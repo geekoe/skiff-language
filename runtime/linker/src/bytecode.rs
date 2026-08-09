@@ -13,10 +13,9 @@
 mod entry;
 mod error;
 mod limits;
-// The v3 artifact seam is landing in parallel. Keep the schema-neutral
-// scheduler compiled now; relocation wiring will consume it immediately after
-// that public DTO is stable.
-#[allow(dead_code)]
+mod link;
+mod stack_map;
+mod types;
 mod worklist;
 
 pub use entry::link_deployment;
@@ -31,8 +30,8 @@ mod tests;
 use skiff_runtime_linked_bytecode::LinkedBytecodeCandidate;
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
-// Keep this exact consumer-to-candidate boundary visible to rustc even when
-// the implementation remains fail-closed at the interface checkpoint.
+// Keep the exact consumer-to-candidate boundary visible to rustc independently
+// of which link obligations the current fail-closed implementation supports.
 const _: fn(
     &HydratedDeploymentBytecode,
     &LinkLimits,

@@ -16,6 +16,8 @@ pub enum BytecodeLinkLimit {
     TotalImageTableEntries,
     TotalFunctionTableEntries,
     TypeNestingDepth,
+    ExpandedTypeNodes,
+    ExpandedTypeBytes,
     ConstantGraphNodes,
     ConstantGraphEdges,
 }
@@ -34,6 +36,8 @@ impl BytecodeLinkLimit {
             Self::TotalImageTableEntries => "total image table entries",
             Self::TotalFunctionTableEntries => "total function table entries",
             Self::TypeNestingDepth => "type nesting depth",
+            Self::ExpandedTypeNodes => "expanded concrete type nodes",
+            Self::ExpandedTypeBytes => "expanded concrete type bytes",
             Self::ConstantGraphNodes => "constant graph nodes",
             Self::ConstantGraphEdges => "constant graph edges",
         }
@@ -60,6 +64,7 @@ pub enum BytecodeLinkObligation {
     CallbackCapturePlan,
     ConstantInitializationPlan,
     SourceAndStatementTables,
+    ControlFlowAndStackMap,
     CandidateAssembly,
 }
 
@@ -78,6 +83,7 @@ impl BytecodeLinkObligation {
             Self::CallbackCapturePlan => "callback capture plan",
             Self::ConstantInitializationPlan => "constant initialization plan",
             Self::SourceAndStatementTables => "source and statement tables",
+            Self::ControlFlowAndStackMap => "control flow and stack map",
             Self::CandidateAssembly => "candidate assembly",
         }
     }

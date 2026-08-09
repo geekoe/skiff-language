@@ -1,10 +1,7 @@
 use skiff_runtime_linked_bytecode::LinkedBytecodeCandidate;
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
-use crate::bytecode::{
-    limits::LinkLimitTracker, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
-    LinkLimits,
-};
+use crate::bytecode::{link::DeploymentLinker, BytecodeLinkError, LinkLimits};
 
 /// Links one exact, consumer-only hydrated deployment into an unverified
 /// concrete candidate.
@@ -13,49 +10,13 @@ use crate::bytecode::{
 /// cross-check the candidate against the exact same opaque hydration. A
 /// candidate is never owner, contract, ABI or structural-validation authority.
 ///
-/// At this checkpoint the opaque hydration is cross-checked as an exact,
-/// bounded closure, but no deployment is accepted: canonical root derivation
-/// is waiting for the final v3 relocation DTO. Returning an empty candidate
-/// here would therefore be an unchecked success path.
+/// The current implementation deliberately recognizes only the exact local,
+/// non-generic closure for which it can construct every candidate fact. Any
+/// graph requiring an unimplemented authority or target family fails before
+/// candidate construction; there is no partial or placeholder success path.
 pub fn link_deployment(
     deployment: &HydratedDeploymentBytecode,
     limits: &LinkLimits,
 ) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
-    let location = BytecodeLinkLocation::Deployment {
-        deployment: deployment.reference().clone(),
-    };
-    let tracker = LinkLimitTracker::new(limits);
-    tracker.check_packages(deployment.packages().len() as u64, location.clone())?;
-
-    let implementation = &deployment.deployment().implementation;
-    if !deployment
-        .packages()
-        .contains_key(&implementation.package_build_id)
-    {
-        return Err(BytecodeLinkError::UnsatisfiedObligation {
-            obligation: BytecodeLinkObligation::ExactPackageClosure,
-            location,
-            detail: format!(
-                "hydrated closure does not contain implementation package {}",
-                implementation.package_build_id
-            ),
-        });
-    }
-    for (package_build_id, package) in deployment.packages() {
-        if package_build_id != &package.reference().package_build_id {
-            return Err(BytecodeLinkError::UnsatisfiedObligation {
-                obligation: BytecodeLinkObligation::ExactPackageClosure,
-                location,
-                detail: format!(
-                    "hydrated package map key {package_build_id} disagrees with exact reference {}",
-                    package.reference().package_build_id
-                ),
-            });
-        }
-    }
-
-    Err(BytecodeLinkError::ImplementationUnavailable {
-        obligation: BytecodeLinkObligation::CanonicalRootSet,
-        location,
-    })
+    DeploymentLinker::new(deployment, limits).link()
 }

@@ -10,9 +10,11 @@ use crate::bytecode::{
 ///
 /// Roots are sorted by their complete specialization key. Targets discovered
 /// while expanding one function are sorted by `(artifact_pc, key)`. A key is
-/// assigned its dense function index when it is first enqueued, so direct and
-/// mutual recursion reuse an already interned index rather than expanding a
-/// second copy.
+/// assigned a provisional dense index when it is first enqueued, so direct and
+/// mutual recursion reuse an already interned entry rather than expanding a
+/// second copy. The linked image assigns final indices from
+/// [`Self::canonical_keys`] after discovery, because a late edge can sort
+/// before its caller.
 #[derive(Debug)]
 pub(super) struct CanonicalWorklist<K> {
     pending: VecDeque<K>,
@@ -61,12 +63,18 @@ where
         Some((index, key))
     }
 
+    #[cfg(test)]
     pub(super) fn index_of(&self, key: &K) -> Option<FunctionIndex> {
         self.indices.get(key).copied()
     }
 
-    pub(super) fn len(&self) -> usize {
-        self.indices.len()
+    /// Complete interned key set in the order required by the linked image.
+    ///
+    /// Discovery order remains useful for bounded expansion, but late edges
+    /// may sort before their callers. Final function indices are therefore
+    /// assigned from this canonical key order after closure discovery.
+    pub(super) fn canonical_keys(&self) -> impl Iterator<Item = &K> {
+        self.indices.keys()
     }
 
     fn intern(

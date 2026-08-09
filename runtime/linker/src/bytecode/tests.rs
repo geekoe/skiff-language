@@ -1,11 +1,18 @@
+use std::collections::BTreeMap;
+
+use skiff_artifact_model::{TypeRefIr, ValueTransferPlan};
 use skiff_runtime_linked_bytecode::LinkedBytecodeCandidate;
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
+use super::types::{substitute_type, TypeLinker};
 use super::worklist::CanonicalWorklist;
 use super::{
     limits::LinkLimitTracker, link_deployment, BytecodeLinkError, BytecodeLinkLimit,
     BytecodeLinkLocation, BytecodeLinkObligation, LinkLimits,
 };
+
+mod deployment;
+mod fixtures;
 
 #[test]
 fn entry_contract_borrows_exact_hydration_and_returns_only_a_candidate() {
@@ -31,8 +38,10 @@ fn link_limits_are_a_complete_explicit_policy_value() {
         max_total_image_table_entries: 9,
         max_total_function_table_entries: 10,
         max_type_nesting_depth: 11,
-        max_constant_graph_nodes: 12,
-        max_constant_graph_edges: 13,
+        max_expanded_type_nodes: 12,
+        max_expanded_type_bytes: 13,
+        max_constant_graph_nodes: 14,
+        max_constant_graph_edges: 15,
     };
 
     assert_eq!(limits.max_packages, 1);
@@ -46,8 +55,10 @@ fn link_limits_are_a_complete_explicit_policy_value() {
     assert_eq!(limits.max_total_image_table_entries, 9);
     assert_eq!(limits.max_total_function_table_entries, 10);
     assert_eq!(limits.max_type_nesting_depth, 11);
-    assert_eq!(limits.max_constant_graph_nodes, 12);
-    assert_eq!(limits.max_constant_graph_edges, 13);
+    assert_eq!(limits.max_expanded_type_nodes, 12);
+    assert_eq!(limits.max_expanded_type_bytes, 13);
+    assert_eq!(limits.max_constant_graph_nodes, 14);
+    assert_eq!(limits.max_constant_graph_edges, 15);
 }
 
 #[test]
@@ -95,6 +106,8 @@ fn generous_limits() -> LinkLimits {
         max_total_image_table_entries: u64::MAX,
         max_total_function_table_entries: u64::MAX,
         max_type_nesting_depth: u64::MAX,
+        max_expanded_type_nodes: u64::MAX,
+        max_expanded_type_bytes: u64::MAX,
         max_constant_graph_nodes: u64::MAX,
         max_constant_graph_edges: u64::MAX,
     }
@@ -124,7 +137,7 @@ fn canonical_worklist_sorts_roots_and_call_site_discoveries() {
     )
     .unwrap();
 
-    assert_eq!(worklist.len(), 2);
+    assert_eq!(worklist.canonical_keys().count(), 2);
     assert_eq!(worklist.pop_next().unwrap().1, "root:a");
     worklist
         .enqueue_discovered(
@@ -139,6 +152,103 @@ fn canonical_worklist_sorts_roots_and_call_site_discoveries() {
     assert_eq!(worklist.pop_next().unwrap().1, "call:m");
     assert_eq!(worklist.pop_next().unwrap().1, "call:z");
     assert!(worklist.pop_next().is_none());
+    assert_eq!(
+        worklist.canonical_keys().copied().collect::<Vec<_>>(),
+        vec!["call:a", "call:m", "call:z", "root:a", "root:z"]
+    );
+}
+
+#[test]
+fn expanded_type_limits_are_aggregate_and_checked() {
+    let mut limits = generous_limits();
+    limits.max_expanded_type_nodes = 3;
+    limits.max_expanded_type_bytes = 9;
+    let location = deployment_location();
+    let mut tracker = LinkLimitTracker::new(&limits);
+
+    tracker.add_expanded_type(2, 4, location.clone()).unwrap();
+    assert!(matches!(
+        tracker.add_expanded_type(2, 4, location),
+        Err(BytecodeLinkError::LimitExceeded {
+            limit: BytecodeLinkLimit::ExpandedTypeNodes,
+            actual: 4,
+            max: 3,
+            ..
+        })
+    ));
+
+    limits.max_expanded_type_nodes = u64::MAX;
+    limits.max_expanded_type_bytes = 7;
+    let location = deployment_location();
+    let mut tracker = LinkLimitTracker::new(&limits);
+    tracker.add_expanded_type(1, 4, location.clone()).unwrap();
+    assert!(matches!(
+        tracker.add_expanded_type(1, 4, location),
+        Err(BytecodeLinkError::LimitExceeded {
+            limit: BytecodeLinkLimit::ExpandedTypeBytes,
+            actual: 8,
+            max: 7,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn type_substitution_is_recursive_and_never_leaves_an_unknown_parameter() {
+    let location = deployment_location();
+    let substitutions = BTreeMap::from([(
+        "T".to_string(),
+        TypeRefIr::Builtin {
+            name: "string".to_string(),
+            args: Vec::new(),
+        },
+    )]);
+    let template = TypeRefIr::Nullable {
+        inner: Box::new(TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::TypeParam {
+                name: "T".to_string(),
+            }],
+        }),
+    };
+
+    assert_eq!(
+        substitute_type(&template, &substitutions, &location).unwrap(),
+        TypeRefIr::Nullable {
+            inner: Box::new(TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![TypeRefIr::builtin("string")],
+            }),
+        }
+    );
+    assert!(matches!(
+        substitute_type(&template, &BTreeMap::new(), &location),
+        Err(BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::ConcreteSpecialization,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn from_type_transfer_plans_remain_fail_closed() {
+    let limits = generous_limits();
+    let linker = TypeLinker::new(&limits);
+    let location = deployment_location();
+
+    assert!(matches!(
+        linker.link_transfer_plan(
+            &ValueTransferPlan::FromType {
+                ty: TypeRefIr::builtin("string"),
+            },
+            &BTreeMap::new(),
+            location,
+        ),
+        Err(BytecodeLinkError::ImplementationUnavailable {
+            obligation: BytecodeLinkObligation::FrameAndValueTransferPlan,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -153,7 +263,7 @@ fn canonical_worklist_reuses_recursive_specializations() {
         .enqueue_discovered([(7, "recursive")], &limits, location)
         .unwrap();
 
-    assert_eq!(worklist.len(), 1);
+    assert_eq!(worklist.canonical_keys().count(), 1);
     assert_eq!(worklist.index_of(&"recursive"), Some(original));
     assert_eq!(worklist.pop_next(), Some((original, "recursive")));
     assert!(worklist.pop_next().is_none());

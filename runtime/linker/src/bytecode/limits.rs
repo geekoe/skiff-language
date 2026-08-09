@@ -38,6 +38,10 @@ pub struct LinkLimits {
     pub max_total_function_table_entries: u64,
     /// Maximum nesting depth of a fully concrete linked type.
     pub max_type_nesting_depth: u64,
+    /// Maximum recursively expanded nodes across all concrete linked types.
+    pub max_expanded_type_nodes: u64,
+    /// Maximum canonical serialized bytes across all concrete linked types.
+    pub max_expanded_type_bytes: u64,
     /// Maximum nodes in the deployment-wide constant initialization plan.
     pub max_constant_graph_nodes: u64,
     /// Maximum edges in the deployment-wide constant initialization plan.
@@ -57,9 +61,10 @@ pub(super) struct LinkLimitTracker<'a> {
     total_relocations: u64,
     total_image_table_entries: u64,
     total_function_table_entries: u64,
+    expanded_type_nodes: u64,
+    expanded_type_bytes: u64,
 }
 
-#[allow(dead_code)]
 impl<'a> LinkLimitTracker<'a> {
     pub(super) const fn new(limits: &'a LinkLimits) -> Self {
         Self {
@@ -68,6 +73,8 @@ impl<'a> LinkLimitTracker<'a> {
             total_relocations: 0,
             total_image_table_entries: 0,
             total_function_table_entries: 0,
+            expanded_type_nodes: 0,
+            expanded_type_bytes: 0,
         }
     }
 
@@ -175,12 +182,7 @@ impl<'a> LinkLimitTracker<'a> {
         entries: u64,
         location: BytecodeLinkLocation,
     ) -> Result<(), BytecodeLinkError> {
-        check_limit(
-            BytecodeLinkLimit::ImageTableEntries,
-            entries,
-            self.limits.max_image_table_entries,
-            location.clone(),
-        )?;
+        self.check_image_table_entries(entries, location.clone())?;
         self.total_image_table_entries = checked_total(
             self.total_image_table_entries,
             entries,
@@ -192,6 +194,19 @@ impl<'a> LinkLimitTracker<'a> {
             BytecodeLinkLimit::TotalImageTableEntries,
             self.total_image_table_entries,
             self.limits.max_total_image_table_entries,
+            location,
+        )
+    }
+
+    pub(super) fn check_image_table_entries(
+        &self,
+        entries: u64,
+        location: BytecodeLinkLocation,
+    ) -> Result<(), BytecodeLinkError> {
+        check_limit(
+            BytecodeLinkLimit::ImageTableEntries,
+            entries,
+            self.limits.max_image_table_entries,
             location,
         )
     }
@@ -209,22 +224,36 @@ impl<'a> LinkLimitTracker<'a> {
         )
     }
 
-    pub(super) fn check_constant_graph(
-        &self,
+    pub(super) fn add_expanded_type(
+        &mut self,
         nodes: u64,
-        edges: u64,
+        bytes: u64,
         location: BytecodeLinkLocation,
     ) -> Result<(), BytecodeLinkError> {
-        check_limit(
-            BytecodeLinkLimit::ConstantGraphNodes,
+        self.expanded_type_nodes = checked_total(
+            self.expanded_type_nodes,
             nodes,
-            self.limits.max_constant_graph_nodes,
+            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
             location.clone(),
+            "summing expanded concrete type nodes",
         )?;
         check_limit(
-            BytecodeLinkLimit::ConstantGraphEdges,
-            edges,
-            self.limits.max_constant_graph_edges,
+            BytecodeLinkLimit::ExpandedTypeNodes,
+            self.expanded_type_nodes,
+            self.limits.max_expanded_type_nodes,
+            location.clone(),
+        )?;
+        self.expanded_type_bytes = checked_total(
+            self.expanded_type_bytes,
+            bytes,
+            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            location.clone(),
+            "summing expanded concrete type bytes",
+        )?;
+        check_limit(
+            BytecodeLinkLimit::ExpandedTypeBytes,
+            self.expanded_type_bytes,
+            self.limits.max_expanded_type_bytes,
             location,
         )
     }
