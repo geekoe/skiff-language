@@ -2,7 +2,7 @@ use super::*;
 use skiff_artifact_model::{
     ContractTypeDescriptor, ContractTypeNameability, NamedUnionBranchIr, NominalTypeRefBaseIr,
     PackageBuildId, PackageLocalAbiIdentity, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
-    PackageSchemaIndexEntry, PackageSchemaTypeId, PackageSchemaTypeRecord, TypeDeclIr,
+    PackageSchemaIndexEntry, PackageSchemaTypeId, PackageSchemaTypeRecord, ParamModeIr, TypeDeclIr,
     TypeDeclarationIr, TypeDescriptorIr,
 };
 
@@ -34,6 +34,7 @@ fn operation_contract(
                 |(index, ty)| skiff_artifact_model::PackageCallableParameter {
                     name: format!("p{index}"),
                     ty,
+                    mode: ParamModeIr::Value,
                 },
             )
             .collect(),
@@ -56,6 +57,7 @@ fn unavailable_reason(parameter_type: PackageTypeRef) -> Vec<BoundaryUnavailable
         parameters: vec![skiff_artifact_model::PackageCallableParameter {
             name: "value".to_string(),
             ty: parameter_type,
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("void"),
@@ -305,6 +307,7 @@ fn concrete_suspension_summary_does_not_enter_operation_contract_shape() {
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
             },
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("string"),
@@ -342,6 +345,7 @@ fn operation_value_plans_use_call_lifetime_except_for_server_stream_items() {
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
             },
+            mode: ParamModeIr::Value,
         }],
         return_type,
         may_suspend: false,
@@ -601,6 +605,7 @@ fn package_schema_applied_nominal_callable_is_structured_unavailable() {
             ty: PackageTypeRef::Local {
                 local_type: applied.clone(),
             },
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("string"),
@@ -664,6 +669,7 @@ fn package_schema_generic_return_stream_and_callback_are_unsupported() {
                         return_type: Box::new(TypeRefIr::builtin("void")),
                     },
                 },
+                mode: ParamModeIr::Value,
             }],
             return_type: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("void"),
@@ -757,6 +763,7 @@ fn package_schema_callback_transitively_referencing_generic_owner_is_unsupported
                     return_type: Box::new(TypeRefIr::builtin("void")),
                 },
             },
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("void"),

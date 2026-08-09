@@ -1,6 +1,6 @@
 use super::*;
 use skiff_artifact_model::{
-    CallableEffectSummary, PackageCallableParameter, PackageSchemaTypeId, TypeDeclIr,
+    CallableEffectSummary, PackageCallableParameter, PackageSchemaTypeId, ParamModeIr, TypeDeclIr,
     TypeDeclarationIr, TypeLinkTargetIr,
 };
 
@@ -75,6 +75,7 @@ fn public_nominals_are_exact_through_parameters_and_return() {
         parameters: vec![PackageCallableParameter {
             name: "values".into(),
             ty: nested,
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::PublicationType {
@@ -231,6 +232,7 @@ fn public_signature_normalization_covers_every_nested_package_and_local_shape() 
                 ty: PackageTypeRef::Local {
                     local_type: local_handle.clone(),
                 },
+                mode: ParamModeIr::InOut,
             },
             PackageCallableParameter {
                 name: "nested".into(),
@@ -247,6 +249,7 @@ fn public_signature_normalization_covers_every_nested_package_and_local_shape() 
                         }),
                     }],
                 },
+                mode: ParamModeIr::Value,
             },
         ],
         return_type: PackageTypeRef::Local {
@@ -286,6 +289,8 @@ fn public_signature_normalization_covers_every_nested_package_and_local_shape() 
         },
     };
     assert_eq!(signature.parameters[0].ty, exact_handle);
+    assert_eq!(signature.parameters[0].mode, ParamModeIr::InOut);
+    assert_eq!(signature.parameters[1].mode, ParamModeIr::Value);
     assert_eq!(signature.return_type, exact_handle);
 }
 

@@ -10,7 +10,7 @@ use skiff_artifact_model::{
     InterfaceMethodSignature, OperationCallableKind, OperationTargetRef, PackageCallableId,
     PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
     PackageImplementationLinks, PackageLocalAbiSymbol, PackageRuntimeRequirements, PackageTypeRef,
-    TypeExport,
+    ParamModeIr, TypeExport,
 };
 use skiff_compiler_core::{
     canonical_implementation_callable_source_path, implementation_package_callable_id,
@@ -258,6 +258,7 @@ fn project_implementation_symbols(
                             )
                         })?,
                     },
+                    mode: ParamModeIr::Value,
                 });
             }
             parameters.extend(
@@ -283,6 +284,7 @@ fn project_implementation_symbols(
                                     )
                                 })?,
                             },
+                            mode: parameter.mode,
                         })
                     })
                     .collect::<Result<Vec<_>, ProjectionError>>()?,

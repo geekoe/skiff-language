@@ -9,10 +9,10 @@ use skiff_artifact_model::{
     ExecutableKind, ExecutableSignatureIr, FileIrRef, FileIrUnit, FunctionTypeParamIr,
     InterfaceDeclIr, InterfaceOperationIr, PackageCallableParameter, PackageCallableSignature,
     PackageExportIndex, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr,
-    PackageRequirement, PackageRuntimeRequirements, PackageSymbolRef, PackageTypeRef, ParamIr, ParamModeIr,
-    ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef, SlotLayout,
-    TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
-    ACTOR_RUNTIME_ABI_VERSION_V1,
+    PackageRequirement, PackageRuntimeRequirements, PackageSymbolRef, PackageTypeRef, ParamIr,
+    ParamModeIr, ServiceCallRef, ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef,
+    SlotLayout, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr,
+    ValueProvenance, ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 use skiff_compiler_projection_input::{
     ProjectionExecutableKey, ProjectionPackageCallableKey, ProjectionPackageCallableSignatureFacts,
@@ -156,9 +156,7 @@ pub(super) fn project_fixture_with_runtime_requirements(
         ProjectionPackageCallableSignatureFacts::try_from_entries(signature_entries).unwrap();
     let mut mutate = safe_facts();
     mutate.effects = CallableEffectSummary::Analyzed {
-        effects: CallableMayEffects {
-            ..no_effects()
-        },
+        effects: CallableMayEffects { ..no_effects() },
     };
     let semantic_facts = BTreeMap::from([
         (ProjectionExecutableKey::new("api", 0), safe_facts()),
@@ -440,6 +438,7 @@ pub(super) fn signature(ty: TypeRefIr) -> PackageCallableSignature {
         parameters: vec![PackageCallableParameter {
             name: "value".to_string(),
             ty: PackageTypeRef::Local { local_type: ty },
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("string"),
@@ -466,6 +465,7 @@ pub(super) fn exact_typed_signature() -> PackageCallableSignature {
                     }],
                 }),
             },
+            mode: ParamModeIr::Value,
         }],
         return_type: contract,
         may_suspend: true,
