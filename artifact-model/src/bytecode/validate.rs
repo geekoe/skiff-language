@@ -14,8 +14,9 @@ use crate::bytecode::decode::{
 use crate::bytecode::dto::limits;
 use crate::bytecode::dto::{
     BytecodeArtifact, BytecodePoolEntry, BytecodePools, CallbackCaptureLayout, DebugBinding,
-    ExceptionRegion, FrozenConstantGraph, FrozenConstantNode, RelocatableBytecodeFunction,
-    SwitchTable, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    DebugTable, ExceptionRegion, FrozenConstantGraph, FrozenConstantNode,
+    RelocatableBytecodeFunction, SwitchTable, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::{
     opcode_table_fingerprint, pool_operand_category, table_operand_category, OperandKind,
@@ -136,6 +137,7 @@ impl std::error::Error for StructuralValidationError {}
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatedFunction {
     pub function_key: String,
+    pub type_parameters: Vec<String>,
     pub frame_layout: crate::bytecode::dto::FrameLayout,
     pub words: Vec<u32>,
     pub relocations: Vec<crate::bytecode::dto::BytecodeRelocation>,
@@ -144,17 +146,30 @@ pub struct ValidatedFunction {
     pub statement_entries: Vec<crate::bytecode::dto::StatementEntry>,
     pub source_map: Vec<crate::bytecode::dto::SourceMapEntry>,
     pub max_operand_depth: u32,
+    pub effect_summary_ref: String,
     pub instructions: Vec<DecodedInstruction>,
     pub header_pcs: Vec<u32>,
 }
 
 /// Opaque validated view. Fields are private: the only construction path is a
 /// successful `structurally_validate` call.
+///
+/// ```compile_fail
+/// use skiff_artifact_model::bytecode::StructurallyValidatedView;
+///
+/// let _unchecked = StructurallyValidatedView {
+///     functions: Vec::new(),
+///     pools: Default::default(),
+///     frozen_constant_graph: Default::default(),
+///     debug_table: None,
+/// };
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructurallyValidatedView {
     functions: Vec<ValidatedFunction>,
     pools: BytecodePools,
     frozen_constant_graph: FrozenConstantGraph,
+    debug_table: Option<DebugTable>,
 }
 
 impl StructurallyValidatedView {
@@ -168,6 +183,10 @@ impl StructurallyValidatedView {
 
     pub fn frozen_constant_graph(&self) -> &FrozenConstantGraph {
         &self.frozen_constant_graph
+    }
+
+    pub fn debug_table(&self) -> Option<&DebugTable> {
+        self.debug_table.as_ref()
     }
 }
 
@@ -190,6 +209,7 @@ pub fn structurally_validate(
         functions,
         pools: artifact.image.pools.clone(),
         frozen_constant_graph: artifact.image.frozen_constant_graph.clone(),
+        debug_table: artifact.image.debug_table.clone(),
     })
 }
 
@@ -525,6 +545,7 @@ fn validate_function(
 
     output.push(ValidatedFunction {
         function_key: function.function_key.clone(),
+        type_parameters: function.type_parameters.clone(),
         frame_layout: function.frame_layout.clone(),
         words: function.words.clone(),
         relocations: function.relocations.clone(),
@@ -533,6 +554,7 @@ fn validate_function(
         statement_entries: function.statement_entries.clone(),
         source_map: function.source_map.clone(),
         max_operand_depth: function.max_operand_depth,
+        effect_summary_ref: function.effect_summary_ref.clone(),
         instructions: decoded.instructions,
         header_pcs: decoded.header_pcs,
     });

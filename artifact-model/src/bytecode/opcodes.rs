@@ -111,9 +111,61 @@ impl RelocationKind {
     }
 }
 
+/// Semantic identity of one bytecode instruction.
+///
+/// Numeric encodings are intentionally not attached to this enum: the sole
+/// numeric-to-semantic mapping lives in [`OPCODE_TABLE`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Opcode {
+    Const,
+    CopySlot,
+    MoveSlot,
+    StoreSlot,
+    Drop,
+    Dup,
+    Jump,
+    JumpIfTrue,
+    JumpIfFalse,
+    SwitchTag,
+    BudgetCheckpoint,
+    CallLocal,
+    TailCallLocal,
+    CallService,
+    CallActor,
+    CallInterface,
+    Return,
+    InterfaceBoxLocal,
+    InterfaceBoxRemote,
+    MakeCallback,
+    InvokeCallback,
+    NewRecord,
+    GetDenseField,
+    SetWritablePath,
+    RepresentationWrap,
+    NewArrayBuilder,
+    ArrayBuilderPush,
+    FreezeArray,
+    ArrayGet,
+    ArrayPushOwned,
+    NewMapBuilder,
+    MapBuilderPut,
+    FreezeMap,
+    MapGet,
+    MapPutOwned,
+    StreamNext,
+    EmitStream,
+    Throw,
+    Rethrow,
+    EnterRegion,
+    LeaveRegion,
+    InvokeHost,
+}
+
 /// One immutable descriptor row of the opcode table (§2.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpcodeDescriptor {
+    pub kind: Opcode,
     pub opcode: u8,
     pub mnemonic: &'static str,
     /// Operand word kinds in word order; length = operand word count.
@@ -251,6 +303,7 @@ pub const fn table_operand_category(opcode: u8, position: usize) -> Option<Table
 pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
     // Value/slot (0x00–0x0F)
     descriptor(
+        Opcode::Const,
         0x00,
         "const",
         &[OperandKind::Pool],
@@ -259,6 +312,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::CopySlot,
         0x01,
         "copy_slot",
         &[OperandKind::Slot, OperandKind::Slot],
@@ -267,6 +321,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::MoveSlot,
         0x02,
         "move_slot",
         &[OperandKind::Slot, OperandKind::Slot],
@@ -275,6 +330,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::StoreSlot,
         0x03,
         "store_slot",
         &[OperandKind::Slot],
@@ -282,8 +338,17 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
         &[],
     ),
-    descriptor(0x04, "drop", &[OperandKind::Slot], &[], &[], &[]),
     descriptor(
+        Opcode::Drop,
+        0x04,
+        "drop",
+        &[OperandKind::Slot],
+        &[],
+        &[],
+        &[],
+    ),
+    descriptor(
+        Opcode::Dup,
         0x05,
         "dup",
         &[],
@@ -292,8 +357,17 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     // Control (0x10–0x1F)
-    descriptor(0x10, "jump", &[OperandKind::Branch], &[], &[], &[]),
     descriptor(
+        Opcode::Jump,
+        0x10,
+        "jump",
+        &[OperandKind::Branch],
+        &[],
+        &[],
+        &[],
+    ),
+    descriptor(
+        Opcode::JumpIfTrue,
         0x11,
         "jump_if_true",
         &[OperandKind::Branch],
@@ -302,6 +376,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::JumpIfFalse,
         0x12,
         "jump_if_false",
         &[OperandKind::Branch],
@@ -310,6 +385,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::SwitchTag,
         0x13,
         "switch_tag",
         &[OperandKind::Table, OperandKind::Branch],
@@ -317,9 +393,18 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
         &[],
     ),
-    descriptor(0x14, "budget_checkpoint", &[], &[], &[], &[]),
+    descriptor(
+        Opcode::BudgetCheckpoint,
+        0x14,
+        "budget_checkpoint",
+        &[],
+        &[],
+        &[],
+        &[],
+    ),
     // Call (0x20–0x2F)
     descriptor(
+        Opcode::CallLocal,
         0x20,
         "call_local",
         &[OperandKind::Reloc, OperandKind::Immediate],
@@ -331,6 +416,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         ],
     ),
     descriptor(
+        Opcode::TailCallLocal,
         0x21,
         "tail_call_local",
         &[OperandKind::Reloc, OperandKind::Immediate],
@@ -342,6 +428,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         ],
     ),
     descriptor(
+        Opcode::CallService,
         0x22,
         "call_service",
         &[
@@ -354,6 +441,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[RelocationKind::ServiceOperationRef],
     ),
     descriptor(
+        Opcode::CallActor,
         0x23,
         "call_actor",
         &[
@@ -366,6 +454,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[RelocationKind::ActorMethodRef],
     ),
     descriptor(
+        Opcode::CallInterface,
         0x24,
         "call_interface",
         &[
@@ -377,9 +466,18 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
         &[RelocationKind::InterfaceRequirementRef],
     ),
-    descriptor(0x25, "return", &[], &[result_count_effect()], &[], &[]),
+    descriptor(
+        Opcode::Return,
+        0x25,
+        "return",
+        &[],
+        &[result_count_effect()],
+        &[],
+        &[],
+    ),
     // Callback/interface (0x30–0x3F)
     descriptor(
+        Opcode::InterfaceBoxLocal,
         0x30,
         "interface_box_local",
         &[OperandKind::Reloc],
@@ -388,6 +486,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[RelocationKind::InterfaceRequirementRef],
     ),
     descriptor(
+        Opcode::InterfaceBoxRemote,
         0x31,
         "interface_box_remote",
         &[OperandKind::Reloc, OperandKind::Reloc],
@@ -399,6 +498,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         ],
     ),
     descriptor(
+        Opcode::MakeCallback,
         0x32,
         "make_callback",
         &[OperandKind::Reloc, OperandKind::Immediate],
@@ -407,6 +507,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[RelocationKind::SyntheticCallbackRef],
     ),
     descriptor(
+        Opcode::InvokeCallback,
         0x33,
         "invoke_callback",
         &[
@@ -420,6 +521,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
     ),
     // Record/value (0x40–0x4F)
     descriptor(
+        Opcode::NewRecord,
         0x40,
         "new_record",
         &[OperandKind::Pool, OperandKind::Immediate],
@@ -428,6 +530,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::GetDenseField,
         0x41,
         "get_dense_field",
         &[OperandKind::Pool, OperandKind::Immediate],
@@ -436,6 +539,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::SetWritablePath,
         0x42,
         "set_writable_path",
         &[OperandKind::Slot, OperandKind::Pool, OperandKind::Immediate],
@@ -444,6 +548,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::RepresentationWrap,
         0x43,
         "representation_wrap",
         &[OperandKind::Pool],
@@ -453,6 +558,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
     ),
     // Collection (0x50–0x5F)
     descriptor(
+        Opcode::NewArrayBuilder,
         0x50,
         "new_array_builder",
         &[OperandKind::Pool],
@@ -461,6 +567,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::ArrayBuilderPush,
         0x51,
         "array_builder_push",
         &[],
@@ -469,6 +576,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::FreezeArray,
         0x52,
         "freeze_array",
         &[],
@@ -477,6 +585,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::ArrayGet,
         0x53,
         "array_get",
         &[],
@@ -485,6 +594,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::ArrayPushOwned,
         0x54,
         "array_push_owned",
         &[OperandKind::Slot],
@@ -493,6 +603,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::NewMapBuilder,
         0x55,
         "new_map_builder",
         &[OperandKind::Pool, OperandKind::Pool],
@@ -501,6 +612,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::MapBuilderPut,
         0x56,
         "map_builder_put",
         &[],
@@ -509,6 +621,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::FreezeMap,
         0x57,
         "freeze_map",
         &[],
@@ -517,6 +630,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::MapGet,
         0x58,
         "map_get",
         &[],
@@ -525,6 +639,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::MapPutOwned,
         0x59,
         "map_put_owned",
         &[OperandKind::Slot],
@@ -534,6 +649,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
     ),
     // Stream (0x60–0x6F)
     descriptor(
+        Opcode::StreamNext,
         0x60,
         "stream_next",
         &[OperandKind::Slot, OperandKind::Pool],
@@ -542,6 +658,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
     ),
     descriptor(
+        Opcode::EmitStream,
         0x61,
         "emit_stream",
         &[OperandKind::Pool],
@@ -551,6 +668,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
     ),
     // Exception/region (0x70–0x7F)
     descriptor(
+        Opcode::Throw,
         0x70,
         "throw",
         &[OperandKind::Pool],
@@ -558,11 +676,28 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
         &[],
     ),
-    descriptor(0x71, "rethrow", &[], &[], &[], &[]),
-    descriptor(0x72, "enter_region", &[OperandKind::Table], &[], &[], &[]),
-    descriptor(0x73, "leave_region", &[OperandKind::Table], &[], &[], &[]),
+    descriptor(Opcode::Rethrow, 0x71, "rethrow", &[], &[], &[], &[]),
+    descriptor(
+        Opcode::EnterRegion,
+        0x72,
+        "enter_region",
+        &[OperandKind::Table],
+        &[],
+        &[],
+        &[],
+    ),
+    descriptor(
+        Opcode::LeaveRegion,
+        0x73,
+        "leave_region",
+        &[OperandKind::Table],
+        &[],
+        &[],
+        &[],
+    ),
     // Host effect (0x80–0x8F)
     descriptor(
+        Opcode::InvokeHost,
         0x80,
         "invoke_host",
         &[
@@ -577,6 +712,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
 ];
 
 const fn descriptor(
+    kind: Opcode,
     opcode: u8,
     mnemonic: &'static str,
     operand_layout: &'static [OperandKind],
@@ -585,6 +721,7 @@ const fn descriptor(
     allowed_relocations: &'static [RelocationKind],
 ) -> OpcodeDescriptor {
     OpcodeDescriptor {
+        kind,
         opcode,
         mnemonic,
         operand_layout,
@@ -603,8 +740,14 @@ pub fn opcode_for(value: u8) -> Option<&'static OpcodeDescriptor> {
         .map(|index| &OPCODE_TABLE[index])
 }
 
+/// Resolves a numeric opcode to its semantic identity through the canonical
+/// descriptor table.
+pub fn opcode_kind(encoded: u8) -> Option<Opcode> {
+    opcode_for(encoded).map(|descriptor| descriptor.kind)
+}
+
 /// Fingerprint of the table projection (D12):
-/// sha256(canonical JSON of `[{opcode, mnemonic, operandKinds, stackIn,
+/// sha256(canonical JSON of `[{kind, opcode, mnemonic, operandKinds, stackIn,
 /// stackOut, relocKinds}]`). Every artifact carries it and validation compares
 /// it against the compile-time built-in (C1); combined with the ISA version
 /// string this is the double check that artifact and reader share one table.
@@ -612,6 +755,7 @@ pub fn opcode_table_fingerprint() -> String {
     let projection: Vec<TableProjectionEntry> = OPCODE_TABLE
         .iter()
         .map(|descriptor| TableProjectionEntry {
+            kind: descriptor.kind,
             opcode: descriptor.opcode,
             mnemonic: descriptor.mnemonic,
             operand_kinds: descriptor
@@ -646,6 +790,7 @@ pub fn opcode_table_fingerprint() -> String {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TableProjectionEntry<'a> {
+    kind: Opcode,
     opcode: u8,
     mnemonic: &'a str,
     operand_kinds: Vec<&'a str>,

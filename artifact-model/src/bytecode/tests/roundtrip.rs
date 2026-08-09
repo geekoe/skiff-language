@@ -1,13 +1,13 @@
 //! Roundtrip and determinism: encode → decode equivalence, canonical bytes
 //! stability, BTreeMap insertion-order insensitivity (阶段页 §4.2 验收).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::bytecode::decode::{decode_branch_target, BoundedDecoder};
 use crate::bytecode::encode::{
     assemble_artifact, assemble_function, encode_instruction, EncodeError, EncodedInstruction,
 };
-use crate::bytecode::opcodes::{opcode_for, OPCODE_TABLE};
+use crate::bytecode::opcodes::{opcode_for, opcode_kind, OPCODE_TABLE};
 
 use super::*;
 
@@ -226,6 +226,78 @@ fn opcode_table_is_complete_sorted_and_lookup_consistent() {
     for descriptor in OPCODE_TABLE {
         assert!(descriptor.instruction_word_count() >= 1);
     }
+}
+
+/// Every numeric encoding and semantic opcode occurs in exactly one
+/// descriptor, and numeric semantic lookup is only a projection of that row.
+#[test]
+fn opcode_numeric_and_semantic_descriptors_are_one_to_one() {
+    let mut encoded = HashSet::new();
+    let mut semantic = HashSet::new();
+
+    for descriptor in OPCODE_TABLE {
+        assert!(
+            encoded.insert(descriptor.opcode),
+            "duplicate numeric opcode 0x{:02x}",
+            descriptor.opcode
+        );
+        assert!(
+            semantic.insert(descriptor.kind),
+            "duplicate semantic opcode {:?}",
+            descriptor.kind
+        );
+        assert_eq!(opcode_kind(descriptor.opcode), Some(descriptor.kind));
+        assert_eq!(
+            opcode_for(descriptor.opcode).map(|resolved| resolved.kind),
+            Some(descriptor.kind)
+        );
+    }
+
+    assert_eq!(encoded.len(), 42);
+    assert_eq!(semantic.len(), 42);
+    assert_eq!(opcode_kind(0xFF), None);
+}
+
+/// The opaque validated view owns every linker fact copied across the checked
+/// boundary, so consumers never need to consult the raw artifact again.
+#[test]
+fn validated_view_retains_linker_facts_after_raw_artifact_is_dropped() {
+    let mut artifact = canonical_artifact();
+    let function = artifact
+        .image
+        .functions
+        .get_mut("module::main")
+        .expect("canonical main function");
+    function.type_parameters = vec!["T".to_string(), "Result".to_string()];
+    function.effect_summary_ref = "effect-summary:module::main".to_string();
+
+    let expected_debug_table = artifact
+        .image
+        .debug_table
+        .clone()
+        .expect("canonical debug table");
+    let view = structurally_validate(&artifact).expect("canonical artifact validates");
+    drop(artifact);
+
+    let validated = view
+        .functions()
+        .iter()
+        .find(|function| function.function_key == "module::main")
+        .expect("validated main function");
+    assert_eq!(
+        validated.type_parameters,
+        vec!["T".to_string(), "Result".to_string()]
+    );
+    assert_eq!(
+        validated.effect_summary_ref,
+        "effect-summary:module::main"
+    );
+    assert_eq!(view.debug_table(), Some(&expected_debug_table));
+
+    let mut without_debug = canonical_artifact();
+    without_debug.image.debug_table = None;
+    let view = structurally_validate(&without_debug).expect("debug table is optional");
+    assert_eq!(view.debug_table(), None);
 }
 
 /// Every descriptor operand position expectation is covered by the
