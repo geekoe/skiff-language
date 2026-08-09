@@ -10,7 +10,9 @@ Skiff 尚未发布。本架构落地时整体升级 artifact/runtime 格式并�
 
 本文依赖的用户可见语义已在`../reference/`收敛：普通aggregate value semantics、
 top-level frozen `const`、local `var` / immutable `let`，以及只允许Package Local ABI使用的
-显式`InOut`。本文只规定它们的VM物理实现与验证边界。
+显式`InOut`。Collection bracket 的 strict read、indexed assignment、atomic loan 与公开错误同样
+由`../reference/syntax.md`、`../reference/static-semantics.md`、`../reference/runtime.md`和
+`../reference/std-surface.md`定义。本文只规定它们的VM物理实现与验证边界。
 
 ## 1. Decisions and invariants
 
@@ -324,6 +326,22 @@ Host effect
   invoke_host
 ```
 
+`array_get` 是 source-visible `Array[index]` 的 strict read；`map_get` 是 source-visible
+`Map[key]` / `JsonObject[key]` 的 strict read。它们分别在越界或 missing 时构造
+`std.collection.IndexOutOfBoundsError` / `std.collection.MissingKeyError`。`map_get` 不得用来
+实现 optional `Map.get(key) -> V?`；后者必须经过独立 intrinsic/receiver-call semantic path。
+`map_put_owned` 是 internal upsert mnemonic，可承接 source `Map.set` 或 terminal indexed assignment；
+它不向 source surface 公开 `Map.put`。
+
+OpcodeContract 必须保留以下失败分类，不能因为都在 VM 内部发生而共用一个 catchable
+error path：
+
+- source-visible strict collection bracket 使用上述 ordinary catchable request exception；
+- `Trap(Assertion)` 的 false 结果、divide-by-zero 和产生非有限值的 arithmetic 是不可捕获
+  terminal；当前不存在公开 `ArithmeticError`，也不得借 collection error 替代；
+- `MapEntryAt` 是遍历等 runtime-internal canonical snapshot access，其 ordinal 越界是
+  VM/generated terminal，不是 source bracket missing，不生成 `MissingKeyError`。
+
 `copy_slot`、`dup`、container store 和普通 by-value argument preparation 按 linked `ValueTransferPlan`执行；
 ordinary aggregate 才做 semantic share transition。它们不能只复制16 bytes后留下两个“唯一”edit token，
 也不能复制move-only/affine resource。`move_slot`转移value并使source slot dead；verifier必须证明之后不再读取。
@@ -387,6 +405,13 @@ Link 后 verifier 至少证明：
 - declared `NoPending` callable 不可到达 pending-capable instruction；
 - `tail_call_local` 满足 exact target、return plan equivalence 与 cleanup eligibility；
 - move、share、builder edit token、writable path 和 `InOut` loan 不产生 use-after-move 或同时可写 alias；
+- 每个 bracket/index plan 的 concrete receiver kind、selector/result type、strict/intermediate/terminal
+  policy 与 opcode 精确一致；`Array` 只接受 `integer` 且 terminal write 为 replace-only，
+  `Map<K,V>` 只接受精确 `K`，`JsonObject` 只接受 `string`，terminal Map/JsonObject write
+  为 upsert，intermediate 与 `InOut` terminal 则必须 exist；
+- bracket read result 存在 exact linked snapshot lifecycle，indexed store 只有一个 atomic commit，`InOut`
+  在所有 argument/selector/path check 后才原子取得整组 loan；任一 fallible segment 都有独立
+  source site；
 - 每个slot/parameter/result/container field的`ValueTransferPlan`完整；move-only/affine resource不会经过copy、dup、
   普通snapshot store或多consumer stream路径，所有overwrite/frame-pop/unwind edge都有exact drop；
 - callback capture layout 与 synthetic body slot/signature/effect profile一致且不违反 escape policy；
@@ -610,7 +635,7 @@ Map:   SmallLinear -> UniqueHash -> SharedHash
 ```
 
 - unique Array `push` 是 amortized O(1) contiguous append；
-- unique Map `put` 是 expected O(1) hash update；
+- unique Map upsert 是 expected O(1) hash update；
 - shared node first write 做 path COW；
 - literal、decode、DB result、map/filter、`Array.concat`、`Map.merge` 和 compiler-proven loop accumulator 使用
   transient builder；freeze 后才作为普通 value 流动；
@@ -618,9 +643,41 @@ Map:   SmallLinear -> UniqueHash -> SharedHash
 - persistent vector/HAMT 只在真实 benchmark 证明频繁大 snapshot 后写入由全量 COW 主导时引入 adaptive form。
 
 Source API 不用 `appending`/`setting` 等细微词形区分 purity。Receiver
-`Array.push` / `Array.set` / `Array.pop` 与 `Map.put` / `Map.delete` 只对verified writable path做
+`Array.push` / `Array.set` / `Array.pop` 与 `Map.set` / `Map.delete` 只对verified writable path做
 mutation；该path可以root于local `var`、有效`InOut` loan，或Actor method中当前规则允许写入的
 `self` field。Pure transform 使用一眼可见的 static `Array.concat` 和 `Map.merge`。
+
+#### Bracket/index plans and atomic mutation
+
+Source analysis/lowering 必须为每个 index segment 产生 symbolic typed fact；deployment link 把它解析成
+concrete image-local plan，至少包含：
+
+```text
+ResolvedIndexSegment
+  receiverKind: Array | Map | JsonObject
+  selectorType
+  resultType
+  policy: StrictRead | IntermediateMustExist | TerminalReplace | TerminalUpsert | LoanMustExist
+  resultTransferPlan
+  sourceSite
+```
+
+VM 只消费 semantic verifier 证明过的 concrete plan，不根据 raw runtime tag 尝试 string/record/
+unsnarrowed `Json` fallback。Strict read 先求值 receiver，再求值 selector，各一次；返回值按
+`resultTransferPlan` 形成 logical snapshot，不暴露 writable handle。Array 越界与 Map/JsonObject missing
+在当前 segment source site 构造公开 collection exception；`MissingKeyError` 的 plan 不得保留 key
+到 payload、message、trace 或 telemetry。
+
+Indexed assignment 先只求值并缓存 writable root 与从外到内的 selector，同时解析全部
+intermediate path；随后只求值一次 RHS，再按 linked COW/transfer plan 执行一次 atomic
+store。Array terminal 是在界内 replace；Map/JsonObject terminal 是 upsert；所有 intermediate 都是
+must-exist。Store preparation 失败不得留下部分 path mutation。不能把该语义降成一串可观测的
+per-segment load + store。
+
+当前 initial instruction list 的 `set_writable_path` 只表达 dense field store，
+`array_push_owned`/`map_put_owned` 也没有表达多 segment transactional path。因此本节是
+OpcodeContract 的强制输入，不声称现有 opcode 集已完成该编码；contract landed，
+implementation pending。
 
 ### 8.4 Dense records and canonical Map order
 
@@ -629,7 +686,7 @@ Compiler-known record 使用 `ShapeId + dense ValueSlot fields`；field opcode �
 
 Map 的用户语义已经要求 canonical key order：`keys()` 与 `for` iteration 在操作开始时生成 snapshot，并按
 canonical string payload 的 UTF-8 bytes 升序排列。Mutation 可以继续使用 hash table；只在 snapshot/encode
-边界排序，不能把 ordered tree 强加给所有 `put`。
+边界排序，不能把 ordered tree 强加给所有 `set`/upsert。
 
 ### 8.5 Strings and bytes
 
@@ -747,6 +804,10 @@ region eligibility后
 
 - 只允许 exact local/package-direct callable signature；它进入 Package Local ABI identity；
 - actual argument必须是 writable `var` access path；compiler/verifier证明调用期间 exclusive；
+- 所有 argument 按源码顺序各求值一次；每个 `InOut` root/index selector 也只求值一次，
+  selector 按 path 从外到内缓存，期间不提前取得部分 loan；
+- 全部 `InOut` path 的 intermediate 与 terminal segment 都必须 exist。只有全部 argument/
+  selector/path check 成功后才原子取得整组 loan；任一失败都无部分 loan、不进入 callee；
 - callee必须有 verified `NoPending`（即 sound `maySuspend=false`），loan不跨 child/host Pending；
 - callee mutation直接更新 caller path。Backing unique时原地写，shared时path COW；
 - ordinary throw不回滚已经执行的写入；caller若捕获错误会观察到它们；
@@ -1112,8 +1173,11 @@ StatementEntry { pc, statementId/function attribution }
 SourceMapEntry { pc range, InstructionSourceSite }
 ```
 
-每次控制流进入statement entry恰好记录一次。Source map覆盖call、throw、effect、DB、timeout和generated
-instruction。挂起/恢复不重复已进入statement，也不漏记resume后的新statement。
+每次控制流进入statement entry恰好记录一次。Source map覆盖call、throw、effect、DB、timeout、每个可失败
+bracket/index path segment 和 generated instruction。一个 strict collection failure 使用它自己的 segment
+source site，`Array.set` 越界使用 receiver call site；`rethrow` 保留原 exception envelope 与原
+source，不把 rethrow instruction 改成新 throw
+source。挂起/恢复不重复已进入statement，也不漏记resume后的新statement。
 
 Frame保存exact call site；throw/effect error使用当前source site。Non-tail local frame按unwind生成stack trace；
 tail replacement遵守bounded diagnostic contract。Cross-service/provider frame通过canonical error channel投影，
@@ -1156,6 +1220,8 @@ implementation benchmark plan绑定workload、release profile、机器、统计�
 - `../reference/static-semantics.md`、`../reference/runtime.md`和Actor文档从mutable aggregate reference
   semantics收敛到value semantics、writable path、ordinary value argument与Package-only `InOut`；
 - `../reference/std-surface.md`明确receiver mutation与static transformation API；
+- collection bracket 的 typed plan、strict catchable error、linked snapshot lifecycle、indexed atomic store 与
+  all-path-existing atomic `InOut` loan 已从 source facts 贯通到 OpcodeContract/emitter/verifier/VM；
 - Package/Service契约拒绝service/gateway/interface/callback `InOut`，Package Local ABI保留该mode和
   `maySuspend` summary；
 - artifact schema由单一opcode/operand/stack-effect声明生成；

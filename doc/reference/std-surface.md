@@ -47,10 +47,23 @@ HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.
 
 当前 platform error surface 包括 `std.json.DecodeError`、`std.bytes.DecodeError`、`std.db.DecodeError`、
 `std.db.ConflictError`、`std.db.ConstraintError`、`std.file.FileError`、`std.number.DecodeError`、
-`std.time.DecodeError`、
+`std.time.DecodeError`、`std.collection.IndexOutOfBoundsError`、`std.collection.MissingKeyError`、
 `config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、
 `std.service.InternalError`、`std.http.HttpError`、`std.websocket.WebSocketRequestError`、
 `TimeoutError`。
+
+Collection access 错误的 public payload 固定为：
+
+```skiff
+std.collection.IndexOutOfBoundsError { index: integer, length: integer }
+std.collection.MissingKeyError { container: string }
+```
+
+`IndexOutOfBoundsError` 保留失败时的 selector 与 array length。`MissingKeyError.container` 只会是
+稳定值 `"Map"` 或 `"JsonObject"`；错误 payload、公开 message、trace 和 telemetry 都不得泄露
+missing key。这两种错误只表示用户代码进入当前 request 后的 strict collection access
+失败，是 ordinary catchable exception；artifact 验证、VM 内部 index 与其它 terminal 不得伪装成这两类
+错误。
 
 decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes、DB、file、number、time 和 config 转换失败。runtime 内部 decode / artifact / transport 不变量失败不暴露为用户可 catch 的 decode 类型。错误消息必须脱敏，不能包含 secret 或原始敏感值。
 
@@ -111,7 +124,10 @@ name/member/index writable path，其root只允许局部`var`、有效`inout` lo
 存入上述verified writable root后才能修改，shared/frozen backing在所属heap首次写入时按COW分离。
 
 `Array<T>`提供长度读取、`push`、`set`、`pop`、`map`和`filter`等基础surface。
-`push`/`set`/`pop`是receiver mutator，只接受上述writable path；`map`/`filter`是pure transform。
+`Array<T>.set(index: integer, item: T) -> void` 是 replace-only receiver mutator；它只接受上述
+writable path，并要求 `0 <= index < length`。负 index 或 `index >= length` 抛
+`std.collection.IndexOutOfBoundsError { index, length }`；`index == length` 不表示 append。`push`/`pop`
+也是receiver mutator，`map`/`filter`是pure transform。
 `Array.concat(left, right)`是type-namespace static transform，返回两个输入的拼接值。例如：
 
 ```skiff
@@ -120,14 +136,34 @@ let ys = Array.concat(xs, [4])
 
 `Array.map` 和 `Array.filter` 的 callback 是 lane-local non-escaping callback；callback effect 并入承载该 API 调用的 lane。
 
-`Map<K,V>`提供长度读取、`keys`、`get`、`has`、`put`和`delete`。`put`/`delete`是receiver mutator，
-只接受上述writable path；其它操作是local read。`Map.merge(base, updates)`是type-namespace
-static transform，在返回值中用`updates`覆盖同名key，不修改任一输入。
+`Map<K,V>`提供长度读取、`keys`、`get`、`has`、`set`和`delete`。
+`Map<K,V>.get(key: K) -> V?` 是可选 lookup；missing 返回 `null`，不抛
+`std.collection.MissingKeyError`。`Map<K,V>.set(key: K, value: V) -> void` 是receiver mutator，对 terminal
+key 执行 upsert。`set`/`delete`只接受上述writable path；其它操作是local read。
+`Map.merge(base, updates)`是type-namespace static transform，在返回值中用`updates`覆盖同名key，
+不修改任一输入。
 
 Source surface不定义`appending`、`setting`等依赖英语词形来区分purity的成对API。
-上述receiver mutator（`push`/`set`/`pop`/`put`/`delete`）表示对writable place的mutation；
+上述receiver mutator（`push`/`set`/`pop`/`delete`）表示对writable place的mutation；
 read/pure receiver API不因此变成写。`Array.concat`、`Map.merge`等显式type-namespace call表示pure
 transform。
+
+Bracket 是另一个语言操作，不是上述 receiver API 的别名：
+
+- `array[index]` 要求 `index: integer`，越界抛 `std.collection.IndexOutOfBoundsError`；
+- `map[key]` 要求 key 精确为 `K`，missing 抛
+  `std.collection.MissingKeyError { container: "Map" }`，不等于 `map.get(key)`；
+- `jsonObject[key]` 要求 `key: string`，missing 抛
+  `std.collection.MissingKeyError { container: "JsonObject" }`。
+
+Bracket read 返回 ordinary logical snapshot。Indexed assignment 的 terminal Array 操作只能 replace，terminal
+Map/JsonObject 操作是 upsert；嵌套路径的所有 intermediate element/key 必须已存在。完整的求值顺序、
+atomic store 与 `inout` loan 规则见 `runtime.md` §5。
+
+> **Contract status（2026-08-10）**：上述 bracket/index 语义已冻结，end-to-end implementation
+> pending。当前 prelude 的 `Array.set` selector 仍是 `number`，实现必须改为 `integer`；
+> `Map.set(key: K, value: V)` 命名与 `Map.get(key: K) -> V?` 已与本 surface 对齐，但不代表
+> parser/source/lowering/OpcodeContract/verifier/runtime 的 strict bracket、错误和原子 path 已完成。
 
 `Map<K,V>.keys() -> Array<K>` 返回 key 的 request-local 快照值。调用后修改原 map 不改变该数组的元素集合；
 返回值放入`var`后可独立修改，不影响原 map。
@@ -170,6 +206,9 @@ bytes surface 包括 concat、fromBase64、fromHex、fromUtf8、length、toBase6
 `Json` 的值域是 `null`、`bool`、`number`、`string`、`Array<Json>` 和 `JsonObject`。`JsonObject` 的 payload 语义等价于 `Map<string,Json>`。
 
 `JsonObject` 不是普通透明 alias，也不要求用户 alias 支持递归。IR 和 schema 可保留它们作为 prelude type symbol / descriptor。
+
+对 `JsonObject` 值使用 `[string]` 遵守§5的 strict bracket 规则。静态类型仍是未收窄 `Json` 时不支持 bracket；
+必须先将它收窄到 `JsonObject` 或 `Array<Json>` branch。
 
 赋值到 `Json` 目标类型时，`null`、`bool`、`number`、`integer`、`string`、`Array<Json>` 和 `JsonObject` 都可直接进入。
 

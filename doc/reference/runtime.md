@@ -276,6 +276,52 @@ target必须经verifier证明`NoPending`（`maySuspend = false`）。`inout`只�
 service/gateway/interface/callback/Actor external/host effect/recoverable boundary；ordinary throw不回滚已执行
 写入。
 
+### Bracket/index execution
+
+Postfix `object[index]` 是 strict collection access。Ordinary read 始终先求值 `object`，再求值
+`index`，两者各恰好一次：
+
+| receiver | selector | result | failure |
+| --- | --- | --- | --- |
+| `Array<T>` | `integer` | `T` | `index < 0` 或 `index >= length` 抛 `std.collection.IndexOutOfBoundsError { index, length }` |
+| `Map<K,V>` | 精确 `K` | `V` | missing 抛 `std.collection.MissingKeyError { container: "Map" }` |
+| `JsonObject` | `string` | `Json` | missing 抛 `std.collection.MissingKeyError { container: "JsonObject" }` |
+
+`string`、record/object 和未收窄 `Json` 不进入该 runtime path。`Map<K,V>.get(key: K) -> V?`
+仍是独立 receiver API；missing 返回 `null`，不执行 strict bracket throw。
+
+Read result 按 linked image 中该精确结果类型的 lifecycle / `ValueTransferPlan` 产生 logical
+snapshot，不返回 container 内部的 writable alias。Snapshot-capable aggregate 可做 O(1) share transition
+并在首次写入时 COW；move-only/affine 结果或缺失 linked lifecycle proof 的 access 必须由
+source checker/verifier 拒绝，VM 不得用 raw handle copy 充当 read。
+
+Indexed assignment 的顺序固定为：
+
+1. writable root 只解析一次；每个动态 selector 按 path 从外到内各求值一次，并解析、
+   检查对应 path segment；
+2. 所有 intermediate Array element / Map key / JsonObject key 都必须已存在。Terminal Array
+   selector 也必须已在界内，只能 replace；terminal Map/JsonObject selector 允许 missing，并在
+   commit 时 upsert；
+3. 整条 path 解析成功后，RHS 恰好求值一次；
+4. runtime 按 linked lifecycle 准备 COW/transfer，然后执行一次原子 logical store。
+
+任一 selector、path check、RHS 或 store preparation 失败都不会暴露部分 container mutation。这个
+atomicity 不回滚 selector 或 RHS 本身已执行的外部副作用。`Array<T>.set(index: integer,
+item: T)` 与 terminal Array assignment 使用同一 replace-only/越界规则；
+`Map<K,V>.set(key: K, value: V)` 与 terminal Map assignment 使用同一 upsert 规则。
+
+含 `inout` 的 local/package-direct call 按源码 argument 顺序求值，每个 ordinary argument、root 和
+index selector 都只求值一次。所有 `inout` path 的 intermediate 与 terminal segment 都必须已
+存在；Map/JsonObject terminal key 在此不使用 assignment upsert。只有在全部 argument/selector
+求值与全部 path check 成功后，runtime 才原子取得整组 exclusive loan；失败时无部分
+loan 且 callee 不进入。Callee 进入后的写入是 write-through；ordinary throw 不回滚已执行写入。
+
+每个可失败 bracket/path segment 都必须保留自己的 source attribution。生成的 collection error
+使用失败 segment 的 source site 创建 exception envelope；`Array.set` 越界使用该 receiver call
+site；missing key 不进入 payload、message、trace 或
+telemetry。该分类只用于 source-visible collection access，不把 artifact/VM 内部 index 失败映射成可捕获
+collection error。
+
 每个request owner（包括service boundary创建的provider owner）都创建fresh request-local managed heap。
 Request参数、DB/HTTP/service/external边界物化值、literal、COW node、需要heap表达的nominal wrapper与
 request-local resource handle都属于对应heap。Collector对每个request heap都可用，但只在allocation
@@ -296,7 +342,7 @@ fail closed。Nested mutation沿writable path检查每个node的share state，�
 `Map<K,V>.keys()` 返回一个`Array<K>`快照值。返回值放入`var`后修改不影响原 map；
 调用后修改原 map 也不改变该数组的元素集合。
 
-map `for` 循环在循环开始时读取快照。`for key in map` 读取 key 快照；循环期间对 map 执行 `put` / `delete` 不改变本轮将访问的 key 集合。`for key, value in map` 读取 entry 快照；循环期间对 map 执行 `put` / `delete` 不改变本轮 key/value 对，若某个尚未访问的 key 被重新 `put`，后续迭代的 `value` 仍是循环开始时的 value。
+map `for` 循环在循环开始时读取快照。`for key in map` 读取 key 快照；循环期间对 map 执行 `set` / `delete` 不改变本轮将访问的 key 集合。`for key, value in map` 读取 entry 快照；循环期间对 map 执行 `set` / `delete` 不改变本轮 key/value 对，若某个尚未访问的 key 被重新 `set`，后续迭代的 `value` 仍是循环开始时的 value。
 
 map key 快照顺序是 canonical map key order，不是插入顺序。当前合法 map key 是 `string` 或 string representation，排序按 canonical string payload 的 UTF-8 字节序升序；未来如果扩展非 string key，runtime 必须先为该 key 类型定义 canonical map ordering。
 

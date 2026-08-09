@@ -2,6 +2,9 @@
 
 状态：draft（待主 agent + 用户确认关键决策后生效）；依赖 Phase 1 complete、Phase 0 ledger
 
+2026-08-10 bracket/index amendment：syntax/source/runtime contract landed；typed lowering、OpcodeContract、
+emitter/verifier/runtime implementation pending。
+
 本文是 Phase 2（`phases/phase-2-compiler-emission.md`）的详细设计。它把权威契约
 `doc/architecture/bytecode-vm.md`、`doc/reference/static-semantics.md`、`doc/reference/syntax.md`、
 `doc/reference/any-interface.md` 与 requirement ledger 中 Phase 2 部分（R-010、R-011、R-025、R-026(部分)、
@@ -34,12 +37,16 @@ R-230、R-243(部分)）落成可实现的 grammar、facts、MIR、emitter、con
 TopLevelConstDecl = "const" Identifier (":" Type)? "=" Expr        // 不变，仅顶层
 LocalBindingDecl  = ("let" | "var") Identifier (":" Type)? "=" Expr // 局部 const 移除
 Param             = ["inout"] name ":" Type                          // inout 是参数 mode
-CallArg           = Expr | "inout" Place                             // Place = name/member/index path
+PostfixExpr       = PrimaryExpr PostfixSuffix*
+IndexSuffix       = "[" Expr "]"                                    // canonical object[index]
+Place             = Identifier (MemberSuffix | IndexSuffix)*
+CallArg           = Expr | "inout" Place
 ```
 
 - 关键字集合加入 `var`、`inout`（parser 关键字表）。
 - AST 变更：`Stmt::Let { kind: LetKind (Let|Var), ... }`；`FunctionParam.mode: ParamMode (Value|InOut)`；
-  `CallArg` 增加 `InOut { place: Expr }`。顶层 `ConstDecl` 不变。
+  `CallArg` 增加 `InOut { place: Expr }`；postfix bracket 保留为 `Expr::Index { object, index }`，
+  不在 parser 阶段降成 method call。顶层 `ConstDecl` 不变。
 - 解析错误：block 内 `const` 报"局部 const 不是语法"；顶层 `let`/`var` 报"let/var 只在 block 内"；
   顶层 `inout` 参数、interface requirement/Actor external/callback 上下文中的 `inout` 参数由 static
   semantics 拒绝（R-198/R-199）。
@@ -60,7 +67,10 @@ pub struct ExecutableIr { ...,
 - `ParamIr` 增加 `#[serde(default, skip_serializing_if = "is_value_mode")] mode: ParamModeIr`（Value | InOut，
   camelCase；MIR builder 从 File IR 取 inout 参数事实，不需要二次推断）。
 - `CallIr` 增加 `#[serde(default, skip_serializing_if = "Vec::is_empty")] pub inout_args: Vec<InOutArgIr>`，
-  `InOutArgIr { root_slot: u32, path: Vec<InOutPathSegmentIr> }`（`InOutPathSegmentIr = Field(String) | Index`）。
+  `InOutArgIr { parameter_ordinal: u32, root_slot: u32, path: Vec<InOutPathSegmentIr> }`（
+  `InOutPathSegmentIr = Field { name } | Index { selector: ExprRefIr }`）。`parameter_ordinal` 与精确
+  callee mode table 共同恢复 ordinary/`inout` 混合 argument 的源码顺序；bare `Index` 不足以
+  表达 selector 的单次求值。
   Phase 2 中 legacy runtime 不执行 inout 调用（三仓迁移不引入 inout 用法），该字段只为 emitter 表示。
 
 ### 2.3 Effects 线格式（WP2 产出，R-025/R-084）
@@ -122,6 +132,13 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
 - MIR 构建 = FileIrUnit 后处理 + source facts（effects 按 callable 取，`may_pending`/`effect_summary_ref`
   经 compile pipeline 传入 `lower`）。
 - liveness：标准 dataflow（may 语义，slot 粒度），产出 `MirLiveness`（每个 `MirFunction` 一份）。
+- 每个 `ExprIr::Index` 和 writable/inout path 内的 index segment 都必须有 source-owned typed
+  fact：concrete receiver kind（Array/Map/JsonObject）、exact selector/result type、segment source span、
+  result lifecycle 以及 `StrictRead | IntermediateMustExist | TerminalReplace | TerminalUpsert |
+  LoanMustExist` policy。String/record/unsnarrowed Json 不得使用 runtime tag fallback。
+- Indexed assignment plan 保留 writable root 与 selector `ExprRefIr` 的 outer-to-inner 顺序，RHS 单独
+  保留；`InOut` plan 还要保留混合 argument 的 source parameter ordinal。这些 fact 是
+  OpcodeContract 的直接输入，emitter 不得从 raw File IR/runtime tag 重新猜测。
 - **停止条件**：MIR/emitter 不得从 File IR 恢复类型/liveness/effect 事实（这些由 lowering/source 写入）。
 
 ### 2.5 Const graph（WP5 产出）
@@ -157,11 +174,29 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
   new_array_builder/array_builder_push/freeze_array/array_get/array_push_owned、
   new_map_builder/map_builder_put/freeze_map/map_get/map_put_owned、stream_next/emit_stream、
   throw/rethrow/enter_region/leave_region、invoke_host。
+- Bracket read 发射必须保留 receiver → selector 的单次求值顺序，并把 MIR 中的 exact
+  receiver/selector/result/lifecycle/source fact 交给 strict `array_get`/`map_get` plan。`map_get` 不用于
+  optional `Map.get(key) -> V?`；source bracket 也不得降成 runtime-internal `MapEntryAt`。
+- Indexed assignment 先按 outer-to-inner 发射每个 selector 恰好一次，然后 RHS 恰好一次，
+  最后发射一个 atomic store plan。Intermediate 必须 exist，terminal Array 是 replace-only，
+  terminal Map/JsonObject 是 upsert。不得用一串可观测 per-segment load/store 伪装 atomicity。
+- `InOut` 按混合 argument 的 source ordinal 发射单次求值；全部 selector/path（含 terminal）
+  必须成功后才发射 atomic multi-loan acquisition。Callee throw 沿用 ordinary non-rollback
+  write-through 语义。
+- 每个可失败 bracket/path segment 发射独立 `InstructionSourceSite`；`Array.set` 越界使用
+  receiver call site。Strict bracket 生成可 catch
+  collection error；`Trap(Assertion)` false、divide-by-zero 与非有限 arithmetic 发射不可 catch
+  terminal（无公开 `ArithmeticError`）；`MapEntryAt` 越界是 VM/generated terminal。`rethrow`
+  保留原 exception source，不用 rethrow pc 覆盖。
+- 上述 transactional path 在 canonical OpcodeContract/schema 落地前为 implementation pending。当前
+  `set_writable_path`/owned collection op 布局无法完整表达时，emitter 必须 fail closed，不发射
+  语义不等价的 bytecode。
 - tail call（R-158 部分）：`return <local-call>`（同 image 的 LocalExecutable/PublicationExecutable 精确
   target、参数求值顺序完整、无未闭合 cleanup region）发射 `tail_call_local`（`LocalExecutableRef`）；
   其余不动。interface const receiver/service/Actor/callback/native 不发射 tail_call_local。
-- inout 调用（合法）：emission 报 `BytecodeEmissionError::InOutEmissionPending`（writable-region 编码归
-  3B/4）；非法 inout 在 source 边界已拒绝（WP3）。
+- inout 调用（合法）：在 atomic multi-loan encoding 落地前，emission 报
+  `BytecodeEmissionError::InOutEmissionPending`（writable-region 编码归 3B/4）；非法 inout 在 source
+  边界已拒绝（WP3）。
 - 常量：函数级 `const` 指令引用 image 级 FrozenConstantGraph 的节点（`FrozenConstantRef`），
   ConstIr 的 request-time body 不进 bytecode image。
 - frame metadata：`FrameLayout`（slot_count/parameter_slots/result_count/result_plans/slot_plans）；
@@ -194,7 +229,12 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
   loop/pattern/with binding 派生 path 不可写。赋值目标、mutating receiver op（`builtin_receiver_ops` 中的
   mutator 集合 + 容器方法）、inout 实参都走该检查。
 - **let 不可写**：现有 "cannot assign to immutable binding"（lowering `function_lowering.rs:976-1010`）
-  扩展为包括 member/index path 写与 mutator receiver（let/普通参数 receiver 的 push/put/set/remove 等拒绝）。
+  扩展为包括 member/index path 写与 mutator receiver（let/普通参数 receiver 的
+  `push`/`set`/`pop`/`delete` 等拒绝）。
+- **Collection builtin facts**：`Array<T>.set(index: integer, item: T) -> void` 只能 replace；
+  `Map<K,V>.set(key: K, value: V) -> void` 是 upsert；`Map<K,V>.get(key: K) -> V?` 保持
+  optional/missing-null 语义，不与 strict bracket 共用 source fact。当前 prelude 的 `Array.set(number,
+  T)` 需改为 `integer`，但该代码变更不属于本文档工兵写界，implementation pending。
 - **Narrowing 清除**（R-196）：对稳定 path 或其前缀赋值、以该 path 作 inout 实参后清除该 path 及子路径
   narrowing（扩展现有 `expression_type_model` narrowing 逻辑）。
 - **InOut 规则**（R-198，`compiler/source/src/inout.rs` 新模块）：
@@ -236,6 +276,10 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
 | 确定性 | 同一 fixture 两次编译（bytecode on）byte 级一致；BTreeMap 遍历序不敏感；identity 相同 |
 | exact targets | fixture 含 direct/mutual/generic/self call，断言 relocation kind + function_key/type args canonical |
 | tail_call_local | `return f(x)` 在 tail 位置发射 0x21 + LocalExecutableRef；非 tail 不发射；args 求值序与 site 完整 |
+| strict bracket read | Array/Map/JsonObject 正例；receiver → selector 各一次；Array OOB 与 Map/JsonObject missing 命中精确 source site 和标准 catchable error；`Map.get` missing 仍返回 `null` |
+| indexed assignment | selector outer-to-inner → RHS → 单次 atomic store；Array replace-only、Map/JsonObject terminal upsert、intermediate missing 无部分 mutation |
+| indexed `InOut` | 混合 arguments 按 source ordinal 单次求值；全 path exist 后 atomic multi-loan；失败无部分 loan；callee throw 保留已写入值 |
+| failure classification | bracket 可 catch；Assertion/divide-by-zero/non-finite arithmetic 不可 catch terminal；`MapEntryAt` OOB 为 generated terminal；`rethrow` 保留原 source |
 | 负例（source 边界） | 非法 inout（非 var place/interface target/mayPending callee/重叠实参）、let 写、use-after-move
   （loan 期内使用）、callback capture of loan、局部 const、effectful const initializer、const call —— 各 ≥2 变体 |
 | 负例（emission 边界） | inout 调用报 InOutEmissionPending；不支持构造报 UnsupportedConstruct |
@@ -313,5 +357,7 @@ Wave 5：
   由 Phase 3B semantic verifier 拒绝/证明；本阶段 manifest 明确不声称"可执行语义"。
 - make_callback/synthetic callback closure 发射、InOut writable-region 编码、const 内 local call 求值
   属 Phase 3B/6A/6B。
+- Bracket/index typed MIR facts、strict error edge、linked snapshot lifecycle、nested atomic store 与 atomic
+  multi-loan 的 canonical OpcodeContract 与发射尚未落地；contract landed，implementation pending。
 - effects wire 变更 + File IR 增量字段 → 全部 package identity 重算（单次 evidence epoch）。
 - 迁移期间 dev watch 编译失败属预期（迁移完成后恢复）；Live 只在迁移完成后的候选上运行。

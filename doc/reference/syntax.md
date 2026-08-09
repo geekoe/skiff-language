@@ -118,7 +118,16 @@ record type 写作 `{ field: Type, ... }`，主要作为类型表达式。边界
 block 是 `{ Stmt* }`。statement 包括声明、赋值、控制流、stream 输出、错误控制、resource / timeout / concurrent 结构和受限 expression statement。
 
 赋值是 statement，不是 expression。左侧 place 由名字、member 和 index 组成；语法不把任意
-place 当作可写。Static semantics 只接受从局部 `var`、当前有效的 `inout` loan，或 Actor method
+place 当作可写。其语法形状为：
+
+```ebnf
+AssignmentStmt = Place "=" Expr
+Place = Identifier (MemberSuffix | IndexSuffix)*
+MemberSuffix = "." Identifier
+IndexSuffix = "[" Expr "]"
+```
+
+Static semantics 只接受从局部 `var`、当前有效的 `inout` loan，或 Actor method
 中允许直接写入的 `self.field` 派生的精确 writable path；Actor DB transaction body 还有额外禁写规则。
 
 `if` 只作为 statement，不作为 expression。需要产值时使用 ternary、`match` expression 或
@@ -160,7 +169,18 @@ expression statement 的最外层表达式必须是普通函数调用、method c
 
 关系比较和相等比较不允许链式写法。`a < b < c` 应写成显式布尔组合。
 
-postfix 表达式由 primary 加任意数量的 member、index 和 call suffix 组成。call suffix 可带 type args。
+postfix 表达式由 primary 加任意数量的 member、index 和 call suffix 组成。index suffix 的
+canonical source spelling 是 `object[index]`；方括号内是一个完整 expression，后缀可以链式组合：
+
+```ebnf
+PostfixExpr = PrimaryExpr PostfixSuffix*
+PostfixSuffix = MemberSuffix | IndexSuffix | CallSuffix
+IndexSuffix = "[" Expr "]"
+InOutArg = "inout" Place
+```
+
+call suffix 可带 type args。哪些 receiver/selector 类型支持 index，以及 read、assignment 和
+`inout` path 的求值顺序与失败语义，由 `static-semantics.md` 和 `runtime.md` 定义，不由 parser 猜测。
 
 普通 call argument 是 expression。与 `inout` 参数对应的 argument 必须显式写作 `inout place`，
 `place` 只能是从局部 `var` 派生的 name/member/index access path；`inout` argument 不是可单独

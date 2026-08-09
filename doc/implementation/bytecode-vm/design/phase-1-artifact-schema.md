@@ -2,6 +2,9 @@
 
 状态：approved（主 agent 已确认 D1–D19 全部决策，未实现）；依赖 Phase 0 complete
 
+2026-08-10 bracket/index amendment：public contract 已冻结；本文的 initial opcode table 尚不足以
+表达嵌套 indexed atomic store/loan，OpcodeContract/schema/runtime implementation pending。
+
 本文是 Phase 1（`phases/phase-1-artifact-schema.md`）的详细设计。它把权威架构契约
 `doc/architecture/bytecode-vm.md` 与 requirement ledger 中 Phase 1 部分（R-003、R-009、R-017、
 R-018、R-019、R-020、R-022、R-023/Phase 1 部分、R-078/1、R-079、R-080/Phase 1 部分、R-081、
@@ -151,18 +154,18 @@ monomorphization、semantic verifier、runtime 执行、decoded micro-op；不�
 | 0x33 | `invoke_callback` | `interfaceReq: Reloc`, `methodSlot: Immediate`, `argCount: Immediate` | `[Value(Fixed(1)), Value(Declared(argCount))] -> []` | callback carrier（§12.1）；callback 在最底 |
 | 0x40 | `new_record` | `shapeRef: Pool`（shapes，kind=ShapeRef）, `fieldCount: Immediate` | `[Value(Declared(fieldCount))] -> [Value(Fixed(1))]` | dense record（§8.4） |
 | 0x41 | `get_dense_field` | `shapeRef: Pool`, `fieldOrdinal: Immediate` | `[Value(Fixed(1))] -> [Value(Fixed(1))]` | verified offset 属 3B（§8.4）；预链接只查边界 |
-| 0x42 | `set_writable_path` | `rootSlot: Slot`, `shapeRef: Pool`, `fieldOrdinal: Immediate` | `[Value(Fixed(1))] -> []` | 只对 verified writable path（§8.3/§6.5）；writability 证明归 3B/6B |
+| 0x42 | `set_writable_path` | `rootSlot: Slot`, `shapeRef: Pool`, `fieldOrdinal: Immediate` | `[Value(Fixed(1))] -> []` | 只表达 verified dense-field writable path（§8.3/§6.5）；嵌套 dynamic index 需 OpcodeContract amendment |
 | 0x43 | `representation_wrap` | `typeRef: Pool`（types，kind=TypeRef） | `[Value(Fixed(1))] -> [Value(Fixed(1))]` | 包装进 nominal representation / named-union branch |
 | 0x50 | `new_array_builder` | `elementTypeRef: Pool`（types） | `[] -> [Value(Fixed(1))]` | transient builder（§8.3） |
 | 0x51 | `array_builder_push` | — | `[Value(Fixed(2))] -> [Value(Fixed(1))]` | builder 留在栈上 |
 | 0x52 | `freeze_array` | — | `[Value(Fixed(1))] -> [Value(Fixed(1))]` | |
-| 0x53 | `array_get` | — | `[Value(Fixed(2))] -> [Value(Fixed(1))]` | |
+| 0x53 | `array_get` | — | `[Value(Fixed(2))] -> [Value(Fixed(1))]` | strict `Array[integer]`；越界为 source-attributed catchable collection error |
 | 0x54 | `array_push_owned` | `slot: Slot` | `[Value(Fixed(1))] -> []` | writable root 在 slot；元素类型来自数组自身类型 |
 | 0x55 | `new_map_builder` | `keyTypeRef: Pool`, `valueTypeRef: Pool` | `[] -> [Value(Fixed(1))]` | |
 | 0x56 | `map_builder_put` | — | `[Value(Fixed(3))] -> [Value(Fixed(1))]` | |
 | 0x57 | `freeze_map` | — | `[Value(Fixed(1))] -> [Value(Fixed(1))]` | |
-| 0x58 | `map_get` | — | `[Value(Fixed(2))] -> [Value(Fixed(1))]` | |
-| 0x59 | `map_put_owned` | `slot: Slot` | `[Value(Fixed(2))] -> []` | |
+| 0x58 | `map_get` | — | `[Value(Fixed(2))] -> [Value(Fixed(1))]` | strict `Map[K]`/`JsonObject[string]`；不是 optional `Map.get(key) -> V?` |
+| 0x59 | `map_put_owned` | `slot: Slot` | `[Value(Fixed(2))] -> []` | internal upsert；source surface 名为 `Map.set` |
 | 0x60 | `stream_next` | `endpointSlot: Slot`, `resumeRef: Pool` | `[] -> [Value(Fixed(1))]` | 一次性 endpoint 下一项（§3.5、§6.5）；affine resource 在 slot |
 | 0x61 | `emit_stream` | `resumeRef: Pool` | `[Value(Fixed(1))] -> []` | 真实 backpressure（§3.5、§11.4）；producer 资格证明归 3B |
 | 0x70 | `throw` | `typeRef: Pool`（types） | `[Value(Fixed(1))] -> []` | 异常 payload；catch leaf identity 经 type pool（§6.2） |
@@ -177,6 +180,39 @@ monomorphization、semantic verifier、runtime 执行、decoded micro-op；不�
 > operand，指向 artifact 级 `resumeDescriptors` pool（`ResumeDescriptor` DTO 见 §5.1）。resume
 > descriptor 的语义正确性（唯一性、result/error shape、stack height）仍由 3B verifier 证明；pre-link 只
 > 校验 pool 边界与 kind。
+
+#### Bracket/index OpcodeContract amendment
+
+§2.3 的 mnemonic/stack arity 不能单独充当 bracket proof。后续 canonical OpcodeContract 必须同时
+编码或从 linked plan 精确解析以下事实：
+
+- receiver 只能是 concrete `Array<T>` / `Map<K,V>` / `JsonObject`；selector 分别是 `integer` /
+  exact `K` / `string`，result 分别是 `T` / `V` / `Json`；
+- `array_get`/`map_get` 是 strict source bracket，失败生成当前 request 内可 catch 的
+  `std.collection.IndexOutOfBoundsError { index, length }` 或不泄露 key 的
+  `std.collection.MissingKeyError { container }`；optional `Map.get(key) -> V?` 需独立 semantic
+  opcode/intrinsic path，不得共用 strict `map_get`；
+- ordinary read 带 exact linked result lifecycle/`ValueTransferPlan`，产生 snapshot，不返回 raw writable
+  alias；
+- indexed assignment 带有序 segment plan：selector 从外到内各求值一次，然后 RHS 求值一次，
+  最后只有一个 atomic store；intermediate 必须 exist，terminal Array 是 replace-only，
+  terminal Map/JsonObject 是 upsert；
+- `InOut` 按源码 argument 顺序单次求值，全部 path（含 terminal）必须 exist，全部
+  selector/path check 后才原子取得整组 loan；callee throw 不回滚已执行 write-through write；
+- 每个可失败 segment 都有自己的 `InstructionSourceSite`，`Array.set` 越界使用
+  receiver call site；`rethrow` 沿用原 exception
+  envelope/source，不在 rethrow pc 重建 source。
+
+失败类型也是 OpcodeContract 的一部分：`Trap(Assertion)` false、divide-by-zero 与非有限
+arithmetic 是不可 catch terminal，当前无公开 `ArithmeticError`；不得把它们投影为 collection
+error。Runtime-internal `MapEntryAt` 读 canonical snapshot，ordinal 越界是 VM/generated terminal，
+不是 source `map[key]` missing。
+
+当前 `set_writable_path` 布局只有 `shapeRef + fieldOrdinal`，`array_push_owned` /
+`map_put_owned` 也只指向单 slot receiver；它们无法表达上述多 segment transactional plan 与
+per-segment source sites。OpcodeContract owner 必须在 emitter 实现前扩展或增加 canonical
+plan/opcode，并按实际 operand/stack semantic 变化 bump ISA/schema。本 amendment 不预分配新 numeric
+opcode，也不把未落地工作标为 complete。
 
 **每个指令允许的 relocation kind（§4.1 “relocation declared kind 与使用 opcode 相容”）**：
 
@@ -587,6 +623,7 @@ records/package-artifacts/<packageId>/<version>/<buildHash>/bytecode/<bytecodeHa
 | ConstantHeap 物化 / ConstEvaluator（§7） | Phase 2/3B | `FrozenConstantGraph` DTO + 校验 |
 | ResourceTable / drop plan 语义（R-220/6B 部分） | Phase 6B | `ValueTransferPlan`/drop 字段声明 |
 | `emit_stream` producer 资格 / `stream_next` 单消费者 proof | 3B | 指令与 resume operand |
+| Bracket/index access、atomic indexed store 与 atomic `InOut` loan plan | OpcodeContract amendment + Phase 2/3B/6B | 现表只有不完整 mnemonic；implementation pending |
 
 ### 7.2 Phase 2 只能消费的公开 API 清单
 
@@ -707,3 +744,6 @@ D1–D19 全部按本文取值确认采纳，无变更。
 9. **遗留 `runtime_assembly` 模块**：artifact-model/artifact-identity 仍保留
    `RuntimeAssembly` 相关模块（Phase 8 删除目标）。Phase 1 的 bytecode 模块与它们无依赖关系，
    不触碰；但 `BYTECODE_*` 常量进 `schema.rs` 时注意与既有版本字符串风格统一。
+10. **Bracket/index 编码缺口**：2026-08-10 public contract 已冻结，但当前 42-opcode table
+    没有嵌套 dynamic path、per-segment policy/source、atomic store 或 atomic multi-loan 的完整表示。
+    本文已冻结 OpcodeContract 必须满足的语义，但 schema/ISA 选形与实现仍 pending。

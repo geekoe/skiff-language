@@ -192,6 +192,37 @@ loop binding 只在 loop body 内可见，离开 body 后恢复外层同名 bind
 
 `while expr { ... }` 的条件表达式必须为 `bool`。body 按 scoped block 检查，不引入 loop binding。§7 的 loop narrowing 规则适用于 `while`：narrowing 只在本次迭代控制流内有效，不自动归纳到下一次迭代。`break` / `continue` 只在 loop 内合法，且 `while` body 内的 `break` / `continue` 只作用于最近的 `while` / `for` loop。
 
+### 8.1 Bracket Access And Indexed Places
+
+Postfix `object[index]` 是 strict collection access，不是可选 lookup。只有以下三组精确静态类型合法：
+
+| receiver | selector | read result |
+| --- | --- | --- |
+| `Array<T>` | `integer` | `T` |
+| `Map<K,V>` | 精确 `K` | `V` |
+| `JsonObject` | `string` | `Json` |
+
+`Map<K,V>` 的 selector 必须在 alias 展开后保留与 `K` 相同的精确类型与名义身份；不会隐式
+projection 或 rewrap representation key。`Array` 不接受普通 `number` selector；可静态证明为 safe
+integer 的 literal 仍按 `integer` assignability 规则检查。
+
+`string`、record/object 与未收窄的 `Json` 不支持 bracket。Nullable/union receiver 也必须先收窄到
+上表某个精确 collection 类型；不根据 `Json` 的运行时 branch 做隐式 dynamic dispatch。Map receiver
+API `map.get(key)` 保持 `V?` 结果且 missing 返回 `null`，它不等价于结果为 `V` 的 strict
+`map[key]`。
+
+Bracket read 先求值 receiver，再求值 selector，两者各恰好一次。Array 越界与 Map/JsonObject
+missing 都是进入当前 request 后的 ordinary catchable exception；精确错误类型、payload 和 source
+attribution 见 `std-surface.md` §3 与 `runtime.md` §5。Ordinary read 按结果类型的 linked lifecycle
+产生 logical snapshot，不产生 writable alias；结果类型无法合法 snapshot 时必须在 source/verifier
+边界拒绝。
+
+Indexed assignment 仍先要满足 writable-place root 规则。所有 selector 按路径从外到内、各一次求值，
+随后 RHS 恰好求值一次；只有在整条路径与 RHS 都成功后才执行一次原子 logical store。所有
+intermediate Array element / Map key / JsonObject key 都必须已存在。Terminal Array selector 也必须
+已在界内，因此只能 replace，不能通过 `array[array.length] = value` append；terminal Map/JsonObject
+则是 upsert，可以新建最后一个 key。任一检查或 RHS 失败都不会留下部分 container store。
+
 ## 9. Name Resolution And Reserved Names
 
 Skiff 使用 type namespace、value namespace 和 method namespace。`impl` 不绑定新顶层名字，只向 receiver 的 method namespace 添加方法。
@@ -387,6 +418,11 @@ function appendedValues() -> Array<number> {
   interface/dynamic dispatch 猜 target。
 - Argument 必须是从局部 `var` 派生的精确 name/member/index place，并在 call site 写作
   `inout place`。Actor `self.field`、局部 `let`、普通 parameter 和顶层 `const` 都不是合法 actual。
+- Call argument 按源码 parameter 顺序各求值一次。对一个 `inout` actual，root 与动态 index
+  selector 也只求值一次，selector 按路径从外到内保留；求值期间不提前取得部分 loan。
+- 每个 `inout` path 的所有 intermediate 与 terminal segment 都必须已存在；Map/JsonObject
+  terminal key 也不能借 `inout` 新建。全部 argument/selector 成功求值、全部 path 解析成功后，
+  runtime 才原子取得整组 loan；任一路径失败时不留下部分 loan，callee 不进入。
 - Compiler 必须证明整个调用期间 loan exclusive；两个重叠 path 不能同时作为 argument，loan
   不能被 callback capture、保存到 resource 或让 concurrent sibling 观察。
 - Callee 必须有 verified `NoPending`；即§12.1定义的 sound `maySuspend=false`，loan 不能跨越
