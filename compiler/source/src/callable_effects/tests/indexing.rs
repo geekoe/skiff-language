@@ -34,8 +34,14 @@ fn index_receiver_and_selector_feed_provenance_and_suspend_analysis_once() {
 fn index_selector_preserves_callback_capture_analysis() {
     let model = AnalysisFixture::new(
         r#"
-            interface Provider {}
+            interface Provider {
+              function label(self: Self) -> string
+            }
             type Boxed implements Provider { value: string }
+
+            impl Boxed {
+              function label() -> string { return self.value }
+            }
 
             function select(provider: any Provider) -> integer {
               return 0

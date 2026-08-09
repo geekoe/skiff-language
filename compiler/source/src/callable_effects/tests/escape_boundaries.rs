@@ -47,9 +47,10 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
             type Failure { message: string }
 
             function buildFailure(input: Boxed) -> Failure {
-              input.value = "changed"
+              var target = input
+              target.value = "changed"
               std.time.sleep(Duration.milliseconds(1))
-              return Failure { message: input.value }
+              return Failure { message: target.value }
             }
 
             function throwStatement(input: Boxed) -> void {

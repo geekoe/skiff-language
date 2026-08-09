@@ -180,7 +180,7 @@ fn indexed_places_publish_intermediate_assignment_and_loan_policies_in_source_or
                 nestedSource: Array<Map<string, integer>>,
                 mapSource: Map<string, integer>,
                 position: integer,
-                key: string,
+                key: string
               ) -> void {
                 var items = source
                 items[position] = 1

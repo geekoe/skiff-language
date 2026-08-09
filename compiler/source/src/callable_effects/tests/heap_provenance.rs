@@ -8,7 +8,7 @@ fn post_construction_store_taints_fresh_return() {
             type Holder { child: Child }
 
             function storeAndReturn(input: Child) -> Holder {
-              let holder = Holder { child: Child { value: "fresh" } }
+              var holder = Holder { child: Child { value: "fresh" } }
               holder.child = input
               return holder
             }
@@ -37,7 +37,7 @@ fn post_construction_store_then_nested_mutation_fails_closed() {
             type Holder { child: Child }
 
             function storeThenMutate(input: Child) -> Holder {
-              let holder = Holder { child: Child { value: "fresh" } }
+              var holder = Holder { child: Child { value: "fresh" } }
               holder.child = input
               holder.child.value = "changed"
               return holder
@@ -58,7 +58,7 @@ fn aliased_fresh_holder_store_taints_original_return() {
 
             function aliasStore(input: Child) -> Holder {
               let holder = Holder { child: Child { value: "fresh" } }
-              let alias = holder
+              var alias = holder
               alias.child = input
               return holder
             }
@@ -82,7 +82,7 @@ fn fresh_store_taint_propagates_through_callers_and_scc() {
             type Holder { child: Child }
 
             function storeLeaf(input: Child) -> Holder {
-              let holder = Holder { child: Child { value: "fresh" } }
+              var holder = Holder { child: Child { value: "fresh" } }
               holder.child = input
               return holder
             }
@@ -105,11 +105,14 @@ fn fresh_store_taint_propagates_through_callers_and_scc() {
 
     for callable in ["storeLeaf", "caller", "first", "second"] {
         assert_eq!(effects(&model, callable), no_effects(), "{callable}");
-        assert!(matches!(
-            provenance(&model, callable),
-            CallableProvenanceSummary::Analyzed { return_origins, .. }
-                if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 }),
-        ), "{callable}");
+        assert!(
+            matches!(
+                provenance(&model, callable),
+                CallableProvenanceSummary::Analyzed { return_origins, .. }
+                    if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 }),
+            ),
+            "{callable}"
+        );
     }
 }
 
@@ -126,7 +129,8 @@ fn direct_parameter_field_store_has_write_without_identity_observation() {
             }
 
             function mutate(input: Boxed) -> void {
-              input.value = "changed"
+              var target = input
+              target.value = "changed"
             }
 
             function wrapper(input: Boxed) -> void {
@@ -165,13 +169,14 @@ fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
             }
 
             function update(state: RelayState, value: string) -> void {
-              state.f01 = value
-              state.f12 = "helper"
-              state.f24 = value
+              var writable = state
+              writable.f01 = value
+              writable.f12 = "helper"
+              writable.f24 = value
             }
 
             function v1Proxy(events: Array<string>) -> string {
-              let state = RelayState {
+              var state = RelayState {
                 f01: "", f02: "", f03: "", f04: "",
                 f05: "", f06: "", f07: "", f08: "",
                 f09: "", f10: "", f11: "", f12: "",
@@ -179,7 +184,7 @@ fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
                 f17: "", f18: "", f19: "", f20: "",
                 f21: "", f22: "", f23: "", f24: ""
               }
-              let alias = state
+              var alias = state
               alias.f02 = "local"
               for event in events {
                 update(state, event)
@@ -216,15 +221,18 @@ fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise()
             type Holder { child: Child }
 
             function nested(input: Holder) -> void {
-              input.child.value = "changed"
+              var target = input
+              target.child.value = "changed"
             }
 
             function reference(input: Holder, child: Child) -> void {
-              input.child = child
+              var target = input
+              target.child = child
             }
 
             function unknownRhs(input: Child, provider: any Provider) -> void {
-              input.value = provider.value()
+              var target = input
+              target.value = provider.value()
             }
         "#,
     )
@@ -257,21 +265,21 @@ fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fai
             }
 
             function intoMap() -> void {
-              let state = State { value: "" }
+              var state = State { value: "" }
               state.value = "changed"
               let container = Map.empty<string, State>()
               container.set("state", state)
             }
 
             function intoArray() -> void {
-              let state = State { value: "" }
+              var state = State { value: "" }
               state.value = "changed"
               let container = Array.empty<State>()
               container.push(state)
             }
 
             function intoDatabase() -> void {
-              let state = State { value: "" }
+              var state = State { value: "" }
               state.value = "changed"
               db insert Stored { id = "state" state = state }
             }
@@ -279,7 +287,7 @@ fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fai
             function ambiguousAlias(useSecond: bool) -> void {
               let first = State { value: "" }
               let second = State { value: "" }
-              let alias = first
+              var alias = first
               if useSecond {
                 alias = second
               }
@@ -328,7 +336,7 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
               states: Map<string, State>,
               key: string
             ) -> State {
-              let state: State? = states.get(key)
+              var state: State? = states.get(key)
               if state == null {
                 state = State { value: "" }
               }
@@ -338,7 +346,7 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
 
             function local(key: string) -> State {
               let states = Map.empty<string, State>()
-              let state: State? = states.get(key)
+              var state: State? = states.get(key)
               if state == null {
                 state = State { value: "" }
               }
@@ -355,7 +363,7 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
             type Node { child: Node? }
 
             function cycle() -> Node {
-              let node = Node { child: null }
+              var node = Node { child: null }
               node.child = node
               return node
             }
@@ -398,7 +406,7 @@ fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_
               states: Map<string, State>,
               key: string
             ) -> State {
-              let state: State? = states.get(key)
+              var state: State? = states.get(key)
               if state == null {
                 state = State { key: key, value: "" }
                 states.set(key, state)
@@ -408,7 +416,7 @@ fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_
 
             function local(key: string) -> State {
               let states = Map.empty<string, State>()
-              let state = stateFor(states, key)
+              var state = stateFor(states, key)
               state.value = "completed"
               states.set(key, state)
               return state
@@ -448,7 +456,7 @@ fn helper_field_projection_keeps_parent_edge_and_rejects_real_cycle() {
             function cycle() -> Parent {
               let child = Child { parent: null }
               let parent = Parent { child: child }
-              let selected = childOf(parent)
+              var selected = childOf(parent)
               selected.parent = parent
               return parent
             }
@@ -456,8 +464,8 @@ fn helper_field_projection_keeps_parent_edge_and_rejects_real_cycle() {
             type Node { next: Node? }
 
             function transitiveCycle() -> Node {
-              let first = Node { next: null }
-              let second = Node { next: null }
+              var first = Node { next: null }
+              var second = Node { next: null }
               first.next = second
               second.next = first
               return first
@@ -490,7 +498,7 @@ fn scalar_field_projection_does_not_invent_a_heap_cycle_in_relay_state_updates()
             }
 
             function local() -> RelayState {
-              let state = RelayState { bytes: 0 }
+              var state = RelayState { bytes: 0 }
               let next = currentBytes(state) + 1
               state.bytes = next
               return state
@@ -538,7 +546,7 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
               input: JsonObject,
               useFresh: bool
             ) -> void {
-              let target: JsonObject = input
+              var target: JsonObject = input
               if useFresh {
                 let candidate: JsonObject = {
                   payload: input.get("payload")
@@ -595,7 +603,7 @@ fn dependency_container_projection_can_be_mutated_and_reinserted_into_fresh_map(
 
             function local(key: string) -> State {
               let states = Map.empty<string, State>()
-              let state: State? = dep/tools/find(states, key)
+              var state: State? = dep/tools/find(states, key)
               if state == null {
                 state = State { key: key, value: "" }
                 states.set(key, state)
@@ -636,7 +644,7 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
               input: JsonObject,
               useFresh: bool
             ) -> void {
-              let target: JsonObject = input
+              var target: JsonObject = input
               if useFresh {
                 target = dep/tools/wrap(input)
               }
@@ -686,8 +694,9 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
             }
 
             function update(state: StreamState, status: string) -> void {
-              state.status = status
-              state.snapshot = state.status
+              var writable = state
+              writable.status = status
+              writable.snapshot = writable.status
             }
 
             function local(status: string) -> StreamState {
@@ -703,7 +712,8 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
             type Node { child: Node? }
 
             function selfStore(node: Node) -> void {
-              node.child = node
+              var writable = node
+              writable.child = node
             }
 
             function helperCycle() -> Node {
@@ -747,11 +757,14 @@ fn recursive_scc_reaches_alias_fixed_point() {
     .analyze();
 
     for callable in ["first", "second"] {
-        assert!(matches!(
-            provenance(&model, callable),
-            CallableProvenanceSummary::Analyzed { return_origins, .. }
-                if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 }),
-        ), "{callable}");
+        assert!(
+            matches!(
+                provenance(&model, callable),
+                CallableProvenanceSummary::Analyzed { return_origins, .. }
+                    if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 }),
+            ),
+            "{callable}"
+        );
     }
 }
 
