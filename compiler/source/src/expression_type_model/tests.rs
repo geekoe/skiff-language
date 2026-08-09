@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -170,7 +170,7 @@ fn bracket_typing_publishes_exact_strict_collection_facts() {
 }
 
 #[test]
-fn indexed_places_publish_intermediate_assignment_and_loan_policies_in_source_order() {
+fn indexed_places_publish_exact_policies_and_evaluation_dependencies() {
     let model = expression_type_result(
         r#"
               function touch(inout value: integer) -> void {}
@@ -193,23 +193,34 @@ fn indexed_places_publish_intermediate_assignment_and_loan_policies_in_source_or
     )
     .expect("indexed assignment and inout paths should type-check");
 
-    let policies = model
-        .index_segments()
-        .values()
-        .map(|fact| fact.policy)
-        .collect::<Vec<_>>();
+    let segments = model.index_segments();
+    assert_eq!(segments.len(), 4);
+    for policy in [
+        SourceIndexPolicy::TerminalReplace,
+        SourceIndexPolicy::IntermediateMustExist,
+        SourceIndexPolicy::TerminalUpsert,
+        SourceIndexPolicy::LoanMustExist,
+    ] {
+        assert_eq!(
+            segments
+                .values()
+                .filter(|fact| fact.policy == policy)
+                .count(),
+            1,
+            "expected exactly one {policy:?} segment"
+        );
+    }
     assert_eq!(
-        policies,
-        vec![
-            SourceIndexPolicy::TerminalReplace,
-            SourceIndexPolicy::IntermediateMustExist,
-            SourceIndexPolicy::TerminalUpsert,
-            SourceIndexPolicy::LoanMustExist,
-        ]
+        segments
+            .values()
+            .map(|fact| &fact.selector_expression)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        segments.len(),
+        "each selector must own one distinct expression key"
     );
 
-    let (segment_key, segment) = model
-        .index_segments()
+    let (segment_key, segment) = segments
         .iter()
         .find(|(_, fact)| fact.policy == SourceIndexPolicy::TerminalReplace)
         .expect("array assignment segment should exist");
@@ -232,6 +243,44 @@ fn indexed_places_publish_intermediate_assignment_and_loan_policies_in_source_or
             .and_then(|fact| fact.ty.as_ref())
             .map(|ty| ty.ir.clone()),
         Some(TypeRefIr::builtin("integer"))
+    );
+
+    let (outer_key, outer) = segments
+        .iter()
+        .find(|(_, fact)| fact.policy == SourceIndexPolicy::TerminalUpsert)
+        .expect("nested Map assignment terminal should exist");
+    let (inner_key, inner) = segments
+        .iter()
+        .find(|(_, fact)| fact.policy == SourceIndexPolicy::IntermediateMustExist)
+        .expect("nested Array intermediate should exist");
+    assert_eq!(outer.receiver_kind, SourceIndexReceiverKind::Map);
+    assert_eq!(inner.receiver_kind, SourceIndexReceiverKind::Array);
+    assert_eq!(
+        &outer.object_expression, inner_key,
+        "the outer Map segment must name the inner Array segment as its receiver"
+    );
+    assert!(
+        outer_key.preorder_index() < inner_key.preorder_index(),
+        "fact-map keys use AST preorder, where the outer node precedes its child"
+    );
+    assert!(
+        inner.object_expression.preorder_index() < inner.selector_expression.preorder_index()
+            && inner.selector_expression.preorder_index()
+                < outer.selector_expression.preorder_index(),
+        "runtime dependencies require the inner receiver and selector before the outer selector"
+    );
+    let nested_rhs_key = ExpressionKey::new(
+        outer_key.module_path(),
+        outer_key.owner().clone(),
+        outer.selector_expression.preorder_index() + 1,
+    );
+    assert_eq!(
+        model
+            .fact(&nested_rhs_key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| ty.ir.clone()),
+        Some(TypeRefIr::builtin("integer")),
+        "the RHS must follow all outer-to-inner path selectors"
     );
 }
 
