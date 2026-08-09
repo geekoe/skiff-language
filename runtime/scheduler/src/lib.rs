@@ -3,6 +3,19 @@
 //! This crate owns the flat trampoline, actual-`Pending` handshake and stream
 //! supervision state. It deliberately exposes synchronous ports instead of a
 //! concrete async runtime, future, task or host implementation.
+//!
+//! # Root-walk safepoint contract
+//!
+//! Pending-cell and stream-supervisor root sources keep their local state mutex
+//! locked while visiting affine payloads; releasing it would let another owner
+//! move or drop those roots during the walk. These implementations do not establish the
+//! process-wide safepoint themselves. The scheduler must first quiesce root
+//! ownership transfers among fibers, pending cells, streams and runnable
+//! queues. Every [`VmRootVisitor`](skiff_runtime_model::vm_root::VmRootVisitor)
+//! and nested [`VmRootSource`](skiff_runtime_model::vm_root::VmRootSource)
+//! used during that safepoint is scheduler-TCB code: it must only enumerate
+//! roots, must not block, and must not poll, wake, drop payloads or re-enter a
+//! scheduler pending/stream operation.
 
 #![forbid(unsafe_code)]
 

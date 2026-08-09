@@ -488,11 +488,15 @@ impl<R, S, O> fmt::Debug for CompletionHandle<R, S, O> {
 
 /// Registry joining the host-side completion handle with the later VM `Park`.
 ///
-/// `begin` installs `Open(rootEscrow)` before returning a handle. `publish`
-/// performs either `Open -> Waiting` or `Settled -> Claimed`. A waiting cell
-/// stays in this scheduler-owned table (and remains root-enumerable) until one
-/// terminal source claims and enqueues it. No registry operation polls user or
-/// host code.
+/// `begin` installs `Open(rootEscrow)` before returning a handle. The public VM
+/// publication path consumes one complete `PendingOperation` and performs
+/// either `Open -> Waiting` or `Settled -> Claimed`. A waiting cell stays in
+/// this scheduler-owned table (and remains root-enumerable) until one terminal
+/// source claims and enqueues it. No registry operation polls user or host
+/// code.
+///
+/// Root enumeration follows the crate-level safepoint contract. In particular,
+/// the visitor and escrow backing must not block or re-enter this registry.
 pub struct PendingRegistry<R, S, O> {
     inner: Arc<RegistryInner<R, S, O>>,
 }
@@ -562,7 +566,9 @@ where
         })
     }
 
-    pub fn publish(
+    /// Scheduler-internal transition used only after a typed envelope has
+    /// established that `ticket` and `draft.resume` are one logical handoff.
+    pub(crate) fn publish(
         &self,
         ticket: PendingTicket,
         draft: PendingOwnerDraft<R, S>,
@@ -622,6 +628,31 @@ where
 {
     /// Publishes the VM's actual-`Pending` envelope without exposing a seam
     /// that can exchange its ticket and unique resume token independently.
+    ///
+    /// The raw transition is intentionally not part of the public API, so
+    /// parts from two operations cannot be rebound:
+    ///
+    /// ```compile_fail,E0624
+    /// use std::sync::Arc;
+    ///
+    /// use skiff_runtime_scheduler::{
+    ///     PendingOwnerDraft, PendingWakeQueue, VmPendingRegistry, VmPendingWake,
+    /// };
+    /// use skiff_runtime_vm::{PendingOperation, ResumeOutcome, VmResumeToken};
+    ///
+    /// struct Queue;
+    ///
+    /// impl PendingWakeQueue<VmResumeToken, (), ResumeOutcome> for Queue {
+    ///     fn enqueue(&self, _wake: VmPendingWake<()>) {}
+    /// }
+    ///
+    /// fn rebind(registry: &VmPendingRegistry<()>, operation: PendingOperation) {
+    ///     let (ticket, resume) = operation.into_parts();
+    ///     let queue: Arc<dyn PendingWakeQueue<VmResumeToken, (), ResumeOutcome>> =
+    ///         Arc::new(Queue);
+    ///     registry.publish(ticket, PendingOwnerDraft::new(resume, ()), queue);
+    /// }
+    /// ```
     pub fn publish_operation(
         &self,
         operation: PendingOperation,
@@ -651,11 +682,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Barrier, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Barrier, Mutex,
+    };
 
     use skiff_runtime_model::{
         vm_heap::VmHeapError,
         vm_root::{VmRootSource, VmRootVisitor},
+        vm_value::ValueSlot,
     };
 
     use super::{
@@ -693,6 +728,63 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct RootWalkCounts {
+        source_visits: AtomicUsize,
+        backing_drops: AtomicUsize,
+        queue_enqueues: AtomicUsize,
+    }
+
+    struct SafepointRoots {
+        root: ValueSlot,
+        counts: Arc<RootWalkCounts>,
+    }
+
+    impl VmRootSource for SafepointRoots {
+        fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            self.counts.source_visits.fetch_add(1, Ordering::Relaxed);
+            visitor.visit_root(&self.root)
+        }
+    }
+
+    impl RootEscrowBacking for SafepointRoots {
+        fn root_count(&self) -> usize {
+            1
+        }
+
+        fn restore_roots(self: Box<Self>) {}
+
+        fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {
+            self.counts.backing_drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct NoRoots;
+
+    impl VmRootSource for NoRoots {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingVisitor(usize);
+
+    impl VmRootVisitor for CountingVisitor {
+        fn visit_root(&mut self, _root: &ValueSlot) -> Result<(), VmHeapError> {
+            self.0 += 1;
+            Ok(())
+        }
+    }
+
+    struct CountingQueue(Arc<RootWalkCounts>);
+
+    impl PendingWakeQueue<u64, (), NoRoots> for CountingQueue {
+        fn enqueue(&self, _wake: PendingWake<u64, (), NoRoots>) {
+            self.0.queue_enqueues.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[derive(Default)]
     struct RecordingQueue(Mutex<Vec<PendingWake<u64, &'static str, &'static str>>>);
 
     impl PendingWakeQueue<u64, &'static str, &'static str> for RecordingQueue {
@@ -716,6 +808,40 @@ mod tests {
             )))))
             .unwrap();
         (handle, events)
+    }
+
+    #[test]
+    fn safepoint_root_walk_neither_enqueues_nor_drops_pending_payloads() {
+        let registry = PendingRegistry::<u64, (), NoRoots>::default();
+        let counts = Arc::new(RootWalkCounts::default());
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(SafepointRoots {
+                root: ValueSlot::integer(1),
+                counts: Arc::clone(&counts),
+            })))
+            .unwrap();
+        let queue = Arc::new(CountingQueue(Arc::clone(&counts)));
+        assert_eq!(
+            registry
+                .publish(completion.ticket(), PendingOwnerDraft::new(1, ()), queue)
+                .unwrap(),
+            PendingPublication::Waiting
+        );
+
+        let mut visitor = CountingVisitor::default();
+        registry.visit_roots(&mut visitor).unwrap();
+
+        assert_eq!(visitor.0, 1);
+        assert_eq!(counts.source_visits.load(Ordering::Relaxed), 1);
+        assert_eq!(counts.queue_enqueues.load(Ordering::Relaxed), 0);
+        assert_eq!(counts.backing_drops.load(Ordering::Relaxed), 0);
+
+        assert!(matches!(
+            completion.internal_stop(NoRoots),
+            SettleDisposition::Enqueued
+        ));
+        assert_eq!(counts.queue_enqueues.load(Ordering::Relaxed), 1);
+        assert_eq!(counts.backing_drops.load(Ordering::Relaxed), 1);
     }
 
     #[test]

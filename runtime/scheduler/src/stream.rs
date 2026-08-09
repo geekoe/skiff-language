@@ -102,6 +102,11 @@ pub const STREAM_BUFFER_CAPACITY: usize = 1;
 /// [`Self::open`] returns the consumer endpoint before any producer body is
 /// polled. The scheduler must materialize that endpoint into the caller before
 /// installing/running the producer unit.
+///
+/// Root enumeration keeps the stream state mutex locked so affine buffered and
+/// terminal payloads cannot move during the walk. `T`, `E` and the visitor must
+/// obey the crate-level safepoint contract: enumeration is non-blocking and
+/// must not wake, drop payloads or re-enter this stream.
 pub struct StreamSupervisor<P, T, E> {
     shared: Arc<SharedStream<P, T, E>>,
 }
@@ -398,6 +403,12 @@ mod tests {
         Arc, Weak,
     };
 
+    use skiff_runtime_model::{
+        vm_heap::VmHeapError,
+        vm_root::{VmRootSource, VmRootVisitor},
+        vm_value::ValueSlot,
+    };
+
     use super::{
         SharedStream, StreamEmit, StreamError, StreamEvent, StreamPoll, StreamSupervisor,
         WakeSignal,
@@ -427,6 +438,103 @@ mod tests {
             }
             self.drops.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    struct NoRoots;
+
+    impl VmRootSource for NoRoots {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingVisitor(usize);
+
+    impl VmRootVisitor for CountingVisitor {
+        fn visit_root(&mut self, _root: &ValueSlot) -> Result<(), VmHeapError> {
+            self.0 += 1;
+            Ok(())
+        }
+    }
+
+    struct RootWalkProbe {
+        root: ValueSlot,
+        shared: Weak<SharedStream<&'static str, RootWalkProbe, NoRoots>>,
+        visits: Arc<AtomicUsize>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl VmRootSource for RootWalkProbe {
+        fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            let shared = self.shared.upgrade().expect("stream remains pinned");
+            assert!(
+                shared.state.try_lock().is_err(),
+                "stream state must stay stable throughout its root walk"
+            );
+            self.visits.fetch_add(1, Ordering::Relaxed);
+            visitor.visit_root(&self.root)
+        }
+    }
+
+    impl Drop for RootWalkProbe {
+        fn drop(&mut self) {
+            if let Some(shared) = self.shared.upgrade() {
+                assert!(
+                    shared.state.try_lock().is_ok(),
+                    "stream root payload dropped while the state mutex was held"
+                );
+            }
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn safepoint_root_walk_neither_wakes_nor_drops_stream_payloads() {
+        let (supervisor, mut producer, consumer) =
+            StreamSupervisor::<_, RootWalkProbe, NoRoots>::open("build");
+        let visits = Arc::new(AtomicUsize::new(0));
+        let drops = Arc::new(AtomicUsize::new(0));
+        let producer_wake = Arc::new(Counter::default());
+        let shared = Arc::downgrade(&producer.shared);
+        assert!(matches!(
+            producer.emit(
+                RootWalkProbe {
+                    root: ValueSlot::integer(1),
+                    shared: shared.clone(),
+                    visits: Arc::clone(&visits),
+                    drops: Arc::clone(&drops),
+                },
+                Arc::new(Counter::default()),
+            ),
+            StreamEmit::Ready
+        ));
+        assert!(matches!(
+            producer.emit(
+                RootWalkProbe {
+                    root: ValueSlot::integer(2),
+                    shared,
+                    visits: Arc::clone(&visits),
+                    drops: Arc::clone(&drops),
+                },
+                producer_wake.clone(),
+            ),
+            StreamEmit::Pending
+        ));
+
+        let mut visitor = CountingVisitor::default();
+        supervisor.visit_roots(&mut visitor).unwrap();
+
+        assert_eq!(visitor.0, 2);
+        assert_eq!(visits.load(Ordering::Relaxed), 2);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        assert_eq!(producer_wake.0.load(Ordering::Relaxed), 0);
+
+        drop(supervisor);
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+        assert_eq!(producer_wake.0.load(Ordering::Relaxed), 1);
+        drop(consumer);
+        drop(producer);
     }
 
     #[test]

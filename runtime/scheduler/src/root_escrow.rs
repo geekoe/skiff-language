@@ -19,7 +19,9 @@ pub enum RootDisposition {
 /// [`RootEscrow::new`]. It may retain stable owner handles, but it must not
 /// retain a heap borrow, heap mutex guard, movable object pointer, or native
 /// poll/future state. Both terminal methods consume the backing so restoration
-/// and dropping cannot both happen.
+/// and dropping cannot both happen. Its [`VmRootSource`] implementation may be
+/// called while a pending-cell state mutex is held and therefore must obey the
+/// crate-level non-blocking, non-reentrant root-walk safepoint contract.
 pub trait RootEscrowBacking: VmRootSource + Send + 'static {
     fn root_count(&self) -> usize;
 
