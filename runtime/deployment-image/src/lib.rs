@@ -1,6 +1,7 @@
 mod attempt;
 mod cache;
 mod dependency;
+mod entry;
 mod image;
 mod load;
 mod owner;
@@ -9,6 +10,7 @@ mod state;
 
 pub use cache::DeploymentImageCache;
 pub use dependency::{ServiceDependencySlot, ServiceDependencySlotError};
+pub use entry::{DeploymentProgramEntry, PinnedDeploymentEntry, PinnedDeploymentEntryError};
 pub use image::{DeploymentImage, DeploymentImageError};
 pub use load::{
     DeploymentLoadError, DeploymentLoadFailure, DeploymentLoadFailureReason, DeploymentLoadResult,

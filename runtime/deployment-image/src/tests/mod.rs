@@ -1,6 +1,7 @@
 mod cache_failure;
 mod cache_success;
 mod contracts;
+mod entry;
 
 use std::{
     fmt,
