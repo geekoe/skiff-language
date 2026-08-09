@@ -170,14 +170,17 @@ impl LoweredPackage {
         let synthetic_operations = SyntheticOperationIndex::from_file_ir_units(&file_ir_units);
         let entrypoint_abi = EntrypointAbiIndex::build(&file_ir_units)
             .map_err(|message| PublicationError::ContractValidation { message })?;
-        // Typed MIR/CFG post-pass: one MirUnit per FileIrUnit. may_pending and
-        // effect_summary_ref come from the source-owned callable effect facts
-        // (design §2.4); the MIR never infers them from File IR.
-        let mir_units =
-            crate::mir::builder::build_mir_units(&file_ir_units, model.callable_effects())
-                .map_err(|message| PublicationError::ContractValidation {
-                    message: format!("MIR build failed: {message}"),
-                })?;
+        // Typed MIR/CFG post-pass: one MirUnit per FileIrUnit. Typed callable
+        // identity and full source-owned effects are copied into MIR; pending
+        // is derived from that summary (design §2.4), never from File IR.
+        let mir_units = crate::mir::builder::build_mir_units(
+            model.policy().package_id(),
+            &file_ir_units,
+            model.callable_effects(),
+        )
+        .map_err(|error| PublicationError::ContractValidation {
+            message: format!("MIR build failed: {error}"),
+        })?;
 
         Ok(Self {
             file_ir_units,
@@ -197,8 +200,8 @@ impl LoweredPackage {
         &self.file_ir_units
     }
 
-    /// Typed MIR/CFG units, one per `FileIrUnit` (pure in-memory; not
-    /// serialized into package artifacts).
+    /// Self-contained typed MIR/CFG units, one per `FileIrUnit` (pure
+    /// in-memory; not serialized into package artifacts).
     pub fn mir_units(&self) -> &[crate::mir::MirUnit] {
         &self.mir_units
     }

@@ -8,9 +8,9 @@
 //! `live_out(b) = ∪ live_in(s) over successors(b)`. Iterates to a fixed
 //! point; final sets are sorted for deterministic output.
 //!
-//! The File IR expression stream backing the function must be supplied by
-//! the caller (the MIR carries expression indices, not expression bodies);
-//! only slot reads/writes are observed, never types.
+//! Expressions are read exclusively through the function-owned MIR expression
+//! table. No external File IR slice is accepted; only slot reads/writes are
+//! observed, never types.
 //!
 //! The API is consumed by the emitter in Wave 4; until then it is exercised
 //! by the test suite only.
@@ -18,13 +18,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{AssignTargetIr, ExprIr, PatternIr};
+use skiff_artifact_model::{AssignTargetIr, ExprIr, ExprRefIr, PatternIr};
 
-use super::{MirBlockLiveness, MirFunction, MirLiveness, MirStmtKind};
+use super::{MirBlockLiveness, MirContractError, MirFunction, MirLiveness, MirStmtKind};
 
-/// May-liveness for one function, backed by the File IR expression stream.
-pub fn compute_liveness(function: &MirFunction, expressions: &[ExprIr]) -> MirLiveness {
-    let (uses, defs) = block_use_def_sets(function, expressions);
+/// May-liveness for one function, backed only by its owned MIR expressions.
+pub fn compute_liveness(function: &MirFunction) -> Result<MirLiveness, MirContractError> {
+    function.validate_expression_indices()?;
+    validate_cfg(function)?;
+    let (uses, defs) = block_use_def_sets(function)?;
     let mut live_in: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
     let mut live_out: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
     for block in &function.blocks {
@@ -65,7 +67,7 @@ pub fn compute_liveness(function: &MirFunction, expressions: &[ExprIr]) -> MirLi
         }
     }
 
-    MirLiveness {
+    Ok(MirLiveness {
         blocks: function
             .blocks
             .iter()
@@ -77,82 +79,106 @@ pub fn compute_liveness(function: &MirFunction, expressions: &[ExprIr]) -> MirLi
                 (block.id, liveness)
             })
             .collect(),
+    })
+}
+
+fn validate_cfg(function: &MirFunction) -> Result<(), MirContractError> {
+    for (expected, block) in function.blocks.iter().enumerate() {
+        let expected =
+            u32::try_from(expected).map_err(|_| MirContractError::BlockIndexOverflow {
+                function: function.symbol.clone(),
+            })?;
+        if block.id != expected {
+            return Err(MirContractError::BlockIndexMismatch {
+                function: function.symbol.clone(),
+                expected,
+                stored: block.id,
+            });
+        }
+        for successor in &block.successors {
+            if function
+                .blocks
+                .get(*successor as usize)
+                .is_none_or(|target| target.id != *successor)
+            {
+                return Err(MirContractError::MissingSuccessorBlock {
+                    function: function.symbol.clone(),
+                    block: block.id,
+                    successor: *successor,
+                });
+            }
+        }
     }
+    Ok(())
 }
 
 fn block_use_def_sets(
     function: &MirFunction,
-    expressions: &[ExprIr],
-) -> (BTreeMap<u32, BTreeSet<u32>>, BTreeMap<u32, BTreeSet<u32>>) {
+) -> Result<(BTreeMap<u32, BTreeSet<u32>>, BTreeMap<u32, BTreeSet<u32>>), MirContractError> {
     let mut uses = BTreeMap::new();
     let mut defs = BTreeMap::new();
     for block in &function.blocks {
         let mut block_uses = BTreeSet::new();
         let mut block_defs = BTreeSet::new();
         for statement in &block.statements {
-            statement_use_def(
-                &statement.kind,
-                &mut block_uses,
-                &mut block_defs,
-                expressions,
-            );
+            statement_use_def(function, &statement.kind, &mut block_uses, &mut block_defs)?;
         }
         uses.insert(block.id, block_uses);
         defs.insert(block.id, block_defs);
     }
-    (uses, defs)
+    Ok((uses, defs))
 }
 
 fn statement_use_def(
+    function: &MirFunction,
     statement: &MirStmtKind,
     uses: &mut BTreeSet<u32>,
     defs: &mut BTreeSet<u32>,
-    expressions: &[ExprIr],
-) {
+) -> Result<(), MirContractError> {
     fn visit(
         expression: u32,
         uses: &mut BTreeSet<u32>,
         defs: &mut BTreeSet<u32>,
-        expressions: &[ExprIr],
-    ) {
-        expression_use_def(expression, uses, defs, expressions, &mut BTreeSet::new());
+        function: &MirFunction,
+    ) -> Result<(), MirContractError> {
+        expression_use_def(expression, uses, defs, function, &mut BTreeSet::new())
     }
     match statement {
         MirStmtKind::Let { slot, value } => {
             defs.insert(*slot);
-            visit(value.expression, uses, defs, expressions);
+            visit(value.expression, uses, defs, function)?;
         }
         MirStmtKind::Assign { target, value } => {
-            visit(value.expression, uses, defs, expressions);
+            visit(value.expression, uses, defs, function)?;
             match target {
                 AssignTargetIr::Slot { slot } => {
                     defs.insert(*slot);
                 }
                 AssignTargetIr::Field { object, .. } => {
-                    visit(object.expression, uses, defs, expressions);
+                    visit(object.expression, uses, defs, function)?;
                 }
                 AssignTargetIr::Index { object, index } => {
-                    visit(object.expression, uses, defs, expressions);
-                    visit(index.expression, uses, defs, expressions);
+                    visit(object.expression, uses, defs, function)?;
+                    visit(index.expression, uses, defs, function)?;
                 }
                 AssignTargetIr::ActorSelfField { .. } => {}
             }
         }
         MirStmtKind::Assert { condition, message } => {
-            visit(condition.expression, uses, defs, expressions);
+            visit(condition.expression, uses, defs, function)?;
             if let Some(message) = message {
-                visit(message.expression, uses, defs, expressions);
+                visit(message.expression, uses, defs, function)?;
             }
         }
-        MirStmtKind::Dispatch { call } => visit(call.expression, uses, defs, expressions),
-        MirStmtKind::Emit { value, .. } => visit(value.expression, uses, defs, expressions),
-        MirStmtKind::Expr { value } => visit(value.expression, uses, defs, expressions),
+        MirStmtKind::Dispatch { call } => visit(call.expression, uses, defs, function)?,
+        MirStmtKind::Emit { value, .. } => visit(value.expression, uses, defs, function)?,
+        MirStmtKind::Expr { value } => visit(value.expression, uses, defs, function)?,
         MirStmtKind::Return { value } => {
             if let Some(value) = value {
-                visit(value.expression, uses, defs, expressions);
+                visit(value.expression, uses, defs, function)?;
             }
         }
-        MirStmtKind::Throw { value, .. } => visit(value.expression, uses, defs, expressions),
+        MirStmtKind::Throw { value, .. } => visit(value.expression, uses, defs, function)?,
         MirStmtKind::Rethrow { exception_slot } => {
             uses.insert(*exception_slot);
         }
@@ -163,23 +189,23 @@ fn statement_use_def(
             ..
         } => {
             for expected in expect.iter().chain(step_expect.iter()) {
-                visit(expected.value.expression, uses, defs, expressions);
+                visit(expected.value.expression, uses, defs, function)?;
             }
             match outcome {
                 skiff_artifact_model::TestEffectOutcomeIr::Respond { value, .. } => {
-                    visit(value.expression, uses, defs, expressions);
+                    visit(value.expression, uses, defs, function)?;
                 }
                 skiff_artifact_model::TestEffectOutcomeIr::Throw { value, .. } => {
-                    visit(value.expression, uses, defs, expressions);
+                    visit(value.expression, uses, defs, function)?;
                 }
                 skiff_artifact_model::TestEffectOutcomeIr::Stream { values, .. } => {
                     for value in values {
-                        visit(value.expression, uses, defs, expressions);
+                        visit(value.expression, uses, defs, function)?;
                     }
                 }
             }
         }
-        MirStmtKind::If { condition, .. } => visit(condition.expression, uses, defs, expressions),
+        MirStmtKind::If { condition, .. } => visit(condition.expression, uses, defs, function)?,
         MirStmtKind::ForIn {
             item_slot,
             value_slot,
@@ -190,22 +216,27 @@ fn statement_use_def(
             if let Some(value_slot) = value_slot {
                 defs.insert(*value_slot);
             }
-            visit(iterable.expression, uses, defs, expressions);
+            visit(iterable.expression, uses, defs, function)?;
         }
         MirStmtKind::While { condition, .. } => {
-            visit(condition.expression, uses, defs, expressions)
+            visit(condition.expression, uses, defs, function)?;
         }
         MirStmtKind::Match { value, arms } => {
-            visit(value.expression, uses, defs, expressions);
+            visit(value.expression, uses, defs, function)?;
             for arm in arms {
                 pattern_defs(&arm.pattern, defs);
             }
         }
-        MirStmtKind::Timeout { .. }
-        | MirStmtKind::Concurrent { .. }
-        | MirStmtKind::Break
-        | MirStmtKind::Continue => {}
+        MirStmtKind::Concurrent { plan } => {
+            for lane in &plan.lanes {
+                if let super::MirConcurrentLaneIr::Tail { tail, .. } = lane {
+                    visit(tail.expression, uses, defs, function)?;
+                }
+            }
+        }
+        MirStmtKind::Timeout { .. } | MirStmtKind::Break | MirStmtKind::Continue => {}
     }
+    Ok(())
 }
 
 fn pattern_defs(pattern: &PatternIr, defs: &mut BTreeSet<u32>) {
@@ -226,23 +257,21 @@ fn expression_use_def(
     expression: u32,
     uses: &mut BTreeSet<u32>,
     defs: &mut BTreeSet<u32>,
-    expressions: &[ExprIr],
+    function: &MirFunction,
     seen: &mut BTreeSet<u32>,
-) {
+) -> Result<(), MirContractError> {
     if !seen.insert(expression) {
-        return;
+        return Ok(());
     }
-    let Some(expr) = expressions.get(expression as usize) else {
-        return;
-    };
+    let expr = &function.expression(ExprRefIr { expression })?.expression;
     fn visit(
         child: u32,
         uses: &mut BTreeSet<u32>,
         defs: &mut BTreeSet<u32>,
-        expressions: &[ExprIr],
+        function: &MirFunction,
         seen: &mut BTreeSet<u32>,
-    ) {
-        expression_use_def(child, uses, defs, expressions, seen);
+    ) -> Result<(), MirContractError> {
+        expression_use_def(child, uses, defs, function, seen)
     }
     match expr {
         ExprIr::LoadSlot { slot } => {
@@ -256,71 +285,86 @@ fn expression_use_def(
         } => {
             // The runtime writes the caught exception into the catch slot.
             defs.insert(*catch_slot);
-            visit(try_expression.expression, uses, defs, expressions, seen);
-            visit(body.expression, uses, defs, expressions, seen);
+            visit(try_expression.expression, uses, defs, function, seen)?;
+            visit(body.expression, uses, defs, function, seen)?;
         }
-        ExprIr::Field { object, .. } => visit(object.expression, uses, defs, expressions, seen),
+        ExprIr::Field { object, .. } => {
+            visit(object.expression, uses, defs, function, seen)?;
+        }
         ExprIr::Construct { fields, .. } => {
             for value in fields.values() {
-                visit(value.expression, uses, defs, expressions, seen);
+                visit(value.expression, uses, defs, function, seen)?;
             }
         }
         ExprIr::RepresentationWrap { value, .. } | ExprIr::InterfaceBox { value, .. } => {
-            visit(value.expression, uses, defs, expressions, seen)
+            visit(value.expression, uses, defs, function, seen)?;
         }
         ExprIr::MapLiteral { entries } => {
             for value in entries.values() {
-                visit(value.expression, uses, defs, expressions, seen);
+                visit(value.expression, uses, defs, function, seen)?;
             }
         }
         ExprIr::ArrayLiteral { items } => {
             for item in items {
-                visit(item.expression, uses, defs, expressions, seen);
+                visit(item.expression, uses, defs, function, seen)?;
             }
         }
-        ExprIr::Unary { value, .. } => visit(value.expression, uses, defs, expressions, seen),
+        ExprIr::Unary { value, .. } => {
+            visit(value.expression, uses, defs, function, seen)?;
+        }
         ExprIr::Binary { left, right, .. } => {
-            visit(left.expression, uses, defs, expressions, seen);
-            visit(right.expression, uses, defs, expressions, seen);
+            visit(left.expression, uses, defs, function, seen)?;
+            visit(right.expression, uses, defs, function, seen)?;
         }
         ExprIr::Call { call } => {
             for argument in &call.args {
-                visit(argument.expression, uses, defs, expressions, seen);
+                visit(argument.expression, uses, defs, function, seen)?;
+            }
+            for argument in &call.inout_args {
+                uses.insert(argument.root_slot);
+                defs.insert(argument.root_slot);
             }
         }
-        ExprIr::Throw { value, .. } => visit(value.expression, uses, defs, expressions, seen),
-        ExprIr::Timeout { value, .. } => visit(value.expression, uses, defs, expressions, seen),
+        ExprIr::Throw { value, .. } => {
+            visit(value.expression, uses, defs, function, seen)?;
+        }
+        ExprIr::Timeout { value, .. } => {
+            visit(value.expression, uses, defs, function, seen)?;
+        }
         ExprIr::ValueBlock { result, .. } => {
-            visit(result.expression, uses, defs, expressions, seen)
+            visit(result.expression, uses, defs, function, seen)?;
         }
         ExprIr::ConcurrentValue { plan } => {
             for lane in &plan.lanes {
                 if let skiff_artifact_model::ConcurrentLaneIr::Tail { tail, .. } = lane {
-                    visit(tail.expression, uses, defs, expressions, seen);
+                    visit(tail.expression, uses, defs, function, seen)?;
                 }
             }
         }
         ExprIr::DbOperation { operation } => {
             for child in crate::mir::builder::db_operation_child_expressions(operation) {
-                visit(child, uses, defs, expressions, seen);
+                visit(child, uses, defs, function, seen)?;
             }
         }
         ExprIr::DbQuery { query } => {
             for child in crate::mir::builder::db_query_child_expressions(&query.query) {
-                visit(child, uses, defs, expressions, seen);
+                visit(child, uses, defs, function, seen)?;
             }
         }
         ExprIr::DbTransaction { transaction } => {
-            visit(transaction.result.expression, uses, defs, expressions, seen)
+            visit(transaction.result.expression, uses, defs, function, seen)?;
         }
         ExprIr::DbLeaseClaim { claim } => {
-            visit(claim.key.expression, uses, defs, expressions, seen)
+            visit(claim.key.expression, uses, defs, function, seen)?;
         }
-        ExprIr::DbLeaseRead { read } => visit(read.key.expression, uses, defs, expressions, seen),
+        ExprIr::DbLeaseRead { read } => {
+            visit(read.key.expression, uses, defs, function, seen)?;
+        }
         ExprIr::Literal { .. }
         | ExprIr::LoadConst { .. }
         | ExprIr::LoadPackageConst { .. }
         | ExprIr::ActorSelfField { .. }
         | ExprIr::Rethrow { .. } => {}
     }
+    Ok(())
 }

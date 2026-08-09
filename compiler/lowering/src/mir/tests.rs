@@ -3,7 +3,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use skiff_artifact_model::{ExprIr, ExprRefIr, InstructionSourceSite, StmtIr, TypeRefIr};
+use skiff_artifact_model::{
+    CallTargetIr, CallableEffectSummary, ContractOperationId, ExecutableLinkTargetIr, ExprIr,
+    ExprRefIr, InstructionSourceSite, PackageCallableId, ServiceCallRef, ServiceCallRefIndex,
+    ServiceProtocolIdentity, StmtIr, TypeRefIr,
+};
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::{
     build_package_from_parsed_sources_with_dependency_analysis,
@@ -13,10 +17,11 @@ use skiff_compiler_source::{
 };
 
 use crate::lower;
+use crate::mir::builder::build_mir_units;
 use crate::mir::liveness::compute_liveness;
 use crate::mir::{
-    MirBlock, MirExecutableKind, MirFunction, MirLiveness, MirParamMode, MirSlotKind, MirStmtKind,
-    MirUnit,
+    MirBlock, MirBuildError, MirContractError, MirExecutableKind, MirExpression, MirFunction,
+    MirLiveness, MirParamMode, MirSlotKind, MirStmtKind, MirUnit,
 };
 
 fn build_model(module_path: &str, source_text: &str) -> skiff_compiler_source::PackageSourceModel {
@@ -49,7 +54,7 @@ fn build_model(module_path: &str, source_text: &str) -> skiff_compiler_source::P
             package_dependencies: &[],
             package_facts: None,
             package_artifacts: None,
-            policy: PackageCompilePolicy::new("example.com/mir-fixture"),
+            policy: PackageCompilePolicy::new(PACKAGE_ID),
         },
         &SourceDependencyAnalysisInput::new([], []).unwrap(),
     )
@@ -57,8 +62,16 @@ fn build_model(module_path: &str, source_text: &str) -> skiff_compiler_source::P
 }
 
 const MODULE: &str = "internal.mir_fixture";
+const PACKAGE_ID: &str = "example.com/mir-fixture";
 
 const MIR_FIXTURE: &str = r#"
+  const answer: number = 42
+  const backup: number = 7
+
+  function answerCopy() -> number {
+    return answer
+  }
+
   function mirror(input: Array<number>) -> number {
     var acc = 0
     var i = 0
@@ -91,22 +104,16 @@ const MIR_FIXTURE: &str = r#"
   }
 "#;
 
-fn mirror_function() -> (MirFunction, Vec<ExprIr>) {
+fn mirror_function() -> MirFunction {
     let model = build_model(MODULE, MIR_FIXTURE);
     let lowered = lower(&model).expect("MIR fixture should lower");
-    let unit = &lowered.file_ir_units()[0];
-    let executable = unit
-        .executables
-        .iter()
-        .find(|executable| executable.symbol == format!("{MODULE}.mirror"))
-        .expect("mirror executable");
     let mir = &lowered.mir_units()[0];
     let function = mir
         .functions
         .iter()
         .find(|function| function.symbol == format!("{MODULE}.mirror"))
         .expect("mirror MirFunction");
-    (function.clone(), executable.body.expressions.clone())
+    function.clone()
 }
 
 #[test]
@@ -116,7 +123,34 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
     assert_eq!(lowered.mir_units().len(), 1);
     let unit: &MirUnit = &lowered.mir_units()[0];
     assert_eq!(unit.module_path, MODULE);
-    assert_eq!(unit.functions.len(), 3);
+    assert_eq!(unit.functions.len(), 4);
+    unit.validate_executable_indices()
+        .expect("executable indices are dense and unique");
+    unit.validate_constants()
+        .expect("constant indices are dense and unique");
+    assert_eq!(unit.constants.len(), 2);
+    let answer = unit.constant(0).expect("answer constant metadata");
+    assert_eq!(answer.index, 0);
+    assert_eq!(answer.symbol, format!("{MODULE}.answer"));
+    assert_eq!(answer.ty, TypeRefIr::builtin("number"));
+    assert_eq!(
+        answer.source_span,
+        lowered.file_ir_units()[0].declarations.constants["answer"].source_span
+    );
+    let answer_copy = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.answerCopy"))
+        .expect("answerCopy");
+    let load_const_index = answer_copy
+        .expressions
+        .iter()
+        .find_map(|expression| match &expression.expression {
+            ExprIr::LoadConst { const_index } => Some(*const_index),
+            _ => None,
+        })
+        .expect("answerCopy loads a local constant");
+    assert_eq!(unit.constant(load_const_index), Ok(answer));
 
     let mirror = unit
         .functions
@@ -125,12 +159,42 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
         .expect("mirror");
     assert_eq!(mirror.kind, MirExecutableKind::Function);
     assert_eq!(
+        mirror.executable_index,
+        lowered.file_ir_units()[0].declarations.executables["mirror"].executable_index
+    );
+    let mirror_position = unit
+        .functions
+        .iter()
+        .position(|function| function.symbol == mirror.symbol)
+        .and_then(|position| u32::try_from(position).ok())
+        .expect("mirror MIR vector position fits u32");
+    assert_ne!(
+        mirror_position, mirror.executable_index,
+        "declaration-name order must not be mistaken for executable-table order"
+    );
+    assert_eq!(
+        unit.function_by_executable_index(mirror.executable_index),
+        Ok(mirror)
+    );
+    assert_eq!(
         mirror.effect_summary_ref,
-        format!("{MODULE}::{MODULE}.mirror"),
-        "effect_summary_ref is the stable callable identity rendering"
+        PackageCallableId::new(format!(
+            "pkg-callable:{PACKAGE_ID}:top-level:{MODULE}.mirror"
+        )),
+        "effect_summary_ref is the canonical typed implementation identity"
+    );
+    assert_eq!(
+        &mirror.effect_summary,
+        model
+            .callable_effects()
+            .operations()
+            .get(&skiff_compiler_source::SourceSymbolKey::new(
+                MODULE, "mirror"
+            ))
+            .expect("source mirror effect summary")
     );
     // A pure loop fixture has no pending effects.
-    assert!(!mirror.may_pending);
+    assert!(!mirror.may_pending());
 
     // Stream emit records PendingEffectCategory::Stream in the source effects.
     let pendingish = unit
@@ -139,7 +203,7 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
         .find(|function| function.symbol == format!("{MODULE}.pendingish"))
         .expect("pendingish");
     assert!(
-        pendingish.may_pending,
+        pendingish.may_pending(),
         "stream fixture must be may_pending from source effects"
     );
     assert_eq!(
@@ -157,9 +221,10 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
     assert_eq!(mirror.slots[0].name, "input");
     assert_eq!(mirror.slots[0].kind, MirSlotKind::Param);
     assert!(mirror.slots[0].ty.is_some());
+    assert_eq!(mirror.slot_type(0), Ok(&mirror.params[0].ty));
 
-    // File IR incremental fields stay index-aligned with the expression and
-    // statement streams.
+    // MIR owns exact-index cloned expression/type pairs and its computed
+    // liveness, while File IR retains the source facts used to construct it.
     let mirror_executable = lowered.file_ir_units()[0]
         .executables
         .iter()
@@ -169,6 +234,28 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
         mirror_executable.expression_types.len(),
         mirror_executable.body.expressions.len(),
         "expression_types aligns with body.expressions"
+    );
+    assert_eq!(
+        mirror.expressions.len(),
+        mirror_executable.body.expressions.len()
+    );
+    for (index, expression) in mirror.expressions.iter().enumerate() {
+        assert_eq!(expression.index as usize, index);
+        assert_eq!(
+            expression.expression,
+            mirror_executable.body.expressions[index]
+        );
+        assert_eq!(expression.ty, mirror_executable.expression_types[index]);
+        assert_eq!(
+            mirror.expression(ExprRefIr {
+                expression: expression.index,
+            }),
+            Ok(expression)
+        );
+    }
+    assert_eq!(
+        compute_liveness(mirror).expect("MIR-only liveness recomputation"),
+        mirror.liveness
     );
     assert_eq!(
         mirror_executable.statement_spans.len(),
@@ -194,12 +281,237 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
         .find(|function| function.symbol == format!("{MODULE}.catchy"))
         .expect("catchy");
     // A pure string function has no pending effects.
-    assert!(!catchy.may_pending);
+    assert!(!catchy.may_pending());
+}
+
+#[test]
+fn mir_remains_self_contained_after_original_file_ir_is_dropped() {
+    let model = build_model(MODULE, MIR_FIXTURE);
+    let lowered = lower(&model).expect("MIR fixture should lower");
+    let mut file_ir_units = lowered.file_ir_units().to_vec();
+    let service_ref = ServiceCallRef {
+        service_requirement_slot: 7,
+        contract_operation_id: ContractOperationId::new("contract-operation:mirror"),
+        expected_protocol_identity: ServiceProtocolIdentity::new("service-protocol:mirror"),
+    };
+    file_ir_units[0]
+        .external_refs
+        .service_call_refs
+        .push(service_ref.clone());
+
+    let mirror_executable_index =
+        file_ir_units[0].declarations.executables["mirror"].executable_index;
+    let mirror_index = mirror_executable_index as usize;
+    file_ir_units[0].link_targets.executables.insert(
+        "mirror".to_string(),
+        ExecutableLinkTargetIr {
+            executable_index: mirror_executable_index,
+        },
+    );
+    let executable = &mut file_ir_units[0].executables[mirror_index];
+    let service_expression_index = executable
+        .body
+        .expressions
+        .iter()
+        .position(|expression| matches!(expression, ExprIr::Call { .. }))
+        .expect("mirror fixture has a call expression");
+    let ExprIr::Call { call } = &mut executable.body.expressions[service_expression_index] else {
+        unreachable!()
+    };
+    call.target = CallTargetIr::ServiceCall {
+        service_call_ref_index: ServiceCallRefIndex::new(0),
+    };
+    let service_expression_index =
+        u32::try_from(service_expression_index).expect("fixture expression index fits u32");
+    let expected_expression =
+        executable.body.expressions[service_expression_index as usize].clone();
+    let expected_expression_type =
+        executable.expression_types[service_expression_index as usize].clone();
+    let expected_source_map = file_ir_units[0].source_map.clone();
+    let expected_type_table = file_ir_units[0].type_table.clone();
+    let expected_link_targets = file_ir_units[0].link_targets.clone();
+
+    let mir_units = build_mir_units(PACKAGE_ID, &file_ir_units, model.callable_effects())
+        .expect("self-contained MIR build");
+    drop(file_ir_units);
+    drop(lowered);
+    drop(model);
+
+    let unit = &mir_units[0];
+    assert_eq!(unit.external_refs.service_call_refs, vec![service_ref]);
+    assert_eq!(unit.source_map, expected_source_map);
+    assert_eq!(unit.type_table, expected_type_table);
+    assert_eq!(unit.link_targets, expected_link_targets);
+    assert!(!unit.source_map.sources.is_empty());
+    assert!(!unit.type_table.is_empty());
+    assert!(unit.link_targets.executables.contains_key("mirror"));
+    assert_eq!(
+        unit.constant(0).expect("owned local constant").symbol,
+        format!("{MODULE}.answer")
+    );
+    let mirror = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.mirror"))
+        .expect("owned mirror MIR");
+    assert_eq!(
+        unit.function_by_executable_index(mirror.executable_index),
+        Ok(mirror)
+    );
+    let expression = mirror
+        .expression(ExprRefIr {
+            expression: service_expression_index,
+        })
+        .expect("owned service-call expression");
+    assert_eq!(expression.index, service_expression_index);
+    assert_eq!(expression.expression, expected_expression);
+    assert_eq!(expression.ty, expected_expression_type);
+    let ExprIr::Call { call } = &expression.expression else {
+        panic!("expected owned service-call expression")
+    };
+    let CallTargetIr::ServiceCall {
+        service_call_ref_index,
+    } = &call.target
+    else {
+        panic!("expected owned service-call target")
+    };
+    assert_eq!(
+        unit.external_refs
+            .service_call_refs
+            .get((*service_call_ref_index).index() as usize),
+        Some(&service_ref)
+    );
+    assert_eq!(
+        compute_liveness(mirror).expect("liveness reads only owned MIR"),
+        mirror.liveness
+    );
+    assert_eq!(mirror.liveness.blocks.len(), mirror.blocks.len());
+}
+
+#[test]
+fn mir_builder_rejects_mismatched_expression_type_count() {
+    let model = build_model(MODULE, MIR_FIXTURE);
+    let lowered = lower(&model).expect("MIR fixture should lower");
+    let mut file_ir_units = lowered.file_ir_units().to_vec();
+    let mirror_index =
+        file_ir_units[0].declarations.executables["mirror"].executable_index as usize;
+    let executable = &mut file_ir_units[0].executables[mirror_index];
+    let expression_count = executable.body.expressions.len();
+    executable
+        .expression_types
+        .pop()
+        .expect("mirror fixture has expressions");
+    let expression_type_count = executable.expression_types.len();
+
+    let error = build_mir_units(PACKAGE_ID, &file_ir_units, model.callable_effects())
+        .expect_err("mismatched expression types must fail closed");
+    assert_eq!(
+        error,
+        MirBuildError::ExpressionTypeCountMismatch {
+            module_path: MODULE.to_string(),
+            symbol: format!("{MODULE}.mirror"),
+            expression_count,
+            expression_type_count,
+        }
+    );
+}
+
+#[test]
+fn mir_builder_rejects_non_dense_or_duplicate_executable_indices() {
+    let model = build_model(MODULE, MIR_FIXTURE);
+    let lowered = lower(&model).expect("MIR fixture should lower");
+    let mut file_ir_units = lowered.file_ir_units().to_vec();
+    let first_declaration = "answerCopy";
+    let duplicate_declaration = "catchy";
+    let executable_index =
+        file_ir_units[0].declarations.executables[first_declaration].executable_index;
+    file_ir_units[0]
+        .declarations
+        .executables
+        .get_mut(duplicate_declaration)
+        .expect("duplicate executable declaration")
+        .executable_index = executable_index;
+
+    let error = build_mir_units(PACKAGE_ID, &file_ir_units, model.callable_effects())
+        .expect_err("duplicate executable indices must fail closed");
+    assert_eq!(
+        error,
+        MirBuildError::DuplicateExecutableIndex {
+            module_path: MODULE.to_string(),
+            executable_index,
+            first_declaration: first_declaration.to_string(),
+            duplicate_declaration: duplicate_declaration.to_string(),
+        }
+    );
+
+    let executable_index =
+        u32::try_from(file_ir_units[0].executables.len()).expect("fixture count fits u32");
+    file_ir_units[0]
+        .declarations
+        .executables
+        .get_mut(duplicate_declaration)
+        .expect("sparse executable declaration")
+        .executable_index = executable_index;
+    let error = build_mir_units(PACKAGE_ID, &file_ir_units, model.callable_effects())
+        .expect_err("sparse executable indices must fail closed");
+    assert_eq!(
+        error,
+        MirBuildError::MissingExecutable {
+            module_path: MODULE.to_string(),
+            declaration_name: duplicate_declaration.to_string(),
+            executable_index,
+        }
+    );
+}
+
+#[test]
+fn mir_builder_rejects_non_dense_or_duplicate_constant_indices() {
+    let model = build_model(MODULE, MIR_FIXTURE);
+    let lowered = lower(&model).expect("MIR fixture should lower");
+    let mut file_ir_units = lowered.file_ir_units().to_vec();
+    let const_index = file_ir_units[0].declarations.constants["answer"].const_index;
+    file_ir_units[0]
+        .declarations
+        .constants
+        .get_mut("backup")
+        .expect("backup constant declaration")
+        .const_index = const_index;
+
+    let error = build_mir_units(PACKAGE_ID, &file_ir_units, model.callable_effects())
+        .expect_err("duplicate constant indices must fail closed");
+    assert_eq!(
+        error,
+        MirBuildError::DuplicateConstantIndex {
+            module_path: MODULE.to_string(),
+            const_index,
+            duplicate_declaration: "backup".to_string(),
+        }
+    );
+
+    let const_index =
+        u32::try_from(file_ir_units[0].constants.len()).expect("fixture count fits u32");
+    file_ir_units[0]
+        .declarations
+        .constants
+        .get_mut("backup")
+        .expect("sparse constant declaration")
+        .const_index = const_index;
+    let error = build_mir_units(PACKAGE_ID, &file_ir_units, model.callable_effects())
+        .expect_err("sparse constant indices must fail closed");
+    assert_eq!(
+        error,
+        MirBuildError::ConstantIndexOutOfBounds {
+            module_path: MODULE.to_string(),
+            declaration_name: "backup".to_string(),
+            const_index,
+            constant_count: file_ir_units[0].constants.len(),
+        }
+    );
 }
 
 #[test]
 fn mir_cfg_shapes_for_branches_loops_match_timeout_concurrent_and_catch() {
-    let (mirror, _expressions) = mirror_function();
+    let mirror = mirror_function();
 
     // Statement index -> MirStmt correspondence is recoverable: one entry per
     // MirStmt in flattened block order, carrying the File IR statement index.
@@ -360,7 +672,25 @@ fn liveness_hand_computed_small_fixture() {
     // live_out(b2) = {}; live_in(b2) = {1}
     // live_out(b1) = live_in(b2) = {1}; live_in(b1) = {0} ∪ ({1} - {1}) = {0}
     // live_out(b0) = live_in(b1) = {0}; live_in(b0) = {} ∪ ({0} - {1}) = {0}
-    let function = MirFunction {
+    let expressions = vec![
+        MirExpression {
+            index: 0,
+            expression: ExprIr::LoadConst { const_index: 0 },
+            ty: TypeRefIr::builtin("number"),
+        },
+        MirExpression {
+            index: 1,
+            expression: ExprIr::LoadSlot { slot: 0 },
+            ty: TypeRefIr::builtin("number"),
+        },
+        MirExpression {
+            index: 2,
+            expression: ExprIr::LoadSlot { slot: 1 },
+            ty: TypeRefIr::builtin("number"),
+        },
+    ];
+    let mut function = MirFunction {
+        executable_index: 0,
         symbol: "m.f".to_string(),
         kind: MirExecutableKind::Function,
         type_params: Vec::new(),
@@ -386,6 +716,7 @@ fn liveness_hand_computed_small_fixture() {
                 ty: None,
             },
         ],
+        expressions,
         blocks: vec![
             MirBlock {
                 id: 0,
@@ -428,17 +759,14 @@ fn liveness_hand_computed_small_fixture() {
         ],
         regions: Vec::new(),
         statements: Vec::new(),
-        may_pending: false,
-        effect_summary_ref: "m::m.f".to_string(),
+        liveness: MirLiveness::default(),
+        effect_summary_ref: PackageCallableId::new("pkg-callable:test:top-level:m.f"),
+        effect_summary: CallableEffectSummary::analysis_pending(),
         source_span: None,
     };
-    let expressions = vec![
-        ExprIr::LoadConst { const_index: 0 },
-        ExprIr::LoadSlot { slot: 0 },
-        ExprIr::LoadSlot { slot: 1 },
-    ];
 
-    let liveness = compute_liveness(&function, &expressions);
+    let liveness = compute_liveness(&function).expect("MIR-only liveness");
+    function.liveness = liveness.clone();
     assert_eq!(liveness.blocks[&0].live_in, vec![0]);
     assert_eq!(liveness.blocks[&0].live_out, vec![0]);
     assert_eq!(liveness.blocks[&1].live_in, vec![0]);
@@ -447,8 +775,14 @@ fn liveness_hand_computed_small_fixture() {
     assert_eq!(liveness.blocks[&2].live_out, Vec::<u32>::new());
 
     // Liveness is deterministic: recomputation yields identical output.
-    let again = compute_liveness(&function, &expressions);
+    let again = compute_liveness(&function).expect("MIR-only liveness recomputation");
     assert_eq!(again.blocks, liveness.blocks);
+    assert_eq!(function.liveness, liveness);
+    assert!(matches!(
+        function.slot_type(0),
+        Err(MirContractError::MissingSlotType { slot: 0, .. })
+    ));
+    assert!(function.validate_slot_types().is_err());
     let _: MirLiveness = liveness;
     let _: MirFunction = function;
     let _: InstructionSourceSite = InstructionSourceSite::Synthetic {
@@ -511,7 +845,7 @@ fn concurrent_plan_lanes_become_block_ids_and_complete_into_continuation() {
         statement_spans: vec![None, None],
         source_span: None,
     };
-    let mut unit = FileIrUnit {
+    let unit = FileIrUnit {
         schema_version: "1".to_string(),
         file_ir_identity: String::new(),
         source_ast_hash: String::new(),
@@ -545,15 +879,31 @@ fn concurrent_plan_lanes_become_block_ids_and_complete_into_continuation() {
         executables: vec![executable],
         external_refs: Default::default(),
     };
-    let _ = &mut unit;
-
     let per_callable = BTreeMap::from([(
         skiff_compiler_source::SourceSymbolKey::new("m", "concurrentish"),
-        (false, "m::m.concurrentish".to_string()),
+        CallableEffectSummary::analysis_pending(),
     )]);
-    let mir = crate::mir::builder::build_mir_unit_with_effect_map(&unit, &per_callable)
-        .expect("concurrent fixture should build MIR");
+    let mir = crate::mir::builder::build_mir_unit_with_effect_map(
+        "example.com/concurrent-fixture",
+        &unit,
+        &per_callable,
+    )
+    .expect("concurrent fixture should build MIR");
     let function = &mir.functions[0];
+    assert_eq!(
+        function.effect_summary_ref,
+        PackageCallableId::new(
+            "pkg-callable:example.com/concurrent-fixture:top-level:m.concurrentish"
+        )
+    );
+    assert_eq!(
+        function.effect_summary,
+        CallableEffectSummary::analysis_pending()
+    );
+    assert!(
+        function.may_pending(),
+        "unknown effect analysis is conservatively pending"
+    );
 
     // entry: [Concurrent] then continuation [Return].
     let entry = &function.blocks[0];

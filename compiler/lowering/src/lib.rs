@@ -1,7 +1,8 @@
 mod actor_method_validation;
 pub mod callable_return_types;
 mod const_evaluator;
-mod db_lowering;mod declaration_lowering;
+mod db_lowering;
+mod declaration_lowering;
 pub mod entrypoint_abi;
 pub mod entrypoint_abi_model;
 mod executable_declaration_lowering;
@@ -11,7 +12,7 @@ pub mod file_ir;
 mod function_lowering;
 mod interface_declaration_lowering;
 pub mod lowered;
-mod mir;
+pub mod mir;
 mod publication_local_refs;
 mod service_call_error;
 mod service_call_lowering;
@@ -23,11 +24,11 @@ mod suspend_analysis;
 mod type_inference;
 mod type_lowering;
 
+pub use const_evaluator::{Bounds, ConstEvaluator, ConstEvaluatorError};
 pub use entrypoint_abi::{
     package_entrypoint_function_signature, package_public_schema_abi_types_for_module,
     package_public_schema_type_names_for_module, EntrypointAbiIndex,
 };
-pub use const_evaluator::{ConstEvaluator, ConstEvaluatorError, Bounds};
 pub use entrypoint_abi_model::{
     type_ref_ir_source_text_with_local_types, EntryFunctionSignature, EntryParamSpec,
     EntryTypeSpec, PackageAbiType, PackageAbiTypeDescriptor,

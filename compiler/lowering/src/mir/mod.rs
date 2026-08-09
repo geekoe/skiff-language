@@ -1,10 +1,18 @@
 //! Typed MIR/CFG over File IR (Phase 2 WP4).
 //!
-//! MIR is the emitter's only semantic input (`emit_bytecode_artifact` in
-//! `compiler/emission`). Construction is a post-pass over each `FileIrUnit`
-//! plus source-owned facts (expression types, callable effects, spans); the
-//! MIR builder must not recover types/liveness/effect facts from File IR
-//! (design §2.4 stop condition).
+//! MIR is the emitter's only source-program semantic input
+//! (`emit_bytecode_artifact` in `compiler/emission`). Construction is a
+//! post-pass over each `FileIrUnit` plus source-owned facts (expression types,
+//! callable effects, spans); after construction, an emitter must not reopen a
+//! `FileIrUnit` to recover types, expressions, external references, liveness,
+//! effects, or source facts (design §2.4 stop condition).
+//!
+//! Frozen constant graphs are deliberately not embedded in [`MirUnit`]. They
+//! are produced by [`crate::ConstEvaluator`] and must remain a separate,
+//! explicit emitter input. Likewise, this C0 contract does not invent a
+//! `ValueTransferPlan`: a later source-owned fact must supply that plan before
+//! emission. An emitter must fail closed when it is absent and must never
+//! default a transfer to `SnapshotShare`.
 //!
 //! # Construction rules
 //!
@@ -24,9 +32,10 @@
 //!   `DbLeaseClaim`, `ConcurrentValue` lanes) complete into the enclosing
 //!   statement's continuation.
 //! - Exception regions: every `ExprIr::Catch` produces one [`MirRegion`].
-//!   `catch_expr` is the File IR expression index of the `Catch` node;
-//!   `cleanup_depth` is the number of enclosing catch regions (nesting level,
-//!   deterministic from the expression DAG).
+//!   `catch_expr` is the function-local [`MirExpression`] index of the `Catch`
+//!   node (kept exactly aligned while cloning File IR); `cleanup_depth` is the
+//!   number of enclosing catch regions (nesting level, deterministic from the
+//!   expression DAG).
 //! - `MirFunction.statements` holds one [`MirStatementEntry`] per `MirStmt`,
 //!   in the order produced by flattening `blocks` in block-id order, giving a
 //!   recoverable correspondence between `MirStmt`s and the File IR statement
@@ -38,16 +47,23 @@
 //!   `symbol` is the File IR executable symbol (`{module_path}.{declaration}`).
 //!   The emitter maps unit functions into `BytecodeImage.functions` by this
 //!   key (design §2.6).
-//! - `effect_summary_ref` is the same stable rendering of the callable
-//!   identity (`"{module_path}::{symbol}"`); `may_pending` and
-//!   `effect_summary_ref` come from the source-owned
-//!   `SourceCallableEffectFacts` keyed by `(module_path, declaration_name)`.
+//! - `effect_summary_ref` is the canonical typed package implementation
+//!   callable identity from
+//!   [`skiff_compiler_core::implementation_package_callable_id`]. The full
+//!   effect summary comes from source-owned
+//!   [`skiff_compiler_source::SourceCallableEffectFacts`] and
+//!   [`MirFunction::may_pending`] derives conservatively from that summary;
+//!   `Unknown` is always pending.
 //!
 //! File layout and API are owned by the WP4 worker (see
 //! `doc/implementation/bytecode-vm/design/phase-2-compiler-emission.md` §2.4).
 
+mod contract;
+
 pub mod builder;
 pub mod liveness;
+
+pub use contract::{MirBuildError, MirContractError};
 
 #[cfg(test)]
 mod tests;
@@ -55,18 +71,38 @@ mod tests;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    AssignTargetIr, ExprRefIr, InstructionSourceSite, PatternIr, SourceSpanRef, TypeRefIr,
+    AssignTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, ExternalRefTable, FileLinkTargets,
+    InstructionSourceSite, PackageCallableId, PatternIr, SourceMapDto, SourceSpanRef, TypeDeclIr,
+    TypeRefIr,
 };
 
-/// One `FileIrUnit`'s typed CFG. Pure in-memory; never serialized.
+/// One `FileIrUnit`'s self-contained typed CFG. Pure in-memory; never
+/// serialized.
+///
+/// Expression-owned indices such as `ServiceCallRefIndex` resolve only
+/// against this unit's cloned [`ExternalRefTable`]. Local type indices and
+/// source spans likewise resolve against this unit's cloned type/source facts.
+/// Const graphs are a separate explicit [`crate::ConstEvaluator`] output; an
+/// emitter must not reopen the source `FileIrUnit` for any of these facts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirUnit {
     pub module_path: String,
+    pub external_refs: ExternalRefTable,
+    pub source_map: SourceMapDto,
+    pub type_table: Vec<TypeDeclIr>,
+    pub link_targets: FileLinkTargets,
+    /// Dense local-constant metadata. Frozen graphs remain a separate
+    /// ConstEvaluator input keyed by `MirConst::symbol`; initializer bodies
+    /// are intentionally not copied into MIR.
+    pub constants: Vec<MirConst>,
     pub functions: Vec<MirFunction>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirFunction {
+    /// Exact index in the owning File IR executable table. Local/publication
+    /// call targets retain this index and resolve it through `MirUnit`.
+    pub executable_index: u32,
     pub symbol: String,
     pub kind: MirExecutableKind,
     pub type_params: Vec<String>,
@@ -74,13 +110,36 @@ pub struct MirFunction {
     pub return_type: TypeRefIr,
     pub self_type: Option<TypeRefIr>,
     pub slots: Vec<MirSlot>,
+    /// Function-owned expression DAG. Every entry's `index` is exactly its
+    /// position and its `ty` is the source-owned type at that index.
+    pub expressions: Vec<MirExpression>,
     pub blocks: Vec<MirBlock>,
     pub regions: Vec<MirRegion>,
     /// One entry per `MirStmt` across `blocks` in block-id order
     /// (`statement_index` = index into the File IR statement stream).
     pub statements: Vec<MirStatementEntry>,
-    pub may_pending: bool,
-    pub effect_summary_ref: String,
+    pub liveness: MirLiveness,
+    pub effect_summary_ref: PackageCallableId,
+    pub effect_summary: CallableEffectSummary,
+    pub source_span: Option<SourceSpanRef>,
+}
+
+/// One exact entry in a function-owned expression DAG.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirExpression {
+    pub index: u32,
+    pub expression: ExprIr,
+    pub ty: TypeRefIr,
+}
+
+/// Emitter-facing metadata for one compile-time-evaluated local constant.
+/// The frozen graph is supplied separately by [`crate::ConstEvaluator`] under
+/// `symbol`; no request-time initializer body is retained here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirConst {
+    pub index: u32,
+    pub symbol: String,
+    pub ty: TypeRefIr,
     pub source_span: Option<SourceSpanRef>,
 }
 
@@ -252,9 +311,9 @@ pub enum MirConcurrentLaneIr {
     },
 }
 
-/// One exception region: the File IR expression index of the `Catch` node,
-/// the slot receiving the caught exception, its static type and the nesting
-/// depth (number of enclosing catch regions).
+/// One exception region: the function-local [`MirExpression`] index of the
+/// `Catch` node, the slot receiving the caught exception, its static type and
+/// the nesting depth (number of enclosing catch regions).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirRegion {
     pub id: u32,

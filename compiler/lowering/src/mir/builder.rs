@@ -3,118 +3,181 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::CallableEffectSummary;
 use skiff_artifact_model::{
-    AssignTargetIr, ConcurrentLaneIr, ConcurrentPlanIr, DbBodyIr, DbChangeOpIr, DbPredicateIr,
-    DbSelectorIr, ExecutableIr, ExprIr, FileIrUnit, SourceSpanRef, StmtIr,
+    AssignTargetIr, CallableEffectSummary, ConcurrentLaneIr, ConcurrentPlanIr, DbBodyIr,
+    DbChangeOpIr, DbPredicateIr, DbSelectorIr, ExecutableIr, ExprIr, FileIrUnit, SourceSpanRef,
+    StmtIr,
 };
+use skiff_compiler_core::{implementation_package_callable_id, ImplementationCallableKind};
 use skiff_compiler_source::{SourceCallableEffectFacts, SourceSymbolKey};
 
 use super::{
-    MirBlock, MirConcurrentLaneIr, MirConcurrentPlanIr, MirExecutableKind, MirFunction,
-    MirMatchArmIr, MirParam, MirParamMode, MirRegion, MirSlot, MirSlotKind, MirStatementEntry,
-    MirStmt, MirStmtKind, MirUnit,
+    liveness::compute_liveness, MirBlock, MirBuildError, MirConcurrentLaneIr, MirConcurrentPlanIr,
+    MirConst, MirExecutableKind, MirExpression, MirFunction, MirLiveness, MirMatchArmIr, MirParam,
+    MirParamMode, MirRegion, MirSlot, MirSlotKind, MirStatementEntry, MirStmt, MirStmtKind,
+    MirUnit,
 };
 
 /// Per-callable effect facts resolved from the source model. The MIR never
-/// infers effects from File IR (design §2.4 stop condition);
-/// `effect_summary_ref` is the stable `"{module_path}::{symbol}"` rendering of
-/// the callable identity (see `super` module docs).
-pub type CallableEffectMap = BTreeMap<SourceSymbolKey, (bool, String)>;
+/// infers effects from File IR (design §2.4 stop condition).
+pub type CallableEffectMap = BTreeMap<SourceSymbolKey, CallableEffectSummary>;
 
 /// One MIR unit per File IR unit; functions are ordered by declaration name
 /// (deterministic `BTreeMap` iteration).
 pub fn build_mir_units(
+    package_id: &str,
     units: &[FileIrUnit],
     effects: &SourceCallableEffectFacts,
-) -> Result<Vec<MirUnit>, String> {
-    let mut per_callable = CallableEffectMap::new();
-    for (source_key, summary) in effects.operations() {
-        let may_pending = match summary {
-            CallableEffectSummary::Analyzed { effects } => effects.may_pending(),
-            // `AnalysisPending` never occurs on the production pipeline; treat
-            // it conservatively as potentially pending.
-            CallableEffectSummary::Unknown { .. } => true,
-        };
-        let symbol = format!(
-            "{module_path}.{symbol}",
-            module_path = source_key.module_path(),
-            symbol = source_key.symbol()
-        );
-        per_callable.insert(
-            source_key.clone(),
-            (
-                may_pending,
-                format!("{}::{symbol}", source_key.module_path()),
-            ),
-        );
-    }
+) -> Result<Vec<MirUnit>, MirBuildError> {
     units
         .iter()
-        .map(|unit| build_mir_unit_with_effect_map(unit, &per_callable))
+        .map(|unit| build_mir_unit_with_effect_map(package_id, unit, effects.operations()))
         .collect()
 }
 
 /// Builder core with an already-resolved per-callable effect map (test seam).
 pub(crate) fn build_mir_unit_with_effect_map(
+    package_id: &str,
     unit: &FileIrUnit,
     per_callable: &CallableEffectMap,
-) -> Result<MirUnit, String> {
+) -> Result<MirUnit, MirBuildError> {
+    if u32::try_from(unit.executables.len()).is_err() {
+        return Err(MirBuildError::ExecutableIndexOverflow {
+            module_path: unit.module_path.clone(),
+        });
+    }
+    if unit.declarations.executables.len() != unit.executables.len() {
+        return Err(MirBuildError::ExecutableCountMismatch {
+            module_path: unit.module_path.clone(),
+            declaration_count: unit.declarations.executables.len(),
+            executable_count: unit.executables.len(),
+        });
+    }
     let mut functions = Vec::with_capacity(unit.declarations.executables.len());
+    let mut executable_owners = BTreeMap::new();
     for (declaration_name, declaration) in &unit.declarations.executables {
+        if let Some(first_declaration) =
+            executable_owners.insert(declaration.executable_index, declaration_name.clone())
+        {
+            return Err(MirBuildError::DuplicateExecutableIndex {
+                module_path: unit.module_path.clone(),
+                executable_index: declaration.executable_index,
+                first_declaration,
+                duplicate_declaration: declaration_name.clone(),
+            });
+        }
+        let expected_symbol = format!("{}.{}", unit.module_path, declaration_name);
+        if declaration.symbol != expected_symbol {
+            return Err(MirBuildError::ExecutableDeclarationSymbolMismatch {
+                module_path: unit.module_path.clone(),
+                declaration_name: declaration_name.clone(),
+                expected_symbol,
+                stored_symbol: declaration.symbol.clone(),
+            });
+        }
         let executable = unit
             .executables
             .get(declaration.executable_index as usize)
-            .ok_or_else(|| {
-                format!(
-                    "MIR build for {module_path}::{declaration_name} references missing executable index {index}",
-                    module_path = unit.module_path,
-                    index = declaration.executable_index
-                )
+            .ok_or_else(|| MirBuildError::MissingExecutable {
+                module_path: unit.module_path.clone(),
+                declaration_name: declaration_name.clone(),
+                executable_index: declaration.executable_index,
             })?;
+        if declaration.symbol != executable.symbol {
+            return Err(MirBuildError::ExecutableSymbolMismatch {
+                module_path: unit.module_path.clone(),
+                declaration_name: declaration_name.clone(),
+                declaration_symbol: declaration.symbol.clone(),
+                executable_symbol: executable.symbol.clone(),
+            });
+        }
         functions.push(build_mir_function(
+            package_id,
             unit,
             declaration_name,
+            declaration.executable_index,
             executable,
             per_callable,
         )?);
     }
-    Ok(MirUnit {
+    let constants = clone_constant_facts(unit)?;
+    let mir = MirUnit {
         module_path: unit.module_path.clone(),
+        external_refs: unit.external_refs.clone(),
+        source_map: unit.source_map.clone(),
+        type_table: unit.type_table.clone(),
+        link_targets: unit.link_targets.clone(),
+        constants,
         functions,
-    })
+    };
+    mir.validate_executable_indices()
+        .and_then(|()| mir.validate_constants())
+        .map_err(|source| MirBuildError::InvalidUnitContract {
+            module_path: unit.module_path.clone(),
+            source,
+        })?;
+    Ok(mir)
 }
 
 fn callable_effect_facts(
     module_path: &str,
     declaration_name: &str,
     per_callable: &CallableEffectMap,
-) -> Result<(bool, String), String> {
+) -> Result<CallableEffectSummary, MirBuildError> {
     let source_key = SourceSymbolKey::new(module_path, declaration_name);
-    per_callable.get(&source_key).cloned().ok_or_else(|| {
-        format!(
-            "MIR build requires source-owned callable effect facts for {source_key} (missing from callable effects)"
-        )
-    })
+    per_callable
+        .get(&source_key)
+        .cloned()
+        .ok_or_else(|| MirBuildError::MissingCallableEffect {
+            module_path: module_path.to_string(),
+            declaration_name: declaration_name.to_string(),
+        })
 }
 
 fn build_mir_function(
+    package_id: &str,
     unit: &FileIrUnit,
     declaration_name: &str,
+    executable_index: u32,
     executable: &ExecutableIr,
     per_callable: &CallableEffectMap,
-) -> Result<MirFunction, String> {
-    let (may_pending, effect_summary_ref) =
-        callable_effect_facts(&unit.module_path, declaration_name, per_callable)?;
-    let mut cfg = FunctionCfg::new(unit, executable);
-    cfg.build_blocks()?;
-    let (blocks, regions, statements) = cfg.finish();
-    Ok(MirFunction {
+) -> Result<MirFunction, MirBuildError> {
+    let effect_summary = callable_effect_facts(&unit.module_path, declaration_name, per_callable)?;
+    let (kind, identity_kind) = match executable.kind {
+        skiff_artifact_model::ExecutableKind::Function => (
+            MirExecutableKind::Function,
+            ImplementationCallableKind::Function,
+        ),
+        skiff_artifact_model::ExecutableKind::ImplMethod => (
+            MirExecutableKind::ImplMethod,
+            ImplementationCallableKind::ImplMethod,
+        ),
+    };
+    let effect_summary_ref = implementation_package_callable_id(
+        package_id,
+        &unit.module_path,
+        &executable.symbol,
+        identity_kind,
+    )
+    .map_err(|source| MirBuildError::CallableIdentity {
+        package_id: package_id.to_string(),
+        module_path: unit.module_path.clone(),
         symbol: executable.symbol.clone(),
-        kind: match executable.kind {
-            skiff_artifact_model::ExecutableKind::Function => MirExecutableKind::Function,
-            skiff_artifact_model::ExecutableKind::ImplMethod => MirExecutableKind::ImplMethod,
-        },
+        source,
+    })?;
+    let expressions = clone_typed_expressions(unit, executable)?;
+    let mut cfg = FunctionCfg::new(unit, executable);
+    cfg.build_blocks()
+        .map_err(|message| MirBuildError::InvalidControlFlow {
+            module_path: unit.module_path.clone(),
+            symbol: executable.symbol.clone(),
+            message,
+        })?;
+    let (blocks, regions, statements) = cfg.finish();
+    let mut function = MirFunction {
+        executable_index,
+        symbol: executable.symbol.clone(),
+        kind,
         type_params: executable.type_params.clone(),
         params: executable
             .params
@@ -148,13 +211,150 @@ fn build_mir_function(
                 ty: slot.ty.clone(),
             })
             .collect(),
+        expressions,
         blocks,
         regions,
         statements,
-        may_pending,
+        liveness: MirLiveness::default(),
         effect_summary_ref,
+        effect_summary,
         source_span: executable.source_span.clone(),
-    })
+    };
+    function.liveness = compute_liveness(&function).map_err(|source| MirBuildError::Liveness {
+        module_path: unit.module_path.clone(),
+        symbol: executable.symbol.clone(),
+        source,
+    })?;
+    Ok(function)
+}
+
+fn clone_typed_expressions(
+    unit: &FileIrUnit,
+    executable: &ExecutableIr,
+) -> Result<Vec<MirExpression>, MirBuildError> {
+    let expression_count = executable.body.expressions.len();
+    let expression_type_count = executable.expression_types.len();
+    if expression_count != expression_type_count {
+        return Err(MirBuildError::ExpressionTypeCountMismatch {
+            module_path: unit.module_path.clone(),
+            symbol: executable.symbol.clone(),
+            expression_count,
+            expression_type_count,
+        });
+    }
+    executable
+        .body
+        .expressions
+        .iter()
+        .cloned()
+        .zip(executable.expression_types.iter().cloned())
+        .enumerate()
+        .map(|(index, (expression, ty))| {
+            let index =
+                u32::try_from(index).map_err(|_| MirBuildError::ExpressionIndexOverflow {
+                    module_path: unit.module_path.clone(),
+                    symbol: executable.symbol.clone(),
+                })?;
+            Ok(MirExpression {
+                index,
+                expression,
+                ty,
+            })
+        })
+        .collect()
+}
+
+fn clone_constant_facts(unit: &FileIrUnit) -> Result<Vec<MirConst>, MirBuildError> {
+    if u32::try_from(unit.constants.len()).is_err() {
+        return Err(MirBuildError::ConstantIndexOverflow {
+            module_path: unit.module_path.clone(),
+        });
+    }
+    if unit.declarations.constants.len() != unit.constants.len() {
+        return Err(MirBuildError::ConstantCountMismatch {
+            module_path: unit.module_path.clone(),
+            declaration_count: unit.declarations.constants.len(),
+            constant_count: unit.constants.len(),
+        });
+    }
+    let mut constants = vec![None; unit.constants.len()];
+    let mut symbols = BTreeSet::new();
+    for (declaration_name, declaration) in &unit.declarations.constants {
+        let constant = unit
+            .constants
+            .get(declaration.const_index as usize)
+            .ok_or_else(|| MirBuildError::ConstantIndexOutOfBounds {
+                module_path: unit.module_path.clone(),
+                declaration_name: declaration_name.clone(),
+                const_index: declaration.const_index,
+                constant_count: unit.constants.len(),
+            })?;
+        let entry = &mut constants[declaration.const_index as usize];
+        if entry.is_some() {
+            return Err(MirBuildError::DuplicateConstantIndex {
+                module_path: unit.module_path.clone(),
+                const_index: declaration.const_index,
+                duplicate_declaration: declaration_name.clone(),
+            });
+        }
+        if constant.name != *declaration_name {
+            return Err(MirBuildError::ConstantNameMismatch {
+                module_path: unit.module_path.clone(),
+                declaration_name: declaration_name.clone(),
+                constant_name: constant.name.clone(),
+                const_index: declaration.const_index,
+            });
+        }
+        let expected_symbol = format!("{}.{}", unit.module_path, constant.name);
+        if declaration.symbol != expected_symbol {
+            return Err(MirBuildError::ConstantSymbolMismatch {
+                module_path: unit.module_path.clone(),
+                declaration_name: declaration_name.clone(),
+                expected_symbol,
+                stored_symbol: declaration.symbol.clone(),
+            });
+        }
+        if !symbols.insert(declaration.symbol.clone()) {
+            return Err(MirBuildError::DuplicateConstantSymbol {
+                module_path: unit.module_path.clone(),
+                symbol: declaration.symbol.clone(),
+            });
+        }
+        if declaration.ty != constant.ty {
+            return Err(MirBuildError::ConstantFactMismatch {
+                module_path: unit.module_path.clone(),
+                declaration_name: declaration_name.clone(),
+                fact: "type",
+            });
+        }
+        if declaration.source_span != constant.source_span {
+            return Err(MirBuildError::ConstantFactMismatch {
+                module_path: unit.module_path.clone(),
+                declaration_name: declaration_name.clone(),
+                fact: "source span",
+            });
+        }
+        *entry = Some(MirConst {
+            index: declaration.const_index,
+            symbol: declaration.symbol.clone(),
+            ty: declaration.ty.clone(),
+            source_span: declaration.source_span.clone(),
+        });
+    }
+    constants
+        .into_iter()
+        .enumerate()
+        .map(|(const_index, constant)| {
+            let const_index =
+                u32::try_from(const_index).map_err(|_| MirBuildError::ConstantIndexOverflow {
+                    module_path: unit.module_path.clone(),
+                })?;
+            constant.ok_or_else(|| MirBuildError::MissingConstantIndex {
+                module_path: unit.module_path.clone(),
+                const_index,
+            })
+        })
+        .collect()
 }
 
 /// Two-pass CFG construction:
