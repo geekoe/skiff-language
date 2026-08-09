@@ -1,13 +1,19 @@
 use super::*;
 
 use skiff_artifact_model::{
-    bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeImage, BytecodePools,
+    bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeFunctionOrigin,
+    BytecodeImage, BytecodePoolEntry, BytecodePools, CallableEffectSummary,
+    CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
     ContractDiagnosticText, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentRevision, FrozenConstantGraph, FrozenConstantNode, LiteralIr,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
-    ServiceProtocolIdentity, ServiceSelectorBinding, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph, FrozenConstantNode, LiteralIr,
+    OperationCallableKind, OperationTargetRef, PackageCallableId, PackageCallableLinkFact,
+    PackageCallableParameter, PackageCallableSignature, PackageExecutableCoordinate,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageTypeRef,
+    ParameterSlotDecl, RelocatableBytecodeFunction, ServiceProtocolIdentity,
+    ServiceSelectorBinding, StatementChargeKind, StatementEntry, TypeRefIr, ValueDropPlan,
+    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
@@ -17,6 +23,8 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
         isa_version: BYTECODE_ISA_VERSION.to_string(),
         opcode_table_fingerprint: opcode_table_fingerprint(),
+        native_value_lifecycle_registry:
+            skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
         bytecode_identity: "unassigned".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::new(),
@@ -27,7 +35,9 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
                 effects: Vec::new(),
                 resume: Vec::new(),
                 callback_capture: Vec::new(),
+                writable_paths: Vec::new(),
             },
+            constant_roots: BTreeMap::new(),
             frozen_constant_graph: FrozenConstantGraph {
                 nodes: vec![FrozenConstantNode::Literal {
                     literal: LiteralIr::String {
@@ -75,6 +85,8 @@ fn package_artifact(
             operation_targets: BTreeMap::new(),
         },
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -109,6 +121,7 @@ fn contract(reference: &ServiceContractRef) -> Arc<ServiceContract> {
         contract_version: reference.contract_version.clone(),
         service_protocol_identity: reference.service_protocol_identity.clone(),
         operations: BTreeMap::new(),
+        public_instances: BTreeMap::new(),
         package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: reference.service_id.clone(),
@@ -160,6 +173,151 @@ fn hydrated_package(
         .unwrap()
 }
 
+fn callable_bytecode(
+    self_bound: bool,
+) -> (
+    Arc<ValidatedBytecodeArtifact>,
+    PackageExecutableCoordinate,
+    PackageCallableId,
+) {
+    let coordinate = PackageExecutableCoordinate {
+        file_ir_identity: "file-ir:manifest".to_string(),
+        module_path: "manifest".to_string(),
+        executable_index: 0,
+    };
+    let callable = PackageCallableId::new("callable:manifest:run");
+    let mut artifact = admitted_bytecode("manifest").artifact().clone();
+    if self_bound {
+        artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
+            ty: TypeRefIr::builtin("string"),
+        });
+    }
+    let plan = ValueTransferPlan::SnapshotShare {
+        drop: ValueDropPlan::Trivial,
+    };
+    artifact.image.functions.insert(
+        "manifest::run".to_string(),
+        RelocatableBytecodeFunction {
+            function_key: "manifest::run".to_string(),
+            origin: BytecodeFunctionOrigin::Executable {
+                executable: coordinate.clone(),
+            },
+            type_parameters: Vec::new(),
+            self_type_ref: self_bound.then_some(0),
+            words: vec![0x14, 0x25],
+            relocations: Vec::new(),
+            call_loan_layouts: Vec::new(),
+            frame_layout: FrameLayout {
+                slot_count: if self_bound { 1 } else { 0 },
+                slot_type_refs: self_bound.then_some(0).into_iter().collect(),
+                parameter_slots: self_bound
+                    .then(|| ParameterSlotDecl {
+                        slot: 0,
+                        mode: skiff_artifact_model::ParamModeIr::Value,
+                        plan: plan.clone(),
+                    })
+                    .into_iter()
+                    .collect(),
+                writable_local_slots: Vec::new(),
+                result_count: 0,
+                result_type_refs: Vec::new(),
+                result_plans: Vec::new(),
+                slot_plans: self_bound.then_some(plan).into_iter().collect(),
+            },
+            max_operand_depth: 0,
+            effect_summary_ref: callable.clone(),
+            exception_regions: Vec::new(),
+            active_regions: Vec::new(),
+            switch_tables: Vec::new(),
+            statement_entries: vec![StatementEntry {
+                pc: 0,
+                statement_id: "manifest:entry".to_string(),
+                charge_kind: StatementChargeKind::FunctionEntry,
+            }],
+            source_map: Vec::new(),
+        },
+    );
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    (
+        Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap()),
+        coordinate,
+        callable,
+    )
+}
+
+fn callable_package(
+    bytecode: &Arc<ValidatedBytecodeArtifact>,
+    coordinate: &PackageExecutableCoordinate,
+    callable: &PackageCallableId,
+    kind: OperationCallableKind,
+) -> Arc<PackageArtifact> {
+    let mut artifact = package_artifact(
+        "example.manifest",
+        "build:manifest",
+        Some(bytecode.reference().clone()),
+    )
+    .as_ref()
+    .clone();
+    let file = FileIrRef::new(
+        coordinate.file_ir_identity.clone(),
+        coordinate.module_path.clone(),
+    );
+    artifact.files = vec![file.clone()];
+    artifact.callable_links.insert(
+        callable.clone(),
+        PackageCallableLinkFact {
+            callable_id: callable.clone(),
+            target: OperationTargetRef {
+                file_ref: file,
+                executable_index: coordinate.executable_index,
+                callable_abi_id: callable.as_str().to_string(),
+                callable_kind: kind,
+            },
+        },
+    );
+    artifact.package_local_abi.implementation_symbols.insert(
+        "manifest.run".to_string(),
+        PackageLocalAbiSymbol::Callable {
+            callable_id: callable.clone(),
+            signature: PackageCallableSignature {
+                type_params: Vec::new(),
+                parameters: self_bound_parameters(kind),
+                return_type: PackageTypeRef::Local {
+                    local_type: TypeRefIr::builtin("void"),
+                },
+                may_suspend: false,
+            },
+        },
+    );
+    artifact.callable_semantic_facts.insert(
+        callable.clone(),
+        CallableSemanticFacts {
+            effects: CallableEffectSummary::analysis_pending(),
+            provenance: CallableProvenanceSummary::Unknown {
+                reason: CallableProvenanceUnknownReason::AnalysisPending,
+            },
+            resolved_call_targets: BTreeMap::new(),
+        },
+    );
+    Arc::new(artifact)
+}
+
+fn self_bound_parameters(kind: OperationCallableKind) -> Vec<PackageCallableParameter> {
+    matches!(
+        kind,
+        OperationCallableKind::ReceiverMethod | OperationCallableKind::ImplMethod
+    )
+    .then(|| PackageCallableParameter {
+        name: "self".to_string(),
+        ty: PackageTypeRef::Local {
+            local_type: TypeRefIr::builtin("string"),
+        },
+        mode: skiff_artifact_model::ParamModeIr::Value,
+    })
+    .into_iter()
+    .collect()
+}
+
 #[test]
 fn package_checked_constructor_admits_only_exact_token_and_exposes_opaque_getters() {
     let bytecode = admitted_bytecode("exact");
@@ -179,6 +337,94 @@ fn package_checked_constructor_admits_only_exact_token_and_exposes_opaque_getter
     assert_eq!(hydrated.reference(), &reference);
     assert!(Arc::ptr_eq(hydrated.artifact(), &artifact));
     assert!(Arc::ptr_eq(hydrated.bytecode(), &bytecode));
+}
+
+#[test]
+fn package_checked_constructor_joins_v4_callable_origin_and_self_manifests() {
+    let (bytecode, coordinate, callable) = callable_bytecode(true);
+    let artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &callable,
+        OperationCallableKind::ImplMethod,
+    );
+    let hydrated =
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode).unwrap();
+
+    assert_eq!(
+        hydrated.function_key_for_executable(&coordinate),
+        Some("manifest::run")
+    );
+    assert_eq!(
+        hydrated.function_key_for_callable(&callable),
+        Some("manifest::run")
+    );
+}
+
+#[test]
+fn package_checked_constructor_rejects_path_free_manifest_gaps_fail_closed() {
+    let (bytecode, coordinate, callable) = callable_bytecode(true);
+    let mut missing_owner = callable_package(
+        &bytecode,
+        &coordinate,
+        &callable,
+        OperationCallableKind::ImplMethod,
+    )
+    .as_ref()
+    .clone();
+    missing_owner.files.clear();
+    let missing_owner = Arc::new(missing_owner);
+    assert!(matches!(
+        HydratedBytecodePackage::checked(
+            package_reference(&missing_owner),
+            missing_owner,
+            Arc::clone(&bytecode)
+        ),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::FunctionOrigin,
+            ..
+        })
+    ));
+
+    let wrong_self = callable_package(
+        &bytecode,
+        &coordinate,
+        &callable,
+        OperationCallableKind::PublicFunction,
+    );
+    assert!(matches!(
+        HydratedBytecodePackage::checked(
+            package_reference(&wrong_self),
+            wrong_self,
+            Arc::clone(&bytecode)
+        ),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::SelfType,
+            ..
+        })
+    ));
+
+    let mut missing_facts = callable_package(
+        &bytecode,
+        &coordinate,
+        &callable,
+        OperationCallableKind::ImplMethod,
+    )
+    .as_ref()
+    .clone();
+    missing_facts.callable_semantic_facts.clear();
+    let missing_facts = Arc::new(missing_facts);
+    assert!(matches!(
+        HydratedBytecodePackage::checked(
+            package_reference(&missing_facts),
+            missing_facts,
+            bytecode
+        ),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::Callable,
+            ..
+        })
+    ));
 }
 
 #[test]

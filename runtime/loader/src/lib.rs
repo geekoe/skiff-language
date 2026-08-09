@@ -10,8 +10,8 @@ pub use deployment::{
 };
 pub use deployment_bytecode::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeHydrationError, DeploymentBytecodeLoader,
-    DeploymentBytecodeReference, HydratedBytecodePackage, HydratedDeploymentBytecode,
-    HydratedServiceDependency,
+    DeploymentBytecodeManifestKind, DeploymentBytecodeReference, HydratedBytecodePackage,
+    HydratedDeploymentBytecode, HydratedServiceDependency,
 };
 pub use filesystem_resolver::FilesystemRuntimeAssemblyContentResolver;
 pub use runtime_assembly::{

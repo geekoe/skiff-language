@@ -7,17 +7,38 @@ use std::{
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     BytecodeArtifactRef, ContractOperationId, PackageArtifact, PackageArtifactRef, PackageBinding,
-    PackageBuildId, PackageRequirement, PackageRequirementKey, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentRef, ServiceRequirementKey,
+    PackageBuildId, PackageCallableId, PackageExecutableCoordinate, PackageRequirement,
+    PackageRequirementKey, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceRequirementKey,
 };
 
-use crate::runtime_assembly::RuntimeAssemblyContentResolver;
+mod manifests;
+
+use manifests::{validate_deployment_manifests, HydratedPackageManifests};
 
 /// Exact content boundary for consumer deployment bytecode hydration.
 ///
-/// The bytecode method returns the opaque C1-C9 admission token. Raw
-/// `BytecodeArtifact` content is never exposed to the loader or its callers.
-pub trait DeploymentBytecodeContentResolver: RuntimeAssemblyContentResolver {
+/// Every method is intentionally repeated on this narrow capability instead
+/// of inheriting [`crate::RuntimeAssemblyContentResolver`]. The bytecode lane
+/// cannot name, resolve or accidentally reopen File IR, schemas or resources.
+/// Raw `BytecodeArtifact` content is never accepted; package bytecode crosses
+/// the boundary only as its opaque C1-C9 admission token.
+pub trait DeploymentBytecodeContentResolver {
+    fn resolve_deployment(
+        &self,
+        reference: &ServiceDeploymentRef,
+    ) -> anyhow::Result<Arc<ServiceDeployment>>;
+
+    fn resolve_contract(
+        &self,
+        reference: &ServiceContractRef,
+    ) -> anyhow::Result<Arc<ServiceContract>>;
+
+    fn resolve_package(
+        &self,
+        reference: &PackageArtifactRef,
+    ) -> anyhow::Result<Arc<PackageArtifact>>;
+
     fn resolve_package_bytecode(
         &self,
         package: &PackageArtifactRef,
@@ -37,6 +58,23 @@ pub enum DeploymentBytecodeReference {
     },
 }
 
+/// Exact cross-record authority that failed while admitting a self-contained
+/// bytecode package. The category remains typed while `detail` on the error
+/// carries the concrete row/identity diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeploymentBytecodeManifestKind {
+    Header,
+    FunctionOrigin,
+    SelfType,
+    Callable,
+    Actor,
+    InterfaceConformance,
+    ConstantRoot,
+    PackageReference,
+    ServiceOperation,
+    RemoteInterface,
+}
+
 /// Fail-closed categories produced while hydrating exact deployment bytecode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeploymentBytecodeHydrationError {
@@ -47,6 +85,11 @@ pub enum DeploymentBytecodeHydrationError {
     InvalidContent {
         reference: Box<DeploymentBytecodeReference>,
         message: String,
+    },
+    ManifestMismatch {
+        package: Box<PackageArtifactRef>,
+        kind: DeploymentBytecodeManifestKind,
+        detail: String,
     },
     MissingBytecode {
         package: Box<PackageArtifactRef>,
@@ -108,6 +151,15 @@ impl fmt::Display for DeploymentBytecodeHydrationError {
             Self::InvalidContent { reference, message } => {
                 write!(formatter, "invalid content for {reference:?}: {message}")
             }
+            Self::ManifestMismatch {
+                package,
+                kind,
+                detail,
+            } => write!(
+                formatter,
+                "package {} has an invalid {kind:?} bytecode manifest: {detail}",
+                package.package_build_id
+            ),
             Self::MissingBytecode { package } => write!(
                 formatter,
                 "package {} has no bytecode artifact reference",
@@ -189,6 +241,7 @@ pub struct HydratedBytecodePackage {
     reference: PackageArtifactRef,
     artifact: Arc<PackageArtifact>,
     bytecode: Arc<ValidatedBytecodeArtifact>,
+    manifests: HydratedPackageManifests,
 }
 
 impl HydratedBytecodePackage {
@@ -221,10 +274,12 @@ impl HydratedBytecodePackage {
                 }),
             });
         }
+        let manifests = HydratedPackageManifests::checked(&reference, &artifact, &bytecode)?;
         Ok(Self {
             reference,
             artifact,
             bytecode,
+            manifests,
         })
     }
 
@@ -238,6 +293,21 @@ impl HydratedBytecodePackage {
 
     pub fn bytecode(&self) -> &Arc<ValidatedBytecodeArtifact> {
         &self.bytecode
+    }
+
+    /// Returns the admitted artifact function key for one exact path-free
+    /// executable coordinate.
+    pub fn function_key_for_executable(
+        &self,
+        executable: &PackageExecutableCoordinate,
+    ) -> Option<&str> {
+        self.manifests.function_key_for_executable(executable)
+    }
+
+    /// Returns the admitted artifact function key selected by one exact
+    /// package callable manifest row.
+    pub fn function_key_for_callable(&self, callable: &PackageCallableId) -> Option<&str> {
+        self.manifests.function_key_for_callable(callable)
     }
 }
 
@@ -310,6 +380,12 @@ impl HydratedDeploymentBytecode {
         let service_dependencies =
             canonical_service_dependencies(&deployment, service_dependencies)?;
         validate_required_contracts(&deployment, &contract_store, &service_dependencies)?;
+        validate_deployment_manifests(
+            &deployment,
+            &contract_store,
+            &service_dependencies,
+            &packages,
+        )?;
         Ok(Self {
             reference,
             deployment,

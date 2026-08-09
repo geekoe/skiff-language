@@ -250,6 +250,7 @@ impl Fixture {
             contract_version: contract_version.to_string(),
             service_protocol_identity: ServiceProtocolIdentity::new("unassigned"),
             operations: BTreeMap::from([(operation_id.clone(), descriptor)]),
+            public_instances: BTreeMap::new(),
             package_type_requirements: Vec::new(),
             diagnostic_text: ContractDiagnosticText {
                 service: "Health".to_string(),
@@ -368,6 +369,8 @@ impl Fixture {
                     target,
                 },
             )]),
+            actor_implementations: Vec::new(),
+            local_interface_conformances: Vec::new(),
             package_requirements: Vec::new(),
             contract_requirements: Vec::new(),
             service_requirements: Vec::new(),
