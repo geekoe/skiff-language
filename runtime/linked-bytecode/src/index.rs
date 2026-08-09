@@ -40,6 +40,6 @@ image_index!(SyntheticCallbackIndex);
 image_index!(HostEffectAdapterIndex);
 image_index!(ResumeSiteIndex);
 
-/// Function-local frame slot index. It is kept distinct from every image
-/// table index for the same reason as the image-local indices above.
+// Function-local frame slot index. It is kept distinct from every image
+// table index for the same reason as the image-local indices above.
 image_index!(FrameSlotIndex);
