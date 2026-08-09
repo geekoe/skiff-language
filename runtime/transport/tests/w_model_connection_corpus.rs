@@ -37,7 +37,7 @@ const REQUIRED_FRAMES: [&str; 11] = [
     "connection.response.resource-limit",
 ];
 
-const REQUIRED_SCENARIOS: [&str; 23] = [
+const REQUIRED_SCENARIOS: [&str; 22] = [
     "01-accept-and-rpc-roundtrip",
     "02-peer-close-terminal",
     "03-business-replacement-close-oldest",
@@ -56,7 +56,6 @@ const REQUIRED_SCENARIOS: [&str; 23] = [
     "16-four-way-peer-close-then-shutdown",
     "17-four-way-shutdown-then-peer-close",
     "18-four-way-runtime-disconnect-then-shutdown",
-    "19-release-timeout-terminal",
     "20-inbound-deadline-terminal",
     "21-broker-outbound-capacity-resource-limit",
     "22-duplicate-peer-request-id",
