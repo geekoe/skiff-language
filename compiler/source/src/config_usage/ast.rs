@@ -470,7 +470,7 @@ fn collect_config_uses_in_expr(
                 diagnostic_path,
                 source_path,
                 callee,
-                expr_spans.map(|spans| ConfigSourceSpan::from(spans.span)),
+                child_span(expr_spans, 0),
                 const_strings,
                 uses,
                 presence_uses,
