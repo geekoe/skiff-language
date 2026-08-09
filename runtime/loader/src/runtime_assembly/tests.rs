@@ -635,6 +635,7 @@ impl Fixture {
             type_params: Vec::new(),
             parameters: vec![PackageCallableParameter {
                 name: "body".to_string(),
+                mode: skiff_artifact_model::ParamModeIr::Value,
                 ty: PackageTypeRef::Local {
                     local_type: TypeRefIr::builtin("string"),
                 },
