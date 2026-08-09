@@ -276,6 +276,36 @@ impl Fixture {
             statement_spans: Vec::new(),
             source_span: None,
         });
+        for symbol in ["gateway_handler", "gateway_pre", "gateway_guard"] {
+            file.executables.push(ExecutableIr {
+                kind: ExecutableKind::Function,
+                symbol: symbol.to_string(),
+                type_params: Vec::new(),
+                params: vec![skiff_artifact_model::ParamIr {
+                    name: "body".to_string(),
+                    slot: 0,
+                    ty: TypeRefIr::builtin("string"),
+                    mode: skiff_artifact_model::ParamModeIr::Value,
+                }],
+                return_type: TypeRefIr::builtin("string"),
+                self_type: None,
+                slots: SlotLayout {
+                    slots: vec![skiff_artifact_model::SlotIr {
+                        index: 0,
+                        name: "body".to_string(),
+                        kind: skiff_artifact_model::SlotKind::Param,
+                        writable_local: false,
+                        ty: Some(TypeRefIr::builtin("string")),
+                    }],
+                    frame_size: 1,
+                },
+                may_suspend: false,
+                body: ExecutableBody::default(),
+                expression_types: Vec::new(),
+                statement_spans: Vec::new(),
+                source_span: None,
+            });
+        }
         skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
         let file_ref = FileIrRef {
             file_ir_identity: file.file_ir_identity.clone(),
@@ -369,6 +399,8 @@ impl Fixture {
                     target,
                 },
             )]),
+            synthetic_callback_owners: Vec::new(),
+            bytecode_schema_records: BTreeMap::new(),
             actor_implementations: Vec::new(),
             local_interface_conformances: Vec::new(),
             package_requirements: Vec::new(),
@@ -661,6 +693,18 @@ impl Fixture {
         let mut target = self.package.callable_links[&self.callable_id]
             .target
             .clone();
+        let symbol = path
+            .rsplit('.')
+            .next()
+            .expect("gateway callable path has a declaration");
+        target.executable_index = u32::try_from(
+            self.file
+                .executables
+                .iter()
+                .position(|executable| executable.symbol == symbol)
+                .expect("gateway callable has an exact File IR executable"),
+        )
+        .expect("gateway fixture executable count fits u32");
         target.callable_abi_id = callable_id.to_string();
         target.callable_kind = skiff_artifact_model::OperationCallableKind::InternalFunction;
         self.package.callable_links.insert(
