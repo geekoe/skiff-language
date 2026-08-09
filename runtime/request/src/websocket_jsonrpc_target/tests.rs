@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     GatewayAdapterArg, GatewayDispatchMode, GatewayExternalErrorProjection, GatewayExternalSchema,
-    GatewayWebSocketJsonRpcProtocolSurface, PackageCallableParameter, PackageTypeRef, TypeRefIr,
+    GatewayWebSocketJsonRpcProtocolSurface, PackageCallableParameter, PackageTypeRef, ParamModeIr,
+    TypeRefIr,
 };
 
 fn surface() -> GatewayEntryProtocolSurface {
@@ -32,6 +33,7 @@ fn signature(parameter: &str) -> PackageCallableSignature {
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
             },
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("void"),

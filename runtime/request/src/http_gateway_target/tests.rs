@@ -2,7 +2,7 @@ use skiff_artifact_model::{
     DeploymentRevision, GatewayAdapterArg, GatewayExternalErrorProjection, GatewayExternalSchema,
     GatewayHttpProtocolSurface, GatewayWebSocketConnectProtocolSurface,
     GatewayWebSocketDownlinkFrame, GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion,
-    PackageCallableParameter, PackageTypeRef, TypeRefIr,
+    PackageCallableParameter, PackageTypeRef, ParamModeIr, TypeRefIr,
 };
 
 use super::*;
@@ -185,6 +185,7 @@ fn unary_signature(parameter: &str) -> PackageCallableSignature {
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
             },
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("string"),
