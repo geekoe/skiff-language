@@ -25,6 +25,7 @@ members = [
   "runtime",
   "runtime/activation",
   "runtime/boundary",
+  "runtime/bytecode-verifier",
   "runtime/capability-context",
   "runtime/deployment-image",
   "runtime/eval",

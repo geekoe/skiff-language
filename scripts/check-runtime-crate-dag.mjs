@@ -37,6 +37,7 @@ const runtimeDag = new Map([
       'skiff-runtime-model',
     ],
   ],
+  ['skiff-runtime-bytecode-verifier', ['skiff-runtime-linked-bytecode']],
   ['skiff-runtime-config-snapshot', []],
   ['skiff-runtime-deployment-image', []],
   ['skiff-runtime-linked-bytecode', []],
@@ -138,6 +139,7 @@ const runtimeDag = new Map([
 const expectedPromotedRuntimePackages = new Set([
   'skiff-runtime-activation',
   'skiff-runtime-boundary',
+  'skiff-runtime-bytecode-verifier',
   'skiff-runtime-capability-context',
   'skiff-runtime-config-snapshot',
   'skiff-runtime-deployment-image',

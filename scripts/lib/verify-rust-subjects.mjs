@@ -39,6 +39,7 @@ const rustImplementationSubjects = [
       rustPackage('runtime', 'runtime'),
       rustPackage('runtime/activation', 'skiff-runtime-activation'),
       rustPackage('runtime/boundary', 'skiff-runtime-boundary'),
+      rustPackage('runtime/bytecode-verifier', 'skiff-runtime-bytecode-verifier'),
       rustPackage('runtime/capability-context', 'skiff-runtime-capability-context'),
       rustPackage('runtime/deployment-image', 'skiff-runtime-deployment-image'),
       rustPackage('runtime/eval', 'skiff-runtime-eval'),
