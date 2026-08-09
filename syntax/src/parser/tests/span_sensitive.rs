@@ -122,7 +122,7 @@ fn index_source_spans_visit_object_before_selector() {
     let source = r#"function read(
   items: Array<number>,
   selectors: Map<string, integer>,
-  key: string,
+  key: string
 ) -> number {
   return items[selectors[key]].value
 }

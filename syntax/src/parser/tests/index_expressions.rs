@@ -24,7 +24,7 @@ function read(
   matrix: Array<Array<number>>,
   values: Map<string, number>,
   position: integer,
-  key: string,
+  key: string
 ) -> number {
   let item = items[position]
   let mapped = values[key]
