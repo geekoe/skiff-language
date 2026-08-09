@@ -149,6 +149,7 @@ pub(super) fn project_package_artifact_facts(
         package_build_id: PackageBuildId::new("unassigned"),
         files: file_ir_refs_from_units(&input.file_ir_units),
         static_resources: resource_refs_from_projected(&input.resources),
+        bytecode: None,
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: callables.public_symbols,
@@ -176,6 +177,8 @@ pub(super) fn project_package_artifact_facts(
             .collect(),
         implementation_links: callables.implementation_links,
         callable_links: callables.callable_links,
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: callables.actor_implementations,
         local_interface_conformances: callables.local_interface_conformances,
         package_requirements: std::mem::take(&mut input.package_requirements),
@@ -185,7 +188,6 @@ pub(super) fn project_package_artifact_facts(
         callable_semantic_facts: callables.semantic_facts,
         boundary_projections: callables.boundary_projections,
         service_call_refs: std::mem::take(&mut input.service_call_refs),
-        bytecode: None,
     };
     normalize_artifact_lists(&mut artifact);
     assign_package_artifact_identities(&mut artifact).map_err(|error| {
