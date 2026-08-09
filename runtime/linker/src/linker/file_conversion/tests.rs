@@ -115,6 +115,7 @@ fn artifact_call(
         target,
         site,
         args: Vec::new(),
+        inout_args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
     }
@@ -536,6 +537,8 @@ fn actor_file_with_method() -> artifact::FileIrUnit {
             }],
             ..artifact::ExecutableBody::default()
         },
+        expression_types: vec![artifact::TypeRefIr::builtin("number")],
+        statement_spans: Vec::new(),
         source_span: None,
     });
     file.actor_declarations[0]
@@ -622,6 +625,7 @@ fn linked_file_conversion_rejects_actor_self_field_type_forgery() {
         field: "nextSeq".to_string(),
         field_type: artifact::TypeRefIr::builtin("string"),
     };
+    file.executables[0].expression_types[0] = artifact::TypeRefIr::builtin("string");
     assert!(linked_file_unit_from_assembly_artifact(
         &file,
         &|_| unreachable!(),
@@ -666,6 +670,7 @@ fn linked_call_preserves_actor_dispatch_identities_without_executable_address() 
             reason: artifact::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
         },
         args: Vec::new(),
+        inout_args: Vec::new(),
         type_args: std::collections::BTreeMap::new(),
         metadata: std::collections::BTreeMap::new(),
     };

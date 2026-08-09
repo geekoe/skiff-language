@@ -17,12 +17,13 @@ use skiff_artifact_model::{
     PackageCallableSignature, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
     PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    PackageTypeRef, ParamIr, PublicationResourceRef, RuntimeAssembly, ServiceBindingTemplate,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceProtocolIdentity, ServiceSymbolRef, SlotLayout, SyntheticInstructionSiteReason,
-    TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr,
-    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    PackageTypeRef, ParamIr, ParamModeIr, PublicationResourceRef, RuntimeAssembly,
+    ServiceBindingTemplate, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceProtocolIdentity, ServiceSymbolRef, SlotLayout,
+    SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport,
+    TypeRefIr, ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    RUNTIME_ASSEMBLY_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_program::{FileAddr, LinkedCallTarget, LinkedExprIr, UnitAddr};
 use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
@@ -176,12 +177,15 @@ fn provider_package_with_actor(
             name: "self".to_string(),
             slot: 0,
             ty: actor_type_ref(),
+            mode: ParamModeIr::Value,
         }],
         return_type: TypeRefIr::builtin("string"),
         self_type: Some(actor_type_ref()),
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     let abi = include_actor.then(actor_abi);
@@ -316,6 +320,7 @@ fn provider_package_with_actor(
                             name: "self".to_string(),
                             slot: 0,
                             ty: actor_type_ref(),
+                            mode: ParamModeIr::Value,
                         }],
                         return_type: TypeRefIr::builtin("string"),
                         self_type: None,
@@ -367,6 +372,8 @@ fn consumer_file(read_callable: &PackageCallableId) -> FileIrUnit {
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     file.external_refs
@@ -394,6 +401,7 @@ fn consumer_file(read_callable: &PackageCallableId) -> FileIrUnit {
             },
             site: test_site(),
             args: vec![ExprRefIr { expression: 0 }],
+            inout_args: Vec::new(),
             type_args: BTreeMap::from([
                 ("T0".to_string(), actor_type_ref()),
                 ("T1".to_string(), TypeRefIr::builtin("string")),
@@ -411,10 +419,16 @@ fn consumer_file(read_callable: &PackageCallableId) -> FileIrUnit {
             },
             site: test_site(),
             args: vec![ExprRefIr { expression: 1 }],
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },
     });
+    file.executables[0].expression_types = vec![
+        TypeRefIr::builtin("string"),
+        actor_type_ref(),
+        TypeRefIr::builtin("string"),
+    ];
     skiff_artifact_identity::assign_file_ir_identity(&mut file).unwrap();
     file
 }

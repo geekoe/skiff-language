@@ -845,6 +845,9 @@ fn attach_local_db_target(file: &mut FileIrUnit, include_attachment: bool) {
                 source_span: None,
             },
         });
+    file.executables[0]
+        .expression_types
+        .push(skiff_artifact_model::TypeRefIr::builtin("number"));
 }
 
 fn attach_second_local_db_object(file: &mut FileIrUnit) {
@@ -953,6 +956,12 @@ fn attach_package_db_target_carriers(file: &mut FileIrUnit, abi_expectation: &st
             },
         },
     ]);
+    file.executables[0].expression_types.extend([
+        skiff_artifact_model::TypeRefIr::builtin("number"),
+        skiff_artifact_model::TypeRefIr::builtin("number"),
+        skiff_artifact_model::TypeRefIr::builtin("bool"),
+        skiff_artifact_model::TypeRefIr::builtin("bool"),
+    ]);
 }
 
 fn linked_call(
@@ -1011,6 +1020,9 @@ fn assembly_code_linker_links_required_catch_applied_nominal_exactly() {
             },
             body: ExprRefIr { expression: 0 },
         });
+        file.executables[0]
+            .expression_types
+            .push(TypeRefIr::builtin("bool"));
     })
     .expect("required catch type should link");
 
@@ -1110,10 +1122,14 @@ fn assembly_execution_call_validation_rejects_identity_valid_native_tamper() {
                 },
                 site: test_instruction_site(),
                 args: vec![ExprRefIr { expression: 0 }],
+                inout_args: Vec::new(),
                 type_args: BTreeMap::from([("T0".to_string(), TypeRefIr::builtin("Json"))]),
                 metadata: BTreeMap::new(),
             },
         });
+        file.executables[0]
+            .expression_types
+            .push(TypeRefIr::builtin("unknown"));
     })
     .expect_err("identity-valid malformed native call must fail before image creation");
 
@@ -1165,16 +1181,14 @@ fn append_actor_registry_call(
             create_implementation: None,
         });
     }
-    let mut type_args = BTreeMap::from([
-        (
-            "T0".to_string(),
-            TypeRefIr::ServiceSymbol {
-                symbol: ServiceSymbolRef {
-                    module_path: file.module_path.clone(),
-                    symbol: "DocHub".to_string(),
-                },
-            },
-        ),
+    let actor_result_type = TypeRefIr::ServiceSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: file.module_path.clone(),
+            symbol: "DocHub".to_string(),
+        },
+    };
+    let type_args = BTreeMap::from([
+        ("T0".to_string(), actor_result_type.clone()),
         ("T1".to_string(), actor_id_type),
     ]);
     file.executables[0].body.expressions.push(ExprIr::Call {
@@ -1192,10 +1206,12 @@ fn append_actor_registry_call(
             },
             site: test_instruction_site(),
             args: vec![ExprRefIr { expression: 0 }],
+            inout_args: Vec::new(),
             type_args,
             metadata: BTreeMap::new(),
         },
     });
+    file.executables[0].expression_types.push(actor_result_type);
 }
 
 #[test]
@@ -1253,6 +1269,12 @@ fn assembly_execution_defers_actor_metadata_for_generic_native_declaration() {
                 name: "ActorType".to_string(),
             },
         );
+        *file.executables[0]
+            .expression_types
+            .last_mut()
+            .expect("Actor call type") = TypeRefIr::TypeParam {
+            name: "ActorType".to_string(),
+        };
     })
     .expect("generic Actor native declaration should defer concrete owner resolution");
     let LinkedExprIr::Call { call } = image.execution_packages()[0].files()[0].executables[0]
@@ -1371,10 +1393,14 @@ fn assembly_execution_call_validation_rejects_identity_valid_interface_tamper() 
                 },
                 site: test_instruction_site(),
                 args: Vec::new(),
+                inout_args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },
         });
+        file.executables[0]
+            .expression_types
+            .push(TypeRefIr::builtin("string"));
     })
     .expect_err("identity-valid malformed interface call must fail before image creation");
 

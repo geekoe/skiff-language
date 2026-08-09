@@ -354,6 +354,7 @@ mod task_route_tests {
                             reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                         },
                         args: Vec::new(),
+                        inout_args: Vec::new(),
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::from([(
                             "dispatchSubmit".to_string(),
@@ -371,6 +372,8 @@ mod task_route_tests {
                     },
                 }],
             },
+            expression_types: vec![skiff_artifact_model::TypeRefIr::builtin("null")],
+            statement_spans: vec![None, None],
             source_span: None,
         }
     }
@@ -386,6 +389,8 @@ mod task_route_tests {
             slots: SlotLayout::default(),
             may_suspend: false,
             body: ExecutableBody::default(),
+            expression_types: Vec::new(),
+            statement_spans: Vec::new(),
             source_span: None,
         }
     }

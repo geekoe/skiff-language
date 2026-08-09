@@ -307,6 +307,7 @@ impl CycleFixture {
                     },
                     site: test_instruction_site(),
                     args: Vec::new(),
+                    inout_args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
                 },
@@ -321,6 +322,8 @@ impl CycleFixture {
             slots: SlotLayout::default(),
             may_suspend: false,
             body: ExecutableBody::default(),
+            expression_types: Vec::new(),
+            statement_spans: Vec::new(),
             source_span: None,
         });
         shared_file.executables[0]
@@ -333,6 +336,7 @@ impl CycleFixture {
                     },
                     site: test_instruction_site(),
                     args: Vec::new(),
+                    inout_args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
                 },
@@ -347,6 +351,7 @@ impl CycleFixture {
                     },
                     site: test_instruction_site(),
                     args: Vec::new(),
+                    inout_args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
                 },
@@ -404,10 +409,12 @@ impl CycleFixture {
                     },
                     site: test_instruction_site(),
                     args: vec![ExprRefIr { expression: 1 }],
+                    inout_args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
                 },
             });
+        shared_file.executables[0].expression_types = vec![TypeRefIr::builtin("bool"); 4];
         skiff_artifact_identity::assign_file_ir_identity(&mut shared_file).unwrap();
         let contract_requirement = ContractRequirement {
             alias: "cycle".to_string(),
@@ -1397,6 +1404,8 @@ fn file(module_path: &str) -> FileIrUnit {
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     file
@@ -1458,6 +1467,9 @@ fn attach_local_db_declaration(file: &mut FileIrUnit, include_target: bool) {
                     source_span: None,
                 },
             });
+        file.executables[0]
+            .expression_types
+            .push(TypeRefIr::builtin("number"));
     }
 }
 
