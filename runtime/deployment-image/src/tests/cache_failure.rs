@@ -141,6 +141,7 @@ async fn spoofed_owner_conflicts_without_joining_or_publishing() {
     let second_conflict =
         conflicting_load(&cache, spoofed_owner.clone(), Arc::clone(&spoofed_loads)).await;
     assert_eq!(first_conflict, second_conflict);
+    assert_eq!(first_conflict.clone(), first_conflict);
     assert_eq!(first_conflict.existing(), &expected_owner);
     assert_eq!(first_conflict.requested(), &spoofed_owner);
     assert_eq!(spoofed_loads.load(Ordering::SeqCst), 0);

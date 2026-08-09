@@ -134,8 +134,8 @@ where
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeploymentOwnerConflict {
     build_id: DeploymentArtifactIdentity,
-    existing: DeploymentOwnerIdentity,
-    requested: DeploymentOwnerIdentity,
+    existing: Box<DeploymentOwnerIdentity>,
+    requested: Box<DeploymentOwnerIdentity>,
 }
 
 impl DeploymentOwnerConflict {
@@ -144,11 +144,11 @@ impl DeploymentOwnerConflict {
     }
 
     pub fn existing(&self) -> &DeploymentOwnerIdentity {
-        &self.existing
+        self.existing.as_ref()
     }
 
     pub fn requested(&self) -> &DeploymentOwnerIdentity {
-        &self.requested
+        self.requested.as_ref()
     }
 
     pub(crate) fn new(
@@ -158,8 +158,8 @@ impl DeploymentOwnerConflict {
     ) -> Self {
         Self {
             build_id,
-            existing,
-            requested,
+            existing: Box::new(existing),
+            requested: Box::new(requested),
         }
     }
 }
