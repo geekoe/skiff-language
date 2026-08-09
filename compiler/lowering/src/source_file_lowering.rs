@@ -116,23 +116,7 @@ pub(crate) fn compile_package_source_file_ir_unit_with_mir_facts(
 ) -> Result<(FileIrUnit, MirSourceFacts)> {
     validate_file_ir_unit_role(input.role)?;
     let source_ast_hash = source_ast_hash(input.source)?;
-    lower_source_file_ir_unit(
-        input.semantic_context,
-        source_ast_hash,
-        input.package_aliases,
-        input.package_interface_methods,
-        input.resolved_call_targets,
-        input.external_type_symbols,
-        input.publication_db_metadata,
-        input.source_alias_targets,
-        input.type_resolution,
-        input.expression_types,
-        input.execution_semantics,
-        input.callable_return_types,
-        input.executable_signatures,
-        input.interface_signatures,
-        input.service_calls,
-    )
+    lower_source_file_ir_unit(input, source_ast_hash)
 }
 
 fn compile_parsed_source_file_ir_unit_with_lowering_context(
@@ -380,22 +364,27 @@ fn validate_file_ir_unit_role(role: &str) -> Result<()> {
 }
 
 fn lower_source_file_ir_unit(
-    semantic_context: &SourceSemanticContext<'_, '_>,
+    input: PackageSourceLoweringInput<'_, '_, '_>,
     source_ast_hash: String,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    package_interface_methods: &PackageInterfaceMethodIndex,
-    resolved_call_targets: &ResolvedCallTargetFacts,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    source_alias_targets: &BTreeMap<String, String>,
-    type_resolution: &TypeResolutionModel,
-    expression_types: Option<&ExpressionTypeModel>,
-    execution_semantics: Option<&SourceExecutionSemantics>,
-    callable_return_types: &BTreeMap<String, CallableReturnType>,
-    exact_executable_signatures: &SourceExecutableSignatureFacts,
-    exact_interface_signatures: Option<&SourceInterfaceSignatureFacts>,
-    service_calls: Option<&LoweredServiceCalls>,
 ) -> Result<(FileIrUnit, MirSourceFacts)> {
+    let PackageSourceLoweringInput {
+        source: _,
+        role: _,
+        package_aliases,
+        package_interface_methods,
+        resolved_call_targets,
+        external_type_symbols,
+        publication_db_metadata,
+        semantic_context,
+        source_alias_targets,
+        type_resolution,
+        expression_types,
+        execution_semantics,
+        callable_return_types,
+        executable_signatures: exact_executable_signatures,
+        interface_signatures: exact_interface_signatures,
+        service_calls,
+    } = input;
     let source = semantic_context.source;
     let ast = source.ast;
     let source_path = source.source_path.as_ref().to_string();
@@ -655,6 +644,14 @@ fn lower_actor_declarations(
     source_alias_targets: &BTreeMap<String, String>,
     unit: &mut FileIrUnit,
 ) -> Result<()> {
+    let type_environment = crate::type_lowering::TypeLoweringEnvironment::new(
+        type_indices,
+        local_db_objects,
+        publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        source_alias_targets,
+    );
     for actor in &ast.actors {
         let attached_type = ast
             .types
@@ -674,12 +671,7 @@ fn lower_actor_declarations(
                     name: field.name.clone(),
                     ty: crate::type_lowering::lower_type_ref(
                         &field.ty,
-                        type_indices,
-                        local_db_objects,
-                        publication_db_metadata,
-                        package_aliases,
-                        external_type_symbols,
-                        source_alias_targets,
+                        type_environment,
                         crate::type_lowering::TypeLoweringContext::value(),
                     )?,
                     encoding: ActorFieldEncodingIr::CanonicalValueV1,
@@ -834,12 +826,7 @@ fn lower_actor_declarations(
                                     name: param.name.clone(),
                                     ty: crate::type_lowering::lower_type_ref(
                                         &param.ty,
-                                        type_indices,
-                                        local_db_objects,
-                                        publication_db_metadata,
-                                        package_aliases,
-                                        external_type_symbols,
-                                        source_alias_targets,
+                                        type_environment,
                                         crate::type_lowering::TypeLoweringContext::value(),
                                     )?,
                                 })

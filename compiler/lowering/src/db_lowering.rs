@@ -36,7 +36,7 @@ use super::{
     source_unit_lowering::{push_source_span, source_span_ref},
     type_lowering::{
         db_object_type_ref, lower_type_ref, lower_type_text, type_ref_ir_type_text,
-        TypeLoweringContext,
+        TypeLoweringContext, TypeLoweringEnvironment,
     },
 };
 
@@ -210,19 +210,23 @@ fn lower_publication_db_metadata(
     });
     let empty_local_db_objects = LocalDbObjectIndex::default();
     let empty_publication_db_metadata = PublicationDbMetadataIndex::default();
+    let empty_type_indices = BTreeMap::new();
     let source_alias_targets = BTreeMap::new();
+    let type_environment = TypeLoweringEnvironment::new(
+        &empty_type_indices,
+        &empty_local_db_objects,
+        &empty_publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        &source_alias_targets,
+    );
     let key = DbObjectKeyIr {
         name: metadata.key.name.clone(),
         ty: match &metadata.canonical_key_type {
             Some(ty) => ty.clone(),
             None => lower_type_ref(
                 &metadata.key.ty,
-                &BTreeMap::new(),
-                &empty_local_db_objects,
-                &empty_publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                &source_alias_targets,
+                type_environment,
                 TypeLoweringContext::value(),
             )?,
         },
@@ -236,16 +240,7 @@ fn lower_publication_db_metadata(
             field_name.clone(),
             match metadata.canonical_field_types.get(field_name) {
                 Some(ty) => ty.clone(),
-                None => lower_type_ref(
-                    field_ty,
-                    &BTreeMap::new(),
-                    &empty_local_db_objects,
-                    &empty_publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    &source_alias_targets,
-                    TypeLoweringContext::value(),
-                )?,
+                None => lower_type_ref(field_ty, type_environment, TypeLoweringContext::value())?,
             },
         );
         field_type_texts.insert(field_name.clone(), field_ty.name.clone());
@@ -306,6 +301,14 @@ pub(super) fn lower_db_declarations(
     next_span_id: &mut u64,
 ) -> Result<BTreeMap<String, DbMetadataIr>> {
     let mut metadata = BTreeMap::new();
+    let type_environment = TypeLoweringEnvironment::new(
+        type_indices,
+        local_db_objects,
+        publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        source_alias_targets,
+    );
     for attachment in db_attachments.iter() {
         let db = attachment.db;
         let key_field = attachment.key;
@@ -322,12 +325,7 @@ pub(super) fn lower_db_declarations(
             ty: db_storage_type_ref(
                 lower_type_ref(
                     &key_field.ty,
-                    type_indices,
-                    local_db_objects,
-                    publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    source_alias_targets,
+                    type_environment,
                     TypeLoweringContext::value(),
                 )?,
                 unit,
@@ -344,28 +342,15 @@ pub(super) fn lower_db_declarations(
             key.name.clone(),
             lower_type_ref(
                 &key_field.ty,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
+                type_environment,
                 TypeLoweringContext::value(),
             )?,
         );
         field_type_texts.insert(key_field.name.clone(), key_field.ty.name.clone());
         for field in attachment.fields() {
             field_type_texts.insert(field.name.clone(), field.ty.name.clone());
-            let lowered = lower_type_ref(
-                &field.ty,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-                TypeLoweringContext::value(),
-            )?;
+            let lowered =
+                lower_type_ref(&field.ty, type_environment, TypeLoweringContext::value())?;
             identity_fields.insert(field.name.clone(), lowered.clone());
             let field_ty = db_storage_type_ref(lowered, unit)?;
             type_fields.insert(field.name.clone(), field_ty);
@@ -402,12 +387,7 @@ pub(super) fn lower_db_declarations(
                 )?;
                 Some(lower_type_ref(
                     implements,
-                    type_indices,
-                    local_db_objects,
-                    publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    source_alias_targets,
+                    type_environment,
                     TypeLoweringContext::value(),
                 )?)
             }
@@ -460,16 +440,7 @@ pub(super) fn lower_db_declarations(
                 Ok(DbObjectFieldIr {
                     name: field.name.clone(),
                     ty: db_storage_type_ref(
-                        lower_type_ref(
-                            &field.ty,
-                            type_indices,
-                            local_db_objects,
-                            publication_db_metadata,
-                            package_aliases,
-                            external_type_symbols,
-                            source_alias_targets,
-                            TypeLoweringContext::value(),
-                        )?,
+                        lower_type_ref(&field.ty, type_environment, TypeLoweringContext::value())?,
                         unit,
                     )?,
                     storage: attachment
@@ -1411,12 +1382,7 @@ impl<'a> FunctionLowerer<'a> {
         }
         lower_type_ref(
             target,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
+            self.type_lowering_environment(),
             self.db_target_type_context(),
         )
     }
@@ -2102,12 +2068,7 @@ impl<'a> FunctionLowerer<'a> {
                 ty.name.clone(),
                 lower_type_ref(
                     ty,
-                    self.type_indices,
-                    self.local_db_objects,
-                    self.publication_db_metadata,
-                    self.package_aliases,
-                    self.external_type_symbols,
-                    self.source_alias_targets,
+                    self.type_lowering_environment(),
                     self.value_type_context(),
                 )?,
             )))
@@ -2117,12 +2078,7 @@ impl<'a> FunctionLowerer<'a> {
                 type_text.clone(),
                 lower_type_text(
                     &type_text,
-                    self.type_indices,
-                    self.local_db_objects,
-                    self.publication_db_metadata,
-                    self.package_aliases,
-                    self.external_type_symbols,
-                    self.source_alias_targets,
+                    self.type_lowering_environment(),
                     self.value_type_context(),
                 )?,
             )))

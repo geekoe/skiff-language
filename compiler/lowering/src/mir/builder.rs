@@ -30,6 +30,17 @@ mod call_contract;
 use actor_authority::validate_actor_declarations;
 use call_contract::{build_receiver_facts, direct_call_parameter_modes, MirPackageCatalog};
 
+struct MirFunctionBuildInput<'a, 'catalog> {
+    package_id: &'a str,
+    unit: &'a FileIrUnit,
+    declaration_name: &'a str,
+    executable_index: u32,
+    executable: &'a ExecutableIr,
+    per_callable: &'a CallableEffectMap,
+    catalog: &'a MirPackageCatalog<'catalog>,
+    source_facts: &'a MirSourceFacts,
+}
+
 /// Per-callable effect facts resolved from the source model. The MIR never
 /// infers effects from File IR (design §2.4 stop condition).
 pub type CallableEffectMap = BTreeMap<SourceSymbolKey, CallableEffectSummary>;
@@ -191,16 +202,16 @@ fn build_mir_unit_with_catalog(
                 executable_symbol: executable.symbol.clone(),
             });
         }
-        functions.push(build_mir_function(
+        functions.push(build_mir_function(MirFunctionBuildInput {
             package_id,
             unit,
             declaration_name,
-            declaration.executable_index,
+            executable_index: declaration.executable_index,
             executable,
             per_callable,
             catalog,
             source_facts,
-        )?);
+        })?);
     }
     validate_actor_declarations(unit)?;
     let constants = clone_constant_facts(unit)?;
@@ -239,16 +250,17 @@ fn callable_effect_facts(
         })
 }
 
-fn build_mir_function(
-    package_id: &str,
-    unit: &FileIrUnit,
-    declaration_name: &str,
-    executable_index: u32,
-    executable: &ExecutableIr,
-    per_callable: &CallableEffectMap,
-    catalog: &MirPackageCatalog<'_>,
-    source_facts: &MirSourceFacts,
-) -> Result<MirFunction, MirBuildError> {
+fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunction, MirBuildError> {
+    let MirFunctionBuildInput {
+        package_id,
+        unit,
+        declaration_name,
+        executable_index,
+        executable,
+        per_callable,
+        catalog,
+        source_facts,
+    } = input;
     if executable.statement_spans.len() != executable.body.statements.len() {
         return Err(MirBuildError::StatementSpanCountMismatch {
             module_path: unit.module_path.clone(),

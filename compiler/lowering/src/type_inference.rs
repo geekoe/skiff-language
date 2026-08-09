@@ -295,12 +295,7 @@ impl<'a> FunctionLowerer<'a> {
                     .ok()?;
                 let target = lower_type_ref(
                     &operation.target,
-                    self.type_indices,
-                    self.local_db_objects,
-                    self.publication_db_metadata,
-                    self.package_aliases,
-                    self.external_type_symbols,
-                    self.source_alias_targets,
+                    self.type_lowering_environment(),
                     self.db_target_type_context(),
                 )
                 .ok()?;
@@ -323,12 +318,7 @@ impl<'a> FunctionLowerer<'a> {
             Expr::DbQuery(query) => {
                 let target = lower_type_ref(
                     &query.target,
-                    self.type_indices,
-                    self.local_db_objects,
-                    self.publication_db_metadata,
-                    self.package_aliases,
-                    self.external_type_symbols,
-                    self.source_alias_targets,
+                    self.type_lowering_environment(),
                     self.db_target_type_context(),
                 )
                 .ok()?;
@@ -339,12 +329,7 @@ impl<'a> FunctionLowerer<'a> {
             _ => self.infer_expr_type_text(expr).and_then(|type_text| {
                 lower_type_text(
                     &type_text,
-                    self.type_indices,
-                    self.local_db_objects,
-                    self.publication_db_metadata,
-                    self.package_aliases,
-                    self.external_type_symbols,
-                    self.source_alias_targets,
+                    self.type_lowering_environment(),
                     self.value_type_context(),
                 )
                 .ok()

@@ -21,7 +21,7 @@ use super::{
     source_unit_lowering::{
         push_source_span, source_span_ref, symbol, type_index, type_param_scope,
     },
-    type_lowering::{lower_type_ref, TypeLoweringContext},
+    type_lowering::{lower_type_ref, TypeLoweringContext, TypeLoweringEnvironment},
 };
 
 pub(super) fn local_type_field_index(unit: &FileIrUnit) -> LocalTypeFieldIndex {
@@ -54,6 +54,14 @@ pub(super) fn lower_type_declarations(
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
+    let type_environment = TypeLoweringEnvironment::new(
+        type_indices,
+        local_db_objects,
+        publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        source_alias_targets,
+    );
     for ty in types {
         let type_index = type_index(type_indices, &ty.name)?;
         let source_span = source_span_ref(ty.span);
@@ -63,12 +71,7 @@ pub(super) fn lower_type_declarations(
             descriptor: lower_type_decl_descriptor(
                 ty,
                 &type_params,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
+                type_environment,
                 type_resolution,
                 module_path,
             )?,
@@ -146,12 +149,7 @@ pub(super) fn lower_type_declarations(
             descriptor: TypeDescriptorIr::Alias {
                 target: lower_type_ref(
                     &alias.target_type,
-                    type_indices,
-                    local_db_objects,
-                    publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    source_alias_targets,
+                    type_environment,
                     TypeLoweringContext::value(),
                 )?,
             },
@@ -214,12 +212,7 @@ pub(super) fn lower_type_declarations(
 fn lower_type_decl_descriptor(
     ty: &TypeDecl,
     type_param_scope: &BTreeSet<String>,
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
+    type_environment: TypeLoweringEnvironment<'_>,
     type_resolution: &TypeResolutionModel,
     module_path: &str,
 ) -> Result<TypeDescriptorIr> {
@@ -238,12 +231,7 @@ fn lower_type_decl_descriptor(
         return Ok(TypeDescriptorIr::Representation {
             representation: lower_type_ref(
                 alias,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
+                type_environment,
                 TypeLoweringContext::value_with_type_params(type_param_scope),
             )?,
         });
@@ -257,12 +245,7 @@ fn lower_type_decl_descriptor(
                 field.name.clone(),
                 lower_type_ref(
                     &field.ty,
-                    type_indices,
-                    local_db_objects,
-                    publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    source_alias_targets,
+                    type_environment,
                     TypeLoweringContext::value_with_type_params(type_param_scope),
                 )?,
             ))

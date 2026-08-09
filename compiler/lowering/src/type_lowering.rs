@@ -95,6 +95,36 @@ impl<'a> TypeLoweringContext<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct TypeLoweringEnvironment<'a> {
+    type_indices: &'a BTreeMap<String, u32>,
+    local_db_objects: &'a LocalDbObjectIndex,
+    publication_db_metadata: &'a PublicationDbMetadataIndex,
+    package_aliases: &'a BTreeMap<String, Vec<String>>,
+    external_type_symbols: &'a PublicationTypeSymbolIndex,
+    source_alias_targets: &'a BTreeMap<String, String>,
+}
+
+impl<'a> TypeLoweringEnvironment<'a> {
+    pub(super) fn new(
+        type_indices: &'a BTreeMap<String, u32>,
+        local_db_objects: &'a LocalDbObjectIndex,
+        publication_db_metadata: &'a PublicationDbMetadataIndex,
+        package_aliases: &'a BTreeMap<String, Vec<String>>,
+        external_type_symbols: &'a PublicationTypeSymbolIndex,
+        source_alias_targets: &'a BTreeMap<String, String>,
+    ) -> Self {
+        Self {
+            type_indices,
+            local_db_objects,
+            publication_db_metadata,
+            package_aliases,
+            external_type_symbols,
+            source_alias_targets,
+        }
+    }
+}
+
 pub(super) fn service_symbol_ref(current_module_path: &str, path: &str) -> ServiceSymbolRef {
     let path = path.trim();
     if let Some((module_path, symbol)) = path.rsplit_once('.') {
@@ -315,24 +345,10 @@ fn resolve_db_object_symbol(
 
 pub(super) fn lower_type_ref(
     ty: &TypeRef,
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
+    environment: TypeLoweringEnvironment<'_>,
     context: TypeLoweringContext<'_>,
 ) -> Result<TypeRefIr> {
-    lower_type_text(
-        &ty.name,
-        type_indices,
-        local_db_objects,
-        publication_db_metadata,
-        package_aliases,
-        external_type_symbols,
-        source_alias_targets,
-        context,
-    )
+    lower_type_text(&ty.name, environment, context)
 }
 
 fn expand_source_alias_type_text(
@@ -410,28 +426,14 @@ fn expand_source_alias_type_text(
 
 pub(super) fn lower_type_text(
     ty: &str,
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
+    environment: TypeLoweringEnvironment<'_>,
     context: TypeLoweringContext<'_>,
 ) -> Result<TypeRefIr> {
-    let expanded_alias = expand_source_alias_type_text(ty, source_alias_targets)?;
+    let expanded_alias = expand_source_alias_type_text(ty, environment.source_alias_targets)?;
     let ty = expanded_alias.trim();
     if let Some(inner) = ty.strip_suffix('?') {
         return Ok(TypeRefIr::Nullable {
-            inner: Box::new(lower_type_text(
-                inner,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-                context,
-            )?),
+            inner: Box::new(lower_type_text(inner, environment, context)?),
         });
     }
 
@@ -440,18 +442,7 @@ pub(super) fn lower_type_text(
         return Ok(TypeRefIr::Union {
             items: union
                 .iter()
-                .map(|part| {
-                    lower_type_text(
-                        part,
-                        type_indices,
-                        local_db_objects,
-                        publication_db_metadata,
-                        package_aliases,
-                        external_type_symbols,
-                        source_alias_targets,
-                        context,
-                    )
-                })
+                .map(|part| lower_type_text(part, environment, context))
                 .collect::<Result<Vec<_>>>()?,
         });
     }
@@ -464,16 +455,7 @@ pub(super) fn lower_type_text(
 
     let parsed_type = TypeExpr::parse(ty);
     if let TypeExpr::AnyInterface { interface } = &parsed_type {
-        return lower_any_interface_type_expr(
-            interface,
-            type_indices,
-            local_db_objects,
-            publication_db_metadata,
-            package_aliases,
-            external_type_symbols,
-            source_alias_targets,
-            context,
-        );
+        return lower_any_interface_type_expr(interface, environment, context);
     }
     if let TypeExpr::Function {
         params,
@@ -486,27 +468,13 @@ pub(super) fn lower_type_text(
                 .map(|param| {
                     Ok(FunctionTypeParamIr {
                         name: param.name.clone(),
-                        ty: lower_type_text(
-                            &param.ty.to_type_string(),
-                            type_indices,
-                            local_db_objects,
-                            publication_db_metadata,
-                            package_aliases,
-                            external_type_symbols,
-                            source_alias_targets,
-                            context,
-                        )?,
+                        ty: lower_type_text(&param.ty.to_type_string(), environment, context)?,
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,
             return_type: Box::new(lower_type_text(
                 &return_type.to_type_string(),
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
+                environment,
                 context,
             )?),
         });
@@ -514,16 +482,7 @@ pub(super) fn lower_type_text(
 
     if ty.starts_with('{') && ty.ends_with('}') {
         return Ok(TypeRefIr::Record {
-            fields: lower_record_type_fields(
-                ty,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-                context,
-            )?,
+            fields: lower_record_type_fields(ty, environment, context)?,
         });
     }
 
@@ -535,18 +494,7 @@ pub(super) fn lower_type_text(
                     parts
                         .args
                         .iter()
-                        .map(|arg| {
-                            lower_type_text(
-                                arg,
-                                type_indices,
-                                local_db_objects,
-                                publication_db_metadata,
-                                package_aliases,
-                                external_type_symbols,
-                                source_alias_targets,
-                                context,
-                            )
-                        })
+                        .map(|arg| lower_type_text(arg, environment, context))
                         .collect::<Result<Vec<_>>>()?,
                 ));
             }
@@ -557,55 +505,19 @@ pub(super) fn lower_type_text(
                 arguments: parts
                     .args
                     .iter()
-                    .map(|arg| {
-                        lower_type_text(
-                            arg,
-                            type_indices,
-                            local_db_objects,
-                            publication_db_metadata,
-                            package_aliases,
-                            external_type_symbols,
-                            source_alias_targets,
-                            context,
-                        )
-                    })
+                    .map(|arg| lower_type_text(arg, environment, context))
                     .collect::<Result<Vec<_>>>()?,
             });
         }
-        return lower_generic_type_text(
-            parts.root,
-            &parts.args,
-            type_indices,
-            local_db_objects,
-            publication_db_metadata,
-            package_aliases,
-            external_type_symbols,
-            source_alias_targets,
-            context,
-        );
+        return lower_generic_type_text(parts.root, &parts.args, environment, context);
     }
 
-    lower_named_type(
-        ty,
-        &[],
-        type_indices,
-        local_db_objects,
-        publication_db_metadata,
-        package_aliases,
-        external_type_symbols,
-        source_alias_targets,
-        context,
-    )
+    lower_named_type(ty, &[], environment, context)
 }
 
 fn lower_any_interface_type_expr(
     interface: &TypeExpr,
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
+    environment: TypeLoweringEnvironment<'_>,
     context: TypeLoweringContext<'_>,
 ) -> Result<TypeRefIr> {
     let selector_text = interface.to_type_string();
@@ -614,29 +526,10 @@ fn lower_any_interface_type_expr(
             "interface selector `{selector_text}` must be a named interface type"
         )));
     };
-    let interface_identity = lower_any_interface_selector_identity(
-        name,
-        type_indices,
-        local_db_objects,
-        publication_db_metadata,
-        package_aliases,
-        external_type_symbols,
-        context,
-    )?;
+    let interface_identity = lower_any_interface_selector_identity(name, environment, context)?;
     let canonical_type_args = args
         .iter()
-        .map(|arg| {
-            lower_type_text(
-                &arg.to_type_string(),
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-                context,
-            )
-        })
+        .map(|arg| lower_type_text(&arg.to_type_string(), environment, context))
         .collect::<Result<Vec<_>>>()?;
     Ok(TypeRefIr::AnyInterface {
         interface: interface_instantiation_ref(interface_identity, canonical_type_args),
@@ -645,13 +538,17 @@ fn lower_any_interface_type_expr(
 
 fn lower_any_interface_selector_identity(
     name: &str,
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
+    environment: TypeLoweringEnvironment<'_>,
     context: TypeLoweringContext<'_>,
 ) -> Result<TypeRefIr> {
+    let TypeLoweringEnvironment {
+        type_indices,
+        local_db_objects,
+        publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        source_alias_targets: _,
+    } = environment;
     let name = name.trim();
     let service_name = name.strip_prefix("root.").unwrap_or(name);
     if context.is_type_param(service_name) {
@@ -705,30 +602,22 @@ fn lower_any_interface_selector_identity(
 fn lower_generic_type_text(
     root: &str,
     args: &[&str],
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
+    environment: TypeLoweringEnvironment<'_>,
     context: TypeLoweringContext<'_>,
 ) -> Result<TypeRefIr> {
+    let TypeLoweringEnvironment {
+        type_indices,
+        local_db_objects: _,
+        publication_db_metadata: _,
+        package_aliases,
+        external_type_symbols: _,
+        source_alias_targets: _,
+    } = environment;
     let root = root.trim();
     reject_unknown_compiler_owned_type(root)?;
     let arguments = args
         .iter()
-        .map(|arg| {
-            lower_type_text(
-                arg,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-                context,
-            )
-        })
+        .map(|arg| lower_type_text(arg, environment, context))
         .collect::<Result<Vec<_>>>()?;
     if let Some(index) = type_indices.get(root) {
         return Ok(TypeRefIr::AppliedNominal {
@@ -774,14 +663,17 @@ fn lower_generic_type_text(
 pub(super) fn lower_named_type(
     name: &str,
     type_args: &[TypeRef],
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
+    environment: TypeLoweringEnvironment<'_>,
     context: TypeLoweringContext<'_>,
 ) -> Result<TypeRefIr> {
+    let TypeLoweringEnvironment {
+        type_indices,
+        local_db_objects,
+        publication_db_metadata,
+        package_aliases,
+        external_type_symbols,
+        source_alias_targets: _,
+    } = environment;
     let name = name.trim();
     if let Some(canonical_name) = canonical_builtin_std_type_name(name) {
         if is_file_ir_native_builtin_type(&canonical_name) {
@@ -789,18 +681,7 @@ pub(super) fn lower_named_type(
                 &canonical_name,
                 type_args
                     .iter()
-                    .map(|arg| {
-                        lower_type_ref(
-                            arg,
-                            type_indices,
-                            local_db_objects,
-                            publication_db_metadata,
-                            package_aliases,
-                            external_type_symbols,
-                            source_alias_targets,
-                            context,
-                        )
-                    })
+                    .map(|arg| lower_type_ref(arg, environment, context))
                     .collect::<Result<Vec<_>>>()?,
             ));
         }
@@ -812,18 +693,7 @@ pub(super) fn lower_named_type(
             base: NominalTypeRefBaseIr::PackageSymbol { symbol },
             arguments: type_args
                 .iter()
-                .map(|arg| {
-                    lower_type_ref(
-                        arg,
-                        type_indices,
-                        local_db_objects,
-                        publication_db_metadata,
-                        package_aliases,
-                        external_type_symbols,
-                        source_alias_targets,
-                        context,
-                    )
-                })
+                .map(|arg| lower_type_ref(arg, environment, context))
                 .collect::<Result<Vec<_>>>()?,
         });
     }
@@ -881,18 +751,7 @@ pub(super) fn lower_named_type(
 
     let arguments = type_args
         .iter()
-        .map(|arg| {
-            lower_type_ref(
-                arg,
-                type_indices,
-                local_db_objects,
-                publication_db_metadata,
-                package_aliases,
-                external_type_symbols,
-                source_alias_targets,
-                context,
-            )
-        })
+        .map(|arg| lower_type_ref(arg, environment, context))
         .collect::<Result<Vec<_>>>()?;
     if let Some(type_index) = type_indices.get(service_name) {
         return Ok(TypeRefIr::AppliedNominal {
@@ -1010,12 +869,7 @@ fn unsupported_file_ir_generic_root(root: &str) -> CompileError {
 
 fn lower_record_type_fields(
     ty: &str,
-    type_indices: &BTreeMap<String, u32>,
-    local_db_objects: &LocalDbObjectIndex,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    package_aliases: &BTreeMap<String, Vec<String>>,
-    external_type_symbols: &PublicationTypeSymbolIndex,
-    source_alias_targets: &BTreeMap<String, String>,
+    environment: TypeLoweringEnvironment<'_>,
     context: TypeLoweringContext<'_>,
 ) -> Result<BTreeMap<String, TypeRefIr>> {
     parse_record_type_fields(ty)
@@ -1031,16 +885,7 @@ fn lower_record_type_fields(
         .map(|field| {
             Ok((
                 field.name.to_string(),
-                lower_type_text(
-                    field.ty,
-                    type_indices,
-                    local_db_objects,
-                    publication_db_metadata,
-                    package_aliases,
-                    external_type_symbols,
-                    source_alias_targets,
-                    context,
-                )?,
+                lower_type_text(field.ty, environment, context)?,
             ))
         })
         .collect()

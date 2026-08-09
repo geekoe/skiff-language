@@ -46,7 +46,7 @@ use super::{
     type_lowering::{
         is_official_std_package_ref, is_unknown_type_ref, lower_named_type, lower_type_ref,
         lower_type_text, prelude_field_type_text, runtime_receiver_root_from_type_ref,
-        type_ref_ir_type_text, union_type_ir, TypeLoweringContext,
+        type_ref_ir_type_text, union_type_ir, TypeLoweringContext, TypeLoweringEnvironment,
     },
 };
 
@@ -143,6 +143,32 @@ pub(super) struct FunctionLowerer<'a> {
 
 pub(super) type LocalTypeFieldIndex = BTreeMap<u32, BTreeMap<String, TypeRefIr>>;
 
+pub(super) struct FunctionLoweringContext<'a> {
+    pub(super) type_indices: &'a BTreeMap<String, u32>,
+    pub(super) package_aliases: &'a BTreeMap<String, Vec<String>>,
+    pub(super) db_metadata: &'a BTreeMap<String, DbMetadataIr>,
+    pub(super) publication_db_metadata: &'a PublicationDbMetadataIndex,
+    pub(super) lowered_publication_db_metadata: &'a LoweredPackageDbMetadataIndex,
+    pub(super) executable_indices: &'a BTreeMap<String, u32>,
+    pub(super) const_indices: &'a BTreeMap<String, u32>,
+    pub(super) external_type_symbols: &'a PublicationTypeSymbolIndex,
+    pub(super) source_alias_targets: &'a BTreeMap<String, String>,
+    pub(super) package_interface_methods: &'a PackageInterfaceMethodIndex,
+    pub(super) resolved_call_targets: &'a ResolvedCallTargetFacts,
+    pub(super) module_path: &'a str,
+    pub(super) local_db_objects: &'a LocalDbObjectIndex,
+    pub(super) interface_semantics: &'a InterfaceSemantics,
+    pub(super) type_resolution: &'a TypeResolutionModel,
+    pub(super) expression_types: Option<&'a ExpressionTypeModel>,
+    pub(super) execution_semantics: Option<&'a SourceExecutionSemantics>,
+    pub(super) callable_return_types: &'a BTreeMap<String, CallableReturnType>,
+    pub(super) local_type_fields: &'a LocalTypeFieldIndex,
+    pub(super) actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
+    pub(super) executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
+    pub(super) exact_executable_signatures: &'a SourceExecutableSignatureFacts,
+    pub(super) service_calls: &'a LoweredServiceCalls,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct LoweredExecutableSignature {
     pub(super) type_params: Vec<String>,
@@ -163,32 +189,35 @@ pub(super) enum LoweredExecutableReceiver {
 
 impl<'a> FunctionLowerer<'a> {
     pub(super) fn new(
-        type_indices: &'a BTreeMap<String, u32>,
-        package_aliases: &'a BTreeMap<String, Vec<String>>,
-        db_metadata: &'a BTreeMap<String, DbMetadataIr>,
-        publication_db_metadata: &'a PublicationDbMetadataIndex,
-        lowered_publication_db_metadata: &'a LoweredPackageDbMetadataIndex,
-        executable_indices: &'a BTreeMap<String, u32>,
-        const_indices: &'a BTreeMap<String, u32>,
-        external_type_symbols: &'a PublicationTypeSymbolIndex,
-        source_alias_targets: &'a BTreeMap<String, String>,
-        package_interface_methods: &'a PackageInterfaceMethodIndex,
-        resolved_call_targets: &'a ResolvedCallTargetFacts,
-        module_path: &'a str,
-        local_db_objects: &'a LocalDbObjectIndex,
+        context: FunctionLoweringContext<'a>,
         type_param_scope: BTreeSet<String>,
         expression_owner: Option<ExpressionOwnerKey>,
-        interface_semantics: &'a InterfaceSemantics,
-        type_resolution: &'a TypeResolutionModel,
-        expression_types: Option<&'a ExpressionTypeModel>,
-        execution_semantics: Option<&'a SourceExecutionSemantics>,
-        callable_return_types: &'a BTreeMap<String, CallableReturnType>,
-        local_type_fields: &'a LocalTypeFieldIndex,
-        actor_self_fields: Option<&'a BTreeMap<String, TypeRefIr>>,
-        executable_signatures: &'a BTreeMap<u32, LoweredExecutableSignature>,
-        exact_executable_signatures: &'a SourceExecutableSignatureFacts,
-        service_calls: &'a LoweredServiceCalls,
     ) -> Self {
+        let FunctionLoweringContext {
+            type_indices,
+            package_aliases,
+            db_metadata,
+            publication_db_metadata,
+            lowered_publication_db_metadata,
+            executable_indices,
+            const_indices,
+            external_type_symbols,
+            source_alias_targets,
+            package_interface_methods,
+            resolved_call_targets,
+            module_path,
+            local_db_objects,
+            interface_semantics,
+            type_resolution,
+            expression_types,
+            execution_semantics,
+            callable_return_types,
+            local_type_fields,
+            actor_self_fields,
+            executable_signatures,
+            exact_executable_signatures,
+            service_calls,
+        } = context;
         Self {
             type_indices,
             package_aliases,
@@ -238,6 +267,17 @@ impl<'a> FunctionLowerer<'a> {
 
     pub(super) fn db_target_type_context(&self) -> TypeLoweringContext<'_> {
         TypeLoweringContext::db_target_with_type_params(&self.type_param_scope)
+    }
+
+    pub(super) fn type_lowering_environment(&self) -> TypeLoweringEnvironment<'a> {
+        TypeLoweringEnvironment::new(
+            self.type_indices,
+            self.local_db_objects,
+            self.publication_db_metadata,
+            self.package_aliases,
+            self.external_type_symbols,
+            self.source_alias_targets,
+        )
     }
 
     pub(super) fn declare_slot(
@@ -1385,12 +1425,7 @@ impl<'a> FunctionLowerer<'a> {
                 type_ref: lower_named_type(
                     type_name,
                     type_args,
-                    self.type_indices,
-                    self.local_db_objects,
-                    self.publication_db_metadata,
-                    self.package_aliases,
-                    self.external_type_symbols,
-                    self.source_alias_targets,
+                    self.type_lowering_environment(),
                     self.value_type_context(),
                 )?,
                 fields: provided_values
@@ -1752,12 +1787,7 @@ impl<'a> FunctionLowerer<'a> {
                 let catch_slot = self.declare_slot(&catch_name, SlotKind::Temp, false)?;
                 let lowered_catch_type = lower_type_ref(
                     catch_type,
-                    self.type_indices,
-                    self.local_db_objects,
-                    self.publication_db_metadata,
-                    self.package_aliases,
-                    self.external_type_symbols,
-                    self.source_alias_targets,
+                    self.type_lowering_environment(),
                     self.value_type_context(),
                 )?;
                 self.set_slot_type(catch_slot, Some(lowered_catch_type.clone()));
@@ -1999,12 +2029,7 @@ impl<'a> FunctionLowerer<'a> {
             .chain(type_arg_refs.iter().map(|ty| {
                 lower_type_ref(
                     ty,
-                    self.type_indices,
-                    self.local_db_objects,
-                    self.publication_db_metadata,
-                    self.package_aliases,
-                    self.external_type_symbols,
-                    self.source_alias_targets,
+                    self.type_lowering_environment(),
                     self.value_type_context(),
                 )
             }))
@@ -2858,12 +2883,7 @@ impl<'a> FunctionLowerer<'a> {
         let field_type = prelude_field_type_text(&field.ty.name, module_path);
         lower_type_text(
             &field_type,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
+            self.type_lowering_environment(),
             self.value_type_context(),
         )
         .ok()
@@ -2892,12 +2912,7 @@ impl<'a> FunctionLowerer<'a> {
         let field_type = prelude_field_type_text(&field.ty.name, module_path);
         lower_type_text(
             &field_type,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
+            self.type_lowering_environment(),
             self.value_type_context(),
         )
         .ok()
@@ -3155,12 +3170,7 @@ impl<'a> FunctionLowerer<'a> {
         lower_named_type(
             type_name,
             type_args,
-            self.type_indices,
-            self.local_db_objects,
-            self.publication_db_metadata,
-            self.package_aliases,
-            self.external_type_symbols,
-            self.source_alias_targets,
+            self.type_lowering_environment(),
             self.value_type_context(),
         )
         .ok()
