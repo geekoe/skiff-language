@@ -262,6 +262,9 @@ where
         result
     }
 
+    // Recursive visitor state stays explicit so trace, guard, cycle, and policy
+    // transitions remain visible at every descriptor edge.
+    #[allow(clippy::too_many_arguments)]
     fn walk_descriptor<P>(
         &self,
         nominal: &NominalTypeKey,

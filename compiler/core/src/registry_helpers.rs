@@ -52,12 +52,10 @@ pub fn is_valid_official_registry_path(path: &str) -> bool {
         return false;
     }
     let components = Path::new(path).components().collect::<Vec<_>>();
-    match components.as_slice() {
-        [Component::CurDir] => true,
-        [Component::Normal(_)] => true,
-        [Component::ParentDir, Component::Normal(_)] => true,
-        _ => false,
-    }
+    matches!(
+        components.as_slice(),
+        [Component::CurDir] | [Component::Normal(_)] | [Component::ParentDir, Component::Normal(_)]
+    )
 }
 
 #[cfg(test)]
