@@ -2049,7 +2049,7 @@ version: 1.0.0
                     return true
                 }
             "#,
-                "assignment target derives from immutable binding `user`",
+                "unknown field `name` on User?",
             ),
             (
                 "replace",
@@ -2071,7 +2071,7 @@ version: 1.0.0
                     return true
                 }
             "#,
-                "assignment target derives from immutable binding `user`",
+                "unknown field `name` on User?",
             ),
             (
                 "upsert",
