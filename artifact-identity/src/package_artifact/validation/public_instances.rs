@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     ExecutableExport, FileIrRef, InterfaceMethodSignature, NominalTypeRefBaseIr,
     OperationCallableKind, PackageArtifact, PackageCallableSignature, PackageLocalAbiSymbol,
-    PackageRefIr, PackageSymbolRef, PackageTypeRef, ServiceSymbolRef, TypeDescriptorIr, TypeRefIr,
+    PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamModeIr, ServiceSymbolRef,
+    TypeDescriptorIr, TypeRefIr,
 };
 
 use crate::Result;
@@ -461,23 +462,31 @@ fn validate_public_instance_method_signature(
         .params
         .first()
         .filter(|parameter| parameter.name == "self");
-    let (implementation_receiver_type, implementation_params) =
-        match (method_link.signature.self_type.as_ref(), explicit_self) {
-            (Some(_), Some(_)) => {
-                return invalid_artifact(format!(
-                    "public instance {public_path} method {} implementation declares two receivers",
-                    interface_method.name
-                ));
-            }
-            (Some(self_type), None) => (self_type, method_link.signature.params.as_slice()),
-            (None, Some(self_param)) => (&self_param.ty, &method_link.signature.params[1..]),
-            (None, None) => {
-                return invalid_artifact(format!(
-                    "public instance {public_path} method {} implementation has no receiver type",
-                    interface_method.name
-                ));
-            }
-        };
+    let Some(implementation_receiver_type) = method_link.signature.self_type.as_ref() else {
+        return invalid_artifact(format!(
+            "public instance {public_path} method {} implementation has no receiver type",
+            interface_method.name
+        ));
+    };
+    if let Some(self_param) = explicit_self {
+        if self_param.mode != ParamModeIr::Value || &self_param.ty != implementation_receiver_type {
+            return invalid_artifact(format!(
+                "public instance {public_path} method {} explicit implementation receiver does not exactly match selfType",
+                interface_method.name
+            ));
+        }
+    }
+    let implementation_params =
+        &method_link.signature.params[usize::from(explicit_self.is_some())..];
+    if implementation_params
+        .iter()
+        .any(|parameter| parameter.name == "self")
+    {
+        return invalid_artifact(format!(
+            "public instance {public_path} method {} implementation has a non-leading receiver",
+            interface_method.name
+        ));
+    }
     let expected_receiver_type = receiver_definition_type(receiver, receiver_type_params);
     if normalized_implementation_type(artifact, implementation_receiver_type, None)?
         != normalized_implementation_type(artifact, &expected_receiver_type, None)?

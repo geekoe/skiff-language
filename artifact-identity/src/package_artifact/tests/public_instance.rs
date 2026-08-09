@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     FileIrRef, NominalTypeRefBaseIr, OperationCallableKind, PackageLocalAbiSymbol, PackageRefIr,
-    PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    PackageSymbolRef, PackageTypeRef, ParamIr, ParamModeIr, TypeRefIr,
 };
 
 use super::{
@@ -122,6 +122,51 @@ fn public_instance_surface_requires_exact_method_link_kinds_and_interfaces() {
     };
     interfaces.clear();
     assert_invalid_package_artifact(&no_interfaces);
+}
+
+#[test]
+fn public_instance_explicit_receiver_must_match_self_type() {
+    let mut exact = public_instance_fixture();
+    for method in ["run", "stop"] {
+        let signature = &mut exact
+            .implementation_links
+            .impl_methods
+            .get_mut(&format!("Worker.{method}"))
+            .unwrap()
+            .signature;
+        signature.params.insert(
+            0,
+            ParamIr {
+                name: "self".to_string(),
+                slot: 0,
+                ty: signature.self_type.clone().unwrap(),
+                mode: ParamModeIr::Value,
+            },
+        );
+    }
+    package_artifact_build_identity(&exact).unwrap();
+
+    let mut wrong_type = exact.clone();
+    wrong_type
+        .implementation_links
+        .impl_methods
+        .get_mut("Worker.run")
+        .unwrap()
+        .signature
+        .params[0]
+        .ty = TypeRefIr::builtin("string");
+    assert_invalid_package_artifact(&wrong_type);
+
+    let mut wrong_mode = exact;
+    wrong_mode
+        .implementation_links
+        .impl_methods
+        .get_mut("Worker.run")
+        .unwrap()
+        .signature
+        .params[0]
+        .mode = ParamModeIr::InOut;
+    assert_invalid_package_artifact(&wrong_mode);
 }
 
 #[test]
