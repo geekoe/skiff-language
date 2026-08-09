@@ -10,6 +10,8 @@ pub mod service_error;
 pub mod type_exports;
 pub mod type_plan;
 pub mod value;
+pub mod vm_heap;
+pub mod vm_root;
 pub mod vm_value;
 
 pub use resource::{
