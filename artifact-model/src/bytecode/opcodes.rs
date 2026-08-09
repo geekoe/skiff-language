@@ -54,13 +54,18 @@ pub enum OperandRole {
     BranchTarget,
     SwitchTable,
     Region,
+    ActiveRegion,
     LocalTarget,
     ServiceTarget,
     ActorTarget,
     InterfaceTarget,
     CallbackTarget,
     HostTarget,
+    IntrinsicTarget,
     ArgCount,
+    ResultCount,
+    SelectorCount,
+    FailureKind,
     CaptureCount,
     FieldCount,
     MethodOrdinal,
@@ -71,6 +76,8 @@ pub enum OperandRole {
     KeyTypeRef,
     ValueTypeRef,
     ShapeRef,
+    WritablePathRef,
+    CaptureLayoutRef,
     ResumeRef,
 }
 
@@ -80,14 +87,18 @@ impl OperandRole {
         match self {
             Self::SourceSlot | Self::DestinationSlot | Self::Slot => OperandKind::Slot,
             Self::BranchTarget => OperandKind::Branch,
-            Self::SwitchTable | Self::Region => OperandKind::Table,
+            Self::SwitchTable | Self::Region | Self::ActiveRegion => OperandKind::Table,
             Self::LocalTarget
             | Self::ServiceTarget
             | Self::ActorTarget
             | Self::InterfaceTarget
             | Self::CallbackTarget
-            | Self::HostTarget => OperandKind::Reloc,
+            | Self::HostTarget
+            | Self::IntrinsicTarget => OperandKind::Reloc,
             Self::ArgCount
+            | Self::ResultCount
+            | Self::SelectorCount
+            | Self::FailureKind
             | Self::CaptureCount
             | Self::FieldCount
             | Self::MethodOrdinal
@@ -98,6 +109,8 @@ impl OperandRole {
             | Self::KeyTypeRef
             | Self::ValueTypeRef
             | Self::ShapeRef
+            | Self::WritablePathRef
+            | Self::CaptureLayoutRef
             | Self::ResumeRef => OperandKind::Pool,
         }
     }
@@ -110,6 +123,8 @@ impl OperandRole {
                 Some(PoolCategory::Types)
             }
             Self::ShapeRef => Some(PoolCategory::Shapes),
+            Self::WritablePathRef => Some(PoolCategory::WritablePaths),
+            Self::CaptureLayoutRef => Some(PoolCategory::CallbackCapture),
             Self::ResumeRef => Some(PoolCategory::Resume),
             _ => None,
         }
@@ -120,6 +135,7 @@ impl OperandRole {
         match self {
             Self::SwitchTable => Some(TableCategory::SwitchTables),
             Self::Region => Some(TableCategory::ExceptionRegions),
+            Self::ActiveRegion => Some(TableCategory::ActiveRegions),
             _ => None,
         }
     }
@@ -160,7 +176,7 @@ const fn result_count_effect() -> StackEffect {
     }
 }
 
-/// The ten relocation kinds (§3.4). `TypeRef`/`ShapeRef`/`FrozenConstantRef`
+/// Relocation kinds (§3.4). `TypeRef`/`ShapeRef`/`FrozenConstantRef`
 /// appear both as function-level relocation kinds and as pool entry kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelocationKind {
@@ -169,8 +185,11 @@ pub enum RelocationKind {
     ServiceOperationRef,
     ActorMethodRef,
     InterfaceRequirementRef,
+    LocalInterfaceRef,
+    RemoteInterfaceRef,
     SyntheticCallbackRef,
     HostEffectRef,
+    IntrinsicRef,
     TypeRef,
     ShapeRef,
     FrozenConstantRef,
@@ -184,8 +203,11 @@ impl RelocationKind {
             Self::ServiceOperationRef => "serviceOperationRef",
             Self::ActorMethodRef => "actorMethodRef",
             Self::InterfaceRequirementRef => "interfaceRequirementRef",
+            Self::LocalInterfaceRef => "localInterfaceRef",
+            Self::RemoteInterfaceRef => "remoteInterfaceRef",
             Self::SyntheticCallbackRef => "syntheticCallbackRef",
             Self::HostEffectRef => "hostEffectRef",
+            Self::IntrinsicRef => "intrinsicRef",
             Self::TypeRef => "typeRef",
             Self::ShapeRef => "shapeRef",
             Self::FrozenConstantRef => "frozenConstantRef",
@@ -206,11 +228,21 @@ pub enum Opcode {
     StoreSlot,
     Drop,
     Dup,
+    /// Reads a semantic-share value onto the operand stack without clearing
+    /// its source slot. The semantic verifier rejects non-shareable values.
+    LoadSlot,
+    /// Moves a value onto the operand stack and clears its source slot; this
+    /// is the slot-to-stack path for move-only and affine values.
+    TakeSlot,
+    /// Discards one operand-stack value using its declared transfer/drop
+    /// semantics. This is the only representation for an ignored result.
+    Pop,
     Jump,
     JumpIfTrue,
     JumpIfFalse,
     SwitchTag,
     BudgetCheckpoint,
+    Trap,
     CallLocal,
     TailCallLocal,
     CallService,
@@ -235,6 +267,9 @@ pub enum Opcode {
     FreezeMap,
     MapGet,
     MapPutOwned,
+    ArrayLen,
+    MapLen,
+    MapEntryAt,
     StreamNext,
     EmitStream,
     Throw,
@@ -242,6 +277,36 @@ pub enum Opcode {
     EnterRegion,
     LeaveRegion,
     InvokeHost,
+    InvokeIntrinsic,
+    Not,
+    Negate,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Equal,
+    NotEqual,
+    LessThan,
+    LessOrEqual,
+    GreaterThan,
+    GreaterOrEqual,
+}
+
+/// Closed failure kinds accepted by [`Opcode::Trap`]. Values are encoded in
+/// the instruction's `FailureKind` immediate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum TrapFailureKind {
+    Assertion = 0,
+}
+
+impl TrapFailureKind {
+    pub const fn from_encoded(encoded: u32) -> Option<Self> {
+        match encoded {
+            0 => Some(Self::Assertion),
+            _ => None,
+        }
+    }
 }
 
 /// One immutable descriptor row of the opcode table (§2.5).
@@ -302,6 +367,7 @@ pub enum PoolCategory {
     Effects,
     Resume,
     CallbackCapture,
+    WritablePaths,
 }
 
 impl PoolCategory {
@@ -313,38 +379,42 @@ impl PoolCategory {
             Self::Effects => "effects",
             Self::Resume => "resume",
             Self::CallbackCapture => "callbackCapture",
+            Self::WritablePaths => "writablePaths",
         }
     }
 
-    /// The only pool entry kind this category admits in v1.
+    /// The only pool entry kind this category admits in v3.
     pub const fn expected_entry_kind(self) -> PoolEntryKind {
         match self {
-            Self::Constants => PoolEntryKind::FrozenConstantRef,
+            Self::Constants => PoolEntryKind::ConstantRef,
             Self::Types => PoolEntryKind::TypeRef,
             Self::Shapes => PoolEntryKind::ShapeRef,
             Self::Effects => PoolEntryKind::HostEffectRef,
             Self::Resume => PoolEntryKind::ResumeDescriptor,
             Self::CallbackCapture => PoolEntryKind::CallbackCaptureLayout,
+            Self::WritablePaths => PoolEntryKind::WritablePath,
         }
     }
 }
 
-/// The six pool entry kinds (mirrors `dto::BytecodePoolEntry` variants without
+/// The seven pool entry kinds (mirrors `dto::BytecodePoolEntry` variants without
 /// payload so the descriptor layer stays payload-free).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolEntryKind {
-    FrozenConstantRef,
+    ConstantRef,
     TypeRef,
     ShapeRef,
     HostEffectRef,
     ResumeDescriptor,
     CallbackCaptureLayout,
+    WritablePath,
 }
 
 /// Function auxiliary table categories for `Table` operands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableCategory {
     ExceptionRegions,
+    ActiveRegions,
     SwitchTables,
 }
 
@@ -352,6 +422,7 @@ impl TableCategory {
     pub const fn name(self) -> &'static str {
         match self {
             Self::ExceptionRegions => "exceptionRegions",
+            Self::ActiveRegions => "activeRegions",
             Self::SwitchTables => "switchTables",
         }
     }
@@ -383,7 +454,7 @@ pub const fn table_operand_category(opcode: u8, position: usize) -> Option<Table
     descriptor.operand_roles[position].table_category()
 }
 
-/// The 42-instruction opcode table (§2.3), in ascending opcode order.
+/// The 62-instruction opcode table (§2.3), in ascending opcode order.
 pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
     // Value/slot (0x00–0x0F)
     descriptor(
@@ -446,6 +517,36 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[fixed_effect(2)],
         &[],
     ),
+    descriptor(
+        Opcode::LoadSlot,
+        0x06,
+        "load_slot",
+        &[OperandKind::Slot],
+        &[OperandRole::SourceSlot],
+        &[],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::TakeSlot,
+        0x07,
+        "take_slot",
+        &[OperandKind::Slot],
+        &[OperandRole::SourceSlot],
+        &[],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::Pop,
+        0x08,
+        "pop",
+        &[],
+        &[],
+        &[fixed_effect(1)],
+        &[],
+        &[],
+    ),
     // Control (0x10–0x1F)
     descriptor(
         Opcode::Jump,
@@ -481,8 +582,8 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         Opcode::SwitchTag,
         0x13,
         "switch_tag",
-        &[OperandKind::Table, OperandKind::Branch],
-        &[OperandRole::SwitchTable, OperandRole::BranchTarget],
+        &[OperandKind::Table],
+        &[OperandRole::SwitchTable],
         &[fixed_effect(1)],
         &[],
         &[],
@@ -497,15 +598,33 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
         &[],
     ),
+    descriptor(
+        Opcode::Trap,
+        0x15,
+        "trap",
+        &[OperandKind::Immediate],
+        &[OperandRole::FailureKind],
+        &[fixed_effect(1)],
+        &[],
+        &[],
+    ),
     // Call (0x20–0x2F)
     descriptor(
         Opcode::CallLocal,
         0x20,
         "call_local",
-        &[OperandKind::Reloc, OperandKind::Immediate],
-        &[OperandRole::LocalTarget, OperandRole::ArgCount],
+        &[
+            OperandKind::Reloc,
+            OperandKind::Immediate,
+            OperandKind::Immediate,
+        ],
+        &[
+            OperandRole::LocalTarget,
+            OperandRole::ArgCount,
+            OperandRole::ResultCount,
+        ],
         &[declared_effect(OperandRole::ArgCount)],
-        &[],
+        &[declared_effect(OperandRole::ResultCount)],
         &[
             RelocationKind::LocalExecutableRef,
             RelocationKind::PackageCallableRef,
@@ -531,15 +650,17 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[
             OperandKind::Reloc,
             OperandKind::Immediate,
+            OperandKind::Immediate,
             OperandKind::Pool,
         ],
         &[
             OperandRole::ServiceTarget,
             OperandRole::ArgCount,
+            OperandRole::ResultCount,
             OperandRole::ResumeRef,
         ],
         &[declared_effect(OperandRole::ArgCount)],
-        &[],
+        &[declared_effect(OperandRole::ResultCount)],
         &[RelocationKind::ServiceOperationRef],
     ),
     descriptor(
@@ -549,15 +670,17 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[
             OperandKind::Reloc,
             OperandKind::Immediate,
+            OperandKind::Immediate,
             OperandKind::Pool,
         ],
         &[
             OperandRole::ActorTarget,
             OperandRole::ArgCount,
+            OperandRole::ResultCount,
             OperandRole::ResumeRef,
         ],
         &[declared_effect(OperandRole::ArgCount)],
-        &[],
+        &[declared_effect(OperandRole::ResultCount)],
         &[RelocationKind::ActorMethodRef],
     ),
     descriptor(
@@ -568,14 +691,18 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
             OperandKind::Reloc,
             OperandKind::Immediate,
             OperandKind::Immediate,
+            OperandKind::Immediate,
+            OperandKind::Pool,
         ],
         &[
             OperandRole::InterfaceTarget,
             OperandRole::MethodOrdinal,
             OperandRole::ArgCount,
+            OperandRole::ResultCount,
+            OperandRole::ResumeRef,
         ],
         &[fixed_effect(1), declared_effect(OperandRole::ArgCount)],
-        &[],
+        &[declared_effect(OperandRole::ResultCount)],
         &[RelocationKind::InterfaceRequirementRef],
     ),
     descriptor(
@@ -597,27 +724,32 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[OperandRole::InterfaceTarget],
         &[fixed_effect(1)],
         &[fixed_effect(1)],
-        &[RelocationKind::InterfaceRequirementRef],
+        &[RelocationKind::LocalInterfaceRef],
     ),
     descriptor(
         Opcode::InterfaceBoxRemote,
         0x31,
         "interface_box_remote",
-        &[OperandKind::Reloc, OperandKind::Reloc],
-        &[OperandRole::ServiceTarget, OperandRole::InterfaceTarget],
+        &[OperandKind::Reloc],
+        &[OperandRole::InterfaceTarget],
         &[],
         &[fixed_effect(1)],
-        &[
-            RelocationKind::ServiceOperationRef,
-            RelocationKind::InterfaceRequirementRef,
-        ],
+        &[RelocationKind::RemoteInterfaceRef],
     ),
     descriptor(
         Opcode::MakeCallback,
         0x32,
         "make_callback",
-        &[OperandKind::Reloc, OperandKind::Immediate],
-        &[OperandRole::CallbackTarget, OperandRole::CaptureCount],
+        &[
+            OperandKind::Reloc,
+            OperandKind::Pool,
+            OperandKind::Immediate,
+        ],
+        &[
+            OperandRole::CallbackTarget,
+            OperandRole::CaptureLayoutRef,
+            OperandRole::CaptureCount,
+        ],
         &[declared_effect(OperandRole::CaptureCount)],
         &[fixed_effect(1)],
         &[RelocationKind::SyntheticCallbackRef],
@@ -630,14 +762,18 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
             OperandKind::Reloc,
             OperandKind::Immediate,
             OperandKind::Immediate,
+            OperandKind::Immediate,
+            OperandKind::Pool,
         ],
         &[
             OperandRole::InterfaceTarget,
             OperandRole::MethodOrdinal,
             OperandRole::ArgCount,
+            OperandRole::ResultCount,
+            OperandRole::ResumeRef,
         ],
         &[fixed_effect(1), declared_effect(OperandRole::ArgCount)],
-        &[],
+        &[declared_effect(OperandRole::ResultCount)],
         &[RelocationKind::InterfaceRequirementRef],
     ),
     // Record/value (0x40–0x4F)
@@ -668,10 +804,10 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[OperandKind::Slot, OperandKind::Pool, OperandKind::Immediate],
         &[
             OperandRole::Slot,
-            OperandRole::ShapeRef,
-            OperandRole::FieldOrdinal,
+            OperandRole::WritablePathRef,
+            OperandRole::SelectorCount,
         ],
-        &[fixed_effect(1)],
+        &[declared_effect(OperandRole::SelectorCount), fixed_effect(1)],
         &[],
         &[],
     ),
@@ -786,6 +922,39 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
         &[],
     ),
+    descriptor(
+        Opcode::ArrayLen,
+        0x5A,
+        "array_len",
+        &[],
+        &[],
+        &[fixed_effect(1)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::MapLen,
+        0x5B,
+        "map_len",
+        &[],
+        &[],
+        &[fixed_effect(1)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    // Map iteration order is RuntimeValueKey ascending order, matching the
+    // legacy BTreeMap representation. The original map snapshot remains on
+    // the caller's slot; this opcode only reads one canonical entry.
+    descriptor(
+        Opcode::MapEntryAt,
+        0x5C,
+        "map_entry_at",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(2)],
+        &[],
+    ),
     // Stream (0x60–0x6F)
     descriptor(
         Opcode::StreamNext,
@@ -818,13 +987,22 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[],
         &[],
     ),
-    descriptor(Opcode::Rethrow, 0x71, "rethrow", &[], &[], &[], &[], &[]),
+    descriptor(
+        Opcode::Rethrow,
+        0x71,
+        "rethrow",
+        &[OperandKind::Slot],
+        &[OperandRole::SourceSlot],
+        &[],
+        &[],
+        &[],
+    ),
     descriptor(
         Opcode::EnterRegion,
         0x72,
         "enter_region",
         &[OperandKind::Table],
-        &[OperandRole::Region],
+        &[OperandRole::ActiveRegion],
         &[],
         &[],
         &[],
@@ -834,7 +1012,7 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         0x73,
         "leave_region",
         &[OperandKind::Table],
-        &[OperandRole::Region],
+        &[OperandRole::ActiveRegion],
         &[],
         &[],
         &[],
@@ -847,20 +1025,162 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
         &[
             OperandKind::Reloc,
             OperandKind::Immediate,
+            OperandKind::Immediate,
             OperandKind::Pool,
         ],
         &[
             OperandRole::HostTarget,
             OperandRole::ArgCount,
+            OperandRole::ResultCount,
             OperandRole::ResumeRef,
         ],
         &[declared_effect(OperandRole::ArgCount)],
-        &[fixed_effect(1)],
+        &[declared_effect(OperandRole::ResultCount)],
         &[RelocationKind::HostEffectRef],
+    ),
+    descriptor(
+        Opcode::InvokeIntrinsic,
+        0x81,
+        "invoke_intrinsic",
+        &[
+            OperandKind::Reloc,
+            OperandKind::Immediate,
+            OperandKind::Immediate,
+        ],
+        &[
+            OperandRole::IntrinsicTarget,
+            OperandRole::ArgCount,
+            OperandRole::ResultCount,
+        ],
+        &[declared_effect(OperandRole::ArgCount)],
+        &[declared_effect(OperandRole::ResultCount)],
+        &[RelocationKind::IntrinsicRef],
+    ),
+    // Typed scalar expressions (0x90–0x9F). Logical And/Or are intentionally
+    // absent: the emitter lowers their short-circuit semantics with branches.
+    descriptor(
+        Opcode::Not,
+        0x90,
+        "not",
+        &[],
+        &[],
+        &[fixed_effect(1)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::Negate,
+        0x91,
+        "negate",
+        &[],
+        &[],
+        &[fixed_effect(1)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::Add,
+        0x92,
+        "add",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::Subtract,
+        0x93,
+        "subtract",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::Multiply,
+        0x94,
+        "multiply",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::Divide,
+        0x95,
+        "divide",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::Equal,
+        0x96,
+        "equal",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::NotEqual,
+        0x97,
+        "not_equal",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::LessThan,
+        0x98,
+        "less_than",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::LessOrEqual,
+        0x99,
+        "less_or_equal",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::GreaterThan,
+        0x9A,
+        "greater_than",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
+    ),
+    descriptor(
+        Opcode::GreaterOrEqual,
+        0x9B,
+        "greater_or_equal",
+        &[],
+        &[],
+        &[fixed_effect(2)],
+        &[fixed_effect(1)],
+        &[],
     ),
 ];
 
-// This eight-field helper mirrors the 42-entry const table row schema;
+// This eight-field helper mirrors the 62-entry const table row schema;
 // wrapping a row in another struct would make the table harder to audit.
 #[allow(clippy::too_many_arguments)]
 const fn descriptor(

@@ -43,15 +43,15 @@ fn assemble_function_matches_hand_written_wordcode() {
         EncodedInstruction::new(0x00, vec![0]),
         EncodedInstruction::new(0x03, vec![0]),
         EncodedInstruction::new(0x11, vec![0]),
-        EncodedInstruction::new(0x20, vec![0, 0]),
+        EncodedInstruction::new(0x20, vec![0, 0, 0]),
         EncodedInstruction::new(0x14, vec![]),
-        EncodedInstruction::new(0x13, vec![0, 0]),
+        EncodedInstruction::new(0x13, vec![0]),
         EncodedInstruction::new(0x10, vec![0]),
         EncodedInstruction::new(0x72, vec![0]),
         EncodedInstruction::new(0x14, vec![]),
         EncodedInstruction::new(0x73, vec![0]),
-        EncodedInstruction::new(0x22, vec![2, 0, 0]),
-        EncodedInstruction::new(0x11, vec![0xFFFF_FFEC]),
+        EncodedInstruction::new(0x22, vec![2, 0, 1, 0]),
+        EncodedInstruction::new(0x11, vec![0xFFFF_FFEB]),
         EncodedInstruction::new(0x25, vec![]),
     ];
     let words = assemble_function(&instructions).expect("assemble");
@@ -76,7 +76,7 @@ fn assemble_function_matches_hand_written_wordcode() {
     );
     assert_eq!(
         decoded.header_pcs,
-        vec![0, 2, 4, 6, 9, 10, 13, 15, 17, 18, 20, 24, 26]
+        vec![0, 2, 4, 6, 10, 11, 13, 15, 17, 18, 20, 25, 27]
     );
 }
 
@@ -88,8 +88,8 @@ fn encode_rejects_unknown_opcode_and_operand_count_mismatch() {
         Err(EncodeError::UnknownOpcode(0xFF))
     );
     assert_eq!(
-        encode_instruction(0x90, &[]),
-        Err(EncodeError::UnknownOpcode(0x90))
+        encode_instruction(0x9C, &[]),
+        Err(EncodeError::UnknownOpcode(0x9C))
     );
     assert_eq!(
         encode_instruction(0x10, &[0, 1]),
@@ -198,15 +198,17 @@ fn branch_target_decode_is_overflow_safe() {
     assert_eq!(decode_branch_target(u32::MAX, 3, 0x7FFF_FFFF), None);
 }
 
-/// The table is ascending, complete (42 rows) and lookup-consistent.
+/// The table is ascending, complete (62 rows) and lookup-consistent.
 #[test]
 fn opcode_table_is_complete_sorted_and_lookup_consistent() {
     let expected: Vec<u8> = vec![
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x11, 0x12, 0x13, 0x14, 0x20, 0x21, 0x22, 0x23,
-        0x24, 0x25, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x50, 0x51, 0x52, 0x53, 0x54,
-        0x55, 0x56, 0x57, 0x58, 0x59, 0x60, 0x61, 0x70, 0x71, 0x72, 0x73, 0x80,
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+        0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x30, 0x31, 0x32, 0x33, 0x40, 0x41, 0x42, 0x43, 0x50,
+        0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x60, 0x61, 0x70,
+        0x71, 0x72, 0x73, 0x80, 0x81, 0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99,
+        0x9A, 0x9B,
     ];
-    assert_eq!(OPCODE_TABLE.len(), 42);
+    assert_eq!(OPCODE_TABLE.len(), 62);
     assert_eq!(
         OPCODE_TABLE
             .iter()
@@ -221,7 +223,7 @@ fn opcode_table_is_complete_sorted_and_lookup_consistent() {
         );
     }
     for forbidden in [
-        0x06, 0x0F, 0x15, 0x1F, 0x26, 0x34, 0x44, 0x5A, 0x62, 0x74, 0x81, 0x8F, 0x90, 0xFF,
+        0x09, 0x0F, 0x16, 0x1F, 0x26, 0x34, 0x44, 0x5D, 0x62, 0x74, 0x82, 0x8F, 0x9C, 0xFF,
     ] {
         assert_eq!(
             opcode_for(forbidden),
@@ -261,8 +263,8 @@ fn opcode_numeric_and_semantic_descriptors_are_one_to_one() {
         assert_eq!(descriptor_for_opcode(descriptor.kind), descriptor);
     }
 
-    assert_eq!(encoded.len(), 42);
-    assert_eq!(semantic.len(), 42);
+    assert_eq!(encoded.len(), 62);
+    assert_eq!(semantic.len(), 62);
     assert_eq!(opcode_kind(0xFF), None);
 }
 
@@ -318,11 +320,79 @@ fn opcode_operand_roles_are_complete_unique_and_readable() {
     assert_eq!(call.operand_position(OperandRole::InterfaceTarget), Some(0));
     assert_eq!(call.operand_position(OperandRole::MethodOrdinal), Some(1));
     assert_eq!(call.operand_position(OperandRole::ArgCount), Some(2));
+    assert_eq!(call.operand_position(OperandRole::ResultCount), Some(3));
     assert_eq!(
-        call.operand_word(OperandRole::ArgCount, &[7, 11, 3]),
-        Some(3)
+        call.operand_word(OperandRole::ResultCount, &[7, 11, 3, 1, 9]),
+        Some(1)
     );
     assert_eq!(call.operand_position(OperandRole::BranchTarget), None);
+}
+
+/// Slot-to-stack transfer and non-tail call results are explicit semantic
+/// contracts; no consumer has to infer them from slots or callee metadata.
+#[test]
+fn transfer_and_call_result_stack_contracts_are_explicit() {
+    for kind in [Opcode::LoadSlot, Opcode::TakeSlot] {
+        let descriptor = descriptor_for_opcode(kind);
+        assert_eq!(descriptor.operand_roles, &[OperandRole::SourceSlot]);
+        assert!(descriptor.stack_in.is_empty());
+        assert_eq!(descriptor.stack_out.len(), 1);
+        assert_eq!(descriptor.stack_out[0].arity, Arity::Fixed(1));
+    }
+
+    for kind in [
+        Opcode::CallLocal,
+        Opcode::CallService,
+        Opcode::CallActor,
+        Opcode::CallInterface,
+        Opcode::InvokeCallback,
+    ] {
+        let descriptor = descriptor_for_opcode(kind);
+        assert!(descriptor
+            .operand_position(OperandRole::ResultCount)
+            .is_some());
+        assert_eq!(descriptor.stack_out.len(), 1);
+        assert_eq!(
+            descriptor.stack_out[0].arity,
+            Arity::Declared(OperandRole::ResultCount)
+        );
+    }
+
+    let tail_call = descriptor_for_opcode(Opcode::TailCallLocal);
+    assert_eq!(tail_call.operand_position(OperandRole::ResultCount), None);
+    assert!(tail_call.stack_out.is_empty());
+}
+
+/// Typed scalar operations have fixed stack effects. Eager logical And/Or
+/// deliberately have no opcodes; the emitter preserves short-circuiting with
+/// control-flow instructions.
+#[test]
+fn typed_scalar_opcode_stack_contracts_are_fixed() {
+    for kind in [Opcode::Not, Opcode::Negate] {
+        let descriptor = descriptor_for_opcode(kind);
+        assert!(descriptor.operand_layout.is_empty());
+        assert_eq!(descriptor.stack_in[0].arity, Arity::Fixed(1));
+        assert_eq!(descriptor.stack_out[0].arity, Arity::Fixed(1));
+    }
+    for kind in [
+        Opcode::Add,
+        Opcode::Subtract,
+        Opcode::Multiply,
+        Opcode::Divide,
+        Opcode::Equal,
+        Opcode::NotEqual,
+        Opcode::LessThan,
+        Opcode::LessOrEqual,
+        Opcode::GreaterThan,
+        Opcode::GreaterOrEqual,
+    ] {
+        let descriptor = descriptor_for_opcode(kind);
+        assert!(descriptor.operand_layout.is_empty());
+        assert_eq!(descriptor.stack_in[0].arity, Arity::Fixed(2));
+        assert_eq!(descriptor.stack_out[0].arity, Arity::Fixed(1));
+    }
+    assert_eq!(opcode_for(0x9C), None);
+    assert_eq!(opcode_for(0x9D), None);
 }
 
 /// Operand roles are an immutable part of the canonical opcode projection.
@@ -330,7 +400,7 @@ fn opcode_operand_roles_are_complete_unique_and_readable() {
 fn opcode_table_fingerprint_with_operand_roles_is_frozen() {
     assert_eq!(
         opcode_table_fingerprint(),
-        "b63a4be7788fb88fd3894aba390b6063fb1718c291c2c6d661f75c37b507a8f6"
+        "b7a38d341715a27c87bab011d2cbfdc87d14cb4d87d00d3d925d3c8dace6a405"
     );
 }
 
@@ -369,6 +439,17 @@ fn validated_view_retains_linker_facts_after_raw_artifact_is_dropped() {
         crate::PackageCallableId::new("effect-summary:module::main")
     );
     assert_eq!(view.debug_table(), Some(&expected_debug_table));
+    assert_eq!(view.schema_version(), BYTECODE_SCHEMA_VERSION);
+    assert_eq!(view.isa_version(), BYTECODE_ISA_VERSION);
+    assert_eq!(
+        view.bytecode_identity(),
+        "skiff-bytecode-image-v1:sha256:fixture"
+    );
+    assert_eq!(view.opcode_table_fingerprint(), opcode_table_fingerprint());
+    assert_eq!(view.constant_roots()["const:implementation"], 2);
+    assert_eq!(view.resume_sites().len(), 1);
+    assert_eq!(view.resume_sites()[0].site_pc, 20);
+    assert_eq!(validated.relocations, main_function().relocations);
 
     let mut without_debug = canonical_artifact();
     without_debug.image.debug_table = None;
@@ -452,11 +533,13 @@ fn encode_decode_encode_is_idempotent() {
 /// round-trips through assemble → decode → re-assemble with identical words.
 #[test]
 fn zero_operand_instruction_mix_round_trips() {
-    let instructions: Vec<EncodedInstruction> =
-        [0x05, 0x14, 0x25, 0x51, 0x52, 0x53, 0x56, 0x57, 0x58, 0x71]
-            .iter()
-            .map(|&opcode| EncodedInstruction::new(opcode, vec![]))
-            .collect();
+    let instructions: Vec<EncodedInstruction> = [
+        0x05, 0x08, 0x14, 0x25, 0x51, 0x52, 0x53, 0x56, 0x57, 0x58, 0x5A, 0x5B, 0x5C, 0x90, 0x91,
+        0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0x9B,
+    ]
+    .iter()
+    .map(|&opcode| EncodedInstruction::new(opcode, vec![]))
+    .collect();
     let words = assemble_function(&instructions).expect("assemble");
     let decoded = BoundedDecoder::new()
         .decode_function(&words)

@@ -12,19 +12,41 @@ mod schema_snapshot;
 use std::collections::BTreeMap;
 
 use crate::bytecode::dto::{
-    BytecodeArtifact, BytecodeImage, BytecodePoolEntry, BytecodePools, BytecodeRelocation,
+    ActiveRegion, ActiveRegionKind, BytecodeArtifact, BytecodeConstantRef, BytecodeImage,
+    BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
     CallbackCaptureDecl, CallbackCaptureLayout, CatchMatcher, DebugBinding, DebugTable,
-    ExceptionRegion, FrameLayout, FrozenConstantGraph, FrozenConstantNode, ParameterSlotDecl,
-    RelocatableBytecodeFunction, ResumeDescriptor, ShapeDeclaration, SourceMapEntry,
-    StatementEntry, SwitchTable, ValueTransferPlan, ValueTransferPlanKind, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    ExceptionRegion, FrameLayout, FrozenBehaviorBinding, FrozenConstantGraph, FrozenConstantNode,
+    HostEffectReference, HostEffectSignature, ParameterSlotDecl, RelocatableBytecodeFunction,
+    ResourceDropPlan, ResumeDescriptor, ResumeErrorMode, ShapeDeclaration, ShapeFieldDeclaration,
+    SourceMapEntry, StatementChargeKind, StatementEntry, SwitchCase, SwitchTable, ValueDropPlan,
+    ValueTransferPlan, ValueTransferPlanKind, WritablePathDeclaration, WritablePathSegment,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::opcode_table_fingerprint;
-use crate::refs::SourcePosition;
 use crate::types::TypeRefIr;
 
 pub(crate) fn plan(kind: ValueTransferPlanKind) -> ValueTransferPlan {
-    ValueTransferPlan { kind }
+    match kind {
+        ValueTransferPlanKind::SnapshotShare => ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::Trivial,
+        },
+        ValueTransferPlanKind::MoveOnly => ValueTransferPlan::MoveOnly {
+            drop: ValueDropPlan::Trivial,
+        },
+        ValueTransferPlanKind::AffineResource => ValueTransferPlan::AffineResource {
+            drop: ResourceDropPlan::ResourceTableRelease,
+        },
+        ValueTransferPlanKind::ExplicitCloneLease => ValueTransferPlan::ExplicitCloneLease {
+            clone_adapter: crate::bytecode::dto::NativeValueAdapterRef {
+                binding_key: "lifecycle.clone.fixture".to_string(),
+            },
+            drop: ResourceDropPlan::NativeAdapter {
+                adapter: crate::bytecode::dto::NativeValueAdapterRef {
+                    binding_key: "lifecycle.drop.fixture".to_string(),
+                },
+            },
+        },
+    }
 }
 
 pub(crate) fn snapshot_share() -> ValueTransferPlan {
@@ -46,16 +68,16 @@ pub(crate) fn number_type() -> TypeRefIr {
 /// 0    const pool[0]
 /// 2    store_slot slot0
 /// 4    jump_if_true -> 6
-/// 6    call_local reloc[0], argCount 0
-/// 9    budget_checkpoint
-/// 10   switch_tag table[0], default -> 13
+/// 6    call_local reloc[0], argCount 0, resultCount 0
+/// 10   budget_checkpoint
+/// 11   switch_tag table[0]
 /// 13   jump -> 15
-/// 15   enter_region region[0]
+/// 15   enter_region activeRegion[0]
 /// 17   budget_checkpoint
-/// 18   leave_region region[0]
-/// 20   call_service reloc[2], argCount 0, resume pool[0]
-/// 24   jump_if_false -> 6
-/// 26   return
+/// 18   leave_region activeRegion[0]
+/// 20   call_service reloc[2], argCount 0, resultCount 1, resume pool[0]
+/// 25   jump_if_false -> 6
+/// 27   return
 /// ```
 pub(crate) fn main_function_words() -> Vec<u32> {
     vec![
@@ -68,9 +90,9 @@ pub(crate) fn main_function_words() -> Vec<u32> {
         0x20,
         0,
         0,
+        0,
         0x14,
         0x13,
-        0,
         0,
         0x10,
         0,
@@ -82,9 +104,10 @@ pub(crate) fn main_function_words() -> Vec<u32> {
         0x22,
         2,
         0,
+        1,
         0,
         0x11,
-        0xFFFF_FFEC,
+        0xFFFF_FFEB,
         0x25,
     ]
 }
@@ -97,12 +120,25 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
         relocations: vec![
             BytecodeRelocation::LocalExecutableRef {
                 function_key: "module::helper".to_string(),
+                specialization: BytecodeSpecialization {
+                    type_arguments: vec![string_type()],
+                    concrete_receiver: None,
+                },
             },
             BytecodeRelocation::InterfaceRequirementRef {
-                interface_identity: "interface:reader".to_string(),
+                interface: crate::InterfaceInstantiationRef {
+                    interface_abi_id: "interface:reader".to_string(),
+                    canonical_type_args: Vec::new(),
+                },
             },
             BytecodeRelocation::ServiceOperationRef {
-                operation_abi_id: "operation:svc:call".to_string(),
+                service_call: crate::ServiceCallRef {
+                    service_requirement_slot: 0,
+                    contract_operation_id: crate::ContractOperationId::new("operation:svc:call"),
+                    expected_protocol_identity: crate::ServiceProtocolIdentity::new(
+                        "protocol:svc:v1",
+                    ),
+                },
             },
         ],
         frame_layout: FrameLayout {
@@ -110,6 +146,7 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
             slot_type_refs: vec![0, 0, 1, 1],
             parameter_slots: vec![ParameterSlotDecl {
                 slot: 0,
+                mode: crate::ParamModeIr::Value,
                 plan: snapshot_share(),
             }],
             result_count: 1,
@@ -127,44 +164,75 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
         exception_regions: vec![ExceptionRegion {
             start_pc: 15,
             end_pc: 20,
-            handler_pc: 26,
+            handler_pc: 27,
             handler_stack_height: 0,
             catch_matchers: vec![CatchMatcher::TypeRef { type_ref: 0 }],
             catch_slot: 1,
+            catch_slot_type_ref: 0,
             cleanup_depth: 0,
         }],
+        active_regions: vec![ActiveRegion {
+            start_pc: 15,
+            end_pc: 20,
+            kind: ActiveRegionKind::Timeout {
+                duration_ms: 1_000,
+                site: crate::InstructionSourceSite::Synthetic {
+                    reason: crate::SyntheticInstructionSiteReason::RuntimeControlFlow,
+                },
+            },
+        }],
         switch_tables: vec![SwitchTable {
-            tag_pool_index: 0,
-            targets: vec![4, 13],
+            cases: vec![
+                SwitchCase {
+                    tag_type_ref: 0,
+                    target_pc: 4,
+                },
+                SwitchCase {
+                    tag_type_ref: 1,
+                    target_pc: 13,
+                },
+            ],
+            default_pc: 13,
         }],
         statement_entries: vec![
             StatementEntry {
                 pc: 0,
                 statement_id: "s:main:0".to_string(),
+                charge_kind: StatementChargeKind::FunctionEntry,
             },
             StatementEntry {
-                pc: 9,
+                pc: 10,
                 statement_id: "s:main:1".to_string(),
+                charge_kind: StatementChargeKind::Statement,
             },
             StatementEntry {
-                pc: 24,
+                pc: 25,
                 statement_id: "s:main:2".to_string(),
+                charge_kind: StatementChargeKind::LoopCheck,
             },
         ],
         source_map: vec![
             SourceMapEntry {
-                start: 0,
-                end: 6,
-                source_id: 0,
-                start_position: SourcePosition::new(1, 1),
-                end_position: SourcePosition::new(3, 1),
+                start_pc: 0,
+                end_pc: 10,
+                site: crate::InstructionSourceSite::Source {
+                    span: crate::SourceSpanRef {
+                        source_id: 0,
+                        start: crate::SourcePosition::new(1, 1),
+                        end: crate::SourcePosition::new(3, 1),
+                    },
+                },
             },
             SourceMapEntry {
-                start: 7,
-                end: 27,
-                source_id: 0,
-                start_position: SourcePosition::new(3, 1),
-                end_position: SourcePosition::new(9, 1),
+                start_pc: 10,
+                end_pc: 28,
+                site: crate::InstructionSourceSite::Source {
+                    span: crate::SourceSpanRef {
+                        source_id: 0,
+                        start: crate::SourcePosition::new(3, 1),
+                        end: crate::SourcePosition::new(9, 1),
+                    },
+                },
             },
         ],
     }
@@ -173,7 +241,7 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
 pub(crate) fn helper_function() -> RelocatableBytecodeFunction {
     RelocatableBytecodeFunction {
         function_key: "module::helper".to_string(),
-        type_parameters: Vec::new(),
+        type_parameters: vec!["T".to_string()],
         words: vec![0x14, 0x25],
         relocations: Vec::new(),
         frame_layout: FrameLayout {
@@ -188,48 +256,107 @@ pub(crate) fn helper_function() -> RelocatableBytecodeFunction {
         max_operand_depth: 2,
         effect_summary_ref: crate::PackageCallableId::new("operation:module:helper"),
         exception_regions: Vec::new(),
+        active_regions: Vec::new(),
         switch_tables: Vec::new(),
-        statement_entries: Vec::new(),
+        statement_entries: vec![StatementEntry {
+            pc: 0,
+            statement_id: "s:helper:entry".to_string(),
+            charge_kind: StatementChargeKind::FunctionEntry,
+        }],
         source_map: Vec::new(),
     }
 }
 
 pub(crate) fn canonical_pools() -> BytecodePools {
     BytecodePools {
-        constants: vec![BytecodePoolEntry::FrozenConstantRef { node_index: 0 }],
+        constants: vec![
+            BytecodePoolEntry::ConstantRef {
+                reference: BytecodeConstantRef::LocalNode { node_index: 1 },
+                type_ref: 0,
+                plan: snapshot_share(),
+            },
+            BytecodePoolEntry::ConstantRef {
+                reference: BytecodeConstantRef::LocalNode { node_index: 3 },
+                type_ref: 0,
+                plan: snapshot_share(),
+            },
+            BytecodePoolEntry::ConstantRef {
+                reference: BytecodeConstantRef::LocalNode { node_index: 4 },
+                type_ref: 0,
+                plan: snapshot_share(),
+            },
+        ],
         types: vec![
             BytecodePoolEntry::TypeRef { ty: string_type() },
             BytecodePoolEntry::TypeRef { ty: number_type() },
         ],
         shapes: vec![BytecodePoolEntry::ShapeRef {
             shape: ShapeDeclaration {
-                field_count: 1,
-                field_types: vec![0],
+                type_ref: 0,
+                fields: vec![ShapeFieldDeclaration {
+                    name: "value".to_string(),
+                    type_ref: 0,
+                    plan: snapshot_share(),
+                }],
             },
         }],
-        effects: vec![BytecodePoolEntry::HostEffectRef {
-            effect_ref: "effect:llm".to_string(),
-        }],
+        effects: vec![BytecodePoolEntry::HostEffectRef(HostEffectReference {
+            target: crate::NativeTarget {
+                namespace: "fixture".to_string(),
+                symbol: "effect".to_string(),
+                binding_key: Some("fixture.effect".to_string()),
+                metadata: BTreeMap::new(),
+            },
+            signature: HostEffectSignature {
+                parameter_types: Vec::new(),
+                parameter_modes: Vec::new(),
+                parameter_plans: Vec::new(),
+                result_types: vec![number_type()],
+                result_plans: vec![snapshot_share()],
+                effects: crate::CallableMayEffects {
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_pending: true,
+                    pending_effect_categories: vec![crate::PendingEffectCategory::NativeCall],
+                    inout_path_effects: Vec::new(),
+                },
+            },
+        })],
         resume: vec![BytecodePoolEntry::ResumeDescriptor(ResumeDescriptor {
-            result_type_ref: 1,
-            expected_stack_height: 2,
-            result_plan: snapshot_share(),
+            function_key: "module::main".to_string(),
+            site_pc: 20,
+            resume_pc: 25,
+            expected_stack_height_before_result: 2,
+            result_type_refs: vec![1],
+            result_plans: vec![snapshot_share()],
+            error_mode: ResumeErrorMode::RaiseAtSite,
         })],
         callback_capture: vec![BytecodePoolEntry::CallbackCaptureLayout(
             CallbackCaptureLayout {
                 function_key: "module::helper".to_string(),
                 captures: vec![
                     CallbackCaptureDecl {
-                        slot: 0,
+                        target_slot: 0,
+                        type_ref: 0,
                         plan: snapshot_share(),
                     },
                     CallbackCaptureDecl {
-                        slot: 1,
+                        target_slot: 1,
+                        type_ref: 1,
                         plan: plan(ValueTransferPlanKind::MoveOnly),
                     },
                 ],
             },
         )],
+        writable_paths: vec![BytecodePoolEntry::WritablePath(WritablePathDeclaration {
+            root_type_ref: 0,
+            leaf_type_ref: 0,
+            segments: vec![WritablePathSegment::DenseField {
+                shape_ref: 0,
+                field_ordinal: 0,
+            }],
+        })],
     }
 }
 
@@ -246,9 +373,15 @@ pub(crate) fn canonical_constant_graph() -> FrozenConstantGraph {
                 shape_index: 0,
                 children: vec![0],
             },
-            FrozenConstantNode::TypeRef { type_ref: 0 },
-            FrozenConstantNode::Behavior {
-                function_key: "module::helper".to_string(),
+            FrozenConstantNode::Representation {
+                type_ref: 0,
+                value: 2,
+            },
+            FrozenConstantNode::Implementation {
+                record: 2,
+                behaviors: vec![FrozenBehaviorBinding {
+                    function_key: "module::helper".to_string(),
+                }],
             },
         ],
     }
@@ -288,6 +421,11 @@ pub(crate) fn canonical_artifact() -> BytecodeArtifact {
         image: BytecodeImage {
             functions,
             pools: canonical_pools(),
+            constant_roots: BTreeMap::from([
+                ("const:array".to_string(), 0),
+                ("const:implementation".to_string(), 2),
+                ("const:representation".to_string(), 1),
+            ]),
             frozen_constant_graph: canonical_constant_graph(),
             debug_table: Some(canonical_debug_table()),
         },

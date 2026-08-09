@@ -10,9 +10,10 @@
 use std::collections::BTreeMap;
 
 use crate::bytecode::dto::{
-    limits, BytecodeArtifact, BytecodeImage, BytecodePoolEntry, BytecodePools, DebugBinding,
-    DebugTable, FrameLayout, FrozenConstantGraph, FrozenConstantNode, RelocatableBytecodeFunction,
-    SwitchTable, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    limits, BytecodeArtifact, BytecodeConstantRef, BytecodeImage, BytecodePoolEntry, BytecodePools,
+    BytecodeSpecialization, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
+    FrozenConstantNode, RelocatableBytecodeFunction, StatementChargeKind, StatementEntry,
+    SwitchCase, SwitchTable, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::opcode_table_fingerprint;
 use crate::types::{LiteralIr, TypeRefIr};
@@ -40,6 +41,7 @@ fn minimal_artifact(functions: BTreeMap<String, RelocatableBytecodeFunction>) ->
         image: BytecodeImage {
             functions,
             pools,
+            constant_roots: BTreeMap::new(),
             frozen_constant_graph: FrozenConstantGraph::default(),
             debug_table: None,
         },
@@ -70,8 +72,16 @@ fn checkpoint_function(
         max_operand_depth: 0,
         effect_summary_ref: crate::PackageCallableId::new("operation:limit"),
         exception_regions: Vec::new(),
+        active_regions: Vec::new(),
         switch_tables: Vec::new(),
-        statement_entries: Vec::new(),
+        statement_entries: (!key.is_empty() && instruction_count > 0)
+            .then(|| StatementEntry {
+                pc: 0,
+                statement_id: "entry".to_string(),
+                charge_kind: StatementChargeKind::FunctionEntry,
+            })
+            .into_iter()
+            .collect(),
         source_map: Vec::new(),
     }
 }
@@ -95,11 +105,13 @@ fn limit_constants_match_design_table() {
     assert_eq!(limits::MAX_FUNCTIONS, 100_000);
     assert_eq!(limits::MAX_WORDS_PER_FUNCTION, 1_000_000);
     assert_eq!(limits::MAX_RELOCATIONS_PER_FUNCTION, 100_000);
+    assert_eq!(limits::MAX_SERVICE_REQUIREMENTS, 100_000);
     assert_eq!(limits::MAX_TABLE_ENTRIES, 1_000_000);
     assert_eq!(limits::MAX_POOL_ENTRIES, 1_000_000);
     assert_eq!(limits::MAX_SLOTS_PER_FRAME, 65_536);
     assert_eq!(limits::MAX_OPERAND_DEPTH, 65_536);
     assert_eq!(limits::MAX_ARITY, 256);
+    assert_eq!(limits::MAX_RESULTS_PER_CALL, 1);
     assert_eq!(limits::MAX_NESTING_DEPTH, 64);
     assert_eq!(limits::MAX_CONSTANT_GRAPH_NODES, 1_000_000);
     assert_eq!(limits::MAX_CONSTANT_GRAPH_BYTES, 64 * 1024 * 1024);
@@ -131,6 +143,35 @@ fn max_arity_boundary() {
     let error = assert_rejected(&above);
     assert!(matches!(error, StructuralValidationError::Operand { .. }));
     assert!(error.to_string().contains("MAX_ARITY"), "{error}");
+}
+
+/// ISA v3 accepts only zero or one result from a non-tail call before the
+/// semantic verifier cross-checks the linked callee signature.
+#[test]
+fn max_results_per_call_boundary() {
+    let words_at = |result_count: u32| {
+        let mut words = main_function_words();
+        words[9] = result_count; // call_local resultCount operand
+        words
+    };
+
+    let mut at_limit = canonical_artifact();
+    at_limit
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .words = words_at(1);
+    assert_validates(&at_limit);
+
+    let mut above = canonical_artifact();
+    above.image.functions.get_mut("module::main").unwrap().words = words_at(2);
+    let error = assert_rejected(&above);
+    assert!(matches!(error, StructuralValidationError::Operand { .. }));
+    assert!(
+        error.to_string().contains("MAX_RESULTS_PER_CALL"),
+        "{error}"
+    );
 }
 
 /// MAX_SLOTS_PER_FRAME: slotCount 65_536 passes, 65_537 is rejected.
@@ -206,10 +247,22 @@ fn max_nesting_depth_constant_graph_boundary() {
 
     let (mut at_limit, _) = single_function_artifact(1, 0);
     at_limit.image.frozen_constant_graph = graph_at(64);
+    at_limit.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: string_type() }];
+    at_limit.image.pools.constants = vec![BytecodePoolEntry::ConstantRef {
+        reference: BytecodeConstantRef::LocalNode { node_index: 63 },
+        type_ref: 0,
+        plan: snapshot_share(),
+    }];
     assert_validates(&at_limit);
 
     let (mut above, _) = single_function_artifact(1, 0);
     above.image.frozen_constant_graph = graph_at(65);
+    above.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: string_type() }];
+    above.image.pools.constants = vec![BytecodePoolEntry::ConstantRef {
+        reference: BytecodeConstantRef::LocalNode { node_index: 64 },
+        type_ref: 0,
+        plan: snapshot_share(),
+    }];
     let error = assert_rejected(&above);
     assert!(matches!(error, StructuralValidationError::Limits { .. }));
     assert!(error.to_string().contains("MAX_NESTING_DEPTH"), "{error}");
@@ -246,10 +299,17 @@ fn max_nesting_depth_type_pool_boundary() {
 fn max_switch_table_targets_boundary() {
     let with_targets = |target_count: usize| -> BytecodeArtifact {
         let (mut artifact, _) = single_function_artifact(target_count + 1, 0);
-        artifact.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: string_type() }];
+        artifact.image.pools.types = (0..target_count.max(1))
+            .map(|_| BytecodePoolEntry::TypeRef { ty: string_type() })
+            .collect();
         artifact.image.functions.get_mut("f").unwrap().switch_tables = vec![SwitchTable {
-            tag_pool_index: 0,
-            targets: (0..target_count as u32).collect(),
+            cases: (0..target_count as u32)
+                .map(|index| SwitchCase {
+                    tag_type_ref: index,
+                    target_pc: index,
+                })
+                .collect(),
+            default_pc: 0,
         }];
         artifact
     };
@@ -289,6 +349,10 @@ fn max_relocations_per_function_boundary() {
             .map(
                 |index| crate::bytecode::dto::BytecodeRelocation::LocalExecutableRef {
                     function_key: format!("f{index}"),
+                    specialization: BytecodeSpecialization {
+                        type_arguments: Vec::new(),
+                        concrete_receiver: None,
+                    },
                 },
             )
             .collect();
@@ -391,6 +455,12 @@ fn max_debug_table_bytes_boundary() {
 fn max_constant_graph_bytes_boundary() {
     let with_literal_len = |len: usize| -> BytecodeArtifact {
         let (mut artifact, _) = single_function_artifact(1, 0);
+        artifact.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: string_type() }];
+        artifact.image.pools.constants = vec![BytecodePoolEntry::ConstantRef {
+            reference: BytecodeConstantRef::LocalNode { node_index: 0 },
+            type_ref: 0,
+            plan: snapshot_share(),
+        }];
         artifact.image.frozen_constant_graph = FrozenConstantGraph {
             nodes: vec![FrozenConstantNode::Literal {
                 literal: LiteralIr::String {
@@ -436,12 +506,26 @@ fn max_pool_entries_boundary() {
 fn max_constant_graph_nodes_boundary() {
     let with_node_count = |count: usize| -> BytecodeArtifact {
         let (mut artifact, _) = single_function_artifact(1, 0);
-        artifact.image.frozen_constant_graph = FrozenConstantGraph {
-            nodes: (0..count)
-                .map(|_| FrozenConstantNode::Literal {
-                    literal: LiteralIr::Null,
-                })
-                .collect(),
+        let mut nodes: Vec<_> = (0..count)
+            .map(|_| FrozenConstantNode::Literal {
+                literal: LiteralIr::Null,
+            })
+            .collect();
+        if count > 1 {
+            nodes[count - 1] = FrozenConstantNode::Array {
+                children: (0..(count - 1) as u32).collect(),
+            };
+        }
+        artifact.image.frozen_constant_graph = FrozenConstantGraph { nodes };
+        if count > 0 {
+            artifact.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: string_type() }];
+            artifact.image.pools.constants = vec![BytecodePoolEntry::ConstantRef {
+                reference: BytecodeConstantRef::LocalNode {
+                    node_index: (count - 1) as u32,
+                },
+                type_ref: 0,
+                plan: snapshot_share(),
+            }];
         };
         artifact
     };

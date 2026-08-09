@@ -37,7 +37,7 @@ const DRAW_ITERATIONS: u32 = 128;
 /// Zero-operand opcodes with no pool/reloc/table/slot references: any mix of
 /// these decodes and passes C1–C8 inside the minimal shell, so a seed
 /// generates a *legal* artifact deterministically.
-const LEGAL_OPCODES: [u8; 10] = [0x05, 0x14, 0x25, 0x51, 0x52, 0x53, 0x56, 0x57, 0x58, 0x71];
+const LEGAL_OPCODES: [u8; 10] = [0x05, 0x08, 0x14, 0x25, 0x51, 0x52, 0x53, 0x56, 0x57, 0x58];
 
 /// Deterministic pseudo-random word generator (same LCG constants as the
 /// existing `roundtrip::decode_never_panics...` smoke test).
@@ -132,6 +132,14 @@ fn legal_words(rng: &mut WordGen) -> Vec<u32> {
 /// relocation, table, slot or branch operand in `words` is therefore checked
 /// as out of bounds or mis-typed before any index access (C5/C6/C7).
 fn shell_artifact(words: Vec<u32>) -> BytecodeArtifact {
+    let statement_entries = (!words.is_empty())
+        .then(|| crate::bytecode::dto::StatementEntry {
+            pc: 0,
+            statement_id: "entry".to_string(),
+            charge_kind: crate::bytecode::dto::StatementChargeKind::FunctionEntry,
+        })
+        .into_iter()
+        .collect();
     let mut functions = BTreeMap::new();
     functions.insert(
         "f".to_string(),
@@ -152,8 +160,9 @@ fn shell_artifact(words: Vec<u32>) -> BytecodeArtifact {
             max_operand_depth: 0,
             effect_summary_ref: crate::PackageCallableId::new("operation:f"),
             exception_regions: Vec::new(),
+            active_regions: Vec::new(),
             switch_tables: Vec::new(),
-            statement_entries: Vec::new(),
+            statement_entries,
             source_map: Vec::new(),
         },
     );
@@ -166,6 +175,7 @@ fn shell_artifact(words: Vec<u32>) -> BytecodeArtifact {
         image: BytecodeImage {
             functions,
             pools: BytecodePools::default(),
+            constant_roots: std::collections::BTreeMap::new(),
             frozen_constant_graph: FrozenConstantGraph::default(),
             debug_table: None,
         },

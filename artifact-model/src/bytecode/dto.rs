@@ -8,7 +8,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::refs::SourcePosition;
 use crate::types::TypeRefIr;
 
 /// Trusted compile-time resource limits (§4.2). All counts/offsets/indices
@@ -22,6 +21,9 @@ pub mod limits {
     pub const MAX_WORDS_PER_FUNCTION: u64 = 1_000_000;
     /// Relocations in a single function.
     pub const MAX_RELOCATIONS_PER_FUNCTION: u64 = 100_000;
+    /// Consumer-local service requirement slots address a bounded declaration
+    /// table at link time; the slot index must be below this count bound.
+    pub const MAX_SERVICE_REQUIREMENTS: u64 = 100_000;
     /// Entries per auxiliary table (exceptionRegions/switchTables/
     /// statementEntries/sourceMap).
     pub const MAX_TABLE_ENTRIES: u64 = 1_000_000;
@@ -31,9 +33,12 @@ pub mod limits {
     pub const MAX_SLOTS_PER_FRAME: u64 = 65_536;
     /// Declared `maxOperandDepth` (and resume expected stack height).
     pub const MAX_OPERAND_DEPTH: u64 = 65_536;
-    /// Count-class immediates (argCount/captureCount/fieldCount/fieldOrdinal/
-    /// methodSlot/...).
+    /// General count-class immediates (argCount/captureCount/fieldCount/
+    /// fieldOrdinal/methodSlot/...). Call result counts use the tighter
+    /// `MAX_RESULTS_PER_CALL` bound.
     pub const MAX_ARITY: u64 = 256;
+    /// Results produced by one non-tail call in ISA v3.
+    pub const MAX_RESULTS_PER_CALL: u64 = 1;
     /// Constant graph / type pool nesting depth.
     pub const MAX_NESTING_DEPTH: u64 = 64;
     /// Frozen constant graph node count.
@@ -55,8 +60,8 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v2";
-pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v1";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v3";
+pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v3";
 
 /// Root bytecode artifact record (D11: one image per package).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -82,12 +87,15 @@ pub struct BytecodeImage {
     /// Function key (module-qualified) to relocatable function.
     pub functions: BTreeMap<String, RelocatableBytecodeFunction>,
     pub pools: BytecodePools,
+    /// Canonical constant symbol/path to constants-pool row. Anonymous
+    /// literal rows need no entry; exported/package-resolvable constants do.
+    pub constant_roots: BTreeMap<String, u32>,
     pub frozen_constant_graph: FrozenConstantGraph,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug_table: Option<DebugTable>,
 }
 
-/// The six artifact-level pools. Each category holds exactly one entry kind
+/// Artifact-level pools. Each category holds exactly one entry kind
 /// (see `opcodes::PoolCategory::expected_entry_kind`).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,10 +112,11 @@ pub struct BytecodePools {
     pub resume: Vec<BytecodePoolEntry>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub callback_capture: Vec<BytecodePoolEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writable_paths: Vec<BytecodePoolEntry>,
 }
 
-/// The six pool entry kinds (D5: `TypeRef`/`ShapeRef`/`FrozenConstantRef`
-/// appear primarily as pool entries in v1).
+/// Pool entry kinds. Every category has one exact compatible variant.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -117,8 +126,11 @@ pub struct BytecodePools {
 )]
 pub enum BytecodePoolEntry {
     /// Reference to a node of the artifact-level frozen constant graph.
-    FrozenConstantRef {
-        node_index: u32,
+    ConstantRef {
+        reference: BytecodeConstantRef,
+        /// Exact typed-stack output type; references the types pool.
+        type_ref: u32,
+        plan: ValueTransferPlan,
     },
     /// Type reference (reuses the File IR type vocabulary).
     TypeRef {
@@ -128,27 +140,28 @@ pub enum BytecodePoolEntry {
     ShapeRef {
         shape: ShapeDeclaration,
     },
-    /// Host effect pool entry (reserved: no v1 opcode consumes the effects
-    /// pool).
-    HostEffectRef {
-        effect_ref: String,
-    },
+    /// Exact native target and signature facts. Admission must match this
+    /// record against the authoritative native registry; it must never infer
+    /// a target or signature from a symbol string.
+    HostEffectRef(HostEffectReference),
     ResumeDescriptor(ResumeDescriptor),
     CallbackCaptureLayout(CallbackCaptureLayout),
+    WritablePath(WritablePathDeclaration),
 }
 
 impl BytecodePoolEntry {
     /// Which pool category this entry kind belongs to.
     pub fn category(&self) -> crate::bytecode::opcodes::PoolCategory {
         match self {
-            Self::FrozenConstantRef { .. } => crate::bytecode::opcodes::PoolCategory::Constants,
+            Self::ConstantRef { .. } => crate::bytecode::opcodes::PoolCategory::Constants,
             Self::TypeRef { .. } => crate::bytecode::opcodes::PoolCategory::Types,
             Self::ShapeRef { .. } => crate::bytecode::opcodes::PoolCategory::Shapes,
-            Self::HostEffectRef { .. } => crate::bytecode::opcodes::PoolCategory::Effects,
+            Self::HostEffectRef(..) => crate::bytecode::opcodes::PoolCategory::Effects,
             Self::ResumeDescriptor(..) => crate::bytecode::opcodes::PoolCategory::Resume,
             Self::CallbackCaptureLayout(..) => {
                 crate::bytecode::opcodes::PoolCategory::CallbackCapture
             }
+            Self::WritablePath(..) => crate::bytecode::opcodes::PoolCategory::WritablePaths,
         }
     }
 }
@@ -167,6 +180,7 @@ impl BytecodePools {
             crate::bytecode::opcodes::PoolCategory::Effects => &self.effects,
             crate::bytecode::opcodes::PoolCategory::Resume => &self.resume,
             crate::bytecode::opcodes::PoolCategory::CallbackCapture => &self.callback_capture,
+            crate::bytecode::opcodes::PoolCategory::WritablePaths => &self.writable_paths,
         };
         entries.get(index as usize)
     }
@@ -182,8 +196,25 @@ impl BytecodePools {
             crate::bytecode::opcodes::PoolCategory::CallbackCapture => {
                 self.callback_capture.len() as u64
             }
+            crate::bytecode::opcodes::PoolCategory::WritablePaths => {
+                self.writable_paths.len() as u64
+            }
         }
     }
+}
+
+/// A constant pool reference retains its owner. Package constants never
+/// masquerade as nodes in the caller's local frozen graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum BytecodeConstantRef {
+    LocalNode { node_index: u32 },
+    PackageSymbol { symbol: crate::PackageSymbolRef },
 }
 
 /// Relocatable template function (§3.2). `function_key` duplicates the image
@@ -205,6 +236,8 @@ pub struct RelocatableBytecodeFunction {
     pub effect_summary_ref: crate::PackageCallableId,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exception_regions: Vec<ExceptionRegion>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_regions: Vec<ActiveRegion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub switch_tables: Vec<SwitchTable>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -237,19 +270,58 @@ pub struct FrameLayout {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ParameterSlotDecl {
     pub slot: u32,
+    /// Calling mode is independent from the underlying value ownership plan.
+    /// InOut must never be inferred from MoveOnly or vice versa.
+    pub mode: crate::ParamModeIr,
     pub plan: ValueTransferPlan,
 }
 
 /// Schema declaration of the value-transfer plan attached to a parameter,
 /// result, slot or capture (R-220/Phase 1 part; move/share proofs are 3B/6B).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ValueTransferPlan {
-    pub kind: ValueTransferPlanKind,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ValueTransferPlan {
+    SnapshotShare {
+        drop: ValueDropPlan,
+    },
+    MoveOnly {
+        drop: ValueDropPlan,
+    },
+    AffineResource {
+        drop: ResourceDropPlan,
+    },
+    ExplicitCloneLease {
+        clone_adapter: NativeValueAdapterRef,
+        drop: ResourceDropPlan,
+    },
+    /// Relocatable plan expression for generic/aggregate types. Linking must
+    /// evaluate it against the exact instantiated type and authoritative
+    /// lifecycle registry; a linked plan may not retain this variant.
+    FromType {
+        ty: TypeRefIr,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+impl ValueTransferPlan {
+    pub const fn concrete_kind(&self) -> Option<ValueTransferPlanKind> {
+        match self {
+            Self::SnapshotShare { .. } => Some(ValueTransferPlanKind::SnapshotShare),
+            Self::MoveOnly { .. } => Some(ValueTransferPlanKind::MoveOnly),
+            Self::AffineResource { .. } => Some(ValueTransferPlanKind::AffineResource),
+            Self::ExplicitCloneLease { .. } => Some(ValueTransferPlanKind::ExplicitCloneLease),
+            Self::FromType { .. } => None,
+        }
+    }
+}
+
+/// Concrete linked plan kind. The relocatable [`ValueTransferPlan::FromType`]
+/// expression deliberately has no fifth concrete kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueTransferPlanKind {
     SnapshotShare,
     MoveOnly,
@@ -257,8 +329,83 @@ pub enum ValueTransferPlanKind {
     ExplicitCloneLease,
 }
 
-/// The ten relocation kinds (§3.4). Payloads carry target identity facts;
-/// resolution/linking is Phase 3B.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ValueDropPlan {
+    Trivial,
+    SnapshotRelease,
+    RecursiveShape { shape_ref: u32 },
+    NativeAdapter { adapter: NativeValueAdapterRef },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ResourceDropPlan {
+    ResourceTableRelease,
+    RecursiveShape { shape_ref: u32 },
+    NativeAdapter { adapter: NativeValueAdapterRef },
+}
+
+/// Exact lifecycle adapter key. It is intentionally not `NativeTarget`:
+/// lifecycle roles require a mandatory registry key and do not accept free
+/// target metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NativeValueAdapterRef {
+    pub binding_key: String,
+}
+
+/// Deterministic direct-call specialization input retained for the linker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BytecodeSpecialization {
+    /// Type arguments in target declaration ordinal order. The producer must
+    /// prove its input keys are exactly dense `T0..T(n-1)` before discarding
+    /// those caller-local placeholders; the linker validates arity against
+    /// the exact resolved target declaration. Required even when empty.
+    pub type_arguments: Vec<TypeRefIr>,
+    /// Concrete receiver/Self instantiation when the target is receiver-bound.
+    /// This field is required and serializes as `null` when absent.
+    pub concrete_receiver: Option<TypeRefIr>,
+}
+
+/// Exact native signature carried beside a host effect relocation. Generic
+/// native registry signatures are instantiated before artifact emission.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostEffectSignature {
+    pub parameter_types: Vec<TypeRefIr>,
+    pub parameter_modes: Vec<crate::ParamModeIr>,
+    pub parameter_plans: Vec<ValueTransferPlan>,
+    /// v3 supports zero or one result, but uses vectors so arity remains
+    /// explicit and exactly matches the opcode `resultCount`.
+    pub result_types: Vec<TypeRefIr>,
+    pub result_plans: Vec<ValueTransferPlan>,
+    pub effects: crate::CallableMayEffects,
+}
+
+/// Complete host effect lookup fact. A non-empty `NativeTarget::binding_key`
+/// is required by structural validation; registry absence or any exact target,
+/// metadata or signature mismatch is a linker/verifier error.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostEffectReference {
+    pub target: crate::NativeTarget,
+    pub signature: HostEffectSignature,
+}
+
+/// Relocation kinds (§3.4). Payloads carry target identity and
+/// specialization facts; resolution/linking is Phase 3B.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -267,19 +414,65 @@ pub enum ValueTransferPlanKind {
     deny_unknown_fields
 )]
 pub enum BytecodeRelocation {
-    LocalExecutableRef { function_key: String },
-    PackageCallableRef { package_callable_id: String },
-    ServiceOperationRef { operation_abi_id: String },
-    ActorMethodRef { method_abi_id: String },
-    InterfaceRequirementRef { interface_identity: String },
-    SyntheticCallbackRef { function_key: String },
-    HostEffectRef { effect_ref: String },
-    TypeRef { ty: TypeRefIr },
-    ShapeRef { shape_index: u32 },
-    FrozenConstantRef { node_index: u32 },
+    LocalExecutableRef {
+        function_key: String,
+        specialization: BytecodeSpecialization,
+    },
+    PackageCallableRef {
+        package_ref: crate::PackageRefIr,
+        package_callable_id: crate::PackageCallableId,
+        specialization: BytecodeSpecialization,
+    },
+    /// Consumer-owned symbolic service selector. It intentionally carries no
+    /// provider build, deployment or executable identity.
+    ServiceOperationRef {
+        service_call: crate::ServiceCallRef,
+    },
+    ActorMethodRef {
+        actor: crate::ServiceSymbolRef,
+        actor_abi_identity: crate::ActorAbiIdentity,
+        actor_implementation_identity: crate::ActorImplementationIdentity,
+        method_identity: crate::ActorMethodIdentity,
+    },
+    InterfaceRequirementRef {
+        interface: crate::InterfaceInstantiationRef,
+    },
+    LocalInterfaceRef {
+        interface: LocalInterfaceRef,
+    },
+    RemoteInterfaceRef {
+        interface: RemoteInterfaceRef,
+    },
+    SyntheticCallbackRef {
+        function_key: String,
+    },
+    HostEffectRef(HostEffectReference),
+    IntrinsicRef {
+        intrinsic: IntrinsicReference,
+    },
+    TypeRef {
+        ty: TypeRefIr,
+    },
+    ShapeRef {
+        shape_index: u32,
+    },
+    FrozenConstantRef {
+        node_index: u32,
+    },
 }
 
 impl BytecodeRelocation {
+    /// Specialization facts for direct template targets. Other target kinds
+    /// are non-generic in this ISA revision and reject an attempted
+    /// `specialization` wire field through `deny_unknown_fields`.
+    pub fn specialization(&self) -> Option<&BytecodeSpecialization> {
+        match self {
+            Self::LocalExecutableRef { specialization, .. }
+            | Self::PackageCallableRef { specialization, .. } => Some(specialization),
+            _ => None,
+        }
+    }
+
     /// The declared relocation kind (C5 compat check against opcode allowed
     /// set).
     pub fn kind(&self) -> crate::bytecode::opcodes::RelocationKind {
@@ -297,10 +490,17 @@ impl BytecodeRelocation {
             Self::InterfaceRequirementRef { .. } => {
                 crate::bytecode::opcodes::RelocationKind::InterfaceRequirementRef
             }
+            Self::LocalInterfaceRef { .. } => {
+                crate::bytecode::opcodes::RelocationKind::LocalInterfaceRef
+            }
+            Self::RemoteInterfaceRef { .. } => {
+                crate::bytecode::opcodes::RelocationKind::RemoteInterfaceRef
+            }
             Self::SyntheticCallbackRef { .. } => {
                 crate::bytecode::opcodes::RelocationKind::SyntheticCallbackRef
             }
-            Self::HostEffectRef { .. } => crate::bytecode::opcodes::RelocationKind::HostEffectRef,
+            Self::HostEffectRef(..) => crate::bytecode::opcodes::RelocationKind::HostEffectRef,
+            Self::IntrinsicRef { .. } => crate::bytecode::opcodes::RelocationKind::IntrinsicRef,
             Self::TypeRef { .. } => crate::bytecode::opcodes::RelocationKind::TypeRef,
             Self::ShapeRef { .. } => crate::bytecode::opcodes::RelocationKind::ShapeRef,
             Self::FrozenConstantRef { .. } => {
@@ -310,15 +510,94 @@ impl BytecodeRelocation {
     }
 }
 
-/// Dense record shape (referenced by `new_record`/`get_dense_field`/
-/// `set_writable_path` through the shapes pool).
+/// Exact local interface method table after executable indices have been
+/// resolved to artifact function keys.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalInterfaceRef {
+    pub interface: crate::InterfaceInstantiationRef,
+    pub concrete_type: TypeRefIr,
+    pub methods: Vec<LocalInterfaceMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocalInterfaceMethod {
+    pub slot: u32,
+    pub method_name: String,
+    pub method_abi_id: String,
+    pub signature: crate::InterfaceMethodSlotSignatureIr,
+    pub function_key: String,
+    pub receiver_call_abi: crate::ReceiverCallAbi,
+}
+
+/// Exact symbolic remote interface table. It remains consumer-owned and
+/// carries no provider build or executable identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteInterfaceRef {
+    pub service_requirement_slot: u32,
+    pub public_instance_key: String,
+    pub interface: crate::InterfaceInstantiationRef,
+    pub methods: Vec<RemoteInterfaceMethod>,
+    pub callee_protocol_identity: crate::ServiceProtocolIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RemoteInterfaceMethod {
+    pub slot: u32,
+    pub method_abi_id: String,
+    pub signature: crate::InterfaceMethodSlotSignatureIr,
+    pub contract_operation_id: crate::ContractOperationId,
+}
+
+/// Closed synchronous intrinsic target. Static keys are versioned registry
+/// entries; receiver intrinsics use the canonical typed builtin op.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum BytecodeIntrinsicRef {
+    Static {
+        canonical_key: String,
+        signature_version: u32,
+    },
+    Receiver {
+        op: crate::BuiltinReceiverOp,
+    },
+}
+
+/// Instantiated synchronous intrinsic target and transfer signature. The
+/// authoritative registry must exact-match every field and confirm NoPending.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IntrinsicReference {
+    pub target: BytecodeIntrinsicRef,
+    pub signature: HostEffectSignature,
+}
+
+/// Nominal record shape. The type identity participates in canonical pooling,
+/// so equal layouts from different nominal types never merge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ShapeDeclaration {
-    pub field_count: u32,
-    /// Field types, in ordinal order; each references the types pool.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub field_types: Vec<u32>,
+    /// Nominal or exact structural type; references the types pool.
+    pub type_ref: u32,
+    /// Strictly ascending UTF-8 field names define dense field ordinal order.
+    pub fields: Vec<ShapeFieldDeclaration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ShapeFieldDeclaration {
+    pub name: String,
+    /// References the types pool.
+    pub type_ref: u32,
+    pub plan: ValueTransferPlan,
 }
 
 /// Artifact-level frozen constant graph (D9: `child index < parent index`
@@ -351,13 +630,17 @@ pub enum FrozenConstantNode {
         shape_index: u32,
         children: Vec<u32>,
     },
-    /// `type_ref` references the types pool.
-    TypeRef {
+    /// Representation wrapper with an explicit child edge. The wrapper node,
+    /// not the child, becomes the graph root.
+    Representation {
         type_ref: u32,
+        value: u32,
     },
-    /// Frozen behavior; `function_key` must exist in the image.
-    Behavior {
-        function_key: String,
+    /// Exact impl record/behavior relation. The implementation node, not the
+    /// record, is the graph root.
+    Implementation {
+        record: u32,
+        behaviors: Vec<FrozenBehaviorBinding>,
     },
 }
 
@@ -366,12 +649,24 @@ impl FrozenConstantNode {
     pub fn children(&self) -> &[u32] {
         match self {
             Self::Array { children } | Self::Record { children, .. } => children,
-            Self::Literal { .. } | Self::TypeRef { .. } | Self::Behavior { .. } => &[],
+            Self::Representation { value, .. } => std::slice::from_ref(value),
+            Self::Implementation { record, .. } => std::slice::from_ref(record),
+            Self::Literal { .. } => &[],
         }
     }
 }
 
-/// Exception region (§13.1). All pcs are function-local word offsets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FrozenBehaviorBinding {
+    /// Exact artifact function key, sorted strictly ascending within one
+    /// implementation node.
+    pub function_key: String,
+}
+
+/// Exception region (§13.1). All pcs are function-local word offsets. Lookup
+/// selects the innermost containing region whose canonical matcher accepts;
+/// cleanup runs before the original envelope is written to `catch_slot`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ExceptionRegion {
@@ -382,6 +677,10 @@ pub struct ExceptionRegion {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub catch_matchers: Vec<CatchMatcher>,
     pub catch_slot: u32,
+    /// Exact RequestException-envelope type; must equal the catch slot's frame
+    /// type. Matchers inspect its payload but the handler always receives the
+    /// opaque envelope so rethrow preserves identity.
+    pub catch_slot_type_ref: u32,
     pub cleanup_depth: u32,
 }
 
@@ -407,10 +706,17 @@ pub enum CatchMatcher {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SwitchTable {
-    /// Tag type; references the types pool (entry kind TypeRef).
-    pub tag_pool_index: u32,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub targets: Vec<u32>,
+    /// Strictly ascending type refs make tag dispatch explicit and unique.
+    pub cases: Vec<SwitchCase>,
+    pub default_pc: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SwitchCase {
+    /// Exact tag type; references the types pool.
+    pub tag_type_ref: u32,
+    pub target_pc: u32,
 }
 
 /// Statement binding for profiling/attribution.
@@ -419,29 +725,130 @@ pub struct SwitchTable {
 pub struct StatementEntry {
     pub pc: u32,
     pub statement_id: String,
+    pub charge_kind: StatementChargeKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StatementChargeKind {
+    FunctionEntry,
+    Statement,
+    Expression,
+    LocalCall,
+    TailHop,
+    LoopCheck,
+    GeneratedChunk,
 }
 
 /// Source range mapping (within-function word range).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceMapEntry {
-    pub start: u32,
-    pub end: u32,
-    pub source_id: u64,
-    pub start_position: SourcePosition,
-    pub end_position: SourcePosition,
+    pub start_pc: u32,
+    pub end_pc: u32,
+    pub site: crate::InstructionSourceSite,
 }
 
 /// Resume descriptor for a pending-capable site (D6).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResumeDescriptor {
-    /// Result type; references the types pool (entry kind TypeRef).
-    pub result_type_ref: u32,
-    /// Operand stack height at the resume point; bounded by
-    /// `limits::MAX_OPERAND_DEPTH`.
-    pub expected_stack_height: u32,
-    pub result_plan: ValueTransferPlan,
+    pub function_key: String,
+    pub site_pc: u32,
+    pub resume_pc: u32,
+    /// Operand stack height immediately before resumed results are pushed.
+    pub expected_stack_height_before_result: u32,
+    /// Type refs and plans in result order; both lengths equal site result
+    /// arity and v3 permits only zero or one.
+    pub result_type_refs: Vec<u32>,
+    pub result_plans: Vec<ValueTransferPlan>,
+    pub error_mode: ResumeErrorMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ResumeErrorMode {
+    RaiseAtSite,
+}
+
+/// Dynamically active control region, distinct from static catch lookup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ActiveRegion {
+    pub start_pc: u32,
+    pub end_pc: u32,
+    pub kind: ActiveRegionKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ActiveRegionKind {
+    Timeout {
+        duration_ms: u64,
+        site: crate::InstructionSourceSite,
+    },
+}
+
+/// Canonical writable place description. Source lowering must provide every
+/// exact ordinal/type fact; absent facts make emission fail closed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WritablePathDeclaration {
+    pub root_type_ref: u32,
+    pub leaf_type_ref: u32,
+    pub segments: Vec<WritablePathSegment>,
+}
+
+impl WritablePathDeclaration {
+    pub fn selector_count(&self) -> u32 {
+        self.segments
+            .iter()
+            .filter_map(WritablePathSegment::selector_ordinal)
+            .max()
+            .map_or(0, |ordinal| ordinal.saturating_add(1))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum WritablePathSegment {
+    DenseField {
+        shape_ref: u32,
+        field_ordinal: u32,
+    },
+    ArrayIndex {
+        selector_ordinal: u32,
+        element_type_ref: u32,
+    },
+    MapKey {
+        selector_ordinal: u32,
+        key_type_ref: u32,
+        value_type_ref: u32,
+    },
+}
+
+impl WritablePathSegment {
+    pub const fn selector_ordinal(&self) -> Option<u32> {
+        match self {
+            Self::DenseField { .. } => None,
+            Self::ArrayIndex {
+                selector_ordinal, ..
+            }
+            | Self::MapKey {
+                selector_ordinal, ..
+            } => Some(*selector_ordinal),
+        }
+    }
 }
 
 /// Capture layout of a synthetic callback function (artifact-level pool).
@@ -457,7 +864,8 @@ pub struct CallbackCaptureLayout {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CallbackCaptureDecl {
-    pub slot: u32,
+    pub target_slot: u32,
+    pub type_ref: u32,
     pub plan: ValueTransferPlan,
 }
 
