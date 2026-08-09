@@ -21,7 +21,7 @@ use skiff_artifact_model::{
     BytecodeRelocation, ContractDiagnosticText, DebugBinding, DebugTable,
     DeploymentArtifactIdentity, DeploymentRevision, FileIrRef, FileIrUnit, FrameLayout,
     FrozenConstantGraph, FrozenConstantNode, LiteralIr, PackageArtifact, PackageBuildId,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageCallableId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
     RelocatableBytecodeFunction, ServiceContract, ServiceProtocolIdentity, TypeRefIr,
     ValueTransferPlan, ValueTransferPlanKind, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
@@ -759,15 +759,17 @@ fn bytecode_fixture() -> BytecodeArtifact {
             }],
             frame_layout: FrameLayout {
                 slot_count: 1,
+                slot_type_refs: vec![0],
                 parameter_slots: Vec::new(),
                 result_count: 0,
+                result_type_refs: Vec::new(),
                 result_plans: Vec::new(),
                 slot_plans: vec![ValueTransferPlan {
                     kind: ValueTransferPlanKind::SnapshotShare,
                 }],
             },
             max_operand_depth: 2,
-            effect_summary_ref: "operation:module:main".to_string(),
+            effect_summary_ref: PackageCallableId::new("operation:module:main"),
             exception_regions: Vec::new(),
             switch_tables: Vec::new(),
             statement_entries: Vec::new(),
@@ -849,6 +851,13 @@ fn bytecode_record_write_read_and_fail_closed_paths() {
     assert_eq!(validated.artifact(), &bytecode);
     assert_eq!(validated.reference(), &reference);
     assert_eq!(validated.view().functions().len(), 1);
+    let stored_function = &validated.view().functions()[0];
+    assert_eq!(stored_function.frame_layout.slot_type_refs, vec![0]);
+    assert!(stored_function.frame_layout.result_type_refs.is_empty());
+    assert_eq!(
+        stored_function.effect_summary_ref,
+        PackageCallableId::new("operation:module:main")
+    );
 
     // The declared artifact path must exactly equal the canonical record path
     // (validate_declared_path, mirroring FileIrRef).
