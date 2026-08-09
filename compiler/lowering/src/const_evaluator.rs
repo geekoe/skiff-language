@@ -136,16 +136,10 @@
 //!
 //! # Dead-code note (temporary)
 //!
-//! This module is pre-wired as `mod const_evaluator;` (lib.rs wiring is owned
-//! by the main agent) and has no call site inside the crate yet — the Wave 6
-//! emitter consumes it. Until that wiring lands, `pub` items in this private
-//! module trip `dead_code` under `cargo clippy -D warnings`; the allow below
-//! is confined to this file and can be dropped once the emitter calls the
-//! API.
-#![allow(dead_code)]
-
+//! The module is re-exported through `lib.rs` (`pub use const_evaluator::{
+//! ConstEvaluator, ConstEvaluatorError, Bounds}`) as the Wave 6 emitter entry
+//! surface.
 use std::collections::{BTreeMap, BTreeSet};
-
 use skiff_artifact_model::{
     bytecode::dto::{FrozenConstantGraph, FrozenConstantNode},
     executable::{BinaryOpIr, ExecutableKind, ExprIr, ExprRefIr, StmtIr, UnaryOpIr},

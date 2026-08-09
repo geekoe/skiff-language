@@ -110,6 +110,7 @@ fn executable(symbol: &str, callee: Option<u32>) -> ExecutableIr {
                                 reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
                             },
                             args: Vec::new(),
+                            inout_args: Vec::new(),
                             type_args: BTreeMap::new(),
                             metadata: BTreeMap::new(),
                         },
@@ -118,6 +119,8 @@ fn executable(symbol: &str, callee: Option<u32>) -> ExecutableIr {
                     .collect(),
                 ..ExecutableBody::default()
             },
+            expression_types: Vec::new(),
+            statement_spans: Vec::new(),
             source_span: None,
         }
 }

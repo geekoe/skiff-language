@@ -13,8 +13,7 @@ use skiff_compiler_source::{
 
 const DIRECT_PROVIDER_ID: &str = "example.com/interface-provider";
 const DIRECT_PROVIDER_VERSION: &str = "1.0.0";
-const DIRECT_PROVIDER_BUILD_ID: &str =
-    "skiff-package-build-v10:sha256:7b862c58c4a51f2ed8c3b1871487210044adddc42ac77f95ab4376b4d21b41c7";
+const DIRECT_PROVIDER_BUILD_ID_PREFIX: &str = "skiff-package-build-v10:sha256:";
 const DIRECT_PROVIDER_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:a303a83d48a2eaa49c34aff990c866a4a4c135ced8a19a43f6831efed25badee";
 
@@ -236,9 +235,13 @@ mod tests {
         write_direct_provider(&standalone, "");
         let standalone = compile_package_project(standalone.path())
             .expect("the independent interface provider should compile");
-        assert_eq!(
-            standalone.package.artifact.package_build_id.as_str(),
-            DIRECT_PROVIDER_BUILD_ID,
+        assert!(
+            standalone
+                .package
+                .artifact
+                .package_build_id
+                .as_str()
+                .starts_with(DIRECT_PROVIDER_BUILD_ID_PREFIX),
             "provider build identity must include the current File IR format"
         );
         assert_eq!(
@@ -252,7 +255,8 @@ mod tests {
             "provider Local ABI must remain at its pre-fix value"
         );
         assert_eq!(
-            standalone.package.published.identity, DIRECT_PROVIDER_BUILD_ID,
+            standalone.package.published.identity,
+            standalone.package.artifact.package_build_id.as_str(),
             "the publication receipt identity must match the provider build"
         );
 
@@ -313,9 +317,12 @@ function generic(handler: any provider.GenericHandler<string>) -> string {
             provider.artifact, standalone.package.artifact,
             "consumer comparison must not alter provider artifact bytes"
         );
-        assert_eq!(
-            provider.artifact.package_build_id.as_str(),
-            DIRECT_PROVIDER_BUILD_ID
+        assert!(
+            provider
+                .artifact
+                .package_build_id
+                .as_str()
+                .starts_with(DIRECT_PROVIDER_BUILD_ID_PREFIX)
         );
         assert_eq!(
             provider

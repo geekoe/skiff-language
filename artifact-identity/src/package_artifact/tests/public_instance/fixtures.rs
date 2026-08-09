@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     ConstExport, ExecutableExport, ExecutableSignatureIr, FunctionTypeParamIr,
     InterfaceMethodSignature, OperationCallableKind, PackageArtifact, PackageCallableId,
-    PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamIr,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamIr, ParamModeIr,
     ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr,
 };
 
@@ -161,6 +161,7 @@ pub(super) fn public_instance_fixture() -> PackageArtifact {
                         name: "value".to_string(),
                         slot: 1,
                         ty: TypeRefIr::builtin("string"),
+                        mode: ParamModeIr::Value,
                     }],
                     return_type: TypeRefIr::builtin("string"),
                     self_type: Some(receiver_type.clone()),

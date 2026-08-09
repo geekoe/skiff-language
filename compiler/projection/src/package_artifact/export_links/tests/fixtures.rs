@@ -152,6 +152,8 @@ pub(super) fn actor_file_ir() -> FileIrUnit {
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     file.link_targets
@@ -261,6 +263,8 @@ pub(super) fn public_instance_file_ir() -> FileIrUnit {
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     file.declarations.executables.insert(

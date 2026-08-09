@@ -9,8 +9,8 @@ use skiff_artifact_model::{
     ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceMethodSignature,
     NominalTypeRefBaseIr, OperationCallableKind, OperationTargetRef, PackageActorAbi,
     PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
-    PackageConfigAccess, PackageConfigRequirement, PackageImplementationLinks, PackageRefIr,
-    PackageRequirement, PackageSymbolRef, PackageTypeRef, ParamIr, ServiceProtocolIdentity,
+    PackageConfigAccess,     PackageConfigRequirement, PackageImplementationLinks, PackageRefIr,
+    PackageRequirement, PackageSymbolRef, PackageTypeRef, ParamIr, ParamModeIr, ServiceProtocolIdentity,
     ServiceRequirement, ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
     ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
@@ -691,6 +691,7 @@ fn implementation_link_type_parameters_use_the_matching_public_callable_scope() 
                     ty: TypeRefIr::TypeParam {
                         name: "T".to_string(),
                     },
+                    mode: ParamModeIr::Value,
                 }],
                 return_type: TypeRefIr::TypeParam {
                     name: "T".to_string(),
@@ -1508,6 +1509,7 @@ fn callable_fixture() -> PackageArtifact {
                     name: "value".to_string(),
                     slot: 0,
                     ty: TypeRefIr::builtin("string"),
+                    mode: ParamModeIr::Value,
                 }],
                 return_type: TypeRefIr::builtin("string"),
                 self_type: None,
@@ -1782,6 +1784,7 @@ fn implementation_only_impl_callable_fixture(
                     name: "value".to_string(),
                     slot: 1,
                     ty: TypeRefIr::builtin("string"),
+                    mode: ParamModeIr::Value,
                 }],
                 return_type: TypeRefIr::builtin("string"),
                 self_type: Some(receiver_type),
