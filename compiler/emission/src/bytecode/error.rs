@@ -9,11 +9,6 @@ use thiserror::Error;
 /// coverage, structural validation and identity assignment all succeed.
 #[derive(Debug, Error)]
 pub enum BytecodeEmissionError {
-    #[error(
-        "bytecode emitter opcode fingerprint mismatch: supplied `{supplied}`, canonical `{canonical}`"
-    )]
-    OpcodeFingerprintMismatch { supplied: String, canonical: String },
-
     #[error("bytecode emitter received duplicate MIR module `{module_path}`")]
     DuplicateMirModule { module_path: String },
 
@@ -37,6 +32,14 @@ pub enum BytecodeEmissionError {
 
     #[error("bytecode emitter received an empty frozen graph for constant `{symbol}`")]
     EmptyConstantGraph { symbol: String },
+
+    #[error(
+        "bytecode emitter constant symbol `{symbol}` is not an exact canonical member of module `{module_path}`"
+    )]
+    InvalidConstantSymbol { module_path: String, symbol: String },
+
+    #[error("bytecode emitter received duplicate canonical constant symbol `{symbol}`")]
+    DuplicateConstantSymbol { symbol: String },
 
     #[error(
         "bytecode emitter function symbol `{symbol}` is not an exact member of module `{module_path}`"
@@ -122,6 +125,17 @@ pub enum BytecodeEmissionError {
         "bytecode emitter received value-transfer plans for unknown function `{function_key}`"
     )]
     UnexpectedValueTransferPlans { function_key: String },
+
+    #[error("bytecode emitter has no explicit value-transfer plan for constant `{symbol}`")]
+    MissingConstantValueTransferPlan { symbol: String },
+
+    #[error(
+        "bytecode emitter constant `{symbol}` has a FromType transfer plan for a different type"
+    )]
+    ConstantValueTransferPlanTypeMismatch { symbol: String },
+
+    #[error("bytecode emitter received a value-transfer plan for unknown constant `{symbol}`")]
+    UnexpectedConstantValueTransferPlan { symbol: String },
 
     #[error(
         "bytecode emitter function `{function_key}` has {slot_count} slots but {plan_count} slot transfer plans"

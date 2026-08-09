@@ -1,26 +1,22 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    bytecode::limits, BytecodePoolEntry, BytecodePools, FrozenConstantGraph, FrozenConstantNode,
-    NominalTypeRefBaseIr, ShapeDeclaration, TypeRefIr,
+    bytecode::limits, BytecodeConstantRef, BytecodePoolEntry, BytecodePools, FrozenConstantGraph,
+    FrozenConstantNode, NominalTypeRefBaseIr, TypeRefIr, ValueTransferPlan,
 };
 use skiff_compiler_core::type_ref::{map_type_ref, walk_type_ref};
-use skiff_compiler_lowering::FrozenConstantBundle;
 
-use super::{
-    inputs::{is_void, ValidatedEmissionInputs},
-    BytecodeEmissionError,
-};
+use super::{inputs::ValidatedEmissionInputs, BytecodeEmissionError};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct CanonicalShapeKey {
-    field_count: u32,
-    field_types: Vec<u32>,
+pub(crate) struct ConstantImage {
+    pub(crate) pools: BytecodePools,
+    pub(crate) roots: BTreeMap<String, u32>,
+    pub(crate) graph: FrozenConstantGraph,
 }
 
 pub(crate) fn build_constant_image(
     inputs: &ValidatedEmissionInputs<'_>,
-) -> Result<(BytecodePools, FrozenConstantGraph), BytecodeEmissionError> {
+) -> Result<ConstantImage, BytecodeEmissionError> {
     let canonical_types = collect_canonical_types(inputs)?;
     check_limit(
         "MAX_POOL_ENTRIES",
@@ -34,255 +30,124 @@ pub(crate) fn build_constant_image(
         .map(|(index, key)| {
             Ok((
                 key.clone(),
-                checked_index(index, "indexing canonical types")?,
+                checked_index(index, "indexing canonical constant types")?,
             ))
         })
         .collect::<Result<BTreeMap<_, _>, BytecodeEmissionError>>()?;
-
-    let mut bundle_type_maps = BTreeMap::new();
-    for (module_path, bundle) in &inputs.bundles {
-        let unit = inputs
-            .units
-            .get(module_path)
-            .expect("bundle coverage was checked before constant merging");
-        let mut mapping = Vec::with_capacity(bundle.types().len());
-        for (index, ty) in bundle.types().iter().enumerate() {
-            validate_local_types(
-                module_path,
-                unit.type_table.len(),
-                &format!("constant bundle type {index}"),
-                ty,
-            )?;
-            let qualified = qualify_local_types(module_path, ty);
-            let key = type_key(
-                &qualified,
-                &format!("constant bundle `{module_path}` type {index}"),
-            )?;
-            mapping.push(*type_indices.get(&key).ok_or_else(|| {
-                BytecodeEmissionError::CanonicalSerialization {
-                    context: format!("constant bundle `{module_path}` type {index}"),
-                    message: "qualified type disappeared from the canonical pool".to_string(),
-                }
-            })?);
-        }
-        bundle_type_maps.insert(module_path.clone(), mapping);
-    }
-
-    let (shape_indices, bundle_shape_maps) = collect_canonical_shapes(inputs, &bundle_type_maps)?;
-    check_limit(
-        "MAX_POOL_ENTRIES",
-        "image.pools.shapes",
-        shape_indices.len(),
-        limits::MAX_POOL_ENTRIES,
-    )?;
-
     let pools = BytecodePools {
-        constants: Vec::new(),
         types: canonical_types
             .into_values()
             .map(|ty| BytecodePoolEntry::TypeRef { ty })
             .collect(),
-        shapes: shape_indices
-            .keys()
-            .map(|shape_key| BytecodePoolEntry::ShapeRef {
-                shape: ShapeDeclaration {
-                    field_count: shape_key.field_count,
-                    field_types: shape_key.field_types.clone(),
-                },
-            })
-            .collect(),
-        effects: Vec::new(),
-        resume: Vec::new(),
-        callback_capture: Vec::new(),
+        ..BytecodePools::default()
     };
 
-    merge_graphs(inputs, pools, &bundle_shape_maps)
+    merge_graphs(inputs, pools, &type_indices)
 }
 
 fn collect_canonical_types(
     inputs: &ValidatedEmissionInputs<'_>,
 ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
     let mut types = BTreeMap::new();
-    for (module_path, bundle) in &inputs.bundles {
-        let unit = inputs
-            .units
-            .get(module_path)
-            .expect("bundle coverage was checked before type collection");
-        for (index, ty) in bundle.types().iter().enumerate() {
+    for (symbol, validated) in &inputs.constants {
+        validate_local_types(
+            validated.module_path,
+            validated.type_count,
+            &format!("constant `{symbol}` type"),
+            &validated.constant.ty,
+        )?;
+        insert_type(
+            &mut types,
+            qualify_local_types(validated.module_path, &validated.constant.ty),
+            format!("constant `{symbol}` type"),
+        )?;
+        if let ValueTransferPlan::FromType { ty } = validated.plan {
             validate_local_types(
-                module_path,
-                unit.type_table.len(),
-                &format!("constant bundle type {index}"),
+                validated.module_path,
+                validated.type_count,
+                &format!("constant `{symbol}` transfer plan"),
                 ty,
-            )?;
-            insert_type(
-                &mut types,
-                qualify_local_types(module_path, ty),
-                format!("constant bundle `{module_path}` type {index}"),
-            )?;
-        }
-    }
-    for (function_key, validated) in &inputs.functions {
-        for slot in &validated.function.slots {
-            let ty = validated.function.slot_type(slot.slot)?;
-            validate_local_types(
-                &validated.unit.module_path,
-                validated.unit.type_table.len(),
-                &format!("function `{function_key}` slot {}", slot.slot),
-                ty,
-            )?;
-            insert_type(
-                &mut types,
-                qualify_local_types(&validated.unit.module_path, ty),
-                format!("function `{function_key}` slot {}", slot.slot),
-            )?;
-        }
-        if !is_void(&validated.function.return_type) {
-            validate_local_types(
-                &validated.unit.module_path,
-                validated.unit.type_table.len(),
-                &format!("function `{function_key}` result"),
-                &validated.function.return_type,
-            )?;
-            insert_type(
-                &mut types,
-                qualify_local_types(&validated.unit.module_path, &validated.function.return_type),
-                format!("function `{function_key}` result"),
             )?;
         }
     }
     Ok(types)
 }
 
-fn collect_canonical_shapes(
-    inputs: &ValidatedEmissionInputs<'_>,
-    bundle_type_maps: &BTreeMap<String, Vec<u32>>,
-) -> Result<(BTreeMap<CanonicalShapeKey, u32>, BTreeMap<String, Vec<u32>>), BytecodeEmissionError> {
-    let mut shapes = BTreeSet::new();
-    let mut relocated_by_bundle = BTreeMap::new();
-    for (module_path, bundle) in &inputs.bundles {
-        let type_map = bundle_type_maps
-            .get(module_path)
-            .expect("every bundle received a type relocation map");
-        let mut relocated = Vec::with_capacity(bundle.shapes().len());
-        for (shape_index, shape) in bundle.shapes().iter().enumerate() {
-            if shape.field_types().len() != shape.field_count() as usize {
-                return Err(BytecodeEmissionError::InvalidConstantGraph {
-                    symbol: format!("{module_path}::<shape:{shape_index}>"),
-                    message: format!(
-                        "shape fieldCount {} differs from fieldTypes length {}",
-                        shape.field_count(),
-                        shape.field_types().len()
-                    ),
-                });
-            }
-            let mut field_types = Vec::with_capacity(shape.field_types().len());
-            for type_ref in shape.field_types() {
-                bundle.type_ref(*type_ref)?;
-                field_types.push(*type_map.get(*type_ref as usize).ok_or_else(|| {
-                    BytecodeEmissionError::InvalidConstantGraph {
-                        symbol: format!("{module_path}::<shape:{shape_index}>"),
-                        message: format!("type relocation {type_ref} is absent"),
-                    }
-                })?);
-            }
-            let key = shape_key(&field_types)?;
-            shapes.insert(key.clone());
-            relocated.push(key);
-        }
-        relocated_by_bundle.insert(module_path.clone(), relocated);
-    }
-
-    let shape_indices = shapes
-        .into_iter()
-        .enumerate()
-        .map(|(index, shape)| {
-            Ok((
-                shape,
-                checked_index(index, "indexing canonical constant shapes")?,
-            ))
-        })
-        .collect::<Result<BTreeMap<_, _>, BytecodeEmissionError>>()?;
-    let mut bundle_shape_maps = BTreeMap::new();
-    for (module_path, shapes) in relocated_by_bundle {
-        let mapping = shapes
-            .iter()
-            .map(|shape| {
-                shape_indices.get(shape).copied().ok_or_else(|| {
-                    BytecodeEmissionError::InvalidConstantGraph {
-                        symbol: format!("{module_path}::<shape>"),
-                        message: "relocated shape disappeared from the canonical pool".to_string(),
-                    }
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        bundle_shape_maps.insert(module_path, mapping);
-    }
-    Ok((shape_indices, bundle_shape_maps))
-}
-
 fn merge_graphs(
     inputs: &ValidatedEmissionInputs<'_>,
     mut pools: BytecodePools,
-    bundle_shape_maps: &BTreeMap<String, Vec<u32>>,
-) -> Result<(BytecodePools, FrozenConstantGraph), BytecodeEmissionError> {
+    type_indices: &BTreeMap<String, u32>,
+) -> Result<ConstantImage, BytecodeEmissionError> {
     let mut nodes = Vec::new();
-    for module_path in inputs.units.keys() {
-        let bundle = inputs
-            .bundles
-            .get(module_path)
-            .expect("constant bundle coverage was checked before graph merging");
-        let shape_map = bundle_shape_maps
-            .get(module_path)
-            .expect("every bundle received a shape relocation map");
+    let mut roots = BTreeMap::new();
 
-        for (symbol, graph) in bundle.graphs() {
-            let base = checked_index(nodes.len(), "offsetting a frozen constant graph")?;
-            let root = bundle.root(symbol)?;
-            let prospective = nodes.len().checked_add(graph.nodes.len()).ok_or(
-                BytecodeEmissionError::ArithmeticOverflow {
-                    context: "merging frozen constant graph nodes",
-                },
-            )?;
-            check_limit(
-                "MAX_CONSTANT_GRAPH_NODES",
-                "image.frozenConstantGraph.nodes",
-                prospective,
-                limits::MAX_CONSTANT_GRAPH_NODES,
-            )?;
+    for (symbol, validated) in &inputs.constants {
+        let graph = validated.bundle.graph(symbol)?;
+        let base = checked_index(nodes.len(), "offsetting a frozen constant graph")?;
+        let local_root = validated.bundle.root(symbol)?;
+        let prospective = nodes.len().checked_add(graph.nodes.len()).ok_or(
+            BytecodeEmissionError::ArithmeticOverflow {
+                context: "merging frozen constant graph nodes",
+            },
+        )?;
+        check_limit(
+            "MAX_CONSTANT_GRAPH_NODES",
+            "image.frozenConstantGraph.nodes",
+            prospective,
+            limits::MAX_CONSTANT_GRAPH_NODES,
+        )?;
 
-            for local_index in 0..graph.nodes.len() {
-                let local_index = checked_index(local_index, "relocating a constant node")?;
-                let node = bundle.node(symbol, local_index)?;
-                let relocated = relocate_node(bundle, symbol, local_index, node, base, shape_map)?;
-                nodes.push(relocated);
-            }
-            let root = base
-                .checked_add(root)
+        for local_index in 0..graph.nodes.len() {
+            let local_index = checked_index(local_index, "relocating a constant node")?;
+            let node = validated.bundle.node(symbol, local_index)?;
+            nodes.push(relocate_node(symbol, local_index, node, base)?);
+        }
+
+        let node_index =
+            base.checked_add(local_root)
                 .ok_or(BytecodeEmissionError::ArithmeticOverflow {
                     context: "relocating a frozen constant root",
                 })?;
-            pools
-                .constants
-                .push(BytecodePoolEntry::FrozenConstantRef { node_index: root });
+        let qualified_type = qualify_local_types(validated.module_path, &validated.constant.ty);
+        let type_key = type_key(&qualified_type, &format!("constant `{symbol}` type"))?;
+        let type_ref = *type_indices.get(&type_key).ok_or_else(|| {
+            BytecodeEmissionError::CanonicalSerialization {
+                context: format!("constant `{symbol}` type"),
+                message: "qualified type disappeared from the canonical pool".to_string(),
+            }
+        })?;
+        let plan = qualify_transfer_plan(validated.module_path, validated.plan);
+        let pool_index = checked_index(pools.constants.len(), "indexing canonical constant roots")?;
+        pools.constants.push(BytecodePoolEntry::ConstantRef {
+            reference: BytecodeConstantRef::LocalNode { node_index },
+            type_ref,
+            plan,
+        });
+        if roots.insert(symbol.clone(), pool_index).is_some() {
+            return Err(BytecodeEmissionError::DuplicateConstantSymbol {
+                symbol: symbol.clone(),
+            });
         }
     }
+
     check_limit(
         "MAX_POOL_ENTRIES",
         "image.pools.constants",
         pools.constants.len(),
         limits::MAX_POOL_ENTRIES,
     )?;
-    Ok((pools, FrozenConstantGraph { nodes }))
+    Ok(ConstantImage {
+        pools,
+        roots,
+        graph: FrozenConstantGraph { nodes },
+    })
 }
 
 fn relocate_node(
-    bundle: &FrozenConstantBundle,
     symbol: &str,
     node_index: u32,
     node: &FrozenConstantNode,
     base: u32,
-    shape_map: &[u32],
 ) -> Result<FrozenConstantNode, BytecodeEmissionError> {
     let relocate_children = |children: &[u32]| {
         children
@@ -312,50 +177,33 @@ fn relocate_node(
         FrozenConstantNode::Array { children } => Ok(FrozenConstantNode::Array {
             children: relocate_children(children)?,
         }),
-        FrozenConstantNode::Record {
-            shape_index,
-            children,
-        } => {
-            let shape = bundle.shape(*shape_index)?;
-            if children.len() != shape.field_count() as usize {
-                return Err(BytecodeEmissionError::ConstantShapeArityMismatch {
-                    symbol: symbol.to_string(),
-                    node_index,
-                    shape_index: *shape_index,
-                    child_count: children.len(),
-                    field_count: shape.field_count(),
-                });
-            }
-            let _ = shape_map.get(*shape_index as usize).ok_or_else(|| {
-                BytecodeEmissionError::InvalidConstantGraph {
-                    symbol: symbol.to_string(),
-                    message: format!("shape relocation {shape_index} is absent"),
-                }
-            })?;
+        FrozenConstantNode::Record { children, .. } => {
             let _ = relocate_children(children)?;
             Err(BytecodeEmissionError::UnsupportedConstantNode {
                 symbol: symbol.to_string(),
                 node_index,
                 construct: "Record",
-                reason: "the frozen shape sidecar has no nominal owner, field names, or explicit field transfer plans",
+                reason: "the frozen shape sidecar has no v4 nominal owner, field names, or explicit field transfer plans",
             })
         }
-        FrozenConstantNode::TypeRef { .. } => Err(
-            BytecodeEmissionError::UnsupportedConstantNode {
+        FrozenConstantNode::Representation { value, .. } => {
+            let _ = relocate_children(std::slice::from_ref(value))?;
+            Err(BytecodeEmissionError::UnsupportedConstantNode {
                 symbol: symbol.to_string(),
                 node_index,
-                construct: "RepresentationWrap/TypeRef",
-                reason: "the frozen graph has no explicit edge from the type annotation to its wrapped value",
-            },
-        ),
-        FrozenConstantNode::Behavior { .. } => Err(
-            BytecodeEmissionError::UnsupportedConstantNode {
+                construct: "Representation",
+                reason: "producer-owned v4 representation type/value facts are not yet connected to emission",
+            })
+        }
+        FrozenConstantNode::Implementation { record, .. } => {
+            let _ = relocate_children(std::slice::from_ref(record))?;
+            Err(BytecodeEmissionError::UnsupportedConstantNode {
                 symbol: symbol.to_string(),
                 node_index,
-                construct: "implementation Behavior",
-                reason: "the frozen graph has no explicit owner edge from the behavior to its implementation record",
-            },
-        ),
+                construct: "Implementation/Behavior",
+                reason: "producer-owned v4 implementation/behavior ownership facts are not yet connected to emission",
+            })
+        }
     }
 }
 
@@ -373,16 +221,6 @@ fn type_key(ty: &TypeRefIr, context: &str) -> Result<String, BytecodeEmissionErr
     serde_json::to_string(ty).map_err(|error| BytecodeEmissionError::CanonicalSerialization {
         context: context.to_string(),
         message: error.to_string(),
-    })
-}
-
-fn shape_key(field_types: &[u32]) -> Result<CanonicalShapeKey, BytecodeEmissionError> {
-    Ok(CanonicalShapeKey {
-        field_count: checked_index(
-            field_types.len(),
-            "encoding canonical constant shape field count",
-        )?,
-        field_types: field_types.to_vec(),
     })
 }
 
@@ -415,6 +253,15 @@ fn validate_local_types(
         });
     }
     Ok(())
+}
+
+fn qualify_transfer_plan(module_path: &str, plan: &ValueTransferPlan) -> ValueTransferPlan {
+    match plan {
+        ValueTransferPlan::FromType { ty } => ValueTransferPlan::FromType {
+            ty: qualify_local_types(module_path, ty),
+        },
+        other => other.clone(),
+    }
 }
 
 fn qualify_local_types(module_path: &str, ty: &TypeRefIr) -> TypeRefIr {
@@ -460,9 +307,9 @@ fn check_limit(
 
 #[cfg(test)]
 mod tests {
-    use skiff_artifact_model::{NominalTypeRefBaseIr, TypeRefIr};
+    use skiff_artifact_model::{NominalTypeRefBaseIr, TypeRefIr, ValueTransferPlan};
 
-    use super::qualify_local_types;
+    use super::{qualify_local_types, qualify_transfer_plan};
 
     #[test]
     fn local_type_qualification_includes_applied_nominal_bases() {
@@ -484,6 +331,25 @@ mod tests {
                     module_path: "alpha".to_string(),
                     type_index: 4,
                 }],
+            }
+        );
+    }
+
+    #[test]
+    fn from_type_plan_is_owner_qualified_without_changing_policy() {
+        let plan = qualify_transfer_plan(
+            "alpha",
+            &ValueTransferPlan::FromType {
+                ty: TypeRefIr::LocalType { type_index: 2 },
+            },
+        );
+        assert_eq!(
+            plan,
+            ValueTransferPlan::FromType {
+                ty: TypeRefIr::PublicationType {
+                    module_path: "alpha".to_string(),
+                    type_index: 2,
+                },
             }
         );
     }

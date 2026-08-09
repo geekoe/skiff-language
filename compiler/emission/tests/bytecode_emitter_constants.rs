@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::validate_bytecode_identity;
 use skiff_artifact_model::{
-    opcode_table_fingerprint, BlockIr, BytecodePoolEntry, CallableEffectSummary, ConstIr,
+    BlockIr, BytecodeConstantRef, BytecodePoolEntry, CallableEffectSummary, ConstIr,
     ExecutableBody, ExprIr, ExprRefIr, FileIrUnit, FrozenConstantNode, LiteralIr,
     PackageCallableId, StmtIr, StmtRefIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    ValueTransferPlan,
 };
 use skiff_compiler_emission::{
     emit_bytecode_artifact, BytecodeEmissionError, BytecodeValueTransferPlans,
@@ -68,13 +69,24 @@ fn emit_constants(
     units: &[MirUnit],
     bundles: &[FrozenConstantBundle],
 ) -> skiff_artifact_model::BytecodeArtifact {
-    emit_bytecode_artifact(
-        units,
-        bundles,
-        &BytecodeValueTransferPlans::default(),
-        &opcode_table_fingerprint(),
-    )
-    .expect("constant-only image emits")
+    let plans = explicit_constant_plans(units);
+    emit_bytecode_artifact(units, bundles, &plans).expect("constant-only image emits")
+}
+
+fn explicit_constant_plans(units: &[MirUnit]) -> BytecodeValueTransferPlans {
+    let constants = units
+        .iter()
+        .flat_map(|unit| &unit.constants)
+        .map(|constant| {
+            (
+                constant.symbol.clone(),
+                ValueTransferPlan::FromType {
+                    ty: constant.ty.clone(),
+                },
+            )
+        })
+        .collect();
+    BytecodeValueTransferPlans::new(BTreeMap::new(), constants)
 }
 
 fn empty_function(module_path: &str, declaration: &str) -> MirFunction {
@@ -115,11 +127,23 @@ fn literal_bundle_becomes_one_checked_constant_pool_root() {
     let artifact = emit_constants(&[mir], &[bundle]);
 
     assert_eq!(artifact.image.pools.constants.len(), 1);
-    let BytecodePoolEntry::FrozenConstantRef { node_index } = &artifact.image.pools.constants[0]
+    let BytecodePoolEntry::ConstantRef {
+        reference: BytecodeConstantRef::LocalNode { node_index },
+        type_ref,
+        plan,
+    } = &artifact.image.pools.constants[0]
     else {
         panic!("constants pool is homogeneous")
     };
     assert_eq!(*node_index, 0);
+    assert_eq!(*type_ref, 0);
+    assert_eq!(
+        plan,
+        &ValueTransferPlan::FromType {
+            ty: TypeRefIr::builtin("number"),
+        }
+    );
+    assert_eq!(artifact.image.constant_roots["sample.answer"], 0);
     assert!(matches!(
         artifact.image.frozen_constant_graph.nodes.as_slice(),
         [FrozenConstantNode::Literal {
@@ -130,7 +154,124 @@ fn literal_bundle_becomes_one_checked_constant_pool_root() {
 }
 
 #[test]
-fn representation_annotation_without_an_owned_child_edge_fails_closed() {
+fn array_bundle_relocates_children_and_keeps_one_canonical_root() {
+    let mut file_ir = FileIrUnit::empty("arrays", "source-hash");
+    file_ir.constants.push(constant(
+        "values",
+        TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::builtin("string")],
+        },
+        vec![
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "a".to_string(),
+                },
+            },
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "b".to_string(),
+                },
+            },
+            ExprIr::ArrayLiteral {
+                items: vec![expression(0), expression(1)],
+            },
+        ],
+    ));
+    let (mir, bundle) = mir_and_bundle(&file_ir);
+
+    let artifact = emit_constants(&[mir], &[bundle]);
+
+    assert_eq!(artifact.image.constant_roots["arrays.values"], 0);
+    assert!(matches!(
+        artifact.image.frozen_constant_graph.nodes.as_slice(),
+        [
+            FrozenConstantNode::Literal { .. },
+            FrozenConstantNode::Literal { .. },
+            FrozenConstantNode::Array { children }
+        ] if children == &[0, 1]
+    ));
+    validate_bytecode_identity(&artifact).expect("array-only v4 artifact is admissible");
+}
+
+#[test]
+fn a_constant_without_an_explicit_plan_fails_before_graph_emission() {
+    let mut file_ir = FileIrUnit::empty("unplanned", "source-hash");
+    file_ir.constants.push(constant(
+        "value",
+        TypeRefIr::builtin("string"),
+        vec![ExprIr::Literal {
+            value: LiteralIr::String {
+                value: "value".to_string(),
+            },
+        }],
+    ));
+    let (mir, bundle) = mir_and_bundle(&file_ir);
+
+    let error = emit_bytecode_artifact(&[mir], &[bundle], &BytecodeValueTransferPlans::empty())
+        .expect_err("constant plans cannot be inferred from the declared type");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::MissingConstantValueTransferPlan { symbol }
+            if symbol == "unplanned.value"
+    ));
+}
+
+#[test]
+fn an_unowned_constant_plan_cannot_be_ignored() {
+    let plans = BytecodeValueTransferPlans::new(
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "unknown.value".to_string(),
+            ValueTransferPlan::FromType {
+                ty: TypeRefIr::builtin("string"),
+            },
+        )]),
+    );
+
+    let error = emit_bytecode_artifact(&[], &[], &plans)
+        .expect_err("extra constant plan must fail exact coverage");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnexpectedConstantValueTransferPlan { symbol }
+            if symbol == "unknown.value"
+    ));
+}
+
+#[test]
+fn a_deferred_constant_plan_must_name_the_exact_constant_type() {
+    let mut file_ir = FileIrUnit::empty("mismatched", "source-hash");
+    file_ir.constants.push(constant(
+        "value",
+        TypeRefIr::builtin("number"),
+        vec![ExprIr::Literal {
+            value: LiteralIr::Number {
+                value: serde_json::Number::from(1),
+            },
+        }],
+    ));
+    let (mir, bundle) = mir_and_bundle(&file_ir);
+    let plans = BytecodeValueTransferPlans::new(
+        BTreeMap::new(),
+        BTreeMap::from([(
+            "mismatched.value".to_string(),
+            ValueTransferPlan::FromType {
+                ty: TypeRefIr::builtin("string"),
+            },
+        )]),
+    );
+
+    let error = emit_bytecode_artifact(&[mir], &[bundle], &plans)
+        .expect_err("FromType cannot describe a different value type");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::ConstantValueTransferPlanTypeMismatch { symbol }
+            if symbol == "mismatched.value"
+    ));
+}
+
+#[test]
+fn representation_constants_remain_gated_on_the_v4_producer_contract() {
     let mut file_ir = FileIrUnit::empty("wrapped", "source-hash");
     file_ir.type_table.push(TypeDeclIr {
         name: "Wrapped".to_string(),
@@ -157,18 +298,14 @@ fn representation_annotation_without_an_owned_child_edge_fails_closed() {
         ],
     ));
     let (mir, bundle) = mir_and_bundle(&file_ir);
+    let plans = explicit_constant_plans(std::slice::from_ref(&mir));
 
-    let error = emit_bytecode_artifact(
-        &[mir],
-        &[bundle],
-        &BytecodeValueTransferPlans::default(),
-        &opcode_table_fingerprint(),
-    )
-    .expect_err("an orphan type annotation cannot encode representation identity");
+    let error = emit_bytecode_artifact(&[mir], &[bundle], &plans)
+        .expect_err("representation facts cannot enter bytecode before the v4 producer seam");
     assert!(matches!(
         error,
         BytecodeEmissionError::UnsupportedConstantNode {
-            construct: "RepresentationWrap/TypeRef",
+            construct: "Representation",
             ..
         }
     ));
@@ -221,13 +358,11 @@ fn record_shape_without_nominal_field_facts_fails_closed() {
 
     let (alpha_mir, alpha_bundle) = owner("alpha_shape");
     let (zeta_mir, zeta_bundle) = owner("zeta_shape");
-    let error = emit_bytecode_artifact(
-        &[zeta_mir, alpha_mir],
-        &[zeta_bundle, alpha_bundle],
-        &BytecodeValueTransferPlans::default(),
-        &opcode_table_fingerprint(),
-    )
-    .expect_err("record constants require nominal field and lifecycle facts");
+    let units = [zeta_mir, alpha_mir];
+    let bundles = [zeta_bundle, alpha_bundle];
+    let plans = explicit_constant_plans(&units);
+    let error = emit_bytecode_artifact(&units, &bundles, &plans)
+        .expect_err("record constants require nominal field and lifecycle facts");
     assert!(matches!(
         error,
         BytecodeEmissionError::UnsupportedConstantNode {
@@ -276,13 +411,8 @@ fn constant_declaration_order_does_not_change_the_image_identity() {
 fn a_mir_unit_without_its_owned_bundle_fails_closed() {
     let file_ir = FileIrUnit::empty("missing", "source-hash");
     let (mir, _) = mir_and_bundle(&file_ir);
-    let error = emit_bytecode_artifact(
-        &[mir],
-        &[],
-        &BytecodeValueTransferPlans::default(),
-        &opcode_table_fingerprint(),
-    )
-    .expect_err("bundle coverage is mandatory even for an empty unit");
+    let error = emit_bytecode_artifact(&[mir], &[], &BytecodeValueTransferPlans::empty())
+        .expect_err("bundle coverage is mandatory even for an empty unit");
     assert!(matches!(
         error,
         BytecodeEmissionError::MissingConstantBundle { module_path }
@@ -296,13 +426,8 @@ fn a_function_without_explicit_transfer_plans_fails_before_body_emission() {
     let (mut mir, bundle) = mir_and_bundle(&file_ir);
     mir.functions.push(empty_function("planned", "run"));
 
-    let error = emit_bytecode_artifact(
-        &[mir],
-        &[bundle],
-        &BytecodeValueTransferPlans::default(),
-        &opcode_table_fingerprint(),
-    )
-    .expect_err("the emitter cannot infer transfer plans");
+    let error = emit_bytecode_artifact(&[mir], &[bundle], &BytecodeValueTransferPlans::empty())
+        .expect_err("the emitter cannot infer transfer plans");
     assert!(matches!(
         error,
         BytecodeEmissionError::MissingValueTransferPlans { function_key }
@@ -315,23 +440,19 @@ fn an_empty_function_cannot_bypass_the_fail_closed_body_gate() {
     let file_ir = FileIrUnit::empty("gated", "source-hash");
     let (mut mir, bundle) = mir_and_bundle(&file_ir);
     mir.functions.push(empty_function("gated", "run"));
-    let transfer_plans = BytecodeValueTransferPlans {
-        functions: BTreeMap::from([(
+    let transfer_plans = BytecodeValueTransferPlans::new(
+        BTreeMap::from([(
             "gated::run".to_string(),
             FunctionValueTransferPlans {
                 slot_plans: Vec::new(),
                 result_plans: Vec::new(),
             },
         )]),
-    };
+        BTreeMap::new(),
+    );
 
-    let error = emit_bytecode_artifact(
-        &[mir],
-        &[bundle],
-        &transfer_plans,
-        &opcode_table_fingerprint(),
-    )
-    .expect_err("no MIR function is silently omitted");
+    let error = emit_bytecode_artifact(&[mir], &[bundle], &transfer_plans)
+        .expect_err("no MIR function is silently omitted");
     assert!(matches!(
         error,
         BytecodeEmissionError::UnsupportedConstruct { function_key, .. }

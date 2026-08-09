@@ -1,22 +1,24 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::TypeRefIr;
+use skiff_artifact_model::{TypeRefIr, ValueTransferPlan};
 use skiff_compiler_lowering::{
-    mir::{liveness::compute_liveness, MirFunction, MirUnit},
+    mir::{liveness::compute_liveness, MirConst, MirFunction, MirUnit},
     FrozenConstantBundle,
 };
 
 use super::{BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTransferPlans};
 
 pub(crate) struct ValidatedEmissionInputs<'a> {
-    pub(crate) units: BTreeMap<String, &'a MirUnit>,
-    pub(crate) bundles: BTreeMap<String, &'a FrozenConstantBundle>,
-    pub(crate) functions: BTreeMap<String, ValidatedFunction<'a>>,
+    pub(crate) constants: BTreeMap<String, ValidatedConstant<'a>>,
+    pub(crate) functions: BTreeMap<String, &'a MirFunction>,
 }
 
-pub(crate) struct ValidatedFunction<'a> {
-    pub(crate) unit: &'a MirUnit,
-    pub(crate) function: &'a MirFunction,
+pub(crate) struct ValidatedConstant<'a> {
+    pub(crate) module_path: &'a str,
+    pub(crate) type_count: usize,
+    pub(crate) constant: &'a MirConst,
+    pub(crate) bundle: &'a FrozenConstantBundle,
+    pub(crate) plan: &'a ValueTransferPlan,
 }
 
 impl<'a> ValidatedEmissionInputs<'a> {
@@ -71,6 +73,52 @@ impl<'a> ValidatedEmissionInputs<'a> {
             validate_constant_coverage(unit, bundle)?;
         }
 
+        let mut constants = BTreeMap::new();
+        for (module_path, unit) in &units_by_module {
+            let bundle = *bundles_by_module
+                .get(module_path)
+                .expect("bundle coverage was checked above");
+            for constant in &unit.constants {
+                validate_constant_symbol(module_path, &constant.symbol)?;
+                let plan = transfer_plans.constant(&constant.symbol).ok_or_else(|| {
+                    BytecodeEmissionError::MissingConstantValueTransferPlan {
+                        symbol: constant.symbol.clone(),
+                    }
+                })?;
+                if matches!(plan, ValueTransferPlan::FromType { ty } if ty != &constant.ty) {
+                    return Err(
+                        BytecodeEmissionError::ConstantValueTransferPlanTypeMismatch {
+                            symbol: constant.symbol.clone(),
+                        },
+                    );
+                }
+                if constants
+                    .insert(
+                        constant.symbol.clone(),
+                        ValidatedConstant {
+                            module_path: unit.module_path.as_str(),
+                            type_count: unit.type_table.len(),
+                            constant,
+                            bundle,
+                            plan,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(BytecodeEmissionError::DuplicateConstantSymbol {
+                        symbol: constant.symbol.clone(),
+                    });
+                }
+            }
+        }
+        for symbol in transfer_plans.constants().keys() {
+            if !constants.contains_key(symbol) {
+                return Err(BytecodeEmissionError::UnexpectedConstantValueTransferPlan {
+                    symbol: symbol.clone(),
+                });
+            }
+        }
+
         let mut functions = BTreeMap::new();
         for (module_path, unit) in &units_by_module {
             for function in &unit.functions {
@@ -83,16 +131,16 @@ impl<'a> ValidatedEmissionInputs<'a> {
                     return Err(BytecodeEmissionError::DuplicateFunctionKey { function_key });
                 }
 
-                let plans = transfer_plans.functions.get(&function_key).ok_or_else(|| {
+                let plans = transfer_plans.function(&function_key).ok_or_else(|| {
                     BytecodeEmissionError::MissingValueTransferPlans {
                         function_key: function_key.clone(),
                     }
                 })?;
                 validate_plan_counts(&function_key, function, plans)?;
-                functions.insert(function_key, ValidatedFunction { unit, function });
+                functions.insert(function_key, function);
             }
         }
-        for function_key in transfer_plans.functions.keys() {
+        for function_key in transfer_plans.functions().keys() {
             if !functions.contains_key(function_key) {
                 return Err(BytecodeEmissionError::UnexpectedValueTransferPlans {
                     function_key: function_key.clone(),
@@ -101,11 +149,29 @@ impl<'a> ValidatedEmissionInputs<'a> {
         }
 
         Ok(Self {
-            units: units_by_module,
-            bundles: bundles_by_module,
+            constants,
             functions,
         })
     }
+}
+
+fn validate_constant_symbol(module_path: &str, symbol: &str) -> Result<(), BytecodeEmissionError> {
+    let prefix = format!("{module_path}.");
+    let canonical = symbol
+        .strip_prefix(&prefix)
+        .is_some_and(|declaration| !declaration.is_empty())
+        && symbol.split('.').all(|segment| {
+            !segment.is_empty()
+                && !segment.chars().any(char::is_whitespace)
+                && !segment.chars().any(char::is_control)
+        });
+    if !canonical {
+        return Err(BytecodeEmissionError::InvalidConstantSymbol {
+            module_path: module_path.to_string(),
+            symbol: symbol.to_string(),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn canonical_function_key(
