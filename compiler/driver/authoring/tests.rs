@@ -311,7 +311,7 @@ fn package(
     let package_schema_index_identity =
         package_schema_index_identity(id, &Default::default()).unwrap();
     serde_json::from_value(json!({
-        "schemaVersion": "skiff-package-artifact-v9",
+        "schemaVersion": "skiff-package-artifact-v13",
         "packageId": id,
         "packageVersion": version,
         "packageBuildId": format!("build:{id}:{version}:{local_abi}"),
@@ -328,6 +328,10 @@ fn package(
         "packageSchemaTypeRecords": {},
         "implementationLinks": {},
         "callableLinks": {},
+        "syntheticCallbackOwners": [],
+        "bytecodeSchemaRecords": {},
+        "actorImplementations": [],
+        "localInterfaceConformances": [],
         "packageRequirements": requirements.into_iter().collect::<Vec<_>>(),
         "contractRequirements": [],
         "serviceRequirements": [],
