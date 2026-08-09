@@ -8,7 +8,7 @@ use skiff_artifact_model::{
     BytecodeArtifact, BytecodeArtifactRef, BytecodeConstantRef, BytecodeFunctionOrigin,
     BytecodeImage, BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
     DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph, FrozenConstantNode, LiteralIr,
-    PackageCallableId, PackageExecutableCoordinate, RelocatableBytecodeFunction,
+    PackageCallableId, PackageExecutableCoordinate, RelocatableBytecodeFunction, SourceMapEntry,
     StatementChargeKind, StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan,
     BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
@@ -72,7 +72,13 @@ fn fixture() -> BytecodeArtifact {
                 statement_id: "s:main:entry".to_string(),
                 charge_kind: StatementChargeKind::FunctionEntry,
             }],
-            source_map: Vec::new(),
+            source_map: vec![SourceMapEntry {
+                start_pc: 6,
+                end_pc: 10,
+                site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                    reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
+            }],
         },
     );
     BytecodeArtifact {
