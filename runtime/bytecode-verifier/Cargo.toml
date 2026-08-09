@@ -1,0 +1,14 @@
+[package]
+name = "skiff-runtime-bytecode-verifier"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
+
+[dev-dependencies]
+skiff-artifact-model = { path = "../../artifact-model" }
+
+[lints]
+workspace = true
