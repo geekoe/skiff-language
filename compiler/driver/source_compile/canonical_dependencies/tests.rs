@@ -7,7 +7,7 @@ use skiff_artifact_identity::{assign_package_artifact_identities, package_schema
 use skiff_artifact_model::{
     PackageBuildId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
-    PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageSymbolRef, ParamModeIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::source_graph::{CompilerSourceFile, PublicationSourceGraph};
@@ -116,18 +116,30 @@ fn applied_base_and_nested_arguments_bind_only_the_exact_package_abi() {
 }
 
 #[test]
-fn dependency_signature_identity_binding_preserves_ordered_callable_type_parameters() {
+fn dependency_signature_identity_binding_preserves_ordered_parameters_and_modes() {
     let dependency = package_artifact("example.dep", "abi:dep");
     let signature = PackageCallableSignature {
         type_params: vec!["T".to_string(), "Id".to_string()],
-        parameters: vec![skiff_artifact_model::PackageCallableParameter {
-            name: "id".to_string(),
-            ty: PackageTypeRef::Local {
-                local_type: TypeRefIr::TypeParam {
-                    name: "Id".to_string(),
+        parameters: vec![
+            skiff_artifact_model::PackageCallableParameter {
+                name: "id".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::TypeParam {
+                        name: "Id".to_string(),
+                    },
                 },
+                mode: ParamModeIr::Value,
             },
-        }],
+            skiff_artifact_model::PackageCallableParameter {
+                name: "state".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: TypeRefIr::TypeParam {
+                        name: "T".to_string(),
+                    },
+                },
+                mode: ParamModeIr::InOut,
+            },
+        ],
         return_type: PackageTypeRef::Nullable {
             inner: Box::new(PackageTypeRef::Local {
                 local_type: TypeRefIr::TypeParam {
@@ -141,6 +153,8 @@ fn dependency_signature_identity_binding_preserves_ordered_callable_type_paramet
     let bound = bind_callable_signature_identity(&signature, &dependency);
     assert_eq!(bound.type_params, ["T", "Id"]);
     assert_eq!(bound.parameters, signature.parameters);
+    assert_eq!(bound.parameters[0].mode, ParamModeIr::Value);
+    assert_eq!(bound.parameters[1].mode, ParamModeIr::InOut);
     assert_eq!(bound.return_type, signature.return_type);
 }
 

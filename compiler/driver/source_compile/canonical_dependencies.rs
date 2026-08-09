@@ -436,6 +436,7 @@ fn bind_callable_signature_identity(
             .map(|parameter| skiff_artifact_model::PackageCallableParameter {
                 name: parameter.name.clone(),
                 ty: bind_package_type_identity(&parameter.ty, artifact),
+                mode: parameter.mode,
             })
             .collect(),
         return_type: bind_package_type_identity(&signature.return_type, artifact),
