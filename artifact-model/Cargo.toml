@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+default = []
+fuzzing = []
+
 [dependencies]
 hex = "0.4"
 serde = { version = "1.0", features = ["derive"] }

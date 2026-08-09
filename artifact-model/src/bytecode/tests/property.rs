@@ -18,7 +18,7 @@
 //!    decode is identical across re-runs, and the validated view's decoded
 //!    instructions equal a fresh decode.
 //!
-//! `#[cfg(fuzzing)]` additionally exports `fuzz_bytecode_decode_words` for
+//! `#[cfg(feature = "fuzzing")]` additionally exports `fuzz_bytecode_decode_words` for
 //! cargo-fuzz integration; see its doc comment. It is not compiled into
 //! default test runs.
 
@@ -274,9 +274,9 @@ fn assert_structured_validation_error(error: &StructuralValidationError) {
     }
 }
 
-/// cargo-fuzz entry point (设计 §8: `cfg(fuzzing)` 导出 fuzz entry fn,
+/// cargo-fuzz entry point (设计 §8: `cfg(feature = "fuzzing")` 导出 fuzz entry fn,
 /// 不进默认测试). Only reachable when the crate is compiled with the
-/// `fuzzing` cfg; `cargo test`/`cargo build` never compile it.
+/// `fuzzing` feature; default `cargo test`/`cargo build` never compile it.
 ///
 /// # cargo-fuzz 接入
 ///
@@ -300,26 +300,23 @@ fn assert_structured_validation_error(error: &StructuralValidationError) {
 ///    ```
 ///
 /// 3. 本入口位于 `#[cfg(test)]` 的 tests 模块内，因此构建 fuzz target 时需
-///    要 artifact-model 同时带 `test` 与 `fuzzing` 两个 cfg 编译
-///    （RUSTFLAGS 会传给依赖的每次 rustc 调用）：
+///    要 artifact-model 同时带 `test` cfg 与 `fuzzing` feature；前者仍通过
+///    RUSTFLAGS 传给依赖，后者由 Cargo 显式启用：
 ///
 ///    ```text
-///    RUSTFLAGS='--cfg fuzzing --cfg test' cargo fuzz run bytecode_decode -- -runs=100000
+///    RUSTFLAGS='--cfg test' cargo fuzz run bytecode_decode --features fuzzing -- -runs=100000
 ///    ```
 ///
 ///    libfuzzer 会把任何 panic（= decode 阶段的越界访问或 bug）当作 crash，
 ///    这正是本不变式的机器化检查。若未来 fuzz crate 落地时不希望依赖
-///    `--cfg test`，替代方案是把本入口提升到 lib 层（`#[cfg(fuzzing)]` 的
+///    `--cfg test`，替代方案是把本入口提升到 lib 层（`fuzzing` feature 下的
 ///    公开 fn，不在 tests 模块内），本函数体只消费公开 API
 ///    （`BoundedDecoder::decode_function` / `structurally_validate`），迁移
 ///    成本为零。
 ///
 /// The input is interpreted as little-endian `u32` words; trailing 1–3 bytes
 /// are ignored. Both decode and validate run; neither may panic.
-// cargo-fuzz injects `cfg(fuzzing)` through RUSTFLAGS; it is intentionally not
-// modeled as an ordinary crate feature.
-#[allow(unexpected_cfgs)]
-#[cfg(fuzzing)]
+#[cfg(feature = "fuzzing")]
 pub fn fuzz_bytecode_decode_words(data: &[u8]) {
     let words: Vec<u32> = data
         .chunks_exact(4)
