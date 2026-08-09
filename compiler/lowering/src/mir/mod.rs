@@ -1,9 +1,285 @@
 //! Typed MIR/CFG over File IR (Phase 2 WP4).
 //!
 //! MIR is the emitter's only semantic input (`emit_bytecode_artifact` in
-//! `compiler/emission`). Construction is a post-pass over `FileIrUnit` plus
-//! source-owned facts (expression types, callable effects, spans); the MIR
-//! builder must not recover types/liveness/effects from File IR.
+//! `compiler/emission`). Construction is a post-pass over each `FileIrUnit`
+//! plus source-owned facts (expression types, callable effects, spans); the
+//! MIR builder must not recover types/liveness/effect facts from File IR
+//! (design §2.4 stop condition).
+//!
+//! # Construction rules
+//!
+//! - One [`MirUnit`] per `FileIrUnit`; one [`MirFunction`] per File IR
+//!   executable (const initializers are not MIR functions: Phase 2 keeps them
+//!   as request-time bodies until the const evaluator freezes them).
+//! - Blocks are derived from File IR blocks by basic-block splitting: every
+//!   branch statement (`If`/`ForIn`/`While`/`Match`/`Timeout`/`Concurrent`)
+//!   and every terminator (`Return`/`Throw`/`Rethrow`/`Break`/`Continue`)
+//!   closes a block. Statements after a terminator in the same File IR block
+//!   are unreachable and are dropped from the CFG.
+//! - Branch statements keep their structured form but reference targets by
+//!   block id; each block also carries its complete successor edge set, so the
+//!   emitter can linearize without re-deriving control flow.
+//! - `Break`/`Continue` resolve to the nearest enclosing loop's exit /
+//!   header block. Expression-referenced blocks (`ValueBlock`, `DbTransaction`,
+//!   `DbLeaseClaim`, `ConcurrentValue` lanes) complete into the enclosing
+//!   statement's continuation.
+//! - Exception regions: every `ExprIr::Catch` produces one [`MirRegion`].
+//!   `catch_expr` is the File IR expression index of the `Catch` node;
+//!   `cleanup_depth` is the number of enclosing catch regions (nesting level,
+//!   deterministic from the expression DAG).
+//! - `MirFunction.statements` holds one [`MirStatementEntry`] per `MirStmt`,
+//!   in the order produced by flattening `blocks` in block-id order, giving a
+//!   recoverable correspondence between `MirStmt`s and the File IR statement
+//!   stream (`statement_index` is the index into `ExecutableBody.statements`).
+//!
+//! # Callable identity conventions
+//!
+//! - `function_key(module_path, symbol) = "{module_path}::{symbol}"` where
+//!   `symbol` is the File IR executable symbol (`{module_path}.{declaration}`).
+//!   The emitter maps unit functions into `BytecodeImage.functions` by this
+//!   key (design §2.6).
+//! - `effect_summary_ref` is the same stable rendering of the callable
+//!   identity (`"{module_path}::{symbol}"`); `may_pending` and
+//!   `effect_summary_ref` come from the source-owned
+//!   `SourceCallableEffectFacts` keyed by `(module_path, declaration_name)`.
 //!
 //! File layout and API are owned by the WP4 worker (see
 //! `doc/implementation/bytecode-vm/design/phase-2-compiler-emission.md` §2.4).
+
+pub mod builder;
+pub mod liveness;
+
+#[cfg(test)]
+mod tests;
+
+use std::collections::BTreeMap;
+
+use skiff_artifact_model::{
+    AssignTargetIr, ExprRefIr, InstructionSourceSite, PatternIr, SourceSpanRef, TypeRefIr,
+};
+
+/// One `FileIrUnit`'s typed CFG. Pure in-memory; never serialized.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirUnit {
+    pub module_path: String,
+    pub functions: Vec<MirFunction>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirFunction {
+    pub symbol: String,
+    pub kind: MirExecutableKind,
+    pub type_params: Vec<String>,
+    pub params: Vec<MirParam>,
+    pub return_type: TypeRefIr,
+    pub self_type: Option<TypeRefIr>,
+    pub slots: Vec<MirSlot>,
+    pub blocks: Vec<MirBlock>,
+    pub regions: Vec<MirRegion>,
+    /// One entry per `MirStmt` across `blocks` in block-id order
+    /// (`statement_index` = index into the File IR statement stream).
+    pub statements: Vec<MirStatementEntry>,
+    pub may_pending: bool,
+    pub effect_summary_ref: String,
+    pub source_span: Option<SourceSpanRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirExecutableKind {
+    Function,
+    ImplMethod,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirParam {
+    pub name: String,
+    pub slot: u32,
+    pub ty: TypeRefIr,
+    pub mode: MirParamMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirParamMode {
+    Value,
+    InOut,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirSlot {
+    pub slot: u32,
+    pub name: String,
+    pub kind: MirSlotKind,
+    pub ty: Option<TypeRefIr>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MirSlotKind {
+    Param,
+    SelfValue,
+    Local,
+    Temp,
+    Pattern,
+}
+
+/// Explicit CFG node. `successors` is the complete edge set (branch targets,
+/// fall-through continuation, loop-back / loop-exit edges).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirBlock {
+    pub id: u32,
+    pub label: String,
+    pub statements: Vec<MirStmt>,
+    pub successors: Vec<u32>,
+}
+
+/// One CFG-ized File IR statement. `statement_index` restores the
+/// correspondence with `ExecutableBody.statements`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirStmt {
+    pub statement_index: u32,
+    pub span: Option<SourceSpanRef>,
+    pub kind: MirStmtKind,
+}
+
+/// CFG-ized `StmtIr`: branch statements reference targets by block id;
+/// `Jump` is the unconditional fall-through / loop edge.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MirStmtKind {
+    Let {
+        slot: u32,
+        value: ExprRefIr,
+    },
+    Assign {
+        target: AssignTargetIr,
+        value: ExprRefIr,
+    },
+    Assert {
+        condition: ExprRefIr,
+        message: Option<ExprRefIr>,
+    },
+    Dispatch {
+        call: ExprRefIr,
+    },
+    Emit {
+        operation: String,
+        value: ExprRefIr,
+    },
+    TestEffectRegister {
+        target: skiff_artifact_model::TestEffectRegisterTargetIr,
+        expect: Option<skiff_artifact_model::TestEffectExpectedIr>,
+        step_expect: Option<skiff_artifact_model::TestEffectExpectedIr>,
+        outcome: skiff_artifact_model::TestEffectOutcomeIr,
+    },
+    Expr {
+        value: ExprRefIr,
+    },
+    Return {
+        value: Option<ExprRefIr>,
+    },
+    Throw {
+        value: ExprRefIr,
+        payload_type: TypeRefIr,
+        site: InstructionSourceSite,
+    },
+    Rethrow {
+        exception_slot: u32,
+    },
+    /// `else_block` is always resolved when the File IR `If` lacks one: the
+    /// builder substitutes the statement continuation so the CFG stays
+    /// explicit.
+    If {
+        condition: ExprRefIr,
+        then_block: u32,
+        else_block: Option<u32>,
+    },
+    ForIn {
+        item_slot: u32,
+        item_type: Option<TypeRefIr>,
+        value_slot: Option<u32>,
+        iterable: ExprRefIr,
+        body: u32,
+    },
+    While {
+        condition: ExprRefIr,
+        body: u32,
+    },
+    Match {
+        value: ExprRefIr,
+        arms: Vec<MirMatchArmIr>,
+    },
+    Timeout {
+        duration_ms: u64,
+        body: u32,
+        site: InstructionSourceSite,
+    },
+    Concurrent {
+        plan: MirConcurrentPlanIr,
+    },
+    Break,
+    Continue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirMatchArmIr {
+    pub pattern: PatternIr,
+    pub body: u32,
+}
+
+/// `ConcurrentPlanIr` with lane bodies resolved to block ids.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirConcurrentPlanIr {
+    pub lanes: Vec<MirConcurrentLaneIr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MirConcurrentLaneIr {
+    Statement {
+        source_order: u32,
+        dependencies: Vec<u32>,
+        body: u32,
+        site: InstructionSourceSite,
+    },
+    Serial {
+        source_order: u32,
+        dependencies: Vec<u32>,
+        body: u32,
+        site: InstructionSourceSite,
+    },
+    Tail {
+        source_order: u32,
+        dependencies: Vec<u32>,
+        tail: ExprRefIr,
+        site: InstructionSourceSite,
+    },
+}
+
+/// One exception region: the File IR expression index of the `Catch` node,
+/// the slot receiving the caught exception, its static type and the nesting
+/// depth (number of enclosing catch regions).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirRegion {
+    pub id: u32,
+    pub catch_expr: u32,
+    pub catch_slot: u32,
+    pub catch_type: TypeRefIr,
+    pub cleanup_depth: u32,
+}
+
+/// Source span side-channel for one `MirStmt`, in the same order as the
+/// flattened `MirStmt` stream.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirStatementEntry {
+    pub statement_index: u32,
+    pub span: Option<SourceSpanRef>,
+}
+
+/// Standard may-liveness (slot granularity) for one `MirFunction`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MirLiveness {
+    pub blocks: BTreeMap<u32, MirBlockLiveness>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MirBlockLiveness {
+    pub live_in: Vec<u32>,
+    pub live_out: Vec<u32>,
+}

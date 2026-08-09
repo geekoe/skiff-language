@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     AssignTargetIr, BlockIr, ConcurrentLaneIr, ConcurrentPlanIr, ExprIr, InstructionSourceSite,
-    LiteralIr, SlotKind, StmtIr,
+    LiteralIr, SlotKind, StmtIr, TypeRefIr,
 };
 use skiff_compiler_source::{
     ConcurrentLaneKind, ConcurrentSourcePlan, ExecutionSourceSite, TimeoutSourcePlan,
@@ -47,46 +47,65 @@ impl FunctionLowerer<'_> {
         let condition = self.lower_expr(condition)?;
         let then_value = self.lower_expr(then_expr)?;
         let else_value = self.lower_expr(else_expr)?;
+        self.set_slot_type(temp_slot, Some(self.expression_ir_type(then_value)));
 
         let then_label = self.next_block_label("ternary_then");
         let else_label = self.next_block_label("ternary_else");
-        let then_stmt = self.push_stmt(StmtIr::Assign {
-            target: AssignTargetIr::Slot { slot: temp_slot },
-            value: then_value,
-        });
+        let then_stmt = self.push_stmt(
+            StmtIr::Assign {
+                target: AssignTargetIr::Slot { slot: temp_slot },
+                value: then_value,
+            },
+            None,
+        );
         self.body.blocks.push(BlockIr {
             label: then_label.clone(),
             statements: vec![then_stmt],
         });
-        let else_stmt = self.push_stmt(StmtIr::Assign {
-            target: AssignTargetIr::Slot { slot: temp_slot },
-            value: else_value,
-        });
+        let else_stmt = self.push_stmt(
+            StmtIr::Assign {
+                target: AssignTargetIr::Slot { slot: temp_slot },
+                value: else_value,
+            },
+            None,
+        );
         self.body.blocks.push(BlockIr {
             label: else_label.clone(),
             statements: vec![else_stmt],
         });
 
         let body_label = self.next_block_label("ternary_body");
-        let init_value = self.push_expr(ExprIr::Literal {
-            value: LiteralIr::Null,
-        });
-        let init_stmt = self.push_stmt(StmtIr::Let {
-            slot: temp_slot,
-            value: init_value,
-        });
-        let body_stmt = self.push_stmt(StmtIr::If {
-            condition,
-            then_block: then_label,
-            else_block: Some(else_label),
-        });
+        let init_value = self.push_expr(
+            ExprIr::Literal {
+                value: LiteralIr::Null,
+            },
+            TypeRefIr::builtin("null"),
+        );
+        let init_stmt = self.push_stmt(
+            StmtIr::Let {
+                slot: temp_slot,
+                value: init_value,
+            },
+            None,
+        );
+        let body_stmt = self.push_stmt(
+            StmtIr::If {
+                condition,
+                then_block: then_label,
+                else_block: Some(else_label),
+            },
+            None,
+        );
         self.body.blocks.push(BlockIr {
             label: body_label.clone(),
             statements: vec![init_stmt, body_stmt],
         });
         Ok(ExprIr::ValueBlock {
             block: body_label,
-            result: self.push_expr(ExprIr::LoadSlot { slot: temp_slot }),
+            result: self.push_expr(
+                ExprIr::LoadSlot { slot: temp_slot },
+                self.expression_ir_type(else_value),
+            ),
         })
     }
 

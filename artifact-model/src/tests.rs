@@ -454,6 +454,8 @@ fn sample_file_ir_unit() -> FileIrUnit {
             statements: vec![StmtIr::Return { value: None }],
             expressions: Vec::new(),
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     unit.link_targets

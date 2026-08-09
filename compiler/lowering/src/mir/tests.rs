@@ -1,0 +1,584 @@
+//! MIR/CFG builder, liveness and `LoweredPackage` carriage tests.
+
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use skiff_artifact_model::{ExprIr, ExprRefIr, InstructionSourceSite, StmtIr, TypeRefIr};
+use skiff_compiler_input::CompilerPlatformSources;
+use skiff_compiler_source::{
+    build_package_from_parsed_sources_with_dependency_analysis,
+    parsed_sources::parse_publication_sources, prelude_registry::initialize_prelude_registry,
+    source_graph::CompilerSourceFile, CompileParsedPackageSourcesInput, PackageCompilePolicy,
+    SourceDependencyAnalysisInput,
+};
+
+use crate::lower;
+use crate::mir::liveness::compute_liveness;
+use crate::mir::{
+    MirBlock, MirExecutableKind, MirFunction, MirLiveness, MirParamMode, MirSlotKind, MirStmtKind,
+    MirUnit,
+};
+
+fn build_model(module_path: &str, source_text: &str) -> skiff_compiler_source::PackageSourceModel {
+    let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    initialize_prelude_registry(
+        &CompilerPlatformSources::new(&platform_root).expect("workspace platform sources load"),
+    )
+    .expect("prelude registry initializes");
+    let root = PathBuf::from("/mir-fixture");
+    let relative = "internal/mir_fixture.skiff";
+    let source = CompilerSourceFile::parse(
+        PathBuf::from(relative),
+        module_path.to_string(),
+        false,
+        false,
+        source_text.to_string(),
+        relative,
+    )
+    .expect("MIR fixture should parse");
+    let production_sources = vec![source];
+    let parsed_sources = parse_publication_sources(&root, &production_sources)
+        .expect("MIR fixture source facts should build");
+    build_package_from_parsed_sources_with_dependency_analysis(
+        CompileParsedPackageSourcesInput {
+            parsed_sources,
+            production_sources,
+            diagnostic_root: &root,
+            publication_api: None,
+            package_aliases: &BTreeMap::new(),
+            package_dependencies: &[],
+            package_facts: None,
+            package_artifacts: None,
+            policy: PackageCompilePolicy::new("example.com/mir-fixture"),
+        },
+        &SourceDependencyAnalysisInput::new([], []).unwrap(),
+    )
+    .expect("MIR fixture source model should build")
+}
+
+const MODULE: &str = "internal.mir_fixture";
+
+const MIR_FIXTURE: &str = r#"
+  function mirror(input: Array<number>) -> number {
+    var acc = 0
+    var i = 0
+    while (i < input.length()) {
+      if (acc == 0) {
+        acc = 1
+      }
+      for item in input {
+        match (item) {
+          0 => { acc = acc + 1 }
+          _ => { acc = acc + 2 }
+        }
+      }
+      timeout(1ms) {
+        acc = acc + 1
+      }
+      i = i + 1
+    }
+    return acc
+  }
+
+  type Problem { message: string }
+
+  function catchy(input: Problem) -> CatchResult<Problem, Problem> {
+    return catch<Problem>(input)
+  }
+
+  function pendingish() -> Stream<number> {
+    emit 1
+  }
+"#;
+
+fn mirror_function() -> (MirFunction, Vec<ExprIr>) {
+    let model = build_model(MODULE, MIR_FIXTURE);
+    let lowered = lower(&model).expect("MIR fixture should lower");
+    let unit = &lowered.file_ir_units()[0];
+    let executable = unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == format!("{MODULE}.mirror"))
+        .expect("mirror executable");
+    let mir = &lowered.mir_units()[0];
+    let function = mir
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.mirror"))
+        .expect("mirror MirFunction");
+    (function.clone(), executable.body.expressions.clone())
+}
+
+#[test]
+fn mir_units_carried_by_lowered_package_with_effect_facts() {
+    let model = build_model(MODULE, MIR_FIXTURE);
+    let lowered = lower(&model).expect("MIR fixture should lower");
+    assert_eq!(lowered.mir_units().len(), 1);
+    let unit: &MirUnit = &lowered.mir_units()[0];
+    assert_eq!(unit.module_path, MODULE);
+    assert_eq!(unit.functions.len(), 3);
+
+    let mirror = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.mirror"))
+        .expect("mirror");
+    assert_eq!(mirror.kind, MirExecutableKind::Function);
+    assert_eq!(
+        mirror.effect_summary_ref,
+        format!("{MODULE}::{MODULE}.mirror"),
+        "effect_summary_ref is the stable callable identity rendering"
+    );
+    // A pure loop fixture has no pending effects.
+    assert!(!mirror.may_pending);
+
+    // Stream emit records PendingEffectCategory::Stream in the source effects.
+    let pendingish = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.pendingish"))
+        .expect("pendingish");
+    assert!(
+        pendingish.may_pending,
+        "stream fixture must be may_pending from source effects"
+    );
+    assert_eq!(
+        mirror.params[0],
+        crate::mir::MirParam {
+            name: "input".to_string(),
+            slot: 0,
+            ty: TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![TypeRefIr::builtin("number")],
+            },
+            mode: MirParamMode::Value,
+        }
+    );
+    assert_eq!(mirror.slots[0].name, "input");
+    assert_eq!(mirror.slots[0].kind, MirSlotKind::Param);
+    assert!(mirror.slots[0].ty.is_some());
+
+    // File IR incremental fields stay index-aligned with the expression and
+    // statement streams.
+    let mirror_executable = lowered.file_ir_units()[0]
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == format!("{MODULE}.mirror"))
+        .expect("mirror executable");
+    assert_eq!(
+        mirror_executable.expression_types.len(),
+        mirror_executable.body.expressions.len(),
+        "expression_types aligns with body.expressions"
+    );
+    assert_eq!(
+        mirror_executable.statement_spans.len(),
+        mirror_executable.body.statements.len(),
+        "statement_spans aligns with body.statements"
+    );
+    assert!(
+        mirror_executable
+            .statement_spans
+            .iter()
+            .any(Option::is_some),
+        "source statements carry spans from the source facts"
+    );
+    assert!(mirror_executable
+        .slots
+        .slots
+        .iter()
+        .any(|slot| slot.ty.is_some()));
+
+    let catchy = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.catchy"))
+        .expect("catchy");
+    // A pure string function has no pending effects.
+    assert!(!catchy.may_pending);
+}
+
+#[test]
+fn mir_cfg_shapes_for_branches_loops_match_timeout_concurrent_and_catch() {
+    let (mirror, _expressions) = mirror_function();
+
+    // Statement index -> MirStmt correspondence is recoverable: one entry per
+    // MirStmt in flattened block order, carrying the File IR statement index.
+    let flattened: Vec<u32> = mirror
+        .blocks
+        .iter()
+        .flat_map(|block| block.statements.iter().map(|stmt| stmt.statement_index))
+        .collect();
+    let entries: Vec<u32> = mirror
+        .statements
+        .iter()
+        .map(|entry| entry.statement_index)
+        .collect();
+    assert_eq!(
+        flattened, entries,
+        "MirStmt stream matches statement entries"
+    );
+
+    // Entry block is id 0 and holds the loop + a Return continuation.
+    let entry = &mirror.blocks[0];
+    assert_eq!(entry.label, "entry");
+    assert!(matches!(
+        entry.statements.last().map(|stmt| &stmt.kind),
+        Some(MirStmtKind::While { .. })
+    ));
+    assert_eq!(entry.successors.len(), 2, "while body + loop exit");
+
+    // The while body's final fragment loops back to the While header.
+    let while_body = mirror
+        .blocks
+        .iter()
+        .find(|block| block.label.starts_with("while_body"))
+        .expect("while body block");
+    let last_while_fragment = mirror
+        .blocks
+        .iter()
+        .filter(|block| block.label.starts_with("while_body"))
+        .last()
+        .expect("last while fragment");
+    assert!(
+        last_while_fragment.successors.contains(&entry.id),
+        "loop-back edge to the While header"
+    );
+    assert!(
+        entry.successors.contains(&while_body.id),
+        "while body must be a successor of the entry block"
+    );
+
+    // ForIn inside the while body with its body block as successor.
+    let for_in_block = mirror
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .statements
+                .last()
+                .is_some_and(|stmt| matches!(stmt.kind, MirStmtKind::ForIn { .. }))
+        })
+        .expect("for-in block");
+    let for_in_body = mirror
+        .blocks
+        .iter()
+        .find(|block| block.label.starts_with("for_body"))
+        .expect("for body block");
+    assert!(for_in_block.successors.contains(&for_in_body.id));
+
+    // Match: arm bodies plus the no-match exit edge; the arm's completion
+    // falls through to the next statement.
+    let match_block = mirror
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .statements
+                .last()
+                .is_some_and(|stmt| matches!(stmt.kind, MirStmtKind::Match { .. }))
+        })
+        .expect("match block");
+    assert_eq!(
+        match_block.successors.len(),
+        3,
+        "two arm bodies + no-match exit"
+    );
+    assert!(matches!(
+        &match_block.statements[0].kind,
+        MirStmtKind::Match { arms, .. } if arms.len() == 2
+    ));
+
+    // Timeout statement references its body by block id.
+    let timeout_block = mirror
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .statements
+                .last()
+                .is_some_and(|stmt| matches!(stmt.kind, MirStmtKind::Timeout { .. }))
+        })
+        .expect("timeout block");
+    let MirStmtKind::Timeout {
+        body, duration_ms, ..
+    } = &timeout_block.statements[0].kind
+    else {
+        unreachable!()
+    };
+    assert_eq!(*duration_ms, 1);
+    assert_eq!(timeout_block.successors, vec![*body]);
+
+    // The timeout body completes back into the timeout statement's
+    // continuation (the loop tail), so the body block is reachable.
+    let timeout_body = mirror
+        .blocks
+        .iter()
+        .find(|block| block.label.starts_with("timeout_body"))
+        .expect("timeout body block");
+    assert!(
+        !timeout_body.successors.is_empty(),
+        "timeout body must continue into the loop tail"
+    );
+
+    // Catch expression produced exactly one exception region.
+    let catchy_model = build_model(MODULE, MIR_FIXTURE);
+    let catchy = lower(&catchy_model).expect("MIR fixture should lower");
+    let catchy_unit = &catchy.file_ir_units()[0];
+    let catchy_executable = catchy_unit
+        .executables
+        .iter()
+        .find(|executable| executable.symbol == format!("{MODULE}.catchy"))
+        .expect("catchy executable");
+    let catchy_expr_index = catchy_executable
+        .body
+        .expressions
+        .iter()
+        .position(|expr| matches!(expr, ExprIr::Catch { .. }))
+        .expect("catch expression");
+    let catchy_mir = catchy.mir_units()[0]
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.catchy"))
+        .expect("catchy MirFunction");
+    assert_eq!(catchy_mir.regions.len(), 1);
+    let region = &catchy_mir.regions[0];
+    if region.catch_expr as usize != catchy_expr_index {
+        panic!(
+            "region catch_expr {} != catch expr index {catchy_expr_index}; exprs: {:?}",
+            region.catch_expr, catchy_executable.body.expressions
+        );
+    }
+    assert_eq!(region.catch_type, TypeRefIr::LocalType { type_index: 0 });
+    assert_eq!(region.cleanup_depth, 0);
+}
+
+#[test]
+fn liveness_hand_computed_small_fixture() {
+    // b0: let acc = const       -> def {1}, use {}
+    // b1: acc = x               -> def {1}, use {0}
+    // b2: return acc            -> def {}, use {1}
+    // live_out(b2) = {}; live_in(b2) = {1}
+    // live_out(b1) = live_in(b2) = {1}; live_in(b1) = {0} ∪ ({1} - {1}) = {0}
+    // live_out(b0) = live_in(b1) = {0}; live_in(b0) = {} ∪ ({0} - {1}) = {0}
+    let function = MirFunction {
+        symbol: "m.f".to_string(),
+        kind: MirExecutableKind::Function,
+        type_params: Vec::new(),
+        params: vec![crate::mir::MirParam {
+            name: "x".to_string(),
+            slot: 0,
+            ty: TypeRefIr::builtin("number"),
+            mode: MirParamMode::Value,
+        }],
+        return_type: TypeRefIr::builtin("number"),
+        self_type: None,
+        slots: vec![
+            crate::mir::MirSlot {
+                slot: 0,
+                name: "x".to_string(),
+                kind: MirSlotKind::Param,
+                ty: None,
+            },
+            crate::mir::MirSlot {
+                slot: 1,
+                name: "acc".to_string(),
+                kind: MirSlotKind::Local,
+                ty: None,
+            },
+        ],
+        blocks: vec![
+            MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![crate::mir::MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Let {
+                        slot: 1,
+                        value: ExprRefIr { expression: 0 },
+                    },
+                }],
+                successors: vec![1],
+            },
+            MirBlock {
+                id: 1,
+                label: "body".to_string(),
+                statements: vec![crate::mir::MirStmt {
+                    statement_index: 1,
+                    span: None,
+                    kind: MirStmtKind::Assign {
+                        target: skiff_artifact_model::AssignTargetIr::Slot { slot: 1 },
+                        value: ExprRefIr { expression: 1 },
+                    },
+                }],
+                successors: vec![2],
+            },
+            MirBlock {
+                id: 2,
+                label: "exit".to_string(),
+                statements: vec![crate::mir::MirStmt {
+                    statement_index: 2,
+                    span: None,
+                    kind: MirStmtKind::Return {
+                        value: Some(ExprRefIr { expression: 2 }),
+                    },
+                }],
+                successors: Vec::new(),
+            },
+        ],
+        regions: Vec::new(),
+        statements: Vec::new(),
+        may_pending: false,
+        effect_summary_ref: "m::m.f".to_string(),
+        source_span: None,
+    };
+    let expressions = vec![
+        ExprIr::LoadConst { const_index: 0 },
+        ExprIr::LoadSlot { slot: 0 },
+        ExprIr::LoadSlot { slot: 1 },
+    ];
+
+    let liveness = compute_liveness(&function, &expressions);
+    assert_eq!(liveness.blocks[&0].live_in, vec![0]);
+    assert_eq!(liveness.blocks[&0].live_out, vec![0]);
+    assert_eq!(liveness.blocks[&1].live_in, vec![0]);
+    assert_eq!(liveness.blocks[&1].live_out, vec![1]);
+    assert_eq!(liveness.blocks[&2].live_in, vec![1]);
+    assert_eq!(liveness.blocks[&2].live_out, Vec::<u32>::new());
+
+    // Liveness is deterministic: recomputation yields identical output.
+    let again = compute_liveness(&function, &expressions);
+    assert_eq!(again.blocks, liveness.blocks);
+    let _: MirLiveness = liveness;
+    let _: MirFunction = function;
+    let _: InstructionSourceSite = InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerDesugaring,
+    };
+    let _: StmtIr = StmtIr::Break;
+}
+
+#[test]
+fn concurrent_plan_lanes_become_block_ids_and_complete_into_continuation() {
+    // A hand-built FileIrUnit exercising StmtIr::Concurrent (the source model
+    // rejects `concurrent` in v1, so the CFG-ization is tested directly).
+    use skiff_artifact_model::{
+        BlockIr, ConcurrentLaneIr, ConcurrentPlanIr, ExecutableBody, ExecutableDeclarationIr,
+        ExecutableIr, ExecutableKind, FileDeclarations, FileIrUnit, FileLinkTargets, SlotLayout,
+        SourceMapDto, StmtRefIr, SyntheticInstructionSiteReason,
+    };
+    let body = ExecutableBody {
+        blocks: vec![
+            BlockIr {
+                label: "concurrent_lane$0".to_string(),
+                statements: vec![StmtRefIr { statement: 1 }],
+            },
+            BlockIr {
+                label: "entry".to_string(),
+                statements: vec![StmtRefIr { statement: 0 }],
+            },
+        ],
+        statements: vec![
+            StmtIr::Concurrent {
+                plan: ConcurrentPlanIr {
+                    lanes: vec![ConcurrentLaneIr::Statement {
+                        source_order: 0,
+                        dependencies: Vec::new(),
+                        body: "concurrent_lane$0".to_string(),
+                        site: InstructionSourceSite::Synthetic {
+                            reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                        },
+                    }],
+                    site: InstructionSourceSite::Synthetic {
+                        reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                    },
+                },
+            },
+            StmtIr::Return { value: None },
+        ],
+        expressions: Vec::new(),
+    };
+    let executable = ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "m.concurrentish".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("void"),
+        self_type: None,
+        slots: SlotLayout::default(),
+        may_suspend: false,
+        body,
+        expression_types: Vec::new(),
+        statement_spans: vec![None, None],
+        source_span: None,
+    };
+    let mut unit = FileIrUnit {
+        schema_version: "1".to_string(),
+        file_ir_identity: String::new(),
+        source_ast_hash: String::new(),
+        module_path: "m".to_string(),
+        ir_format_version: "1".to_string(),
+        opcode_table_version: "1".to_string(),
+        required_receiver_builtin_capability_version: 0,
+        source_map: SourceMapDto {
+            format: "skiff-file-ir-source-map-v1".to_string(),
+            sources: Vec::new(),
+            spans: Vec::new(),
+        },
+        actor_declarations: Vec::new(),
+        declarations: FileDeclarations {
+            types: BTreeMap::new(),
+            interfaces: BTreeMap::new(),
+            db: BTreeMap::new(),
+            executables: BTreeMap::from([(
+                "concurrentish".to_string(),
+                ExecutableDeclarationIr {
+                    executable_index: 0,
+                    symbol: "m.concurrentish".to_string(),
+                    source_span: None,
+                },
+            )]),
+            constants: BTreeMap::new(),
+        },
+        link_targets: FileLinkTargets::default(),
+        type_table: Vec::new(),
+        constants: Vec::new(),
+        executables: vec![executable],
+        external_refs: Default::default(),
+    };
+    let _ = &mut unit;
+
+    let per_callable = BTreeMap::from([(
+        skiff_compiler_source::SourceSymbolKey::new("m", "concurrentish"),
+        (false, "m::m.concurrentish".to_string()),
+    )]);
+    let mir = crate::mir::builder::build_mir_unit_with_effect_map(&unit, &per_callable)
+        .expect("concurrent fixture should build MIR");
+    let function = &mir.functions[0];
+
+    // entry: [Concurrent] then continuation [Return].
+    let entry = &function.blocks[0];
+    let MirStmtKind::Concurrent { plan } = &entry.statements[0].kind else {
+        panic!("expected concurrent statement")
+    };
+    assert_eq!(plan.lanes.len(), 1);
+    let crate::mir::MirConcurrentLaneIr::Statement { body, .. } = &plan.lanes[0] else {
+        panic!("expected statement lane")
+    };
+    let lane_id = *body;
+    assert!(function.blocks.iter().any(|block| block.id == lane_id));
+    assert_eq!(entry.successors, vec![lane_id]);
+
+    // The lane's Return terminates; the statement continuation (entry's next
+    // fragment) holds the Return and has no successors.
+    let lane_block = function
+        .blocks
+        .iter()
+        .find(|block| block.id == lane_id)
+        .expect("lane block");
+    assert!(matches!(
+        lane_block.statements.last().map(|stmt| &stmt.kind),
+        Some(MirStmtKind::Return { .. })
+    ));
+    assert!(lane_block.successors.is_empty());
+    assert_eq!(function.statements.len(), 2);
+}

@@ -16,9 +16,8 @@ use skiff_compiler_source::{
 };
 use skiff_syntax::{
     ast::{
-        BinaryOp, CallArg, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding,
-        LetKind, Literal, ObjectLiteralKey, PatchOperation, Stmt, TestEffectStepOutcome, TypeRef,
-        UnaryOp,
+        BinaryOp, CallArg, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding, LetKind,
+        Literal, ObjectLiteralKey, PatchOperation, Stmt, TestEffectStepOutcome, TypeRef, UnaryOp,
     },
     ast_utils::{compiler_test_effect_expressions, dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
@@ -30,9 +29,9 @@ use crate::file_ir::{
     ExprRefIr, FunctionTypeParamIr, InOutArgIr, InOutPathSegmentIr, InstructionSourceSite,
     InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr,
     InterfaceMethodTablePlanIr, LiteralIr, MatchArmIr, MetadataValue, NativeTarget, PackageRefIr,
-    PackageSymbolRef, PatternIr, RecordPatternFieldIr, ServiceSymbolRef, SlotIr, SlotKind, StmtIr,
-    StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeRefIr,
-    UnaryOpIr,
+    PackageSymbolRef, PatternIr, RecordPatternFieldIr, ServiceSymbolRef, SlotIr, SlotKind,
+    SourceSpanRef, StmtIr, StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr,
+    TestEffectRegisterTargetIr, TypeRefIr, UnaryOpIr,
 };
 
 use super::{
@@ -41,6 +40,7 @@ use super::{
     executable_type_projection::execution_type_ref,
     service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::source_span_ref,
+    type_inference::{map_entry_key_type_ir, map_entry_value_type_ir},
     type_lowering::{
         is_official_std_package_ref, is_unknown_type_ref, lower_named_type, lower_type_ref,
         lower_type_text, prelude_field_type_text, runtime_receiver_root_from_type_ref,
@@ -122,6 +122,12 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) scope_binding_restore: Vec<Vec<(String, Option<Binding>)>>,
     pub(super) slots: Vec<SlotIr>,
     pub(super) body: ExecutableBody,
+    /// Static type of every `body.expressions` entry, in index order. Written
+    /// in lockstep with `push_expr` (Phase 2 design §2.2).
+    pub(super) expression_types_ir: Vec<TypeRefIr>,
+    /// Source span of every `body.statements` entry, in index order. Written
+    /// in lockstep with `push_stmt`; `None` for compiler-generated statements.
+    pub(super) statement_spans: Vec<Option<SourceSpanRef>>,
     pub(super) next_block_id: u32,
     pub(super) db_transaction_depth: u32,
     pub(super) timeout_plan_cursor: usize,
@@ -198,6 +204,8 @@ impl<'a> FunctionLowerer<'a> {
             scope_binding_restore: vec![Vec::new()],
             slots: Vec::new(),
             body: ExecutableBody::default(),
+            expression_types_ir: Vec::new(),
+            statement_spans: Vec::new(),
             next_block_id: 0,
             db_transaction_depth: 0,
             timeout_plan_cursor: 0,
@@ -244,6 +252,7 @@ impl<'a> FunctionLowerer<'a> {
             index: slot,
             name: name.to_string(),
             kind,
+            ty: None,
         });
         current_scope.insert(name.to_string());
         let previous = self.bindings.insert(
@@ -313,6 +322,7 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<StmtRefIr> {
+        let statement_span = self.current_statement_span();
         let lowered = match stmt {
             Stmt::CompilerTestEffectRegister {
                 target,
@@ -518,6 +528,10 @@ impl<'a> FunctionLowerer<'a> {
                     .map(|ty| ty.name.clone())
                     .or_else(|| self.next_expression_type_text())
                     .or_else(|| self.infer_expr_type_text(value));
+                let value_ty = self
+                    .next_expression_type()
+                    .map(|(_, ty)| ty)
+                    .or_else(|| self.infer_expr_type_ir(value));
                 let value = self.lower_expr(value)?;
                 let slot = self.declare_slot_with_type(
                     name,
@@ -526,6 +540,7 @@ impl<'a> FunctionLowerer<'a> {
                     readonly,
                     type_text,
                 )?;
+                self.set_slot_type(slot, value_ty);
                 StmtIr::Let { slot, value }
             }
             Stmt::Assign { target, value } => {
@@ -597,13 +612,15 @@ impl<'a> FunctionLowerer<'a> {
                 let body = self.lower_scoped_block("for_body", body, |lowerer| {
                     match binding {
                         ForBinding::Item { item } => {
-                            item_slot = Some(lowerer.declare_slot_with_type(
+                            let slot = lowerer.declare_slot_with_type(
                                 item,
                                 SlotKind::Local,
                                 false,
                                 item_readonly,
                                 item_type_text,
-                            )?);
+                            )?;
+                            lowerer.set_slot_type(slot, item_type_ir.clone());
+                            item_slot = Some(slot);
                         }
                         ForBinding::Entry { key, value } => {
                             let (key_type_text, value_type_text) =
@@ -613,20 +630,30 @@ impl<'a> FunctionLowerer<'a> {
                                             .to_string(),
                                     )
                                 })?;
-                            item_slot = Some(lowerer.declare_slot_with_type(
+                            let key_slot = lowerer.declare_slot_with_type(
                                 key,
                                 SlotKind::Local,
                                 false,
                                 item_readonly,
                                 Some(key_type_text),
-                            )?);
-                            value_slot = Some(lowerer.declare_slot_with_type(
+                            )?;
+                            lowerer.set_slot_type(
+                                key_slot,
+                                item_type_ir.as_ref().and_then(map_entry_key_type_ir),
+                            );
+                            let value_slot_id = lowerer.declare_slot_with_type(
                                 value,
                                 SlotKind::Local,
                                 false,
                                 BindingReadonlyFlags::default(),
                                 Some(value_type_text),
-                            )?);
+                            )?;
+                            lowerer.set_slot_type(
+                                value_slot_id,
+                                item_type_ir.as_ref().and_then(map_entry_value_type_ir),
+                            );
+                            item_slot = Some(key_slot);
+                            value_slot = Some(value_slot_id);
                         }
                     }
                     Ok(())
@@ -655,11 +682,14 @@ impl<'a> FunctionLowerer<'a> {
             Stmt::Assert { condition, message } => StmtIr::Assert {
                 condition: self.lower_expr(condition)?,
                 message: message.as_ref().map(|message| {
-                    self.push_expr(ExprIr::Literal {
-                        value: LiteralIr::String {
-                            value: message.clone(),
+                    self.push_expr(
+                        ExprIr::Literal {
+                            value: LiteralIr::String {
+                                value: message.clone(),
+                            },
                         },
-                    })
+                        TypeRefIr::builtin("string"),
+                    )
                 }),
             },
             Stmt::Break => StmtIr::Break,
@@ -690,7 +720,7 @@ impl<'a> FunctionLowerer<'a> {
                 StmtIr::Rethrow { exception_slot }
             }
         };
-        Ok(self.push_stmt(lowered))
+        Ok(self.push_stmt(lowered, statement_span))
     }
 
     fn lower_task_stmt(&mut self, call: &Expr, timing: Option<&DispatchTiming>) -> Result<StmtIr> {
@@ -1262,9 +1292,12 @@ impl<'a> FunctionLowerer<'a> {
                     }
                     value.clone()
                 }
-                ConstructorFieldValueSource::SyntheticNull => self.push_expr(ExprIr::Literal {
-                    value: LiteralIr::Null,
-                }),
+                ConstructorFieldValueSource::SyntheticNull => self.push_expr(
+                    ExprIr::Literal {
+                        value: LiteralIr::Null,
+                    },
+                    field.ty.ir.clone(),
+                ),
             };
             lowered_fields.insert(field.name, value);
         }
@@ -1450,10 +1483,13 @@ impl<'a> FunctionLowerer<'a> {
         let expression_key = self.next_expression_key();
         if let Some(symbol) = expr_path(expr)
             .and_then(|path| self.type_resolution.resolve_package_constant(&path))
-            .map(|constant| constant.symbol.clone())
+            .map(|constant| (constant.symbol.clone(), constant.ty.clone()))
         {
             self.consume_static_package_value_descendants(expr)?;
-            return Ok(self.push_expr(ExprIr::LoadPackageConst { symbol }));
+            return Ok(self.push_expr(
+                ExprIr::LoadPackageConst { symbol: symbol.0 },
+                execution_type_ref(&symbol.1),
+            ));
         }
         let lowered = match expr {
             Expr::Literal(literal) => ExprIr::Literal {
@@ -1571,20 +1607,25 @@ impl<'a> FunctionLowerer<'a> {
             } => {
                 let catch_name = format!("$catch{}", self.slots.len());
                 let catch_slot = self.declare_slot(&catch_name, SlotKind::Temp, false)?;
+                let lowered_catch_type = lower_type_ref(
+                    catch_type,
+                    self.type_indices,
+                    self.local_db_objects,
+                    self.publication_db_metadata,
+                    self.package_aliases,
+                    self.external_type_symbols,
+                    self.source_alias_targets,
+                    self.value_type_context(),
+                )?;
+                self.set_slot_type(catch_slot, Some(lowered_catch_type.clone()));
                 ExprIr::Catch {
                     try_expression: self.lower_expr(try_expr)?,
                     catch_slot,
-                    catch_type: lower_type_ref(
-                        catch_type,
-                        self.type_indices,
-                        self.local_db_objects,
-                        self.publication_db_metadata,
-                        self.package_aliases,
-                        self.external_type_symbols,
-                        self.source_alias_targets,
-                        self.value_type_context(),
-                    )?,
-                    body: self.push_expr(ExprIr::LoadSlot { slot: catch_slot }),
+                    catch_type: lowered_catch_type.clone(),
+                    body: self.push_expr(
+                        ExprIr::LoadSlot { slot: catch_slot },
+                        lowered_catch_type,
+                    ),
                 }
             }
             Expr::ValueBlock(value) => self.lower_user_value_block(value, expected_target)?,
@@ -1598,7 +1639,66 @@ impl<'a> FunctionLowerer<'a> {
             Expr::DbLeaseClaim(claim) => self.lower_db_lease_claim(claim)?,
             Expr::DbLeaseRead(read) => self.lower_db_lease_read(read)?,
         };
-        Ok(self.push_expr(lowered))
+        let expression_ty = self.typed_expression_type(expression_key.as_ref(), &lowered)?;
+        Ok(self.push_expr(lowered, expression_ty))
+    }
+
+    /// Static type of a lowered File IR expression. The source-owned
+    /// `expression_types` fact is authoritative; constructs the source model
+    /// deliberately leaves untyped (diverging expressions, catches over
+    /// throws, dependency calls without an exact signature, pattern-binding
+    /// loads) fall back to a structural type from the File IR shape, and
+    /// `unknown` as the honest top type when the shape fixes nothing.
+    fn typed_expression_type(
+        &self,
+        key: Option<&ExpressionKey>,
+        lowered: &ExprIr,
+    ) -> Result<TypeRefIr> {
+        if let Some(key) = key {
+            if let Some(fact) = self.expression_types.and_then(|types| types.fact(key)) {
+                if let Some(ty) = &fact.ty {
+                    return Ok(ty.ir.clone());
+                }
+            }
+        }
+        Ok(self
+            .file_ir_expression_type(lowered)
+            .unwrap_or_else(|| TypeRefIr::builtin("unknown")))
+    }
+
+    /// Context-fixed File IR expression types for constructs whose source
+    /// type fact is intentionally absent.
+    fn file_ir_expression_type(&self, lowered: &ExprIr) -> Option<TypeRefIr> {
+        match lowered {
+            ExprIr::Throw { .. } | ExprIr::Rethrow { .. } => Some(TypeRefIr::builtin("never")),
+            ExprIr::LoadSlot { slot } => self
+                .slots
+                .get(*slot as usize)
+                .and_then(|slot| slot.ty.clone()),
+            ExprIr::Literal { value } => Some(match value {
+                LiteralIr::Null => TypeRefIr::builtin("null"),
+                LiteralIr::String { .. } => TypeRefIr::builtin("string"),
+                LiteralIr::Number { .. } => TypeRefIr::builtin("number"),
+                LiteralIr::Bool { .. } => TypeRefIr::builtin("bool"),
+            }),
+            ExprIr::Call { .. } => Some(TypeRefIr::builtin("void")),
+            ExprIr::Catch {
+                try_expression,
+                catch_type,
+                ..
+            } => Some(TypeRefIr::Builtin {
+                name: "CatchResult".to_string(),
+                args: vec![self.expression_ir_type(*try_expression), catch_type.clone()],
+            }),
+            ExprIr::DbOperation { operation } => Some(operation.result_type.clone()),
+            ExprIr::DbQuery { query } => Some(query.result_type.clone()),
+            ExprIr::DbTransaction { transaction } => Some(transaction.result_type.clone()),
+            ExprIr::DbLeaseClaim { claim } => Some(claim.result_type.clone()),
+            ExprIr::DbLeaseRead { read } => Some(read.result_type.clone()),
+            ExprIr::Timeout { value, .. } => Some(self.expression_ir_type(*value)),
+            ExprIr::ValueBlock { result, .. } => Some(self.expression_ir_type(*result)),
+            _ => None,
+        }
     }
 
     fn consume_static_package_value_descendants(&mut self, expr: &Expr) -> Result<()> {
@@ -1639,17 +1739,26 @@ impl<'a> FunctionLowerer<'a> {
             entries.insert(key, lowered_value);
         }
 
-        let patch_type = self.push_expr(ExprIr::Literal {
-            value: LiteralIr::String {
-                value: target.name.clone(),
+        let patch_type = self.push_expr(
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: target.name.clone(),
+                },
             },
-        });
-        let set = self.push_expr(ExprIr::MapLiteral {
-            entries: set_entries,
-        });
-        let inc = self.push_expr(ExprIr::MapLiteral {
-            entries: inc_entries,
-        });
+            TypeRefIr::builtin("string"),
+        );
+        let set = self.push_expr(
+            ExprIr::MapLiteral {
+                entries: set_entries,
+            },
+            patch_map_type(),
+        );
+        let inc = self.push_expr(
+            ExprIr::MapLiteral {
+                entries: inc_entries,
+            },
+            patch_map_type(),
+        );
 
         let mut entries = BTreeMap::new();
         entries.insert("__skiffPatchType".to_string(), patch_type);
@@ -2347,10 +2456,13 @@ impl<'a> FunctionLowerer<'a> {
                 )));
             }
             let payload = self.lower_expr(payload.expr())?;
-            return Ok(Some(self.push_expr(ExprIr::RepresentationWrap {
-                value: payload,
-                type_ref: wrapper_type,
-            })));
+            return Ok(Some(self.push_expr(
+                ExprIr::RepresentationWrap {
+                    value: payload,
+                    type_ref: wrapper_type.clone(),
+                },
+                wrapper_type,
+            )));
         }
         Ok(None)
     }
@@ -2881,16 +2993,56 @@ impl<'a> FunctionLowerer<'a> {
         .ok()
     }
 
-    pub(super) fn push_stmt(&mut self, stmt: StmtIr) -> StmtRefIr {
+    pub(super) fn push_stmt(&mut self, stmt: StmtIr, span: Option<SourceSpanRef>) -> StmtRefIr {
         let statement = self.body.statements.len() as u32;
         self.body.statements.push(stmt);
+        self.statement_spans.push(span);
         StmtRefIr { statement }
     }
 
-    pub(super) fn push_expr(&mut self, expr: ExprIr) -> ExprRefIr {
+    pub(super) fn push_expr(&mut self, expr: ExprIr, ty: TypeRefIr) -> ExprRefIr {
         let expression = self.body.expressions.len() as u32;
         self.body.expressions.push(expr);
+        self.expression_types_ir.push(ty);
         ExprRefIr { expression }
+    }
+
+    /// Static type of an already-pushed File IR expression, used to type
+    /// compiler-generated expressions whose value mirrors an earlier
+    /// expression (e.g. a temp slot load holding a branch result).
+    pub(super) fn expression_ir_type(&self, reference: ExprRefIr) -> TypeRefIr {
+        self.expression_types_ir
+            .get(reference.expression as usize)
+            .cloned()
+            .unwrap_or_else(|| TypeRefIr::builtin("Json"))
+    }
+
+    /// Record the static type of a slot from the source fact / declared type
+    /// the lowerer has already resolved. `None` is kept for synthetic slots
+    /// whose type lowering cannot determine (design §2.2).
+    pub(super) fn set_slot_type(&mut self, slot: u32, ty: Option<TypeRefIr>) {
+        if let Some(slot_ir) = self.slots.get_mut(slot as usize) {
+            slot_ir.ty = ty;
+        }
+    }
+
+    /// Source span of the statement currently being lowered: the source fact
+    /// span of its first expression. `None` when no fact is available.
+    pub(super) fn current_statement_span(&self) -> Option<SourceSpanRef> {
+        self.peek_expression_key().and_then(|key| {
+            self.expression_types
+                .and_then(|types| types.fact(&key))
+                .map(|fact| source_span_ref(fact.span))
+        })
+    }
+}
+
+/// Static type of the compiler-generated `set`/`inc` patch payload maps:
+/// the patch expression is a `Map<String, Json>` change payload.
+fn patch_map_type() -> TypeRefIr {
+    TypeRefIr::Builtin {
+        name: "Map".to_string(),
+        args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("Json")],
     }
 }
 

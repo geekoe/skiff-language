@@ -81,6 +81,15 @@ pub struct ExecutableIr {
     pub slots: SlotLayout,
     pub may_suspend: bool,
     pub body: ExecutableBody,
+    /// Static type of every `body.expressions` entry, in index order. Written
+    /// by lowering from source-owned expression type facts (Phase 2 design
+    /// §2.2); the emitter and MIR never recover types from File IR.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expression_types: Vec<TypeRefIr>,
+    /// Source span of every `body.statements` entry, in index order. `None`
+    /// for compiler-generated statements without a source fact.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub statement_spans: Vec<Option<SourceSpanRef>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_span: Option<SourceSpanRef>,
 }
@@ -92,19 +101,24 @@ pub enum ExecutableKind {
     ImplMethod,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SlotLayout {
     pub slots: Vec<SlotIr>,
     pub frame_size: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SlotIr {
     pub index: u32,
     pub name: String,
     pub kind: SlotKind,
+    /// Static type of the slot written by lowering. Skipped when unknown
+    /// (synthetic temps, pattern bindings) so legacy File IR stays
+    /// byte-identical where no type fact exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ty: Option<TypeRefIr>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

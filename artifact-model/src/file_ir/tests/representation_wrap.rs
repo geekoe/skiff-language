@@ -348,6 +348,8 @@ fn file_ir_rejects_representation_wrap_wrong_arity_and_unresolved_type_param() {
             ],
             ..ExecutableBody::default()
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     let error = validate_file_ir_type_refs(&unresolved).unwrap_err();

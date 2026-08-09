@@ -155,6 +155,80 @@ fn representation_wrap_has_one_required_wire_shape() {
 }
 
 #[test]
+fn slot_ty_and_executable_type_facts_are_incremental_file_ir_fields() {
+    // Empty fields are skipped on the wire so legacy File IR stays
+    // byte-identical when lowering has no facts to record.
+    let slot = SlotIr {
+        index: 0,
+        name: "x".to_string(),
+        kind: SlotKind::Local,
+        ty: None,
+    };
+    let slot_wire = serde_json::to_value(&slot).unwrap();
+    assert_eq!(slot_wire.get("ty"), None);
+    let executable = ExecutableIr {
+        kind: ExecutableKind::Function,
+        symbol: "root.mod.f".to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("void"),
+        self_type: None,
+        slots: SlotLayout {
+            slots: vec![slot],
+            frame_size: 1,
+        },
+        may_suspend: false,
+        body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
+        source_span: None,
+    };
+    let wire = serde_json::to_value(&executable).unwrap();
+    assert_eq!(wire.get("expressionTypes"), None);
+    assert_eq!(wire.get("statementSpans"), None);
+
+    // Legacy JSON without the new fields decodes with empty defaults.
+    let mut legacy = wire.clone();
+    legacy.as_object_mut().unwrap().insert(
+        "slots".to_string(),
+        serde_json::json!({
+            "slots": [{ "index": 0, "name": "x", "kind": "local" }],
+            "frameSize": 1
+        }),
+    );
+    let decoded = serde_json::from_value::<ExecutableIr>(legacy).unwrap();
+    assert_eq!(decoded.expression_types, Vec::<TypeRefIr>::new());
+    assert_eq!(decoded.statement_spans, Vec::<Option<SourceSpanRef>>::new());
+    assert_eq!(decoded.slots.slots[0].ty, None);
+
+    // Non-empty facts serialize and round-trip in index-aligned order.
+    let typed = ExecutableIr {
+        expression_types: vec![TypeRefIr::builtin("number"), TypeRefIr::builtin("string")],
+        statement_spans: vec![
+            Some(SourceSpanRef {
+                source_id: 1,
+                start: SourcePosition::new(2, 1),
+                end: SourcePosition::new(2, 5),
+            }),
+            None,
+        ],
+        ..executable.clone()
+    };
+    let typed_wire = serde_json::to_value(&typed).unwrap();
+    assert_eq!(
+        typed_wire.get("expressionTypes"),
+        Some(&serde_json::json!([
+            { "kind": "builtin", "name": "number" },
+            { "kind": "builtin", "name": "string" }
+        ]))
+    );
+    assert_eq!(
+        serde_json::from_value::<ExecutableIr>(typed_wire).unwrap(),
+        typed
+    );
+}
+
+#[test]
 fn representation_wrap_type_visitor_reaches_all_nested_arguments() {
     let nested_argument = TypeRefIr::AppliedNominal {
         base: crate::NominalTypeRefBaseIr::LocalType { type_index: 1 },

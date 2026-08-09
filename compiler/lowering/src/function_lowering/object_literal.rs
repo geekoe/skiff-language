@@ -184,9 +184,12 @@ impl FunctionLowerer<'_> {
                             ),
                         ));
                     }
-                    self.push_expr(ExprIr::Literal {
-                        value: LiteralIr::Null,
-                    })
+                    self.push_expr(
+                        ExprIr::Literal {
+                            value: LiteralIr::Null,
+                        },
+                        field.ty.ir.clone(),
+                    )
                 }
             };
             if lowered_fields.insert(field.name.clone(), value).is_some() {

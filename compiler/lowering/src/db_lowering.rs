@@ -1181,24 +1181,31 @@ impl<'a> FunctionLowerer<'a> {
         let block = self.lower_scoped_block("db_transaction", body, |_| Ok(()));
         self.db_transaction_depth -= 1;
         let block = block?;
-        let result = self.push_expr(ExprIr::Literal {
-            value: LiteralIr::Null,
-        });
-        let block_arg = self.push_expr(ExprIr::ValueBlock { block, result });
-        let call = self.push_expr(ExprIr::Call {
-            call: CallIr {
-                target: CallTargetIr::Builtin {
-                    op: "db.transaction".to_string(),
-                },
-                site: InstructionSourceSite::Synthetic {
-                    reason: SyntheticInstructionSiteReason::CompilerDesugaring,
-                },
-                args: vec![block_arg],
-                inout_args: Vec::new(),
-                type_args: BTreeMap::new(),
-                metadata: db_builtin_metadata("transaction", None),
+        let null_type = TypeRefIr::builtin("null");
+        let result = self.push_expr(
+            ExprIr::Literal {
+                value: LiteralIr::Null,
             },
-        });
+            null_type.clone(),
+        );
+        let block_arg = self.push_expr(ExprIr::ValueBlock { block, result }, null_type.clone());
+        let call = self.push_expr(
+            ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::Builtin {
+                        op: "db.transaction".to_string(),
+                    },
+                    site: InstructionSourceSite::Synthetic {
+                        reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                    },
+                    args: vec![block_arg],
+                    inout_args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: db_builtin_metadata("transaction", None),
+                },
+            },
+            null_type,
+        );
         Ok(StmtIr::Expr { value: call })
     }
 
@@ -2011,11 +2018,15 @@ impl<'a> FunctionLowerer<'a> {
                 .unwrap_or_else(|| TypeRefIr::builtin("Json"));
             (self.lower_expr(value)?, result_type)
         } else {
+            let null_type = TypeRefIr::builtin("null");
             (
-                self.push_expr(ExprIr::Literal {
-                    value: LiteralIr::Null,
-                }),
-                TypeRefIr::builtin("null"),
+                self.push_expr(
+                    ExprIr::Literal {
+                        value: LiteralIr::Null,
+                    },
+                    null_type.clone(),
+                ),
+                null_type,
             )
         };
 

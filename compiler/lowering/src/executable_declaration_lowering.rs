@@ -222,9 +222,10 @@ fn lower_const_initializer_body(
         label: "entry".to_string(),
         statements: Vec::new(),
     };
-    entry
-        .statements
-        .push(lowerer.push_stmt(StmtIr::Return { value: Some(value) }));
+    entry.statements.push(lowerer.push_stmt(
+        StmtIr::Return { value: Some(value) },
+        Some(source_span_ref(constant.span)),
+    ));
     lowerer.body.blocks.push(entry);
     lowerer.validate_execution_plans_consumed()?;
     Ok(lowerer.body)
@@ -697,15 +698,16 @@ fn lower_function_with_params(
         )));
     }
     let self_type = exact_signature.self_type.clone();
-    if self_type.is_some() {
+    if let Some(self_type) = &self_type {
         let self_type_text = function.implicit_self.as_ref().map(|ty| ty.name.clone());
-        lowerer.declare_slot_with_type(
+        let self_slot = lowerer.declare_slot_with_type(
             "self",
             SlotKind::SelfValue,
             false,
             BindingReadonlyFlags::default(),
             self_type_text,
         )?;
+        lowerer.set_slot_type(self_slot, Some(self_type.clone()));
     }
 
     let mut params = Vec::new();
@@ -730,6 +732,7 @@ fn lower_function_with_params(
             BindingReadonlyFlags::default(),
             Some(source_param.ty.name.clone()),
         )?;
+        lowerer.set_slot_type(slot, Some(param.ty.clone()));
         params.push(ParamIr {
             name: param.name.clone(),
             slot,
@@ -749,7 +752,7 @@ fn lower_function_with_params(
     if function.is_native {
         let args = params
             .iter()
-            .map(|param| lowerer.push_expr(ExprIr::LoadSlot { slot: param.slot }))
+            .map(|param| lowerer.push_expr(ExprIr::LoadSlot { slot: param.slot }, param.ty.clone()))
             .collect::<Vec<_>>();
         let type_args = function
             .type_params
@@ -771,23 +774,27 @@ fn lower_function_with_params(
                 ))
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
-        let call = lowerer.push_expr(ExprIr::Call {
-            call: CallIr {
-                target: CallTargetIr::Native {
-                    target: native_target_from_symbol(&executable_symbol),
+        let call = lowerer.push_expr(
+            ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::Native {
+                        target: native_target_from_symbol(&executable_symbol),
+                    },
+                    site: InstructionSourceSite::Synthetic {
+                        reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+                    },
+                    args,
+                    inout_args: Vec::new(),
+                    type_args,
+                    metadata: BTreeMap::new(),
                 },
-                site: InstructionSourceSite::Synthetic {
-                    reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
-                },
-                args,
-                inout_args: Vec::new(),
-                type_args,
-                metadata: BTreeMap::new(),
             },
-        });
-        entry
-            .statements
-            .push(lowerer.push_stmt(StmtIr::Return { value: Some(call) }));
+            exact_signature.return_type.clone(),
+        );
+        entry.statements.push(lowerer.push_stmt(
+            StmtIr::Return { value: Some(call) },
+            Some(source_span_ref(function.span)),
+        ));
     } else {
         for stmt in &function.body.statements {
             entry.statements.push(lowerer.lower_stmt(stmt)?);
@@ -810,6 +817,8 @@ fn lower_function_with_params(
         slots,
         may_suspend: exact_signature.may_suspend,
         body: lowerer.body,
+        expression_types: lowerer.expression_types_ir,
+        statement_spans: lowerer.statement_spans,
         source_span: Some(source_span_ref(function.span)),
     })
 }

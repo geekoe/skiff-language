@@ -27,6 +27,7 @@ use skiff_compiler_source::SourceCompileError as PublicationError;
 #[derive(Debug)]
 pub struct LoweredPackage {
     file_ir_units: Vec<FileIrUnit>,
+    mir_units: Vec<crate::mir::MirUnit>,
     sources: Vec<CompiledPackageSource>,
     service_storage_projection: CompiledPackageStorageProjection,
     diagnostics: LoweringDiagnostics,
@@ -169,9 +170,18 @@ impl LoweredPackage {
         let synthetic_operations = SyntheticOperationIndex::from_file_ir_units(&file_ir_units);
         let entrypoint_abi = EntrypointAbiIndex::build(&file_ir_units)
             .map_err(|message| PublicationError::ContractValidation { message })?;
+        // Typed MIR/CFG post-pass: one MirUnit per FileIrUnit. may_pending and
+        // effect_summary_ref come from the source-owned callable effect facts
+        // (design §2.4); the MIR never infers them from File IR.
+        let mir_units =
+            crate::mir::builder::build_mir_units(&file_ir_units, model.callable_effects())
+                .map_err(|message| PublicationError::ContractValidation {
+                    message: format!("MIR build failed: {message}"),
+                })?;
 
         Ok(Self {
             file_ir_units,
+            mir_units,
             sources,
             service_storage_projection: CompiledPackageStorageProjection::default(),
             diagnostics: LoweringDiagnostics,
@@ -185,6 +195,12 @@ impl LoweredPackage {
 
     pub fn file_ir_units(&self) -> &[FileIrUnit] {
         &self.file_ir_units
+    }
+
+    /// Typed MIR/CFG units, one per `FileIrUnit` (pure in-memory; not
+    /// serialized into package artifacts).
+    pub fn mir_units(&self) -> &[crate::mir::MirUnit] {
+        &self.mir_units
     }
 
     pub fn file_ir_units_mut(&mut self) -> &mut [FileIrUnit] {

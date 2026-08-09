@@ -48,6 +48,14 @@ fn map_entry_type_ir(ty: &TypeRefIr) -> Option<(TypeRefIr, TypeRefIr)> {
     (name == "Map" && args.len() == 2).then(|| (args[0].clone(), args[1].clone()))
 }
 
+pub(super) fn map_entry_key_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
+    map_entry_type_ir(ty).map(|(key, _)| key)
+}
+
+pub(super) fn map_entry_value_type_ir(ty: &TypeRefIr) -> Option<TypeRefIr> {
+    map_entry_type_ir(ty).map(|(_, value)| value)
+}
+
 fn builtin_receiver_call_return_type_for_root(
     root: &str,
     receiver_type: &TypeRefIr,

@@ -201,6 +201,8 @@ fn push_package_call_to_executable(
             expressions: vec![package_call(package_ref, package_callable_id)],
             ..ExecutableBody::default()
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
 }
