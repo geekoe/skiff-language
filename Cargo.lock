@@ -2634,7 +2634,10 @@ name = "skiff-runtime-bytecode-verifier"
 version = "0.1.0"
 dependencies = [
  "skiff-artifact-model",
+ "skiff-runtime-deployment-image",
  "skiff-runtime-linked-bytecode",
+ "skiff-runtime-loader",
+ "skiff-runtime-model",
 ]
 
 [[package]]
@@ -2906,6 +2909,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "skiff-runtime-scheduler"
+version = "0.1.0"
+dependencies = [
+ "skiff-runtime-model",
+ "skiff-runtime-vm",
+]
+
+[[package]]
 name = "skiff-runtime-service-db"
 version = "0.1.0"
 dependencies = [
@@ -2946,6 +2957,17 @@ dependencies = [
  "skiff-canonical-json",
  "skiff-runtime-request-contract",
  "url",
+]
+
+[[package]]
+name = "skiff-runtime-vm"
+version = "0.1.0"
+dependencies = [
+ "skiff-artifact-model",
+ "skiff-runtime-bytecode-verifier",
+ "skiff-runtime-deployment-image",
+ "skiff-runtime-linked-bytecode",
+ "skiff-runtime-model",
 ]
 
 [[package]]
