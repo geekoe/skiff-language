@@ -860,6 +860,9 @@ pub const OPCODE_TABLE: &[OpcodeDescriptor] = &[
     ),
 ];
 
+// This eight-field helper mirrors the 42-entry const table row schema;
+// wrapping a row in another struct would make the table harder to audit.
+#[allow(clippy::too_many_arguments)]
 const fn descriptor(
     kind: Opcode,
     opcode: u8,

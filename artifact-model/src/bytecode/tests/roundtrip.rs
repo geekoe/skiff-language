@@ -274,8 +274,7 @@ fn opcode_operand_roles_are_complete_unique_and_readable() {
         assert_eq!(
             descriptor.operand_roles.len(),
             descriptor.operand_layout.len(),
-            "{} must name every operand position",
-            descriptor
+            "{descriptor} must name every operand position"
         );
 
         let mut unique_roles = HashSet::new();
@@ -290,15 +289,9 @@ fn opcode_operand_roles_are_complete_unique_and_readable() {
         {
             assert!(
                 unique_roles.insert(role),
-                "{} assigns {role:?} to multiple operands",
-                descriptor
+                "{descriptor} assigns {role:?} to multiple operands"
             );
-            assert_eq!(
-                role.operand_kind(),
-                kind,
-                "{} role kind mismatch",
-                descriptor
-            );
+            assert_eq!(role.operand_kind(), kind, "{descriptor} role kind mismatch");
             assert_eq!(descriptor.operand_position(role), Some(position));
             assert_eq!(
                 descriptor.operand_word(role, &operand_words),
@@ -314,8 +307,7 @@ fn opcode_operand_roles_are_complete_unique_and_readable() {
             if let Arity::Declared(role) = effect.arity {
                 assert!(
                     descriptor.operand_position(role).is_some(),
-                    "{} stack effect names absent role {role:?}",
-                    descriptor
+                    "{descriptor} stack effect names absent role {role:?}"
                 );
                 assert_eq!(role.operand_kind(), OperandKind::Immediate);
             }
