@@ -2444,6 +2444,7 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-compiler-core",
+ "skiff-compiler-lowering",
  "skiff-compiler-projection",
  "thiserror 2.0.18",
 ]
