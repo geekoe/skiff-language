@@ -3,7 +3,7 @@ import std
 test defaultRun false
 
 function localRequest(marker: string) -> std.http.HttpRequest {
-  let headers = Array.empty<std.http.HttpHeader>()
+  var headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "x-runtime-live-marker", value: marker })
   return std.http.HttpRequest {
     method: "POST",
@@ -38,7 +38,7 @@ test "live raw http adapter handles runtime http envelope" {
 
 test "live http adapter decodes typed json and returns json body" {
   let marker = root.internal.http_adapter.marker()
-  let headers = Array.empty<std.http.HttpHeader>()
+  var headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "application/json" })
   let response = root.internal.http_adapter.typedJsonEcho(requestWithBody(
     "POST",
@@ -76,11 +76,11 @@ test "live http adapter returns binary payload and guard short circuits" {
 
 test "live http adapter streams response events and package route uses private wrapper" {
   let marker = root.internal.http_adapter.marker()
-  let headers = Array.empty<std.http.HttpHeader>()
-  let sawStart = false
-  let sawChunk = false
-  let sawEnd = false
-  let body = ""
+  var headers = Array.empty<std.http.HttpHeader>()
+  var sawStart = false
+  var sawChunk = false
+  var sawEnd = false
+  var body = ""
   for event in root.internal.http_adapter.streamEcho(requestWithBody(
     "POST",
     "/runtime-live/stream",
