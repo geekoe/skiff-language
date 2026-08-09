@@ -36,15 +36,15 @@ fn current_identity_generations_are_atomic() {
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-artifact-build-identity-v10"
+        "skiff-package-artifact-build-identity-v11"
     );
     assert_eq!(
         skiff_artifact_model::PACKAGE_ARTIFACT_SCHEMA_VERSION,
-        "skiff-package-artifact-v12"
+        "skiff-package-artifact-v13"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-        "skiff-package-build-v11:sha256"
+        "skiff-package-build-v12:sha256"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,

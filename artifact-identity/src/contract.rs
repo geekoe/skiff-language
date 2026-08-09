@@ -4,8 +4,8 @@ use serde::Serialize;
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryOperationContract, BoundaryOperationDescriptor,
     BoundaryStreamContract, ContractOperationId, ContractPublicInstance, ContractTypeDescriptor,
-    ContractTypeNameability, ContractTypeRef, ContractTypeShape, PackageSchemaCanonicalDescriptor,
-    PackageSchemaIndex, PackageSchemaIndexEntry, PackageSchemaIndexIdentity, PackageSchemaTypeId,
+    ContractTypeNameability, ContractTypeRef, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaIndexIdentity, PackageSchemaTypeId,
     PackageSchemaTypeRecord, PackageTypeRequirement, ServiceContract, ServiceContractRef,
     ServiceProtocolIdentity, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
@@ -14,23 +14,13 @@ use crate::{
     framing::{canonical_ir_bytes, framed_identity, sha256_hex},
     ArtifactIdentityError, Result, CONTRACT_OPERATION_IDENTITY_PREFIX,
     CONTRACT_OPERATION_IDENTITY_SCHEMA_MARKER, PACKAGE_SCHEMA_INDEX_IDENTITY_PREFIX,
-    PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER, PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
-    PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER, SERVICE_PROTOCOL_IDENTITY_PREFIX,
+    PACKAGE_SCHEMA_INDEX_IDENTITY_SCHEMA_MARKER, SERVICE_PROTOCOL_IDENTITY_PREFIX,
     SERVICE_PROTOCOL_IDENTITY_SCHEMA_MARKER,
 };
 
 mod normalization;
 
 pub use normalization::{normalize_contract_operation_contract, normalize_contract_type_shape};
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PackageSchemaTypeIdentityInput<'a> {
-    schema: &'static str,
-    package_id: &'a str,
-    stable_schema_key: &'a str,
-    canonical_descriptor: &'a PackageSchemaCanonicalDescriptor,
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,25 +57,17 @@ pub fn package_schema_type_id(
     stable_schema_key: &str,
     canonical_descriptor: &PackageSchemaCanonicalDescriptor,
 ) -> Result<PackageSchemaTypeId> {
-    validate_non_empty("packageId", package_id)?;
-    validate_non_empty("stableSchemaKey", stable_schema_key)?;
-    let normalized = normalize_schema_descriptor(canonical_descriptor.clone())?;
-    if &normalized != canonical_descriptor {
-        return invalid_contract("package schema canonicalDescriptor is not canonical");
-    }
-    let bytes = canonical_ir_bytes(
-        &PackageSchemaTypeIdentityInput {
-            schema: PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER,
-            package_id,
-            stable_schema_key,
-            canonical_descriptor,
-        },
-        ArtifactIdentityError::SerializePackageSchemaTypeIdentity,
-    )?;
-    Ok(PackageSchemaTypeId::new(framed_identity(
-        PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
-        &sha256_hex(&bytes),
-    )))
+    skiff_artifact_model::derive_package_schema_type_id(
+        package_id,
+        stable_schema_key,
+        canonical_descriptor,
+    )
+    .map_err(|error| ArtifactIdentityError::InvalidServiceContract {
+        message: format!(
+            "package schema type identity is invalid: {}",
+            error.message()
+        ),
+    })
 }
 
 pub fn package_schema_index_identity(
@@ -409,23 +391,6 @@ fn validate_existential_ref(ty: &ContractTypeRef) -> Result<()> {
         | ContractTypeRef::TypeParam { .. }
         | ContractTypeRef::Literal { .. } => Ok(()),
     }
-}
-
-fn normalize_schema_descriptor(
-    descriptor: PackageSchemaCanonicalDescriptor,
-) -> Result<PackageSchemaCanonicalDescriptor> {
-    let shape = normalize_contract_type_shape(
-        ContractTypeShape {
-            nameability: ContractTypeNameability::ClosureOnly,
-            type_params: descriptor.type_params,
-            descriptor: descriptor.descriptor,
-        },
-        "packageSchemaType",
-    )?;
-    Ok(PackageSchemaCanonicalDescriptor {
-        type_params: shape.type_params,
-        descriptor: shape.descriptor,
-    })
 }
 
 fn visit_schema_record(

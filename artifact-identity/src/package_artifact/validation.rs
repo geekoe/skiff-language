@@ -49,9 +49,14 @@ pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> R
     }
     validate_unique_file_refs(&artifact.files)?;
     validate_unique_resources(&artifact.static_resources)?;
-    validate_build_authority_rows(artifact)?;
+    validate_actor_and_conformance_rows(artifact)?;
     validate_requirements(artifact)?;
     validate_callable_surfaces(artifact)?;
+    skiff_artifact_model::validate_package_build_authority(artifact).map_err(|error| {
+        crate::ArtifactIdentityError::InvalidPackageArtifact {
+            message: format!("package build authority is invalid: {}", error.message()),
+        }
+    })?;
     validate_service_calls(artifact)?;
     skiff_artifact_model::validate_package_boundary_projections(artifact).map_err(|error| {
         crate::ArtifactIdentityError::InvalidPackageArtifact {
@@ -60,7 +65,7 @@ pub(super) fn validate_package_artifact_surface(artifact: &PackageArtifact) -> R
     })
 }
 
-fn validate_build_authority_rows(artifact: &PackageArtifact) -> Result<()> {
+fn validate_actor_and_conformance_rows(artifact: &PackageArtifact) -> Result<()> {
     for adjacent in artifact.actor_implementations.windows(2) {
         let left = &adjacent[0].actor;
         let right = &adjacent[1].actor;
@@ -457,9 +462,18 @@ fn validate_callable_surfaces(artifact: &PackageArtifact) -> Result<()> {
         .keys()
         .cloned()
         .collect::<BTreeSet<_>>();
-    if semantic_fact_keys != all_callables {
+    let synthetic_callables = artifact
+        .synthetic_callback_owners
+        .iter()
+        .map(|row| row.package_callable_id.clone())
+        .collect::<BTreeSet<_>>();
+    let semantic_callables = all_callables
+        .union(&synthetic_callables)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if semantic_fact_keys != semantic_callables {
         return invalid_artifact(format!(
-            "callableSemanticFacts keys must exactly match public and implementation callable ids; expected {all_callables:?}, got {semantic_fact_keys:?}"
+            "callableSemanticFacts keys must exactly match ordinary and synthetic callable ids; expected {semantic_callables:?}, got {semantic_fact_keys:?}"
         ));
     }
     validate_public_callable_link_kinds(artifact, &public_callables, &implementation_callables)?;

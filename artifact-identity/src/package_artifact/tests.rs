@@ -6,15 +6,17 @@ use skiff_artifact_model::{
     BoundaryUnavailableReason, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
     BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
     CallableProvenanceSummary, CallableSemanticFacts, ConstExport, ContractOperationId,
-    ContractRequirement, ContractTypeRef, ExecutableExport, ExecutableSignatureIr, FileIrRef,
-    FunctionTypeParamIr, InterfaceInstantiationRef, InterfaceMethodSignature, NominalTypeRefBaseIr,
-    OperationCallableKind, OperationTargetRef, PackageActorAbi, PackageActorImplementation,
-    PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
-    PackageConfigAccess, PackageConfigRequirement, PackageImplementationLinks,
-    PackageLocalInterfaceConformance, PackageRefIr, PackageRequirement, PackageSymbolRef,
-    PackageTypeRef, ParamIr, ParamModeIr, PendingEffectCategory, ServiceProtocolIdentity,
-    ServiceRequirement, ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
-    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    ContractRequirement, ContractTypeDescriptor, ContractTypeRef, ExecutableExport,
+    ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceInstantiationRef,
+    InterfaceMethodSignature, NominalTypeRefBaseIr, OperationCallableKind, OperationTargetRef,
+    PackageActorAbi, PackageActorImplementation, PackageCallableLinkFact, PackageCallableParameter,
+    PackageCallableSignature, PackageConfigAccess, PackageConfigRequirement,
+    PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalInterfaceConformance,
+    PackageRefIr, PackageRequirement, PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord,
+    PackageSymbolRef, PackageSyntheticCallbackOwner, PackageTypeRef, ParamIr, ParamModeIr,
+    PendingEffectCategory, ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef,
+    TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance, ACTOR_RUNTIME_ABI_VERSION_V1,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -44,7 +46,7 @@ fn current_package_artifact_generation_assigns_and_rejects_stale_domains() {
     validate_package_artifact_identities(&artifact).unwrap();
 
     let mut stale_schema = artifact.clone();
-    stale_schema.schema_version = "skiff-package-artifact-v11".to_string();
+    stale_schema.schema_version = "skiff-package-artifact-v12".to_string();
     assert!(matches!(
         validate_package_artifact_identities(&stale_schema),
         Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
@@ -71,7 +73,7 @@ fn current_package_artifact_generation_assigns_and_rejects_stale_domains() {
     stale_build.package_build_id =
         PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
             crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-            "skiff-package-build-v10:sha256",
+            "skiff-package-build-v11:sha256",
             1,
         ));
     assert!(matches!(
@@ -259,6 +261,110 @@ fn build_authority_rows_must_be_canonical_before_identity() {
 }
 
 #[test]
+fn bytecode_authority_fields_change_build_identity_but_not_local_abi() {
+    let (ordinary, implementation_id) = implementation_only_private_impl_callable_fixture();
+    let ordinary_local = package_artifact_local_abi_identity(&ordinary).unwrap();
+
+    let mut first_synthetic = ordinary.clone();
+    add_synthetic_callback_owner(&mut first_synthetic, &implementation_id, 1);
+    assign_package_artifact_identities(&mut first_synthetic).unwrap();
+    let mut second_synthetic = ordinary;
+    add_synthetic_callback_owner(&mut second_synthetic, &implementation_id, 2);
+    assign_package_artifact_identities(&mut second_synthetic).unwrap();
+    assert_ne!(
+        first_synthetic.package_build_id,
+        second_synthetic.package_build_id
+    );
+    assert_eq!(
+        package_artifact_local_abi_identity(&first_synthetic).unwrap(),
+        ordinary_local
+    );
+    assert_eq!(
+        package_artifact_local_abi_identity(&second_synthetic).unwrap(),
+        ordinary_local
+    );
+
+    let mut string_schema = fixture();
+    insert_bytecode_schema_record(&mut string_schema, "Payload", "string");
+    assign_package_artifact_identities(&mut string_schema).unwrap();
+    let mut integer_schema = fixture();
+    insert_bytecode_schema_record(&mut integer_schema, "Payload", "integer");
+    assign_package_artifact_identities(&mut integer_schema).unwrap();
+    assert_ne!(
+        string_schema.package_build_id,
+        integer_schema.package_build_id
+    );
+    assert_eq!(
+        string_schema.package_local_abi.local_abi_identity,
+        integer_schema.package_local_abi.local_abi_identity
+    );
+
+    let projection =
+        serde_json::to_value(package_artifact_build_identity_projection(&first_synthetic).unwrap())
+            .unwrap();
+    assert_eq!(
+        projection["syntheticCallbackOwners"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let projection =
+        serde_json::to_value(package_artifact_build_identity_projection(&string_schema).unwrap())
+            .unwrap();
+    assert_eq!(
+        projection["bytecodeSchemaRecords"]
+            .as_object()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn synthetic_and_schema_authority_drift_fail_closed() {
+    let (mut synthetic, implementation_id) = implementation_only_private_impl_callable_fixture();
+    let synthetic_id = add_synthetic_callback_owner(&mut synthetic, &implementation_id, 3);
+    assign_package_artifact_identities(&mut synthetic).unwrap();
+    assert!(!synthetic.callable_links.contains_key(&synthetic_id));
+    assert!(!synthetic.boundary_projections.contains_key(&synthetic_id));
+    assert!(synthetic
+        .package_local_abi
+        .public_symbols
+        .values()
+        .chain(synthetic.package_local_abi.implementation_symbols.values())
+        .all(|symbol| !matches!(
+            symbol,
+            PackageLocalAbiSymbol::Callable { callable_id, .. } if callable_id == &synthetic_id
+        )));
+
+    let mut owner_drift = synthetic.clone();
+    owner_drift.synthetic_callback_owners[0].site_ordinal += 1;
+    assert_invalid_package_artifact(&owner_drift);
+
+    let mut coverage_drift = synthetic.clone();
+    coverage_drift.callable_semantic_facts.remove(&synthetic_id);
+    assert_invalid_package_artifact(&coverage_drift);
+
+    let mut link_leak = synthetic;
+    let mut leaked_link = link_leak.callable_links[&implementation_id].clone();
+    leaked_link.callable_id = synthetic_id.clone();
+    leaked_link.target.callable_abi_id = synthetic_id.to_string();
+    link_leak.callable_links.insert(synthetic_id, leaked_link);
+    assert_invalid_package_artifact(&link_leak);
+
+    let mut schema = fixture();
+    let schema_id = insert_bytecode_schema_record(&mut schema, "Payload", "string");
+    assign_package_artifact_identities(&mut schema).unwrap();
+    schema
+        .bytecode_schema_records
+        .get_mut(&schema_id)
+        .unwrap()
+        .canonical_descriptor = bytecode_schema_descriptor("integer");
+    assert_invalid_package_artifact(&schema);
+}
+
+#[test]
 fn package_identity_requires_one_canonical_config_access_per_path() {
     let mut duplicate = fixture();
     duplicate.runtime_requirements.config = vec![
@@ -350,8 +456,13 @@ fn implementation_throw_facts_without_matching_boundary_projection_are_rejected(
 }
 
 #[test]
-fn package_artifact_build_v11_preimage_excludes_service_selection() {
-    let artifact = two_callable_fixture();
+fn package_artifact_build_v12_preimage_excludes_service_selection() {
+    let mut artifact = two_callable_fixture();
+    artifact.bytecode = Some(skiff_artifact_model::BytecodeArtifactRef {
+        bytecode_identity: bytecode_identity_leaf('a'),
+        artifact_path: None,
+    });
+    assign_package_artifact_identities(&mut artifact).unwrap();
     let build =
         serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
             .unwrap();
@@ -364,21 +475,68 @@ fn package_artifact_build_v11_preimage_excludes_service_selection() {
         build["schema"],
         crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER
     );
-    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v10");
+    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v11");
+    assert_eq!(
+        build
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            "schema",
+            "packageId",
+            "localAbiIdentity",
+            "implementationSymbols",
+            "packageSchemaIndex",
+            "packageSchemaTypeRecords",
+            "files",
+            "bytecode",
+            "staticResources",
+            "implementationLinks",
+            "callableLinks",
+            "syntheticCallbackOwners",
+            "bytecodeSchemaRecords",
+            "actorImplementations",
+            "localInterfaceConformances",
+            "packageRequirements",
+            "contractRequirements",
+            "serviceRequirements",
+            "runtimeRequirements",
+            "callableSemanticFacts",
+            "boundaryProjections",
+            "serviceCallRefs",
+        ]
+    );
     assert!(build.get("serviceCallRoots").is_none());
     assert!(wire.get("serviceCallRoots").is_none());
+    assert_eq!(build["syntheticCallbackOwners"], serde_json::json!([]));
+    assert_eq!(build["bytecodeSchemaRecords"], serde_json::json!({}));
+    assert_eq!(wire["syntheticCallbackOwners"], serde_json::json!([]));
+    assert_eq!(wire["bytecodeSchemaRecords"], serde_json::json!({}));
     assert_eq!(build["serviceCallRefs"], serde_json::json!([]));
     assert_eq!(wire["serviceCallRefs"], serde_json::json!([]));
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v11:sha256:"));
+        .starts_with("skiff-package-build-v12:sha256:"));
 
     assert_eq!(
         local["schema"],
         "skiff-package-artifact-local-abi-identity-v6"
     );
+    assert_eq!(
+        local
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["schema", "packageId", "publicSymbols"]
+    );
     assert!(local.get("serviceCallRoots").is_none());
+    assert!(local.get("syntheticCallbackOwners").is_none());
+    assert!(local.get("bytecodeSchemaRecords").is_none());
     assert!(artifact
         .package_local_abi
         .local_abi_identity
@@ -1420,6 +1578,72 @@ fn removed_dependency_collection_mapping_wire_is_rejected() {
     assert!(serde_json::from_value::<PackageArtifact>(removed_wire).is_err());
 }
 
+fn add_synthetic_callback_owner(
+    artifact: &mut PackageArtifact,
+    ordinary_implementation_id: &PackageCallableId,
+    site_ordinal: u32,
+) -> PackageCallableId {
+    let owner = {
+        let target = &artifact.callable_links[ordinary_implementation_id].target;
+        PackageExecutableCoordinate {
+            file_ir_identity: target.file_ref.file_ir_identity.clone(),
+            module_path: target.file_ref.module_path.clone(),
+            executable_index: target.executable_index,
+        }
+    };
+    let package_callable_id = skiff_artifact_model::derive_synthetic_callback_callable_id(
+        &artifact.package_id,
+        ordinary_implementation_id,
+        site_ordinal,
+    )
+    .unwrap();
+    let semantic_facts = artifact.callable_semantic_facts[ordinary_implementation_id].clone();
+    artifact
+        .synthetic_callback_owners
+        .push(PackageSyntheticCallbackOwner {
+            owner,
+            site_ordinal,
+            package_callable_id: package_callable_id.clone(),
+        });
+    artifact
+        .callable_semantic_facts
+        .insert(package_callable_id.clone(), semantic_facts);
+    package_callable_id
+}
+
+fn bytecode_schema_descriptor(target: &str) -> PackageSchemaCanonicalDescriptor {
+    PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Representation {
+            target: ContractTypeRef::builtin(target),
+        },
+    }
+}
+
+fn insert_bytecode_schema_record(
+    artifact: &mut PackageArtifact,
+    stable_schema_key: &str,
+    target: &str,
+) -> skiff_artifact_model::PackageSchemaTypeId {
+    let canonical_descriptor = bytecode_schema_descriptor(target);
+    let package_schema_type_id = crate::package_schema_type_id(
+        &artifact.package_id,
+        stable_schema_key,
+        &canonical_descriptor,
+    )
+    .unwrap();
+    artifact.bytecode_schema_records.insert(
+        package_schema_type_id.clone(),
+        PackageSchemaTypeRecord {
+            package_id: artifact.package_id.clone(),
+            stable_schema_key: stable_schema_key.to_string(),
+            package_schema_type_id: package_schema_type_id.clone(),
+            canonical_descriptor,
+        },
+    );
+    package_schema_type_id
+}
+
 fn fixture() -> PackageArtifact {
     let mut artifact = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
@@ -1445,6 +1669,8 @@ fn fixture() -> PackageArtifact {
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),

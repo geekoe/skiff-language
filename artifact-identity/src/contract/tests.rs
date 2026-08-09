@@ -17,6 +17,19 @@ fn package_type_identity_uses_owner_key_and_descriptor_not_release_coordinates()
     let across_version_and_build =
         package_schema_type_id("example.pkg", "User", &string_descriptor).unwrap();
     assert_eq!(first, across_version_and_build);
+    assert_eq!(
+        first.as_str(),
+        "skiff-package-schema-type-v2:sha256:c72c69aa175ea061ff4bd0a88aac3f83b1c064995cdddcaf47ae05ba1dbf6c31"
+    );
+    assert_eq!(
+        first,
+        skiff_artifact_model::derive_package_schema_type_id(
+            "example.pkg",
+            "User",
+            &string_descriptor,
+        )
+        .unwrap()
+    );
     assert_ne!(
         first,
         package_schema_type_id("other.pkg", "User", &string_descriptor).unwrap()

@@ -8,7 +8,8 @@ use skiff_artifact_model::{
     PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageLocalInterfaceConformance,
     PackageRuntimeRequirements, PackageSchemaIndexRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecordRef, ServiceCallRef,
+    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PackageSyntheticCallbackOwner,
+    ServiceCallRef,
 };
 
 use self::implementation_links::{
@@ -108,6 +109,8 @@ pub struct PackageArtifactBuildIdentityProjection {
     static_resources: Vec<ResourceIdentityProjection>,
     implementation_links: PackageImplementationLinksIdentityProjection,
     callable_links: BTreeMap<PackageCallableId, CallableLinkIdentityProjection>,
+    synthetic_callback_owners: Vec<PackageSyntheticCallbackOwner>,
+    bytecode_schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     actor_implementations: Vec<PackageActorImplementation>,
     local_interface_conformances: Vec<PackageLocalInterfaceConformance>,
     package_requirements: Value,

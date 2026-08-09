@@ -73,7 +73,7 @@ fn stale_package_schema_type_prefix_fails_closed() {
     let canonical_descriptor = descriptor("string");
     let current = package_schema_type_id("example.pkg", "User", &canonical_descriptor).unwrap();
     let stale = PackageSchemaTypeId::new(current.as_str().replacen(
-        PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
+        crate::PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX,
         "skiff-package-schema-type-v1:sha256",
         1,
     ));
