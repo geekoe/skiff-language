@@ -65,6 +65,7 @@ pub enum DeploymentBytecodeReference {
 pub enum DeploymentBytecodeManifestKind {
     Header,
     FunctionOrigin,
+    SyntheticCallback,
     SelfType,
     Callable,
     Actor,
@@ -338,6 +339,48 @@ impl HydratedBytecodePackage {
     ) -> Option<&str> {
         self.manifests
             .function_key_for_canonical_implementation_callable(callable)
+    }
+
+    /// Returns the admitted synthetic callback function anchored at one exact
+    /// ordinary executable and producer-owned site ordinal.
+    pub fn function_key_for_synthetic_callback(
+        &self,
+        owner: &PackageExecutableCoordinate,
+        site_ordinal: u32,
+    ) -> Option<&str> {
+        self.manifests
+            .function_key_for_synthetic_callback(owner, site_ordinal)
+    }
+
+    /// Returns the canonical package-owned callable identity for one exact
+    /// synthetic callback site.
+    pub fn synthetic_callback_callable(
+        &self,
+        owner: &PackageExecutableCoordinate,
+        site_ordinal: u32,
+    ) -> Option<&PackageCallableId> {
+        self.manifests
+            .synthetic_callback_callable(owner, site_ordinal)
+    }
+
+    /// Resolves a canonical synthetic callback callable identity back to its
+    /// admitted function key.
+    pub fn function_key_for_synthetic_callback_callable(
+        &self,
+        callable: &PackageCallableId,
+    ) -> Option<&str> {
+        self.manifests
+            .function_key_for_synthetic_callback_callable(callable)
+    }
+
+    /// Returns the canonical effect-summary owner for either an ordinary or
+    /// synthetic admitted function. Public aliases are never returned.
+    pub fn canonical_effect_callable_for_function_key(
+        &self,
+        function_key: &str,
+    ) -> Option<&PackageCallableId> {
+        self.manifests
+            .canonical_effect_callable_for_function_key(function_key)
     }
 }
 

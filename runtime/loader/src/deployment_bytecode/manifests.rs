@@ -20,11 +20,16 @@ use super::{
     HydratedServiceDependency,
 };
 
+mod synthetic;
+
+use synthetic::SyntheticCallbackIndex;
+
 #[derive(Debug)]
 pub(super) struct HydratedPackageManifests {
     ordinary_functions: BTreeMap<PackageExecutableCoordinate, String>,
     callable_functions: BTreeMap<PackageCallableId, String>,
     canonical_implementation_callables: CanonicalImplementationCallableIndex,
+    synthetic_callbacks: SyntheticCallbackIndex,
     constant_roots: BTreeSet<String>,
 }
 
@@ -51,6 +56,13 @@ impl HydratedPackageManifests {
             bytecode,
             &ordinary_functions,
         )?;
+        let synthetic_callbacks = SyntheticCallbackIndex::checked(
+            reference,
+            artifact,
+            bytecode,
+            &ordinary_functions,
+            &canonical_implementation_callables,
+        )?;
         validate_actor_manifests(reference, artifact, bytecode, &callable_functions)?;
         validate_conformance_manifests(reference, bytecode, artifact, &callable_functions)?;
         let constant_roots = validate_constant_roots(reference, artifact, bytecode)?;
@@ -58,6 +70,7 @@ impl HydratedPackageManifests {
             ordinary_functions,
             callable_functions,
             canonical_implementation_callables,
+            synthetic_callbacks,
             constant_roots,
         })
     }
@@ -99,6 +112,39 @@ impl HydratedPackageManifests {
             .by_callable
             .get(callable)
             .map(String::as_str)
+    }
+
+    pub(super) fn function_key_for_synthetic_callback(
+        &self,
+        owner: &PackageExecutableCoordinate,
+        site_ordinal: u32,
+    ) -> Option<&str> {
+        self.synthetic_callbacks
+            .function_key_for_site(owner, site_ordinal)
+    }
+
+    pub(super) fn synthetic_callback_callable(
+        &self,
+        owner: &PackageExecutableCoordinate,
+        site_ordinal: u32,
+    ) -> Option<&PackageCallableId> {
+        self.synthetic_callbacks
+            .callable_for_site(owner, site_ordinal)
+    }
+
+    pub(super) fn function_key_for_synthetic_callback_callable(
+        &self,
+        callable: &PackageCallableId,
+    ) -> Option<&str> {
+        self.synthetic_callbacks.function_key_for_callable(callable)
+    }
+
+    pub(super) fn canonical_effect_callable_for_function_key(
+        &self,
+        function_key: &str,
+    ) -> Option<&PackageCallableId> {
+        self.canonical_implementation_callable_for_function_key(function_key)
+            .or_else(|| self.synthetic_callbacks.callable_for_function(function_key))
     }
 }
 
@@ -173,14 +219,7 @@ fn validate_function_origins(
             );
         }
         let Some(executable) = function.origin.ordinary_executable() else {
-            return manifest_error(
-                reference,
-                DeploymentBytecodeManifestKind::FunctionOrigin,
-                format!(
-                    "synthetic callback function {:?} has no independent package-owned callback manifest; owner coordinates alone do not establish canonical callable authority",
-                    function.function_key
-                ),
-            );
+            continue;
         };
         if let Some(previous) = ordinary.insert(executable.clone(), function.function_key.clone()) {
             return manifest_error(

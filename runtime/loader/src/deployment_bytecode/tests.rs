@@ -9,11 +9,11 @@ use skiff_artifact_model::{
     OperationCallableKind, OperationTargetRef, PackageCallableId, PackageCallableLinkFact,
     PackageCallableParameter, PackageCallableSignature, PackageExecutableCoordinate,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageTypeRef,
-    ParameterSlotDecl, RelocatableBytecodeFunction, ServiceProtocolIdentity,
-    ServiceSelectorBinding, StatementChargeKind, StatementEntry, TypeRefIr, ValueDropPlan,
-    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+    PackageSyntheticCallbackOwner, PackageTypeRef, ParameterSlotDecl, RelocatableBytecodeFunction,
+    ServiceProtocolIdentity, ServiceSelectorBinding, StatementChargeKind, StatementEntry,
+    TypeRefIr, ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
@@ -364,7 +364,15 @@ fn with_effect_summary_ref(
 fn with_synthetic_callback(
     bytecode: &ValidatedBytecodeArtifact,
     owner: &PackageExecutableCoordinate,
-) -> Arc<ValidatedBytecodeArtifact> {
+    package_id: &str,
+    ordinary_callable: &PackageCallableId,
+) -> (Arc<ValidatedBytecodeArtifact>, PackageCallableId) {
+    let callback_callable = skiff_artifact_model::derive_synthetic_callback_callable_id(
+        package_id,
+        ordinary_callable,
+        0,
+    )
+    .unwrap();
     let mut artifact = bytecode.artifact().clone();
     let mut callback = artifact.image.functions["manifest::run"].clone();
     callback.function_key = "manifest::run$callback0".to_string();
@@ -372,12 +380,33 @@ fn with_synthetic_callback(
         owner: owner.clone(),
         site_ordinal: 0,
     };
+    callback.effect_summary_ref = callback_callable.clone();
     artifact
         .image
         .functions
         .insert(callback.function_key.clone(), callback);
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
-    Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+    (
+        Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap()),
+        callback_callable,
+    )
+}
+
+fn add_synthetic_callback_owner(
+    artifact: &mut PackageArtifact,
+    owner: &PackageExecutableCoordinate,
+    callback_callable: &PackageCallableId,
+) {
+    artifact
+        .synthetic_callback_owners
+        .push(PackageSyntheticCallbackOwner {
+            owner: owner.clone(),
+            site_ordinal: 0,
+            package_callable_id: callback_callable.clone(),
+        });
+    artifact
+        .callable_semantic_facts
+        .insert(callback_callable.clone(), callable_semantic_facts());
 }
 
 fn self_bound_parameters(kind: OperationCallableKind) -> Vec<PackageCallableParameter> {
@@ -675,9 +704,10 @@ fn canonical_callable_index_rejects_non_implementation_target_kind() {
 }
 
 #[test]
-fn canonical_callable_index_rejects_synthetic_callbacks_without_owner_manifest() {
+fn synthetic_callback_index_rejects_missing_owner_manifest() {
     let (bytecode, coordinate, canonical) = callable_bytecode(false);
-    let bytecode = with_synthetic_callback(&bytecode, &coordinate);
+    let (bytecode, _) =
+        with_synthetic_callback(&bytecode, &coordinate, "example.manifest", &canonical);
     let artifact = callable_package(
         &bytecode,
         &coordinate,
@@ -688,10 +718,84 @@ fn canonical_callable_index_rejects_synthetic_callbacks_without_owner_manifest()
     assert!(matches!(
         HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode),
         Err(DeploymentBytecodeHydrationError::ManifestMismatch {
-            kind: DeploymentBytecodeManifestKind::FunctionOrigin,
-            detail,
+            kind: DeploymentBytecodeManifestKind::SyntheticCallback,
             ..
-        }) if detail.contains("no independent package-owned callback manifest")
+        })
+    ));
+}
+
+#[test]
+fn synthetic_callback_index_binds_exact_owner_effect_and_function() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(false);
+    let (bytecode, callback_callable) =
+        with_synthetic_callback(&bytecode, &coordinate, "example.manifest", &canonical);
+    let mut artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::InternalFunction,
+    )
+    .as_ref()
+    .clone();
+    add_synthetic_callback_owner(&mut artifact, &coordinate, &callback_callable);
+    let artifact = Arc::new(artifact);
+
+    let hydrated =
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode).unwrap();
+
+    assert_eq!(
+        hydrated.function_key_for_synthetic_callback(&coordinate, 0),
+        Some("manifest::run$callback0")
+    );
+    assert_eq!(
+        hydrated.synthetic_callback_callable(&coordinate, 0),
+        Some(&callback_callable)
+    );
+    assert_eq!(
+        hydrated.function_key_for_synthetic_callback_callable(&callback_callable),
+        Some("manifest::run$callback0")
+    );
+    assert_eq!(
+        hydrated.canonical_effect_callable_for_function_key("manifest::run$callback0"),
+        Some(&callback_callable)
+    );
+    assert_eq!(
+        hydrated.canonical_effect_callable_for_function_key("manifest::run"),
+        Some(&canonical)
+    );
+}
+
+#[test]
+fn synthetic_callback_index_rejects_effect_owner_drift() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(false);
+    let (bytecode, callback_callable) =
+        with_synthetic_callback(&bytecode, &coordinate, "example.manifest", &canonical);
+    let mut drifted = bytecode.artifact().clone();
+    drifted
+        .image
+        .functions
+        .get_mut("manifest::run$callback0")
+        .unwrap()
+        .effect_summary_ref = canonical.clone();
+    skiff_artifact_identity::assign_bytecode_identity(&mut drifted).unwrap();
+    let drifted = Arc::new(ValidatedBytecodeArtifact::admit(drifted).unwrap());
+    let mut artifact = callable_package(
+        &drifted,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::InternalFunction,
+    )
+    .as_ref()
+    .clone();
+    add_synthetic_callback_owner(&mut artifact, &coordinate, &callback_callable);
+    let artifact = Arc::new(artifact);
+
+    assert!(matches!(
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, drifted),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::SyntheticCallback,
+            ..
+        })
     ));
 }
 
