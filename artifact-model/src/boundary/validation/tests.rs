@@ -545,7 +545,7 @@ fn unavailable_reasons_are_nonempty_exact_and_canonical() {
     let CallableEffectSummary::Analyzed { effects } = &mut facts.effects else {
         unreachable!()
     };
-    effects.writes_caller_reachable = true;
+    effects.requires_same_heap_identity = true;
     effects.invokes_unknown_target = true;
     let runtime = empty_runtime_requirements();
     let canonical = canonical_boundary_callable_projection(&signature, &facts, &runtime);
@@ -554,7 +554,7 @@ fn unavailable_reasons_are_nonempty_exact_and_canonical() {
         BoundaryCallableProjection::Unavailable {
             reasons: vec![
                 BoundaryUnavailableReason::UnknownCallTarget,
-                BoundaryUnavailableReason::WritesCallerReachable,
+                BoundaryUnavailableReason::RequiresSameHeapIdentity,
                 BoundaryUnavailableReason::UnsupportedBoundaryType,
             ]
         }
@@ -567,21 +567,21 @@ fn unavailable_reasons_are_nonempty_exact_and_canonical() {
         BoundaryCallableProjection::Unavailable {
             reasons: vec![
                 BoundaryUnavailableReason::UnsupportedBoundaryType,
-                BoundaryUnavailableReason::WritesCallerReachable,
+                BoundaryUnavailableReason::RequiresSameHeapIdentity,
                 BoundaryUnavailableReason::UnknownCallTarget,
             ],
         },
         BoundaryCallableProjection::Unavailable {
             reasons: vec![
                 BoundaryUnavailableReason::UnknownCallTarget,
-                BoundaryUnavailableReason::WritesCallerReachable,
+                BoundaryUnavailableReason::RequiresSameHeapIdentity,
             ],
         },
         BoundaryCallableProjection::Unavailable {
             reasons: vec![
                 BoundaryUnavailableReason::UnknownCallTarget,
                 BoundaryUnavailableReason::UnknownCallTarget,
-                BoundaryUnavailableReason::WritesCallerReachable,
+                BoundaryUnavailableReason::RequiresSameHeapIdentity,
                 BoundaryUnavailableReason::UnsupportedBoundaryType,
             ],
         },
@@ -664,7 +664,7 @@ fn implementation_requirements_must_match_complete_facts_and_runtime_requirement
             unreachable!()
         };
         match mutation {
-            0 => implementation_requirements.complete_may_effects.may_suspend = true,
+            0 => implementation_requirements.complete_may_effects.may_pending = true,
             1 => {
                 implementation_requirements.provenance = CallableProvenanceSummary::Unknown {
                     reason: crate::CallableProvenanceUnknownReason::AnalysisPending,
@@ -782,13 +782,12 @@ fn safe_facts() -> CallableSemanticFacts {
     CallableSemanticFacts {
         effects: CallableEffectSummary::Analyzed {
             effects: CallableMayEffects {
-                writes_caller_reachable: false,
-                returns_caller_alias: false,
-                throws_caller_alias: false,
                 escapes_caller_value: false,
                 requires_same_heap_identity: false,
                 invokes_unknown_target: false,
-                may_suspend: false,
+                may_pending: false,
+                pending_effect_categories: Vec::new(),
+                inout_path_effects: Vec::new(),
             },
         },
         provenance: CallableProvenanceSummary::Analyzed {

@@ -17,12 +17,21 @@ fn normal_return_and_wire_detached_throw_remain_independent() {
     )
     .analyze();
 
-    let returned = effects(&model, "returnAlias");
-    assert!(returned.returns_caller_alias);
-    assert!(!returned.throws_caller_alias);
-    let thrown = effects(&model, "throwAlias");
-    assert!(!thrown.returns_caller_alias);
-    assert!(!thrown.throws_caller_alias);
+    assert_eq!(
+        effects(&model, "returnAlias"),
+        no_effects(),
+        "returning a caller aggregate is a logical snapshot, not an alias effect"
+    );
+    assert!(matches!(
+        provenance(&model, "returnAlias"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins == &vec![ValueProvenance::CallerParameter { index: 0 }]
+    ));
+    assert_eq!(
+        effects(&model, "throwAlias"),
+        no_effects(),
+        "throwing a caller aggregate detaches at the wire boundary"
+    );
     assert!(matches!(
         provenance(&model, "throwAlias"),
         CallableProvenanceSummary::Analyzed { throw_origins, .. }
@@ -52,14 +61,14 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
             }
 
             function rethrowStatement(input: Boxed) -> void {
-              const attempted = catch<Failure>(throw Failure { message: input.value })
+              let attempted = catch<Failure>(throw Failure { message: input.value })
               if attempted.tag == "err" {
                 rethrow attempted.exception
               }
             }
 
             function rethrowExpression(input: Boxed) -> Failure {
-              const attempted = catch<Failure>(throw Failure { message: input.value })
+              let attempted = catch<Failure>(throw Failure { message: input.value })
               if attempted.tag == "err" {
                 return rethrow attempted.exception
               }
@@ -67,7 +76,7 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
             }
 
             function nestedRethrow(input: Boxed) -> void {
-              const outer = catch<Failure>(rethrowStatement(input))
+              let outer = catch<Failure>(rethrowStatement(input))
               if outer.tag == "err" {
                 rethrow outer.exception
               }
@@ -84,7 +93,6 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
         "nestedRethrow",
     ] {
         let effects = effects(&model, callable);
-        assert!(!effects.throws_caller_alias, "{callable}: {effects:?}");
         assert!(
             !effects.requires_same_heap_identity,
             "{callable}: {effects:?}"
@@ -97,12 +105,19 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
         ));
     }
 
-    assert!(effects(&model, "throwStatement").writes_caller_reachable);
-    assert!(effects(&model, "throwExpression").writes_caller_reachable);
-    assert!(effects(&model, "throwStatement").may_suspend);
-    assert!(effects(&model, "throwExpression").may_suspend);
-    assert!(!effects(&model, "rethrowStatement").writes_caller_reachable);
-    assert!(!effects(&model, "rethrowExpression").writes_caller_reachable);
+    // Operand mutation is tracked internally (write_parameters) and no longer
+    // surfaces as a public aggregate write flag; only the operand's pending
+    // NativeCall (std.time.sleep) propagates to the throwing callables.
+    assert_eq!(
+        effects(&model, "throwStatement"),
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
+    );
+    assert_eq!(
+        effects(&model, "throwExpression"),
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
+    );
+    assert_eq!(effects(&model, "rethrowStatement"), no_effects());
+    assert_eq!(effects(&model, "rethrowExpression"), no_effects());
 }
 
 #[test]
@@ -138,7 +153,7 @@ fn stream_task_database_and_callback_escape_lanes_are_explicit() {
             }
 
             function expressionSpawn(input: Boxed) -> void {
-              const ref = dispatch sink(input)
+              let ref = dispatch sink(input)
             }
 
             function persist(input: Boxed) -> void {
@@ -146,7 +161,7 @@ fn stream_task_database_and_callback_escape_lanes_are_explicit() {
             }
 
             function callback(input: Boxed) -> void {
-              const boxed = input as Provider
+              let boxed = input as Provider
             }
         "#,
     )
@@ -156,7 +171,15 @@ fn stream_task_database_and_callback_escape_lanes_are_explicit() {
     assert_escape_lane(&model, "scalarStream", ValueEscapeLane::Stream);
     assert_escape_lane(&model, "spawnWork", ValueEscapeLane::Dispatch);
     assert_escape_lane(&model, "expressionSpawn", ValueEscapeLane::Dispatch);
-    assert!(effects(&model, "persist").may_suspend);
+    assert_eq!(
+        effects(&model, "persist"),
+        CallableMayEffects {
+            escapes_caller_value: true,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::HostEffect],
+            ..no_effects()
+        }
+    );
     assert_escape_lane(&model, "persist", ValueEscapeLane::Database);
     assert_escape_lane(&model, "callback", ValueEscapeLane::Callback);
     assert!(
@@ -203,7 +226,7 @@ fn database_queries_and_detached_writes_do_not_escape_caller_values() {
     for callable in ["read", "history", "put", "compareAndSet"] {
         assert_eq!(
             effects(&model, callable),
-            suspend_only_effects(),
+            pending_only_effects(vec![PendingEffectCategory::HostEffect]),
             "{callable}"
         );
         let CallableProvenanceSummary::Analyzed {
@@ -243,8 +266,16 @@ fn persisting_caller_owned_mutable_values_remains_a_database_escape() {
 
     for callable in ["insertOwned", "replaceOwned"] {
         let callable_effects = effects(&model, callable);
-        assert!(callable_effects.may_suspend, "{callable}");
-        assert!(callable_effects.escapes_caller_value, "{callable}");
+        assert_eq!(
+            callable_effects,
+            CallableMayEffects {
+                escapes_caller_value: true,
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::HostEffect],
+                ..no_effects()
+            },
+            "{callable}"
+        );
         assert_escape_lane(&model, callable, ValueEscapeLane::Database);
     }
 }
@@ -259,7 +290,7 @@ fn database_value_transactions_transfer_the_exact_final_value() {
 
             function receipt(input: Input) -> Receipt {
               return db transaction value {
-                const pointer = input.pointer
+                let pointer = input.pointer
                 Receipt { sequence: 1, pointer: pointer }
               }
             }
@@ -273,9 +304,10 @@ fn database_value_transactions_transfer_the_exact_final_value() {
     )
     .analyze();
 
-    let receipt = effects(&model, "receipt");
-    assert!(receipt.may_suspend);
-    assert!(receipt.returns_caller_alias);
+    assert_eq!(
+        effects(&model, "receipt"),
+        pending_only_effects(vec![PendingEffectCategory::HostEffect])
+    );
     let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "receipt")
     else {
         panic!("transaction result must retain analyzed provenance");
@@ -289,9 +321,10 @@ fn database_value_transactions_transfer_the_exact_final_value() {
         ]
     );
 
-    let direct = effects(&model, "direct");
-    assert!(direct.may_suspend);
-    assert!(direct.returns_caller_alias);
+    assert_eq!(
+        effects(&model, "direct"),
+        pending_only_effects(vec![PendingEffectCategory::HostEffect])
+    );
     let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance(&model, "direct")
     else {
         panic!("direct caller result should retain exact caller provenance");
@@ -319,7 +352,7 @@ fn database_writes_detach_static_field_projections_but_not_direct_or_unknown_val
             }
 
             function projected(input: Input) -> Stored {
-              const result = db upsert Stored(input.id) {
+              let result = db upsert Stored(input.id) {
                 id = input.id
                 pointer = input.pointer
               } {
@@ -353,10 +386,19 @@ fn database_writes_detach_static_field_projections_but_not_direct_or_unknown_val
     )
     .analyze();
 
-    assert_eq!(effects(&model, "projected"), suspend_only_effects());
-    let direct = effects(&model, "direct");
-    assert!(direct.may_suspend);
-    assert!(direct.escapes_caller_value);
+    assert_eq!(
+        effects(&model, "projected"),
+        pending_only_effects(vec![PendingEffectCategory::HostEffect])
+    );
+    assert_eq!(
+        effects(&model, "direct"),
+        CallableMayEffects {
+            escapes_caller_value: true,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::HostEffect],
+            ..no_effects()
+        }
+    );
     assert_escape_lane(&model, "direct", ValueEscapeLane::Database);
 
     for callable in ["unknownPredicate", "unknownUpdate"] {
@@ -389,7 +431,7 @@ fn formal_indexed_stream_escape_ignores_unrelated_caller_actuals_through_helpers
             }
 
             function freshStream(state: JsonObject) -> void {
-              const stream = std.bytes.fromUtf8("fresh")
+              let stream = std.bytes.fromUtf8("fresh")
               nestedForward(stream, state)
               recursiveForward(stream, state, true)
             }
@@ -406,10 +448,7 @@ fn formal_indexed_stream_escape_ignores_unrelated_caller_actuals_through_helpers
 
     assert_eq!(
         effects_in(&model, "formal_escape", "freshStream"),
-        CallableMayEffects {
-            may_suspend: true,
-            ..no_effects()
-        },
+        pending_only_effects(vec![PendingEffectCategory::Stream]),
         "a caller state actual must not enter the Stream lane selected by the Fresh stream"
     );
     for callable in [
@@ -422,7 +461,8 @@ fn formal_indexed_stream_escape_ignores_unrelated_caller_actuals_through_helpers
             effects_in(&model, "formal_escape", callable),
             CallableMayEffects {
                 escapes_caller_value: true,
-                may_suspend: true,
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::Stream],
                 ..no_effects()
             },
             "{callable}"

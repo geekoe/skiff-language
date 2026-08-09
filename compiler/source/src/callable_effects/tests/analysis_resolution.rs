@@ -90,21 +90,21 @@ fn nested_local_calls_preserve_exact_effects_and_provenance() {
             }
 
             function nested(input: Input) -> Output {
-              const rows = db find many Input {
+              let rows = db find many Input {
                 where value == input.value
               }
               return outer(inner(input))
             }
 
             function nestedRecordField(input: Input) -> Output {
-              const rows = db find many Input {
+              let rows = db find many Input {
                 where value == input.value
               }
               return Output { value: inner(input).value }
             }
 
             function nestedCollectionElement(input: Input) -> JsonObject {
-              const rows = db find many Input {
+              let rows = db find many Input {
                 where value == input.value
               }
               return { item: inner(input).value }
@@ -124,7 +124,7 @@ fn nested_local_calls_preserve_exact_effects_and_provenance() {
     for callable in ["nested", "nestedRecordField", "nestedCollectionElement"] {
         assert_eq!(
             effects(&model, callable),
-            suspend_only_effects(),
+            pending_only_effects(vec![PendingEffectCategory::HostEffect]),
             "{callable}"
         );
         assert!(matches!(
@@ -231,7 +231,7 @@ fn unsupported_and_cyclic_module_constants_remain_fail_closed() {
     .analyze();
 
     for callable in ["unsupportedValue", "cyclicValue"] {
-        assert!(effects(&model, callable).returns_caller_alias, "{callable}");
+        assert_eq!(effects(&model, callable), all_effects(), "{callable}");
         assert_eq!(
             provenance(&model, callable),
             &CallableProvenanceSummary::Unknown {
@@ -248,7 +248,7 @@ fn unresolved_global_and_non_constant_zero_arg_return_are_not_constant_shortcuts
         AnalysisFixture::new("function unresolved() -> string { return MISSING_GLOBAL }")
             .analyze_result()
             .expect("source analysis retains a fail-closed callable summary");
-    assert!(effects(&unresolved, "unresolved").returns_caller_alias);
+    assert_eq!(effects(&unresolved, "unresolved"), all_effects());
     assert_eq!(
         provenance(&unresolved, "unresolved"),
         &CallableProvenanceSummary::Unknown {
@@ -292,7 +292,7 @@ fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
             }
 
             function catchWrapper(input: Input) -> Output? {
-              const attempted = catch<Failure>(detach(input))
+              let attempted = catch<Failure>(detach(input))
               if attempted.tag == "ok" { return attempted.value }
               return null
             }
@@ -329,37 +329,37 @@ fn typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate() {
             }
 
             function okEq(input: Boxed) -> Boxed? {
-              const attempted = catch<Failure>(fresh(input))
+              let attempted = catch<Failure>(fresh(input))
               if attempted.tag == "ok" { return attempted.value }
               return null
             }
 
             function okNeEarly(input: Boxed) -> Boxed? {
-              const attempted = catch<Failure>(fresh(input))
+              let attempted = catch<Failure>(fresh(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
 
             function nested(input: Boxed) -> Boxed? {
-              const attempted = catch<Failure>(okEq(input))
+              let attempted = catch<Failure>(okEq(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
 
             function exactAlias(input: Boxed) -> Boxed? {
-              const attempted = catch<Failure>(alias(input))
+              let attempted = catch<Failure>(alias(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
 
             function errorBranch(input: Boxed) -> Exception<Failure>? {
-              const attempted = catch<Failure>(alias(input))
+              let attempted = catch<Failure>(alias(input))
               if attempted.tag == "err" { return attempted.exception }
               return null
             }
 
             function nullableCheck(input: Boxed) -> bool {
-              const attempted = catch<Failure>(nullableAlias(input))
+              let attempted = catch<Failure>(nullableAlias(input))
               if attempted.tag != "ok" { return false }
               return attempted.value == null
             }
@@ -380,13 +380,7 @@ fn typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate() {
         );
     }
 
-    assert_eq!(
-        effects(&model, "exactAlias"),
-        CallableMayEffects {
-            returns_caller_alias: true,
-            ..no_effects()
-        }
-    );
+    assert_eq!(effects(&model, "exactAlias"), no_effects());
     assert!(matches!(
         provenance(&model, "exactAlias"),
         CallableProvenanceSummary::Analyzed { return_origins, .. }
@@ -415,7 +409,7 @@ fn typed_catch_does_not_sanitize_unknown_success_provenance() {
             }
 
             function unknown(input: Boxed, provider: any Provider) -> Boxed? {
-              const attempted = catch<Failure>(provider.run(input))
+              let attempted = catch<Failure>(provider.run(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
@@ -568,10 +562,7 @@ fn publication_wide_call_graph_closes_effects_and_provenance_across_files() {
         ("bridge", "recursive"),
         ("entry", "recursiveThroughFiles"),
     ] {
-        assert!(
-            effects_in(&model, module, symbol).returns_caller_alias,
-            "{module}.{symbol}"
-        );
+        assert_eq!(effects_in(&model, module, symbol), no_effects(), "{module}.{symbol}");
         assert!(matches!(
             provenance_in(&model, module, symbol),
             CallableProvenanceSummary::Analyzed { return_origins, .. }
@@ -585,7 +576,7 @@ fn publication_wide_call_graph_closes_effects_and_provenance_across_files() {
         ("entry", "mutateThroughFiles"),
     ] {
         let effects = effects_in(&model, module, symbol);
-        assert!(effects.writes_caller_reachable, "{module}.{symbol}");
+        assert_eq!(effects, no_effects(), "{module}.{symbol}");
         assert!(!effects.requires_same_heap_identity, "{module}.{symbol}");
     }
 
@@ -596,7 +587,16 @@ fn publication_wide_call_graph_closes_effects_and_provenance_across_files() {
     ] {
         let effects = effects_in(&model, module, symbol);
         assert!(effects.escapes_caller_value, "{module}.{symbol}");
-        assert!(effects.may_suspend, "{module}.{symbol}");
+        assert_eq!(
+            effects,
+            CallableMayEffects {
+                escapes_caller_value: true,
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::HostEffect],
+                ..no_effects()
+            },
+            "{module}.{symbol}"
+        );
         assert!(matches!(
             provenance_in(&model, module, symbol),
             CallableProvenanceSummary::Analyzed { escape_lanes, .. }
@@ -762,8 +762,11 @@ fn interface_conformance_accepts_non_suspending_and_suspending_implementations()
     .analyze();
 
     assert_eq!(model.interface_signatures().conformances().count(), 2);
-    assert!(!effects(&model, "Immediate.run").may_suspend);
-    assert!(effects(&model, "Deferred.run").may_suspend);
+    assert_eq!(effects(&model, "Immediate.run"), no_effects());
+    assert_eq!(
+        effects(&model, "Deferred.run"),
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
+    );
 }
 
 #[test]
@@ -874,7 +877,7 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
             }
 
             function dynamicNativeWrapper(input: string) -> string {
-              const callable = std.string.encodePath
+              let callable = std.string.encodePath
               return callable(input)
             }
 
@@ -910,13 +913,7 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
             CallableProvenanceSummary::Unknown { .. }
         ));
     }
-    assert_eq!(
-        effects_in(&model, "std.effect_test", "mutableReceiver"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            ..no_effects()
-        }
-    );
+    assert_eq!(effects_in(&model, "std.effect_test", "mutableReceiver"), no_effects());
     assert_eq!(
         effects_in(&model, "std.effect_test", "dynamicWrapper"),
         no_effects()
@@ -927,7 +924,7 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     ));
     assert_eq!(
         effects_in(&model, "std.effect_test", "httpWrapper"),
-        suspend_only_effects()
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
     );
     assert!(matches!(
         provenance_in(&model, "std.effect_test", "httpWrapper"),

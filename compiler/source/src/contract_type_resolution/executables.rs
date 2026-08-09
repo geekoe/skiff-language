@@ -200,7 +200,7 @@ fn exact_may_suspend(
     source_key: &SourceSymbolKey,
 ) -> Result<bool, String> {
     match effects.operations().get(source_key) {
-        Some(CallableEffectSummary::Analyzed { effects }) => Ok(effects.may_suspend),
+        Some(CallableEffectSummary::Analyzed { effects }) => Ok(effects.may_pending),
         Some(CallableEffectSummary::Unknown { reason }) => Err(format!(
             "source executable `{source_key}` has unknown source effects: {reason:?}"
         )),

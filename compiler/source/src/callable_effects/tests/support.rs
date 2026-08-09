@@ -7,7 +7,7 @@ pub(super) use skiff_artifact_model::{
     ContractTypeRef, PackageArtifact, PackageBuildId, PackageCallableId, PackageCallableParameter,
     PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageTypeRef,
-    TypeRefIr, ValueEscapeLane, ValueProjectionPath, ValueProvenance,
+    PendingEffectCategory, TypeRefIr, ValueEscapeLane, ValueProjectionPath, ValueProvenance,
     PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 pub(super) use skiff_compiler_input::{CompilerPlatformSources, ResolvedContractDependency};
@@ -60,7 +60,6 @@ pub(super) fn container_projection_dependency() -> SourceDependencyAnalysisInput
         CallableSemanticFacts {
             effects: CallableEffectSummary::Analyzed {
                 effects: CallableMayEffects {
-                    returns_caller_alias: true,
                     requires_same_heap_identity: true,
                     ..no_effects()
                 },
@@ -93,10 +92,7 @@ pub(super) fn fresh_wrapper_dependency() -> SourceDependencyAnalysisInput {
         PackageCallableId::new("pkg-callable:dep-tools-wrap"),
         CallableSemanticFacts {
             effects: CallableEffectSummary::Analyzed {
-                effects: CallableMayEffects {
-                    returns_caller_alias: true,
-                    ..no_effects()
-                },
+                effects: no_effects(),
             },
             provenance: CallableProvenanceSummary::Analyzed {
                 return_origins: vec![
@@ -307,7 +303,7 @@ pub(super) fn effects_in(
         .get(&SourceSymbolKey::new(module, symbol))
         .unwrap_or_else(|| panic!("missing effects for {symbol}"))
     {
-        CallableEffectSummary::Analyzed { effects } => *effects,
+        CallableEffectSummary::Analyzed { effects } => effects.clone(),
         CallableEffectSummary::Unknown { reason } => {
             panic!("production callable {symbol} remained Unknown: {reason:?}")
         }
@@ -383,7 +379,11 @@ pub(super) fn is_caller_parameter_provenance(origin: &ValueProvenance) -> bool {
 }
 
 pub(super) fn assert_detached_contract_summary(model: &PackageSourceModel, symbol: &str) {
-    assert_eq!(effects(model, symbol), suspend_only_effects(), "{symbol}");
+    assert_eq!(
+        effects(model, symbol),
+        pending_only_effects(vec![PendingEffectCategory::Unknown]),
+        "{symbol}"
+    );
     let CallableProvenanceSummary::Analyzed {
         return_origins,
         direct_return_origins,
@@ -405,31 +405,32 @@ pub(super) fn assert_detached_contract_summary(model: &PackageSourceModel, symbo
 
 pub(super) fn no_effects() -> CallableMayEffects {
     CallableMayEffects {
-        writes_caller_reachable: false,
-        returns_caller_alias: false,
-        throws_caller_alias: false,
         escapes_caller_value: false,
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
-        may_suspend: false,
+        may_pending: false,
+        pending_effect_categories: Vec::new(),
+        inout_path_effects: Vec::new(),
     }
 }
 
-pub(super) fn suspend_only_effects() -> CallableMayEffects {
+/// May-pending effects with exactly the given categories (may_pending true iff
+/// the category list is non-empty).
+pub(super) fn pending_only_effects(categories: Vec<PendingEffectCategory>) -> CallableMayEffects {
     CallableMayEffects {
-        may_suspend: true,
+        may_pending: !categories.is_empty(),
+        pending_effect_categories: categories,
         ..no_effects()
     }
 }
 
 pub(super) fn all_effects() -> CallableMayEffects {
     CallableMayEffects {
-        writes_caller_reachable: true,
-        returns_caller_alias: true,
-        throws_caller_alias: true,
         escapes_caller_value: true,
         requires_same_heap_identity: false,
         invokes_unknown_target: true,
-        may_suspend: true,
+        may_pending: true,
+        pending_effect_categories: vec![PendingEffectCategory::Unknown],
+        inout_path_effects: Vec::new(),
     }
 }

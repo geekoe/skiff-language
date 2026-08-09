@@ -59,14 +59,12 @@ fn callable_semantics_registry_is_sparse_exact_and_safe() {
         assert_eq!(
             semantics.effects,
             CallableMayEffects {
-                writes_caller_reachable: mutates_receiver,
-                returns_caller_alias: aliases_receiver,
-                throws_caller_alias: false,
                 escapes_caller_value: false,
                 requires_same_heap_identity: false,
                 invokes_unknown_target: false,
-                may_suspend: false,
-            }
+                may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),            }
         );
         assert_eq!(
             semantics.return_provenance,
@@ -111,14 +109,12 @@ fn bytes_to_hex_callable_semantics_are_exact() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -183,14 +179,12 @@ fn number_ceil_callable_semantics_are_exact_and_detached() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -235,14 +229,12 @@ fn map_get_callable_semantics_are_exact_and_receiver_reachable() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: true,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(
         semantics.return_provenance,
@@ -282,14 +274,12 @@ fn map_has_and_set_callable_semantics_are_exact() {
     assert_eq!(
         has_semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(has_semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -299,14 +289,12 @@ fn map_has_and_set_callable_semantics_are_exact() {
     assert_eq!(
         set_semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: true,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(set_semantics.return_provenance, ValueProvenance::Constant);
 

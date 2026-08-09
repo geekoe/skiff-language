@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::CallableEffectSummary;
-
 use crate::{
     shared::{ast::Expr, ast_utils::expr_path},
     ResolvedCallTarget,
@@ -103,51 +101,13 @@ impl OwnerAnalyzer<'_> {
             }) => source_callable,
             _ => return,
         };
-        let writes_caller_reachable = match self.callable_effects.operations().get(source_callable)
-        {
-            Some(CallableEffectSummary::Analyzed { effects }) => effects.writes_caller_reachable,
-            Some(CallableEffectSummary::Unknown { .. }) | None => {
-                self.diagnostic(format!(
-                    "concurrent local call `{}` has unknown caller-reachable mutation facts",
-                    source_callable.symbol()
-                ));
-                return;
-            }
-        };
-        if !writes_caller_reachable {
-            return;
-        }
-
-        let mut actuals = Vec::with_capacity(args.len() + usize::from(receiver_field.is_some()));
-        if matches!(
-            resolved_target,
-            Some(ResolvedCallTarget::LocalImplMethod { .. })
-        ) {
-            if let Some((receiver, _)) = receiver_field {
-                actuals.push(receiver);
-            }
-        }
-        actuals.extend(args);
-        for actual in actuals {
-            match binding_root_for_value(actual, scope, true, true) {
-                BindingRoot::LaneLocalFresh | BindingRoot::Scalar => {}
-                BindingRoot::Outer => {
-                    let root = expr_path(actual)
-                        .and_then(|path| path.split('.').next().map(str::to_string))
-                        .unwrap_or_else(|| "<opaque>".to_string());
-                    self.diagnostic(format!(
-                        "concurrent local call `{}` may write outer mutable root `{root}`; outer mutable root writes are forbidden",
-                        source_callable.symbol()
-                    ));
-                }
-                BindingRoot::LaneLocalOpaque => {
-                    self.diagnostic(format!(
-                        "concurrent local call `{}` has caller-reachable mutation through a non-fresh lane value",
-                        source_callable.symbol()
-                    ));
-                }
-            }
-        }
+        // TODO(WP3): re-derive via writable-place analysis. The concurrent
+        // local call may-write-outer-root gate previously read the retired
+        // `writesCallerReachable` aggregate flag; the effect wire no longer
+        // carries it (R-084), and the WP3 writable-place model will restore
+        // this check on var-derived paths. Until then the check is disabled so
+        // previously-valid programs are not blocked.
+        let _ = source_callable;
     }
 
     pub(super) fn taint_lane_local_root_from_payloads<'expr>(

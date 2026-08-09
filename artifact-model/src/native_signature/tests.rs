@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::{builtin_receiver_op_by_name, CallableMayEffects, ValueProvenance};
+use crate::{builtin_receiver_op_by_name, CallableMayEffects, PendingEffectCategory, ValueProvenance};
 
 use super::{
     is_runtime_receiver_native_binding_key, native_callable_semantics,
@@ -22,10 +22,11 @@ fn websocket_request_signature_and_suspension_are_exact() {
 
     let request_semantics = native_callable_semantics("std.websocket.requestJsonToConnection")
         .expect("WebSocket request callable semantics must be registered");
-    assert!(request_semantics.effects.may_suspend);
-    assert!(!request_semantics.effects.writes_caller_reachable);
-    assert!(!request_semantics.effects.returns_caller_alias);
-    assert!(!request_semantics.effects.throws_caller_alias);
+    assert!(request_semantics.effects.may_pending);
+    assert_eq!(
+        request_semantics.effects.pending_effect_categories,
+        vec![PendingEffectCategory::NativeCall]
+    );
     assert!(!request_semantics.effects.escapes_caller_value);
     assert!(!request_semantics.effects.requires_same_heap_identity);
     assert!(!request_semantics.effects.invokes_unknown_target);
@@ -40,8 +41,16 @@ fn websocket_request_signature_and_suspension_are_exact() {
             !native_callable_semantics(raw_send)
                 .expect("raw WebSocket send semantics must remain registered")
                 .effects
-                .may_suspend,
-            "{raw_send} must remain non-suspending"
+                .may_pending,
+            "{raw_send} must remain non-pending"
+        );
+        assert!(
+            native_callable_semantics(raw_send)
+                .expect("raw WebSocket send semantics must remain registered")
+                .effects
+                .pending_effect_categories
+                .is_empty(),
+            "{raw_send} must have no pending categories"
         );
     }
 }
@@ -109,33 +118,36 @@ fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
 
     assert_eq!(actual, expected);
     assert_eq!(actual.len(), STD_NATIVE_CALLABLE_SEMANTICS.len());
-    for semantics in STD_NATIVE_CALLABLE_SEMANTICS {
+    for semantics in STD_NATIVE_CALLABLE_SEMANTICS.iter() {
         assert!(STD_NATIVE_SIGNATURES
             .iter()
             .any(|signature| signature.binding_key == semantics.binding_key));
         let is_emit_response = semantics.binding_key == "std.http.stream.emitResponse";
-        assert_eq!(semantics.effects.writes_caller_reachable, false);
-        assert_eq!(semantics.effects.returns_caller_alias, false);
-        assert_eq!(semantics.effects.throws_caller_alias, false);
         assert_eq!(semantics.effects.escapes_caller_value, is_emit_response);
         assert_eq!(semantics.effects.requires_same_heap_identity, false);
         assert_eq!(semantics.effects.invokes_unknown_target, false);
+        let is_pending = is_emit_response
+            || matches!(
+                semantics.binding_key,
+                "std.actor.get"
+                    | "std.file.create"
+                    | "std.file.createFromStream"
+                    | "std.http.client.request"
+                    | "std.http.client.sse"
+                    | "std.http.client.stream"
+                    | "std.task.cancel"
+                    | "std.task.status"
+                    | "std.time.sleep"
+                    | "std.websocket.requestJsonToConnection"
+            );
+        assert_eq!(semantics.effects.may_pending, is_pending);
         assert_eq!(
-            semantics.effects.may_suspend,
-            is_emit_response
-                || matches!(
-                    semantics.binding_key,
-                    "std.actor.get"
-                        | "std.file.create"
-                        | "std.file.createFromStream"
-                        | "std.http.client.request"
-                        | "std.http.client.sse"
-                        | "std.http.client.stream"
-                        | "std.task.cancel"
-                        | "std.task.status"
-                        | "std.time.sleep"
-                        | "std.websocket.requestJsonToConnection"
-                )
+            semantics.effects.pending_effect_categories,
+            if is_pending {
+                vec![PendingEffectCategory::NativeCall]
+            } else {
+                Vec::new()
+            }
         );
         assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
         assert_eq!(
@@ -168,14 +180,12 @@ fn json_merge_semantics_are_exact_fresh_and_detached() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -196,14 +206,12 @@ fn date_from_epoch_milliseconds_semantics_match_exact_signature() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -222,14 +230,12 @@ fn map_empty_semantics_match_exact_generic_signature() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -267,14 +273,12 @@ fn date_parse_semantics_match_exact_signature() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -308,14 +312,12 @@ fn bytes_from_base64_semantics_match_exact_signature() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -349,14 +351,12 @@ fn bytes_from_hex_semantics_match_exact_signature() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -390,14 +390,12 @@ fn bytes_concat_semantics_match_exact_signature() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -438,14 +436,12 @@ fn http_request_native_semantics_match_exact_signatures() {
         assert_eq!(
             semantics.effects,
             CallableMayEffects {
-                writes_caller_reachable: false,
-                returns_caller_alias: false,
-                throws_caller_alias: false,
                 escapes_caller_value: false,
                 requires_same_heap_identity: false,
                 invokes_unknown_target: false,
-                may_suspend: false,
-            }
+                may_pending: false,
+            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),            }
         );
         assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -465,14 +461,12 @@ fn http_client_stream_semantics_match_exact_signature_and_remain_canonical() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: true,
-        }
+            may_pending: true,
+            pending_effect_categories: if true { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -506,14 +500,12 @@ fn http_client_sse_semantics_match_exact_signature_and_remain_canonical() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: true,
-        }
+            may_pending: true,
+            pending_effect_categories: if true { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -562,14 +554,12 @@ fn http_response_stream_event_constructor_semantics_match_exact_signatures() {
         assert_eq!(
             semantics.effects,
             CallableMayEffects {
-                writes_caller_reachable: false,
-                returns_caller_alias: false,
-                throws_caller_alias: false,
                 escapes_caller_value: false,
                 requires_same_heap_identity: false,
                 invokes_unknown_target: false,
-                may_suspend: false,
-            }
+                may_pending: false,
+            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),            }
         );
         assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -608,14 +598,12 @@ fn http_response_stream_emit_semantics_match_exact_signature() {
     assert_eq!(
         semantics.effects,
         CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: true,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: true,
-        }
+            may_pending: true,
+            pending_effect_categories: if true { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
+            inout_path_effects: Vec::new(),        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 

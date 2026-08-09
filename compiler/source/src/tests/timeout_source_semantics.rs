@@ -4,7 +4,9 @@ use std::{
 };
 
 use compiler_input_model::PackageCompilePolicy;
-use skiff_artifact_model::{CallableEffectSummary, CallableProvenanceSummary, ValueProvenance};
+use skiff_artifact_model::{
+    CallableEffectSummary, CallableProvenanceSummary, PendingEffectCategory, ValueProvenance,
+};
 use skiff_compiler_input::CompilerPlatformSources;
 
 use crate::{
@@ -76,8 +78,8 @@ fn timeout_value_is_target_typed_lexically_scoped_and_type_transparent() {
             type Receipt { value: string }
 
             function run(input: string) -> Receipt {
-              const receipt: Receipt = timeout(20ms) value {
-                const local = input;
+              let receipt: Receipt = timeout(20ms) value {
+                let local = input;
                 ({ value: local })
               }
               return receipt
@@ -91,13 +93,13 @@ fn timeout_value_is_target_typed_lexically_scoped_and_type_transparent() {
     for source in [
         r#"
             function run() -> string {
-              const value = timeout(20ms) value { 1 }
+              let value = timeout(20ms) value { 1 }
               return value
             }
         "#,
         r#"
             function run() -> string {
-              const value = value { const local = "ok" local }
+              let value = value { const local = "ok" local }
               return local
             }
         "#,
@@ -114,8 +116,8 @@ fn timeout_value_is_target_typed_lexically_scoped_and_type_transparent() {
             function local() -> string { return "top-level" }
 
             function run() -> string {
-              const captured = value {
-                const local = "block-local"
+              let captured = value {
+                let local = "block-local"
                 local
               }
               return local()
@@ -160,8 +162,12 @@ fn timeout_body_and_tail_preserve_suspend_effect_and_root_provenance() {
         "#,
     );
     let effects = callable_effects(&model, "run");
-    assert!(effects.may_suspend);
-    assert!(effects.returns_caller_alias);
+    assert!(effects.may_pending);
+    assert_eq!(
+        effects.pending_effect_categories,
+        vec![PendingEffectCategory::HostEffect],
+        "the db transaction inside the timeout carries the HostEffect category"
+    );
     let provenance =
         &model.callable_provenance().operations()[&SourceSymbolKey::new(MODULE_PATH, "run")];
     let CallableProvenanceSummary::Analyzed { return_origins, .. } = provenance else {
@@ -310,7 +316,7 @@ fn db_transaction_is_allowed_in_actor_methods_create_and_through_local_helpers()
 
 #[test]
 fn ordinary_sources_without_concurrent_surface_still_compile() {
-    build_ok("function run() -> number {\n  const value = 1\n  return value\n}\n");
+    build_ok("function run() -> number {\n  let value = 1\n  return value\n}\n");
 }
 
 #[test]
@@ -323,7 +329,7 @@ fn timeout_and_value_walkers_reach_config_roots_calls_stream_and_db_paths() {
 
             function configured() -> string {
               return timeout(30ms) value {
-                const configured = config.require<string>("timeout.value")
+                let configured = config.require<string>("timeout.value")
                 helper().concat(configured)
               }
             }
@@ -341,7 +347,12 @@ fn timeout_and_value_walkers_reach_config_roots_calls_stream_and_db_paths() {
         .iter()
         .any(|(_, target)| target.source_callable_key()
             == Some(SourceSymbolKey::new(MODULE_PATH, "helper"))));
-    assert!(callable_effects(&model, "stream").may_suspend);
+    let stream_effects = callable_effects(&model, "stream");
+    assert!(stream_effects.may_pending);
+    assert_eq!(
+        stream_effects.pending_effect_categories,
+        vec![PendingEffectCategory::Stream]
+    );
 
     let root_error = build_error(
         r#"

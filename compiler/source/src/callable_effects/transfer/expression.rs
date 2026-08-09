@@ -5,9 +5,11 @@ use crate::shared::ast::{
     DbWhereClause, DispatchTiming, Expr, PatchOperation, Stmt,
 };
 
+use skiff_artifact_model::PendingEffectCategory;
+
 use super::{
     super::analysis::ModuleConstantFact,
-    super::provenance::{AbstractValue, CallableState, EscapeLane},
+    super::provenance::{record_pending_category, AbstractValue, CallableState, EscapeLane},
     join_environments, Environment, Evaluator,
 };
 
@@ -37,7 +39,10 @@ impl Evaluator<'_, '_> {
             }
             Expr::DependencySourceAddress(_) => {
                 self.state.effects.invokes_unknown_target = true;
-                self.state.effects.may_suspend = true;
+                record_pending_category(
+                    &mut self.state.effects,
+                    PendingEffectCategory::Unknown,
+                );
                 self.state
                     .mark_unknown(CallableProvenanceUnknownReason::UnknownCallTarget);
                 AbstractValue::unknown(true)
@@ -105,7 +110,10 @@ impl Evaluator<'_, '_> {
                 }
                 let captured = self.values_in_range(start, self.next_index);
                 self.state.record_escape(&captured, EscapeLane::Dispatch);
-                self.state.effects.may_suspend = true;
+                record_pending_category(
+                    &mut self.state.effects,
+                    PendingEffectCategory::Unknown,
+                );
                 AbstractValue::unknown(true)
             }
             Expr::Generic { callee, .. } => self.eval_expr(callee, env),
@@ -205,12 +213,12 @@ impl Evaluator<'_, '_> {
             Expr::DbOperation(operation) => {
                 let persisted = self.eval_db_operation(operation, env);
                 self.state.record_persistent_escape(&persisted);
-                self.state.effects.may_suspend = true;
+                record_pending_category(&mut self.state.effects, PendingEffectCategory::HostEffect);
                 AbstractValue::fresh(reference)
             }
             Expr::DbQuery(query) => {
                 self.eval_db_query(&query.query, env);
-                self.state.effects.may_suspend = true;
+                record_pending_category(&mut self.state.effects, PendingEffectCategory::HostEffect);
                 AbstractValue::fresh(reference)
             }
             Expr::DbTransaction(transaction) => {
@@ -241,7 +249,7 @@ impl Evaluator<'_, '_> {
                     }
                 };
                 join_environments(env, &body_env);
-                self.state.effects.may_suspend = true;
+                record_pending_category(&mut self.state.effects, PendingEffectCategory::HostEffect);
                 result
             }
             Expr::DbLeaseClaim(claim) => {
@@ -252,12 +260,12 @@ impl Evaluator<'_, '_> {
                 }
                 self.eval_block(&claim.body, &mut body_env);
                 join_environments(env, &body_env);
-                self.state.effects.may_suspend = true;
+                record_pending_category(&mut self.state.effects, PendingEffectCategory::HostEffect);
                 AbstractValue::fresh(reference)
             }
             Expr::DbLeaseRead(read) => {
                 self.eval_expr(&read.key, env);
-                self.state.effects.may_suspend = true;
+                record_pending_category(&mut self.state.effects, PendingEffectCategory::HostEffect);
                 AbstractValue::fresh(reference)
             }
         };

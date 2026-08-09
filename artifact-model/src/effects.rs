@@ -64,16 +64,90 @@ pub enum CallableEffectUnknownReason {
 
 /// Sound may-effects. Every field is required on the wire: adding or omitting
 /// a field cannot silently grant a boundary optimization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The three aggregate alias flags (`writesCallerReachable`,
+/// `returnsCallerAlias`, `throwsCallerAlias`) were retired: ordinary aggregate
+/// parameters/returns/throw payloads are logical snapshots, so only explicit
+/// InOut paths (not yet exercised) write caller places. Identity-bearing
+/// escape and heap-identity facts remain, and `mayPending` replaces the old
+/// `maySuspend` with an explicit effect-category trace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CallableMayEffects {
-    pub writes_caller_reachable: bool,
-    pub returns_caller_alias: bool,
-    pub throws_caller_alias: bool,
+    /// Identity-bearing (resource/capability) values escape into an external
+    /// lane. Aggregates never set this.
     pub escapes_caller_value: bool,
+    /// An identity-sensitive operation observed a caller-owned value.
     pub requires_same_heap_identity: bool,
+    /// The callable may invoke a target that is not statically resolved.
     pub invokes_unknown_target: bool,
-    pub may_suspend: bool,
+    /// The callable may suspend/park the current execution. Semantically
+    /// equivalent to `!pending_effect_categories.is_empty()`; the field is
+    /// kept on the wire as a required, cheaply assertable fact.
+    pub may_pending: bool,
+    /// Trace of the pending effect categories observed. Empty means the
+    /// callable never suspends. Order is deterministic and deduplicated.
+    pub pending_effect_categories: Vec<PendingEffectCategory>,
+    /// Per-parameter InOut path effects (read/write selector paths). Not yet
+    /// exercised by the Phase 2 compiler; always empty for now.
+    pub inout_path_effects: Vec<InOutPathEffect>,
+}
+
+impl CallableMayEffects {
+    /// Semantic definition of pending: any recorded pending category makes the
+    /// callable potentially suspending.
+    pub fn may_pending(&self) -> bool {
+        !self.pending_effect_categories.is_empty()
+    }
+}
+
+/// Why a callable may park/suspend the current execution. Unknown is the
+/// conservative catch-all for dynamic, unresolved, or not-yet-classified
+/// targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PendingEffectCategory {
+    ServiceCall,
+    ActorCall,
+    InterfaceCall,
+    NativeCall,
+    Stream,
+    HostEffect,
+    Unknown,
+}
+
+/// One parameter's InOut path effects: which selector paths of the parameter
+/// are read and which are written by the callable.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InOutPathEffect {
+    pub parameter_index: u32,
+    pub read: Vec<SelectorPath>,
+    pub write: Vec<SelectorPath>,
+}
+
+/// A typed selector path inside an InOut parameter (field / index sequence).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SelectorPath(pub Vec<SelectorPathSegment>);
+
+impl SelectorPath {
+    pub fn steps(&self) -> &[SelectorPathSegment] {
+        &self.0
+    }
+}
+
+/// One step of a selector path.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SelectorPathSegment {
+    Field { name: String },
+    Index {},
 }
 
 #[cfg(test)]

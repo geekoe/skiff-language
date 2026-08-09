@@ -3,13 +3,12 @@ use super::support::*;
 #[test]
 fn exact_dependency_callee_does_not_poison_known_target() {
     let dependency_effects = CallableMayEffects {
-        writes_caller_reachable: true,
-        returns_caller_alias: true,
-        throws_caller_alias: false,
         escapes_caller_value: false,
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
-        may_suspend: false,
+        may_pending: false,
+        pending_effect_categories: Vec::new(),
+        inout_path_effects: Vec::new(),
     };
     let dependency = PackageDependencyCallableAnalysis::new(
         PackageCallableId::new("pkg-callable:dep-run"),
@@ -52,7 +51,8 @@ fn exact_dependency_callee_does_not_poison_known_target() {
     assert_eq!(
         effects(&model, "wrapper"),
         CallableMayEffects {
-            may_suspend: true,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::Unknown],
             ..dependency_effects
         }
     );
@@ -146,7 +146,11 @@ fn dependency_exact_signature_controls_caller_suspension() {
     .analyze();
 
     assert_eq!(effects(&model, "exactFalse"), no_effects());
-    assert_eq!(effects(&model, "exactTrue"), suspend_only_effects());
+    assert_eq!(
+        effects(&model, "exactTrue"),
+        pending_only_effects(vec![PendingEffectCategory::Unknown]),
+        "the exact signature carries the File IR suspension channel"
+    );
 }
 
 #[test]
@@ -170,7 +174,7 @@ fn exact_dependency_field_callee_does_not_poison_known_target() {
     for callable in ["wrapper", "genericWrapper"] {
         assert_eq!(
             effects(&model, callable),
-            suspend_only_effects(),
+            pending_only_effects(vec![PendingEffectCategory::Unknown]),
             "{callable}"
         );
         assert!(matches!(
@@ -268,7 +272,7 @@ fn dependency_field_first_class_value_remains_fail_closed() {
     let error = AnalysisFixture::new(
         r#"
             function wrapper() -> void {
-              const callable = dep/tools.run
+              let callable = dep/tools.run
             }
         "#,
     )
@@ -368,15 +372,11 @@ fn missing_detached_error_or_other_guarantee_remains_fail_closed() {
         .analyze();
 
         let effects = effects(&model, "wrapper");
-        assert!(effects.writes_caller_reachable, "{missing_guarantee}");
-        assert!(effects.throws_caller_alias, "{missing_guarantee}");
-        assert!(effects.escapes_caller_value, "{missing_guarantee}");
+        assert_eq!(effects, all_effects(), "{missing_guarantee}");
         assert!(
             !effects.requires_same_heap_identity,
             "{missing_guarantee}: fail-closed must not invent identity observation"
         );
-        assert!(effects.invokes_unknown_target, "{missing_guarantee}");
-        assert!(effects.may_suspend, "{missing_guarantee}");
         assert!(
             matches!(
                 provenance(&model, "wrapper"),

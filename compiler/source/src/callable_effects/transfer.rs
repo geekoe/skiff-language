@@ -37,7 +37,7 @@ pub(super) fn transfer_callable(
         {
             if let Some(semantics) = native_callable_semantics(binding_key) {
                 let mut state = CallableState::bottom();
-                state.effects = semantics.effects;
+                state.effects = semantics.effects.clone();
                 let origin = Origin::from(semantics.return_provenance.clone());
                 state.return_origins.insert(origin.clone());
                 state.return_direct_origins.insert(origin);

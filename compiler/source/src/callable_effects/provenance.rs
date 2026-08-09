@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
-    CallableProvenanceUnknownReason, ValueEscapeLane, ValueProjectionPath, ValueProjectionStep,
-    ValueProvenance, MAX_VALUE_PROJECTION_PATH_STEPS,
+    CallableProvenanceUnknownReason, PendingEffectCategory, ValueEscapeLane,
+    ValueProjectionPath, ValueProjectionStep, ValueProvenance, MAX_VALUE_PROJECTION_PATH_STEPS,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -452,10 +452,8 @@ impl CallableState {
         self.return_origins.extend(value.origins.iter().cloned());
         self.return_direct_origins
             .extend(value.direct_origins.iter().cloned());
-        self.effects.returns_caller_alias |= value.contains_caller_reference();
         if value.unknown {
             self.mark_unknown_value_if_unowned();
-            self.effects.returns_caller_alias = true;
         }
     }
 
@@ -555,7 +553,7 @@ impl CallableState {
     ) -> Self {
         let mut state = match effects {
             CallableEffectSummary::Analyzed { effects } => Self {
-                effects: *effects,
+                effects: effects.clone(),
                 ..Self::bottom()
             },
             CallableEffectSummary::Unknown { .. } => {
@@ -597,13 +595,12 @@ fn public_origins(origins: BTreeSet<Origin>) -> Vec<ValueProvenance> {
 
 pub(super) fn no_effects() -> CallableMayEffects {
     CallableMayEffects {
-        writes_caller_reachable: false,
-        returns_caller_alias: false,
-        throws_caller_alias: false,
         escapes_caller_value: false,
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
-        may_suspend: false,
+        may_pending: false,
+        pending_effect_categories: Vec::new(),
+        inout_path_effects: Vec::new(),
     }
 }
 
@@ -613,24 +610,56 @@ pub(super) fn all_effects() -> CallableMayEffects {
     // invokes_unknown_target and the other conservative effects carry the
     // rejection without claiming that an identity comparison occurred.
     CallableMayEffects {
-        writes_caller_reachable: true,
-        returns_caller_alias: true,
-        throws_caller_alias: true,
         escapes_caller_value: true,
         requires_same_heap_identity: false,
         invokes_unknown_target: true,
-        may_suspend: true,
+        may_pending: true,
+        pending_effect_categories: vec![PendingEffectCategory::Unknown],
+        inout_path_effects: Vec::new(),
     }
 }
 
 pub(super) fn join_effects(target: &mut CallableMayEffects, source: &CallableMayEffects) {
-    target.writes_caller_reachable |= source.writes_caller_reachable;
-    target.returns_caller_alias |= source.returns_caller_alias;
-    target.throws_caller_alias |= source.throws_caller_alias;
     target.escapes_caller_value |= source.escapes_caller_value;
     target.requires_same_heap_identity |= source.requires_same_heap_identity;
     target.invokes_unknown_target |= source.invokes_unknown_target;
-    target.may_suspend |= source.may_suspend;
+    target.may_pending |= source.may_pending;
+    union_categories(&mut target.pending_effect_categories, &source.pending_effect_categories);
+    target
+        .inout_path_effects
+        .extend(source.inout_path_effects.iter().cloned());
+    target.inout_path_effects.sort();
+    target.inout_path_effects.dedup();
+}
+
+/// Records that the callable may park/suspend for the given pending category.
+/// Sets `may_pending` and appends the category once (deterministic order).
+pub(super) fn record_pending_category(
+    effects: &mut CallableMayEffects,
+    category: PendingEffectCategory,
+) {
+    union_pending_categories(effects, &[category]);
+}
+
+/// Joins pending categories into the target, setting `may_pending` whenever
+/// any category is recorded.
+pub(super) fn union_pending_categories(
+    effects: &mut CallableMayEffects,
+    categories: &[PendingEffectCategory],
+) {
+    if categories.is_empty() {
+        return;
+    }
+    effects.may_pending = true;
+    union_categories(&mut effects.pending_effect_categories, categories);
+}
+
+fn union_categories(target: &mut Vec<PendingEffectCategory>, source: &[PendingEffectCategory]) {
+    for category in source {
+        if !target.contains(category) {
+            target.push(*category);
+        }
+    }
 }
 
 fn join_unknown(

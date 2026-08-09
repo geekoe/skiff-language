@@ -96,7 +96,7 @@ fn map_empty_materialization_accumulator_uses_exact_native_semantics() {
     let model = AnalysisFixture::new(
         r#"
             function materializeCompletedResult() -> Map<string, Json> {
-              const accumulator = Map.empty<string, Json>()
+              let accumulator = Map.empty<string, Json>()
               return accumulator
             }
         "#,
@@ -137,7 +137,7 @@ fn json_decode_materialization_uses_exact_detached_semantics() {
             type Event { id: string, values: Array<string> }
 
             function materializeCompletedResult(encoded: string) -> Event? {
-              const decoded = catch<std.json.DecodeError>(
+              let decoded = catch<std.json.DecodeError>(
                 std.json.decode<Event>(encoded)
               )
               if decoded.tag != "ok" {
@@ -348,7 +348,7 @@ fn bytes_concat_openai_multipart_shape_uses_exact_native_semantics() {
             type MultipartPart { body: bytes }
 
             function multipartBody(parts: Array<MultipartPart>, boundary: string) -> bytes {
-              const chunks = Array.empty<bytes>()
+              let chunks = Array.empty<bytes>()
               for part in parts {
                 chunks.push(bytes.fromUtf8("--".concat(boundary).concat("\r\n")))
                 chunks.push(part.body)
@@ -396,8 +396,8 @@ fn exact_http_request_natives_transfer_through_local_helpers() {
             }
 
             function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
-              const values = headerValues(request)
-              const session = cookieValue(request)
+              let values = headerValues(request)
+              let session = cookieValue(request)
               return std.http.HttpResponse {
                 status: 200,
                 headers: Array.empty<std.http.HttpHeader>(),
@@ -461,14 +461,11 @@ fn exact_http_client_stream_is_fresh_detached_and_suspending_through_raw_request
             }
         "#).analyze();
 
+    assert_eq!(effects(&model, "rawRequest"), no_effects());
     assert_eq!(
-        effects(&model, "rawRequest"),
-        CallableMayEffects {
-            returns_caller_alias: true,
-            ..no_effects()
-        }
+        effects(&model, "responses"),
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
     );
-    assert_eq!(effects(&model, "responses"), suspend_only_effects());
     assert!(matches!(
         provenance(&model, "responses"),
         CallableProvenanceSummary::Analyzed {
@@ -510,14 +507,11 @@ fn exact_http_client_sse_is_fresh_detached_and_suspending_through_raw_request() 
     )
     .analyze();
 
+    assert_eq!(effects(&model, "rawRequest"), no_effects());
     assert_eq!(
-        effects(&model, "rawRequest"),
-        CallableMayEffects {
-            returns_caller_alias: true,
-            ..no_effects()
-        }
+        effects(&model, "responses"),
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
     );
-    assert_eq!(effects(&model, "responses"), suspend_only_effects());
     assert!(matches!(
         provenance(&model, "responses"),
         CallableProvenanceSummary::Analyzed {
@@ -562,8 +556,8 @@ fn exact_http_response_stream_event_constructors_are_fresh_and_effect_free() {
               headers: Array<std.http.HttpHeader>,
               value: bytes
             ) -> std.http.HttpResponseStreamEvent {
-              const started = std.http.streamStart(status, headers)
-              const chunked = std.http.streamChunk(value)
+              let started = std.http.streamStart(status, headers)
+              let chunked = std.http.streamChunk(value)
               return std.http.streamEnd()
             }
         "#,
@@ -622,7 +616,8 @@ fn exact_http_response_stream_emit_escapes_and_suspends_only_for_caller_event() 
         effects(&model, "emit"),
         CallableMayEffects {
             escapes_caller_value: true,
-            may_suspend: true,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::NativeCall],
             ..no_effects()
         }
     );
@@ -639,10 +634,7 @@ fn exact_http_response_stream_emit_escapes_and_suspends_only_for_caller_event() 
     ));
     assert_eq!(
         effects(&model, "emitFresh"),
-        CallableMayEffects {
-            may_suspend: true,
-            ..no_effects()
-        }
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
     );
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
@@ -726,7 +718,7 @@ fn std_exact_native_matrix_uses_shared_callable_semantics() {
     }
     assert_eq!(
         effects_in(&model, "std.effect_test", "sleep"),
-        suspend_only_effects()
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
     );
 
     let native_keys = model
@@ -873,7 +865,7 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
 
     assert_eq!(
         effects_in(&model, "std.effect_test", "request"),
-        suspend_only_effects()
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
     );
     let CallableProvenanceSummary::Analyzed { return_origins, .. } =
         provenance_in(&model, "std.effect_test", "request")
@@ -882,13 +874,7 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
     };
     assert_eq!(return_origins, &vec![ValueProvenance::Fresh]);
 
-    assert_eq!(
-        effects_in(&model, "std.effect_test", "push"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            ..no_effects()
-        }
-    );
+    assert_eq!(effects_in(&model, "std.effect_test", "push"), no_effects());
     let CallableProvenanceSummary::Analyzed { return_origins, .. } =
         provenance_in(&model, "std.effect_test", "push")
     else {
@@ -962,7 +948,7 @@ fn exact_file_creation_wrappers_are_fresh_and_only_suspend() {
     ] {
         assert_eq!(
             effects_in(&model, "std.file_effect_test", callable),
-            suspend_only_effects(),
+            pending_only_effects(vec![PendingEffectCategory::NativeCall]),
             "{callable}"
         );
         assert!(matches!(

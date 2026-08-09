@@ -4,13 +4,12 @@ use super::*;
 
 fn analyzed_effects() -> CallableMayEffects {
     CallableMayEffects {
-        writes_caller_reachable: false,
-        returns_caller_alias: true,
-        throws_caller_alias: false,
         escapes_caller_value: false,
         requires_same_heap_identity: false,
         invokes_unknown_target: true,
-        may_suspend: false,
+        may_pending: false,
+        pending_effect_categories: Vec::new(),
+        inout_path_effects: Vec::new(),
     }
 }
 
@@ -34,27 +33,59 @@ fn unknown_round_trips_with_reason_and_is_not_boundary_available() {
 }
 
 #[test]
-fn analyzed_normal_return_and_throw_alias_are_independent() {
-    let summary = CallableEffectSummary::Analyzed {
-        effects: analyzed_effects(),
+fn analyzed_pending_categories_round_trip_and_drive_may_pending() {
+    let effects = CallableMayEffects {
+        may_pending: true,
+        pending_effect_categories: vec![
+            PendingEffectCategory::ServiceCall,
+            PendingEffectCategory::Unknown,
+        ],
+        inout_path_effects: vec![InOutPathEffect {
+            parameter_index: 1,
+            read: vec![SelectorPath(vec![SelectorPathSegment::Field {
+                name: "data".to_string(),
+            }])],
+            write: Vec::new(),
+        }],
+        ..analyzed_effects()
     };
-    let effects = summary
+    let summary = CallableEffectSummary::Analyzed { effects };
+    let value = serde_json::to_value(&summary).expect("serialize analyzed effects");
+    assert_eq!(
+        value,
+        json!({
+            "kind": "analyzed",
+            "effects": {
+                "escapesCallerValue": false,
+                "requiresSameHeapIdentity": false,
+                "invokesUnknownTarget": true,
+                "mayPending": true,
+                "pendingEffectCategories": ["serviceCall", "unknown"],
+                "inoutPathEffects": [{
+                    "parameterIndex": 1,
+                    "read": [[{ "kind": "field", "name": "data" }]],
+                    "write": []
+                }]
+            }
+        })
+    );
+    let decoded = serde_json::from_value::<CallableEffectSummary>(value)
+        .expect("deserialize analyzed effects");
+    let effects = decoded
         .effects_for_boundary()
         .expect("analyzed effects are available");
-    assert!(effects.returns_caller_alias);
-    assert!(!effects.throws_caller_alias);
-
-    let mut throw_alias = analyzed_effects();
-    throw_alias.returns_caller_alias = false;
-    throw_alias.throws_caller_alias = true;
-    let throw_summary = CallableEffectSummary::Analyzed {
-        effects: throw_alias,
-    };
-    let effects = throw_summary
-        .effects_for_boundary()
-        .expect("analyzed effects are available");
-    assert!(!effects.returns_caller_alias);
-    assert!(effects.throws_caller_alias);
+    assert!(effects.may_pending);
+    assert!(effects.may_pending());
+    assert_eq!(
+        effects.pending_effect_categories,
+        vec![PendingEffectCategory::ServiceCall, PendingEffectCategory::Unknown]
+    );
+    assert_eq!(
+        effects.inout_path_effects[0].read[0].steps(),
+        &[SelectorPathSegment::Field {
+            name: "data".to_string()
+        }]
+    );
 }
 
 #[test]
@@ -67,17 +98,7 @@ fn typed_wire_rejects_missing_tags_fields_and_unknown_fields() {
             "reason": "analysisPending",
             "detail": "diagnostic text must not enter semantic bytes"
         }),
-        json!({
-            "kind": "analyzed",
-            "effects": {
-                "writesCallerReachable": false,
-                "returnsCallerAlias": false,
-                "throwsCallerAlias": false,
-                "escapesCallerValue": false,
-                "requiresSameHeapIdentity": false,
-                "invokesUnknownTarget": false
-            }
-        }),
+        // Old aggregate flags are rejected (retired from the wire).
         json!({
             "kind": "analyzed",
             "effects": {
@@ -88,7 +109,56 @@ fn typed_wire_rejects_missing_tags_fields_and_unknown_fields() {
                 "requiresSameHeapIdentity": false,
                 "invokesUnknownTarget": false,
                 "maySuspend": false,
+                "mayPending": false,
+                "pendingEffectCategories": [],
+                "inoutPathEffects": []
+            }
+        }),
+        // Old maySuspend field is rejected even alone.
+        json!({
+            "kind": "analyzed",
+            "effects": {
+                "escapesCallerValue": false,
+                "requiresSameHeapIdentity": false,
+                "invokesUnknownTarget": false,
+                "maySuspend": false,
+                "mayPending": false,
+                "pendingEffectCategories": [],
+                "inoutPathEffects": []
+            }
+        }),
+        // Every new field is required on the wire.
+        json!({
+            "kind": "analyzed",
+            "effects": {
+                "escapesCallerValue": false,
+                "requiresSameHeapIdentity": false,
+                "invokesUnknownTarget": false,
+                "mayPending": false,
+                "pendingEffectCategories": []
+            }
+        }),
+        json!({
+            "kind": "analyzed",
+            "effects": {
+                "escapesCallerValue": false,
+                "requiresSameHeapIdentity": false,
+                "invokesUnknownTarget": false,
+                "mayPending": false,
+                "pendingEffectCategories": [],
+                "inoutPathEffects": [],
                 "futureField": false
+            }
+        }),
+        json!({
+            "kind": "analyzed",
+            "effects": {
+                "escapesCallerValue": false,
+                "requiresSameHeapIdentity": false,
+                "invokesUnknownTarget": false,
+                "mayPending": true,
+                "pendingEffectCategories": ["unknown", "futureCategory"],
+                "inoutPathEffects": []
             }
         }),
     ] {

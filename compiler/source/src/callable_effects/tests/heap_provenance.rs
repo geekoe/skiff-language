@@ -8,7 +8,7 @@ fn post_construction_store_taints_fresh_return() {
             type Holder { child: Child }
 
             function storeAndReturn(input: Child) -> Holder {
-              const holder = Holder { child: Child { value: "fresh" } }
+              let holder = Holder { child: Child { value: "fresh" } }
               holder.child = input
               return holder
             }
@@ -18,11 +18,15 @@ fn post_construction_store_taints_fresh_return() {
 
     assert_eq!(
         effects(&model, "storeAndReturn"),
-        CallableMayEffects {
-            returns_caller_alias: true,
-            ..no_effects()
-        }
+        no_effects(),
+        "a fresh return embedding a caller payload is a logical snapshot"
     );
+    assert!(matches!(
+        provenance(&model, "storeAndReturn"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 })
+                && return_origins.contains(&ValueProvenance::Fresh)
+    ));
 }
 
 #[test]
@@ -33,7 +37,7 @@ fn post_construction_store_then_nested_mutation_fails_closed() {
             type Holder { child: Child }
 
             function storeThenMutate(input: Child) -> Holder {
-              const holder = Holder { child: Child { value: "fresh" } }
+              let holder = Holder { child: Child { value: "fresh" } }
               holder.child = input
               holder.child.value = "changed"
               return holder
@@ -53,8 +57,8 @@ fn aliased_fresh_holder_store_taints_original_return() {
             type Holder { child: Child }
 
             function aliasStore(input: Child) -> Holder {
-              const holder = Holder { child: Child { value: "fresh" } }
-              const alias = holder
+              let holder = Holder { child: Child { value: "fresh" } }
+              let alias = holder
               alias.child = input
               return holder
             }
@@ -62,10 +66,11 @@ fn aliased_fresh_holder_store_taints_original_return() {
     )
     .analyze();
 
-    assert!(effects(&model, "aliasStore").returns_caller_alias);
+    assert_eq!(effects(&model, "aliasStore"), no_effects());
     assert!(matches!(
         provenance(&model, "aliasStore"),
-        CallableProvenanceSummary::Analyzed { .. }
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 })
     ));
 }
 
@@ -77,7 +82,7 @@ fn fresh_store_taint_propagates_through_callers_and_scc() {
             type Holder { child: Child }
 
             function storeLeaf(input: Child) -> Holder {
-              const holder = Holder { child: Child { value: "fresh" } }
+              let holder = Holder { child: Child { value: "fresh" } }
               holder.child = input
               return holder
             }
@@ -99,10 +104,12 @@ fn fresh_store_taint_propagates_through_callers_and_scc() {
     .analyze();
 
     for callable in ["storeLeaf", "caller", "first", "second"] {
-        assert!(effects(&model, callable).returns_caller_alias, "{callable}");
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
         assert!(matches!(
             provenance(&model, callable),
-            CallableProvenanceSummary::Analyzed { .. }
+            CallableProvenanceSummary::Analyzed { return_origins, .. }
+                if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 }),
+            "{callable}"
         ));
     }
 }
@@ -135,14 +142,9 @@ fn direct_parameter_field_store_has_write_without_identity_observation() {
     .analyze();
 
     for callable in ["mutate", "wrapper", "Boxed.clear", "methodWrapper"] {
-        assert_eq!(
-            effects(&model, callable),
-            CallableMayEffects {
-                writes_caller_reachable: true,
-                ..no_effects()
-            },
-            "{callable}"
-        );
+        // The write itself is tracked internally (write_parameters); the
+        // retired writesCallerReachable aggregate flag no longer surfaces.
+        assert_eq!(effects(&model, callable), no_effects(), "{callable}");
         assert!(matches!(
             provenance(&model, callable),
             CallableProvenanceSummary::Analyzed { .. }
@@ -170,7 +172,7 @@ fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
             }
 
             function v1Proxy(events: Array<string>) -> string {
-              const state = RelayState {
+              let state = RelayState {
                 f01: "", f02: "", f03: "", f04: "",
                 f05: "", f06: "", f07: "", f08: "",
                 f09: "", f10: "", f11: "", f12: "",
@@ -178,7 +180,7 @@ fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
                 f17: "", f18: "", f19: "", f20: "",
                 f21: "", f22: "", f23: "", f24: ""
               }
-              const alias = state
+              let alias = state
               alias.f02 = "local"
               for event in events {
                 update(state, event)
@@ -191,14 +193,12 @@ fn fresh_alias_helper_loop_and_suspend_keep_relay_shaped_state_local() {
     )
     .analyze();
 
+    assert_eq!(effects(&model, "update"), no_effects());
     assert_eq!(
-        effects(&model, "update"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            ..no_effects()
-        }
+        effects(&model, "v1Proxy"),
+        pending_only_effects(vec![PendingEffectCategory::NativeCall]),
+        "the sleep native carries the pending NativeCall category"
     );
-    assert_eq!(effects(&model, "v1Proxy"), suspend_only_effects());
     assert!(matches!(
         provenance(&model, "v1Proxy"),
         CallableProvenanceSummary::Analyzed { .. }
@@ -234,10 +234,8 @@ fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise()
     assert_heap_store_fail_closed(&model, "nested");
     assert_eq!(
         effects(&model, "reference"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            ..no_effects()
-        }
+        no_effects(),
+        "a direct reference store is an internal write, not a public effect"
     );
     assert_eq!(effects(&model, "unknownRhs"), all_effects());
     assert!(matches!(
@@ -260,28 +258,28 @@ fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fai
             }
 
             function intoMap() -> void {
-              const state = State { value: "" }
+              let state = State { value: "" }
               state.value = "changed"
-              const container = Map.empty<string, State>()
+              let container = Map.empty<string, State>()
               container.set("state", state)
             }
 
             function intoArray() -> void {
-              const state = State { value: "" }
+              let state = State { value: "" }
               state.value = "changed"
-              const container = Array.empty<State>()
+              let container = Array.empty<State>()
               container.push(state)
             }
 
             function intoDatabase() -> void {
-              const state = State { value: "" }
+              let state = State { value: "" }
               state.value = "changed"
               db insert Stored { id = "state" state = state }
             }
 
             function ambiguousAlias(useSecond: bool) -> void {
-              const first = State { value: "" }
-              const second = State { value: "" }
+              let first = State { value: "" }
+              let second = State { value: "" }
               let alias = first
               if useSecond {
                 alias = second
@@ -321,7 +319,7 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
             }
 
             function local(key: string) -> State {
-              const states = Map.empty<string, State>()
+              let states = Map.empty<string, State>()
               let state: State? = states.get(key)
               if state == null {
                 state = State { value: "" }
@@ -332,14 +330,14 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
             }
 
             function throughFresh(key: string) -> State {
-              const states = Map.empty<string, State>()
+              let states = Map.empty<string, State>()
               return formal(states, key)
             }
 
             type Node { child: Node? }
 
             function cycle() -> Node {
-              const node = Node { child: null }
+              let node = Node { child: null }
               node.child = node
               return node
             }
@@ -349,12 +347,19 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
 
     assert_eq!(
         effects(&model, "formal"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            returns_caller_alias: true,
-            ..no_effects()
-        }
+        no_effects(),
+        "mutating a caller map projection is tracked internally only"
     );
+    assert!(matches!(
+        provenance(&model, "formal"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins.contains(&ValueProvenance::Fresh)
+                && return_origins.iter().any(|origin| matches!(
+                    origin,
+                    ValueProvenance::CallerParameter { .. }
+                        | ValueProvenance::CallerParameterProjection { .. }
+                ))
+    ));
     for callable in ["local", "throughFresh"] {
         assert_eq!(effects(&model, callable), no_effects(), "{callable}");
         assert!(matches!(
@@ -384,8 +389,8 @@ fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_
             }
 
             function local(key: string) -> State {
-              const states = Map.empty<string, State>()
-              const state = stateFor(states, key)
+              let states = Map.empty<string, State>()
+              let state = stateFor(states, key)
               state.value = "completed"
               states.set(key, state)
               return state
@@ -394,14 +399,16 @@ fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_
     )
     .analyze();
 
-    assert_eq!(
-        effects(&model, "stateFor"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            returns_caller_alias: true,
-            ..no_effects()
-        }
-    );
+    assert_eq!(effects(&model, "stateFor"), no_effects());
+    assert!(matches!(
+        provenance(&model, "stateFor"),
+        CallableProvenanceSummary::Analyzed { return_origins, .. }
+            if return_origins.iter().any(|origin| matches!(
+                origin,
+                ValueProvenance::CallerParameter { .. }
+                    | ValueProvenance::CallerParameterProjection { .. }
+            ))
+    ));
     assert_eq!(effects(&model, "local"), no_effects());
     assert!(matches!(
         provenance(&model, "local"),
@@ -421,9 +428,9 @@ fn helper_field_projection_keeps_parent_edge_and_rejects_real_cycle() {
             }
 
             function cycle() -> Parent {
-              const child = Child { parent: null }
-              const parent = Parent { child: child }
-              const selected = childOf(parent)
+              let child = Child { parent: null }
+              let parent = Parent { child: child }
+              let selected = childOf(parent)
               selected.parent = parent
               return parent
             }
@@ -431,8 +438,8 @@ fn helper_field_projection_keeps_parent_edge_and_rejects_real_cycle() {
             type Node { next: Node? }
 
             function transitiveCycle() -> Node {
-              const first = Node { next: null }
-              const second = Node { next: null }
+              let first = Node { next: null }
+              let second = Node { next: null }
               first.next = second
               second.next = first
               return first
@@ -465,8 +472,8 @@ fn scalar_field_projection_does_not_invent_a_heap_cycle_in_relay_state_updates()
             }
 
             function local() -> RelayState {
-              const state = RelayState { bytes: 0 }
-              const next = currentBytes(state) + 1
+              let state = RelayState { bytes: 0 }
+              let next = currentBytes(state) + 1
               state.bytes = next
               return state
             }
@@ -493,15 +500,15 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
             }
 
             function mutateWrappedPayload(input: JsonObject) -> void {
-              const wrapper = wrap(input)
-              const payload = wrapper.payload
+              let wrapper = wrap(input)
+              let payload = wrapper.payload
               payload.set("kind", "changed")
             }
 
             function project(tools: Array<JsonObject>) -> void {
-              const output = Array.empty<JsonObject>()
+              let output = Array.empty<JsonObject>()
               for tool in tools {
-                const projected: JsonObject = {
+                let projected: JsonObject = {
                   payload: tool.get("payload")
                 }
                 projected.set("kind", "function")
@@ -515,7 +522,7 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
             ) -> void {
               let target: JsonObject = input
               if useFresh {
-                const candidate: JsonObject = {
+                let candidate: JsonObject = {
                   payload: input.get("payload")
                 }
                 target = candidate
@@ -541,11 +548,8 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
     );
     assert_eq!(
         effects(&model, "mutateWrappedPayload"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            ..no_effects()
-        },
-        "mutating a caller payload recovered from a fresh wrapper is a write, not an identity observation"
+        no_effects(),
+        "mutating a caller payload recovered from a fresh wrapper is tracked internally, not an identity observation"
     );
 
     assert_eq!(
@@ -560,10 +564,7 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
 
     assert_eq!(
         effects(&model, "conditional"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            ..no_effects()
-        },
+        no_effects(),
         "a fresh/caller receiver union must not discharge the caller candidate"
     );
 }
@@ -575,7 +576,7 @@ fn dependency_container_projection_can_be_mutated_and_reinserted_into_fresh_map(
             type State { key: string, value: string }
 
             function local(key: string) -> State {
-              const states = Map.empty<string, State>()
+              let states = Map.empty<string, State>()
               let state: State? = dep/tools/find(states, key)
               if state == null {
                 state = State { key: key, value: "" }
@@ -590,7 +591,11 @@ fn dependency_container_projection_can_be_mutated_and_reinserted_into_fresh_map(
     .dependency_analysis(container_projection_dependency())
     .analyze();
 
-    assert_eq!(effects(&model, "local"), suspend_only_effects());
+    assert_eq!(
+        effects(&model, "local"),
+        pending_only_effects(vec![PendingEffectCategory::Unknown]),
+        "the dependency call override carries the exact-signature suspension channel"
+    );
     assert!(matches!(
         provenance(&model, "local"),
         CallableProvenanceSummary::Analyzed { .. }
@@ -604,7 +609,7 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
             function mutate(
               input: JsonObject
             ) -> JsonObject {
-              const wrapped: JsonObject = dep/tools/wrap(input)
+              let wrapped: JsonObject = dep/tools/wrap(input)
               wrapped.set("kind", "function")
               return wrapped
             }
@@ -626,11 +631,7 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
 
     assert_eq!(
         effects(&model, "mutate"),
-        CallableMayEffects {
-            returns_caller_alias: true,
-            may_suspend: true,
-            ..no_effects()
-        },
+        pending_only_effects(vec![PendingEffectCategory::Unknown]),
         "mutating the dependency's fresh return root must not become a caller write"
     );
     assert_eq!(
@@ -651,11 +652,7 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
     );
     assert_eq!(
         effects(&model, "conditional"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            may_suspend: true,
-            ..no_effects()
-        },
+        pending_only_effects(vec![PendingEffectCategory::Unknown]),
         "a direct Fresh/caller union remains conservative across a package boundary"
     );
 }
@@ -676,7 +673,7 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
             }
 
             function local(status: string) -> StreamState {
-              const state = StreamState {
+              let state = StreamState {
                 key: "response",
                 status: "",
                 snapshot: ""
@@ -692,7 +689,7 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
             }
 
             function helperCycle() -> Node {
-              const node = Node { child: null }
+              let node = Node { child: null }
               selfStore(node)
               return node
             }
@@ -702,10 +699,8 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
 
     assert_eq!(
         effects(&model, "update"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            ..no_effects()
-        }
+        no_effects(),
+        "direct parameter field stores are internal writes"
     );
     assert_eq!(effects(&model, "local"), no_effects());
     assert!(matches!(
@@ -733,8 +728,14 @@ fn recursive_scc_reaches_alias_fixed_point() {
     )
     .analyze();
 
-    assert!(effects(&model, "first").returns_caller_alias);
-    assert!(effects(&model, "second").returns_caller_alias);
+    for callable in ["first", "second"] {
+        assert!(matches!(
+            provenance(&model, callable),
+            CallableProvenanceSummary::Analyzed { return_origins, .. }
+                if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 }),
+            "{callable}"
+        ));
+    }
 }
 
 #[test]
@@ -767,7 +768,7 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
               settings: JsonObject,
               response: JsonObject
             ) -> JsonObject {
-              const same = response == response
+              let same = response == response
               return response
             }
 
@@ -788,7 +789,7 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
               second: JsonObject,
               third: JsonObject
             ) -> JsonObject {
-              const same = value == value
+              let same = value == value
               return value
             }
 
@@ -802,10 +803,10 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
               thirdValue: JsonObject
             ) -> JsonObject {
               if chooseFirst {
-                const same = firstValue == firstValue
+                let same = firstValue == firstValue
                 return firstValue
               }
-              const same = thirdValue == thirdValue
+              let same = thirdValue == thirdValue
               return thirdValue
             }
 
@@ -839,13 +840,13 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
             }
 
             function freshEquality() -> bool {
-              const left: JsonObject = {}
-              const right: JsonObject = {}
+              let left: JsonObject = {}
+              let right: JsonObject = {}
               return left == right
             }
 
             function identityThenFresh(input: JsonObject) -> JsonObject {
-              const same = input == input
+              let same = input == input
               return {}
             }
         "#,
@@ -862,7 +863,6 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
 
     for (callable, expected_parameter) in [("callerFirst", 0), ("eitherFormal", 1)] {
         let effects = effects(&model, callable);
-        assert!(effects.returns_caller_alias, "{callable}");
         assert!(effects.requires_same_heap_identity, "{callable}");
         let CallableProvenanceSummary::Analyzed { return_origins, .. } =
             provenance(&model, callable)

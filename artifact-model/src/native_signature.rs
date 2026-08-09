@@ -1,8 +1,10 @@
+use std::sync::LazyLock;
+
 use crate::{
     builtin_receiver_ops::{
         validate_supported_receiver_builtin_op, BuiltinReceiverOp, SUPPORTED_RECEIVER_BUILTIN_OPS,
     },
-    CallableMayEffects, ValueProvenance,
+    CallableMayEffects, PendingEffectCategory, ValueProvenance,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -45,96 +47,101 @@ pub struct NativeCallableSemantics {
     pub return_provenance: ValueProvenance,
 }
 
-const fn detached_scalar_native(binding_key: &'static str) -> NativeCallableSemantics {
+fn detached_scalar_native(binding_key: &'static str) -> NativeCallableSemantics {
     detached_native(binding_key, false)
 }
 
-const fn detached_native(binding_key: &'static str, may_suspend: bool) -> NativeCallableSemantics {
+fn detached_native(binding_key: &'static str, may_pending: bool) -> NativeCallableSemantics {
     NativeCallableSemantics {
         binding_key,
         effects: CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend,
+            may_pending,
+            pending_effect_categories: if may_pending {
+                vec![PendingEffectCategory::NativeCall]
+            } else {
+                Vec::new()
+            },
+            inout_path_effects: Vec::new(),
         },
         return_provenance: ValueProvenance::Fresh,
     }
 }
 
-const fn escaping_suspending_native(binding_key: &'static str) -> NativeCallableSemantics {
+fn escaping_suspending_native(binding_key: &'static str) -> NativeCallableSemantics {
     NativeCallableSemantics {
         binding_key,
         effects: CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: true,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: true,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+            inout_path_effects: Vec::new(),
         },
         return_provenance: ValueProvenance::Fresh,
     }
 }
 
-pub const STD_NATIVE_CALLABLE_SEMANTICS: &[NativeCallableSemantics] = &[
-    detached_native("std.actor.get", true),
-    detached_scalar_native("core.array.empty"),
-    detached_scalar_native("core.map.empty"),
-    detached_scalar_native("core.bytes.concat"),
-    detached_scalar_native("core.bytes.fromBase64"),
-    detached_scalar_native("core.bytes.fromHex"),
-    detached_scalar_native("core.bytes.fromUtf8"),
-    detached_scalar_native("core.date.fromEpochMilliseconds"),
-    detached_scalar_native("core.date.now"),
-    detached_scalar_native("core.date.parse"),
-    detached_scalar_native("core.duration.milliseconds"),
-    detached_scalar_native("core.duration.seconds"),
-    detached_scalar_native("core.number.parse"),
-    detached_scalar_native("core.number.assertSafeInteger"),
-    detached_scalar_native("std.json.decode"),
-    detached_scalar_native("std.json.encode"),
-    detached_scalar_native("std.json.merge"),
-    detached_scalar_native("std.json.get"),
-    detached_scalar_native("std.json.getString"),
-    detached_scalar_native("std.json.getNumber"),
-    detached_scalar_native("std.json.getBool"),
-    detached_scalar_native("std.json.getArray"),
-    detached_scalar_native("std.string.join"),
-    detached_scalar_native("std.string.split"),
-    detached_scalar_native("std.string.isAsciiDigits"),
-    detached_scalar_native("std.string.truncateUtf8Bytes"),
-    detached_scalar_native("std.string.encodeQueryComponent"),
-    detached_scalar_native("std.string.encodePath"),
-    detached_scalar_native("std.crypto.hmacSha1Base64"),
-    detached_scalar_native("std.crypto.sha256"),
-    detached_scalar_native("std.crypto.randomToken"),
-    detached_scalar_native("std.crypto.uuid"),
-    detached_scalar_native("std.crypto.uuidSimple"),
-    detached_native("std.http.client.request", true),
-    detached_native("std.http.client.stream", true),
-    detached_native("std.http.client.sse", true),
-    detached_scalar_native("std.http.request.cookie"),
-    detached_scalar_native("std.http.request.headers"),
-    detached_scalar_native("std.http.stream.start"),
-    detached_scalar_native("std.http.stream.chunk"),
-    detached_scalar_native("std.http.stream.end"),
-    escaping_suspending_native("std.http.stream.emitResponse"),
-    detached_native("std.file.create", true),
-    detached_native("std.file.createFromStream", true),
-    detached_native("std.time.sleep", true),
-    detached_native("std.task.status", true),
-    detached_native("std.task.cancel", true),
-    detached_scalar_native("std.websocket.sendTextToConnection"),
-    detached_scalar_native("std.websocket.sendBinaryToConnection"),
-    detached_scalar_native("std.websocket.sendTextToBusinessIdentity"),
-    detached_scalar_native("std.websocket.sendBinaryToBusinessIdentity"),
-    detached_native("std.websocket.requestJsonToConnection", true),
-];
+pub static STD_NATIVE_CALLABLE_SEMANTICS: LazyLock<Vec<NativeCallableSemantics>> =
+    LazyLock::new(|| {
+        vec![
+            detached_native("std.actor.get", true),
+            detached_scalar_native("core.array.empty"),
+            detached_scalar_native("core.map.empty"),
+            detached_scalar_native("core.bytes.concat"),
+            detached_scalar_native("core.bytes.fromBase64"),
+            detached_scalar_native("core.bytes.fromHex"),
+            detached_scalar_native("core.bytes.fromUtf8"),
+            detached_scalar_native("core.date.fromEpochMilliseconds"),
+            detached_scalar_native("core.date.now"),
+            detached_scalar_native("core.date.parse"),
+            detached_scalar_native("core.duration.milliseconds"),
+            detached_scalar_native("core.duration.seconds"),
+            detached_scalar_native("core.number.parse"),
+            detached_scalar_native("core.number.assertSafeInteger"),
+            detached_scalar_native("std.json.decode"),
+            detached_scalar_native("std.json.encode"),
+            detached_scalar_native("std.json.merge"),
+            detached_scalar_native("std.json.get"),
+            detached_scalar_native("std.json.getString"),
+            detached_scalar_native("std.json.getNumber"),
+            detached_scalar_native("std.json.getBool"),
+            detached_scalar_native("std.json.getArray"),
+            detached_scalar_native("std.string.join"),
+            detached_scalar_native("std.string.split"),
+            detached_scalar_native("std.string.isAsciiDigits"),
+            detached_scalar_native("std.string.truncateUtf8Bytes"),
+            detached_scalar_native("std.string.encodeQueryComponent"),
+            detached_scalar_native("std.string.encodePath"),
+            detached_scalar_native("std.crypto.hmacSha1Base64"),
+            detached_scalar_native("std.crypto.sha256"),
+            detached_scalar_native("std.crypto.randomToken"),
+            detached_scalar_native("std.crypto.uuid"),
+            detached_scalar_native("std.crypto.uuidSimple"),
+            detached_native("std.http.client.request", true),
+            detached_native("std.http.client.stream", true),
+            detached_native("std.http.client.sse", true),
+            detached_scalar_native("std.http.request.cookie"),
+            detached_scalar_native("std.http.request.headers"),
+            detached_scalar_native("std.http.stream.start"),
+            detached_scalar_native("std.http.stream.chunk"),
+            detached_scalar_native("std.http.stream.end"),
+            escaping_suspending_native("std.http.stream.emitResponse"),
+            detached_native("std.file.create", true),
+            detached_native("std.file.createFromStream", true),
+            detached_native("std.time.sleep", true),
+            detached_native("std.task.status", true),
+            detached_native("std.task.cancel", true),
+            detached_scalar_native("std.websocket.sendTextToConnection"),
+            detached_scalar_native("std.websocket.sendBinaryToConnection"),
+            detached_scalar_native("std.websocket.sendTextToBusinessIdentity"),
+            detached_scalar_native("std.websocket.sendBinaryToBusinessIdentity"),
+            detached_native("std.websocket.requestJsonToConnection", true),
+        ]
+    });
 
 pub fn native_callable_semantics(binding_key: &str) -> Option<&'static NativeCallableSemantics> {
     STD_NATIVE_CALLABLE_SEMANTICS

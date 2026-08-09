@@ -2,10 +2,12 @@ use std::collections::BTreeSet;
 
 use skiff_artifact_model::{CallableProvenanceUnknownReason, ValueProjectionPath};
 
-use crate::shared::ast::{ForBinding, Stmt};
+use crate::shared::ast::{ForBinding, LetKind, Stmt};
+
+use skiff_artifact_model::PendingEffectCategory;
 
 use super::{
-    super::provenance::{AbstractValue, CallableState, EscapeLane},
+    super::provenance::{record_pending_category, AbstractValue, CallableState, EscapeLane},
     join_environments, pattern_bindings, Environment, Evaluator,
 };
 
@@ -136,7 +138,7 @@ impl Evaluator<'_, '_> {
                 let mut body_env = env.clone();
                 self.eval_block(body, &mut body_env);
                 join_environments(env, &body_env);
-                self.state.effects.may_suspend = true;
+                record_pending_category(&mut self.state.effects, PendingEffectCategory::HostEffect);
             }
             Stmt::Throw { value } => {
                 let value = self.eval_expr(value, env);
@@ -152,7 +154,7 @@ impl Evaluator<'_, '_> {
                 let value = self.eval_expr(value, env);
                 let value = self.materialize_heap_value(&value);
                 self.state.record_escape(&value, EscapeLane::Stream);
-                self.state.effects.may_suspend = true;
+                record_pending_category(&mut self.state.effects, PendingEffectCategory::Stream);
             }
             Stmt::Return(value) => {
                 if let Some(value) = value {
@@ -203,7 +205,7 @@ impl Evaluator<'_, '_> {
         for statement in &body.statements {
             match statement {
                 Stmt::Let {
-                    mutable: false,
+                    kind: LetKind::Let,
                     name,
                     value,
                     ..
@@ -258,7 +260,6 @@ impl Evaluator<'_, '_> {
             transferred = true;
         }
         if base.contains_direct_caller_reference() {
-            self.state.effects.writes_caller_reachable = true;
             self.state.write_parameters.extend(
                 base.direct_caller_references
                     .iter()

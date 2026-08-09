@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
     builtin_receiver_callable_semantics, native_callable_semantics, BoundaryCallbackContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp,
-    CallableProvenanceUnknownReason, ValueProjectionPath,
+    BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp, BuiltinReceiverOpSpec,
+    CallableProvenanceUnknownReason, PendingEffectCategory, ValueProjectionPath,
 };
 
 use crate::{shared::ast::Expr, ExpressionKey, ResolvedCallTarget};
@@ -115,10 +115,19 @@ impl Evaluator<'_, '_> {
                     &callable.semantic_facts().effects,
                     &callable.semantic_facts().provenance,
                 );
-                callee.effects.may_suspend = exact_signature
+                // The exact signature carries the File IR suspension channel;
+                // override the dependency summary's pending facts with the
+                // signature-derived truth.
+                let may_pending = exact_signature
                     .as_ref()
                     .map(|signature| signature.may_suspend)
                     .unwrap_or(true);
+                callee.effects.may_pending = may_pending;
+                callee.effects.pending_effect_categories = if may_pending {
+                    vec![PendingEffectCategory::Unknown]
+                } else {
+                    Vec::new()
+                };
                 self.apply_callee(
                     &callee,
                     &actuals,
@@ -274,7 +283,7 @@ impl Evaluator<'_, '_> {
         let mut actuals = Vec::with_capacity(args.len().saturating_add(1));
         actuals.push(receiver.clone());
         actuals.extend_from_slice(args);
-        let Some(mut callee) = receiver_callable_callee(op) else {
+        let Some(callee) = receiver_callable_callee(op) else {
             return self.apply_unknown_call_with_callee(
                 callee_value,
                 &actuals,
@@ -282,13 +291,6 @@ impl Evaluator<'_, '_> {
                 EscapeLane::Native,
             );
         };
-        // Receiver mutation is contextual to the receiver graph, not to values
-        // merely embedded into that graph. A fresh local JsonObject therefore
-        // discharges the write fact even when the inserted value originated at
-        // the caller boundary.
-        if !actuals[0].contains_direct_caller_reference() && !actuals[0].unknown {
-            callee.effects.writes_caller_reachable = false;
-        }
         let result = self.apply_callee(&callee, &actuals, return_reference, None);
         if let Some(value) = stored_value {
             if !receiver.fresh_roots.is_empty() {
@@ -351,22 +353,6 @@ impl Evaluator<'_, '_> {
         let any_caller_reference = actuals
             .iter()
             .any(|value| value.contains_caller_reference() || value.unknown);
-        if callee.write_parameters.is_empty() && callee.parameter_stores.is_empty() {
-            self.state.effects.writes_caller_reachable |=
-                callee.effects.writes_caller_reachable && any_caller_reference;
-        } else if callee.effects.writes_caller_reachable {
-            for actual in indexed_actuals(&callee.write_parameters, actuals) {
-                if actual.contains_direct_caller_reference() || actual.unknown {
-                    self.state.effects.writes_caller_reachable = true;
-                    self.state.write_parameters.extend(
-                        actual
-                            .direct_caller_references
-                            .iter()
-                            .map(|reference| reference.parameter),
-                    );
-                }
-            }
-        }
         for (formal, stored) in &callee.parameter_stores {
             let Some(actual) = usize::try_from(formal.parameter)
                 .ok()
@@ -393,7 +379,6 @@ impl Evaluator<'_, '_> {
                     transferred = true;
                 }
                 if mapped_target.contains_direct_caller_reference() {
-                    self.state.effects.writes_caller_reachable = true;
                     self.state.write_parameters.extend(
                         mapped_target
                             .direct_caller_references
@@ -450,7 +435,11 @@ impl Evaluator<'_, '_> {
             }
         }
         self.state.effects.invokes_unknown_target |= callee.effects.invokes_unknown_target;
-        self.state.effects.may_suspend |= callee.effects.may_suspend;
+        self.state.effects.may_pending |= callee.effects.may_pending;
+        super::super::provenance::union_pending_categories(
+            &mut self.state.effects,
+            &callee.effects.pending_effect_categories,
+        );
 
         if callee.effects.escapes_caller_value {
             let lanes = if callee.escape_lanes.is_empty() {
@@ -479,10 +468,16 @@ impl Evaluator<'_, '_> {
             &callee.return_direct_origins,
             actuals,
             return_reference,
-            callee.effects.returns_caller_alias,
+            true,
         );
         let return_formals = caller_parameter_indices(&callee.return_origins);
-        if callee.effects.returns_caller_alias && return_formals.is_empty() && any_caller_reference
+        // A fresh return that cannot be attributed to any parameter may still
+        // embed caller-owned values when the callee wrote into the caller's
+        // reachable graph (local summaries carry that internal fact; the wire
+        // summary no longer does since the aggregate alias flags are retired).
+        if (!callee.parameter_stores.is_empty() || !callee.write_parameters.is_empty())
+            && return_formals.is_empty()
+            && any_caller_reference
         {
             for actual in actuals {
                 returned
@@ -509,19 +504,11 @@ impl Evaluator<'_, '_> {
             &callee.throw_origins,
             actuals,
             true,
-            callee.effects.throws_caller_alias,
+            true,
         );
-        if callee.effects.throws_caller_alias && any_caller_reference {
-            for actual in actuals {
-                thrown.join(actual);
-            }
-        }
         self.state
             .throw_origins
             .extend(thrown.origins.iter().cloned());
-        self.state.effects.throws_caller_alias |= thrown.contains_caller_reference()
-            || (callee.effects.throws_caller_alias && any_caller_reference)
-            || thrown.unknown;
 
         if thrown.unknown {
             self.state.join(&CallableState::fail_closed(
@@ -570,7 +557,7 @@ fn receiver_store_value<'a>(
 fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
     if let Some(semantics) = native_callable_semantics(binding_key) {
         let mut state = CallableState::bottom();
-        state.effects = semantics.effects;
+        state.effects = semantics.effects.clone();
         if binding_key == "std.http.stream.emitResponse" && state.effects.escapes_caller_value {
             state.escape_lanes.insert(EscapeLane::External);
             state
@@ -599,8 +586,10 @@ fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
 fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
     if let Some(semantics) = builtin_receiver_callable_semantics(op) {
         let mut state = CallableState::bottom();
-        state.effects = semantics.effects;
-        if state.effects.writes_caller_reachable {
+        state.effects = semantics.effects.clone();
+        // The receiver write fact lives in the op support table now; the
+        // retired writesCallerReachable aggregate flag no longer exists.
+        if receiver_mutates_receiver(op) {
             state.write_parameters.insert(0);
         }
         if state.effects.requires_same_heap_identity {
@@ -641,6 +630,12 @@ fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {
     Some(state)
 }
 
+fn receiver_mutates_receiver(op: BuiltinReceiverOp) -> bool {
+    skiff_artifact_model::validate_supported_receiver_builtin_op(&op)
+        .map(BuiltinReceiverOpSpec::mutates_receiver)
+        .unwrap_or(false)
+}
+
 fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<CallableState> {
     let contract = &operation.contract;
     let guarantee = contract.effect_guarantee;
@@ -656,7 +651,11 @@ fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<C
         return None;
     }
     let mut state = CallableState::bottom();
-    state.effects.may_suspend = true;
+    state.effects.may_pending = true;
+    state
+        .effects
+        .pending_effect_categories
+        .push(PendingEffectCategory::Unknown);
     state.return_origins.insert(Origin::Fresh);
     state.return_direct_origins.insert(Origin::Fresh);
     state.throw_origins.insert(Origin::Fresh);

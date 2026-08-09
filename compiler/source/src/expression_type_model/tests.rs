@@ -258,8 +258,8 @@ fn explicit_actor_registry_intrinsics_return_nominal_handles() {
               }
 
               function load(id: string) -> UserActor {
-                const actor: UserActor = std.actor.get<UserActor>(id, "Ada", 1)
-                const label: string = actor.label()
+                let actor: UserActor = std.actor.get<UserActor>(id, "Ada", 1)
+                let label: string = actor.label()
                 return actor
               }
             "#,
@@ -279,9 +279,9 @@ fn actor_registry_intrinsics_reject_non_actor_wrong_id_and_bootstrap_shape() {
                 std.actor.get<User>("u1")
                 std.actor.get<UserActor>(42, "Ada")
                 std.actor.get<UserActor>("u1", 42)
-                const actor = std.actor.get<UserActor>("u1", "Ada")
-                const leaked = actor.displayName
-                const stored = db require UserActor("u1")
+                let actor = std.actor.get<UserActor>("u1", "Ada")
+                let leaked = actor.displayName
+                let stored = db require UserActor("u1")
               }
             "#,
     )
@@ -347,12 +347,12 @@ fn catch_leaves_accept_nominal_representations_aliases_unions_and_rethrow_envelo
               }
 
               function catchEveryShape(value: RecordFailure) -> void {
-                const record = catch<RecordFailure>(value)
-                const primitive = catch<PrimitiveFailure>(value)
-                const generic = catch<GenericFailure<string>>(value)
-                const transparent = catch<TransparentFailure>(value)
-                const named = catch<FailureUnion>(value)
-                const anonymous = catch<RecordFailure | PrimitiveFailure>(value)
+                let record = catch<RecordFailure>(value)
+                let primitive = catch<PrimitiveFailure>(value)
+                let generic = catch<GenericFailure<string>>(value)
+                let transparent = catch<TransparentFailure>(value)
+                let named = catch<FailureUnion>(value)
+                let anonymous = catch<RecordFailure | PrimitiveFailure>(value)
               }
 
               function rethrowStatement(
@@ -495,13 +495,12 @@ fn package_and_service_test_effect_throw_use_open_nominal_payloads() {
         CallableSemanticFacts {
             effects: CallableEffectSummary::Analyzed {
                 effects: CallableMayEffects {
-                    writes_caller_reachable: false,
-                    returns_caller_alias: false,
-                    throws_caller_alias: false,
                     escapes_caller_value: false,
                     requires_same_heap_identity: false,
                     invokes_unknown_target: false,
-                    may_suspend: false,
+                    may_pending: false,
+                    pending_effect_categories: Vec::new(),
+                    inout_path_effects: Vec::new(),
                 },
             },
             provenance: CallableProvenanceSummary::Unknown {
@@ -812,7 +811,7 @@ fn db_read_projection_publishes_selected_fields_and_automatic_key() {
               }
 
               function projected(id: string) -> { id: string, apiKey: string } {
-                const credential = db require Credential(id) {
+                let credential = db require Credential(id) {
                   fields { apiKey }
                 }
                 return { id: credential.id, apiKey: credential.apiKey }
@@ -913,7 +912,7 @@ fn relational_comparison_accepts_numbers_and_db_string_cursor() {
               }
 
               function lexicalBindingSurvivesDbPredicate(id: number) -> number {
-                const count = db count Credential { where id > "credential-0" }
+                let count = db count Credential { where id > "credential-0" }
                 return id + count
               }
             "#,
@@ -974,7 +973,7 @@ fn relational_comparison_rejects_runtime_strings_mixed_nullable_and_other_types(
 
                   function invalid(id: number?) -> bool {
                     if id != null {
-                      const count = db count Credential { where id > id }
+                      let count = db count Credential { where id > id }
                     }
                     return true
                   }
@@ -991,7 +990,7 @@ fn relational_comparison_rejects_runtime_strings_mixed_nullable_and_other_types(
 
                   function invalid(profile: LexicalProfile, lastString: string) -> bool {
                     if profile.name != null {
-                      const count = db count Credential { where profile.name > lastString }
+                      let count = db count Credential { where profile.name > lastString }
                     }
                     return true
                   }
@@ -1014,7 +1013,7 @@ fn explicit_interface_boxing_and_any_interface_method_call_type_check() {
     expression_type_result(&boxing_source(
         r#"
               function run() -> string {
-                const provider: any Provider = Host { label: "host" } as Provider
+                let provider: any Provider = Host { label: "host" } as Provider
                 return provider.name()
               }
             "#,
@@ -1033,7 +1032,7 @@ fn any_interface_internal_named_record_and_function_type_hosts_type_check() {
               function consume(handler: fn(input: any Provider) -> any Provider) -> void {}
 
               function make() -> Holder {
-                const holder: Holder = Holder {
+                let holder: Holder = Holder {
                   provider: Host { label: "host" } as Provider,
                 }
                 return holder
@@ -1131,7 +1130,7 @@ fn interface_boxing_rejects_invalid_selector_source_and_conformance() {
     let selector_error = expression_type_result(&boxing_source(
         r#"
               function run() -> void {
-                const provider = Host { label: "host" } as string
+                let provider = Host { label: "host" } as string
               }
             "#,
     ))
@@ -1146,7 +1145,7 @@ fn interface_boxing_rejects_invalid_selector_source_and_conformance() {
     let source_error = expression_type_result(&boxing_source(
         r#"
               function run() -> void {
-                const provider = { label: "host" } as Provider
+                let provider = { label: "host" } as Provider
               }
             "#,
     ))
@@ -1160,7 +1159,7 @@ fn interface_boxing_rejects_invalid_selector_source_and_conformance() {
     let conformance_error = expression_type_result(&boxing_source(
         r#"
               function run() -> void {
-                const provider = Other { label: "host" } as Provider
+                let provider = Other { label: "host" } as Provider
               }
             "#,
     ))
@@ -1183,7 +1182,7 @@ fn interface_boxing_rejects_marker_interface() {
               }
 
               function run() -> void {
-                const provider = Host { label: "host" } as Marker
+                let provider = Host { label: "host" } as Marker
               }
             "#,
     )
@@ -1289,7 +1288,7 @@ fn db_upsert_result_fields_are_static_expression_type_facts() {
               }
 
               test "upsert result fields" {
-                const r = db upsert User("u1") { name = "Ada" } { name = "Ada" }
+                let r = db upsert User("u1") { name = "Ada" } { name = "Ada" }
                 assert r.inserted
                 assert r.value.name == "Ada"
               }
@@ -1370,14 +1369,14 @@ fn runtime_receiver_builtin_calls_publish_static_return_type_facts() {
               }
 
               function run() -> bool {
-                const marker = config.require<string>("runtimeLive.db")
-                const prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
-                const firstId = prefix.concat("-a")
-                const epoch = Date.fromEpochMilliseconds(0)
-                const later = epoch.addMilliseconds(5)
-                const epochMillis = epoch.toEpochMilliseconds()
-                const diffMillis = later.diffMilliseconds(epoch)
-                const ordering = epoch.compare(later)
+                let marker = config.require<string>("runtimeLive.db")
+                let prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
+                let firstId = prefix.concat("-a")
+                let epoch = Date.fromEpochMilliseconds(0)
+                let later = epoch.addMilliseconds(5)
+                let epochMillis = epoch.toEpochMilliseconds()
+                let diffMillis = later.diffMilliseconds(epoch)
+                let ordering = epoch.compare(later)
                 db insert RuntimeLiveDoc { id = firstId value = marker.concat("-first") visits = 1 rank = 10 }
                 return firstId.contains(marker)
               }
@@ -1489,7 +1488,7 @@ fn native_signature_local_types_are_externalized_from_the_declaring_module() {
               import std
 
               test "duration native signature" {
-                const duration = Duration.milliseconds(1)
+                let duration = Duration.milliseconds(1)
                 std.time.sleep(duration)
               }
             "#
@@ -1853,11 +1852,11 @@ fn ternary_accepts_matching_and_widening_branch_types() {
                 ratio: number,
                 user: User?
               ) -> string {
-                const same = flag ? a : b
-                const widened = flag ? count : ratio
-                const literalWidened = flag ? "a" : "b"
-                const nullable = user != null ? user.name : null
-                const neverBranch = flag ? throw User { name: "boom" } : b
+                let same = flag ? a : b
+                let widened = flag ? count : ratio
+                let literalWidened = flag ? "a" : "b"
+                let nullable = user != null ? user.name : null
+                let neverBranch = flag ? throw User { name: "boom" } : b
                 return same
               }
             "#,
@@ -1870,7 +1869,7 @@ fn ternary_rejects_incompatible_branch_types() {
     let error = expression_type_result(
         r#"
               function pick(flag: bool, a: string, b: number) -> string {
-                const value = flag ? a : b
+                let value = flag ? a : b
                 return value
               }
             "#,
@@ -1892,7 +1891,7 @@ fn ternary_requires_bool_condition() {
     let error = expression_type_result(
         r#"
               function pick(a: string, b: string) -> string {
-                const value = a ? b : a
+                let value = a ? b : a
                 return value
               }
             "#,
@@ -1910,7 +1909,7 @@ fn ternary_accepts_non_nullable_annotated_result() {
     expression_type_result(
         r#"
               function pick(flag: bool, a: string, b: string) -> string {
-                const value: string = flag ? a : b
+                let value: string = flag ? a : b
                 return value
               }
             "#,
@@ -1923,7 +1922,7 @@ fn ternary_null_branch_result_is_assignable_to_nullable_annotation() {
     expression_type_result(
         r#"
               function pick(flag: bool, value: string) -> string? {
-                const result: string? = flag ? value : null
+                let result: string? = flag ? value : null
                 return result
               }
             "#,
@@ -1935,15 +1934,15 @@ fn ternary_null_branch_result_is_assignable_to_nullable_annotation() {
 fn db_write_operations_on_contract_target_are_rejected_by_expression_typing() {
     for (body, kind) in [
         (
-            "const value = db insert AgentThread { id = \"a\" status = \"open\" }\n              return value",
+            "let value = db insert AgentThread { id = \"a\" status = \"open\" }\n              return value",
             "insert",
         ),
         (
-            "const value = db replace AgentThread(\"a\") { id = \"a\" status = \"open\" }\n              return value",
+            "let value = db replace AgentThread(\"a\") { id = \"a\" status = \"open\" }\n              return value",
             "replace",
         ),
         (
-            "const value = db upsert AgentThread(\"a\") { id = \"a\" status = \"open\" } { status = \"open\" }\n              return value",
+            "let value = db upsert AgentThread(\"a\") { id = \"a\" status = \"open\" } { status = \"open\" }\n              return value",
             "upsert",
         ),
     ] {

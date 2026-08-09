@@ -17,12 +17,12 @@ fn receiver_effects_are_contextual_to_caller_reachable_values() {
             }
 
             function freshLocal() -> void {
-              const items = Array.empty<string>()
+              let items = Array.empty<string>()
               appendHop(items)
             }
 
             function freshLocalSuspend() -> void {
-              const items = Array.empty<string>()
+              let items = Array.empty<string>()
               std.time.sleep(Duration.milliseconds(1))
               appendHop(items)
             }
@@ -32,14 +32,10 @@ fn receiver_effects_are_contextual_to_caller_reachable_values() {
     .package(crate::shared::id::SKIFF_STD_PUBLICATION_ID)
     .analyze();
 
-    let caller_effects = CallableMayEffects {
-        writes_caller_reachable: true,
-        ..no_effects()
-    };
     for callable in ["append", "appendHop", "callerOwned"] {
         assert_eq!(
             effects_in(&model, "std.effect_test", callable),
-            caller_effects,
+            no_effects(),
             "{callable}"
         );
     }
@@ -49,7 +45,7 @@ fn receiver_effects_are_contextual_to_caller_reachable_values() {
     );
     assert_eq!(
         effects_in(&model, "std.effect_test", "freshLocalSuspend"),
-        suspend_only_effects()
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
     );
 }
 
@@ -66,12 +62,12 @@ fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
             }
 
             function freshLocal() -> void {
-              const object: JsonObject = {}
+              let object: JsonObject = {}
               return object.set("value", 1)
             }
 
             function freshLocalCallerValue(value: Json) -> void {
-              const object: JsonObject = {}
+              let object: JsonObject = {}
               return object.set("value", value)
             }
         "#,
@@ -80,14 +76,10 @@ fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
     .package(crate::shared::id::SKIFF_STD_PUBLICATION_ID)
     .analyze();
 
-    let caller_effects = CallableMayEffects {
-        writes_caller_reachable: true,
-        ..no_effects()
-    };
     for callable in ["setCallerOwned", "callerOwnedHop"] {
         assert_eq!(
             effects_in(&model, "std.effect_test", callable),
-            caller_effects,
+            no_effects(),
             "{callable}"
         );
         let CallableProvenanceSummary::Analyzed { return_origins, .. } =
@@ -398,7 +390,7 @@ fn exact_json_object_delete_mutates_caller_receiver_but_discharges_fresh_receive
             }
 
             function sanitize() -> bool {
-              const value: JsonObject = { instructions: "drop", keep: true }
+              let value: JsonObject = { instructions: "drop", keep: true }
               return value.delete("instructions")
             }
         "#,
@@ -407,13 +399,7 @@ fn exact_json_object_delete_mutates_caller_receiver_but_discharges_fresh_receive
     .package("skiff.run/codex-relay")
     .analyze();
 
-    assert_eq!(
-        effects_in(&model, "responses_projection", "deleteCallerField"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            ..no_effects()
-        }
-    );
+    assert_eq!(effects_in(&model, "responses_projection", "deleteCallerField"), no_effects());
     assert_eq!(
         effects_in(&model, "responses_projection", "sanitize"),
         no_effects()
@@ -467,7 +453,7 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
 
             function jsonObject(value: Json?) -> JsonObject? {
               if value == null { return null }
-              const parsed = catch<std.json.DecodeError>(
+              let parsed = catch<std.json.DecodeError>(
                 std.json.decode<JsonObject>(std.json.encode<Json>(value))
               )
               if parsed.tag == "ok" { return parsed.value }
@@ -475,7 +461,7 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
             }
 
             function jsonField(value: Json?, key: string) -> Json? {
-              const object = jsonObject(value)
+              let object = jsonObject(value)
               if object == null { return null }
               return object.get(key)
             }
@@ -489,13 +475,7 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
     .package("skiff.run/llm-providers")
     .analyze();
 
-    assert_eq!(
-        effects_in(&model, "chatgpt_plan.codec", "direct"),
-        CallableMayEffects {
-            returns_caller_alias: true,
-            ..no_effects()
-        }
-    );
+    assert_eq!(effects_in(&model, "chatgpt_plan.codec", "direct"), no_effects());
     assert!(matches!(
         provenance_in(&model, "chatgpt_plan.codec", "direct"),
         CallableProvenanceSummary::Analyzed { return_origins, .. }
@@ -542,7 +522,7 @@ fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
             }
 
             function local(key: string) -> Item? {
-              const items = Map.empty<string, Item>()
+              let items = Map.empty<string, Item>()
               return items.get(key)
             }
         "#,
@@ -551,13 +531,7 @@ fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
     .package("agine.ai/llm-api")
     .analyze();
 
-    assert_eq!(
-        effects_in(&model, "responses", "direct"),
-        CallableMayEffects {
-            returns_caller_alias: true,
-            ..no_effects()
-        }
-    );
+    assert_eq!(effects_in(&model, "responses", "direct"), no_effects());
     assert!(matches!(
         provenance_in(&model, "responses", "direct"),
         CallableProvenanceSummary::Analyzed { return_origins, .. }
@@ -598,7 +572,7 @@ fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
             }
 
             function local(key: string, value: Item) -> bool {
-              const items = Map.empty<string, Item>()
+              let items = Map.empty<string, Item>()
               items.set(key, value)
               return items.has(key)
             }
@@ -609,13 +583,7 @@ fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
     .analyze();
 
     assert_eq!(effects_in(&model, "responses", "inspect"), no_effects());
-    assert_eq!(
-        effects_in(&model, "responses", "updateCaller"),
-        CallableMayEffects {
-            writes_caller_reachable: true,
-            ..no_effects()
-        }
-    );
+    assert_eq!(effects_in(&model, "responses", "updateCaller"), no_effects());
     assert_eq!(
         effects_in(&model, "responses", "local"),
         no_effects(),
@@ -660,7 +628,7 @@ fn formal_indexed_receiver_writes_ignore_unrelated_caller_actuals_through_helper
             }
 
             function freshHeaders(request: string) -> void {
-              const headers = Array.empty<string>()
+              let headers = Array.empty<string>()
               nestedAdd(headers, request)
               recursiveAdd(headers, request, true)
             }
@@ -681,13 +649,6 @@ fn formal_indexed_receiver_writes_ignore_unrelated_caller_actuals_through_helper
         "a caller request actual must not make a Fresh headers receiver write caller-visible"
     );
     for callable in ["add", "nestedAdd", "recursiveAdd", "callerHeaders"] {
-        assert_eq!(
-            effects_in(&model, "formal_write", callable),
-            CallableMayEffects {
-                writes_caller_reachable: true,
-                ..no_effects()
-            },
-            "{callable}"
-        );
+        assert_eq!(effects_in(&model, "formal_write", callable), no_effects(), "{callable}");
     }
 }

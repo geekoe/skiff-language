@@ -121,6 +121,7 @@ pub use ecosystem_authoring::{
 };
 pub use effects::{
     CallableEffectFacts, CallableEffectSummary, CallableEffectUnknownReason, CallableMayEffects,
+    InOutPathEffect, PendingEffectCategory, SelectorPath, SelectorPathSegment,
 };
 pub use executable::*;
 pub use executable_target::{
