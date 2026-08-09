@@ -71,7 +71,7 @@ function slow(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStre
 }
 
 function readBody(body: Stream<bytes>) -> string {
-  let value = ""
+  var value = ""
   for chunk in body {
     value = value.concat(chunk.toUtf8String())
   }
@@ -79,7 +79,7 @@ function readBody(body: Stream<bytes>) -> string {
 }
 
 function reservedHeaderRejected(name: string) -> boolean {
-  let requestHeaders = headers()
+  var requestHeaders = headers()
   requestHeaders.push(std.http.HttpHeader { name: name, value: "caller-owned" })
   let rejected = catch<std.http.HttpError>(
     std.http.request(request("POST", "/plain", requestHeaders, bytes.fromUtf8("blocked")))
@@ -155,7 +155,7 @@ test "non-self origin remains an ordinary inline HTTP double" effects {
 
 test "consumer break cancels the slow child and releases a sequential self-ingress slot" {
   let response = std.http.stream(request("GET", "/slow", headers(), null))
-  let first = ""
+  var first = ""
   for chunk in response.body {
     first = chunk.toUtf8String()
     break
