@@ -113,7 +113,8 @@ fn image(
                 })
                 .collect::<Vec<_>>();
             let package_id = format!("test.package.{slot}");
-            let artifact = serde_json::from_value(serde_json::json!({
+            let artifact: skiff_artifact_model::PackageArtifact =
+                serde_json::from_value(serde_json::json!({
                 "schemaVersion": "skiff-package-artifact-v9",
                 "packageId": package_id,
                 "packageVersion": "1.0.0",
@@ -142,8 +143,8 @@ fn image(
                 "callableSemanticFacts": {},
                 "boundaryProjections": {},
                 "serviceCallRefs": []
-            }))
-            .unwrap();
+                }))
+                .unwrap();
             assert!(artifact.actor_implementations.is_empty());
             assert!(artifact.local_interface_conformances.is_empty());
             RuntimeExecutionPackage::try_new(
