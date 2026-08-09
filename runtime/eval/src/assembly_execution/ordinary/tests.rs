@@ -1499,6 +1499,7 @@ fn callable_package(
                     ty: PackageTypeRef::Local {
                         local_type: array_type.clone(),
                     },
+                    mode: ParamModeIr::Value,
                 }],
                 return_type: PackageTypeRef::Local {
                     local_type: array_type,
@@ -1611,6 +1612,7 @@ fn stream_callable_package(
                     ty: PackageTypeRef::Local {
                         local_type: array_type,
                     },
+                    mode: ParamModeIr::Value,
                 }],
                 return_type: PackageTypeRef::Local {
                     local_type: stream_string_type(),
