@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{DeploymentImage, DeploymentOwnerIdentity};
+use crate::{DeploymentImage, DeploymentOwnerIdentity, DeploymentProgramFacts};
 
 /// Strong pin held for the full lifetime of one provider invocation or carrier.
 #[derive(Debug)]
@@ -16,7 +16,10 @@ impl<P> Clone for PinnedProviderImage<P> {
     }
 }
 
-impl<P> PinnedProviderImage<P> {
+impl<P> PinnedProviderImage<P>
+where
+    P: DeploymentProgramFacts,
+{
     pub fn new(image: Arc<DeploymentImage<P>>) -> Self {
         Self { image }
     }

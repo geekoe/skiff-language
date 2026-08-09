@@ -8,13 +8,13 @@ use tokio::sync::Notify;
 use crate::{DeploymentImageCache, DeploymentLoadError, DeploymentLoadFailureReason};
 
 use super::{
-    attempt_failure, image, join, owner, owner_with, ready_without_runtime, within,
+    attempt_failure, image, join, owner, owner_with, ready_without_runtime, within, TestProgram,
     TestProviderError,
 };
 
 #[test]
 fn runtime_unavailable_is_attempt_scoped_and_retryable() {
-    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let cache = DeploymentImageCache::<TestProgram, TestProviderError>::new();
     let requested_owner = owner("build:no-runtime");
     let loader_calls = Arc::new(AtomicUsize::new(0));
 
@@ -56,7 +56,7 @@ fn runtime_unavailable_is_attempt_scoped_and_retryable() {
 
 #[tokio::test]
 async fn concurrent_failure_waiters_share_one_failure_arc() {
-    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let cache = DeploymentImageCache::<TestProgram, TestProviderError>::new();
     let requested_owner = owner("build:shared-failure");
     let calls = Arc::new(AtomicUsize::new(0));
     let unexpected_calls = Arc::new(AtomicUsize::new(0));
@@ -122,7 +122,7 @@ async fn concurrent_failure_waiters_share_one_failure_arc() {
 
 #[tokio::test]
 async fn failed_attempt_is_not_published_and_retry_uses_next_id() {
-    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let cache = DeploymentImageCache::<TestProgram, TestProviderError>::new();
     let requested_owner = owner("build:retry");
     let first = cache
         .get_or_load(requested_owner.clone(), |_, _| async {
@@ -151,12 +151,12 @@ async fn failed_attempt_is_not_published_and_retry_uses_next_id() {
 
     assert_eq!(first.attempt_id().get(), 1);
     assert_eq!(observed_attempt.load(Ordering::SeqCst), 2);
-    assert_eq!(loaded.program().as_str(), "retry-success");
+    assert_eq!(loaded.program().label(), "retry-success");
 }
 
 #[tokio::test]
 async fn spoofed_owner_conflicts_without_joining_or_publishing() {
-    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let cache = DeploymentImageCache::<TestProgram, TestProviderError>::new();
     let expected_owner = owner_with("build:claimed", "alpha", "revision:alpha");
     let spoofed_owner = owner_with("build:claimed", "beta", "revision:beta");
     let started = Arc::new(Notify::new());
@@ -193,7 +193,7 @@ async fn spoofed_owner_conflicts_without_joining_or_publishing() {
 
     release.notify_one();
     let genuine = join(genuine).await;
-    assert_eq!(genuine.program().as_str(), "genuine");
+    assert_eq!(genuine.program().label(), "genuine");
     let lookup_conflict = cache
         .loaded(&spoofed_owner)
         .await
@@ -203,7 +203,7 @@ async fn spoofed_owner_conflicts_without_joining_or_publishing() {
 
 #[tokio::test]
 async fn mismatched_output_owner_is_shared_failure_and_not_cached() {
-    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let cache = DeploymentImageCache::<TestProgram, TestProviderError>::new();
     let expected_owner = owner_with("build:output-owner", "alpha", "revision:alpha");
     let actual_owner = owner_with("build:output-owner", "beta", "revision:beta");
     let failure = cache
@@ -232,7 +232,7 @@ async fn mismatched_output_owner_is_shared_failure_and_not_cached() {
 
 #[tokio::test]
 async fn loader_task_panic_becomes_attempt_failure_and_retry_can_succeed() {
-    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let cache = DeploymentImageCache::<TestProgram, TestProviderError>::new();
     let requested_owner = owner("build:panic");
     let failure = within(cache.get_or_load(requested_owner.clone(), |_, _| panicking_loader()))
         .await
@@ -249,15 +249,15 @@ async fn loader_task_panic_becomes_attempt_failure_and_retry_can_succeed() {
         })
         .await
         .expect("panic does not publish or wedge the key");
-    assert_eq!(retry.program().as_str(), "after-panic");
+    assert_eq!(retry.program().label(), "after-panic");
 }
 
-async fn panicking_loader() -> Result<Arc<crate::DeploymentImage<String>>, TestProviderError> {
+async fn panicking_loader() -> Result<Arc<crate::DeploymentImage<TestProgram>>, TestProviderError> {
     panic!("loader panic fixture")
 }
 
 async fn conflicting_load(
-    cache: &DeploymentImageCache<String, TestProviderError>,
+    cache: &DeploymentImageCache<TestProgram, TestProviderError>,
     spoofed_owner: crate::DeploymentOwnerIdentity,
     calls: Arc<AtomicUsize>,
 ) -> crate::DeploymentOwnerConflict {

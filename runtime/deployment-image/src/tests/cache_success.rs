@@ -8,11 +8,11 @@ use tokio::sync::Notify;
 use crate::attempt::LoadAttempt;
 use crate::{DeploymentImageCache, LoadAttemptId};
 
-use super::{image, join, owner, within, TestProviderError};
+use super::{image, join, owner, within, TestProgram, TestProviderError};
 
 #[tokio::test]
 async fn concurrent_success_runs_loader_once_and_shares_image() {
-    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let cache = DeploymentImageCache::<TestProgram, TestProviderError>::new();
     let requested_owner = owner("build:shared-success");
     let calls = Arc::new(AtomicUsize::new(0));
     let started = Arc::new(Notify::new());
@@ -60,7 +60,7 @@ async fn concurrent_success_runs_loader_once_and_shares_image() {
 #[tokio::test]
 async fn stored_completion_is_observed_without_a_wake() {
     let requested_owner = owner("build:precompleted");
-    let attempt = LoadAttempt::<String, TestProviderError>::new(
+    let attempt = LoadAttempt::<TestProgram, TestProviderError>::new(
         LoadAttemptId::new(9),
         requested_owner.clone(),
     );
@@ -79,7 +79,7 @@ async fn stored_completion_is_observed_without_a_wake() {
 
 #[tokio::test]
 async fn cancelling_leader_does_not_cancel_the_load_attempt() {
-    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let cache = DeploymentImageCache::<TestProgram, TestProviderError>::new();
     let requested_owner = owner("build:cancelled-leader");
     let calls = Arc::new(AtomicUsize::new(0));
     let started = Arc::new(Notify::new());
@@ -127,12 +127,12 @@ async fn cancelling_leader_does_not_cancel_the_load_attempt() {
     let loaded = join(waiter).await;
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(loaded.program().as_str(), "survived-cancellation");
+    assert_eq!(loaded.program().label(), "survived-cancellation");
 }
 
 #[tokio::test]
 async fn different_builds_load_independently_and_snapshot_in_build_order() {
-    let cache = DeploymentImageCache::<String, TestProviderError>::new();
+    let cache = DeploymentImageCache::<TestProgram, TestProviderError>::new();
     let z_owner = owner("build:z");
     let a_owner = owner("build:a");
     let z_started = Arc::new(Notify::new());
@@ -167,7 +167,7 @@ async fn different_builds_load_independently_and_snapshot_in_build_order() {
 }
 
 fn spawn_blocked_success(
-    cache: DeploymentImageCache<String, TestProviderError>,
+    cache: DeploymentImageCache<TestProgram, TestProviderError>,
     requested_owner: crate::DeploymentOwnerIdentity,
     started: Arc<Notify>,
     release: Arc<Notify>,

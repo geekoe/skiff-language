@@ -6,7 +6,7 @@ use crate::attempt::{LoadAttempt, SharedAttemptResult};
 use crate::state::{BeginLoad, CacheState};
 use crate::{
     DeploymentImage, DeploymentLoadError, DeploymentLoadFailure, DeploymentLoadResult,
-    DeploymentOwnerConflict, DeploymentOwnerIdentity, LoadAttemptId,
+    DeploymentOwnerConflict, DeploymentOwnerIdentity, DeploymentProgramFacts, LoadAttemptId,
 };
 
 /// Exact-build cache for immutable deployment images.
@@ -20,7 +20,10 @@ struct CacheInner<P, E> {
     state: Mutex<CacheState<P, E>>,
 }
 
-impl<P, E> DeploymentImageCache<P, E> {
+impl<P, E> DeploymentImageCache<P, E>
+where
+    P: DeploymentProgramFacts,
+{
     pub fn new() -> Self {
         Self {
             inner: Arc::new(CacheInner {
@@ -41,7 +44,10 @@ impl<P, E> DeploymentImageCache<P, E> {
     }
 }
 
-impl<P, E> Default for DeploymentImageCache<P, E> {
+impl<P, E> Default for DeploymentImageCache<P, E>
+where
+    P: DeploymentProgramFacts,
+{
     fn default() -> Self {
         Self::new()
     }
@@ -49,7 +55,7 @@ impl<P, E> Default for DeploymentImageCache<P, E> {
 
 impl<P, E> DeploymentImageCache<P, E>
 where
-    P: Send + Sync + 'static,
+    P: DeploymentProgramFacts + Send + Sync + 'static,
     E: Send + Sync + 'static,
 {
     pub async fn get_or_load<L, F>(
@@ -129,7 +135,7 @@ fn spawn_loader<P, E, L, F>(
     attempt: Arc<LoadAttempt<P, E>>,
     loader: L,
 ) where
-    P: Send + Sync + 'static,
+    P: DeploymentProgramFacts + Send + Sync + 'static,
     E: Send + Sync + 'static,
     L: FnOnce(LoadAttemptId, DeploymentOwnerIdentity) -> F + Send + 'static,
     F: Future<Output = Result<Arc<DeploymentImage<P>>, E>> + Send + 'static,
@@ -148,7 +154,10 @@ fn loader_result<P, E>(
     attempt_id: LoadAttemptId,
     expected_owner: DeploymentOwnerIdentity,
     task_result: Result<Result<Arc<DeploymentImage<P>>, E>, JoinError>,
-) -> SharedAttemptResult<P, E> {
+) -> SharedAttemptResult<P, E>
+where
+    P: DeploymentProgramFacts,
+{
     match task_result {
         Ok(Ok(image)) if image.owner() == &expected_owner => Ok(image),
         Ok(Ok(image)) => Err(DeploymentLoadFailure::output_owner_mismatch(

@@ -4,6 +4,13 @@ use skiff_artifact_model::ServiceRequirementKey;
 
 use crate::{DeploymentOwnerIdentity, ServiceDependencySlot};
 
+/// Canonical deployment facts sealed into one program payload.
+pub trait DeploymentProgramFacts {
+    fn owner(&self) -> &DeploymentOwnerIdentity;
+
+    fn dependency_slots(&self) -> &[ServiceDependencySlot];
+}
+
 /// Immutable exact-deployment image with a generic verified program payload.
 #[derive(Debug)]
 pub struct DeploymentImage<P> {
@@ -12,14 +19,14 @@ pub struct DeploymentImage<P> {
     dependency_slots: BTreeMap<ServiceRequirementKey, ServiceDependencySlot>,
 }
 
-impl<P> DeploymentImage<P> {
-    pub fn try_new(
-        owner: DeploymentOwnerIdentity,
-        program: Arc<P>,
-        dependency_slots: impl IntoIterator<Item = ServiceDependencySlot>,
-    ) -> Result<Self, DeploymentImageError> {
+impl<P> DeploymentImage<P>
+where
+    P: DeploymentProgramFacts,
+{
+    pub fn try_new(program: Arc<P>) -> Result<Self, DeploymentImageError> {
+        let owner = program.owner().clone();
         let mut slots_by_key = BTreeMap::new();
-        for slot in dependency_slots {
+        for slot in program.dependency_slots().iter().cloned() {
             let key = slot.key().clone();
             if slots_by_key.insert(key.clone(), slot).is_some() {
                 return Err(DeploymentImageError::DuplicateDependencyKey { key });

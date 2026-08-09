@@ -14,7 +14,10 @@ use std::{
 use skiff_artifact_model::{DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef};
 use tokio::task::JoinHandle;
 
-use crate::{DeploymentImage, DeploymentLoadError, DeploymentLoadFailure, DeploymentOwnerIdentity};
+use crate::{
+    DeploymentImage, DeploymentLoadError, DeploymentLoadFailure, DeploymentOwnerIdentity,
+    DeploymentProgramFacts, ServiceDependencySlot,
+};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -29,6 +32,29 @@ impl fmt::Display for TestProviderError {
 
 impl std::error::Error for TestProviderError {}
 
+#[derive(Debug)]
+struct TestProgram {
+    owner: DeploymentOwnerIdentity,
+    dependency_slots: Box<[ServiceDependencySlot]>,
+    label: String,
+}
+
+impl TestProgram {
+    fn label(&self) -> &str {
+        &self.label
+    }
+}
+
+impl DeploymentProgramFacts for TestProgram {
+    fn owner(&self) -> &DeploymentOwnerIdentity {
+        &self.owner
+    }
+
+    fn dependency_slots(&self) -> &[ServiceDependencySlot] {
+        &self.dependency_slots
+    }
+}
+
 fn owner(build_id: &str) -> DeploymentOwnerIdentity {
     owner_with(build_id, "consumer", "revision:consumer")
 }
@@ -42,9 +68,24 @@ fn owner_with(build_id: &str, service_id: &str, revision: &str) -> DeploymentOwn
     })
 }
 
-fn image(owner: &DeploymentOwnerIdentity, program: &str) -> Arc<DeploymentImage<String>> {
+fn program(
+    owner: DeploymentOwnerIdentity,
+    label: &str,
+    dependency_slots: impl IntoIterator<Item = ServiceDependencySlot>,
+) -> Arc<TestProgram> {
+    Arc::new(TestProgram {
+        owner,
+        dependency_slots: dependency_slots
+            .into_iter()
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        label: label.to_string(),
+    })
+}
+
+fn image(owner: &DeploymentOwnerIdentity, label: &str) -> Arc<DeploymentImage<TestProgram>> {
     Arc::new(
-        DeploymentImage::try_new(owner.clone(), Arc::new(program.to_string()), [])
+        DeploymentImage::try_new(program(owner.clone(), label, []))
             .expect("empty dependency set is valid"),
     )
 }

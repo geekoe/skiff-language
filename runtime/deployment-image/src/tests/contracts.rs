@@ -6,11 +6,11 @@ use skiff_artifact_model::{
 };
 
 use crate::{
-    DeploymentImage, DeploymentImageError, PinnedProviderImage, ServiceDependencySlot,
-    ServiceDependencySlotError,
+    DeploymentImage, DeploymentImageError, DeploymentOwnerIdentity, DeploymentProgramFacts,
+    PinnedProviderImage, ServiceDependencySlot, ServiceDependencySlotError,
 };
 
-use super::{owner, owner_with};
+use super::{owner, owner_with, program, TestProgram};
 
 #[test]
 fn owner_preserves_the_exact_deployment_build() {
@@ -61,12 +61,13 @@ fn dependency_slot_rejects_duplicate_operations() {
 fn deployment_image_rejects_duplicate_dependency_keys() {
     let first = dependency_slot(3, "payments");
     let duplicate = dependency_slot(3, "payments-v2");
-    let error = DeploymentImage::try_new(
+    let program = program(
         owner("build:consumer:exact"),
-        Arc::new("verified-program"),
+        "verified-program",
         [first, duplicate],
-    )
-    .expect_err("duplicate requirement keys must be rejected");
+    );
+    let error =
+        DeploymentImage::try_new(program).expect_err("duplicate requirement keys must be rejected");
 
     assert_eq!(
         error,
@@ -77,18 +78,45 @@ fn deployment_image_rejects_duplicate_dependency_keys() {
 }
 
 #[test]
+fn deployment_image_derives_owner_and_slots_only_from_program_facts() {
+    let exact_owner = owner("build:derived-facts");
+    let slot = dependency_slot(4, "ledger");
+    let program = program(exact_owner.clone(), "verified-program", [slot.clone()]);
+    let constructor: fn(
+        Arc<TestProgram>,
+    ) -> Result<DeploymentImage<TestProgram>, DeploymentImageError> = DeploymentImage::try_new;
+    let image = constructor(Arc::clone(&program)).expect("program facts are canonical");
+
+    assert_eq!(image.owner(), &exact_owner);
+    assert!(Arc::ptr_eq(image.program(), &program));
+    assert_eq!(image.dependency_slot(slot.key()), Some(&slot));
+}
+
+#[test]
 fn provider_pin_keeps_the_same_image_arc_without_requiring_program_clone() {
     #[derive(Debug)]
-    struct NonCloneProgram;
+    struct NonCloneProgram {
+        owner: DeploymentOwnerIdentity,
+        dependency_slots: Box<[ServiceDependencySlot]>,
+    }
+
+    impl DeploymentProgramFacts for NonCloneProgram {
+        fn owner(&self) -> &DeploymentOwnerIdentity {
+            &self.owner
+        }
+
+        fn dependency_slots(&self) -> &[ServiceDependencySlot] {
+            &self.dependency_slots
+        }
+    }
 
     let owner = owner_with("build:provider:exact", "provider", "revision:provider");
     let image = Arc::new(
-        DeploymentImage::try_new(
-            owner.clone(),
-            Arc::new(NonCloneProgram),
-            [dependency_slot(2, "ledger")],
-        )
-        .expect("unique dependency slots must construct an image"),
+        DeploymentImage::try_new(Arc::new(NonCloneProgram {
+            owner: owner.clone(),
+            dependency_slots: vec![dependency_slot(2, "ledger")].into_boxed_slice(),
+        }))
+        .expect("program facts are canonical"),
     );
     let invocation_pin = PinnedProviderImage::new(Arc::clone(&image));
     let stream_pin = invocation_pin.clone();

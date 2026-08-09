@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc};
 
-use crate::{DeploymentImage, DeploymentOwnerIdentity};
+use crate::{DeploymentImage, DeploymentOwnerIdentity, DeploymentProgramFacts};
 
 /// Read-only proof that an entry belongs to one immutable program allocation.
 pub trait DeploymentProgramEntry<P> {
@@ -18,6 +18,7 @@ pub struct PinnedDeploymentEntry<P, E> {
 
 impl<P, E> PinnedDeploymentEntry<P, E>
 where
+    P: DeploymentProgramFacts,
     E: DeploymentProgramEntry<P>,
 {
     pub fn try_new(
