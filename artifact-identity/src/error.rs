@@ -71,6 +71,20 @@ pub enum ArtifactIdentityError {
     PackageArtifactBuildIdentityMismatch { declared: String, computed: String },
     #[error("failed to serialize File IR identity payload: {0}")]
     SerializeFileIrIdentity(serde_json::Error),
+    #[error("failed to serialize bytecode identity payload: {0}")]
+    SerializeBytecodeIdentity(serde_json::Error),
+    #[error("failed to serialize validated bytecode admission payload: {0}")]
+    SerializeValidatedBytecodeArtifact(serde_json::Error),
+    #[error("bytecode structural validation failed: {0}")]
+    InvalidBytecodeStructural(
+        #[from] skiff_artifact_model::bytecode::validate::StructuralValidationError,
+    ),
+    #[error("bytecode artifact declared identity {declared} but content identity is {computed}")]
+    BytecodeIdentityMismatch { declared: String, computed: String },
+    #[error(
+        "bytecode identity {identity} must use skiff-bytecode-image-v1:sha256:<64 lowercase hex>"
+    )]
+    InvalidBytecodeIdentity { identity: String },
     #[error("File IR {field} must be {expected}, got {actual}")]
     FileIrGenerationMismatch {
         field: &'static str,

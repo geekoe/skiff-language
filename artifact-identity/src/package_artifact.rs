@@ -99,6 +99,11 @@ pub struct PackageArtifactBuildIdentityProjection {
     package_schema_index: PackageSchemaIndexRef,
     package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,
     files: Vec<FileIrOwnerIdentityProjection>,
+    /// Bytecode image owner projection: only the bytecode identity enters the
+    /// build preimage (§6.2); absent (migration period, D18) when the package
+    /// has no bytecode record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bytecode: Option<BytecodeOwnerIdentityProjection>,
     static_resources: Vec<ResourceIdentityProjection>,
     implementation_links: PackageImplementationLinksIdentityProjection,
     callable_links: BTreeMap<PackageCallableId, CallableLinkIdentityProjection>,
@@ -123,6 +128,20 @@ impl FileIrOwnerIdentityProjection {
         Self {
             file_ir_identity: file.file_ir_identity.clone(),
             module_path: file.module_path.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BytecodeOwnerIdentityProjection {
+    bytecode_identity: String,
+}
+
+impl BytecodeOwnerIdentityProjection {
+    fn from_ref(bytecode: &skiff_artifact_model::BytecodeArtifactRef) -> Self {
+        Self {
+            bytecode_identity: bytecode.bytecode_identity.clone(),
         }
     }
 }
@@ -176,6 +195,9 @@ pub fn assign_package_artifact_identities(
     validation::validate_package_artifact_surface(artifact)?;
     let local_abi_identity = projection::local_abi_identity_from_validated(artifact)?;
     artifact.package_local_abi.local_abi_identity = local_abi_identity.clone();
+    // C9 linkage: after Local ABI, before the build projection — the declared
+    // bytecode identity (if any) must be a well-formed framed identity.
+    validation::validate_bytecode_linkage(artifact)?;
     let build_projection =
         projection::build_projection_from_validated(artifact, local_abi_identity.clone())?;
     let build_identity = projection::build_identity_from_projection(&build_projection)?;
@@ -195,6 +217,9 @@ pub fn validate_package_artifact_identities(artifact: &PackageArtifact) -> Resul
             },
         );
     }
+    // C9 linkage: after Local ABI, before the build projection — the declared
+    // bytecode identity (if any) must be a well-formed framed identity.
+    validation::validate_bytecode_linkage(artifact)?;
     let build_projection =
         projection::build_projection_from_validated(artifact, computed_local.clone())?;
     let computed_build = projection::build_identity_from_projection(&build_projection)?;

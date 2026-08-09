@@ -1319,6 +1319,7 @@ fn fixture() -> PackageArtifact {
         package_build_id: PackageBuildId::new("unassigned"),
         files: Vec::new(),
         static_resources: Vec::new(),
+        bytecode: None,
         package_local_abi: skiff_artifact_model::PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
@@ -2091,3 +2092,87 @@ fn package_symbol(symbol_path: &str) -> PackageSymbolRef {
     }
 }
 mod public_instance;
+
+fn bytecode_identity_leaf(character: char) -> String {
+    format!(
+        "{}:{}",
+        crate::BYTECODE_IDENTITY_PREFIX,
+        std::iter::repeat_n(character, 64).collect::<String>()
+    )
+}
+
+#[test]
+fn bytecode_identity_enters_build_preimage_but_not_local_abi() {
+    let base = fixture();
+    let base_local = package_artifact_local_abi_identity(&base).unwrap();
+    let base_build = package_artifact_build_identity(&base).unwrap();
+
+    let mut with_bytecode = base.clone();
+    with_bytecode.bytecode = Some(skiff_artifact_model::BytecodeArtifactRef {
+        bytecode_identity: bytecode_identity_leaf('a'),
+        artifact_path: None,
+    });
+    assign_package_artifact_identities(&mut with_bytecode).unwrap();
+
+    // Local ABI projection stays bytecode-free: direct package dependents do
+    // not recompile when bytecode content changes (R-105/R-125).
+    assert_eq!(
+        package_artifact_local_abi_identity(&with_bytecode).unwrap(),
+        base_local
+    );
+    assert_ne!(
+        package_artifact_build_identity(&with_bytecode).unwrap(),
+        base_build,
+        "bytecode identity must enter the build preimage"
+    );
+
+    let build_projection = package_artifact_build_identity_projection(&with_bytecode).unwrap();
+    assert_eq!(
+        serde_json::to_value(&build_projection).unwrap()["bytecode"]["bytecodeIdentity"],
+        serde_json::json!(bytecode_identity_leaf('a'))
+    );
+    let base_projection = package_artifact_build_identity_projection(&base).unwrap();
+    assert!(
+        serde_json::to_value(&base_projection)
+            .unwrap()
+            .get("bytecode")
+            .is_none(),
+        "bytecode must be skipped when absent (D18)"
+    );
+
+    // Any bytecode content change changes the build identity.
+    let mut changed_bytecode = with_bytecode.clone();
+    changed_bytecode
+        .bytecode
+        .as_mut()
+        .unwrap()
+        .bytecode_identity = bytecode_identity_leaf('b');
+    assign_package_artifact_identities(&mut changed_bytecode).unwrap();
+    assert_ne!(
+        package_artifact_build_identity(&changed_bytecode).unwrap(),
+        package_artifact_build_identity(&with_bytecode).unwrap()
+    );
+    assert_eq!(
+        package_artifact_local_abi_identity(&changed_bytecode).unwrap(),
+        base_local
+    );
+
+    validate_package_artifact_identities(&with_bytecode).unwrap();
+}
+
+#[test]
+fn malformed_bytecode_owner_identity_is_rejected_at_package_surface() {
+    let mut malformed = fixture();
+    malformed.bytecode = Some(skiff_artifact_model::BytecodeArtifactRef {
+        bytecode_identity: "skiff-bytecode-image-v2:sha256:short".to_string(),
+        artifact_path: None,
+    });
+    assert!(matches!(
+        assign_package_artifact_identities(&mut malformed),
+        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+    ));
+    assert!(matches!(
+        validate_package_artifact_identities(&malformed),
+        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+    ));
+}

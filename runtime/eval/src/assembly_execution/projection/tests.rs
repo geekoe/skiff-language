@@ -460,6 +460,7 @@ fn std_error_projection_image(
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     let package_ref = PackageArtifactRef {
         package_id: package.package_id.clone(),
@@ -605,6 +606,7 @@ fn projection_image_with_db_shape(
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     let package_ref = PackageArtifactRef {
         package_id: package.package_id.clone(),

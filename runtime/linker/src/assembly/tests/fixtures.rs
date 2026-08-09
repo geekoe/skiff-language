@@ -1213,6 +1213,7 @@ fn package(
             },
         )]),
         service_call_refs: Vec::new(),
+        bytecode: None,
     }
 }
 

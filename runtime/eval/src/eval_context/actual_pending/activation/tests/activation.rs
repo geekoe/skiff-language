@@ -800,6 +800,7 @@ mod server_stream_fixture {
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
             service_call_refs: Vec::new(),
+            bytecode: None,
         }
     }
 

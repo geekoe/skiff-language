@@ -22,6 +22,27 @@ impl FileIrRef {
     }
 }
 
+/// Lightweight package-artifact reference to a canonical bytecode record.
+/// The bytecode artifact itself lives in the same package build record family
+/// and is content-addressed by `bytecode_identity` (C9 identity/content
+/// consistency is validated by artifact-identity).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BytecodeArtifactRef {
+    pub bytecode_identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_path: Option<String>,
+}
+
+impl BytecodeArtifactRef {
+    pub fn new(bytecode_identity: impl Into<String>) -> Self {
+        Self {
+            bytecode_identity: bytecode_identity.into(),
+            artifact_path: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceSpanRef {

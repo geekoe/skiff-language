@@ -1227,6 +1227,7 @@ fn provider_package(
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: vec![service_call.clone()],
+        bytecode: None,
     });
     PackageFixture {
         reference: PackageArtifactRef {
@@ -1349,6 +1350,7 @@ fn caller_package(
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: vec![service_call.clone()],
+        bytecode: None,
     });
     PackageFixture {
         reference: PackageArtifactRef {
@@ -1513,6 +1515,7 @@ fn std_package() -> PackageFixture {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     });
     PackageFixture {
         reference: PackageArtifactRef {

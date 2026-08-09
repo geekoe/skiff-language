@@ -326,6 +326,7 @@ fn package_fixture() -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections,
         service_call_refs: Vec::new(),
+        bytecode: None,
     }
 }
 

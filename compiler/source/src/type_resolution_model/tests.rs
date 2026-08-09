@@ -612,6 +612,7 @@ fn signature_rehydration_artifact() -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     }
 }
 
@@ -2486,6 +2487,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     let mut package_types = BTreeMap::new();
     let mut package_interfaces = BTreeMap::new();
@@ -3131,6 +3133,7 @@ fn actor_artifact() -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     artifact.files[0].source_ast_hash = Some("source-hash".to_string());
     artifact

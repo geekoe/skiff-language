@@ -697,6 +697,7 @@ fn package_validator_requires_exact_public_callable_coverage() {
         package_build_id: PackageBuildId::new("build"),
         files: Vec::new(),
         static_resources: Vec::new(),
+        bytecode: None,
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("abi"),
             public_symbols: BTreeMap::from([(

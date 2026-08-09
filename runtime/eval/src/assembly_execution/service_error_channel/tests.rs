@@ -1956,6 +1956,7 @@ fn package(package_id: &str, types: Vec<PublicType>) -> PackageFixture {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     });
     PackageFixture {
         package_id: package_id.to_string(),

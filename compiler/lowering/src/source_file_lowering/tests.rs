@@ -3284,6 +3284,7 @@ fn provider_contract_artifact() -> (
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     artifact.package_schema_index.package_schema_index_identity =
         skiff_artifact_identity::package_schema_index_identity(package_id, &BTreeMap::new())
@@ -3401,6 +3402,7 @@ fn provider_object_artifact() -> (
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode: None,
     };
     artifact.package_schema_index.package_schema_index_identity =
         skiff_artifact_identity::package_schema_index_identity(package_id, &BTreeMap::new())
