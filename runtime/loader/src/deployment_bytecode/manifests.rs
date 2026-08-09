@@ -5,14 +5,15 @@ use std::{
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    native_value_lifecycle_registry_identity, BytecodeConstantRef, BytecodePoolEntry,
-    BytecodeRelocation, BytecodeSpecialization, ContractOperationId, HostEffectSignature,
-    InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, NominalTypeRefBaseIr,
-    OperationCallableKind, PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
-    PackageCallableSignature, PackageExecutableCoordinate, PackageLocalAbiSymbol, PackageRefIr,
-    PackageSymbolRef, PackageTypeRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceRequirementKey, TypeRefIr, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION,
+    host_effect_registry_identity, intrinsic_registry_identity,
+    native_value_lifecycle_registry_identity, value_lifecycle_policy_identity, BytecodeConstantRef,
+    BytecodePoolEntry, BytecodeRelocation, BytecodeSpecialization, ContractOperationId,
+    HostEffectSignature, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
+    NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact, PackageArtifactRef,
+    PackageBuildId, PackageCallableId, PackageCallableSignature, PackageExecutableCoordinate,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, PackageTypeRef, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceRequirementKey, TypeRefIr, ValueTransferPlan,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::{
@@ -180,19 +181,35 @@ fn validate_header(
     let view = bytecode.view();
     let opcode_fingerprint = skiff_artifact_model::bytecode::opcodes::opcode_table_fingerprint();
     if artifact.magic.as_str() != BYTECODE_MAGIC
+        || artifact.schema_version.as_str() != BYTECODE_SCHEMA_VERSION
         || view.schema_version() != BYTECODE_SCHEMA_VERSION
+        || view.schema_version() != artifact.schema_version.as_str()
+        || artifact.isa_version.as_str() != BYTECODE_ISA_VERSION
         || view.isa_version() != BYTECODE_ISA_VERSION
+        || view.isa_version() != artifact.isa_version.as_str()
+        || artifact.opcode_table_fingerprint.as_str() != opcode_fingerprint.as_str()
         || view.opcode_table_fingerprint() != opcode_fingerprint.as_str()
         || view.opcode_table_fingerprint() != artifact.opcode_table_fingerprint.as_str()
+        || &artifact.native_value_lifecycle_registry != native_value_lifecycle_registry_identity()
         || view.native_value_lifecycle_registry() != native_value_lifecycle_registry_identity()
         || view.native_value_lifecycle_registry() != &artifact.native_value_lifecycle_registry
+        || &artifact.value_lifecycle_policy != value_lifecycle_policy_identity()
+        || view.value_lifecycle_policy() != value_lifecycle_policy_identity()
+        || view.value_lifecycle_policy() != &artifact.value_lifecycle_policy
+        || &artifact.host_effect_registry != host_effect_registry_identity()
+        || view.host_effect_registry() != host_effect_registry_identity()
+        || view.host_effect_registry() != &artifact.host_effect_registry
+        || &artifact.intrinsic_registry != intrinsic_registry_identity()
+        || view.intrinsic_registry() != intrinsic_registry_identity()
+        || view.intrinsic_registry() != &artifact.intrinsic_registry
         || view.bytecode_identity() != bytecode.reference().bytecode_identity.as_str()
         || artifact.bytecode_identity.as_str() != bytecode.reference().bytecode_identity.as_str()
+        || view.bytecode_identity() != artifact.bytecode_identity.as_str()
     {
         return manifest_error(
             reference,
             DeploymentBytecodeManifestKind::Header,
-            "admitted v4 header/view/reference facts are not exact".to_string(),
+            "admitted v5 header/view/reference facts are not exact".to_string(),
         );
     }
     Ok(())

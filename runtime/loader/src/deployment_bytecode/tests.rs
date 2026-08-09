@@ -26,6 +26,9 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
         opcode_table_fingerprint: opcode_table_fingerprint(),
         native_value_lifecycle_registry:
             skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
+        host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
+        intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
         bytecode_identity: "unassigned".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::new(),
@@ -59,6 +62,21 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
     };
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+}
+
+fn assert_header_pin_drift_rejected(seed: &str, field: &str, mutate: fn(&mut BytecodeArtifact)) {
+    let mut artifact = admitted_bytecode(seed).artifact().clone();
+    mutate(&mut artifact);
+
+    let error = ValidatedBytecodeArtifact::admit(artifact)
+        .expect_err("semantic authority drift must fail before loader admission");
+    assert!(matches!(
+        &error,
+        skiff_artifact_identity::ArtifactIdentityError::InvalidBytecodeStructural(
+            skiff_artifact_model::bytecode::validate::StructuralValidationError::Header { .. }
+        )
+    ));
+    assert!(error.to_string().contains(field), "{field}: {error}");
 }
 
 fn bytecode_with_type_root(seed: &str, ty: TypeRefIr) -> Arc<ValidatedBytecodeArtifact> {
@@ -505,7 +523,124 @@ fn package_checked_constructor_admits_only_exact_token_and_exposes_opaque_getter
 }
 
 #[test]
-fn package_checked_constructor_joins_v4_callable_origin_and_self_manifests() {
+fn package_checked_constructor_pins_exact_v5_header_view_and_reference() {
+    let bytecode = admitted_bytecode("v5-header");
+    let artifact = package_artifact(
+        "example.package",
+        "build:package",
+        Some(bytecode.reference().clone()),
+    );
+    let hydrated = HydratedBytecodePackage::checked(
+        package_reference(&artifact),
+        artifact,
+        Arc::clone(&bytecode),
+    )
+    .unwrap();
+    let admitted = hydrated.bytecode();
+    let artifact = admitted.artifact();
+    let view = admitted.view();
+    let opcode_fingerprint = opcode_table_fingerprint();
+
+    assert_eq!(artifact.magic.as_str(), BYTECODE_MAGIC);
+    assert_eq!(artifact.schema_version.as_str(), BYTECODE_SCHEMA_VERSION);
+    assert_eq!(view.schema_version(), BYTECODE_SCHEMA_VERSION);
+    assert_eq!(view.schema_version(), artifact.schema_version.as_str());
+    assert_eq!(artifact.isa_version.as_str(), BYTECODE_ISA_VERSION);
+    assert_eq!(view.isa_version(), BYTECODE_ISA_VERSION);
+    assert_eq!(view.isa_version(), artifact.isa_version.as_str());
+    assert_eq!(
+        artifact.opcode_table_fingerprint.as_str(),
+        opcode_fingerprint.as_str()
+    );
+    assert_eq!(view.opcode_table_fingerprint(), opcode_fingerprint.as_str());
+    assert_eq!(
+        view.opcode_table_fingerprint(),
+        artifact.opcode_table_fingerprint.as_str()
+    );
+    assert_eq!(
+        &artifact.native_value_lifecycle_registry,
+        skiff_artifact_model::native_value_lifecycle_registry_identity()
+    );
+    assert_eq!(
+        view.native_value_lifecycle_registry(),
+        &artifact.native_value_lifecycle_registry
+    );
+    assert_eq!(
+        &artifact.value_lifecycle_policy,
+        skiff_artifact_model::value_lifecycle_policy_identity()
+    );
+    assert_eq!(
+        view.value_lifecycle_policy(),
+        &artifact.value_lifecycle_policy
+    );
+    assert_eq!(
+        &artifact.host_effect_registry,
+        skiff_artifact_model::host_effect_registry_identity()
+    );
+    assert_eq!(view.host_effect_registry(), &artifact.host_effect_registry);
+    assert_eq!(
+        &artifact.intrinsic_registry,
+        skiff_artifact_model::intrinsic_registry_identity()
+    );
+    assert_eq!(view.intrinsic_registry(), &artifact.intrinsic_registry);
+    assert_eq!(
+        admitted.reference().bytecode_identity.as_str(),
+        artifact.bytecode_identity.as_str()
+    );
+    assert_eq!(
+        hydrated.artifact().bytecode.as_ref(),
+        Some(admitted.reference())
+    );
+    assert_eq!(
+        view.bytecode_identity(),
+        admitted.reference().bytecode_identity.as_str()
+    );
+}
+
+#[test]
+fn bytecode_admission_rejects_native_lifecycle_registry_pin_drift_before_loader() {
+    assert_header_pin_drift_rejected(
+        "native-lifecycle-drift",
+        "nativeValueLifecycleRegistry",
+        |artifact| {
+            artifact
+                .native_value_lifecycle_registry
+                .fingerprint
+                .push_str(":drift");
+        },
+    );
+}
+
+#[test]
+fn bytecode_admission_rejects_value_lifecycle_policy_pin_drift_before_loader() {
+    assert_header_pin_drift_rejected(
+        "value-lifecycle-drift",
+        "valueLifecyclePolicy",
+        |artifact| {
+            artifact
+                .value_lifecycle_policy
+                .fingerprint
+                .push_str(":drift")
+        },
+    );
+}
+
+#[test]
+fn bytecode_admission_rejects_host_effect_registry_pin_drift_before_loader() {
+    assert_header_pin_drift_rejected("host-effect-drift", "hostEffectRegistry", |artifact| {
+        artifact.host_effect_registry.fingerprint.push_str(":drift")
+    });
+}
+
+#[test]
+fn bytecode_admission_rejects_intrinsic_registry_pin_drift_before_loader() {
+    assert_header_pin_drift_rejected("intrinsic-drift", "intrinsicRegistry", |artifact| {
+        artifact.intrinsic_registry.fingerprint.push_str(":drift")
+    });
+}
+
+#[test]
+fn package_checked_constructor_joins_v5_callable_origin_and_self_manifests() {
     let (bytecode, coordinate, callable) = callable_bytecode(true);
     let artifact = callable_package(
         &bytecode,
