@@ -11,7 +11,7 @@ use skiff_artifact_model::{
     ActorMethodIdentity, ActorPublicMethodIr, FileIrRef, InterfaceDeclIr, InterfaceOperationIr,
     PackageImplementationLinks, PackageLocalAbi, PackageRuntimeRequirements,
     PackageSchemaCanonicalDescriptor, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
-    TypeDeclIr, TypeDeclarationIr, TypeExport, ACTOR_RUNTIME_ABI_VERSION_V1,
+    PackageSchemaTypeId, TypeDeclIr, TypeDeclarationIr, TypeExport, ACTOR_RUNTIME_ABI_VERSION_V1,
     PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
@@ -606,6 +606,8 @@ fn signature_rehydration_artifact() -> PackageArtifact {
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
@@ -1452,7 +1454,7 @@ fn canonical_interface_selectors_and_conformance_facts_use_exact_service_schema_
           }
         "#,
     );
-    let schema_type_id = "schema:user".into();
+    let schema_type_id: PackageSchemaTypeId = "schema:user".into();
     model.service_api_schemas.insert(
         "payments".to_string(),
         BTreeMap::from([(
@@ -2689,6 +2691,8 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
@@ -3382,6 +3386,8 @@ fn actor_artifact() -> PackageArtifact {
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
