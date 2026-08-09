@@ -9,7 +9,7 @@ pub enum ProjectionError {
     #[error("invalid typed {artifact}: {identity_error}")]
     InvalidTypedArtifact {
         artifact: &'static str,
-        identity_error: skiff_artifact_identity::ArtifactIdentityError,
+        identity_error: Box<skiff_artifact_identity::ArtifactIdentityError>,
     },
     #[error("package build {build_id} has invalid boundary projections: {source}")]
     InvalidPackageBoundaryProjections {

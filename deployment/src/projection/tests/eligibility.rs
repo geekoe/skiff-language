@@ -9,8 +9,8 @@ impl ProjectionFixture {
             .get_mut(&self.callable_id)
             .unwrap()
             .effects = CallableEffectSummary::Analyzed {
-                effects: effects.clone(),
-            };
+            effects: effects.clone(),
+        };
         let BoundaryCallableProjection::Available {
             implementation_requirements,
             ..
@@ -111,7 +111,9 @@ fn synchronized_unsafe_effect_mutations_cannot_forge_available() {
     // The three aggregate alias flags were retired (R-084): ordinary aggregate
     // mutation/returns/throws are logical snapshots and cannot forge an
     // availability claim. The remaining unsafe effect mutations still reject.
-    let cases: &[(fn(&mut CallableMayEffects), BoundaryUnavailableReason)] = &[
+    type UnsafeEffectMutation = (fn(&mut CallableMayEffects), BoundaryUnavailableReason);
+
+    let cases: &[UnsafeEffectMutation] = &[
         (
             |effects| effects.requires_same_heap_identity = true,
             BoundaryUnavailableReason::RequiresSameHeapIdentity,

@@ -72,7 +72,7 @@ fn project_service_deployment_after_package_validation(
     skiff_artifact_identity::validate_service_deployment_input(&input).map_err(|error| {
         ProjectionError::InvalidTypedArtifact {
             artifact: "ServiceDeploymentInput",
-            identity_error: error,
+            identity_error: Box::new(error),
         }
     })?;
 
@@ -117,7 +117,7 @@ fn validate_package_schema_records(
     skiff_artifact_identity::validate_package_schema_records(records).map_err(
         |identity_error| ProjectionError::InvalidTypedArtifact {
             artifact: "PackageSchemaTypeRecord closure",
-            identity_error,
+            identity_error: Box::new(identity_error),
         },
     )?;
 
@@ -155,7 +155,7 @@ fn validate_contract_ref(
     skiff_artifact_identity::validate_service_contract_identities(contract).map_err(|error| {
         ProjectionError::InvalidTypedArtifact {
             artifact: "ServiceContract",
-            identity_error: error,
+            identity_error: Box::new(error),
         }
     })?;
     for (field, expected, actual) in [

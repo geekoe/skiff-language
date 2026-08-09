@@ -75,16 +75,16 @@ impl<'a, 'c> Resolver<'a, 'c> {
                     .iter()
                     .find(|selector| selector.key == key)
                     .ok_or_else(|| AssemblyResolutionError::MissingServiceSelector {
-                        activation: reference.clone(),
+                        activation: Box::new(reference.clone()),
                         key: key.clone(),
                     })?;
                 let expected = service_requirement_contract(requirement);
                 if selector.contract != expected {
                     return Err(AssemblyResolutionError::ServiceSelectorMismatch {
-                        activation: reference.clone(),
+                        activation: Box::new(reference.clone()),
                         key,
-                        expected,
-                        selected: selector.contract.clone(),
+                        expected: Box::new(expected),
+                        selected: Box::new(selector.contract.clone()),
                     });
                 }
 
@@ -92,9 +92,9 @@ impl<'a, 'c> Resolver<'a, 'c> {
                 for operation in &requirement.used_operations {
                     if !selected_contract.operations.contains_key(operation) {
                         return Err(AssemblyResolutionError::MissingServiceOperation {
-                            activation: reference.clone(),
+                            activation: Box::new(reference.clone()),
                             key: key.clone(),
-                            contract: expected.clone(),
+                            contract: Box::new(expected.clone()),
                             operation: operation.clone(),
                         });
                     }
@@ -130,7 +130,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         for selector in &deployment.service_selectors {
             if !used_keys.contains(&selector.key) {
                 return Err(AssemblyResolutionError::UnexpectedServiceSelector {
-                    activation: activation.clone(),
+                    activation: Box::new(activation.clone()),
                     key: selector.key.clone(),
                 });
             }
@@ -181,9 +181,9 @@ impl<'a, 'c> Resolver<'a, 'c> {
             let key = binding.service_ingress_key();
             if let Some(first) = self.gateway_ingress.insert(key.clone(), binding) {
                 return Err(AssemblyResolutionError::GatewayIngressCollision {
-                    key,
-                    first: first.deployment,
-                    second: reference.clone(),
+                    key: Box::new(key),
+                    first: Box::new(first.deployment),
+                    second: Box::new(reference.clone()),
                 });
             }
         }
@@ -212,7 +212,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
             ) {
                 if first_build_id != package.package_build_id {
                     return Err(AssemblyResolutionError::MultiplePackageBuildsForId {
-                        activation: activation.clone(),
+                        activation: Box::new(activation.clone()),
                         package_id: package.package_id.clone(),
                         first_build_id,
                         second_build_id: package.package_build_id.clone(),
@@ -232,15 +232,15 @@ impl<'a, 'c> Resolver<'a, 'c> {
                     .iter()
                     .find(|binding| binding.key == key)
                     .ok_or_else(|| AssemblyResolutionError::MissingPackageBinding {
-                        activation: activation.clone(),
+                        activation: Box::new(activation.clone()),
                         key: key.clone(),
                     })?;
                 if !package_requirement_matches(requirement, binding) {
                     return Err(AssemblyResolutionError::PackageRequirementMismatch {
-                        activation: activation.clone(),
+                        activation: Box::new(activation.clone()),
                         key,
-                        requirement: requirement.clone(),
-                        selected: binding.package.clone(),
+                        requirement: Box::new(requirement.clone()),
+                        selected: Box::new(binding.package.clone()),
                     });
                 }
                 self.insert_package_link(binding)?;
@@ -252,7 +252,7 @@ impl<'a, 'c> Resolver<'a, 'c> {
         for binding in &deployment.package_bindings {
             if !used_binding_keys.contains(&binding.key) {
                 return Err(AssemblyResolutionError::UnexpectedPackageBinding {
-                    activation: activation.clone(),
+                    activation: Box::new(activation.clone()),
                     key: binding.key.clone(),
                 });
             }
@@ -267,8 +267,8 @@ impl<'a, 'c> Resolver<'a, 'c> {
         {
             if existing != reference {
                 return Err(AssemblyResolutionError::PackageReferenceMismatch {
-                    expected: existing,
-                    available: reference,
+                    expected: Box::new(existing),
+                    available: Box::new(reference),
                 });
             }
         }
@@ -283,8 +283,8 @@ impl<'a, 'c> Resolver<'a, 'c> {
             if existing != *binding {
                 return Err(AssemblyResolutionError::ConflictingPackageLink {
                     key: binding.key.clone(),
-                    first: existing.package,
-                    second: binding.package.clone(),
+                    first: Box::new(existing.package),
+                    second: Box::new(binding.package.clone()),
                 });
             }
         }

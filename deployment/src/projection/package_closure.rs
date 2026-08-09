@@ -20,7 +20,7 @@ impl<'a> PackageClosure<'a> {
             skiff_artifact_identity::validate_package_artifact_identities(artifact).map_err(
                 |error| ProjectionError::InvalidTypedArtifact {
                     artifact: "PackageArtifact",
-                    identity_error: error,
+                    identity_error: Box::new(error),
                 },
             )?;
             if by_build

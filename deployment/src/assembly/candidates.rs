@@ -126,8 +126,8 @@ impl<'a> CandidateIndex<'a> {
                 if entry.get().0 != reference {
                     return Err(AssemblyResolutionError::ConflictingCandidatePackageBuild {
                         build_id: reference.package_build_id.clone(),
-                        first: entry.get().0.clone(),
-                        second: reference,
+                        first: Box::new(entry.get().0.clone()),
+                        second: Box::new(reference),
                     });
                 }
             }
@@ -176,8 +176,8 @@ impl<'a> CandidateIndex<'a> {
         };
         if available != reference {
             return Err(AssemblyResolutionError::PackageReferenceMismatch {
-                expected: reference.clone(),
-                available: available.clone(),
+                expected: Box::new(reference.clone()),
+                available: Box::new(available.clone()),
             });
         }
         Ok(*package)

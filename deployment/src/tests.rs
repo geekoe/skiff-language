@@ -197,9 +197,11 @@ fn removed_collection_mapping_wire_is_rejected_by_deployment() {
 
 #[test]
 fn deployment_identity_mutation_matrix_covers_every_semantic_category() {
+    type DeploymentMutation = Box<dyn Fn(&mut ServiceDeployment)>;
+
     let deployment = rich_deployment();
     let expected = service_deployment_identity(&deployment).unwrap();
-    let cases: Vec<(&str, Box<dyn Fn(&mut ServiceDeployment)>)> = vec![
+    let cases: Vec<(&str, DeploymentMutation)> = vec![
         (
             "revision",
             Box::new(|value| value.deployment_revision = "revision-2".into()),

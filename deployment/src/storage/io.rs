@@ -123,6 +123,7 @@ impl CanonicalArtifactStore {
         reject_symlink_or_non_file(&lock_path, "pointer lock")?;
         let lock = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(&lock_path)

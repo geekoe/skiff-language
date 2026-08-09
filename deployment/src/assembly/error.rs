@@ -57,8 +57,8 @@ pub enum AssemblyResolutionError {
 
     #[error("package build {expected:?} resolves to candidate {available:?}")]
     PackageReferenceMismatch {
-        expected: PackageArtifactRef,
-        available: PackageArtifactRef,
+        expected: Box<PackageArtifactRef>,
+        available: Box<PackageArtifactRef>,
     },
 
     #[error(
@@ -66,15 +66,15 @@ pub enum AssemblyResolutionError {
     )]
     ConflictingCandidatePackageBuild {
         build_id: PackageBuildId,
-        first: PackageArtifactRef,
-        second: PackageArtifactRef,
+        first: Box<PackageArtifactRef>,
+        second: Box<PackageArtifactRef>,
     },
 
     #[error(
         "activation {activation:?} resolves package {package_id} to multiple builds {first_build_id} and {second_build_id}"
     )]
     MultiplePackageBuildsForId {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         package_id: String,
         first_build_id: PackageBuildId,
         second_build_id: PackageBuildId,
@@ -82,7 +82,7 @@ pub enum AssemblyResolutionError {
 
     #[error("activation {activation:?} has no package binding for {key:?}")]
     MissingPackageBinding {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: PackageRequirementKey,
     },
 
@@ -90,10 +90,10 @@ pub enum AssemblyResolutionError {
         "activation {activation:?} package binding {key:?} selects {selected:?}, which does not satisfy {requirement:?}"
     )]
     PackageRequirementMismatch {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: PackageRequirementKey,
-        requirement: PackageRequirement,
-        selected: PackageArtifactRef,
+        requirement: Box<PackageRequirement>,
+        selected: Box<PackageArtifactRef>,
     },
 
     #[error(
@@ -101,19 +101,19 @@ pub enum AssemblyResolutionError {
     )]
     ConflictingPackageLink {
         key: PackageRequirementKey,
-        first: PackageArtifactRef,
-        second: PackageArtifactRef,
+        first: Box<PackageArtifactRef>,
+        second: Box<PackageArtifactRef>,
     },
 
     #[error("activation {activation:?} contains an unused package binding {key:?}")]
     UnexpectedPackageBinding {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: PackageRequirementKey,
     },
 
     #[error("activation {activation:?} has no service selector for {key:?}")]
     MissingServiceSelector {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: ServiceRequirementKey,
     },
 
@@ -121,15 +121,15 @@ pub enum AssemblyResolutionError {
         "activation {activation:?} service selector {key:?} is {selected:?}, expected {expected:?}"
     )]
     ServiceSelectorMismatch {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: ServiceRequirementKey,
-        expected: ServiceContractRef,
-        selected: ServiceContractRef,
+        expected: Box<ServiceContractRef>,
+        selected: Box<ServiceContractRef>,
     },
 
     #[error("activation {activation:?} contains an unused service selector {key:?}")]
     UnexpectedServiceSelector {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: ServiceRequirementKey,
     },
 
@@ -137,9 +137,9 @@ pub enum AssemblyResolutionError {
         "activation {activation:?} binding {key:?} uses operation {operation}, which is absent from {contract:?}"
     )]
     MissingServiceOperation {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: ServiceRequirementKey,
-        contract: ServiceContractRef,
+        contract: Box<ServiceContractRef>,
         operation: ContractOperationId,
     },
 
@@ -151,9 +151,9 @@ pub enum AssemblyResolutionError {
 
     #[error("gateway ingress key {key:?} is declared by both {first:?} and {second:?}")]
     GatewayIngressCollision {
-        key: ServiceIngressKey,
-        first: ServiceDeploymentRef,
-        second: ServiceDeploymentRef,
+        key: Box<ServiceIngressKey>,
+        first: Box<ServiceDeploymentRef>,
+        second: Box<ServiceDeploymentRef>,
     },
 }
 

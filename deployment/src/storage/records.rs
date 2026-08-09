@@ -144,7 +144,7 @@ impl CanonicalArtifactStore {
         &self,
         record: &PackageSchemaTypeRecord,
     ) -> StorageResult<PathBuf> {
-        validate_package_schema_type_record(&self.root().to_path_buf(), record)?;
+        validate_package_schema_type_record(self.root(), record)?;
         let reference = PackageSchemaTypeRecordRef {
             package_id: record.package_id.clone(),
             package_schema_type_id: record.package_schema_type_id.clone(),
@@ -416,7 +416,7 @@ impl CanonicalArtifactStore {
         file: &FileIrUnit,
     ) -> StorageResult<PathBuf> {
         validate_file_ir_identity(file)?;
-        validate_file_ref(&self.root().to_path_buf(), package, reference, file)?;
+        validate_file_ref(self.root(), package, reference, file)?;
         let path = PackageFileIrRecordPath::new(package, reference)?;
         self.write_immutable(path.as_relative_path(), &canonical_bytes(file)?)
     }
@@ -511,7 +511,7 @@ impl CanonicalArtifactStore {
         reference: &PublicationResourceRef,
         bytes: &[u8],
     ) -> StorageResult<PathBuf> {
-        validate_resource(&self.root().to_path_buf(), reference, bytes)?;
+        validate_resource(self.root(), reference, bytes)?;
         let path = PackageResourceRecordPath::new(package, reference)?;
         self.write_immutable(path.as_relative_path(), bytes)
     }

@@ -461,13 +461,13 @@ where
     })
 }
 
-fn parse_pointer<T: DeserializeOwned>(
+fn parse_pointer<T>(
     path: &Path,
     bytes: &[u8],
     validate: fn(&T, &Path) -> StorageResult<()>,
 ) -> StorageResult<T>
 where
-    T: Serialize,
+    T: DeserializeOwned + Serialize,
 {
     let value = strict_value(path, bytes)?;
     let pointer = typed_from_value(path, value)?;
