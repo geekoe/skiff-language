@@ -11,6 +11,7 @@ mod frame;
 mod function;
 mod index;
 mod instruction;
+mod signature;
 mod specialization;
 mod tables;
 mod targets;
@@ -27,6 +28,7 @@ pub use index::{
     SyntheticCallbackIndex, TypeIndex,
 };
 pub use instruction::LinkedInstruction;
+pub use signature::{LinkedCallableSignature, LinkedCallableSignatureError};
 pub use specialization::SpecializationKey;
 pub use tables::{
     LinkedCatchMatcher, LinkedExceptionRegion, LinkedResumeSite, LinkedSourceMapEntry,

@@ -1,7 +1,8 @@
 use skiff_artifact_model::{NativeTarget, ValueTransferPlanKind};
 
 use crate::{
-    FrameSlotIndex, FunctionIndex, HostEffectAdapterIndex, SyntheticCallbackIndex, TypeIndex,
+    FrameSlotIndex, FunctionIndex, HostEffectAdapterIndex, LinkedCallableSignature,
+    SyntheticCallbackIndex, TypeIndex,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,7 @@ pub struct LinkedSyntheticCallbackTarget {
     index: SyntheticCallbackIndex,
     function: FunctionIndex,
     captures: Box<[LinkedCallbackCapture]>,
+    signature: LinkedCallableSignature,
 }
 
 impl LinkedSyntheticCallbackTarget {
@@ -41,11 +43,13 @@ impl LinkedSyntheticCallbackTarget {
         index: SyntheticCallbackIndex,
         function: FunctionIndex,
         captures: Box<[LinkedCallbackCapture]>,
+        signature: LinkedCallableSignature,
     ) -> Self {
         Self {
             index,
             function,
             captures,
+            signature,
         }
     }
 
@@ -60,17 +64,30 @@ impl LinkedSyntheticCallbackTarget {
     pub fn captures(&self) -> &[LinkedCallbackCapture] {
         &self.captures
     }
+
+    pub const fn signature(&self) -> &LinkedCallableSignature {
+        &self.signature
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkedHostEffectAdapterTarget {
     index: HostEffectAdapterIndex,
     target: NativeTarget,
+    signature: LinkedCallableSignature,
 }
 
 impl LinkedHostEffectAdapterTarget {
-    pub fn new(index: HostEffectAdapterIndex, target: NativeTarget) -> Self {
-        Self { index, target }
+    pub fn new(
+        index: HostEffectAdapterIndex,
+        target: NativeTarget,
+        signature: LinkedCallableSignature,
+    ) -> Self {
+        Self {
+            index,
+            target,
+            signature,
+        }
     }
 
     pub const fn index(&self) -> HostEffectAdapterIndex {
@@ -79,5 +96,9 @@ impl LinkedHostEffectAdapterTarget {
 
     pub const fn target(&self) -> &NativeTarget {
         &self.target
+    }
+
+    pub const fn signature(&self) -> &LinkedCallableSignature {
+        &self.signature
     }
 }

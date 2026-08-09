@@ -11,12 +11,13 @@ use crate::{
     ActorMethodIndex, CandidateTable, ConstantIndex, FrameSlotIndex, FunctionIndex,
     HostEffectAdapterIndex, InterfaceTableIndex, LinkedActorMethodTarget, LinkedBytecodeCandidate,
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedCallableEffectDeclaration,
-    LinkedCallbackCapture, LinkedConstantEntry, LinkedConstantValue, LinkedExactLocalTarget,
-    LinkedFrameLayout, LinkedFrameLayoutError, LinkedFunction, LinkedFunctionTables,
-    LinkedHostEffectAdapterTarget, LinkedInstruction, LinkedInterfaceMethod, LinkedInterfaceTable,
-    LinkedResumeSite, LinkedServiceOperationTarget, LinkedShapeEntry,
-    LinkedSyntheticCallbackTarget, LinkedTypeEntry, ResumeSiteIndex, ServiceOperationIndex,
-    ShapeIndex, SpecializationKey, SyntheticCallbackIndex, TypeIndex,
+    LinkedCallableSignature, LinkedCallableSignatureError, LinkedCallbackCapture,
+    LinkedConstantEntry, LinkedConstantValue, LinkedExactLocalTarget, LinkedFrameLayout,
+    LinkedFrameLayoutError, LinkedFunction, LinkedFunctionTables, LinkedHostEffectAdapterTarget,
+    LinkedInstruction, LinkedInterfaceMethod, LinkedInterfaceTable, LinkedResumeSite,
+    LinkedServiceOperationTarget, LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
+    ResumeSiteIndex, ServiceOperationIndex, ShapeIndex, SpecializationKey, SyntheticCallbackIndex,
+    TypeIndex,
 };
 
 fn specialization(name: &str) -> SpecializationKey {
@@ -32,6 +33,17 @@ fn frame() -> LinkedFrameLayout {
         Box::new([ValueTransferPlanKind::SnapshotShare]),
     )
     .expect("fixture frame is locally well-shaped")
+}
+
+fn signature() -> LinkedCallableSignature {
+    LinkedCallableSignature::new(
+        Box::new([TypeIndex::new(0)]),
+        Box::new([ValueTransferPlanKind::SnapshotShare]),
+        Box::new([TypeIndex::new(0)]),
+        Box::new([ValueTransferPlanKind::SnapshotShare]),
+        CallableEffectSummary::analysis_pending(),
+    )
+    .expect("fixture signature has one plan for each concrete type")
 }
 
 fn function(index: u32, name: &str) -> LinkedFunction {
@@ -119,6 +131,41 @@ fn frame_rejects_plan_shape_mismatch() {
 }
 
 #[test]
+fn callable_signature_rejects_plan_shape_mismatch() {
+    let parameter_error = LinkedCallableSignature::new(
+        Box::new([TypeIndex::new(0)]),
+        Box::new([]),
+        Box::new([]),
+        Box::new([]),
+        CallableEffectSummary::analysis_pending(),
+    )
+    .expect_err("one parameter type requires one transfer plan");
+    assert_eq!(
+        parameter_error,
+        LinkedCallableSignatureError::ParameterPlanCountMismatch {
+            parameter_type_count: 1,
+            parameter_plan_count: 0,
+        }
+    );
+
+    let result_error = LinkedCallableSignature::new(
+        Box::new([]),
+        Box::new([]),
+        Box::new([TypeIndex::new(0)]),
+        Box::new([]),
+        CallableEffectSummary::analysis_pending(),
+    )
+    .expect_err("one result type requires one transfer plan");
+    assert_eq!(
+        result_error,
+        LinkedCallableSignatureError::ResultPlanCountMismatch {
+            result_type_count: 1,
+            result_plan_count: 0,
+        }
+    );
+}
+
+#[test]
 fn candidate_rejects_non_dense_function_indices() {
     let error =
         LinkedBytecodeCandidate::try_from_parts(minimal_parts(vec![function(1, "callable:one")]))
@@ -146,10 +193,16 @@ fn service_target_remains_symbolic_and_provider_free() {
         ServiceOperationIndex::new(0),
         requirement.clone(),
         operation.clone(),
+        signature(),
     );
 
     assert_eq!(target.service_requirement_key(), &requirement);
     assert_eq!(target.contract_operation_id(), &operation);
+    assert_eq!(target.signature().parameter_types(), [TypeIndex::new(0)]);
+    assert_eq!(
+        target.signature().effect_summary(),
+        &CallableEffectSummary::analysis_pending()
+    );
 }
 
 #[test]
@@ -180,21 +233,19 @@ fn candidate_exposes_read_only_component_views() {
         ServiceOperationIndex::new(0),
         requirement,
         ContractOperationId::new("contract-operation:send"),
+        signature(),
     )];
     parts.actor_methods = vec![LinkedActorMethodTarget::new(
         ActorMethodIndex::new(0),
         ActorAbiIdentity::new("actor:worker"),
         ActorMethodIdentity::new("actor-method:run"),
         FunctionIndex::new(0),
+        signature(),
     )];
     parts.interface_tables = vec![LinkedInterfaceTable::new(
         InterfaceTableIndex::new(0),
         AbiInterfaceId::from_key_bytes(vec![1, 2, 3]),
-        Box::new([LinkedInterfaceMethod::new(
-            0,
-            Box::new([TypeIndex::new(0)]),
-            Box::new([TypeIndex::new(0)]),
-        )]),
+        Box::new([LinkedInterfaceMethod::new(0, signature())]),
     )];
     parts.synthetic_callbacks = vec![LinkedSyntheticCallbackTarget::new(
         SyntheticCallbackIndex::new(0),
@@ -204,6 +255,7 @@ fn candidate_exposes_read_only_component_views() {
             TypeIndex::new(0),
             ValueTransferPlanKind::SnapshotShare,
         )]),
+        signature(),
     )];
     parts.host_effect_adapters = vec![LinkedHostEffectAdapterTarget::new(
         HostEffectAdapterIndex::new(0),
@@ -213,6 +265,7 @@ fn candidate_exposes_read_only_component_views() {
             binding_key: None,
             metadata: BTreeMap::new(),
         },
+        signature(),
     )];
     parts.shapes = vec![LinkedShapeEntry::new(
         ShapeIndex::new(0),
@@ -240,6 +293,28 @@ fn candidate_exposes_read_only_component_views() {
     assert_eq!(candidate.interface_tables().len(), 1);
     assert_eq!(candidate.synthetic_callbacks().len(), 1);
     assert_eq!(candidate.host_effect_adapters().len(), 1);
+    assert_eq!(
+        candidate.actor_methods()[0].signature().result_plans(),
+        [ValueTransferPlanKind::SnapshotShare]
+    );
+    assert_eq!(
+        candidate.interface_tables()[0].methods()[0]
+            .signature()
+            .parameter_types(),
+        [TypeIndex::new(0)]
+    );
+    assert_eq!(
+        candidate.synthetic_callbacks()[0]
+            .signature()
+            .result_types(),
+        [TypeIndex::new(0)]
+    );
+    assert_eq!(
+        candidate.host_effect_adapters()[0]
+            .signature()
+            .parameter_plans(),
+        [ValueTransferPlanKind::SnapshotShare]
+    );
     assert_eq!(candidate.types().len(), 1);
     assert_eq!(candidate.shapes().len(), 1);
     assert_eq!(candidate.constants().len(), 1);

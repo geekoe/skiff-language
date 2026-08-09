@@ -2,7 +2,10 @@ use skiff_artifact_model::{
     ActorAbiIdentity, ActorMethodIdentity, ContractOperationId, ServiceRequirementKey,
 };
 
-use crate::{ActorMethodIndex, FunctionIndex, ServiceOperationIndex, SpecializationKey};
+use crate::{
+    ActorMethodIndex, FunctionIndex, LinkedCallableSignature, ServiceOperationIndex,
+    SpecializationKey,
+};
 
 /// Exact concrete local target. The key and function remain visible so the
 /// verifier can independently compare target specialization and code.
@@ -33,6 +36,7 @@ pub struct LinkedServiceOperationTarget {
     index: ServiceOperationIndex,
     service_requirement_key: ServiceRequirementKey,
     contract_operation_id: ContractOperationId,
+    signature: LinkedCallableSignature,
 }
 
 impl LinkedServiceOperationTarget {
@@ -40,11 +44,13 @@ impl LinkedServiceOperationTarget {
         index: ServiceOperationIndex,
         service_requirement_key: ServiceRequirementKey,
         contract_operation_id: ContractOperationId,
+        signature: LinkedCallableSignature,
     ) -> Self {
         Self {
             index,
             service_requirement_key,
             contract_operation_id,
+            signature,
         }
     }
 
@@ -59,6 +65,10 @@ impl LinkedServiceOperationTarget {
     pub const fn contract_operation_id(&self) -> &ContractOperationId {
         &self.contract_operation_id
     }
+
+    pub const fn signature(&self) -> &LinkedCallableSignature {
+        &self.signature
+    }
 }
 
 /// Actor entry target inside the exact owner image.
@@ -68,6 +78,7 @@ pub struct LinkedActorMethodTarget {
     actor_abi_identity: ActorAbiIdentity,
     method_identity: ActorMethodIdentity,
     function: FunctionIndex,
+    signature: LinkedCallableSignature,
 }
 
 impl LinkedActorMethodTarget {
@@ -76,12 +87,14 @@ impl LinkedActorMethodTarget {
         actor_abi_identity: ActorAbiIdentity,
         method_identity: ActorMethodIdentity,
         function: FunctionIndex,
+        signature: LinkedCallableSignature,
     ) -> Self {
         Self {
             index,
             actor_abi_identity,
             method_identity,
             function,
+            signature,
         }
     }
 
@@ -99,5 +112,9 @@ impl LinkedActorMethodTarget {
 
     pub const fn function(&self) -> FunctionIndex {
         self.function
+    }
+
+    pub const fn signature(&self) -> &LinkedCallableSignature {
+        &self.signature
     }
 }

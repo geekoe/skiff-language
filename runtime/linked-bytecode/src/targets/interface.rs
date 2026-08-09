@@ -1,6 +1,6 @@
 use skiff_artifact_model::AbiInterfaceId;
 
-use crate::{InterfaceTableIndex, TypeIndex};
+use crate::{InterfaceTableIndex, LinkedCallableSignature};
 
 /// Canonical dynamic-interface method signature. It has no executable target:
 /// carrier selection and exact local/remote/callback dispatch remain runtime
@@ -8,20 +8,14 @@ use crate::{InterfaceTableIndex, TypeIndex};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedInterfaceMethod {
     method_slot: u32,
-    parameter_types: Box<[TypeIndex]>,
-    result_types: Box<[TypeIndex]>,
+    signature: LinkedCallableSignature,
 }
 
 impl LinkedInterfaceMethod {
-    pub fn new(
-        method_slot: u32,
-        parameter_types: Box<[TypeIndex]>,
-        result_types: Box<[TypeIndex]>,
-    ) -> Self {
+    pub fn new(method_slot: u32, signature: LinkedCallableSignature) -> Self {
         Self {
             method_slot,
-            parameter_types,
-            result_types,
+            signature,
         }
     }
 
@@ -29,12 +23,8 @@ impl LinkedInterfaceMethod {
         self.method_slot
     }
 
-    pub fn parameter_types(&self) -> &[TypeIndex] {
-        &self.parameter_types
-    }
-
-    pub fn result_types(&self) -> &[TypeIndex] {
-        &self.result_types
+    pub const fn signature(&self) -> &LinkedCallableSignature {
+        &self.signature
     }
 }
 
