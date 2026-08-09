@@ -4,9 +4,9 @@ use skiff_artifact_model::{
     PackageConfigRequirement,
 };
 
-fn package_requirements<'a>(
-    shape: &'a skiff_artifact_model::ConfigShape,
-) -> BTreeMap<&'a str, &'a ConfigShapeEntry> {
+fn package_requirements(
+    shape: &skiff_artifact_model::ConfigShape,
+) -> BTreeMap<&str, &ConfigShapeEntry> {
     shape
         .entries
         .iter()

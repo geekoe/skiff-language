@@ -591,6 +591,10 @@ fn package_impl_target_matches(target: &str, module_path: &str, local_target: &s
     target == local_target || target == format!("{module_path}.{local_target}")
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the recursive ABI collector explicitly threads projection traversal state and diagnostic accumulators; restructuring this large module is outside this focused lint fix"
+)]
 fn collect_package_executable_abi_violations(
     manifest: &PackageArtifactProjectionContext<'_>,
     type_index: &PackageApiTypeIndex<'_>,
@@ -641,6 +645,10 @@ fn collect_package_executable_abi_violations(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the recursive ABI collector explicitly threads projection traversal state and diagnostic accumulators; restructuring this large module is outside this focused lint fix"
+)]
 fn collect_package_operation_abi_violations(
     manifest: &PackageArtifactProjectionContext<'_>,
     type_index: &PackageApiTypeIndex<'_>,
@@ -691,6 +699,10 @@ fn collect_package_operation_abi_violations(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the recursive ABI collector explicitly threads projection traversal state and diagnostic accumulators; restructuring this large module is outside this focused lint fix"
+)]
 fn collect_package_const_abi_violations(
     manifest: &PackageArtifactProjectionContext<'_>,
     type_index: &PackageApiTypeIndex<'_>,
@@ -715,6 +727,10 @@ fn collect_package_const_abi_violations(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the recursive ABI collector explicitly threads projection traversal state and diagnostic accumulators; restructuring this large module is outside this focused lint fix"
+)]
 fn collect_package_type_ref_abi_violations(
     manifest: &PackageArtifactProjectionContext<'_>,
     type_index: &PackageApiTypeIndex<'_>,
@@ -986,6 +1002,10 @@ fn collect_package_nominal_base_abi_violations(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the recursive ABI collector explicitly threads projection traversal state and diagnostic accumulators; restructuring this large module is outside this focused lint fix"
+)]
 fn collect_package_function_type_param_abi_violations(
     manifest: &PackageArtifactProjectionContext<'_>,
     type_index: &PackageApiTypeIndex<'_>,
@@ -1010,6 +1030,10 @@ fn collect_package_function_type_param_abi_violations(
     );
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the recursive ABI collector explicitly threads projection traversal state and diagnostic accumulators; restructuring this large module is outside this focused lint fix"
+)]
 fn collect_package_type_binding_reference_abi_violations(
     manifest: &PackageArtifactProjectionContext<'_>,
     type_index: &PackageApiTypeIndex<'_>,
@@ -1150,6 +1174,10 @@ fn collect_package_exported_type_binding_abi_violations(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the recursive ABI collector explicitly threads projection traversal state and diagnostic accumulators; restructuring this large module is outside this focused lint fix"
+)]
 fn collect_package_type_descriptor_abi_violations(
     manifest: &PackageArtifactProjectionContext<'_>,
     type_index: &PackageApiTypeIndex<'_>,

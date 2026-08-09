@@ -13,6 +13,10 @@ use crate::package_artifact::{
 use super::{public_instance_error, PackagePublicInstanceInterface, PackagePublicInstanceReceiver};
 use crate::error::ProjectionError;
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "receiver resolution explicitly carries source, visible-type, and expected-symbol context; grouping them would obscure this validation boundary"
+)]
 pub(super) fn resolve_receiver(
     package: &PackageExportLinkProjectionInput<'_>,
     file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
