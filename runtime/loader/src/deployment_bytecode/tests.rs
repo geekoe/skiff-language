@@ -4,17 +4,18 @@ use skiff_artifact_model::{
     bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeConstantRef,
     BytecodeFunctionOrigin, BytecodeImage, BytecodePoolEntry, BytecodePools, CallableEffectSummary,
     CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
-    ContractDiagnosticText, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph, FrozenConstantNode, LiteralIr,
-    OperationCallableKind, OperationTargetRef, PackageCallableId, PackageCallableLinkFact,
-    PackageCallableParameter, PackageCallableSignature, PackageExecutableCoordinate,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
-    PackageSyntheticCallbackOwner, PackageTypeRef, ParameterSlotDecl, RelocatableBytecodeFunction,
-    ServiceProtocolIdentity, ServiceSelectorBinding, StatementChargeKind, StatementEntry,
-    TypeRefIr, ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    ContractDiagnosticText, ContractTypeDescriptor, ContractTypeRef, DeploymentArtifactIdentity,
+    DeploymentDiagnosticText, DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph,
+    FrozenConstantNode, LiteralIr, OperationCallableKind, OperationTargetRef, PackageCallableId,
+    PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
+    PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
+    PackageSchemaCanonicalDescriptor, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+    PackageSchemaTypeRecord, PackageSyntheticCallbackOwner, PackageTypeRef, ParameterSlotDecl,
+    RelocatableBytecodeFunction, ServiceProtocolIdentity, ServiceSelectorBinding,
+    StatementChargeKind, StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
@@ -58,6 +59,48 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
     };
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+}
+
+fn bytecode_with_type_root(seed: &str, ty: TypeRefIr) -> Arc<ValidatedBytecodeArtifact> {
+    let mut artifact = admitted_bytecode(seed).artifact().clone();
+    artifact
+        .image
+        .pools
+        .types
+        .push(BytecodePoolEntry::TypeRef { ty });
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+}
+
+fn schema_record(
+    package_id: &str,
+    stable_schema_key: &str,
+    descriptor: ContractTypeDescriptor,
+) -> PackageSchemaTypeRecord {
+    let canonical_descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor,
+    };
+    let package_schema_type_id = skiff_artifact_model::derive_package_schema_type_id(
+        package_id,
+        stable_schema_key,
+        &canonical_descriptor,
+    )
+    .unwrap();
+    PackageSchemaTypeRecord {
+        package_id: package_id.to_string(),
+        stable_schema_key: stable_schema_key.to_string(),
+        package_schema_type_id,
+        canonical_descriptor,
+    }
+}
+
+fn schema_type_ref(record: &PackageSchemaTypeRecord) -> TypeRefIr {
+    TypeRefIr::PackageSchema {
+        package_id: record.package_id.clone(),
+        stable_schema_key: record.stable_schema_key.clone(),
+        package_schema_type_id: record.package_schema_type_id.clone(),
+    }
 }
 
 fn package_artifact(
@@ -181,6 +224,21 @@ fn hydrated_package(
     let artifact = package_artifact(package_id, build_id, Some(bytecode.reference().clone()));
     HydratedBytecodePackage::checked(package_reference(&artifact), artifact, Arc::clone(bytecode))
         .unwrap()
+}
+
+fn hydrated_deployment(
+    implementation: PackageArtifactRef,
+    packages: Vec<HydratedBytecodePackage>,
+) -> Result<HydratedDeploymentBytecode, DeploymentBytecodeHydrationError> {
+    let own_contract = contract_reference("example.consumer");
+    let deployment = deployment(implementation, own_contract.clone(), Vec::new());
+    HydratedDeploymentBytecode::checked(
+        deployment_reference(&deployment),
+        deployment,
+        BTreeMap::from([(own_contract.clone(), contract(&own_contract))]),
+        Vec::new(),
+        packages,
+    )
 }
 
 fn callable_bytecode(
@@ -1064,6 +1122,126 @@ fn deployment_checked_constructor_rejects_contract_mismatch() {
         }) if mismatch_key == key
             && expected.as_ref() == &expected_contract
             && actual.as_ref() == &actual_contract
+    ));
+}
+
+#[test]
+fn deployment_schema_closure_hydrates_cross_package_descriptors_without_schema_resolver() {
+    let child = schema_record(
+        "example.schema",
+        "model.MessageBody",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([("value".to_string(), ContractTypeRef::builtin("string"))]),
+        },
+    );
+    let schema = schema_record(
+        "example.schema",
+        "model.Message",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([(
+                "body".to_string(),
+                ContractTypeRef::package_schema(
+                    child.package_id.clone(),
+                    child.stable_schema_key.clone(),
+                    child.package_schema_type_id.clone(),
+                ),
+            )]),
+        },
+    );
+    let consumer_bytecode = bytecode_with_type_root("schema-consumer", schema_type_ref(&schema));
+    let schema_bytecode = admitted_bytecode("schema-owner");
+
+    let consumer_artifact = package_artifact(
+        "example.consumer-package",
+        "build:schema-consumer",
+        Some(consumer_bytecode.reference().clone()),
+    );
+    let consumer = HydratedBytecodePackage::checked(
+        package_reference(&consumer_artifact),
+        consumer_artifact,
+        consumer_bytecode,
+    )
+    .unwrap();
+    let consumer_reference = consumer.reference().clone();
+    let mut schema_artifact = package_artifact(
+        "example.schema",
+        "build:schema-owner",
+        Some(schema_bytecode.reference().clone()),
+    )
+    .as_ref()
+    .clone();
+    schema_artifact
+        .bytecode_schema_records
+        .insert(schema.package_schema_type_id.clone(), schema);
+    schema_artifact
+        .bytecode_schema_records
+        .insert(child.package_schema_type_id.clone(), child);
+    let schema_artifact = Arc::new(schema_artifact);
+    let schema_owner = HydratedBytecodePackage::checked(
+        package_reference(&schema_artifact),
+        schema_artifact,
+        schema_bytecode,
+    )
+    .unwrap();
+
+    hydrated_deployment(consumer_reference, vec![schema_owner, consumer]).unwrap();
+}
+
+#[test]
+fn deployment_schema_closure_rejects_missing_and_extra_descriptor_rows() {
+    let schema = schema_record(
+        "example.schema",
+        "model.Message",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    );
+    let consumer_bytecode = bytecode_with_type_root("schema-missing", schema_type_ref(&schema));
+    let consumer_artifact = package_artifact(
+        "example.consumer-package",
+        "build:schema-missing",
+        Some(consumer_bytecode.reference().clone()),
+    );
+    let consumer = HydratedBytecodePackage::checked(
+        package_reference(&consumer_artifact),
+        consumer_artifact,
+        consumer_bytecode,
+    )
+    .unwrap();
+    let consumer_reference = consumer.reference().clone();
+    assert!(matches!(
+        hydrated_deployment(consumer_reference, vec![consumer]),
+        Err(DeploymentBytecodeHydrationError::MissingSchemaPackageOwner { .. })
+    ));
+
+    let extra = schema_record(
+        "example.extra",
+        "model.Extra",
+        ContractTypeDescriptor::Record {
+            fields: BTreeMap::new(),
+        },
+    );
+    let bytecode = admitted_bytecode("schema-extra");
+    let mut artifact = package_artifact(
+        "example.extra",
+        "build:schema-extra",
+        Some(bytecode.reference().clone()),
+    )
+    .as_ref()
+    .clone();
+    artifact
+        .bytecode_schema_records
+        .insert(extra.package_schema_type_id.clone(), extra);
+    let artifact = Arc::new(artifact);
+    let package =
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode).unwrap();
+    let package_reference = package.reference().clone();
+    assert!(matches!(
+        hydrated_deployment(package_reference, vec![package]),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::SchemaDescriptor,
+            ..
+        })
     ));
 }
 

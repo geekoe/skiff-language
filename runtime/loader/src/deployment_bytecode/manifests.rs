@@ -20,8 +20,10 @@ use super::{
     HydratedServiceDependency,
 };
 
+mod schema_closure;
 mod synthetic;
 
+use schema_closure::validate_bytecode_schema_closure;
 use synthetic::SyntheticCallbackIndex;
 
 #[derive(Debug)]
@@ -155,6 +157,7 @@ pub(super) fn validate_deployment_manifests(
     packages: &BTreeMap<PackageBuildId, HydratedBytecodePackage>,
 ) -> Result<(), DeploymentBytecodeHydrationError> {
     validate_unique_package_ids(packages)?;
+    validate_bytecode_schema_closure(packages)?;
     validate_deployment_entry_callables(deployment, packages)?;
     for package in packages.values() {
         validate_package_manifest_type_refs(package, deployment, packages)?;
@@ -1958,9 +1961,15 @@ fn validate_type_ref(
         }
         TypeRefIr::PackageSchema {
             package_id,
+            stable_schema_key,
             package_schema_type_id,
-            ..
-        } => validate_package_schema_type(caller, package_id, package_schema_type_id, packages)?,
+        } => validate_package_schema_type(
+            caller,
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+            packages,
+        )?,
         TypeRefIr::LocalType { type_index } => {
             return manifest_error(
                 caller.reference(),
@@ -2004,9 +2013,15 @@ fn validate_nominal_base(
         }
         NominalTypeRefBaseIr::PackageSchema {
             package_id,
+            stable_schema_key,
             package_schema_type_id,
-            ..
-        } => validate_package_schema_type(caller, package_id, package_schema_type_id, packages),
+        } => validate_package_schema_type(
+            caller,
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+            packages,
+        ),
         NominalTypeRefBaseIr::LocalType { type_index } => manifest_error(
             caller.reference(),
             DeploymentBytecodeManifestKind::PackageReference,
@@ -2125,6 +2140,7 @@ fn exact_service_symbol_type_export<'a>(
 fn validate_package_schema_type(
     caller: &HydratedBytecodePackage,
     package_id: &str,
+    stable_schema_key: &str,
     type_id: &skiff_artifact_model::PackageSchemaTypeId,
     packages: &BTreeMap<PackageBuildId, HydratedBytecodePackage>,
 ) -> Result<(), DeploymentBytecodeHydrationError> {
@@ -2141,18 +2157,19 @@ fn validate_package_schema_type(
     if matches.next().is_some()
         || owner
             .artifact()
-            .package_schema_type_records
+            .bytecode_schema_records
             .get(type_id)
-            .is_none_or(|reference| {
-                reference.package_id.as_str() != package_id
-                    || &reference.package_schema_type_id != type_id
+            .is_none_or(|record| {
+                record.package_id.as_str() != package_id
+                    || record.stable_schema_key.as_str() != stable_schema_key
+                    || &record.package_schema_type_id != type_id
             })
     {
         return manifest_error(
             caller.reference(),
             DeploymentBytecodeManifestKind::PackageReference,
             format!(
-                "package schema type {package_id}:{type_id} has ambiguous or mismatched owner facts"
+                "package schema type {package_id}:{stable_schema_key}:{type_id} has ambiguous or mismatched bytecode descriptor authority"
             ),
         );
     }

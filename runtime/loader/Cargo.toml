@@ -13,11 +13,9 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
+skiff-canonical-json = { path = "../../canonical-json" }
 skiff-deployment = { path = "../../deployment" }
 skiff-runtime-model = { path = "../model" }
-
-[dev-dependencies]
-skiff-canonical-json = { path = "../../canonical-json" }
 
 [lints]
 workspace = true

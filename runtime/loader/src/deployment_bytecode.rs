@@ -8,8 +8,8 @@ use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     BytecodeArtifactRef, ContractOperationId, PackageArtifact, PackageArtifactRef, PackageBinding,
     PackageBuildId, PackageCallableId, PackageExecutableCoordinate, PackageRequirement,
-    PackageRequirementKey, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, ServiceRequirementKey,
+    PackageRequirementKey, PackageSchemaTypeId, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef, ServiceRequirementKey,
 };
 
 mod manifests;
@@ -71,6 +71,7 @@ pub enum DeploymentBytecodeManifestKind {
     Actor,
     InterfaceConformance,
     ConstantRoot,
+    SchemaDescriptor,
     PackageReference,
     ServiceOperation,
     RemoteInterface,
@@ -122,6 +123,11 @@ pub enum DeploymentBytecodeHydrationError {
         package_id: String,
         first_build_id: PackageBuildId,
         second_build_id: PackageBuildId,
+    },
+    MissingSchemaPackageOwner {
+        package_id: String,
+        stable_schema_key: String,
+        type_id: PackageSchemaTypeId,
     },
     DuplicateServiceSlot {
         key: ServiceRequirementKey,
@@ -202,6 +208,14 @@ impl fmt::Display for DeploymentBytecodeHydrationError {
             } => write!(
                 formatter,
                 "consumer closure resolves package {package_id} to builds {first_build_id} and {second_build_id}"
+            ),
+            Self::MissingSchemaPackageOwner {
+                package_id,
+                stable_schema_key,
+                type_id,
+            } => write!(
+                formatter,
+                "PackageSchema reference {package_id}:{stable_schema_key}:{type_id} has no hydrated package owner"
             ),
             Self::DuplicateServiceSlot { key } => {
                 write!(formatter, "service dependency slot {key:?} is repeated")
