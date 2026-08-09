@@ -24,7 +24,10 @@ mod suspend_analysis;
 mod type_inference;
 mod type_lowering;
 
-pub use const_evaluator::{Bounds, ConstEvaluator, ConstEvaluatorError};
+pub use const_evaluator::{
+    Bounds, ConstEvaluator, ConstEvaluatorError, FrozenConstantBundle, FrozenConstantLookupError,
+    FrozenConstantShape,
+};
 pub use entrypoint_abi::{
     package_entrypoint_function_signature, package_public_schema_abi_types_for_module,
     package_public_schema_type_names_for_module, EntrypointAbiIndex,

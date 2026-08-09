@@ -1,24 +1,23 @@
 //! Phase 2 bounded const evaluator (WP5).
 //!
 //! Evaluates every top-level `const` lowered expression DAG at compile time
-//! and produces one `FrozenConstantGraph` per const
-//! (`artifact-model::bytecode::dto`). The request-time executable initializer
-//! body never enters bytecode images; any evaluation failure is a compile
-//! error and fails the package build closed (no retryable initializer is
-//! produced). Const purity is enforced by the source checker (Wave 2); this
-//! evaluator performs the remaining compile-time evaluation under explicit
-//! bounds. See
+//! and produces one [`FrozenConstantBundle`] per File IR unit. The bundle owns
+//! every `FrozenConstantGraph` plus the canonical type and shape pools their
+//! indices reference. The request-time executable initializer body never
+//! enters bytecode images; any evaluation failure is a compile error and fails
+//! the package build closed (no retryable initializer is produced). Const
+//! purity is enforced by the source checker (Wave 2); this evaluator performs
+//! the remaining compile-time evaluation under explicit bounds. See
 //! `doc/implementation/bytecode-vm/design/phase-2-compiler-emission.md` §2.5.
 //!
 //! # Entry points
 //!
-//! - [`ConstEvaluator::evaluate_const`] evaluates one [`ConstIr`].
+//! - [`ConstEvaluator::evaluate_const`] evaluates one [`ConstIr`] into a
+//!   one-graph bundle.
 //! - [`ConstEvaluator::evaluate_unit`] evaluates every const of a
-//!   [`FileIrUnit`] and returns a `BTreeMap<String, FrozenConstantGraph>`
-//!   keyed by the const *symbol* `"{module_path}.{name}"` — the same symbol
-//!   recorded in `ConstDeclarationIr.symbol`. Wave 6's emitter entry
-//!   (`emit_bytecode_artifact(units, const_graphs, ...)` per §2.6) will adapt
-//!   to this key shape.
+//!   [`FileIrUnit`] and returns its self-contained [`FrozenConstantBundle`].
+//!   Graphs are keyed by the const *symbol* `"{module_path}.{name}"` — the
+//!   same symbol recorded in `ConstDeclarationIr.symbol`.
 //!
 //! Consts are evaluated in `unit.constants` declaration order; the first
 //! failing const aborts the unit with its `ConstEvaluatorError`.
@@ -81,28 +80,34 @@
 //! # Pool index contract (WP5 → WP6 seam)
 //!
 //! `FrozenConstantNode::TypeRef { type_ref }` and `Record { shape_index }`
-//! reference the image-level types/shapes pools, but the graph itself carries
-//! only indices. This evaluator defines both pools as a *canonical function
-//! of the graph content*, so the emitter can rebuild the pools from each
-//! graph alone and (if its image-level pool ordering differs) remap
-//! deterministically:
+//! reference the owning [`FrozenConstantBundle`]'s types/shapes pools. The
+//! graph alone is intentionally insufficient: an emitter must consume the
+//! bundle and use its checked lookups; it must never rebuild a pool from graph
+//! nodes or reopen File IR. Both pools are one canonical function of *all*
+//! graphs in the unit:
 //!
-//! - **Types pool**: the distinct `TypeRefIr` values referenced by the graph
+//! - **Types pool**: the distinct `TypeRefIr` values referenced by any graph
 //!   (`TypeRef` nodes and `Record` shape field types), ordered by ascending
 //!   canonical JSON text (`serde_json::to_string`; `TypeRefIr` contains only
 //!   `BTreeMap`/`Vec`/scalar fields, so the encoding is deterministic and
 //!   injective).
 //! - **Shapes pool**: the distinct shapes `(field_count, field_types)`
-//!   referenced by `Record` nodes, ordered by ascending
+//!   referenced by any `Record` node, ordered by ascending
 //!   `[field_count, canonical type indices...]` (lexicographic).
 //! - **Shape field order**: the record's declared field order, sorted by
 //!   field name (the same order as `Construct.fields` and
 //!   `TypeRefIr::Record.fields`). Field *types* are taken from the
 //!   constructed type's declared record descriptor; field *names* are not
-//!   part of `ShapeDeclaration` (the loader resolves names through the
-//!   type), so the emitter derives `ShapeDeclaration.field_types` from the
-//!   construct's declared type in the unit (WP6 owns that lookup; the
-//!   const's declared type itself is not embedded in the graph).
+//!   part of `ShapeDeclaration`; [`FrozenConstantShape`] carries the exact
+//!   ordered type indices, so the emitter performs no source lookup.
+//!
+//! Graph child indices remain local to each graph. Cross-graph merge order is
+//! ascending const symbol; an emitter appends graphs in that order and
+//! checked-adds the running node base to child indices. Cross-unit pool merge
+//! requires exact `bundle.module_path() == MirUnit.module_path` ownership:
+//! resolve local types under that module, then canonicalize and relocate the
+//! image-wide types and shapes. Missing, duplicate, or extra bundles are an
+//! emission error, never a reason to guess an owner.
 //!
 //! # Behavior function keys
 //!
@@ -136,17 +141,22 @@
 //!
 //! # Dead-code note (temporary)
 //!
-//! The module is re-exported through `lib.rs` (`pub use const_evaluator::{
-//! ConstEvaluator, ConstEvaluatorError, Bounds}`) as the Wave 6 emitter entry
-//! surface.
-use std::collections::{BTreeMap, BTreeSet};
+//! The evaluator, bundle, checked lookup error, bounds and structured build
+//! error are re-exported through `lib.rs` as the Wave 6 emitter surface.
 use skiff_artifact_model::{
     bytecode::dto::{FrozenConstantGraph, FrozenConstantNode},
     executable::{BinaryOpIr, ExecutableKind, ExprIr, ExprRefIr, StmtIr, UnaryOpIr},
     file_ir::{ConstIr, FileIrUnit},
     types::{LiteralIr, TypeDescriptorIr, TypeRefIr},
 };
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
+
+mod bundle;
+
+pub use bundle::{FrozenConstantBundle, FrozenConstantLookupError, FrozenConstantShape};
+
+use bundle::EvaluatedConstant;
 
 /// Which [`Bounds`] limit was exceeded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -187,9 +197,9 @@ impl Default for Bounds {
 
 /// Phase 2 bounded const evaluator.
 ///
-/// Evaluates top-level const lowered expression DAGs into
-/// [`FrozenConstantGraph`] values. See the module documentation for the full
-/// contract (supported nodes, pool index contract, root convention, bounds).
+/// Evaluates top-level const lowered expression DAGs into owned
+/// [`FrozenConstantBundle`] values. See the module documentation for the full
+/// contract (supported nodes, pool index ownership, root convention, bounds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConstEvaluator {
     bounds: Bounds,
@@ -203,28 +213,42 @@ impl ConstEvaluator {
 
     /// Evaluates every const of `unit` in declaration order.
     ///
-    /// Returns a `BTreeMap` keyed by the const symbol
-    /// `"{module_path}.{name}"` (the same symbol as
-    /// `ConstDeclarationIr.symbol`). The first failing const aborts the unit.
+    /// The bundle is owned by `unit.module_path`; all of its graphs share one
+    /// canonical type/shape pool. The first failing const aborts the unit.
     pub fn evaluate_unit(
         &self,
         unit: &FileIrUnit,
-    ) -> Result<BTreeMap<String, FrozenConstantGraph>, ConstEvaluatorError> {
-        let mut graphs = BTreeMap::new();
+    ) -> Result<FrozenConstantBundle, ConstEvaluatorError> {
+        let mut evaluated = BTreeMap::new();
         for constant in &unit.constants {
-            let graph = self.evaluate_const(unit, constant)?;
-            graphs.insert(format!("{}.{}", unit.module_path, constant.name), graph);
+            let symbol = format!("{}.{}", unit.module_path, constant.name);
+            match evaluated.entry(symbol) {
+                std::collections::btree_map::Entry::Occupied(entry) => {
+                    return Err(ConstEvaluatorError::DuplicateConstantSymbol {
+                        module_path: unit.module_path.clone(),
+                        symbol: entry.key().clone(),
+                    });
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let constant = Evaluator::new(unit, constant, self.bounds).run()?;
+                    entry.insert(constant);
+                }
+            }
         }
-        Ok(graphs)
+        FrozenConstantBundle::from_evaluated(unit.module_path.clone(), evaluated)
     }
 
-    /// Evaluates one const initializer body into a frozen constant graph.
+    /// Evaluates one const initializer body into a one-graph owned bundle.
+    /// This intentionally does not expose a graph without its index owners.
     pub fn evaluate_const(
         &self,
         unit: &FileIrUnit,
         constant: &ConstIr,
-    ) -> Result<FrozenConstantGraph, ConstEvaluatorError> {
-        Evaluator::new(unit, constant, self.bounds).run()
+    ) -> Result<FrozenConstantBundle, ConstEvaluatorError> {
+        let symbol = format!("{}.{}", unit.module_path, constant.name);
+        let evaluated =
+            BTreeMap::from([(symbol, Evaluator::new(unit, constant, self.bounds).run()?)]);
+        FrozenConstantBundle::from_evaluated(unit.module_path.clone(), evaluated)
     }
 }
 
@@ -242,10 +266,11 @@ struct Evaluator<'a> {
     /// Expression index -> record field names in ordinal (sorted) order, for
     /// expressions whose result node is a dense record.
     expr_fields: Vec<Option<Vec<String>>>,
-    /// Provisional types pool (first-seen order); canonicalized at the end.
+    /// Provisional types pool (first-seen order); canonicalized by the unit
+    /// bundle after every graph has evaluated.
     types: Vec<TypeRefIr>,
     /// Provisional shapes pool (first-seen order, deduplicated by field
-    /// types); canonicalized at the end.
+    /// types); canonicalized by the unit bundle.
     shapes: Vec<Vec<u32>>,
     /// Deduplicated behavior function keys.
     behaviors: BTreeSet<String>,
@@ -269,7 +294,7 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    fn run(mut self) -> Result<FrozenConstantGraph, ConstEvaluatorError> {
+    fn run(mut self) -> Result<EvaluatedConstant, ConstEvaluatorError> {
         self.validate_body()?;
         let return_expr = self.return_expression();
         let expression_count = self.constant.body.expressions.len() as u32;
@@ -286,8 +311,11 @@ impl<'a> Evaluator<'a> {
             let depth = self.depths[result_node as usize];
             self.push_node(duplicate, depth)?;
         }
-        self.canonicalize_pool_refs();
-        Ok(FrozenConstantGraph { nodes: self.nodes })
+        Ok(EvaluatedConstant {
+            graph: FrozenConstantGraph { nodes: self.nodes },
+            types: self.types,
+            shapes: self.shapes,
+        })
     }
 
     fn const_name(&self) -> &str {
@@ -761,44 +789,6 @@ impl<'a> Evaluator<'a> {
         Ok((self.nodes.len() - 1) as u32)
     }
 
-    /// Rewrites provisional pool indices into the canonical pools defined by
-    /// the graph content (see module documentation).
-    fn canonicalize_pool_refs(&mut self) {
-        let mut type_order: Vec<u32> = (0..self.types.len() as u32).collect();
-        type_order.sort_by(|left, right| {
-            type_pool_key(&self.types[*left as usize])
-                .cmp(&type_pool_key(&self.types[*right as usize]))
-        });
-        let mut type_map = vec![0u32; self.types.len()];
-        for (canonical, provisional) in type_order.into_iter().enumerate() {
-            type_map[provisional as usize] = canonical as u32;
-        }
-
-        let mut shape_order: Vec<u32> = (0..self.shapes.len() as u32).collect();
-        shape_order.sort_by(|left, right| {
-            shape_pool_key(&self.shapes[*left as usize], &type_map)
-                .cmp(&shape_pool_key(&self.shapes[*right as usize], &type_map))
-        });
-        let mut shape_map = vec![0u32; self.shapes.len()];
-        for (canonical, provisional) in shape_order.into_iter().enumerate() {
-            shape_map[provisional as usize] = canonical as u32;
-        }
-
-        for node in &mut self.nodes {
-            match node {
-                FrozenConstantNode::TypeRef { type_ref } => {
-                    *type_ref = type_map[*type_ref as usize];
-                }
-                FrozenConstantNode::Record { shape_index, .. } => {
-                    *shape_index = shape_map[*shape_index as usize];
-                }
-                FrozenConstantNode::Literal { .. }
-                | FrozenConstantNode::Array { .. }
-                | FrozenConstantNode::Behavior { .. } => {}
-            }
-        }
-    }
-
     fn unsupported(
         &self,
         expression: u32,
@@ -829,23 +819,6 @@ impl<'a> Evaluator<'a> {
             actual,
         }
     }
-}
-
-/// Canonical ordering key for a type-pool entry (ascending JSON text).
-fn type_pool_key(ty: &TypeRefIr) -> String {
-    serde_json::to_string(ty).expect("TypeRefIr serializes without failure")
-}
-
-/// Canonical ordering key for a shape: `[field_count, canonical type indices]`.
-fn shape_pool_key(field_types: &[u32], type_map: &[u32]) -> Vec<u32> {
-    let mut key = Vec::with_capacity(field_types.len() + 1);
-    key.push(field_types.len() as u32);
-    key.extend(
-        field_types
-            .iter()
-            .map(|provisional| type_map[*provisional as usize]),
-    );
-    key
 }
 
 /// Evaluates one unary operation over a literal.
@@ -1020,6 +993,17 @@ fn number_result(
 /// build fails closed and no retryable request-time initializer is emitted.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum ConstEvaluatorError {
+    /// Two unit constants resolved to the same canonical graph key.
+    #[error("constant bundle `{module_path}` repeats graph symbol `{symbol}`")]
+    DuplicateConstantSymbol { module_path: String, symbol: String },
+    /// Internal graph/pool relocation did not satisfy the public bundle
+    /// contract. This is fail-closed rather than exposing ambiguous indices.
+    #[error("constant bundle `{module_path}` graph `{symbol}` is invalid: {message}")]
+    BundleContract {
+        module_path: String,
+        symbol: String,
+        message: String,
+    },
     /// The const body is not the expected single-entry `Return` shape.
     #[error("const `{const_name}` initializer body is invalid: {message}")]
     InvalidConstBody { const_name: String, message: String },
@@ -1199,7 +1183,12 @@ mod tests {
         unit: &FileIrUnit,
         constant: &ConstIr,
     ) -> Result<FrozenConstantGraph, ConstEvaluatorError> {
-        ConstEvaluator::new(Bounds::default()).evaluate_const(unit, constant)
+        let symbol = format!("{}.{}", unit.module_path, constant.name);
+        let bundle = ConstEvaluator::new(Bounds::default()).evaluate_const(unit, constant)?;
+        Ok(bundle
+            .graph(&symbol)
+            .expect("one-const bundle owns its graph")
+            .clone())
     }
 
     #[test]
@@ -1451,6 +1440,251 @@ mod tests {
                     children: vec![2, 4],
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn bundle_relocates_and_deduplicates_pools_across_graphs() {
+        let type_table = vec![
+            record_type_declaration(
+                "A",
+                &[
+                    ("a", TypeRefIr::builtin("string")),
+                    ("b", TypeRefIr::builtin("integer")),
+                ],
+            ),
+            record_type_declaration("B", &[("x", TypeRefIr::builtin("string"))]),
+        ];
+        let zeta = const_ir(
+            "zeta",
+            vec![
+                literal_expr(string("z")),
+                ExprIr::Construct {
+                    type_ref: TypeRefIr::LocalType { type_index: 1 },
+                    fields: BTreeMap::from([("x".to_string(), expr_ref(0))]),
+                },
+            ],
+        );
+        let alpha = const_ir(
+            "alpha",
+            vec![
+                literal_expr(string("a")),
+                literal_expr(number(1.0)),
+                ExprIr::Construct {
+                    type_ref: TypeRefIr::LocalType { type_index: 0 },
+                    fields: BTreeMap::from([
+                        ("a".to_string(), expr_ref(0)),
+                        ("b".to_string(), expr_ref(1)),
+                    ]),
+                },
+            ],
+        );
+        let middle = const_ir(
+            "middle",
+            vec![
+                literal_expr(string("wrapped")),
+                ExprIr::RepresentationWrap {
+                    value: expr_ref(0),
+                    type_ref: TypeRefIr::builtin("secret"),
+                },
+            ],
+        );
+        let reverse_unit = unit_with(
+            vec![alpha.clone(), middle.clone(), zeta.clone()],
+            type_table.clone(),
+            Vec::new(),
+            BTreeMap::new(),
+        );
+        let unit = unit_with(
+            vec![zeta, middle, alpha],
+            type_table,
+            Vec::new(),
+            BTreeMap::new(),
+        );
+
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&unit)
+            .expect("unit bundle evaluates");
+        assert_eq!(
+            bundle,
+            ConstEvaluator::new(Bounds::default())
+                .evaluate_unit(&reverse_unit)
+                .expect("reordered unit bundle evaluates"),
+            "successful bundle ordering is canonical across const declaration order"
+        );
+        assert_eq!(bundle.module_path(), MODULE);
+        assert_eq!(
+            bundle.graphs().keys().cloned().collect::<Vec<_>>(),
+            vec![
+                "internal.t.alpha".to_string(),
+                "internal.t.middle".to_string(),
+                "internal.t.zeta".to_string()
+            ]
+        );
+        assert!(bundle.types().windows(2).all(|pair| {
+            serde_json::to_string(&pair[0]).expect("type serializes")
+                < serde_json::to_string(&pair[1]).expect("type serializes")
+        }));
+        assert_eq!(
+            bundle.types().len(),
+            3,
+            "shared string type is deduplicated"
+        );
+        let integer_index = bundle
+            .types()
+            .iter()
+            .position(|ty| ty == &TypeRefIr::builtin("integer"))
+            .and_then(|index| u32::try_from(index).ok())
+            .expect("integer type index");
+        let secret_index = bundle
+            .types()
+            .iter()
+            .position(|ty| ty == &TypeRefIr::builtin("secret"))
+            .and_then(|index| u32::try_from(index).ok())
+            .expect("secret type index");
+        let string_index = bundle
+            .types()
+            .iter()
+            .position(|ty| ty == &TypeRefIr::builtin("string"))
+            .and_then(|index| u32::try_from(index).ok())
+            .expect("string type index");
+        assert_eq!(bundle.shapes().len(), 2);
+        assert_eq!(bundle.shapes()[0].field_count(), 1);
+        assert_eq!(bundle.shapes()[0].field_types(), &[string_index]);
+        assert_eq!(bundle.shapes()[1].field_count(), 2);
+        assert_eq!(
+            bundle.shapes()[1].field_types(),
+            &[string_index, integer_index]
+        );
+        assert_eq!(
+            bundle
+                .shape_field_type(1, 0)
+                .expect("shape field type resolves"),
+            &TypeRefIr::builtin("string")
+        );
+        assert_eq!(
+            bundle
+                .shape_field_type(1, 1)
+                .expect("shape field type resolves"),
+            &TypeRefIr::builtin("integer")
+        );
+        assert!(matches!(
+            bundle.shape_field_type(0, 1),
+            Err(FrozenConstantLookupError::MissingShapeField {
+                shape_index: 0,
+                field_ordinal: 1,
+                ..
+            })
+        ));
+
+        let alpha_root = bundle.root("internal.t.alpha").expect("alpha root");
+        assert_eq!(alpha_root, 2);
+        assert!(matches!(
+            bundle
+                .node("internal.t.alpha", alpha_root)
+                .expect("alpha root node"),
+            FrozenConstantNode::Record { shape_index: 1, .. }
+        ));
+        let FrozenConstantNode::TypeRef { type_ref } = bundle
+            .node("internal.t.middle", 1)
+            .expect("middle type-ref node")
+        else {
+            panic!("expected middle type-ref node")
+        };
+        assert_eq!(*type_ref, secret_index);
+        assert_eq!(
+            bundle
+                .type_ref(*type_ref)
+                .expect("middle type-ref resolves through bundle"),
+            &TypeRefIr::builtin("secret")
+        );
+        let zeta_root = bundle.root("internal.t.zeta").expect("zeta root");
+        assert_eq!(zeta_root, 1);
+        assert!(matches!(
+            bundle
+                .node("internal.t.zeta", zeta_root)
+                .expect("zeta root node"),
+            FrozenConstantNode::Record { shape_index: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn bundle_checked_lookups_fail_closed() {
+        let unit = unit_with(
+            vec![const_ir("answer", vec![literal_expr(number(42.0))])],
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+        );
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&unit)
+            .expect("literal bundle evaluates");
+
+        assert!(matches!(
+            bundle.graph("internal.t.missing"),
+            Err(FrozenConstantLookupError::MissingGraph { .. })
+        ));
+        assert!(matches!(
+            bundle.node("internal.t.answer", 1),
+            Err(FrozenConstantLookupError::MissingNode { node_index: 1, .. })
+        ));
+        assert!(matches!(
+            bundle.type_ref(0),
+            Err(FrozenConstantLookupError::MissingType { type_ref: 0, .. })
+        ));
+        assert!(matches!(
+            bundle.shape(0),
+            Err(FrozenConstantLookupError::MissingShape { shape_index: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn bundle_builder_rejects_unowned_pool_indices() {
+        let evaluated = BTreeMap::from([(
+            "internal.t.bad".to_string(),
+            EvaluatedConstant {
+                graph: FrozenConstantGraph {
+                    nodes: vec![FrozenConstantNode::TypeRef { type_ref: 1 }],
+                },
+                types: vec![TypeRefIr::builtin("string")],
+                shapes: Vec::new(),
+            },
+        )]);
+
+        let error = FrozenConstantBundle::from_evaluated(MODULE.to_string(), evaluated)
+            .expect_err("graph-local type indices must resolve during bundle construction");
+        assert!(matches!(
+            error,
+            ConstEvaluatorError::BundleContract {
+                module_path,
+                symbol,
+                message,
+            } if module_path == MODULE
+                && symbol == "internal.t.bad"
+                && message.contains("type index 1 is out of bounds")
+        ));
+    }
+
+    #[test]
+    fn bundle_rejects_duplicate_constant_symbols() {
+        let unit = unit_with(
+            vec![
+                const_ir("same", vec![literal_expr(number(1.0))]),
+                const_ir("same", vec![literal_expr(number(2.0))]),
+            ],
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+        );
+        let error = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&unit)
+            .expect_err("duplicate graph symbols must fail closed");
+        assert_eq!(
+            error,
+            ConstEvaluatorError::DuplicateConstantSymbol {
+                module_path: MODULE.to_string(),
+                symbol: "internal.t.same".to_string(),
+            }
         );
     }
 
@@ -1747,7 +1981,10 @@ mod tests {
                 },
             ],
         );
-        let graph = evaluate(&unit, &constant).expect("wrap evaluates");
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_const(&unit, &constant)
+            .expect("wrap evaluates");
+        let graph = bundle.graph("internal.t.wrapped").expect("wrapped graph");
         // The wrap result is the value node; per the root convention (last
         // node = result) a value-identical duplicate is appended as the root.
         assert_eq!(
@@ -1761,6 +1998,15 @@ mod tests {
                     literal: string("x")
                 },
             ]
+        );
+        let FrozenConstantNode::TypeRef { type_ref } = &graph.nodes[1] else {
+            panic!("expected type-ref sidecar node")
+        };
+        assert_eq!(
+            bundle
+                .type_ref(*type_ref)
+                .expect("type-ref node resolves through its bundle"),
+            &TypeRefIr::builtin("secret")
         );
     }
 
@@ -2043,7 +2289,7 @@ mod tests {
             .expect("unit evaluates again");
         assert_eq!(first, second);
         assert_eq!(
-            first.keys().cloned().collect::<Vec<_>>(),
+            first.graphs().keys().cloned().collect::<Vec<_>>(),
             vec!["internal.t.foo".to_string(), "internal.t.items".to_string()]
         );
     }
@@ -2055,11 +2301,11 @@ mod tests {
             const_ir("beta", vec![literal_expr(string("b"))]),
         ];
         let unit = unit_with(constants, Vec::new(), Vec::new(), BTreeMap::new());
-        let graphs = ConstEvaluator::new(Bounds::default())
+        let bundle = ConstEvaluator::new(Bounds::default())
             .evaluate_unit(&unit)
             .expect("unit evaluates");
         assert_eq!(
-            graphs.keys().cloned().collect::<Vec<_>>(),
+            bundle.graphs().keys().cloned().collect::<Vec<_>>(),
             vec![
                 "internal.t.alpha".to_string(),
                 "internal.t.beta".to_string()

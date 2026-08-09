@@ -8,11 +8,12 @@
 //! effects, or source facts (design §2.4 stop condition).
 //!
 //! Frozen constant graphs are deliberately not embedded in [`MirUnit`]. They
-//! are produced by [`crate::ConstEvaluator`] and must remain a separate,
-//! explicit emitter input. Likewise, this C0 contract does not invent a
-//! `ValueTransferPlan`: a later source-owned fact must supply that plan before
-//! emission. An emitter must fail closed when it is absent and must never
-//! default a transfer to `SnapshotShare`.
+//! are produced by [`crate::ConstEvaluator`] as a unit-owned
+//! [`crate::FrozenConstantBundle`] whose module owner and type/shape pools are
+//! a separate, explicit emitter input. Likewise, this C0 contract does not
+//! invent a `ValueTransferPlan`: a later source-owned fact must supply that
+//! plan before emission. An emitter must fail closed when it is absent and
+//! must never default a transfer to `SnapshotShare`.
 //!
 //! # Construction rules
 //!
@@ -43,10 +44,12 @@
 //!
 //! # Callable identity conventions
 //!
-//! - `function_key(module_path, symbol) = "{module_path}::{symbol}"` where
-//!   `symbol` is the File IR executable symbol (`{module_path}.{declaration}`).
-//!   The emitter maps unit functions into `BytecodeImage.functions` by this
-//!   key (design §2.6).
+//! - `symbol` is the File IR executable symbol
+//!   (`{module_path}.{declaration}`). After requiring and stripping that exact
+//!   module prefix, the bytecode function key is
+//!   `"{module_path}::{declaration}"`. This is also the sole key spelling in
+//!   frozen `Behavior` nodes; `"{module_path}::{symbol}"` would duplicate the
+//!   module and is invalid (design §2.6).
 //! - `effect_summary_ref` is the canonical typed package implementation
 //!   callable identity from
 //!   [`skiff_compiler_core::implementation_package_callable_id`]. The full
@@ -82,8 +85,9 @@ use skiff_artifact_model::{
 /// Expression-owned indices such as `ServiceCallRefIndex` resolve only
 /// against this unit's cloned [`ExternalRefTable`]. Local type indices and
 /// source spans likewise resolve against this unit's cloned type/source facts.
-/// Const graphs are a separate explicit [`crate::ConstEvaluator`] output; an
-/// emitter must not reopen the source `FileIrUnit` for any of these facts.
+/// Const graphs and their pool-index owners are a separate explicit
+/// [`crate::FrozenConstantBundle`]; an emitter must exact-match its module and
+/// must not reopen the source `FileIrUnit` for any of these facts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirUnit {
     pub module_path: String,
