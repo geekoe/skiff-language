@@ -85,9 +85,9 @@ fn native_lifecycle_nesting_uses_the_registry_limit() {
     assert!(matches!(
         root_error(&plan(&facts, &ty).expect_err("native nesting must be bounded")),
         SourceValueTransferError::NativeLifecycleLookup {
-            source: NativeValueLifecycleLookupError::NestingLimit,
+            source,
             ..
-        }
+        } if source.as_ref() == &NativeValueLifecycleLookupError::NestingLimit
     ));
 }
 
@@ -103,9 +103,9 @@ fn unknown_and_unregistered_builtins_never_receive_guessed_plans() {
     assert!(matches!(
         plan(&facts, &builtin("TaskRef")),
         Err(SourceValueTransferError::NativeLifecycleLookup {
-            source: NativeValueLifecycleLookupError::Missing { .. },
+            source,
             ..
-        })
+        }) if matches!(source.as_ref(), NativeValueLifecycleLookupError::Missing { .. })
     ));
 }
 

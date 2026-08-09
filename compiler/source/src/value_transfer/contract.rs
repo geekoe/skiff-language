@@ -294,9 +294,9 @@ pub enum SourceValueTransferError {
     EmptyUnion { owner: String },
     #[error("pinned native lifecycle lookup failed for `{ty:?}`: {source}")]
     NativeLifecycleLookup {
-        ty: TypeRefIr,
+        ty: Box<TypeRefIr>,
         #[source]
-        source: NativeValueLifecycleLookupError,
+        source: Box<NativeValueLifecycleLookupError>,
     },
     #[error(
         "native lifecycle adapter `{binding_key}` is not authoritative for role {expected_role:?} ABI {expected_abi_version}"

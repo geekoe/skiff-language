@@ -108,7 +108,7 @@ pub struct SourceIndexSegmentFact {
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub struct ExpressionTypeModelBuildError {
-    model: ExpressionTypeModel,
+    model: Box<ExpressionTypeModel>,
     diagnostics: Vec<String>,
 }
 
@@ -373,7 +373,10 @@ impl ExpressionTypeModel {
             object_materializations: object_materialization.facts,
         };
         if !diagnostics.is_empty() {
-            return Err(ExpressionTypeModelBuildError { model, diagnostics });
+            return Err(ExpressionTypeModelBuildError {
+                model: Box::new(model),
+                diagnostics,
+            });
         }
 
         Ok(model)

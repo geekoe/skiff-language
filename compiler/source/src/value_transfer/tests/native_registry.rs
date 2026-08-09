@@ -204,9 +204,9 @@ fn package_registry_identity_and_arity_are_exact() {
     assert!(matches!(
         plan_with_registry(&facts, &registry, &wrong_arity, &[]),
         Err(SourceValueTransferError::NativeLifecycleLookup {
-            source: NativeValueLifecycleLookupError::ArityMismatch { actual: 1, .. },
+            source,
             ..
-        })
+        }) if matches!(source.as_ref(), NativeValueLifecycleLookupError::ArityMismatch { actual: 1, .. })
     ));
 
     let dependency = TypeRefIr::PackageSymbol {

@@ -478,5 +478,8 @@ fn native_lookup_error(
     ty: TypeRefIr,
     source: NativeValueLifecycleLookupError,
 ) -> SourceValueTransferError {
-    SourceValueTransferError::NativeLifecycleLookup { ty, source }
+    SourceValueTransferError::NativeLifecycleLookup {
+        ty: Box::new(ty),
+        source: Box::new(source),
+    }
 }
