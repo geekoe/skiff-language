@@ -16,7 +16,7 @@ pub(crate) fn test_runtime_package(
         })
         .collect::<Vec<_>>();
     let artifact = serde_json::from_value(serde_json::json!({
-        "schemaVersion": "skiff-package-artifact-v9",
+        "schemaVersion": skiff_artifact_model::PACKAGE_ARTIFACT_SCHEMA_VERSION,
         "packageId": package_id,
         "packageVersion": "1.0.0",
         "packageBuildId": format!("test-build:{slot}:{package_id}"),
@@ -33,6 +33,8 @@ pub(crate) fn test_runtime_package(
         "packageSchemaTypeRecords": {},
         "implementationLinks": {},
         "callableLinks": {},
+        "actorImplementations": [],
+        "localInterfaceConformances": [],
         "packageRequirements": [],
         "contractRequirements": [],
         "serviceRequirements": [],
