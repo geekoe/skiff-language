@@ -2027,7 +2027,7 @@ version: 1.0.0
                     return true
                 }
             "#,
-                "cannot assign to field of readonly binding `user`",
+                "assignment target derives from immutable binding `user`",
             ),
             (
                 "update",
@@ -2049,7 +2049,7 @@ version: 1.0.0
                     return true
                 }
             "#,
-                "unknown field `name` on User?",
+                "assignment target derives from immutable binding `user`",
             ),
             (
                 "replace",
@@ -2071,7 +2071,7 @@ version: 1.0.0
                     return true
                 }
             "#,
-                "unknown field `name` on User?",
+                "assignment target derives from immutable binding `user`",
             ),
             (
                 "upsert",
@@ -2093,7 +2093,7 @@ version: 1.0.0
                     return true
                 }
             "#,
-                "cannot assign to field of readonly binding `result`",
+                "assignment target derives from immutable binding `result`",
             ),
         ] {
             let error = compile_package_file_ir(
