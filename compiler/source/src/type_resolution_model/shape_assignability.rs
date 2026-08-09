@@ -218,7 +218,7 @@ impl TypeResolutionModel {
         }
     }
 
-    fn package_method_slots_for_local_conformance(
+    pub(super) fn package_method_slots_for_local_conformance(
         &self,
         receiver: &SourceSymbolKey,
         receiver_args: &[TypeRefIr],

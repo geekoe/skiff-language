@@ -17,6 +17,7 @@ pub(crate) mod expression_type_model;
 mod foreign_db_targets;
 mod linked_facts;
 pub(crate) mod linked_publication;
+mod local_interface_conformances;
 mod name_resolution_model;
 mod package_db_schema;
 mod package_dependency_facts;
@@ -101,6 +102,10 @@ pub use expression_type_model::{
 pub use foreign_db_targets::{foreign_package_db_metadata_index, ForeignPackageDbDependency};
 pub use linked_facts::{SourceCompileLinkedFacts, SourceCompileLinkedFactsInput};
 pub use linked_publication::CompileParsedPackageSourcesInput;
+pub use local_interface_conformances::{
+    SourceLocalInterfaceConformance, SourceLocalInterfaceConformanceError,
+    SourceLocalInterfaceConformanceFacts, SourceLocalInterfaceConformanceFactsError,
+};
 pub use name_resolution_model::{validate_source_name_resolution_from_model, NameResolutionModel};
 pub use package_dependency_facts::{SourceCompilePackageDependencyFact, SourceCompilePackageFacts};
 pub use resolved_call_targets::{

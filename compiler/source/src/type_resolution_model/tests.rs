@@ -1363,6 +1363,93 @@ fn package_reader_conformance_source() -> &'static str {
 }
 
 #[test]
+fn local_interface_conformance_facts_preserve_source_declaration_slot_order() {
+    let (_parsed_sources, model) = type_resolution(
+        r#"
+          interface Ordered<T> {
+            function zeta(self: Self, value: T) -> T
+            function alpha(self: Self) -> string
+          }
+
+          interface Marker {}
+
+          type Box<T> implements Ordered<T>, Marker {
+            value: T,
+          }
+
+          impl Box<T> {
+            function alpha() -> string { return "alpha" }
+            function zeta(value: T) -> T { return value }
+          }
+        "#,
+    );
+
+    let facts = model
+        .local_interface_conformance_facts()
+        .expect("source conformances should expose exact canonical facts");
+    assert_eq!(facts.len(), 2);
+    let ordered = facts
+        .iter()
+        .find(|row| {
+            serde_json::from_str::<TypeRefIr>(&row.interface().interface_abi_id).is_ok_and(
+                |identity| {
+                    matches!(
+                        identity,
+                        TypeRefIr::ServiceSymbol { symbol }
+                            if symbol.module_path == MODULE && symbol.symbol == "Ordered"
+                    )
+                },
+            )
+        })
+        .expect("Ordered<T> conformance should be present");
+    assert_eq!(ordered.receiver(), &SourceSymbolKey::new(MODULE, "Box"));
+    assert_eq!(ordered.receiver_type_parameters(), &["T".to_string()]);
+    assert_eq!(
+        ordered.interface().canonical_type_args,
+        vec![TypeRefIr::TypeParam {
+            name: "T".to_string()
+        }]
+    );
+    assert_eq!(
+        ordered.implementation_methods(),
+        &[
+            SourceSymbolKey::new(MODULE, "Box<T>.zeta"),
+            SourceSymbolKey::new(MODULE, "Box<T>.alpha"),
+        ],
+        "implementation keys must follow interface declaration slots, not impl or name order"
+    );
+    assert!(facts
+        .iter()
+        .find(|row| {
+            serde_json::from_str::<TypeRefIr>(&row.interface().interface_abi_id).is_ok_and(
+                |identity| {
+                    matches!(
+                        identity,
+                        TypeRefIr::ServiceSymbol { symbol }
+                            if symbol.module_path == MODULE && symbol.symbol == "Marker"
+                    )
+                },
+            )
+        })
+        .expect("marker conformance should be present")
+        .implementation_methods()
+        .is_empty());
+}
+
+#[test]
+fn imported_conformance_projection_requires_an_exact_artifact_owner() {
+    let (_parsed_sources, model) = package_type_resolution(package_reader_conformance_source());
+
+    let error = model
+        .local_interface_conformance_facts()
+        .expect_err("package facts without a selected artifact ABI must fail closed");
+    assert!(matches!(
+        error,
+        crate::SourceLocalInterfaceConformanceFactsError::MissingPackageOwner { .. }
+    ));
+}
+
+#[test]
 fn any_interface_selector_resolution_rejects_non_interface_targets() {
     let (_parsed_sources, type_resolution) = type_resolution(object_safe_interface_source());
     let context = context();
@@ -1745,6 +1832,14 @@ fn package_interface_conformance_rejects_local_impl_signature_mismatch() {
             .is_none(),
         "local method table slots must not be generated for mismatched package conformance"
     );
+    assert!(matches!(
+        type_resolution.local_interface_conformance_facts(),
+        Err(
+            crate::SourceLocalInterfaceConformanceFactsError::ImportedInterfaceImplementationMismatch {
+                ..
+            }
+        )
+    ));
 }
 
 #[test]
@@ -2600,6 +2695,29 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
         }
     );
     assert_eq!(symbol.symbol_path, "types.LlmClient");
+    assert_eq!(symbol.abi_expectation.as_deref(), Some("abi"));
+    let projected = model
+        .local_interface_conformance_facts()
+        .expect("artifact-backed imported conformance should project");
+    assert_eq!(projected.len(), 1);
+    assert_eq!(
+        projected.conformances()[0].implementation_methods(),
+        &[SourceSymbolKey::new(MODULE, "LocalClient.complete")]
+    );
+    let TypeRefIr::PackageSymbol { symbol } = serde_json::from_str::<TypeRefIr>(
+        &projected.conformances()[0].interface().interface_abi_id,
+    )
+    .expect("projected imported interface identity should decode") else {
+        panic!("projected imported interface must retain package ownership")
+    };
+    assert_eq!(
+        symbol.package,
+        PackageRefIr::PackageId {
+            package_id: "llm-api".to_string()
+        }
+    );
+    assert_eq!(symbol.symbol_path, "types.LlmClient");
+    assert_eq!(symbol.abi_expectation.as_deref(), Some("abi"));
 
     let mut tampered_method = artifact.clone();
     tampered_method

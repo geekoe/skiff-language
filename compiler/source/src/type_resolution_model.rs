@@ -52,6 +52,7 @@ use super::{
 
 mod catch_leaves;
 mod index;
+mod local_interface_conformances;
 mod query;
 mod shape_assignability;
 

@@ -338,6 +338,17 @@ impl PackageSourceModel {
         &self.type_resolution
     }
 
+    /// Returns the source-authoritative local conformance handoff without
+    /// exposing the type model's indexing tables.
+    pub fn local_interface_conformance_facts(
+        &self,
+    ) -> Result<
+        super::SourceLocalInterfaceConformanceFacts,
+        super::SourceLocalInterfaceConformanceFactsError,
+    > {
+        self.type_resolution.local_interface_conformance_facts()
+    }
+
     pub fn expression_sources(&self) -> &ExpressionSourceMap {
         &self.expression_sources
     }
