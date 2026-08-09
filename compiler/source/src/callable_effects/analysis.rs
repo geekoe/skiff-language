@@ -13,7 +13,9 @@ use crate::{
 };
 
 use super::{
-    call_graph::LocalCallGraph, provenance::CallableState, transfer::transfer_callable,
+    call_graph::LocalCallGraph,
+    provenance::CallableState,
+    transfer::{transfer_callable, TransferContext},
     CallableDefinition, SourceCallableAnalysis, SourceCallableEffectFacts,
     SourceCallableProvenanceFacts,
 };
@@ -33,6 +35,7 @@ pub(crate) fn analyze_source_callables(
     // Local seeds contain only syntax/provenance transfer and canonical
     // dependency facts. A missing local summary is lattice bottom here; local
     // propagation happens exclusively through the SCC loop below.
+    let empty_summaries = BTreeMap::new();
     for (key, definition) in &definitions {
         if definition.is_test_source {
             continue;
@@ -41,13 +44,15 @@ pub(crate) fn analyze_source_callables(
             key.clone(),
             transfer_callable(
                 definition,
-                &definitions,
-                &module_constants,
-                &BTreeMap::new(),
-                resolved_call_targets,
-                dependency_analysis,
-                expression_types,
-                type_resolution,
+                &TransferContext {
+                    definitions: &definitions,
+                    module_constants: &module_constants,
+                    summaries: &empty_summaries,
+                    resolved_call_targets,
+                    dependency_analysis,
+                    expression_types,
+                    type_resolution,
+                },
             ),
         );
     }
@@ -64,13 +69,15 @@ pub(crate) fn analyze_source_callables(
                 }
                 let candidate = transfer_callable(
                     definition,
-                    &definitions,
-                    &module_constants,
-                    &states,
-                    resolved_call_targets,
-                    dependency_analysis,
-                    expression_types,
-                    type_resolution,
+                    &TransferContext {
+                        definitions: &definitions,
+                        module_constants: &module_constants,
+                        summaries: &states,
+                        resolved_call_targets,
+                        dependency_analysis,
+                        expression_types,
+                        type_resolution,
+                    },
                 );
                 changed |= states
                     .entry(key.clone())

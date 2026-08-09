@@ -23,7 +23,7 @@ use type_projection::{resolved_contract_type, ContractCallTypeProjection};
 pub(super) enum ContractCallOutcome {
     NotContract,
     Typed {
-        return_type: ResolvedTypeRef,
+        return_type: Box<ResolvedTypeRef>,
         projected_return_type: PackageTypeRef,
     },
     Invalid(Vec<String>),
@@ -81,7 +81,7 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
         };
         if diagnostics.is_empty() {
             ContractCallOutcome::Typed {
-                return_type,
+                return_type: Box::new(return_type),
                 projected_return_type,
             }
         } else {

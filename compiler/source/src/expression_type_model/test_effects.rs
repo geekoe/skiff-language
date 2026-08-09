@@ -44,14 +44,16 @@ impl<'a> OwnerChecker<'a> {
         let actual = self.check_expr(value);
         if let Some(actual) = actual {
             self.check_value_assignable_to_expected(
-                None,
                 value,
                 &key,
                 &actual,
                 &partial,
-                None,
-                "test effect expect subset",
-                self.expression_span(&key),
+                ValueAssignmentContext {
+                    annotation: None,
+                    exact_expected: None,
+                    diagnostic_context: "test effect expect subset",
+                    fallback_span: self.expression_span(&key),
+                },
             );
         }
     }
@@ -83,14 +85,16 @@ impl<'a> OwnerChecker<'a> {
         }
         let resolved_expected = resolved_package_type_ref(expected);
         self.check_value_assignable_to_expected(
-            None,
             value,
             &key,
             &actual,
             &resolved_expected,
-            Some(expected),
-            &format!("test effect {context}"),
-            self.expression_span(&key),
+            ValueAssignmentContext {
+                annotation: None,
+                exact_expected: Some(expected),
+                diagnostic_context: &format!("test effect {context}"),
+                fallback_span: self.expression_span(&key),
+            },
         );
     }
 

@@ -179,19 +179,18 @@ impl TypeResolutionModel {
             }
         }
         if let Some(dependencies) = compiler_owned_dependencies {
-            index_compiler_owned_package_artifacts(
-                package_artifacts,
-                dependencies,
-                &mut package_types,
-                &mut package_interfaces,
-                &mut package_type_slots,
-                &mut package_type_source_paths,
-                &mut package_constants,
-                &mut package_dependencies,
-                &mut package_dependency_views,
-                &mut package_dependency_canonical_refs,
-                &mut package_artifact_identities,
-            )?;
+            let mut indexes = CompilerOwnedPackageIndexes {
+                types: &mut package_types,
+                interfaces: &mut package_interfaces,
+                type_slots: &mut package_type_slots,
+                type_source_paths: &mut package_type_source_paths,
+                constants: &mut package_constants,
+                dependencies: &mut package_dependencies,
+                dependency_views: &mut package_dependency_views,
+                dependency_canonical_refs: &mut package_dependency_canonical_refs,
+                artifact_identities: &mut package_artifact_identities,
+            };
+            index_compiler_owned_package_artifacts(package_artifacts, dependencies, &mut indexes)?;
         }
         let semantic_publication = type_resolution_semantic_publication(parsed_sources);
         let interface_semantics = InterfaceSemantics::build(&semantic_publication)

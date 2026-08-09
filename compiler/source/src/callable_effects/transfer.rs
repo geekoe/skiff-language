@@ -21,15 +21,9 @@ mod statement;
 
 type Environment = BTreeMap<String, AbstractValue>;
 
-pub(super) fn transfer_callable(
-    definition: &CallableDefinition<'_>,
-    definitions: &BTreeMap<SourceSymbolKey, CallableDefinition<'_>>,
-    module_constants: &BTreeMap<SourceSymbolKey, ModuleConstantFact>,
-    summaries: &BTreeMap<SourceSymbolKey, CallableState>,
-    resolved_call_targets: &ResolvedCallTargetFacts,
-    dependency_analysis: &SourceDependencyAnalysisInput,
-    expression_types: &ExpressionTypeModel,
-    type_resolution: &TypeResolutionModel,
+pub(super) fn transfer_callable<'source>(
+    definition: &CallableDefinition<'source>,
+    context: &TransferContext<'_, 'source>,
 ) -> CallableState {
     if definition.function.is_native {
         if let Some(binding_key) = crate::prelude_registry::prelude_registry()
@@ -55,13 +49,13 @@ pub(super) fn transfer_callable(
 
     let mut evaluator = Evaluator {
         definition,
-        definitions,
-        module_constants,
-        summaries,
-        resolved_call_targets,
-        dependency_analysis,
-        expression_types,
-        type_resolution,
+        definitions: context.definitions,
+        module_constants: context.module_constants,
+        summaries: context.summaries,
+        resolved_call_targets: context.resolved_call_targets,
+        dependency_analysis: context.dependency_analysis,
+        expression_types: context.expression_types,
+        type_resolution: context.type_resolution,
         next_index: 0,
         values: BTreeMap::new(),
         heap: BTreeMap::new(),
@@ -71,6 +65,16 @@ pub(super) fn transfer_callable(
     let mut env = evaluator.parameter_environment();
     evaluator.eval_block(&definition.function.body, &mut env);
     evaluator.state
+}
+
+pub(super) struct TransferContext<'a, 'source> {
+    pub definitions: &'a BTreeMap<SourceSymbolKey, CallableDefinition<'source>>,
+    pub module_constants: &'a BTreeMap<SourceSymbolKey, ModuleConstantFact>,
+    pub summaries: &'a BTreeMap<SourceSymbolKey, CallableState>,
+    pub resolved_call_targets: &'a ResolvedCallTargetFacts,
+    pub dependency_analysis: &'a SourceDependencyAnalysisInput,
+    pub expression_types: &'a ExpressionTypeModel,
+    pub type_resolution: &'a TypeResolutionModel,
 }
 
 struct Evaluator<'a, 'source> {

@@ -414,26 +414,29 @@ mod tests {
             .unwrap_or_else(|| panic!("fixture function {name} should be present"))
     }
 
-    fn analyzer<'a>(
-        function: &'a FunctionDecl,
+    struct AnalyzerFacts<'a> {
         expression_sources: &'a ExpressionSourceMap,
         expression_keys: &'a BTreeMap<usize, crate::ExpressionKey>,
         resolved_targets: &'a ResolvedCallTargetFacts,
         callable_effects: &'a SourceCallableEffectFacts,
         inout_param_indices: &'a BTreeMap<SourceSymbolKey, BTreeMap<usize, String>>,
+    }
+
+    fn analyzer<'a>(
+        function: &'a FunctionDecl,
+        facts: AnalyzerFacts<'a>,
         semantics: &'a mut SourceExecutionSemantics,
         diagnostics: &'a mut Vec<String>,
     ) -> OwnerAnalyzer<'a> {
         OwnerAnalyzer::new(
             MODULE_PATH,
             ExpressionOwnerKey::Function("run".to_string()),
-            SourceSymbolKey::new(MODULE_PATH, "run"),
             function,
-            expression_sources,
-            expression_keys,
-            resolved_targets,
-            callable_effects,
-            inout_param_indices,
+            facts.expression_sources,
+            facts.expression_keys,
+            facts.resolved_targets,
+            facts.callable_effects,
+            facts.inout_param_indices,
             BTreeSet::new(),
             semantics,
             diagnostics,
@@ -547,11 +550,13 @@ mod tests {
         let mut diagnostics = Vec::new();
         let mut analyzer = analyzer(
             &function,
-            &expression_sources,
-            &expression_keys,
-            &resolved_targets,
-            &callable_effects,
-            &inout_param_indices,
+            AnalyzerFacts {
+                expression_sources: &expression_sources,
+                expression_keys: &expression_keys,
+                resolved_targets: &resolved_targets,
+                callable_effects: &callable_effects,
+                inout_param_indices: &inout_param_indices,
+            },
             &mut semantics,
             &mut diagnostics,
         );
@@ -606,11 +611,13 @@ mod tests {
         let mut diagnostics = Vec::new();
         let mut analyzer = analyzer(
             &function,
-            &expression_sources,
-            &expression_keys,
-            &resolved_targets,
-            &callable_effects,
-            &inout_param_indices,
+            AnalyzerFacts {
+                expression_sources: &expression_sources,
+                expression_keys: &expression_keys,
+                resolved_targets: &resolved_targets,
+                callable_effects: &callable_effects,
+                inout_param_indices: &inout_param_indices,
+            },
             &mut semantics,
             &mut diagnostics,
         );
@@ -690,11 +697,13 @@ mod tests {
         let mut diagnostics = Vec::new();
         let mut analyzer = analyzer(
             &function,
-            &expression_sources,
-            &expression_keys,
-            &resolved_targets,
-            &callable_effects,
-            &inout_param_indices,
+            AnalyzerFacts {
+                expression_sources: &expression_sources,
+                expression_keys: &expression_keys,
+                resolved_targets: &resolved_targets,
+                callable_effects: &callable_effects,
+                inout_param_indices: &inout_param_indices,
+            },
             &mut semantics,
             &mut diagnostics,
         );

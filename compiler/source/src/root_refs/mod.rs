@@ -1053,10 +1053,10 @@ pub fn validate_root_refs_in_text(
 }
 
 #[cfg(test)]
-fn match_root_chain(
-    tokens: &[Token],
-    start: usize,
-) -> Option<(String, Vec<String>, (usize, usize, usize))> {
+type RootChainMatch = (String, Vec<String>, (usize, usize, usize));
+
+#[cfg(test)]
+fn match_root_chain(tokens: &[Token], start: usize) -> Option<RootChainMatch> {
     let head = tokens.get(start)?;
     if start > 0
         && matches!(

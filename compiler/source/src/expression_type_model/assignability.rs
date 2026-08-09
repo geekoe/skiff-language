@@ -205,14 +205,16 @@ impl<'a> OwnerChecker<'a> {
             Ok(expected) => {
                 if let Some((value, key)) = value {
                     self.check_value_assignable_to_expected(
-                        Some(annotation),
                         value,
                         key,
                         actual,
                         &expected,
-                        exact_expected,
-                        context,
-                        span,
+                        ValueAssignmentContext {
+                            annotation: Some(annotation),
+                            exact_expected,
+                            diagnostic_context: context,
+                            fallback_span: span,
+                        },
                     );
                 } else if !self.type_resolution.assignable_in_context(
                     actual,
@@ -232,15 +234,18 @@ impl<'a> OwnerChecker<'a> {
 
     pub(super) fn check_value_assignable_to_expected(
         &mut self,
-        annotation: Option<&TypeRef>,
         value: &Expr,
         value_key: &ExpressionKey,
         actual: &ResolvedTypeRef,
         expected: &ResolvedTypeRef,
-        exact_expected: Option<&PackageTypeRef>,
-        context: &str,
-        fallback_span: SourceSpan,
+        assignment: ValueAssignmentContext<'_>,
     ) -> bool {
+        let ValueAssignmentContext {
+            annotation,
+            exact_expected,
+            diagnostic_context: context,
+            fallback_span,
+        } = assignment;
         let target_key = self.transparent_value_target_key(value_key);
         let target_value = transparent_value_target(value);
         if matches!(target_value, Expr::ObjectLiteral { .. }) {

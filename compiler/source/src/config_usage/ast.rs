@@ -11,6 +11,19 @@ use super::validation::{
 };
 use super::{ConfigPresenceUse, ConfigSourceSpan, ConfigUsageSeed, ConfigUse};
 
+#[derive(Clone, Copy)]
+struct ConfigSourcePaths<'a> {
+    diagnostic: &'a str,
+    source: &'a str,
+}
+
+struct DirectConfigIntrinsicCall<'a> {
+    intrinsic: ConfigIntrinsic,
+    type_args: &'a [crate::shared::ast::TypeRef],
+    args: &'a [&'a Expr],
+    source_span: Option<ConfigSourceSpan>,
+}
+
 pub(super) fn collect_config_uses_in_ast(
     diagnostic_path: &str,
     source_path: &str,
@@ -39,11 +52,14 @@ pub(super) fn collect_common_config_uses_in_ast(
     presence_uses: &mut Vec<ConfigPresenceUse>,
     violations: &mut Vec<String>,
 ) -> BTreeMap<String, String> {
+    let paths = ConfigSourcePaths {
+        diagnostic: diagnostic_path,
+        source: source_path,
+    };
     let mut const_strings = BTreeMap::new();
     for (index, constant) in ast.consts.iter().enumerate() {
         collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             &constant.value,
             ast.source_spans.consts.get(index),
             &const_strings,
@@ -60,8 +76,7 @@ pub(super) fn collect_common_config_uses_in_ast(
             continue;
         }
         collect_config_uses_in_block(
-            diagnostic_path,
-            source_path,
+            paths,
             &function.body,
             ast.source_spans
                 .functions
@@ -77,8 +92,7 @@ pub(super) fn collect_common_config_uses_in_ast(
     for implementation in &ast.impls {
         for method in &implementation.method_bodies {
             collect_config_uses_in_block(
-                diagnostic_path,
-                source_path,
+                paths,
                 &method.body,
                 ast.source_spans
                     .impl_methods
@@ -104,6 +118,10 @@ pub(super) fn collect_config_uses_in_ast_functions(
     seeds: &mut [ConfigUsageSeed],
     violations: &mut Vec<String>,
 ) {
+    let paths = ConfigSourcePaths {
+        diagnostic: diagnostic_path,
+        source: source_path,
+    };
     for (index, function) in ast.functions.iter().enumerate() {
         let Some(seed_index) = function_indexes.get(&function.name) else {
             continue;
@@ -112,8 +130,7 @@ pub(super) fn collect_config_uses_in_ast_functions(
             continue;
         };
         collect_config_uses_in_block(
-            diagnostic_path,
-            source_path,
+            paths,
             &function.body,
             ast.source_spans
                 .functions
@@ -128,8 +145,7 @@ pub(super) fn collect_config_uses_in_ast_functions(
 }
 
 fn collect_config_uses_in_block(
-    diagnostic_path: &str,
-    source_path: &str,
+    paths: ConfigSourcePaths<'_>,
     block: &Block,
     block_spans: Option<&BlockSourceSpans>,
     inherited_const_strings: &BTreeMap<String, String>,
@@ -149,8 +165,7 @@ fn collect_config_uses_in_block(
                         .enumerate()
                 {
                     collect_config_uses_in_expr(
-                        diagnostic_path,
-                        source_path,
+                        paths,
                         expression,
                         // The compiler-owned target probe is source-span entry
                         // zero, but it is link metadata rather than an
@@ -167,8 +182,7 @@ fn collect_config_uses_in_block(
                 kind, name, value, ..
             } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     value,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -188,8 +202,7 @@ fn collect_config_uses_in_block(
             }
             Stmt::Emit(value) | Stmt::Expr(value) => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     value,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -201,8 +214,7 @@ fn collect_config_uses_in_block(
             Stmt::Return(value) => {
                 if let Some(value) = value {
                     collect_config_uses_in_expr(
-                        diagnostic_path,
-                        source_path,
+                        paths,
                         value,
                         statement_spans.and_then(|spans| spans.expressions.first()),
                         &const_strings,
@@ -214,8 +226,7 @@ fn collect_config_uses_in_block(
             }
             Stmt::Throw { value } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     value,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -226,8 +237,7 @@ fn collect_config_uses_in_block(
             }
             Stmt::Rethrow { exception } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     exception,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -238,8 +248,7 @@ fn collect_config_uses_in_block(
             }
             Stmt::Assign { target, value } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     target,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -248,8 +257,7 @@ fn collect_config_uses_in_block(
                     violations,
                 );
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     value,
                     statement_spans.and_then(|spans| spans.expressions.get(1)),
                     &const_strings,
@@ -260,8 +268,7 @@ fn collect_config_uses_in_block(
             }
             Stmt::Timeout { body, .. } | Stmt::Concurrent { body } | Stmt::Serial { body } => {
                 collect_config_uses_in_block(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     body,
                     statement_spans.and_then(|spans| spans.blocks.first()),
                     &const_strings,
@@ -276,8 +283,7 @@ fn collect_config_uses_in_block(
                 else_block,
             } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     condition,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -286,8 +292,7 @@ fn collect_config_uses_in_block(
                     violations,
                 );
                 collect_config_uses_in_block(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     then_block,
                     statement_spans.and_then(|spans| spans.blocks.first()),
                     &const_strings,
@@ -297,8 +302,7 @@ fn collect_config_uses_in_block(
                 );
                 if let Some(else_block) = else_block {
                     collect_config_uses_in_block(
-                        diagnostic_path,
-                        source_path,
+                        paths,
                         else_block,
                         statement_spans.and_then(|spans| spans.blocks.get(1)),
                         &const_strings,
@@ -310,8 +314,7 @@ fn collect_config_uses_in_block(
             }
             Stmt::For { iterable, body, .. } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     iterable,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -320,8 +323,7 @@ fn collect_config_uses_in_block(
                     violations,
                 );
                 collect_config_uses_in_block(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     body,
                     statement_spans.and_then(|spans| spans.blocks.first()),
                     &const_strings,
@@ -334,8 +336,7 @@ fn collect_config_uses_in_block(
                 condition, body, ..
             } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     condition,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -344,8 +345,7 @@ fn collect_config_uses_in_block(
                     violations,
                 );
                 collect_config_uses_in_block(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     body,
                     statement_spans.and_then(|spans| spans.blocks.first()),
                     &const_strings,
@@ -356,8 +356,7 @@ fn collect_config_uses_in_block(
             }
             Stmt::Match { value, arms } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     value,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -367,8 +366,7 @@ fn collect_config_uses_in_block(
                 );
                 for (arm_index, arm) in arms.iter().enumerate() {
                     collect_config_uses_in_block(
-                        diagnostic_path,
-                        source_path,
+                        paths,
                         &arm.body,
                         statement_spans.and_then(|spans| spans.blocks.get(arm_index)),
                         &const_strings,
@@ -380,8 +378,7 @@ fn collect_config_uses_in_block(
             }
             Stmt::Assert { condition, .. } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     condition,
                     statement_spans.and_then(|spans| spans.expressions.first()),
                     &const_strings,
@@ -392,8 +389,7 @@ fn collect_config_uses_in_block(
             }
             Stmt::DbTransaction { body } => {
                 collect_config_uses_in_block(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     body,
                     statement_spans.and_then(|spans| spans.blocks.first()),
                     &const_strings,
@@ -408,8 +404,7 @@ fn collect_config_uses_in_block(
 }
 
 fn collect_config_uses_in_expr(
-    diagnostic_path: &str,
-    source_path: &str,
+    paths: ConfigSourcePaths<'_>,
     expr: &Expr,
     expr_spans: Option<&ExprSourceSpans>,
     const_strings: &BTreeMap<String, String>,
@@ -417,17 +412,19 @@ fn collect_config_uses_in_expr(
     presence_uses: &mut Vec<ConfigPresenceUse>,
     violations: &mut Vec<String>,
 ) {
+    let diagnostic_path = paths.diagnostic;
     match expr {
         Expr::Call { callee, args } => {
             if let Some((intrinsic, type_args)) = config_intrinsic_callee(callee) {
                 let plain_args: Vec<&Expr> = args.iter().map(|arg| arg.expr()).collect();
                 collect_direct_config_intrinsic_call(
-                    diagnostic_path,
-                    source_path,
-                    intrinsic,
-                    type_args,
-                    &plain_args,
-                    expr_spans.map(|spans| ConfigSourceSpan::from(spans.span)),
+                    paths,
+                    DirectConfigIntrinsicCall {
+                        intrinsic,
+                        type_args,
+                        args: &plain_args,
+                        source_span: expr_spans.map(|spans| ConfigSourceSpan::from(spans.span)),
+                    },
                     const_strings,
                     uses,
                     presence_uses,
@@ -435,8 +432,7 @@ fn collect_config_uses_in_expr(
                 );
                 for (arg_index, arg) in args.iter().enumerate() {
                     collect_config_uses_in_expr(
-                        diagnostic_path,
-                        source_path,
+                        paths,
                         arg.expr(),
                         child_span(expr_spans, arg_index + 1),
                         const_strings,
@@ -451,8 +447,7 @@ fn collect_config_uses_in_expr(
                 push_legacy_values_violation(diagnostic_path, violations);
                 for (arg_index, arg) in args.iter().enumerate() {
                     collect_config_uses_in_expr(
-                        diagnostic_path,
-                        source_path,
+                        paths,
                         arg.expr(),
                         child_span(expr_spans, arg_index + 1),
                         const_strings,
@@ -464,8 +459,7 @@ fn collect_config_uses_in_expr(
                 return;
             }
             collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 callee,
                 child_span(expr_spans, 0),
                 const_strings,
@@ -475,8 +469,7 @@ fn collect_config_uses_in_expr(
             );
             for (arg_index, arg) in args.iter().enumerate() {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     arg.expr(),
                     child_span(expr_spans, arg_index + 1),
                     const_strings,
@@ -487,8 +480,7 @@ fn collect_config_uses_in_expr(
             }
         }
         Expr::Generic { callee, .. } => collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             callee,
             child_span(expr_spans, 0),
             const_strings,
@@ -497,8 +489,7 @@ fn collect_config_uses_in_expr(
             violations,
         ),
         Expr::InterfaceBox { value, .. } => collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             value,
             child_span(expr_spans, 0),
             const_strings,
@@ -524,8 +515,7 @@ fn collect_config_uses_in_expr(
                 return;
             }
             collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 object,
                 child_span(expr_spans, 0),
                 const_strings,
@@ -536,8 +526,7 @@ fn collect_config_uses_in_expr(
         }
         Expr::Index { object, index } => {
             collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 object,
                 child_span(expr_spans, 0),
                 const_strings,
@@ -546,8 +535,7 @@ fn collect_config_uses_in_expr(
                 violations,
             );
             collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 index,
                 child_span(expr_spans, 1),
                 const_strings,
@@ -558,8 +546,7 @@ fn collect_config_uses_in_expr(
         }
         Expr::Binary { left, right, .. } => {
             collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 left,
                 child_span(expr_spans, 0),
                 const_strings,
@@ -568,8 +555,7 @@ fn collect_config_uses_in_expr(
                 violations,
             );
             collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 right,
                 child_span(expr_spans, 1),
                 const_strings,
@@ -579,8 +565,7 @@ fn collect_config_uses_in_expr(
             );
         }
         Expr::Unary { expr, .. } => collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             expr,
             child_span(expr_spans, 0),
             const_strings,
@@ -595,8 +580,7 @@ fn collect_config_uses_in_expr(
         } => {
             for (index, expr) in [condition, then_expr, else_expr].into_iter().enumerate() {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     expr,
                     child_span(expr_spans, index),
                     const_strings,
@@ -609,8 +593,7 @@ fn collect_config_uses_in_expr(
         Expr::Record { fields, .. } => {
             for (field_index, (_, value)) in fields.iter().enumerate() {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     value,
                     trailing_child_span(expr_spans, fields.len(), field_index),
                     const_strings,
@@ -623,8 +606,7 @@ fn collect_config_uses_in_expr(
         Expr::ObjectLiteral { entries } => {
             for (entry_index, entry) in entries.iter().enumerate() {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     &entry.value,
                     child_span(expr_spans, entry_index),
                     const_strings,
@@ -640,8 +622,7 @@ fn collect_config_uses_in_expr(
                     crate::shared::ast::PatchOperation::Set { value, .. }
                     | crate::shared::ast::PatchOperation::Inc { value, .. } => {
                         collect_config_uses_in_expr(
-                            diagnostic_path,
-                            source_path,
+                            paths,
                             value,
                             trailing_child_span(expr_spans, operations.len(), operation_index),
                             const_strings,
@@ -655,8 +636,7 @@ fn collect_config_uses_in_expr(
         }
         Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
             collect_config_uses_in_block(
-                diagnostic_path,
-                source_path,
+                paths,
                 &value.body,
                 expr_spans.and_then(|spans| spans.blocks.first()),
                 const_strings,
@@ -681,8 +661,7 @@ fn collect_config_uses_in_expr(
                 }
             }
             collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 &value.tail,
                 child_span(expr_spans, 0),
                 &tail_const_strings,
@@ -692,8 +671,7 @@ fn collect_config_uses_in_expr(
             );
         }
         Expr::Timeout { value, .. } => collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             value,
             child_span(expr_spans, 0),
             const_strings,
@@ -702,8 +680,7 @@ fn collect_config_uses_in_expr(
             violations,
         ),
         Expr::Throw { value } => collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             value,
             child_span(expr_spans, 0),
             const_strings,
@@ -712,8 +689,7 @@ fn collect_config_uses_in_expr(
             violations,
         ),
         Expr::Rethrow { exception } => collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             exception,
             child_span(expr_spans, 0),
             const_strings,
@@ -722,8 +698,7 @@ fn collect_config_uses_in_expr(
             violations,
         ),
         Expr::Catch { try_expr, .. } => collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             try_expr,
             child_span(expr_spans, 0),
             const_strings,
@@ -735,8 +710,7 @@ fn collect_config_uses_in_expr(
             push_indirect_config_intrinsic_violation(diagnostic_path, violations);
         }
         Expr::DbOperation(operation) => collect_config_uses_in_db_operation(
-            diagnostic_path,
-            source_path,
+            paths,
             operation,
             expr_spans,
             const_strings,
@@ -745,8 +719,7 @@ fn collect_config_uses_in_expr(
             violations,
         ),
         Expr::DbQuery(query) => collect_config_uses_in_db_query(
-            diagnostic_path,
-            source_path,
+            paths,
             &query.query,
             &mut ExprSpanCursor::new(expr_spans),
             const_strings,
@@ -755,8 +728,7 @@ fn collect_config_uses_in_expr(
             violations,
         ),
         Expr::DbTransaction(transaction) => collect_config_uses_in_block(
-            diagnostic_path,
-            source_path,
+            paths,
             &transaction.body,
             None,
             const_strings,
@@ -766,8 +738,7 @@ fn collect_config_uses_in_expr(
         ),
         Expr::DbLeaseClaim(claim) => {
             collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 &claim.key,
                 child_span(expr_spans, 0),
                 const_strings,
@@ -776,8 +747,7 @@ fn collect_config_uses_in_expr(
                 violations,
             );
             collect_config_uses_in_block(
-                diagnostic_path,
-                source_path,
+                paths,
                 &claim.body,
                 None,
                 const_strings,
@@ -787,8 +757,7 @@ fn collect_config_uses_in_expr(
             );
         }
         Expr::DbLeaseRead(read) => collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             &read.key,
             child_span(expr_spans, 0),
             const_strings,
@@ -799,8 +768,7 @@ fn collect_config_uses_in_expr(
         Expr::Dispatch { call, timing } => {
             let mut cursor = ExprSpanCursor::new(expr_spans);
             collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 call,
                 cursor.next(),
                 const_strings,
@@ -810,8 +778,7 @@ fn collect_config_uses_in_expr(
             );
             if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     expr,
                     cursor.next(),
                     const_strings,
@@ -866,8 +833,7 @@ impl<'a> ExprSpanCursor<'a> {
 }
 
 fn collect_config_uses_in_db_operation(
-    diagnostic_path: &str,
-    source_path: &str,
+    paths: ConfigSourcePaths<'_>,
     operation: &crate::shared::ast::DbOperation,
     operation_spans: Option<&ExprSourceSpans>,
     const_strings: &BTreeMap<String, String>,
@@ -879,8 +845,7 @@ fn collect_config_uses_in_db_operation(
     if let Some(selector) = &operation.selector {
         match selector {
             crate::shared::ast::DbSelector::Key { value } => collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 value,
                 child_spans.next(),
                 const_strings,
@@ -889,8 +854,7 @@ fn collect_config_uses_in_db_operation(
                 violations,
             ),
             crate::shared::ast::DbSelector::Query { query } => collect_config_uses_in_db_query(
-                diagnostic_path,
-                source_path,
+                paths,
                 query,
                 &mut child_spans,
                 const_strings,
@@ -907,8 +871,7 @@ fn collect_config_uses_in_db_operation(
         );
         if !query_already_visited_as_selector {
             collect_config_uses_in_db_query(
-                diagnostic_path,
-                source_path,
+                paths,
                 query,
                 &mut child_spans,
                 const_strings,
@@ -926,8 +889,7 @@ fn collect_config_uses_in_db_operation(
             crate::shared::ast::DbBody::ObjectFields { fields } => {
                 for field in fields {
                     collect_config_uses_in_expr(
-                        diagnostic_path,
-                        source_path,
+                        paths,
                         &field.value,
                         child_spans.next(),
                         const_strings,
@@ -938,8 +900,7 @@ fn collect_config_uses_in_db_operation(
                 }
             }
             crate::shared::ast::DbBody::Values { value } => collect_config_uses_in_expr(
-                diagnostic_path,
-                source_path,
+                paths,
                 value,
                 child_spans.next(),
                 const_strings,
@@ -957,8 +918,7 @@ fn collect_config_uses_in_db_operation(
                 | crate::shared::ast::DbChangeOp::AddToSet { value, .. }
                 | crate::shared::ast::DbChangeOp::Remove { value, .. } => {
                     collect_config_uses_in_expr(
-                        diagnostic_path,
-                        source_path,
+                        paths,
                         value,
                         child_spans.next(),
                         const_strings,
@@ -974,8 +934,7 @@ fn collect_config_uses_in_db_operation(
 }
 
 fn collect_config_uses_in_db_query(
-    diagnostic_path: &str,
-    source_path: &str,
+    paths: ConfigSourcePaths<'_>,
     query: &crate::shared::ast::DbQueryBlock,
     query_spans: &mut ExprSpanCursor<'_>,
     const_strings: &BTreeMap<String, String>,
@@ -987,8 +946,7 @@ fn collect_config_uses_in_db_query(
         match clause {
             crate::shared::ast::DbWhereClause::Predicate { predicate } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     predicate,
                     query_spans.next(),
                     const_strings,
@@ -1002,8 +960,7 @@ fn collect_config_uses_in_db_query(
                 predicate,
             } => {
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     condition,
                     query_spans.next(),
                     const_strings,
@@ -1012,8 +969,7 @@ fn collect_config_uses_in_db_query(
                     violations,
                 );
                 collect_config_uses_in_expr(
-                    diagnostic_path,
-                    source_path,
+                    paths,
                     predicate,
                     query_spans.next(),
                     const_strings,
@@ -1026,8 +982,7 @@ fn collect_config_uses_in_db_query(
     }
     if let Some(limit) = &query.limit {
         collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             limit,
             query_spans.next(),
             const_strings,
@@ -1038,8 +993,7 @@ fn collect_config_uses_in_db_query(
     }
     if let Some(offset) = &query.offset {
         collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             offset,
             query_spans.next(),
             const_strings,
@@ -1050,8 +1004,7 @@ fn collect_config_uses_in_db_query(
     }
     if let Some(after) = &query.after {
         collect_config_uses_in_expr(
-            diagnostic_path,
-            source_path,
+            paths,
             after,
             query_spans.next(),
             const_strings,
@@ -1063,17 +1016,23 @@ fn collect_config_uses_in_db_query(
 }
 
 fn collect_direct_config_intrinsic_call(
-    diagnostic_path: &str,
-    source_path: &str,
-    intrinsic: ConfigIntrinsic,
-    type_args: &[crate::shared::ast::TypeRef],
-    args: &[&Expr],
-    source_span: Option<ConfigSourceSpan>,
+    paths: ConfigSourcePaths<'_>,
+    call: DirectConfigIntrinsicCall<'_>,
     const_strings: &BTreeMap<String, String>,
     uses: &mut Vec<ConfigUse>,
     presence_uses: &mut Vec<ConfigPresenceUse>,
     violations: &mut Vec<String>,
 ) {
+    let ConfigSourcePaths {
+        diagnostic: diagnostic_path,
+        source: source_path,
+    } = paths;
+    let DirectConfigIntrinsicCall {
+        intrinsic,
+        type_args,
+        args,
+        source_span,
+    } = call;
     if intrinsic == ConfigIntrinsic::Get {
         push_removed_config_get_violation(diagnostic_path, violations);
         return;

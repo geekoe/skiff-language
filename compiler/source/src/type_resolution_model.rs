@@ -407,18 +407,22 @@ pub struct TypeResolutionPackageCallableFact<'a> {
     pub exact_signature: Option<&'a skiff_artifact_model::PackageCallableSignature>,
 }
 
+struct CompilerOwnedPackageIndexes<'a> {
+    types: &'a mut BTreeMap<PackageSymbolKey, SourceTypeResolution>,
+    interfaces: &'a mut BTreeMap<PackageSymbolKey, PackageInterfaceFact>,
+    type_slots: &'a mut BTreeMap<(String, String, u32), String>,
+    type_source_paths: &'a mut BTreeMap<(String, String, String), String>,
+    constants: &'a mut BTreeMap<PackageSymbolKey, PackageConstantResolution>,
+    dependencies: &'a mut BTreeMap<String, String>,
+    dependency_views: &'a mut BTreeMap<String, PackageDependencyView>,
+    dependency_canonical_refs: &'a mut BTreeMap<String, String>,
+    artifact_identities: &'a mut BTreeMap<String, (PackageLocalAbiIdentity, PackageBuildId)>,
+}
+
 fn index_compiler_owned_package_artifacts(
     package_artifacts: Option<&[PackageArtifact]>,
     dependencies: &SourceDependencyAnalysisInput,
-    package_types: &mut BTreeMap<PackageSymbolKey, SourceTypeResolution>,
-    package_interfaces: &mut BTreeMap<PackageSymbolKey, PackageInterfaceFact>,
-    package_type_slots: &mut BTreeMap<(String, String, u32), String>,
-    package_type_source_paths: &mut BTreeMap<(String, String, String), String>,
-    package_constants: &mut BTreeMap<PackageSymbolKey, PackageConstantResolution>,
-    package_dependencies: &mut BTreeMap<String, String>,
-    package_dependency_views: &mut BTreeMap<String, PackageDependencyView>,
-    package_dependency_canonical_refs: &mut BTreeMap<String, String>,
-    package_artifact_identities: &mut BTreeMap<String, (PackageLocalAbiIdentity, PackageBuildId)>,
+    indexes: &mut CompilerOwnedPackageIndexes<'_>,
 ) -> Result<(), String> {
     for (alias, expected_build_id, expected_local_abi) in
         dependencies.compiler_owned_package_owners()
@@ -437,8 +441,8 @@ fn index_compiler_owned_package_artifacts(
                 matches.len()
             ));
         };
-        if package_dependencies.contains_key(alias)
-            || package_artifact_identities.contains_key(alias)
+        if indexes.dependencies.contains_key(alias)
+            || indexes.artifact_identities.contains_key(alias)
         {
             return Err(format!(
                 "compiler-owned dependency alias `{alias}` conflicts with a declared package owner"
@@ -450,16 +454,20 @@ fn index_compiler_owned_package_artifacts(
             alias,
             view,
             ArtifactPackageTypePathMode::CompilerOwnedExact,
-            package_types,
-            package_interfaces,
-            package_type_slots,
+            indexes.types,
+            indexes.interfaces,
+            indexes.type_slots,
         )?;
-        index_artifact_package_type_source_paths(artifact, alias, view, package_type_source_paths)?;
-        index_artifact_package_constants(artifact, alias, alias, view, package_constants)?;
-        package_dependencies.insert(alias.to_string(), artifact.package_id.clone());
-        package_dependency_views.insert(alias.to_string(), view);
-        package_dependency_canonical_refs.insert(alias.to_string(), alias.to_string());
-        package_artifact_identities.insert(
+        index_artifact_package_type_source_paths(artifact, alias, view, indexes.type_source_paths)?;
+        index_artifact_package_constants(artifact, alias, alias, view, indexes.constants)?;
+        indexes
+            .dependencies
+            .insert(alias.to_string(), artifact.package_id.clone());
+        indexes.dependency_views.insert(alias.to_string(), view);
+        indexes
+            .dependency_canonical_refs
+            .insert(alias.to_string(), alias.to_string());
+        indexes.artifact_identities.insert(
             alias.to_string(),
             (expected_local_abi.clone(), expected_build_id.clone()),
         );
@@ -2475,19 +2483,22 @@ fn package_callable_resolution(
 fn callable_resolution_from_parts(
     module_path: &str,
     source_symbol: &str,
-    inherited_type_params: &[String],
-    decl_type_params: &[String],
-    implicit_self: Option<&TypeRef>,
-    params: &[Param],
-    return_type: &TypeRef,
-    local_type_names: &BTreeSet<String>,
+    parts: CallableResolutionParts<'_>,
 ) -> PackageCallableResolution {
+    let CallableResolutionParts {
+        inherited_type_params,
+        declaration_type_params,
+        implicit_self,
+        params,
+        return_type,
+        local_type_names,
+    } = parts;
     PackageCallableResolution {
         module_path: module_path.to_string(),
         source_symbol: source_symbol.to_string(),
         type_params: inherited_type_params
             .iter()
-            .chain(decl_type_params)
+            .chain(declaration_type_params)
             .cloned()
             .collect(),
         local_type_names: local_type_names.clone(),
@@ -2501,6 +2512,15 @@ fn callable_resolution_from_parts(
     }
 }
 
+struct CallableResolutionParts<'a> {
+    inherited_type_params: &'a [String],
+    declaration_type_params: &'a [String],
+    implicit_self: Option<&'a TypeRef>,
+    params: &'a [Param],
+    return_type: &'a TypeRef,
+    local_type_names: &'a BTreeSet<String>,
+}
+
 fn function_callable_resolution(
     module_path: &str,
     source_symbol: &str,
@@ -2511,12 +2531,14 @@ fn function_callable_resolution(
     callable_resolution_from_parts(
         module_path,
         source_symbol,
-        inherited_type_params,
-        &function.type_params,
-        function.implicit_self.as_ref(),
-        &function.params,
-        &function.return_type,
-        local_type_names,
+        CallableResolutionParts {
+            inherited_type_params,
+            declaration_type_params: &function.type_params,
+            implicit_self: function.implicit_self.as_ref(),
+            params: &function.params,
+            return_type: &function.return_type,
+            local_type_names,
+        },
     )
 }
 
@@ -2530,12 +2552,14 @@ fn operation_callable_resolution(
     callable_resolution_from_parts(
         module_path,
         source_symbol,
-        inherited_type_params,
-        &operation.type_params,
-        operation.implicit_self.as_ref(),
-        &operation.params,
-        &operation.return_type,
-        local_type_names,
+        CallableResolutionParts {
+            inherited_type_params,
+            declaration_type_params: &operation.type_params,
+            implicit_self: operation.implicit_self.as_ref(),
+            params: &operation.params,
+            return_type: &operation.return_type,
+            local_type_names,
+        },
     )
 }
 
@@ -2741,29 +2765,26 @@ fn type_assignable(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
     }
 }
 
-fn contract_type_shape_ir(
-    alias: &str,
-    descriptor: &ContractTypeDescriptor,
-) -> Result<TypeRefIr, String> {
+fn contract_type_shape_ir(descriptor: &ContractTypeDescriptor) -> Result<TypeRefIr, String> {
     match descriptor {
         ContractTypeDescriptor::Record { fields } => Ok(TypeRefIr::Record {
             fields: fields
                 .iter()
-                .map(|(name, ty)| Ok((name.clone(), contract_type_ref_ir(alias, ty)?)))
+                .map(|(name, ty)| Ok((name.clone(), contract_type_ref_ir(ty)?)))
                 .collect::<Result<_, String>>()?,
         }),
         ContractTypeDescriptor::Alias { target }
-        | ContractTypeDescriptor::Representation { target } => contract_type_ref_ir(alias, target),
+        | ContractTypeDescriptor::Representation { target } => contract_type_ref_ir(target),
         ContractTypeDescriptor::StructuralUnion { variants } => Ok(TypeRefIr::Union {
             items: variants
                 .iter()
-                .map(|ty| contract_type_ref_ir(alias, ty))
+                .map(contract_type_ref_ir)
                 .collect::<Result<_, _>>()?,
         }),
         ContractTypeDescriptor::DiscriminatedUnion { branches, .. } => Ok(TypeRefIr::Union {
             items: branches
                 .iter()
-                .map(|branch| contract_type_ref_ir(alias, &branch.branch_type))
+                .map(|branch| contract_type_ref_ir(&branch.branch_type))
                 .collect::<Result<_, _>>()?,
         }),
         ContractTypeDescriptor::Enumeration { variants } => Ok(TypeRefIr::Union {
@@ -2782,13 +2803,13 @@ fn contract_type_shape_ir(
     }
 }
 
-fn contract_type_ref_ir(alias: &str, ty: &ContractTypeRef) -> Result<TypeRefIr, String> {
+fn contract_type_ref_ir(ty: &ContractTypeRef) -> Result<TypeRefIr, String> {
     match ty {
         ContractTypeRef::Builtin { name, arguments } => Ok(TypeRefIr::Builtin {
             name: name.clone(),
             args: arguments
                 .iter()
-                .map(|argument| contract_type_ref_ir(alias, argument))
+                .map(contract_type_ref_ir)
                 .collect::<Result<_, _>>()?,
         }),
         ContractTypeRef::PackageSchema {
@@ -2808,20 +2829,20 @@ fn contract_type_ref_ir(alias: &str, ty: &ContractTypeRef) -> Result<TypeRefIr, 
         ContractTypeRef::Record { fields } => Ok(TypeRefIr::Record {
             fields: fields
                 .iter()
-                .map(|(name, ty)| Ok((name.clone(), contract_type_ref_ir(alias, ty)?)))
+                .map(|(name, ty)| Ok((name.clone(), contract_type_ref_ir(ty)?)))
                 .collect::<Result<_, String>>()?,
         }),
         ContractTypeRef::StructuralUnion { variants } => Ok(TypeRefIr::Union {
             items: variants
                 .iter()
-                .map(|ty| contract_type_ref_ir(alias, ty))
+                .map(contract_type_ref_ir)
                 .collect::<Result<_, _>>()?,
         }),
         ContractTypeRef::Nullable { inner } => Ok(TypeRefIr::Nullable {
-            inner: Box::new(contract_type_ref_ir(alias, inner)?),
+            inner: Box::new(contract_type_ref_ir(inner)?),
         }),
         ContractTypeRef::AnyInterface { interface, .. } => {
-            let identity = contract_type_ref_ir(alias, interface)?;
+            let identity = contract_type_ref_ir(interface)?;
             Ok(TypeRefIr::AnyInterface {
                 interface: skiff_artifact_model::InterfaceInstantiationRef {
                     interface_abi_id: type_ref_abi_key(&identity),

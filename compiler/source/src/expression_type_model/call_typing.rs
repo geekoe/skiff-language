@@ -1,5 +1,7 @@
 use super::*;
 
+type DependencyParameterExpectation = (String, Result<(ResolvedTypeRef, PackageTypeRef), String>);
+
 impl<'a> OwnerChecker<'a> {
     pub(super) fn call_type(
         &mut self,
@@ -127,7 +129,7 @@ impl<'a> OwnerChecker<'a> {
             } => {
                 self.contract_projection
                     .record_expression_type(key.clone(), projected_return_type);
-                Ok(Some(return_type))
+                Ok(Some(*return_type))
             }
             ContractCallOutcome::Invalid(diagnostics) => {
                 let location = self.expression_span_label(key);
@@ -778,14 +780,16 @@ impl<'a> OwnerChecker<'a> {
             }
             let context = format!("call `{callable}` argument {}", index + 1);
             self.check_value_assignable_to_expected(
-                None,
                 args[index].expr(),
                 key,
                 actual,
                 expected,
-                exact_expected.get(index).and_then(Option::as_ref),
-                &context,
-                self.expression_span(key),
+                ValueAssignmentContext {
+                    annotation: None,
+                    exact_expected: exact_expected.get(index).and_then(Option::as_ref),
+                    diagnostic_context: &context,
+                    fallback_span: self.expression_span(key),
+                },
             );
         }
     }
@@ -794,7 +798,7 @@ impl<'a> OwnerChecker<'a> {
         &mut self,
         call_key: &ExpressionKey,
         callable: &str,
-        expected: &[(String, Result<(ResolvedTypeRef, PackageTypeRef), String>)],
+        expected: &[DependencyParameterExpectation],
         args: &[CallArg],
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) {
@@ -830,14 +834,16 @@ impl<'a> OwnerChecker<'a> {
             }
             let context = format!("call `{callable}` argument {}", index + 1);
             self.check_value_assignable_to_expected(
-                None,
                 args[index].expr(),
                 key,
                 actual,
                 expected,
-                Some(exact_expected),
-                &context,
-                self.expression_span(key),
+                ValueAssignmentContext {
+                    annotation: None,
+                    exact_expected: Some(exact_expected),
+                    diagnostic_context: &context,
+                    fallback_span: self.expression_span(key),
+                },
             );
         }
     }
@@ -1061,14 +1067,16 @@ impl<'a> OwnerChecker<'a> {
             return;
         };
         self.check_value_assignable_to_expected(
-            None,
             args[0].expr(),
             key,
             actual,
             &expected,
-            None,
-            "call `Array.push` argument 1",
-            self.expression_span(key),
+            ValueAssignmentContext {
+                annotation: None,
+                exact_expected: None,
+                diagnostic_context: "call `Array.push` argument 1",
+                fallback_span: self.expression_span(key),
+            },
         );
     }
 

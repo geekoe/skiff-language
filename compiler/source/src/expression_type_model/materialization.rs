@@ -206,14 +206,16 @@ impl<'a> OwnerChecker<'a> {
             if let Some(actual) = actual {
                 let context = format!("constructor field `{field_name}`");
                 if !self.check_value_assignable_to_expected(
-                    None,
                     value,
                     value_key,
                     actual,
                     expected,
-                    exact_field_types.get(field_name),
-                    &context,
-                    record_field_value_source_span(source_fact, index),
+                    ValueAssignmentContext {
+                        annotation: None,
+                        exact_expected: exact_field_types.get(field_name),
+                        diagnostic_context: &context,
+                        fallback_span: record_field_value_source_span(source_fact, index),
+                    },
                 ) {
                     type_mismatches.push(ConstructorFieldTypeMismatch {
                         name: field_name.clone(),
@@ -348,15 +350,17 @@ impl<'a> OwnerChecker<'a> {
             let source = if let Some(provided) = provided.get(name.as_str()) {
                 if let Some(actual) = &provided.actual {
                     valid &= self.check_value_assignable_to_expected(
-                        None,
                         object_literal_field_value(value, name)
                             .expect("materialization plan field must exist in object literal"),
                         &provided.expression,
                         actual,
                         ty,
-                        None,
-                        &format!("{context} object literal field `{name}`"),
-                        provided.value_span,
+                        ValueAssignmentContext {
+                            annotation: None,
+                            exact_expected: None,
+                            diagnostic_context: &format!("{context} object literal field `{name}`"),
+                            fallback_span: provided.value_span,
+                        },
                     );
                 } else {
                     // Exact contract-derived and flow-assigned bindings can be

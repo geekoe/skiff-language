@@ -323,6 +323,21 @@ struct CheckOutputs {
     diagnostics: Vec<String>,
 }
 
+struct ExpressionCheckContext<'a> {
+    expression_sources: &'a ExpressionSourceMap,
+    type_resolution: &'a TypeResolutionModel,
+    publication_db_metadata: &'a PublicationDbMetadataIndex,
+    callable_signatures: &'a BTreeMap<String, CallableSignature>,
+    dependency_analysis: Option<&'a SourceDependencyAnalysisInput>,
+}
+
+struct ValueAssignmentContext<'a> {
+    annotation: Option<&'a TypeRef>,
+    exact_expected: Option<&'a PackageTypeRef>,
+    diagnostic_context: &'a str,
+    fallback_span: SourceSpan,
+}
+
 impl ExpressionTypeModel {
     pub fn build(
         parsed_sources: &[ParsedCompilerSource],
@@ -333,15 +348,18 @@ impl ExpressionTypeModel {
     ) -> Result<Self, ExpressionTypeModelBuildError> {
         let callable_signatures = callable_signatures(parsed_sources);
         let mut outputs = CheckOutputs::default();
+        let context = ExpressionCheckContext {
+            expression_sources,
+            type_resolution,
+            publication_db_metadata,
+            callable_signatures: &callable_signatures,
+            dependency_analysis,
+        };
         for parsed in parsed_sources {
             check_source(
                 parsed.source().module_path.as_str(),
                 parsed.ast(),
-                expression_sources,
-                type_resolution,
-                publication_db_metadata,
-                &callable_signatures,
-                dependency_analysis,
+                &context,
                 &mut outputs,
             );
         }
@@ -422,17 +440,13 @@ impl ExpressionTypeModel {
 fn check_source(
     module_path: &str,
     ast: &SourceFile,
-    expression_sources: &ExpressionSourceMap,
-    type_resolution: &TypeResolutionModel,
-    publication_db_metadata: &PublicationDbMetadataIndex,
-    callable_signatures: &BTreeMap<String, CallableSignature>,
-    dependency_analysis: Option<&SourceDependencyAnalysisInput>,
+    context: &ExpressionCheckContext<'_>,
     outputs: &mut CheckOutputs,
 ) {
     let const_env = const_type_env(
         ast,
-        type_resolution,
-        dependency_analysis,
+        context.type_resolution,
+        context.dependency_analysis,
         &TypeResolutionContext::source(module_path),
     );
     for function in &ast.functions {
@@ -444,11 +458,11 @@ fn check_source(
             ExpressionOwnerKey::Function(function.name.clone()),
             function,
             &[],
-            expression_sources,
-            type_resolution,
-            publication_db_metadata,
-            callable_signatures,
-            dependency_analysis,
+            context.expression_sources,
+            context.type_resolution,
+            context.publication_db_metadata,
+            context.callable_signatures,
+            context.dependency_analysis,
             &const_env,
             outputs,
         );
@@ -469,11 +483,11 @@ fn check_source(
                 },
                 method,
                 &inherited,
-                expression_sources,
-                type_resolution,
-                publication_db_metadata,
-                callable_signatures,
-                dependency_analysis,
+                context.expression_sources,
+                context.type_resolution,
+                context.publication_db_metadata,
+                context.callable_signatures,
+                context.dependency_analysis,
                 &const_env,
                 outputs,
             );
@@ -501,11 +515,11 @@ fn check_source(
             TypeResolutionContext::source(module_path),
             BTreeMap::new(),
             BTreeMap::new(),
-            expression_sources,
-            type_resolution,
-            publication_db_metadata,
-            callable_signatures,
-            dependency_analysis,
+            context.expression_sources,
+            context.type_resolution,
+            context.publication_db_metadata,
+            context.callable_signatures,
+            context.dependency_analysis,
             None,
             outputs,
         );
@@ -532,11 +546,11 @@ fn check_source(
             TypeResolutionContext::source(module_path),
             const_env.resolved.clone(),
             const_env.projected.clone(),
-            expression_sources,
-            type_resolution,
-            publication_db_metadata,
-            callable_signatures,
-            dependency_analysis,
+            context.expression_sources,
+            context.type_resolution,
+            context.publication_db_metadata,
+            context.callable_signatures,
+            context.dependency_analysis,
             None,
             outputs,
         );
@@ -547,7 +561,7 @@ fn check_source(
         for index in &db.indexes {
             if let Some(where_expr) = &index.where_expr {
                 let type_context = TypeResolutionContext::source(module_path);
-                let env = db_index_where_env(&db.name, type_resolution, &type_context);
+                let env = db_index_where_env(&db.name, context.type_resolution, &type_context);
                 let mut checker = OwnerChecker::new(
                     module_path,
                     ExpressionOwnerKey::DbIndexWhere {
@@ -557,11 +571,11 @@ fn check_source(
                     type_context,
                     env,
                     BTreeMap::new(),
-                    expression_sources,
-                    type_resolution,
-                    publication_db_metadata,
-                    callable_signatures,
-                    dependency_analysis,
+                    context.expression_sources,
+                    context.type_resolution,
+                    context.publication_db_metadata,
+                    context.callable_signatures,
+                    context.dependency_analysis,
                     None,
                     outputs,
                 );

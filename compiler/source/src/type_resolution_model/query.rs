@@ -802,16 +802,11 @@ impl TypeResolutionModel {
 
         if let TypeRefIr::PackageSymbol { symbol } = &base {
             if let PackageRefIr::PackageId { package_id } = &symbol.package {
-                if let Some((alias, schema_type)) =
-                    self.service_api_schemas
-                        .iter()
-                        .find_map(|(alias, records)| {
-                            records
-                                .get(&symbol.symbol_path)
-                                .filter(|record| record.package_id == *package_id)
-                                .map(|record| (alias.as_str(), record))
-                        })
-                {
+                if let Some(schema_type) = self.service_api_schemas.values().find_map(|records| {
+                    records
+                        .get(&symbol.symbol_path)
+                        .filter(|record| record.package_id == *package_id)
+                }) {
                     let ContractTypeDescriptor::Record { fields } =
                         &schema_type.canonical_descriptor.descriptor
                     else {
@@ -837,7 +832,7 @@ impl TypeResolutionModel {
                     let fields = fields
                         .iter()
                         .map(|(name, field_ty)| {
-                            let field_ty = contract_type_ref_ir(alias, field_ty)?;
+                            let field_ty = contract_type_ref_ir(field_ty)?;
                             let field_ty =
                                 substitute_type_params_in_type_ref_ref(&field_ty, &substitutions);
                             Ok((name.clone(), ResolvedTypeRef::new(field_ty)))
@@ -2534,11 +2529,11 @@ impl TypeResolutionModel {
                         .map(|(index, ty)| {
                             Some(FunctionTypeParamIr {
                                 name: format!("arg{index}"),
-                                ty: contract_type_ref_ir(alias, ty).ok()?,
+                                ty: contract_type_ref_ir(ty).ok()?,
                             })
                         })
                         .collect::<Option<Vec<_>>>()?,
-                    return_type: contract_type_ref_ir(alias, &operation.return_type).ok()?,
+                    return_type: contract_type_ref_ir(&operation.return_type).ok()?,
                     is_native: false,
                     is_provider: false,
                     is_static: false,

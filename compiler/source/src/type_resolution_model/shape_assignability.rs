@@ -1261,11 +1261,8 @@ impl TypeResolutionModel {
                         .filter_map(|records| records.get(&symbol.symbol_path))
                         .find(|record| record.package_id == *package_id)
                     {
-                        return contract_type_shape_ir(
-                            &symbol.symbol_path,
-                            &record.canonical_descriptor.descriptor,
-                        )
-                        .ok();
+                        return contract_type_shape_ir(&record.canonical_descriptor.descriptor)
+                            .ok();
                     }
                 }
                 if let Some(shape) = self.std_package_symbol_shape_ir(symbol, &type_args, context) {
