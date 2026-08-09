@@ -8,6 +8,12 @@
 //! All limits come from `dto::limits`; all arithmetic is checked; any error
 //! aborts the whole artifact (no partial results, no panic path).
 
+mod constants;
+mod plans;
+
+use self::constants::{validate_constant_graph, validate_constant_graph_limits};
+use self::plans::{validate_adapter_key, validate_transfer_plan};
+
 use std::collections::BTreeSet;
 
 use crate::bytecode::decode::{
@@ -17,9 +23,8 @@ use crate::bytecode::dto::limits;
 use crate::bytecode::dto::{
     BytecodeArtifact, BytecodeConstantRef, BytecodePoolEntry, BytecodePools, CallbackCaptureLayout,
     DebugBinding, DebugTable, ExceptionRegion, FrameLayout, FrozenConstantGraph,
-    FrozenConstantNode, HostEffectReference, RelocatableBytecodeFunction, ResourceDropPlan,
-    SwitchTable, ValueDropPlan, ValueTransferPlan, WritablePathSegment, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    HostEffectReference, RelocatableBytecodeFunction, SwitchTable, WritablePathSegment,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::{
     opcode_table_fingerprint, pool_operand_category, table_operand_category, Arity, Opcode,
@@ -907,109 +912,6 @@ fn validate_package_ref(
     Ok(())
 }
 
-fn validate_transfer_plan(
-    plan: &ValueTransferPlan,
-    pools: &BytecodePools,
-    enclosing_shape_index: Option<usize>,
-    location: &str,
-) -> Result<(), StructuralValidationError> {
-    match plan {
-        ValueTransferPlan::SnapshotShare { drop } | ValueTransferPlan::MoveOnly { drop } => {
-            validate_value_drop_plan(drop, pools, enclosing_shape_index, location)?;
-        }
-        ValueTransferPlan::AffineResource { drop }
-        | ValueTransferPlan::ExplicitCloneLease { drop, .. } => {
-            validate_resource_drop_plan(drop, pools, enclosing_shape_index, location)?;
-        }
-        ValueTransferPlan::FromType { ty } => {
-            let depth = type_ref_nesting_depth(ty);
-            if depth as u64 > limits::MAX_NESTING_DEPTH {
-                return Err(limit_error(
-                    "MAX_NESTING_DEPTH",
-                    limits::MAX_NESTING_DEPTH,
-                    depth as u64,
-                    location,
-                ));
-            }
-        }
-    }
-    if let ValueTransferPlan::ExplicitCloneLease { clone_adapter, .. } = plan {
-        validate_adapter_key(
-            &clone_adapter.binding_key,
-            &format!("{location}.cloneAdapter"),
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_value_drop_plan(
-    drop: &ValueDropPlan,
-    pools: &BytecodePools,
-    enclosing_shape_index: Option<usize>,
-    location: &str,
-) -> Result<(), StructuralValidationError> {
-    match drop {
-        ValueDropPlan::Trivial | ValueDropPlan::SnapshotRelease => Ok(()),
-        ValueDropPlan::RecursiveShape { shape_ref } => {
-            validate_recursive_shape_ref(*shape_ref, pools, enclosing_shape_index, location)
-        }
-        ValueDropPlan::NativeAdapter { adapter } => {
-            validate_adapter_key(&adapter.binding_key, &format!("{location}.drop.adapter"))
-        }
-    }
-}
-
-fn validate_resource_drop_plan(
-    drop: &ResourceDropPlan,
-    pools: &BytecodePools,
-    enclosing_shape_index: Option<usize>,
-    location: &str,
-) -> Result<(), StructuralValidationError> {
-    match drop {
-        ResourceDropPlan::ResourceTableRelease => Ok(()),
-        ResourceDropPlan::RecursiveShape { shape_ref } => {
-            validate_recursive_shape_ref(*shape_ref, pools, enclosing_shape_index, location)
-        }
-        ResourceDropPlan::NativeAdapter { adapter } => {
-            validate_adapter_key(&adapter.binding_key, &format!("{location}.drop.adapter"))
-        }
-    }
-}
-
-fn validate_recursive_shape_ref(
-    shape_ref: u32,
-    pools: &BytecodePools,
-    enclosing_shape_index: Option<usize>,
-    location: &str,
-) -> Result<(), StructuralValidationError> {
-    let Some(entry) = pools.shapes.get(shape_ref as usize) else {
-        return Err(index_out_of_bounds("shapes pool", shape_ref, location));
-    };
-    if !entry_is_kind(entry, PoolCategory::Shapes) {
-        return Err(header_error(format!(
-            "{location} recursive shape must reference a ShapeRef entry"
-        )));
-    }
-    if enclosing_shape_index.is_some_and(|parent| shape_ref as usize >= parent) {
-        return Err(header_error(format!(
-            "{location} recursive shape {shape_ref} must precede its enclosing shape (acyclic plan graph)"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_adapter_key(
-    binding_key: &str,
-    location: &str,
-) -> Result<(), StructuralValidationError> {
-    if binding_key.is_empty() {
-        return Err(header_error(format!(
-            "{location}.bindingKey must not be empty"
-        )));
-    }
-    Ok(())
-}
-
 fn validate_host_effect_reference(
     effect: &HostEffectReference,
     pools: &BytecodePools,
@@ -1206,34 +1108,6 @@ fn validate_capture_layout(
                 "{location}.captures[{capture_index}].plan does not match target slot plan"
             )));
         }
-    }
-    Ok(())
-}
-
-/// C2: frozen constant graph node/byte bounds (C8 detail checks run in
-/// `validate_constant_graph`).
-fn validate_constant_graph_limits(
-    artifact: &BytecodeArtifact,
-) -> Result<(), StructuralValidationError> {
-    let graph = &artifact.image.frozen_constant_graph;
-    let node_count = graph.nodes.len() as u64;
-    if node_count > limits::MAX_CONSTANT_GRAPH_NODES {
-        return Err(limit_error(
-            "MAX_CONSTANT_GRAPH_NODES",
-            limits::MAX_CONSTANT_GRAPH_NODES,
-            node_count,
-            "image.frozenConstantGraph.nodes",
-        ));
-    }
-    let graph_bytes = skiff_canonical_json::canonical_json_bytes(graph)
-        .map_err(|error| header_error(format!("constant graph is not canonical JSON: {error}")))?;
-    if graph_bytes.len() as u64 > limits::MAX_CONSTANT_GRAPH_BYTES {
-        return Err(limit_error(
-            "MAX_CONSTANT_GRAPH_BYTES",
-            limits::MAX_CONSTANT_GRAPH_BYTES,
-            graph_bytes.len() as u64,
-            "image.frozenConstantGraph",
-        ));
     }
     Ok(())
 }
@@ -2886,137 +2760,6 @@ fn validate_debug_binding(
         return Err(header_error(format!(
             "{location} slot {} out of bounds: slotCount {}",
             binding.slot, function.frame_layout.slot_count
-        )));
-    }
-    Ok(())
-}
-
-/// C8: constant graph encoding (child < parent, in-bounds, compatible kinds,
-/// existing behavior function) and nesting depth.
-fn validate_constant_graph(artifact: &BytecodeArtifact) -> Result<(), StructuralValidationError> {
-    let graph = &artifact.image.frozen_constant_graph;
-    let nodes = &graph.nodes;
-    let mut depths = vec![1u32; nodes.len()];
-    for (index, node) in nodes.iter().enumerate() {
-        let index_u32 = index as u32;
-        for child in node.children() {
-            if *child >= index_u32 {
-                return Err(constant_graph_error(format!(
-                    "node[{index}].children contains {child}; child index must be strictly less than parent index (acyclicity encoding)"
-                )));
-            }
-        }
-        for child in node.children() {
-            let child_depth = depths[*child as usize];
-            depths[index] = depths[index].max(child_depth.checked_add(1).unwrap_or(u32::MAX));
-        }
-        if depths[index] as u64 > limits::MAX_NESTING_DEPTH {
-            return Err(limit_error(
-                "MAX_NESTING_DEPTH",
-                limits::MAX_NESTING_DEPTH,
-                depths[index] as u64,
-                &format!("image.frozenConstantGraph.nodes[{index}]"),
-            ));
-        }
-        match node {
-            FrozenConstantNode::Representation { type_ref, .. } => {
-                validate_type_pool_ref(
-                    &artifact.image.pools,
-                    *type_ref,
-                    &format!("image.frozenConstantGraph.nodes[{index}].typeRef"),
-                )?;
-            }
-            FrozenConstantNode::Record {
-                shape_index,
-                children,
-            } => {
-                if *shape_index as usize >= artifact.image.pools.shapes.len() {
-                    return Err(index_out_of_bounds(
-                        "shapes pool",
-                        *shape_index,
-                        &format!("image.frozenConstantGraph.nodes[{index}].shapeIndex"),
-                    ));
-                }
-                if !entry_is_kind(
-                    &artifact.image.pools.shapes[*shape_index as usize],
-                    PoolCategory::Shapes,
-                ) {
-                    return Err(constant_graph_error(format!(
-                        "node[{index}] shapeIndex must reference a ShapeRef entry"
-                    )));
-                }
-                let BytecodePoolEntry::ShapeRef { shape } =
-                    &artifact.image.pools.shapes[*shape_index as usize]
-                else {
-                    return Err(constant_graph_error(format!(
-                        "node[{index}] shapeIndex must reference a ShapeRef entry"
-                    )));
-                };
-                if children.len() != shape.fields.len() {
-                    return Err(constant_graph_error(format!(
-                        "node[{index}] has {} record children but shape declares {} fields",
-                        children.len(),
-                        shape.fields.len()
-                    )));
-                }
-            }
-            FrozenConstantNode::Implementation { record, behaviors } => {
-                if !matches!(
-                    nodes.get(*record as usize),
-                    Some(FrozenConstantNode::Record { .. })
-                ) {
-                    return Err(constant_graph_error(format!(
-                        "node[{index}] implementation record {record} is not a Record node"
-                    )));
-                }
-                if behaviors.is_empty() {
-                    return Err(constant_graph_error(format!(
-                        "node[{index}] implementation must declare at least one behavior"
-                    )));
-                }
-                let mut previous_function: Option<&str> = None;
-                for (behavior_index, behavior) in behaviors.iter().enumerate() {
-                    if behavior.function_key.is_empty()
-                        || previous_function
-                            .is_some_and(|previous| previous >= behavior.function_key.as_str())
-                        || !artifact
-                            .image
-                            .functions
-                            .contains_key(&behavior.function_key)
-                    {
-                        return Err(constant_graph_error(format!(
-                            "node[{index}].behaviors[{behavior_index}] is not strictly ordered or references a missing function"
-                        )));
-                    }
-                    previous_function = Some(behavior.function_key.as_str());
-                }
-            }
-            FrozenConstantNode::Literal { .. } | FrozenConstantNode::Array { .. } => {}
-        }
-    }
-    let mut reachable = vec![false; nodes.len()];
-    let mut pending = Vec::new();
-    for entry in &artifact.image.pools.constants {
-        let BytecodePoolEntry::ConstantRef {
-            reference: BytecodeConstantRef::LocalNode { node_index, .. },
-            ..
-        } = entry
-        else {
-            continue;
-        };
-        pending.push(*node_index);
-    }
-    while let Some(index) = pending.pop() {
-        let slot = &mut reachable[index as usize];
-        if *slot {
-            continue;
-        }
-        *slot = true;
-        pending.extend(nodes[index as usize].children().iter().copied());
-    }
-    if let Some(orphan) = reachable.iter().position(|reachable| !reachable) {
-        return Err(constant_graph_error(format!(
-            "node[{orphan}] is unreachable from every local constant pool root"
         )));
     }
     Ok(())
