@@ -2629,6 +2629,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "skiff-runtime-bytecode-verifier"
+version = "0.1.0"
+dependencies = [
+ "skiff-artifact-model",
+ "skiff-runtime-linked-bytecode",
+]
+
+[[package]]
 name = "skiff-runtime-capability-context"
 version = "0.1.0"
 dependencies = [
