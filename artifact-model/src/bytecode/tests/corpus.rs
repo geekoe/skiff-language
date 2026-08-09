@@ -1025,3 +1025,77 @@ fn corpus_resource_limit_position_variants() {
         "{error}"
     );
 }
+
+/// Typed frame declarations are complete and every entry is a checked index
+/// into the artifact's types pool.
+#[test]
+fn corpus_frame_type_refs_fail_closed() {
+    let mut short_slots = canonical_artifact();
+    short_slots
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .slot_type_refs
+        .pop();
+    let error = assert_rejected(&short_slots);
+    assert!(matches!(error, StructuralValidationError::Table { .. }));
+    assert!(error.to_string().contains("slotTypeRefs len"), "{error}");
+
+    let mut short_results = canonical_artifact();
+    short_results
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .result_type_refs
+        .clear();
+    let error = assert_rejected(&short_results);
+    assert!(matches!(error, StructuralValidationError::Table { .. }));
+    assert!(error.to_string().contains("resultTypeRefs len"), "{error}");
+
+    let mut slot_out_of_bounds = canonical_artifact();
+    slot_out_of_bounds
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .slot_type_refs[0] = 2;
+    let error = assert_rejected(&slot_out_of_bounds);
+    assert!(matches!(error, StructuralValidationError::Table { .. }));
+    assert!(error.to_string().contains("out of bounds"), "{error}");
+
+    let mut result_out_of_bounds = canonical_artifact();
+    result_out_of_bounds
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .result_type_refs[0] = 2;
+    let error = assert_rejected(&result_out_of_bounds);
+    assert!(matches!(error, StructuralValidationError::Table { .. }));
+    assert!(error.to_string().contains("out of bounds"), "{error}");
+
+    let mut wrong_entry_kind = canonical_artifact();
+    wrong_entry_kind
+        .image
+        .pools
+        .types
+        .push(BytecodePoolEntry::HostEffectRef {
+            effect_ref: "effect:not-a-type".to_string(),
+        });
+    wrong_entry_kind
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .result_type_refs[0] = 2;
+    let error = assert_rejected(&wrong_entry_kind);
+    assert!(matches!(error, StructuralValidationError::Table { .. }));
+    assert!(error.to_string().contains("TypeRef entry"), "{error}");
+}

@@ -21,6 +21,16 @@ use super::*;
 
 /// Minimal artifact with the given functions and no pools/graph/debug table.
 fn minimal_artifact(functions: BTreeMap<String, RelocatableBytecodeFunction>) -> BytecodeArtifact {
+    let needs_type_entry = functions.values().any(|function| {
+        !function.frame_layout.slot_type_refs.is_empty()
+            || !function.frame_layout.result_type_refs.is_empty()
+    });
+    let mut pools = BytecodePools::default();
+    if needs_type_entry {
+        pools
+            .types
+            .push(BytecodePoolEntry::TypeRef { ty: string_type() });
+    }
     BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
@@ -29,7 +39,7 @@ fn minimal_artifact(functions: BTreeMap<String, RelocatableBytecodeFunction>) ->
         bytecode_identity: String::new(),
         image: BytecodeImage {
             functions,
-            pools: BytecodePools::default(),
+            pools,
             frozen_constant_graph: FrozenConstantGraph::default(),
             debug_table: None,
         },
@@ -50,13 +60,15 @@ fn checkpoint_function(
         relocations: Vec::new(),
         frame_layout: FrameLayout {
             slot_count,
+            slot_type_refs: vec![0; slot_count as usize],
             parameter_slots: Vec::new(),
             result_count: 0,
+            result_type_refs: Vec::new(),
             result_plans: Vec::new(),
             slot_plans: vec![snapshot_share(); slot_count as usize],
         },
         max_operand_depth: 0,
-        effect_summary_ref: "operation:limit".to_string(),
+        effect_summary_ref: crate::PackageCallableId::new("operation:limit"),
         exception_regions: Vec::new(),
         switch_tables: Vec::new(),
         statement_entries: Vec::new(),

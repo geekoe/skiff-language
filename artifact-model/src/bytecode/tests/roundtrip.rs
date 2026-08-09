@@ -114,6 +114,10 @@ fn assemble_artifact_round_trips_through_json() {
     let decoded: BytecodeArtifact =
         serde_json::from_slice(&bytes).expect("canonical bytes must be valid artifact JSON");
     assert_eq!(decoded, artifact);
+    assert_eq!(
+        decoded.image.functions["module::main"].effect_summary_ref,
+        crate::PackageCallableId::new("operation:module:main")
+    );
 }
 
 /// Same typed input built with different map insertion orders yields the same
@@ -269,7 +273,7 @@ fn validated_view_retains_linker_facts_after_raw_artifact_is_dropped() {
         .get_mut("module::main")
         .expect("canonical main function");
     function.type_parameters = vec!["T".to_string(), "Result".to_string()];
-    function.effect_summary_ref = "effect-summary:module::main".to_string();
+    function.effect_summary_ref = crate::PackageCallableId::new("effect-summary:module::main");
 
     let expected_debug_table = artifact
         .image
@@ -290,7 +294,7 @@ fn validated_view_retains_linker_facts_after_raw_artifact_is_dropped() {
     );
     assert_eq!(
         validated.effect_summary_ref,
-        "effect-summary:module::main"
+        crate::PackageCallableId::new("effect-summary:module::main")
     );
     assert_eq!(view.debug_table(), Some(&expected_debug_table));
 

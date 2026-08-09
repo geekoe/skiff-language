@@ -55,7 +55,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v1";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v2";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v1";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -202,7 +202,7 @@ pub struct RelocatableBytecodeFunction {
     pub max_operand_depth: u32,
     /// Reference to the callable's effect summary (owned by the effect facts
     /// table; semantic consumption is 3B).
-    pub effect_summary_ref: String,
+    pub effect_summary_ref: crate::PackageCallableId,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exception_regions: Vec<ExceptionRegion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -218,9 +218,13 @@ pub struct RelocatableBytecodeFunction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FrameLayout {
     pub slot_count: u32,
+    /// One `BytecodePools::types` index per frame slot, indexed by slot.
+    pub slot_type_refs: Vec<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameter_slots: Vec<ParameterSlotDecl>,
     pub result_count: u32,
+    /// One `BytecodePools::types` index per result slot, in result order.
+    pub result_type_refs: Vec<u32>,
     /// One plan per result slot (schema declaration; arity/type proof is 3B).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub result_plans: Vec<ValueTransferPlan>,

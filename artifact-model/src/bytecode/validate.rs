@@ -14,7 +14,7 @@ use crate::bytecode::decode::{
 use crate::bytecode::dto::limits;
 use crate::bytecode::dto::{
     BytecodeArtifact, BytecodePoolEntry, BytecodePools, CallbackCaptureLayout, DebugBinding,
-    DebugTable, ExceptionRegion, FrozenConstantGraph, FrozenConstantNode,
+    DebugTable, ExceptionRegion, FrameLayout, FrozenConstantGraph, FrozenConstantNode,
     RelocatableBytecodeFunction, SwitchTable, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
     BYTECODE_SCHEMA_VERSION,
 };
@@ -146,7 +146,7 @@ pub struct ValidatedFunction {
     pub statement_entries: Vec<crate::bytecode::dto::StatementEntry>,
     pub source_map: Vec<crate::bytecode::dto::SourceMapEntry>,
     pub max_operand_depth: u32,
-    pub effect_summary_ref: String,
+    pub effect_summary_ref: crate::PackageCallableId,
     pub instructions: Vec<DecodedInstruction>,
     pub header_pcs: Vec<u32>,
 }
@@ -531,7 +531,7 @@ fn validate_function(
         });
     }
 
-    validate_function_limits(key, function)?;
+    validate_function_limits(key, function, &artifact.image.pools)?;
     let decoded = decoder.decode_function(&function.words).map_err(|error| {
         StructuralValidationError::Decode {
             function_key: key.to_string(),
@@ -565,6 +565,7 @@ fn validate_function(
 fn validate_function_limits(
     key: &str,
     function: &RelocatableBytecodeFunction,
+    pools: &BytecodePools,
 ) -> Result<(), StructuralValidationError> {
     let location = |field: &str| format!("functions[{key}].{field}");
     if function.words.len() as u64 > limits::MAX_WORDS_PER_FUNCTION {
@@ -632,6 +633,7 @@ fn validate_function_limits(
             &location("frameLayout.resultCount"),
         ));
     }
+    validate_frame_type_refs(key, frame, pools)?;
     if frame.slot_plans.len() as u64 != frame.slot_count as u64 {
         return Err(StructuralValidationError::Table {
             function_key: key.to_string(),
@@ -689,6 +691,59 @@ fn validate_function_limits(
                 entry.statement_id.len() as u64,
                 &location(&format!("statementEntries[{index}].statementId")),
             ));
+        }
+    }
+    Ok(())
+}
+
+/// C5: every declared frame slot/result type is a checked reference into the
+/// artifact's homogeneous types pool.
+fn validate_frame_type_refs(
+    key: &str,
+    frame: &FrameLayout,
+    pools: &BytecodePools,
+) -> Result<(), StructuralValidationError> {
+    for (field, count_field, refs, expected_len) in [
+        (
+            "slotTypeRefs",
+            "slotCount",
+            frame.slot_type_refs.as_slice(),
+            frame.slot_count as usize,
+        ),
+        (
+            "resultTypeRefs",
+            "resultCount",
+            frame.result_type_refs.as_slice(),
+            frame.result_count as usize,
+        ),
+    ] {
+        if refs.len() != expected_len {
+            return Err(table_error(
+                key,
+                format!(
+                    "frameLayout.{field} len {} does not match {count_field} {}",
+                    refs.len(),
+                    expected_len
+                ),
+            ));
+        }
+        for (index, type_ref) in refs.iter().enumerate() {
+            let Some(entry) = pools.types.get(*type_ref as usize) else {
+                return Err(table_error(
+                    key,
+                    format!(
+                        "frameLayout.{field}[{index}] index {type_ref} out of bounds of types pool"
+                    ),
+                ));
+            };
+            if !entry_is_kind(entry, PoolCategory::Types) {
+                return Err(table_error(
+                    key,
+                    format!(
+                        "frameLayout.{field}[{index}] must reference a TypeRef entry"
+                    ),
+                ));
+            }
         }
     }
     Ok(())

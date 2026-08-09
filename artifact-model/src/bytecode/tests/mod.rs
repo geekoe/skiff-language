@@ -107,11 +107,13 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
         ],
         frame_layout: FrameLayout {
             slot_count: 4,
+            slot_type_refs: vec![0, 0, 1, 1],
             parameter_slots: vec![ParameterSlotDecl {
                 slot: 0,
                 plan: snapshot_share(),
             }],
             result_count: 1,
+            result_type_refs: vec![1],
             result_plans: vec![snapshot_share()],
             slot_plans: vec![
                 snapshot_share(),
@@ -121,7 +123,7 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
             ],
         },
         max_operand_depth: 8,
-        effect_summary_ref: "operation:module:main".to_string(),
+        effect_summary_ref: crate::PackageCallableId::new("operation:module:main"),
         exception_regions: vec![ExceptionRegion {
             start_pc: 15,
             end_pc: 20,
@@ -176,13 +178,15 @@ pub(crate) fn helper_function() -> RelocatableBytecodeFunction {
         relocations: Vec::new(),
         frame_layout: FrameLayout {
             slot_count: 2,
+            slot_type_refs: vec![0, 1],
             parameter_slots: Vec::new(),
             result_count: 0,
+            result_type_refs: Vec::new(),
             result_plans: Vec::new(),
             slot_plans: vec![snapshot_share(), plan(ValueTransferPlanKind::MoveOnly)],
         },
         max_operand_depth: 2,
-        effect_summary_ref: "operation:module:helper".to_string(),
+        effect_summary_ref: crate::PackageCallableId::new("operation:module:helper"),
         exception_regions: Vec::new(),
         switch_tables: Vec::new(),
         statement_entries: Vec::new(),
