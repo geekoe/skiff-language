@@ -7,7 +7,7 @@ function configured() -> string {
 }
 
 function run() -> string {
-  const box = helper.Box { value: "consumer" }
+  let box = helper.Box { value: "consumer" }
   helper/tools.mutate(box)
   return payments/echo(box.value)
 }
@@ -22,7 +22,7 @@ function effectLookup(url: string, detail: string) -> string {
 
 function effectEvents(url: string) -> string {
   let output = ""
-  const events: Stream<helper.EffectResponse> = helper/tools.events(helper.EffectRequest {
+  let events: Stream<helper.EffectResponse> = helper/tools.events(helper.EffectRequest {
     method: "GET",
     url: url,
     detail: "stream"

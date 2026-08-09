@@ -71,7 +71,7 @@ impl Flaky {
 }
 
 function marker() -> string {
-  const counter = std.actor.get<Counter>("shared")
+  let counter = std.actor.get<Counter>("shared")
   return counter.increment()
 }
 
@@ -80,22 +80,22 @@ function __skiffHttpProbe(body: null) -> string {
 }
 
 function slowGetOnly(body: null) -> string {
-  const slow = std.actor.get<Slow>("slow")
+  let slow = std.actor.get<Slow>("slow")
   return "slow-get-ok"
 }
 
 function slowDedup(body: null) -> string {
-  const slow = std.actor.get<Slow>("slow-dedup")
+  let slow = std.actor.get<Slow>("slow-dedup")
   return "slow-get-ok"
 }
 
 function slowIncrement(body: null) -> string {
-  const slow = std.actor.get<Slow>("slow")
+  let slow = std.actor.get<Slow>("slow")
   return slow.increment()
 }
 
 function flakyGet(body: null) -> string {
-  const flaky = std.actor.get<Flaky>("flaky")
+  let flaky = std.actor.get<Flaky>("flaky")
   return flaky.ping()
 }
 
@@ -125,7 +125,7 @@ impl SelfCalling {
 
   function addViaSelf(value: number) -> number {
     self.count = self.count + 1
-    const nested = self.add(value)
+    let nested = self.add(value)
     self.count = self.count + 100
     return self.count
   }
@@ -136,12 +136,12 @@ impl SelfCalling {
 }
 
 function synchronousSelfCall(body: null) -> number {
-  const target = std.actor.get<SelfCalling>("synchronous-self")
+  let target = std.actor.get<SelfCalling>("synchronous-self")
   return target.addViaSelf(4)
 }
 
 function synchronousSelfCount(body: null) -> number {
-  const target = std.actor.get<SelfCalling>("synchronous-self")
+  let target = std.actor.get<SelfCalling>("synchronous-self")
   return target.count()
 }
 
@@ -190,48 +190,48 @@ impl Spawned {
 }
 
 function spawnExternal(body: null) -> string {
-  const target = std.actor.get<Spawned>("external")
+  let target = std.actor.get<Spawned>("external")
   dispatch target.record("x")
   return "external-submitted"
 }
 
 function externalCount(body: null) -> number {
-  const target = std.actor.get<Spawned>("external")
+  let target = std.actor.get<Spawned>("external")
   return target.count()
 }
 
 function externalHistory(body: null) -> string {
-  const target = std.actor.get<Spawned>("external")
+  let target = std.actor.get<Spawned>("external")
   return target.history()
 }
 
 function spawnSelfKick(body: null) -> string {
-  const target = std.actor.get<Spawned>("self-kick")
+  let target = std.actor.get<Spawned>("self-kick")
   return target.kickSelf("s")
 }
 
 function selfKickCount(body: null) -> number {
-  const target = std.actor.get<Spawned>("self-kick")
+  let target = std.actor.get<Spawned>("self-kick")
   return target.count()
 }
 
 function selfKickHistory(body: null) -> string {
-  const target = std.actor.get<Spawned>("self-kick")
+  let target = std.actor.get<Spawned>("self-kick")
   return target.history()
 }
 
 function spawnFanout(body: null) -> string {
-  const target = std.actor.get<Spawned>("fanout")
+  let target = std.actor.get<Spawned>("fanout")
   return target.fanout()
 }
 
 function fanoutCount(body: null) -> number {
-  const target = std.actor.get<Spawned>("fanout")
+  let target = std.actor.get<Spawned>("fanout")
   return target.count()
 }
 
 function fanoutHistory(body: null) -> string {
-  const target = std.actor.get<Spawned>("fanout")
+  let target = std.actor.get<Spawned>("fanout")
   return target.history()
 }
 
@@ -280,17 +280,17 @@ impl Chain {
 }
 
 function chainKick(body: null) -> string {
-  const target = std.actor.get<Chain>("chain")
+  let target = std.actor.get<Chain>("chain")
   return target.chainKick("c")
 }
 
 function chainSteps(body: null) -> number {
-  const target = std.actor.get<Chain>("chain")
+  let target = std.actor.get<Chain>("chain")
   return target.steps()
 }
 
 function chainHistory(body: null) -> string {
-  const target = std.actor.get<Chain>("chain")
+  let target = std.actor.get<Chain>("chain")
   return target.history()
 }
 
@@ -323,7 +323,7 @@ impl Throwing {
 }
 
 function spawnThrow(body: null) -> string {
-  const target = std.actor.get<Throwing>("throwing")
+  let target = std.actor.get<Throwing>("throwing")
   dispatch target.boom("t")
   return "throw-spawned"
 }

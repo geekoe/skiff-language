@@ -638,18 +638,18 @@ fn compile_current_scope_fixture_once() -> CurrentScopeCompiledFixture {
         .expect("exact current-scope RuntimeAssembly");
     assert_eq!(
         receipt.base_assembly.assembly_identity.as_str(),
-        "skiff-runtime-assembly-v3:sha256:f7fea222ef76c34c280c9e7eac9d259a92c26bee8555debce33f8b4dac29f039"
+        "skiff-runtime-assembly-v3:sha256:80feb45c46d58768cb1657d824aa5569a0c7824963ac16835eda647e49205ef6"
     );
     assert_eq!(
         receipt.consumer_package.package_build_id.as_str(),
-        "skiff-package-build-v10:sha256:56f677fa94fab84264002a19204368d705fc3c02a1dab06781c9e885c6854671"
+        "skiff-package-build-v10:sha256:77cbf05c67b9a3045a2e6bec49faa87819b16c1abb434dc7f2eca4f253d15e03"
     );
     assert_eq!(
         receipt
             .consumer_deployment
             .deployment_artifact_identity
             .as_str(),
-        "skiff-deployment-artifact-v4:sha256:15a00015eff5607f7ec8ea1c0c5e75765988185f83d3f8d530909700d945d78a"
+        "skiff-deployment-artifact-v4:sha256:9154c650bd3e7a29657d882abf72b01e15edbdab465ade5606cdcc42a4804d07"
     );
     CurrentScopeCompiledFixture {
         assembly,

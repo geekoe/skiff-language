@@ -88,7 +88,10 @@ impl RequestTelemetryContext {
         let mut event = PlatformEvent::new(name)
             .with_attrs(attrs)
             .into_event(telemetry_timestamp_now(), TelemetrySource::Runtime);
+        event.trace_id = self.trace_id.clone();
         self.apply_correlation(&mut event);
+        event.span_id = None;
+        event.parent_span_id = None;
         self.emit(event);
     }
 

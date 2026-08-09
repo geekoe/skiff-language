@@ -2191,14 +2191,6 @@ fn no_effects(may_suspend: bool) -> CallableMayEffects {
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
         may_pending: may_suspend,
-    
-        may_pending: false,
-        pending_effect_categories: Vec::new(),
-        inout_path_effects: Vec::new(),
-    }
-}
-
-        may_pending: false,
         pending_effect_categories: Vec::new(),
         inout_path_effects: Vec::new(),
     }

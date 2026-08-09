@@ -2021,7 +2021,7 @@ fn connection_send_stays_inside_the_current_synchronous_segment() {
     ] {
         let semantics = skiff_artifact_model::native_callable_semantics(target)
             .expect("connection send has exact callable semantics");
-        assert!(!semantics.effects.may_suspend, "{target}");
+        assert!(!semantics.effects.may_pending, "{target}");
         assert!(
             !crate::eval_context::native_call_suspends(target),
             "{target}"

@@ -4,7 +4,7 @@ pub(crate) fn legacy_native_call_expected_to_suspend(binding_key: &str) -> bool 
     skiff_artifact_model::STD_NATIVE_CALLABLE_SEMANTICS
         .iter()
         .find(|semantics| semantics.binding_key == binding_key)
-        .is_some_and(|semantics| semantics.effects.may_suspend)
+        .is_some_and(|semantics| semantics.effects.may_pending)
         || binding_key.starts_with("std.file.")
         || binding_key.starts_with("std.actor.")
         || matches!(

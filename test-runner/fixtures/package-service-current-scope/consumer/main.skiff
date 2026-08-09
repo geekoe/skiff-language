@@ -38,7 +38,7 @@ function configured() -> string {
 function nestedHttpUnary(url: string) -> integer {
   return timeout(400ms) value {
     timeout(200ms) value {
-      const response = std.http.request(clientRequest(url))
+      let response = std.http.request(clientRequest(url))
       response.status
     }
   }
@@ -47,7 +47,7 @@ function nestedHttpUnary(url: string) -> integer {
 function nestedHttpStream(url: string) -> integer {
   return timeout(410ms) value {
     timeout(210ms) value {
-      const response = std.http.stream(clientRequest(url))
+      let response = std.http.stream(clientRequest(url))
       response.status
     }
   }
@@ -68,7 +68,7 @@ function nestedWebSocketRequest(connectionId: string) -> string {
 function nestedFile(value: string) -> string {
   return timeout(430ms) value {
     timeout(230ms) value {
-      const file = std.file.createText(value, null)
+      let file = std.file.createText(value, null)
       std.file.readText(file)
     }
   }
@@ -77,7 +77,7 @@ function nestedFile(value: string) -> string {
 function nestedActor() -> string {
   return timeout(440ms) value {
     timeout(240ms) value {
-      const counter = std.actor.get<Counter>("current-scope")
+      let counter = std.actor.get<Counter>("current-scope")
       counter.increment()
     }
   }
@@ -92,7 +92,7 @@ function nestedService(value: string) -> string {
 }
 
 function textResponse(status: integer, body: string) -> std.http.HttpResponse {
-  const headers = Array.empty<std.http.HttpHeader>()
+  let headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
   return std.http.HttpResponse {
     status: status,
@@ -102,12 +102,12 @@ function textResponse(status: integer, body: string) -> std.http.HttpResponse {
 }
 
 function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const unaryStatus = nestedHttpUnary("https://example.test/unary")
-  const streamStatus = nestedHttpStream("https://example.test/stream")
-  const peer = nestedWebSocketRequest(request.path)
-  const file = nestedFile(peer)
-  const actor = nestedActor()
-  const service = nestedService(file.concat(actor))
+  let unaryStatus = nestedHttpUnary("https://example.test/unary")
+  let streamStatus = nestedHttpStream("https://example.test/stream")
+  let peer = nestedWebSocketRequest(request.path)
+  let file = nestedFile(peer)
+  let actor = nestedActor()
+  let service = nestedService(file.concat(actor))
   if unaryStatus == streamStatus {
     return textResponse(200, service)
   }
@@ -115,8 +115,8 @@ function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-  const status = nestedHttpStream("https://example.test/stream")
-  const headers = Array.empty<std.http.HttpHeader>()
+  let status = nestedHttpStream("https://example.test/stream")
+  let headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
   emit(std.http.streamStart(status, headers))
   emit(std.http.streamChunk(request.body))

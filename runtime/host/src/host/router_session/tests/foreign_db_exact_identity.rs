@@ -790,11 +790,11 @@ test "case one keeps foreign DB identity and inline double local" effects {
     },
   }
 } {
-  const firstExists = db exists firstImpl/model.Session("first")
-  const firstDeleted = db delete firstImpl/model.Session("first")
-  const secondExists = db exists secondImpl/model.Session("second")
-  const secondDeleted = db delete secondImpl/model.Session("second")
-  const doubled = std.http.request(sharedDoubleRequest())
+  let firstExists = db exists firstImpl/model.Session("first")
+  let firstDeleted = db delete firstImpl/model.Session("first")
+  let secondExists = db exists secondImpl/model.Session("second")
+  let secondDeleted = db delete secondImpl/model.Session("second")
+  let doubled = std.http.request(sharedDoubleRequest())
   assert firstExists
   assert firstDeleted
   assert secondExists
@@ -815,11 +815,11 @@ test "case two gets a fresh heap and inline double sequence" effects {
     },
   }
 } {
-  const firstExists = db exists firstImpl/model.Session("first")
-  const firstDeleted = db delete firstImpl/model.Session("first")
-  const secondExists = db exists secondImpl/model.Session("second")
-  const secondDeleted = db delete secondImpl/model.Session("second")
-  const doubled = std.http.request(sharedDoubleRequest())
+  let firstExists = db exists firstImpl/model.Session("first")
+  let firstDeleted = db delete firstImpl/model.Session("first")
+  let secondExists = db exists secondImpl/model.Session("second")
+  let secondDeleted = db delete secondImpl/model.Session("second")
+  let doubled = std.http.request(sharedDoubleRequest())
   assert firstExists
   assert firstDeleted
   assert secondExists

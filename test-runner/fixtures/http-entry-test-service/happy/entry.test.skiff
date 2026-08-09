@@ -32,7 +32,7 @@ function textResponse(status: integer, value: string) -> std.http.HttpResponse {
 }
 
 function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  const outbound = std.http.request(std.http.HttpClientRequest {
+  let outbound = std.http.request(std.http.HttpClientRequest {
     method: "POST",
     url: "https://example.test/from-entry",
     headers: headers(),
@@ -79,9 +79,9 @@ function readBody(body: Stream<bytes>) -> string {
 }
 
 function reservedHeaderRejected(name: string) -> boolean {
-  const requestHeaders = headers()
+  let requestHeaders = headers()
   requestHeaders.push(std.http.HttpHeader { name: name, value: "caller-owned" })
-  const rejected = catch<std.http.HttpError>(
+  let rejected = catch<std.http.HttpError>(
     std.http.request(request("POST", "/plain", requestHeaders, bytes.fromUtf8("blocked")))
   )
   if rejected.tag == "err" {
@@ -105,7 +105,7 @@ test "unary entry returns its complete body and consumes the parent inline doubl
     },
   }
 } {
-  const response = std.http.request(
+  let response = std.http.request(
     request("POST", "/unary", headers(), bytes.fromUtf8("request-body"))
   )
   assert response.status == 201
@@ -113,7 +113,7 @@ test "unary entry returns its complete body and consumes the parent inline doubl
 }
 
 test "raw response stream is consumed through the ordinary HTTP client" {
-  const response = std.http.stream(
+  let response = std.http.stream(
     request("POST", "/stream", headers(), bytes.fromUtf8("middle"))
   )
   assert response.status == 206
@@ -142,7 +142,7 @@ test "non-self origin remains an ordinary inline HTTP double" effects {
     },
   }
 } {
-  const response = std.http.request(std.http.HttpClientRequest {
+  let response = std.http.request(std.http.HttpClientRequest {
     method: "GET",
     url: "https://example.test/direct",
     headers: headers(),
@@ -154,7 +154,7 @@ test "non-self origin remains an ordinary inline HTTP double" effects {
 }
 
 test "consumer break cancels the slow child and releases a sequential self-ingress slot" {
-  const response = std.http.stream(request("GET", "/slow", headers(), null))
+  let response = std.http.stream(request("GET", "/slow", headers(), null))
   let first = ""
   for chunk in response.body {
     first = chunk.toUtf8String()
@@ -162,7 +162,7 @@ test "consumer break cancels the slow child and releases a sequential self-ingre
   }
   assert first == "first"
 
-  const sequential = std.http.request(
+  let sequential = std.http.request(
     request("POST", "/plain", headers(), bytes.fromUtf8("after-break"))
   )
   assert sequential.status == 200
