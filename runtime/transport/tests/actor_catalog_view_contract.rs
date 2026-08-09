@@ -17,6 +17,9 @@ use serde_json::Value;
 
 const CORPUS_SCHEMA_VERSION: &str = "skiff-router-rust-actor-routing-corpus-v1";
 const PROJECTION_SCHEMA_VERSION: &str = "skiff-actor-routing-projection-v1";
+const PACKAGE_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v11:sha256";
+const LEGACY_PACKAGE_BUILD_ID_V10: &str =
+    "skiff-package-build-v10:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,7 +107,7 @@ impl ProjectionMirror {
             )?;
             validate_identity(
                 &method.package.package_build_id,
-                "skiff-package-build-v10:sha256",
+                PACKAGE_BUILD_IDENTITY_PREFIX,
                 "package.packageBuildId",
             )?;
             validate_identity(
@@ -321,6 +324,31 @@ mod tests {
                 other => panic!("{}: unknown rejectAt {other}", case.id),
             }
         }
+    }
+
+    #[test]
+    fn legacy_package_build_v10_is_explicitly_rejected() {
+        let corpus = corpus();
+        let mut json = corpus
+            .positive
+            .iter()
+            .find(|case| case.id == "two-methods-sorted")
+            .expect("two-methods-sorted case")
+            .json
+            .clone();
+        *json
+            .pointer_mut("/methods/0/package/packageBuildId")
+            .expect("positive fixture packageBuildId") =
+            Value::String(LEGACY_PACKAGE_BUILD_ID_V10.to_string());
+
+        let projection: ProjectionMirror =
+            serde_json::from_value(json).expect("legacy fixture shape parses");
+        assert_eq!(
+            projection.validate(),
+            Err(format!(
+                "package.packageBuildId must use {PACKAGE_BUILD_IDENTITY_PREFIX}"
+            ))
+        );
     }
 
     #[test]
