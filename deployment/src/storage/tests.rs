@@ -12,6 +12,7 @@ use skiff_artifact_identity::{
     package_artifact_ref, package_schema_index_identity, runtime_assembly_ref,
     service_contract_ref, service_deployment_ref, PackageArtifactRecordPath,
     PackageBytecodeRecordPath, ReleasePointerPath, BYTECODE_IDENTITY_PREFIX,
+    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
@@ -291,8 +292,10 @@ fn package_copy_admission_cache_is_content_identity_and_source_exact() {
 fn package_copy_cache_never_admits_an_invalid_declared_identity() {
     let (_source_root, source) = test_store();
     let mut invalid = package_fixture();
-    invalid.package_build_id =
-        PackageBuildId::new(format!("skiff-package-build-v10:sha256:{}", "0".repeat(64)));
+    invalid.package_build_id = PackageBuildId::new(format!(
+        "{PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX}:{}",
+        "0".repeat(64)
+    ));
     let invalid_ref = declared_package_ref(&invalid);
     source
         .write_package_schema_index(&empty_schema_index(&invalid))
