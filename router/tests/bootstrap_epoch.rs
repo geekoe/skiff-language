@@ -164,7 +164,7 @@ mod tests {
                     package_id: service.clone(),
                     package_version: "0.1.0".to_string(),
                     package_build_id: PackageBuildId::new(format!(
-                        "skiff-package-build-v10:sha256:{build}"
+                        "skiff-package-build-v11:sha256:{build}"
                     )),
                     package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
                         "skiff-package-local-abi-v7:sha256:{build}"

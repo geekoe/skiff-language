@@ -754,7 +754,7 @@ mod tests {
                         package_id: "example.com/docs".to_string(),
                         package_version: "0.1.0".to_string(),
                         package_build_id: PackageBuildId::new(
-                            "skiff-package-build-v10:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+                            "skiff-package-build-v11:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
                         ),
                         package_local_abi_identity: PackageLocalAbiIdentity::new(
                             "skiff-package-local-abi-v7:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
