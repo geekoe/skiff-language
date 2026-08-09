@@ -7,7 +7,7 @@ use skiff_artifact_model::{
     BoundaryValueOwner, BoundaryValuePlan, ContractDiagnosticText, ContractTypeDescriptor,
     ContractTypeRef, PackageCallableParameter, PackageCallableSignature,
     PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageTypeRef,
-    PackageTypeRequirement, ServiceContract, ServiceProtocolIdentity, TypeRefIr,
+    PackageTypeRequirement, ParamModeIr, ServiceContract, ServiceProtocolIdentity, TypeRefIr,
     SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
@@ -125,6 +125,7 @@ fn provider_signature(may_suspend: bool) -> PackageCallableSignature {
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
             },
+            mode: ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("void"),

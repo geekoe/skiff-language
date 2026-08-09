@@ -4,15 +4,16 @@ use skiff_artifact_model::{
     BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryParameter,
     BoundaryReturn, BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, PendingEffectCategory,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
     ConstExport, ContractOperationId, ContractRequirement, ContractTypeRef, ExecutableExport,
     ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceMethodSignature,
     NominalTypeRefBaseIr, OperationCallableKind, OperationTargetRef, PackageActorAbi,
     PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
-    PackageConfigAccess,     PackageConfigRequirement, PackageImplementationLinks, PackageRefIr,
-    PackageRequirement, PackageSymbolRef, PackageTypeRef, ParamIr, ParamModeIr, ServiceProtocolIdentity,
-    ServiceRequirement, ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
-    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageConfigAccess, PackageConfigRequirement, PackageImplementationLinks, PackageRefIr,
+    PackageRequirement, PackageSymbolRef, PackageTypeRef, ParamIr, ParamModeIr,
+    PendingEffectCategory, ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef,
+    TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance, ACTOR_RUNTIME_ABI_VERSION_V1,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -1478,6 +1479,7 @@ fn callable_fixture() -> PackageArtifact {
                     ty: PackageTypeRef::Local {
                         local_type: TypeRefIr::builtin("string"),
                     },
+                    mode: ParamModeIr::Value,
                 }],
                 return_type: PackageTypeRef::Local {
                     local_type: TypeRefIr::builtin("string"),
