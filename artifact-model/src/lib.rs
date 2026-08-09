@@ -31,6 +31,7 @@ pub mod gateway;
 pub mod http_boundary;
 pub mod metadata;
 pub mod native_signature;
+pub mod native_value_lifecycle;
 pub mod package_artifact;
 pub mod package_unit;
 pub mod publication_abi;
@@ -148,6 +149,18 @@ pub use native_signature::{
     is_runtime_receiver_native_binding_key, native_callable_semantics,
     native_signature_for_receiver_op, NativeCallableSemantics, NativeSignatureDef,
     NativeSignatureTypeExpr, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
+};
+pub use native_value_lifecycle::{
+    native_value_lifecycle_registry, native_value_lifecycle_registry_identity,
+    NativeResourceDropPlan, NativeValueAdapterRole, NativeValueArgumentPolicy, NativeValueDropPlan,
+    NativeValueEmbedding, NativeValueLifecycleAdapter, NativeValueLifecycleConcrete,
+    NativeValueLifecycleEntry, NativeValueLifecycleKind, NativeValueLifecycleLookupError,
+    NativeValueLifecycleRegistry, NativeValueLifecycleRegistryError,
+    NativeValueLifecycleRegistryIdentity, NativeValueLifecycleResolution,
+    NativeValueLifecycleTemplate, NativeValueTypeConstructor, NativeValueTypePattern,
+    MAX_NATIVE_VALUE_LIFECYCLE_ARGUMENTS, NATIVE_VALUE_LIFECYCLE_REGISTRY,
+    NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT, NATIVE_VALUE_LIFECYCLE_REGISTRY_ID,
+    NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION,
 };
 pub use package_artifact::{
     PackageActorAbi, PackageArtifact, PackageCallableLinkFact, PackageCallableParameter,
