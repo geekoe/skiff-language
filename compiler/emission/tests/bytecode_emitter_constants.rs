@@ -205,7 +205,7 @@ mod tests {
                 FrozenConstantNode::Array { children }
             ] if children == &[0, 1]
         ));
-        validate_bytecode_identity(&artifact).expect("array-only v4 artifact is admissible");
+        validate_bytecode_identity(&artifact).expect("array-only artifact is admissible");
     }
 
     #[test]
@@ -285,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn representation_constants_remain_gated_on_the_v4_producer_contract() {
+    fn representation_constants_remain_gated_on_the_producer_contract() {
         let mut file_ir = FileIrUnit::empty("wrapped", "source-hash");
         file_ir.type_table.push(TypeDeclIr {
             name: "Wrapped".to_string(),
@@ -315,7 +315,7 @@ mod tests {
         let plans = explicit_constant_plans(std::slice::from_ref(&mir));
 
         let error = emit_bytecode_artifact(&[mir], &[bundle], &plans)
-            .expect_err("representation facts cannot enter bytecode before the v4 producer seam");
+            .expect_err("representation facts cannot enter bytecode before the producer seam");
         assert!(matches!(
             error,
             BytecodeEmissionError::UnsupportedConstantNode {

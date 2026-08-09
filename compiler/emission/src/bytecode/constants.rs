@@ -183,7 +183,7 @@ fn relocate_node(
                 symbol: symbol.to_string(),
                 node_index,
                 construct: "Record",
-                reason: "the frozen shape sidecar has no v4 nominal owner, field names, or explicit field transfer plans",
+                reason: "the frozen shape sidecar has no nominal owner, field names, or explicit field transfer plans",
             })
         }
         FrozenConstantNode::Representation { value, .. } => {
@@ -192,7 +192,7 @@ fn relocate_node(
                 symbol: symbol.to_string(),
                 node_index,
                 construct: "Representation",
-                reason: "producer-owned v4 representation type/value facts are not yet connected to emission",
+                reason: "producer-owned representation type/value facts are not yet connected to emission",
             })
         }
         FrozenConstantNode::Implementation { record, .. } => {
@@ -201,7 +201,7 @@ fn relocate_node(
                 symbol: symbol.to_string(),
                 node_index,
                 construct: "Implementation/Behavior",
-                reason: "producer-owned v4 implementation/behavior ownership facts are not yet connected to emission",
+                reason: "producer-owned implementation/behavior ownership facts are not yet connected to emission",
             })
         }
     }

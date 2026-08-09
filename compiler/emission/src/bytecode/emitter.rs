@@ -1,7 +1,9 @@
 use skiff_artifact_identity::{assign_bytecode_identity, validate_bytecode_identity};
 use skiff_artifact_model::{
-    native_value_lifecycle_registry_identity, opcode_table_fingerprint, BytecodeArtifact,
-    BytecodeImage, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    host_effect_registry_identity, intrinsic_registry_identity,
+    native_value_lifecycle_registry_identity, opcode_table_fingerprint,
+    value_lifecycle_policy_identity, BytecodeArtifact, BytecodeImage, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use skiff_compiler_lowering::{mir::MirUnit, FrozenConstantBundle};
 
@@ -13,9 +15,12 @@ use super::{
 /// Emits one canonical package bytecode image from public, self-contained MIR.
 ///
 /// The emitter requires exact one-to-one constant-bundle ownership and exact
-/// transfer-plan coverage. It never reopens File IR and never returns a
-/// partially emitted artifact. Success has already passed C1-C8 structural
-/// validation, canonical identity assignment and C9 identity validation.
+/// transfer-plan coverage. The artifact header is owned by the emitter and
+/// pinned directly to the compile-time schema, ISA and semantic authorities;
+/// callers cannot supply or override it. The emitter never reopens File IR and
+/// never returns a partially emitted artifact. Success has already passed C1-C8
+/// structural validation, canonical identity assignment and C9 identity
+/// validation.
 pub fn emit_bytecode_artifact(
     units: &[MirUnit],
     constants: &[FrozenConstantBundle],
@@ -26,7 +31,7 @@ pub fn emit_bytecode_artifact(
     if let Some((function_key, _)) = inputs.functions.first_key_value() {
         return Err(BytecodeEmissionError::unsupported_function(
             function_key,
-            "bytecode v4 functions until MIR owns exact origin, receiver, writable-local, and loan manifest facts",
+            "bytecode functions until MIR owns exact origin, receiver, writable-local, and loan manifest facts",
         ));
     }
 
@@ -38,6 +43,9 @@ pub fn emit_bytecode_artifact(
         isa_version: BYTECODE_ISA_VERSION.to_string(),
         opcode_table_fingerprint: opcode_table_fingerprint(),
         native_value_lifecycle_registry: native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy: value_lifecycle_policy_identity().clone(),
+        host_effect_registry: host_effect_registry_identity().clone(),
+        intrinsic_registry: intrinsic_registry_identity().clone(),
         bytecode_identity: String::new(),
         image: BytecodeImage {
             functions: Default::default(),
@@ -55,23 +63,46 @@ pub fn emit_bytecode_artifact(
 #[cfg(test)]
 mod tests {
     use skiff_artifact_identity::validate_bytecode_identity;
-    use skiff_artifact_model::{native_value_lifecycle_registry_identity, ValueTransferPlan};
+    use skiff_artifact_model::{
+        host_effect_registry_identity, intrinsic_registry_identity,
+        native_value_lifecycle_registry_identity, opcode_table_fingerprint,
+        value_lifecycle_policy_identity, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+        BYTECODE_SCHEMA_VERSION,
+    };
 
     use super::*;
     use crate::bytecode::FunctionValueTransferPlans;
 
     #[test]
-    fn empty_package_is_identity_assigned_and_admissible() {
+    fn empty_package_uses_the_exact_compile_time_header_and_is_identity_assigned() {
         let artifact =
             emit_bytecode_artifact(&[], &[], &BytecodeValueTransferPlans::empty()).unwrap();
 
-        assert!(!artifact.bytecode_identity.is_empty());
-        assert!(artifact.image.functions.is_empty());
-        assert!(artifact.image.constant_roots.is_empty());
+        assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v5");
+        assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v4");
+        assert_eq!(artifact.magic, BYTECODE_MAGIC);
+        assert_eq!(artifact.schema_version, BYTECODE_SCHEMA_VERSION);
+        assert_eq!(artifact.isa_version, BYTECODE_ISA_VERSION);
+        assert_eq!(
+            artifact.opcode_table_fingerprint,
+            opcode_table_fingerprint()
+        );
         assert_eq!(
             &artifact.native_value_lifecycle_registry,
             native_value_lifecycle_registry_identity()
         );
+        assert_eq!(
+            &artifact.value_lifecycle_policy,
+            value_lifecycle_policy_identity()
+        );
+        assert_eq!(
+            &artifact.host_effect_registry,
+            host_effect_registry_identity()
+        );
+        assert_eq!(&artifact.intrinsic_registry, intrinsic_registry_identity());
+        assert!(!artifact.bytecode_identity.is_empty());
+        assert!(artifact.image.functions.is_empty());
+        assert!(artifact.image.constant_roots.is_empty());
         validate_bytecode_identity(&artifact).unwrap();
     }
 
