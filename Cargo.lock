@@ -2657,6 +2657,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "skiff-runtime-deployment-image"
+version = "0.1.0"
+dependencies = [
+ "skiff-artifact-model",
+]
+
+[[package]]
 name = "skiff-runtime-eval"
 version = "0.1.0"
 dependencies = [
