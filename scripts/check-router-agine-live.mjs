@@ -6,7 +6,8 @@
 // root authored through the real compiler, real Rust Router/Runtime binaries,
 // dynamic ports 45000-45999, local ingress), in order:
 //   1. `npm run e2e:chat-smoke` in internals/agine (existing canonical smoke);
-//   2. `npm run e2e:host-tools -- --check` (host online/binding only, no chat);
+//   2. `node client/e2e/host-tools.mjs --check` (host online/binding only, no
+//      chat; direct node invocation - the npm workspace script swallows `--`);
 //   3. strict full host-tools: `node client/e2e/host-tools.mjs` with an
 //      explicit runtime PID, a read-only narrowed workspace (read-only copy of
 //      the Skiff `doc` directory), an allowed-tools list without
@@ -42,6 +43,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -70,7 +72,6 @@ const defaultSkiffPackagesRoot = resolve(repoRoot, '..', 'skiff-packages');
 const PROFILE = 'router-live-agine';
 const REPLICA_ID = 'skiff-runtime-live-agine-replica';
 const SMOKE_COMMAND = 'npm run e2e:chat-smoke';
-const HOST_TOOLS_CHECK_COMMAND = 'npm run e2e:host-tools -- --check';
 // Strict host-tools allowed tools: read-only file exploration only.
 const ALLOWED_HOST_TOOLS = [
   'host.file.find',
@@ -109,6 +110,11 @@ const codexRelayServiceRoot = resolve(
   process.env.SKIFF_ROUTER_AGINE_LIVE_CODEX_RELAY_SERVICE_ROOT
     || join(internalsRoot, 'codex-relay', 'service'),
 );
+// Direct node invocation of host-tools.mjs. The npm workspace script
+// (`npm run e2e:host-tools -- --check`) swallows the `-- --check` passthrough
+// and executes a full chat instead (Phase 0 residual risk 1, fixed in Phase 1).
+const HOST_TOOLS_CHECK_COMMAND =
+  `node ${join(agineRoot, 'client', 'e2e', 'host-tools.mjs')} --check`;
 
 const BUILD_ROOTS = [
   join(internalsRoot, 'packages', 'agent'),
@@ -134,6 +140,7 @@ let manifestBase;
 let runFailed = false;
 
 async function main() {
+  warnUnsetRootEnv();
 try {
   if (PREFLIGHT) {
     await preflight();
@@ -351,10 +358,14 @@ try {
     ingressBase,
     startedAt: new Date().toISOString(),
   };
-  await runAttachedCommand('npm', ['run', 'e2e:host-tools', '--', '--check'], {
-    cwd: agineRoot,
-    env: hostToolsEnv(ingressBase, gatewayBase, hostWorkspace, runtimePid, tempRoot),
-  });
+  await runAttachedCommand(
+    process.execPath,
+    [join(agineRoot, 'client', 'e2e', 'host-tools.mjs'), '--check'],
+    {
+      cwd: agineRoot,
+      env: hostToolsEnv(ingressBase, gatewayBase, hostWorkspace, runtimePid, tempRoot),
+    },
+  );
   hostToolsCheck.finishedAt = new Date().toISOString();
   hostToolsCheck.status = 'PASS';
   manifestBase.phases.hostToolsCheck = hostToolsCheck;
@@ -401,6 +412,7 @@ try {
   const manifestPath = resolve(
     process.env.SKIFF_ROUTER_AGINE_LIVE_MANIFEST_OUT || join(tempRoot, 'router-agine-live-manifest.json'),
   );
+  await mkdir(dirname(manifestPath), { recursive: true });
   await writeFile(manifestPath, `${JSON.stringify(manifestBase, null, 2)}\n`);
   console.log(`router-live:agine: manifest written to ${manifestPath}`);
   console.log(evidenceSummary({
@@ -1007,6 +1019,25 @@ function evidenceSummary({
   ].join('\n');
 }
 
+function warnUnsetRootEnv() {
+  // Default roots resolve to the main workspace checkouts (internals main
+  // branch). Running Live without explicit roots silently tests main-branch
+  // code; make that visible instead of silent.
+  if (process.env.SKIFF_ROUTER_AGINE_LIVE_INTERNALS_ROOT === undefined) {
+    console.warn(
+      'router-live:agine: SKIFF_ROUTER_AGINE_LIVE_INTERNALS_ROOT is unset; '
+      + `defaulting to the main workspace ${internalsRoot}. Set it to the `
+      + 'Phase 1 internals worktree for feature evidence (preflight will still pass).',
+    );
+  }
+  if (process.env.SKIFF_ROUTER_AGINE_LIVE_SKIFF_PACKAGES_ROOT === undefined) {
+    console.warn(
+      'router-live:agine: SKIFF_ROUTER_AGINE_LIVE_SKIFF_PACKAGES_ROOT is unset; '
+      + `defaulting to the main workspace ${skiffPackagesRoot}.`,
+    );
+  }
+}
+
 async function preflight() {
   for (const [label, root] of [
     ['internals', internalsRoot],
@@ -1031,6 +1062,36 @@ async function preflight() {
   } catch {
     throw new Error(
       `router-live:agine preflight: host-tools missing: ${hostToolsPath}`,
+    );
+  }
+  // Worktree dependency completeness (Phase 0 residual: worktree node_modules
+  // lacked @vscode/ripgrep, which only fails late in the full host-tools run).
+  // The agine stack installs per-package node_modules; fail fast instead of
+  // burning a full stack build on a missing install.
+  for (const [label, root] of [
+    ['agine node_modules', join(agineRoot, 'node_modules')],
+    ['agine client node_modules', join(agineRoot, 'client', 'node_modules')],
+    ['agine host node_modules', join(agineRoot, 'host', 'node_modules')],
+  ]) {
+    try {
+      const metadata = await stat(root);
+      if (!metadata.isDirectory()) {
+        throw new Error(`${root} is not a directory`);
+      }
+    } catch (error) {
+      throw new Error(
+        `router-live:agine preflight: ${label} missing: ${root} `
+        + `(run npm/pnpm install in the internals worktree) ${errorMessage(error)}`,
+      );
+    }
+  }
+  const hostRequire = createRequire(join(agineRoot, 'host', 'package.json'));
+  try {
+    hostRequire.resolve('@vscode/ripgrep');
+  } catch (error) {
+    throw new Error(
+      'router-live:agine preflight: @vscode/ripgrep is not resolvable from '
+      + `agine/host (${errorMessage(error)}); install worktree dependencies`,
     );
   }
   const pinned = await readPinnedRepositories();
