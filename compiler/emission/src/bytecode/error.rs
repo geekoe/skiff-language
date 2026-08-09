@@ -95,6 +95,16 @@ pub enum BytecodeEmissionError {
     },
 
     #[error(
+        "bytecode emitter cannot encode constant graph `{symbol}` node {node_index} ({construct}): {reason}"
+    )]
+    UnsupportedConstantNode {
+        symbol: String,
+        node_index: u32,
+        construct: &'static str,
+        reason: &'static str,
+    },
+
+    #[error(
         "bytecode emitter constant graph `{symbol}` references unknown behavior function `{function_key}`"
     )]
     UnknownBehaviorFunction {

@@ -130,75 +130,48 @@ fn literal_bundle_becomes_one_checked_constant_pool_root() {
 }
 
 #[test]
-fn local_constant_types_are_qualified_by_their_exact_module_owner() {
-    fn owner(module_path: &str) -> (MirUnit, FrozenConstantBundle) {
-        let mut file_ir = FileIrUnit::empty(module_path, "source-hash");
-        file_ir.type_table.push(TypeDeclIr {
-            name: "Wrapped".to_string(),
-            descriptor: TypeDescriptorIr::Representation {
-                representation: TypeRefIr::builtin("string"),
-            },
-            type_params: Vec::new(),
-            implements: Vec::new(),
-            source_span: None,
-        });
-        file_ir.constants.push(constant(
-            "wrapped",
-            TypeRefIr::LocalType { type_index: 0 },
-            vec![
-                ExprIr::Literal {
-                    value: LiteralIr::String {
-                        value: "value".to_string(),
-                    },
-                },
-                ExprIr::RepresentationWrap {
-                    value: expression(0),
-                    type_ref: TypeRefIr::LocalType { type_index: 0 },
-                },
-            ],
-        ));
-        mir_and_bundle(&file_ir)
-    }
-
-    let (alpha_mir, alpha_bundle) = owner("alpha");
-    let (zeta_mir, zeta_bundle) = owner("zeta");
-    let artifact = emit_constants(&[zeta_mir, alpha_mir], &[zeta_bundle, alpha_bundle]);
-
-    let pooled_types = artifact
-        .image
-        .pools
-        .types
-        .iter()
-        .map(|entry| match entry {
-            BytecodePoolEntry::TypeRef { ty } => ty,
-            _ => panic!("types pool is homogeneous"),
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        pooled_types,
+fn representation_annotation_without_an_owned_child_edge_fails_closed() {
+    let mut file_ir = FileIrUnit::empty("wrapped", "source-hash");
+    file_ir.type_table.push(TypeDeclIr {
+        name: "Wrapped".to_string(),
+        descriptor: TypeDescriptorIr::Representation {
+            representation: TypeRefIr::builtin("string"),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    file_ir.constants.push(constant(
+        "value",
+        TypeRefIr::LocalType { type_index: 0 },
         vec![
-            &TypeRefIr::PublicationType {
-                module_path: "alpha".to_string(),
-                type_index: 0,
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "value".to_string(),
+                },
             },
-            &TypeRefIr::PublicationType {
-                module_path: "zeta".to_string(),
-                type_index: 0,
+            ExprIr::RepresentationWrap {
+                value: expression(0),
+                type_ref: TypeRefIr::LocalType { type_index: 0 },
             },
-        ]
-    );
+        ],
+    ));
+    let (mir, bundle) = mir_and_bundle(&file_ir);
 
-    let graph_type_refs = artifact
-        .image
-        .frozen_constant_graph
-        .nodes
-        .iter()
-        .filter_map(|node| match node {
-            FrozenConstantNode::TypeRef { type_ref } => Some(*type_ref),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(graph_type_refs, vec![0, 1]);
+    let error = emit_bytecode_artifact(
+        &[mir],
+        &[bundle],
+        &BytecodeValueTransferPlans::default(),
+        &opcode_table_fingerprint(),
+    )
+    .expect_err("an orphan type annotation cannot encode representation identity");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedConstantNode {
+            construct: "RepresentationWrap/TypeRef",
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -249,6 +222,30 @@ fn record_shapes_are_relocated_after_module_owned_type_qualification() {
     let (alpha_mir, alpha_bundle) = owner("alpha_shape");
     let (zeta_mir, zeta_bundle) = owner("zeta_shape");
     let artifact = emit_constants(&[zeta_mir, alpha_mir], &[zeta_bundle, alpha_bundle]);
+
+    let pooled_types = artifact
+        .image
+        .pools
+        .types
+        .iter()
+        .map(|entry| match entry {
+            BytecodePoolEntry::TypeRef { ty } => ty,
+            _ => panic!("types pool is homogeneous"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pooled_types,
+        vec![
+            &TypeRefIr::PublicationType {
+                module_path: "alpha_shape".to_string(),
+                type_index: 0,
+            },
+            &TypeRefIr::PublicationType {
+                module_path: "zeta_shape".to_string(),
+                type_index: 0,
+            },
+        ]
+    );
 
     let field_type_rows = artifact
         .image

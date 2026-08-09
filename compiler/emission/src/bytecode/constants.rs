@@ -96,7 +96,7 @@ pub(crate) fn build_constant_image(
         callback_capture: Vec::new(),
     };
 
-    merge_graphs(inputs, pools, &bundle_type_maps, &bundle_shape_maps)
+    merge_graphs(inputs, pools, &bundle_shape_maps)
 }
 
 fn collect_canonical_types(
@@ -224,23 +224,14 @@ fn collect_canonical_shapes(
 fn merge_graphs(
     inputs: &ValidatedEmissionInputs<'_>,
     mut pools: BytecodePools,
-    bundle_type_maps: &BTreeMap<String, Vec<u32>>,
     bundle_shape_maps: &BTreeMap<String, Vec<u32>>,
 ) -> Result<(BytecodePools, FrozenConstantGraph), BytecodeEmissionError> {
     let mut nodes = Vec::new();
-    let function_keys = inputs
-        .functions
-        .keys()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
     for module_path in inputs.units.keys() {
         let bundle = inputs
             .bundles
             .get(module_path)
             .expect("constant bundle coverage was checked before graph merging");
-        let type_map = bundle_type_maps
-            .get(module_path)
-            .expect("every bundle received a type relocation map");
         let shape_map = bundle_shape_maps
             .get(module_path)
             .expect("every bundle received a shape relocation map");
@@ -263,16 +254,7 @@ fn merge_graphs(
             for local_index in 0..graph.nodes.len() {
                 let local_index = checked_index(local_index, "relocating a constant node")?;
                 let node = bundle.node(symbol, local_index)?;
-                let relocated = relocate_node(
-                    bundle,
-                    symbol,
-                    local_index,
-                    node,
-                    base,
-                    type_map,
-                    shape_map,
-                    &function_keys,
-                )?;
+                let relocated = relocate_node(bundle, symbol, local_index, node, base, shape_map)?;
                 nodes.push(relocated);
             }
             let root = base
@@ -294,16 +276,13 @@ fn merge_graphs(
     Ok((pools, FrozenConstantGraph { nodes }))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn relocate_node(
     bundle: &FrozenConstantBundle,
     symbol: &str,
     node_index: u32,
     node: &FrozenConstantNode,
     base: u32,
-    type_map: &[u32],
     shape_map: &[u32],
-    function_keys: &BTreeSet<&str>,
 ) -> Result<FrozenConstantNode, BytecodeEmissionError> {
     let relocate_children = |children: &[u32]| {
         children
@@ -358,27 +337,22 @@ fn relocate_node(
                 children: relocate_children(children)?,
             })
         }
-        FrozenConstantNode::TypeRef { type_ref } => {
-            bundle.type_ref(*type_ref)?;
-            let type_ref = *type_map.get(*type_ref as usize).ok_or_else(|| {
-                BytecodeEmissionError::InvalidConstantGraph {
-                    symbol: symbol.to_string(),
-                    message: format!("type relocation {type_ref} is absent"),
-                }
-            })?;
-            Ok(FrozenConstantNode::TypeRef { type_ref })
-        }
-        FrozenConstantNode::Behavior { function_key } => {
-            if !function_keys.contains(function_key.as_str()) {
-                return Err(BytecodeEmissionError::UnknownBehaviorFunction {
-                    symbol: symbol.to_string(),
-                    function_key: function_key.clone(),
-                });
-            }
-            Ok(FrozenConstantNode::Behavior {
-                function_key: function_key.clone(),
-            })
-        }
+        FrozenConstantNode::TypeRef { .. } => Err(
+            BytecodeEmissionError::UnsupportedConstantNode {
+                symbol: symbol.to_string(),
+                node_index,
+                construct: "RepresentationWrap/TypeRef",
+                reason: "the frozen graph has no explicit edge from the type annotation to its wrapped value",
+            },
+        ),
+        FrozenConstantNode::Behavior { .. } => Err(
+            BytecodeEmissionError::UnsupportedConstantNode {
+                symbol: symbol.to_string(),
+                node_index,
+                construct: "implementation Behavior",
+                reason: "the frozen graph has no explicit owner edge from the behavior to its implementation record",
+            },
+        ),
     }
 }
 
