@@ -1,4 +1,4 @@
-//! Bytecode v4 manifest ownership and cross-row structural invariants.
+//! Bytecode v5 manifest ownership and cross-row structural invariants.
 
 use crate::bytecode::dto::{
     BytecodeFunctionOrigin, BytecodePoolEntry, BytecodeRelocation, CallLoanBinding,
@@ -57,15 +57,47 @@ fn local_interface_relocation(target: &str) -> BytecodeRelocation {
 }
 
 #[test]
-fn manifest_header_is_pinned_to_the_exact_lifecycle_registry() {
-    let mut artifact = canonical_artifact();
+fn manifest_header_is_pinned_to_every_exact_semantic_authority() {
+    for (field, corrupt) in [
+        (
+            "nativeValueLifecycleRegistry",
+            fn_corrupt_native_registry as fn(&mut BytecodeArtifact),
+        ),
+        ("valueLifecyclePolicy", fn_corrupt_lifecycle_policy),
+        ("hostEffectRegistry", fn_corrupt_host_registry),
+        ("intrinsicRegistry", fn_corrupt_intrinsic_registry),
+    ] {
+        let mut artifact = canonical_artifact();
+        corrupt(&mut artifact);
+        let error = assert_rejected(&artifact);
+        assert!(matches!(error, StructuralValidationError::Header { .. }));
+        assert!(error.to_string().contains(field), "{field}: {error}");
+    }
+}
+
+fn fn_corrupt_native_registry(artifact: &mut BytecodeArtifact) {
     artifact
         .native_value_lifecycle_registry
         .fingerprint
         .push_str(":corrupt");
-    let error = assert_rejected(&artifact);
-    assert!(matches!(error, StructuralValidationError::Header { .. }));
-    assert!(error.to_string().contains("nativeValueLifecycleRegistry"));
+}
+
+fn fn_corrupt_lifecycle_policy(artifact: &mut BytecodeArtifact) {
+    artifact
+        .value_lifecycle_policy
+        .fingerprint
+        .push_str(":corrupt");
+}
+
+fn fn_corrupt_host_registry(artifact: &mut BytecodeArtifact) {
+    artifact
+        .host_effect_registry
+        .fingerprint
+        .push_str(":corrupt");
+}
+
+fn fn_corrupt_intrinsic_registry(artifact: &mut BytecodeArtifact) {
+    artifact.intrinsic_registry.fingerprint.push_str(":corrupt");
 }
 
 #[test]
@@ -97,13 +129,25 @@ fn executable_coordinate_wire_is_path_free_required_and_strict() {
 }
 
 #[test]
-fn validated_view_retains_registry_origin_and_receiver_facts() {
+fn validated_view_retains_semantic_authority_origin_and_receiver_facts() {
     let mut artifact = canonical_artifact();
     bind_helper_receiver(&mut artifact);
     let view = structurally_validate(&artifact).expect("receiver-bound fixture");
     assert_eq!(
         view.native_value_lifecycle_registry(),
         crate::native_value_lifecycle_registry_identity()
+    );
+    assert_eq!(
+        view.value_lifecycle_policy(),
+        crate::value_lifecycle_policy_identity()
+    );
+    assert_eq!(
+        view.host_effect_registry(),
+        crate::host_effect_registry_identity()
+    );
+    assert_eq!(
+        view.intrinsic_registry(),
+        crate::intrinsic_registry_identity()
     );
     let helper = view
         .functions()

@@ -1,12 +1,12 @@
-//! Frozen v4 wire-shape snapshot and fail-closed serde tests.
+//! Frozen v5 wire-shape snapshot and fail-closed serde tests.
 
 use super::*;
 
-/// Compact golden projection: it freezes every v4 seam that downstream
+/// Compact golden projection: it freezes every v5 seam that downstream
 /// emission/linking consumes without duplicating the canonical fixture's
 /// large literal payload.
-const GOLDEN_V4_SHAPE: &str = r#"{
-  "artifact":["bytecodeIdentity","image","isaVersion","magic","nativeValueLifecycleRegistry","opcodeTableFingerprint","schemaVersion"],
+const GOLDEN_V5_SHAPE: &str = r#"{
+  "artifact":["bytecodeIdentity","hostEffectRegistry","image","intrinsicRegistry","isaVersion","magic","nativeValueLifecycleRegistry","opcodeTableFingerprint","schemaVersion","valueLifecyclePolicy"],
   "image":["constantRoots","debugTable","frozenConstantGraph","functions","pools"],
   "function":["activeRegions","callLoanLayouts","effectSummaryRef","exceptionRegions","frameLayout","functionKey","maxOperandDepth","origin","relocations","selfTypeRef","sourceMap","statementEntries","switchTables","words"],
   "frame":["parameterSlots","resultCount","resultPlans","resultTypeRefs","slotCount","slotPlans","slotTypeRefs","writableLocalSlots"],
@@ -30,7 +30,7 @@ fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
 }
 
 #[test]
-fn canonical_fixture_matches_v4_wire_shape_snapshot() {
+fn canonical_fixture_matches_v5_wire_shape_snapshot() {
     let value = serde_json::to_value(canonical_artifact()).expect("fixture JSON");
     let main = &value["image"]["functions"]["module::main"];
     let projection = serde_json::json!({
@@ -45,14 +45,26 @@ fn canonical_fixture_matches_v4_wire_shape_snapshot() {
         "constantEntry": sorted_keys(&value["image"]["pools"]["constants"][0]),
         "resume": sorted_keys(&value["image"]["pools"]["resume"][0]),
     });
-    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V4_SHAPE).expect("golden JSON");
+    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V5_SHAPE).expect("golden JSON");
     assert_eq!(projection, golden);
 
-    assert_eq!(value["schemaVersion"], "skiff-bytecode-v4");
+    assert_eq!(value["schemaVersion"], "skiff-bytecode-v5");
     assert_eq!(value["isaVersion"], "skiff-bytecode-isa-v4");
     assert_eq!(
         value["nativeValueLifecycleRegistry"]["fingerprint"],
         crate::NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT
+    );
+    assert_eq!(
+        value["valueLifecyclePolicy"]["fingerprint"],
+        crate::VALUE_LIFECYCLE_POLICY_FINGERPRINT
+    );
+    assert_eq!(
+        value["hostEffectRegistry"],
+        serde_json::to_value(crate::host_effect_registry_identity()).unwrap()
+    );
+    assert_eq!(
+        value["intrinsicRegistry"],
+        serde_json::to_value(crate::intrinsic_registry_identity()).unwrap()
     );
     assert_eq!(main["origin"]["kind"], "executable");
     assert!(main["selfTypeRef"].is_null());
@@ -136,6 +148,9 @@ fn schema_rejects_missing_required_header_image_and_frame_fields() {
         "isaVersion",
         "opcodeTableFingerprint",
         "nativeValueLifecycleRegistry",
+        "valueLifecyclePolicy",
+        "hostEffectRegistry",
+        "intrinsicRegistry",
         "bytecodeIdentity",
         "image",
     ] {
@@ -258,8 +273,8 @@ fn schema_rejects_unknown_tagged_enum_variants() {
 }
 
 #[test]
-fn version_constants_freeze_schema_v4_and_isa_v4() {
+fn version_constants_freeze_schema_v5_and_isa_v4() {
     assert_eq!(BYTECODE_MAGIC, "skiff-bytecode");
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v4");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v5");
     assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v4");
 }

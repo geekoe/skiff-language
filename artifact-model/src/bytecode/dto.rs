@@ -60,7 +60,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v4";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v5";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v4";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -77,6 +77,16 @@ pub struct BytecodeArtifact {
     /// Exact native lifecycle table identity used to interpret transfer
     /// plans. Required even when the table has no adapter entries.
     pub native_value_lifecycle_registry: crate::NativeValueLifecycleRegistryIdentity,
+    /// Exact owner-normalization and value lifecycle classification policy.
+    /// This is separate from the native table because it also covers
+    /// structural and package-owned value types.
+    pub value_lifecycle_policy: crate::ValueLifecyclePolicyIdentity,
+    /// Exact host-effect binding, metadata and instantiated-signature
+    /// authority used when validating HostEffectRef rows.
+    pub host_effect_registry: crate::HostEffectRegistryIdentity,
+    /// Exact intrinsic target and instantiated-signature authority used when
+    /// validating IntrinsicRef rows.
+    pub intrinsic_registry: crate::IntrinsicRegistryIdentity,
     /// Declared identity. Filled by artifact-identity (C9); validation of the
     /// declared value against the recomputed identity is a later task.
     pub bytecode_identity: String,

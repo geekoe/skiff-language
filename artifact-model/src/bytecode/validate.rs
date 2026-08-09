@@ -197,6 +197,9 @@ pub struct ValidatedResumeSite {
 ///     isa_version: String::new(),
 ///     opcode_table_fingerprint: String::new(),
 ///     native_value_lifecycle_registry: todo!(),
+///     value_lifecycle_policy: todo!(),
+///     host_effect_registry: todo!(),
+///     intrinsic_registry: todo!(),
 ///     resume_sites: Vec::new(),
 /// };
 /// ```
@@ -212,6 +215,9 @@ pub struct StructurallyValidatedView {
     isa_version: String,
     opcode_table_fingerprint: String,
     native_value_lifecycle_registry: crate::NativeValueLifecycleRegistryIdentity,
+    value_lifecycle_policy: crate::ValueLifecyclePolicyIdentity,
+    host_effect_registry: crate::HostEffectRegistryIdentity,
+    intrinsic_registry: crate::IntrinsicRegistryIdentity,
     resume_sites: Vec<ValidatedResumeSite>,
 }
 
@@ -256,6 +262,18 @@ impl StructurallyValidatedView {
         &self.native_value_lifecycle_registry
     }
 
+    pub fn value_lifecycle_policy(&self) -> &crate::ValueLifecyclePolicyIdentity {
+        &self.value_lifecycle_policy
+    }
+
+    pub fn host_effect_registry(&self) -> &crate::HostEffectRegistryIdentity {
+        &self.host_effect_registry
+    }
+
+    pub fn intrinsic_registry(&self) -> &crate::IntrinsicRegistryIdentity {
+        &self.intrinsic_registry
+    }
+
     pub fn resume_sites(&self) -> &[ValidatedResumeSite] {
         &self.resume_sites
     }
@@ -289,6 +307,9 @@ pub fn structurally_validate(
         isa_version: artifact.isa_version.clone(),
         opcode_table_fingerprint: artifact.opcode_table_fingerprint.clone(),
         native_value_lifecycle_registry: artifact.native_value_lifecycle_registry.clone(),
+        value_lifecycle_policy: artifact.value_lifecycle_policy.clone(),
+        host_effect_registry: artifact.host_effect_registry.clone(),
+        intrinsic_registry: artifact.intrinsic_registry.clone(),
         resume_sites,
     })
 }
@@ -327,6 +348,27 @@ fn validate_header(artifact: &BytecodeArtifact) -> Result<(), StructuralValidati
             "nativeValueLifecycleRegistry {:?} does not match the compile-time built-in registry {:?}",
             artifact.native_value_lifecycle_registry,
             crate::native_value_lifecycle_registry_identity()
+        )));
+    }
+    if &artifact.value_lifecycle_policy != crate::value_lifecycle_policy_identity() {
+        return Err(header_error(format!(
+            "valueLifecyclePolicy {:?} does not match the compile-time built-in policy {:?}",
+            artifact.value_lifecycle_policy,
+            crate::value_lifecycle_policy_identity()
+        )));
+    }
+    if &artifact.host_effect_registry != crate::host_effect_registry_identity() {
+        return Err(header_error(format!(
+            "hostEffectRegistry {:?} does not match the compile-time built-in registry {:?}",
+            artifact.host_effect_registry,
+            crate::host_effect_registry_identity()
+        )));
+    }
+    if &artifact.intrinsic_registry != crate::intrinsic_registry_identity() {
+        return Err(header_error(format!(
+            "intrinsicRegistry {:?} does not match the compile-time built-in registry {:?}",
+            artifact.intrinsic_registry,
+            crate::intrinsic_registry_identity()
         )));
     }
     Ok(())

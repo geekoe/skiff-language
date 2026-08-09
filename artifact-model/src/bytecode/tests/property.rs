@@ -182,6 +182,9 @@ fn shell_artifact(words: Vec<u32>) -> BytecodeArtifact {
         isa_version: BYTECODE_ISA_VERSION.to_string(),
         opcode_table_fingerprint: opcode_table_fingerprint(),
         native_value_lifecycle_registry: crate::native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy: crate::value_lifecycle_policy_identity().clone(),
+        host_effect_registry: crate::host_effect_registry_identity().clone(),
+        intrinsic_registry: crate::intrinsic_registry_identity().clone(),
         bytecode_identity: String::new(),
         image: BytecodeImage {
             functions,

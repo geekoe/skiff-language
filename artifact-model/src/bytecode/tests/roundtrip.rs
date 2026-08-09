@@ -472,6 +472,18 @@ fn validated_view_retains_linker_facts_after_raw_artifact_is_dropped() {
         view.native_value_lifecycle_registry(),
         crate::native_value_lifecycle_registry_identity()
     );
+    assert_eq!(
+        view.value_lifecycle_policy(),
+        crate::value_lifecycle_policy_identity()
+    );
+    assert_eq!(
+        view.host_effect_registry(),
+        crate::host_effect_registry_identity()
+    );
+    assert_eq!(
+        view.intrinsic_registry(),
+        crate::intrinsic_registry_identity()
+    );
     assert_eq!(view.constant_roots()["module.implementation"], 2);
     assert_eq!(view.resume_sites().len(), 1);
     assert_eq!(view.resume_sites()[0].site_pc, 20);
