@@ -853,6 +853,8 @@ mod package_schema_tests {
             package_schema_type_records: record_refs,
             implementation_links: PackageImplementationLinks::default(),
             callable_links: BTreeMap::new(),
+            synthetic_callback_owners: Vec::new(),
+            bytecode_schema_records: BTreeMap::new(),
             actor_implementations: Vec::new(),
             local_interface_conformances: Vec::new(),
             package_requirements: Vec::new(),

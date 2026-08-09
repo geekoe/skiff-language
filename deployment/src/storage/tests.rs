@@ -90,6 +90,8 @@ fn package_fixture() -> PackageArtifact {
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
@@ -804,6 +806,9 @@ fn bytecode_fixture() -> BytecodeArtifact {
         ),
         native_value_lifecycle_registry:
             skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
+        host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
+        intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
         bytecode_identity: bytecode_identity_leaf('0'),
         image: BytecodeImage {
             functions,
@@ -885,6 +890,18 @@ fn bytecode_record_write_read_and_fail_closed_paths() {
     assert_eq!(
         validated.view().native_value_lifecycle_registry(),
         skiff_artifact_model::native_value_lifecycle_registry_identity()
+    );
+    assert_eq!(
+        validated.view().value_lifecycle_policy(),
+        skiff_artifact_model::value_lifecycle_policy_identity()
+    );
+    assert_eq!(
+        validated.view().host_effect_registry(),
+        skiff_artifact_model::host_effect_registry_identity()
+    );
+    assert_eq!(
+        validated.view().intrinsic_registry(),
+        skiff_artifact_model::intrinsic_registry_identity()
     );
     assert_eq!(validated.view().functions().len(), 1);
     let stored_function = &validated.view().functions()[0];
