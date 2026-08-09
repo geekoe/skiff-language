@@ -91,6 +91,7 @@ impl<'a> PublicationLocalRefIndex<'a> {
     }
 }
 
+#[cfg(test)]
 pub(super) fn rewrite_publication_local_refs(
     units: &mut [FileIrUnit],
     current_package_id: Option<&str>,

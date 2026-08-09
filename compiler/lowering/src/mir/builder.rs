@@ -113,6 +113,7 @@ pub fn build_mir_units_with_source_facts(
 }
 
 /// Builder core with an already-resolved per-callable effect map (test seam).
+#[cfg(test)]
 pub(crate) fn build_mir_unit_with_effect_map(
     package_id: &str,
     unit: &FileIrUnit,
@@ -128,6 +129,7 @@ pub(crate) fn build_mir_unit_with_effect_map(
     )
 }
 
+#[cfg(test)]
 fn unit_slice(unit: &FileIrUnit) -> &[FileIrUnit] {
     std::slice::from_ref(unit)
 }

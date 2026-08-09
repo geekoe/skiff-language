@@ -14,7 +14,7 @@ use skiff_artifact_model::{
     validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
     InstructionSourceSite, LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr, PackageCallableId,
     PackageLocalAbiIdentity, PatternIr, ReceiverCallAbi, ServiceProtocolIdentity, SlotKind,
-    SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr,
+    SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr,
 };
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::{
@@ -3247,6 +3247,8 @@ fn provider_contract_artifact() -> (
             ..skiff_artifact_model::PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -3365,6 +3367,8 @@ fn provider_object_artifact() -> (
             ..skiff_artifact_model::PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),

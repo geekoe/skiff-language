@@ -86,6 +86,7 @@ pub(super) fn contract_dependency() -> (
                 contract: unary_operation(package_type(), package_type()),
             },
         )]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: vec![PackageTypeRequirement {
             package_id: package_id.to_string(),
             required_type_ids: vec![package_schema_type_id],
