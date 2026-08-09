@@ -1000,9 +1000,9 @@ fn phase6_cross_crate_error_code_and_catch_golden_matrix() {
             status: Some(503),
             details: Some(json!({ "service": "account" })),
         });
-    let linked_boundary = skiff_runtime_linked_type_plan::Error::Boundary(
+    let linked_boundary = skiff_runtime_linked_type_plan::Error::Boundary(Box::new(
         skiff_runtime_boundary::error::RuntimeError::file_error("std.file denied"),
-    );
+    ));
     let request_eval = skiff_runtime_request::RequestError::Eval(
         skiff_runtime_eval::error::RuntimeError::file_error("std.file denied"),
     );
