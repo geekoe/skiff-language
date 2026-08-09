@@ -10,8 +10,8 @@ const WRITABLE_FIXTURE: &str = r#"
     value = value + 1
   }
 
-  function run() -> number {
-    var outer = Outer { inner: Inner { values: [1], count: 0 } }
+  function run(source: Array<number>) -> number {
+    var outer = Outer { inner: Inner { values: source, count: 0 } }
     outer.inner.count = 2
     outer.inner.values.push(3)
     outer.inner.values[0] = 4
@@ -30,8 +30,8 @@ const WRITABLE_NO_INDEX_FIXTURE: &str = r#"
     value = value + 1
   }
 
-  function run() -> number {
-    var outer = Outer { inner: Inner { values: [1], count: 0 } }
+  function run(source: Array<number>) -> number {
+    var outer = Outer { inner: Inner { values: source, count: 0 } }
     inc("before", inout outer.inner.count, "after")
     return outer.inner.count
   }
@@ -792,25 +792,55 @@ fn assert_condition_type_and_statement_span_table_are_checked() {
     let model = build_model(
         MODULE,
         r#"
-          function check() -> void {
-            assert true, "must stay true"
-            return
+          function check(condition: bool) -> bool {
+            return condition
           }
         "#,
     );
     let lowered = lower(&model).expect("assert fixture should lower");
     let mut units = lowered.file_ir_units().to_vec();
     let check_index = units[0].declarations.executables["check"].executable_index as usize;
-    let condition = units[0].executables[check_index]
+    // Source `assert` is legal only in test blocks, while File IR production
+    // units deliberately reject test declarations. Reuse a parsed, typed bool
+    // return expression as the exact Assert operand to exercise the MIR
+    // contract without inventing an expression or bypassing source parsing.
+    let return_index = units[0].executables[check_index]
         .body
         .statements
         .iter()
-        .find_map(|statement| match statement {
-            StmtIr::Assert { condition, .. } => Some(condition.expression),
+        .position(|statement| matches!(statement, StmtIr::Return { value: Some(_) }))
+        .expect("typed bool return");
+    let condition = match &units[0].executables[check_index].body.statements[return_index] {
+        StmtIr::Return {
+            value: Some(condition),
+        } => *condition,
+        _ => unreachable!(),
+    };
+    let assert_span = units[0].executables[check_index].statement_spans[return_index].clone();
+    units[0].executables[check_index].body.statements.insert(
+        return_index,
+        StmtIr::Assert {
+            condition,
+            message: None,
+        },
+    );
+    units[0].executables[check_index]
+        .statement_spans
+        .insert(return_index, assert_span);
+    let valid = build_mir_units(PACKAGE_ID, &units, model.callable_effects())
+        .expect("typed assert fixture should build");
+    let stored_span = valid[0].functions[0]
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .find_map(|statement| match &statement.kind {
+            MirStmtKind::Assert { .. } => statement.span.as_ref(),
             _ => None,
         })
-        .expect("assert condition");
-    units[0].executables[check_index].expression_types[condition as usize] =
+        .expect("assert source statement span");
+    assert_eq!(stored_span.source_id, 0);
+
+    units[0].executables[check_index].expression_types[condition.expression as usize] =
         TypeRefIr::builtin("number");
     let error = build_mir_units(PACKAGE_ID, &units, model.callable_effects())
         .expect_err("non-bool assert condition must fail closed");
