@@ -142,7 +142,7 @@ pub fn request_cancel_reason_for_situation(
 
 pub fn map_internal_request_cancel_reason(internal_reason: &str) -> RequestCancelReasonMapping<'_> {
     let wire_reason =
-        RequestCancelReason::from_wire(internal_reason).unwrap_or_else(|| match internal_reason {
+        RequestCancelReason::from_wire(internal_reason).unwrap_or(match internal_reason {
             "caller_abort" => RequestCancelReason::CallerCancel,
             "unexpected_stream_response"
             | "unexpected_control_response"

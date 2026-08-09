@@ -227,6 +227,9 @@ pub enum ActorMethodErrorFramePayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+// This public frame enum intentionally owns its headers and payloads; boxing a
+// variant would change its API and impose allocation on every caller.
+#[allow(clippy::large_enum_variant)]
 pub enum ActorMethodFrame {
     Invoke(ActorMethodInvokeFrameHeader, Vec<u8>),
     Return(ActorMethodReturnFrameHeader, Vec<u8>),

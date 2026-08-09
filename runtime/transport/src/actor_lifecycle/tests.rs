@@ -288,7 +288,7 @@ fn fence_mismatch_outcome_cannot_pass_the_clear_owner_gate_with_is_ok() {
         request.confirm_absence(&rejected),
         Err(ActorLifecycleContractError::DiscardAckDidNotConfirmAbsence)
     );
-    assert!(!request.confirm_absence(&rejected).is_ok());
+    assert!(request.confirm_absence(&rejected).is_err());
 }
 
 #[test]

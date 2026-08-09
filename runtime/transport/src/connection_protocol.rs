@@ -303,13 +303,13 @@ fn validate_response(
                 ));
             }
             if remote.message.trim().is_empty()
-                || remote.message.as_bytes().len() > CONNECTION_RESPONSE_MAX_MESSAGE_BYTES
+                || remote.message.len() > CONNECTION_RESPONSE_MAX_MESSAGE_BYTES
             {
                 return Err(decode_error(
                     "remote connection response message must be a bounded non-empty string",
                 ));
             }
-            if remote.data_present != !payload.is_empty() {
+            if remote.data_present == payload.is_empty() {
                 return Err(decode_error(
                     "remote dataPresent must match payload presence",
                 ));
@@ -354,7 +354,7 @@ fn validate_envelope(
 fn validate_token(value: &str, label: &str, max_bytes: usize) -> Result<(), BinaryFrameError> {
     if value.is_empty()
         || value.trim() != value
-        || value.as_bytes().len() > max_bytes
+        || value.len() > max_bytes
         || value.chars().any(char::is_control)
     {
         return Err(decode_error(format!(

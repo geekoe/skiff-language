@@ -659,7 +659,7 @@ pub fn validate_response_end_frame_wire(
         &header.envelope_type,
         &header.request_id,
     )?;
-    if header.payload_present != !payload.is_empty() {
+    if header.payload_present == payload.is_empty() {
         return Err(TransportError::decode(
             "response.end payloadPresent must match payload presence",
         ));

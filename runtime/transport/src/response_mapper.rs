@@ -178,7 +178,7 @@ pub fn validate_response_end_frame(
     let valid = match (phase, &header.metadata) {
         (ResponseEndPhase::Payload, ResponseEndFrameMetadata::None)
         | (ResponseEndPhase::Http, ResponseEndFrameMetadata::Http(_)) => {
-            header.payload_present == !payload.is_empty()
+            header.payload_present != payload.is_empty()
         }
         _ => false,
     };

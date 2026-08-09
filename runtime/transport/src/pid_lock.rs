@@ -47,8 +47,7 @@ pub struct PidFileGuard {
 impl PidFileGuard {
     /// Acquire `<run_dir>/<name>.pid` with O_EXCL semantics.
     pub fn acquire(run_dir: &Path, name: &str) -> Result<PidFileGuard, PidLockError> {
-        fs::create_dir_all(run_dir)
-            .map_err(|error| PidLockError::Io(error.to_string()))?;
+        fs::create_dir_all(run_dir).map_err(|error| PidLockError::Io(error.to_string()))?;
         let path = run_dir.join(format!("{name}.pid"));
         match Self::create_exclusive(&path) {
             Ok(()) => Ok(PidFileGuard { path }),
@@ -58,8 +57,7 @@ impl PidFileGuard {
                         return Err(PidLockError::AlreadyRunning { pid });
                     }
                 }
-                fs::remove_file(&path)
-                    .map_err(|error| PidLockError::Io(error.to_string()))?;
+                fs::remove_file(&path).map_err(|error| PidLockError::Io(error.to_string()))?;
                 Self::create_exclusive(&path)
                     .map_err(|error| PidLockError::Io(error.to_string()))?;
                 Ok(PidFileGuard { path })
@@ -69,13 +67,15 @@ impl PidFileGuard {
     }
 
     fn create_exclusive(path: &Path) -> io::Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
+        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
         writeln!(file, "{}", std::process::id())?;
         file.sync_all()?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -172,12 +172,5 @@ mod tests {
         ));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
-    }
-}
-
-impl PidFileGuard {
-    #[cfg(test)]
-    fn path(&self) -> &Path {
-        &self.path
     }
 }

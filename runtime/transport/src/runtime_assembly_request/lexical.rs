@@ -390,7 +390,7 @@ where
     D: Deserializer<'de>,
 {
     let value = String::deserialize(deserializer)?;
-    if value.is_empty() || value.as_bytes().len() > max_bytes {
+    if value.is_empty() || value.len() > max_bytes {
         return Err(de::Error::custom(format!(
             "{label} must be a bounded non-empty string"
         )));
