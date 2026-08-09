@@ -103,6 +103,13 @@ pub enum RuntimeError {
     /// constant so raw payload bytes never enter generic diagnostics.
     #[error("canonical service failure")]
     FixedServiceFailure(OpaqueServiceError),
+    /// Runtime-owned failure to durably submit a `dispatch` task.
+    ///
+    /// This must never acquire an ordinary catch projection: task submission
+    /// is part of the Runtime implementation of `dispatch`, not a business
+    /// effect that Skiff code can recover or retry itself.
+    #[error("task dispatch failed for {target}: {reason}")]
+    TaskDispatchFailure { target: String, reason: String },
     #[error("provider unavailable for {target}: {reason}")]
     ProviderUnavailable { target: String, reason: String },
     #[error("protocol error for {target}: {message}")]
@@ -446,6 +453,10 @@ fn runtime_error_from_eval_ref(error: &RuntimeError) -> RuntimeError {
         RuntimeError::FixedServiceFailure(error) => {
             RuntimeError::FixedServiceFailure(error.clone())
         }
+        RuntimeError::TaskDispatchFailure { target, reason } => RuntimeError::TaskDispatchFailure {
+            target: target.clone(),
+            reason: reason.clone(),
+        },
         RuntimeError::ProviderUnavailable { target, reason } => RuntimeError::ProviderUnavailable {
             target: target.clone(),
             reason: reason.clone(),
@@ -1571,6 +1582,15 @@ impl RuntimeError {
                 status: None,
                 details: None,
             },
+            RuntimeError::TaskDispatchFailure { target, reason } => RuntimeErrorPayload {
+                code: "TaskDispatchFailure".to_string(),
+                message: reason.clone(),
+                status: None,
+                details: Some(serde_json::json!({
+                    "target": target,
+                    "reason": reason,
+                })),
+            },
             RuntimeError::ProviderUnavailable { target, reason } => RuntimeErrorPayload {
                 code: "std.service.ProviderUnavailableError".to_string(),
                 message: reason.clone(),
@@ -1716,6 +1736,7 @@ impl RuntimeError {
             | RuntimeError::ResourceLimitExceeded { .. }
             | RuntimeError::UserException(_)
             | RuntimeError::FixedServiceFailure(_)
+            | RuntimeError::TaskDispatchFailure { .. }
             | RuntimeError::RootRuntimePayload(_)
             | RuntimeError::Json(_) => None,
         }

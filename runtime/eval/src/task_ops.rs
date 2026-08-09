@@ -355,12 +355,12 @@ async fn evaluate_task_call_args(
 /// Waits for a durable `task.submit` acceptance.
 ///
 /// Definite rejections (`invalidTiming` / `payloadInvalid` / `quotaExceeded` /
-/// `rejected` / `unsupportedTarget`) throw a clear platform error immediately
+/// `rejected` / `unsupportedTarget`) terminate the current request immediately
 /// and never create a task. Ambiguous outcomes (`storeUnavailable` from the
 /// control plane and transport-level uncertainty such as a lost response) are
-/// retried a bounded number of times with the exact same TaskId; if no ack
-/// arrives, the caller receives a "result is uncertain" platform error rather
-/// than a false success or a second TaskId.
+/// retried a bounded number of times with the exact same TaskId. If no durable
+/// ack arrives, the current request terminates with a Runtime-owned failure.
+/// Neither outcome is projected into a business-catchable Skiff exception.
 async fn submit_task_durable(
     context: &mut EvalContext<'_>,
     request_context: &skiff_runtime_capability_context::RequestCapabilityContext<'_>,
@@ -381,13 +381,13 @@ async fn submit_task_durable(
             Ok(response) => return Ok(response),
             Err(CapabilityError::TaskSubmitRejected { code, message }) => {
                 if !task_submit_rejection_is_transient(&code) {
-                    return Err(RuntimeError::ProviderUnavailable {
+                    return Err(RuntimeError::TaskDispatchFailure {
                         target: TASK_SUBMIT_TARGET.to_string(),
                         reason: format!("task.submit rejected ({code}): {message}"),
                     });
                 }
                 if attempt + 1 >= TASK_SUBMIT_MAX_ATTEMPTS {
-                    return Err(RuntimeError::ProviderUnavailable {
+                    return Err(RuntimeError::TaskDispatchFailure {
                         target: TASK_SUBMIT_TARGET.to_string(),
                         reason: format!(
                             "task.submit result is uncertain after {} attempt(s) with the same TaskId; last error: storeUnavailable: {message}",
@@ -398,7 +398,7 @@ async fn submit_task_durable(
             }
             Err(error) => {
                 if attempt + 1 >= TASK_SUBMIT_MAX_ATTEMPTS {
-                    return Err(RuntimeError::ProviderUnavailable {
+                    return Err(RuntimeError::TaskDispatchFailure {
                         target: TASK_SUBMIT_TARGET.to_string(),
                         reason: format!(
                             "task.submit result is uncertain after {} attempt(s) with the same TaskId; last error: {error}",

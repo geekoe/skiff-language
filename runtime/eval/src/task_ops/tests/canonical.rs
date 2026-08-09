@@ -759,7 +759,7 @@ async fn canonical_task_transient_store_unavailable_retries_same_task_id() {
 }
 
 #[tokio::test]
-async fn canonical_task_definite_rejection_throws_without_task() {
+async fn canonical_task_definite_rejection_terminates_without_catch_projection() {
     let fixture = canonical_task_fixture_with(
         vec![caller_executable(Some(TARGET_SYMBOL)), target_executable()],
         vec![Err(CapabilityError::task_submit_rejected(
@@ -786,6 +786,11 @@ async fn canonical_task_definite_rejection_throws_without_task() {
     assert!(error
         .to_string()
         .contains("task.submit rejected (rejected)"));
+    assert_eq!(
+        error.ordinary_catch_projection(),
+        None,
+        "task.submit is Runtime-owned and must not become a business exception"
+    );
     assert_eq!(
         fixture
             .submissions
@@ -833,6 +838,11 @@ async fn canonical_task_ambiguous_result_after_bounded_retries() {
         .await
         .expect_err("exhausted ambiguous retries must surface as uncertain");
     assert!(error.to_string().contains("result is uncertain"));
+    assert_eq!(
+        error.ordinary_catch_projection(),
+        None,
+        "an uncertain task.submit result must terminate instead of entering Skiff catch"
+    );
     let submissions = fixture
         .submissions
         .lock()

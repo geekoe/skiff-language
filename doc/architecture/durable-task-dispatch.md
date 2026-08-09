@@ -261,6 +261,10 @@ rejection 保证没有创建 task；连接丢失或响应无法判定时，task 
 context 时只能复用原 TaskId 查询 / 重试，不能生成第二个 TaskId。若整个 caller request 被外部重新执行，它会形成新的独立
 task；本架构不提供业务 dedupe 来合并两次 source operation。
 
+`task.submit` 是 Runtime 实现 `dispatch` 的内部步骤，不是业务 effect。上述 definite rejection 与 ambiguous acceptance
+都不得投影成 Skiff 可捕获异常，也不得由业务代码重试；Runtime 在同一 submission context 内完成可行的恢复。最终仍无法确认
+durable acceptance 时，当前 request 以不可捕获的平台错误失败并由 Runtime 记录，不能伪造成功或让业务生成第二个 TaskId。
+
 `due_at` 是 not-before boundary，不是准点 SLA。scheduler 按 TaskStore authority time 不得早于 `due_at` claim；到期后的实际
 开始时间受容量、fairness、Runtime availability、actor ownership 和平台健康影响。wall-clock rollback / skew 的误差处理由
 store adapter 统一界定：误差可以造成迟执行，不能让各 Runtime 按本地 wall clock 主动突破 not-before boundary。

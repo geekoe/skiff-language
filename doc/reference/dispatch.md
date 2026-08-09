@@ -79,6 +79,8 @@ std.task.cancel(ref: std.task.TaskRef) -> TaskCancelResult
 
 - 提交顺序：求值 → 冻结 exact deployment `buildId` / target → recoverable encode → 生成 TaskId → TaskStore durable create（TaskId-idempotent）→ 返回 TaskRef。
 - 成功返回保证 task 已 durable commit；响应不确定时内部复用原 TaskId 查询 / 重试。
+- `task.submit` 是 Runtime 内部步骤；其拒绝或最终无法确认的结果不投影为 Skiff 可捕获异常。Runtime 无法完成 durable submission
+  时，当前 request 直接以平台错误失败并自动记录，业务代码不能 catch 后自行重试。
 - 位置透明：不保证提交方 Runtime 执行；立即 task 也没有易失 fast path 语义线。
 - at-least-once attempt：lease loss / 不确定 settlement 自动产生后续 attempt（平台 bounded backoff）；普通 request deadline / timeout 是已开始执行，收敛为 `failed`，不自动重跑。
 - 同一 task 同时最多一个有效 lease；TaskId 吸收重复 notification；没有业务 dedupe。
