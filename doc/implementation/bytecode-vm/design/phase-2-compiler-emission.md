@@ -57,6 +57,8 @@ pub struct ExecutableIr { ...,
 ```
 
 - lowering 在发射每个表达式/语句时写入类型与 span（`FunctionLowerer` 已有 `expression_types: Option<&ExpressionTypeModel>` 与语法 AST span）。
+- `ParamIr` 增加 `#[serde(default, skip_serializing_if = "is_value_mode")] mode: ParamModeIr`（Value | InOut，
+  camelCase；MIR builder 从 File IR 取 inout 参数事实，不需要二次推断）。
 - `CallIr` 增加 `#[serde(default, skip_serializing_if = "Vec::is_empty")] pub inout_args: Vec<InOutArgIr>`，
   `InOutArgIr { root_slot: u32, path: Vec<InOutPathSegmentIr> }`（`InOutPathSegmentIr = Field(String) | Index`）。
   Phase 2 中 legacy runtime 不执行 inout 调用（三仓迁移不引入 inout 用法），该字段只为 emitter 表示。
