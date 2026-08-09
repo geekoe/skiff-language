@@ -74,7 +74,7 @@ function sequentialValue() -> string {
         assert_eq!(file.schema_version, FILE_IR_SCHEMA_VERSION);
         assert_eq!(file.ir_format_version, FILE_IR_FORMAT_VERSION);
         assert_eq!(file.opcode_table_version, FILE_IR_OPCODE_TABLE_VERSION);
-        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v12");
+        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v13");
         assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
         assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
         // The exact hash churns whenever File IR identity inputs change; the
@@ -157,7 +157,7 @@ function sequentialValue() -> string {
     fn timeout_file_ir_upgrade_does_not_change_unrelated_top_level_schemas() {
         assert_eq!(
             PACKAGE_ARTIFACT_SCHEMA_VERSION,
-            "skiff-package-artifact-v11"
+            "skiff-package-artifact-v13"
         );
         assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v6");
         assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v3");
