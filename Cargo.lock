@@ -2797,6 +2797,7 @@ dependencies = [
  "skiff-canonical-json",
  "skiff-compiler",
  "skiff-deployment",
+ "skiff-runtime-linked-bytecode",
  "skiff-runtime-linked-program",
  "skiff-runtime-linked-type-plan",
  "skiff-runtime-loader",

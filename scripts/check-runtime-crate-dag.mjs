@@ -121,6 +121,7 @@ const runtimeDag = new Map([
     'skiff-runtime-linker',
     [
       'skiff-runtime-loader',
+      'skiff-runtime-linked-bytecode',
       'skiff-runtime-linked-program',
       'skiff-runtime-linked-type-plan',
       'skiff-runtime-native-contract',
