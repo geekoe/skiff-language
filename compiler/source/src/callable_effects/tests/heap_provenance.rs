@@ -109,8 +109,7 @@ fn fresh_store_taint_propagates_through_callers_and_scc() {
             provenance(&model, callable),
             CallableProvenanceSummary::Analyzed { return_origins, .. }
                 if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 }),
-            "{callable}"
-        ));
+        ), "{callable}");
     }
 }
 
@@ -733,8 +732,7 @@ fn recursive_scc_reaches_alias_fixed_point() {
             provenance(&model, callable),
             CallableProvenanceSummary::Analyzed { return_origins, .. }
                 if return_origins.contains(&ValueProvenance::CallerParameter { index: 0 }),
-            "{callable}"
-        ));
+        ), "{callable}");
     }
 }
 

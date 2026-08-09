@@ -1,7 +1,8 @@
 use serde_json::json;
 use skiff_artifact_model::{
     BuiltinReceiverCallableSemantics, NativeCallableSemantics, NativeSignatureTypeExpr,
-    BUILTIN_RECEIVER_CALLABLE_SEMANTICS, STD_NATIVE_CALLABLE_SEMANTICS, STD_NATIVE_SIGNATURES,
+    PendingEffectCategory, BUILTIN_RECEIVER_CALLABLE_SEMANTICS, STD_NATIVE_CALLABLE_SEMANTICS,
+    STD_NATIVE_SIGNATURES,
 };
 use skiff_runtime_model::service_error::PlatformBuiltinErrorIdentity;
 use skiff_runtime_native_contract::NativeRequiredContext;
@@ -93,7 +94,7 @@ fn native_handler_registry_validates_once_across_repeated_route_lookups() {
 #[test]
 fn native_callable_semantics_registry_validates_exact_builtin_matrix() {
     validate_native_callable_semantics_registry(
-        STD_NATIVE_CALLABLE_SEMANTICS,
+        &STD_NATIVE_CALLABLE_SEMANTICS,
         STD_NATIVE_SIGNATURES,
         NATIVE_BINDINGS,
     )
@@ -152,14 +153,13 @@ fn map_empty_semantics_matches_exact_generic_signature_and_runtime_handler() {
     assert_eq!(
         semantics.effects,
         skiff_artifact_model::CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
 }
 
@@ -252,14 +252,13 @@ fn json_decode_semantics_matches_exact_generic_signature_and_json_route() {
     assert_eq!(
         semantics.effects,
         skiff_artifact_model::CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
 }
 
@@ -363,14 +362,13 @@ fn json_merge_semantics_match_only_the_exact_non_generic_json_signature() {
     assert_eq!(
         semantics.effects,
         skiff_artifact_model::CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
 
     let cases = [
@@ -461,14 +459,13 @@ fn date_parse_semantics_matches_exact_native_signature_and_runtime_handler() {
     assert_eq!(
         semantics.effects,
         skiff_artifact_model::CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
 }
 
@@ -576,14 +573,13 @@ fn date_compare_receiver_semantics_matches_exact_native_signature() {
     assert_eq!(
         semantics.effects,
         skiff_artifact_model::CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
 }
 
@@ -677,14 +673,13 @@ fn date_add_milliseconds_receiver_semantics_matches_exact_native_signature() {
     assert_eq!(
         semantics.effects,
         skiff_artifact_model::CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
 }
 
@@ -778,14 +773,13 @@ fn date_diff_milliseconds_receiver_semantics_matches_exact_native_signature() {
     assert_eq!(
         semantics.effects,
         skiff_artifact_model::CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: false,
-        }
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
 }
 
@@ -1012,10 +1006,11 @@ fn native_callable_semantics_registry_accepts_http_suspend_detachment_routes() {
             .find(|semantics| semantics.binding_key == binding_key)
             .cloned()
             .unwrap_or_else(|| panic!("{binding_key} must have exact callable semantics"));
-        assert!(semantics.effects.may_suspend);
-        assert!(!semantics.effects.writes_caller_reachable);
-        assert!(!semantics.effects.returns_caller_alias);
-        assert!(!semantics.effects.throws_caller_alias);
+        assert!(semantics.effects.may_pending);
+        assert_eq!(
+            semantics.effects.pending_effect_categories,
+            vec![PendingEffectCategory::NativeCall]
+        );
         assert!(!semantics.effects.escapes_caller_value);
         assert!(!semantics.effects.requires_same_heap_identity);
         assert!(!semantics.effects.invokes_unknown_target);
@@ -1054,13 +1049,12 @@ fn native_callable_semantics_registry_accepts_exact_response_stream_emit_route()
     assert_eq!(
         semantics.effects,
         skiff_artifact_model::CallableMayEffects {
-            writes_caller_reachable: false,
-            returns_caller_alias: false,
-            throws_caller_alias: false,
             escapes_caller_value: true,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_suspend: true,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+            inout_path_effects: Vec::new(),
         }
     );
     assert_eq!(
@@ -1095,14 +1089,13 @@ fn file_create_semantics_match_exact_signatures_and_file_routes() {
         assert_eq!(
             semantics.effects,
             skiff_artifact_model::CallableMayEffects {
-                writes_caller_reachable: false,
-                returns_caller_alias: false,
-                throws_caller_alias: false,
                 escapes_caller_value: false,
                 requires_same_heap_identity: false,
                 invokes_unknown_target: false,
-                may_suspend: true,
-            }
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+                inout_path_effects: Vec::new(),
+        }
         );
         assert_eq!(
             NativeRequiredContext::for_binding_key(binding_key),

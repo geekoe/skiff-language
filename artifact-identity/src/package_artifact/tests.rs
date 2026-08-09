@@ -4,7 +4,7 @@ use skiff_artifact_model::{
     BoundaryImplementationRequirements, BoundaryOperationContract, BoundaryParameter,
     BoundaryReturn, BoundaryStreamContract, BoundaryUnavailableReason, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, PendingEffectCategory,
     ConstExport, ContractOperationId, ContractRequirement, ContractTypeRef, ExecutableExport,
     ExecutableSignatureIr, FileIrRef, FunctionTypeParamIr, InterfaceMethodSignature,
     NominalTypeRefBaseIr, OperationCallableKind, OperationTargetRef, PackageActorAbi,
@@ -232,7 +232,7 @@ fn implementation_throw_facts_without_matching_boundary_projection_are_rejected(
     let CallableEffectSummary::Analyzed { effects } = &mut facts.effects else {
         panic!("fixture effects must be analyzed")
     };
-    effects.throws_caller_alias = true;
+    effects.requires_same_heap_identity = true;
     let CallableProvenanceSummary::Analyzed { throw_origins, .. } = &mut facts.provenance else {
         panic!("fixture provenance must be analyzed")
     };
@@ -387,7 +387,11 @@ fn package_identity_entrypoints_reject_boundary_plan_and_type_mutations() {
     else {
         unreachable!()
     };
-    implementation_requirements.complete_may_effects.may_suspend = true;
+    implementation_requirements.complete_may_effects.may_pending = true;
+    implementation_requirements
+        .complete_may_effects
+        .pending_effect_categories
+        .push(PendingEffectCategory::Unknown);
     mutations.push(wrong_requirements);
 
     let mut wrong_facts = canonical;
@@ -446,11 +450,11 @@ fn package_identity_rejects_public_schema_and_unavailable_reason_mutations() {
     else {
         unreachable!()
     };
-    effects.writes_caller_reachable = true;
+    effects.requires_same_heap_identity = true;
     effects.invokes_unknown_target = true;
     let canonical_reasons = vec![
         BoundaryUnavailableReason::UnknownCallTarget,
-        BoundaryUnavailableReason::WritesCallerReachable,
+        BoundaryUnavailableReason::RequiresSameHeapIdentity,
     ];
     set_boundary_unavailable(&mut unavailable, canonical_reasons.clone());
     assign_package_artifact_identities(&mut unavailable).unwrap();
@@ -459,7 +463,7 @@ fn package_identity_rejects_public_schema_and_unavailable_reason_mutations() {
         ("empty", Vec::new()),
         (
             "wrong",
-            vec![BoundaryUnavailableReason::WritesCallerReachable],
+            vec![BoundaryUnavailableReason::RequiresSameHeapIdentity],
         ),
         (
             "out-of-order",
@@ -1512,13 +1516,12 @@ fn callable_fixture() -> PackageArtifact {
         },
     );
     let effects = CallableMayEffects {
-        writes_caller_reachable: false,
-        returns_caller_alias: false,
-        throws_caller_alias: false,
         escapes_caller_value: false,
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
-        may_suspend: false,
+        may_pending: false,
+        pending_effect_categories: Vec::new(),
+        inout_path_effects: Vec::new(),
     };
     let provenance = CallableProvenanceSummary::Analyzed {
         return_origins: vec![ValueProvenance::Fresh],
@@ -1529,7 +1532,9 @@ fn callable_fixture() -> PackageArtifact {
     artifact.callable_semantic_facts.insert(
         callable_id.clone(),
         CallableSemanticFacts {
-            effects: CallableEffectSummary::Analyzed { effects },
+            effects: CallableEffectSummary::Analyzed {
+                effects: effects.clone(),
+            },
             provenance: provenance.clone(),
             resolved_call_targets: BTreeMap::new(),
         },

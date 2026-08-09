@@ -549,7 +549,9 @@ fn implementation_package(
     package.callable_semantic_facts.insert(
         callable_id.clone(),
         CallableSemanticFacts {
-            effects: CallableEffectSummary::Analyzed { effects },
+            effects: CallableEffectSummary::Analyzed {
+                effects: effects.clone(),
+            },
             provenance: provenance.clone(),
             resolved_call_targets: BTreeMap::new(),
         },
@@ -562,7 +564,7 @@ fn implementation_package(
                 config: Vec::new(),
                 state: Vec::new(),
                 native_capabilities: Vec::new(),
-                complete_may_effects: effects,
+                complete_may_effects: effects.clone(),
                 provenance,
             },
         },
@@ -869,12 +871,11 @@ fn add_http_ingress(deployment: &mut ServiceDeployment, contract: &ServiceContra
 
 fn no_effects() -> CallableMayEffects {
     CallableMayEffects {
-        writes_caller_reachable: false,
-        returns_caller_alias: false,
-        throws_caller_alias: false,
         escapes_caller_value: false,
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
-        may_suspend: false,
+        may_pending: false,
+        pending_effect_categories: Vec::new(),
+        inout_path_effects: Vec::new(),
     }
 }

@@ -301,9 +301,10 @@ fn implementation_requirements() -> BoundaryImplementationRequirements {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,
+            may_pending: false,        
             pending_effect_categories: Vec::new(),
-            inout_path_effects: Vec::new(),        },
+            inout_path_effects: Vec::new(),
+},
         provenance: CallableProvenanceSummary::Analyzed {
             return_origins: Vec::new(),
             direct_return_origins: Vec::new(),

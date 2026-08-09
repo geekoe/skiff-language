@@ -60,7 +60,7 @@ pub(super) fn project_boundary_callable_with_package_schemas(
     }
 
     let effects = match &facts.effects {
-        CallableEffectSummary::Analyzed { effects } => *effects,
+        CallableEffectSummary::Analyzed { effects } => effects.clone(),
         CallableEffectSummary::Unknown { .. } => {
             return Err(ProjectionError::InvalidPackageArtifact {
                 message: format!(

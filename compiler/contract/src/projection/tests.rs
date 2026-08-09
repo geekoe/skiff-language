@@ -124,7 +124,7 @@ fn manifest_selection_projection_selects_function_and_complete_instance_methods(
         ServiceApiFunctionStatus::Unavailable { reasons }
             if reasons == &vec![
                 BoundaryUnavailableReason::AnalysisPending,
-                BoundaryUnavailableReason::WritesCallerReachable,
+                BoundaryUnavailableReason::UnknownEffect,
             ]
     ));
 }
@@ -147,7 +147,7 @@ fn manifest_selection_projection_reports_all_unavailable_callables_and_reasons()
         unavailable["blocked"],
         vec![
             BoundaryUnavailableReason::AnalysisPending,
-            BoundaryUnavailableReason::WritesCallerReachable,
+            BoundaryUnavailableReason::UnknownEffect,
         ]
     );
     assert_eq!(
@@ -235,14 +235,13 @@ fn package_fixture() -> PackageArtifact {
                             state: Vec::new(),
                             native_capabilities: Vec::new(),
                             complete_may_effects: skiff_artifact_model::CallableMayEffects {
-                                writes_caller_reachable: false,
-                                returns_caller_alias: false,
-                                throws_caller_alias: false,
                                 escapes_caller_value: false,
                                 requires_same_heap_identity: false,
                                 invokes_unknown_target: false,
-                                may_suspend: false,
-                            },
+                                may_pending: false,
+                                pending_effect_categories: Vec::new(),
+                                inout_path_effects: Vec::new(),
+},
                             provenance: skiff_artifact_model::CallableProvenanceSummary::Analyzed {
                                 return_origins: Vec::new(),
                                 direct_return_origins: Vec::new(),
@@ -267,14 +266,13 @@ fn package_fixture() -> PackageArtifact {
                 state: Vec::new(),
                 native_capabilities: Vec::new(),
                 complete_may_effects: skiff_artifact_model::CallableMayEffects {
-                    writes_caller_reachable: false,
-                    returns_caller_alias: false,
-                    throws_caller_alias: false,
                     escapes_caller_value: false,
                     requires_same_heap_identity: false,
                     invokes_unknown_target: false,
-                    may_suspend: false,
-                },
+                    may_pending: false,
+                    pending_effect_categories: Vec::new(),
+                    inout_path_effects: Vec::new(),
+},
                 provenance: skiff_artifact_model::CallableProvenanceSummary::Analyzed {
                     return_origins: Vec::new(),
                     direct_return_origins: Vec::new(),
@@ -289,7 +287,7 @@ fn package_fixture() -> PackageArtifact {
         BoundaryCallableProjection::Unavailable {
             reasons: vec![
                 BoundaryUnavailableReason::AnalysisPending,
-                BoundaryUnavailableReason::WritesCallerReachable,
+                BoundaryUnavailableReason::UnknownEffect,
             ],
         },
     );

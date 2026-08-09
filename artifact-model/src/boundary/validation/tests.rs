@@ -788,7 +788,7 @@ fn safe_facts() -> CallableSemanticFacts {
                 may_pending: false,
                 pending_effect_categories: Vec::new(),
                 inout_path_effects: Vec::new(),
-            },
+},
         },
         provenance: CallableProvenanceSummary::Analyzed {
             return_origins: vec![ValueProvenance::Fresh],

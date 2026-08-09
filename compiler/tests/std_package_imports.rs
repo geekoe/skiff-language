@@ -295,14 +295,13 @@ function truncate(value: string, maxBytes: number) -> string {
             facts.effects,
             CallableEffectSummary::Analyzed {
                 effects: CallableMayEffects {
-                    writes_caller_reachable: false,
-                    returns_caller_alias: false,
-                    throws_caller_alias: false,
                     escapes_caller_value: false,
                     requires_same_heap_identity: false,
                     invokes_unknown_target: false,
-                    may_suspend: false,
-                },
+                    may_pending: false,
+                    pending_effect_categories: Vec::new(),
+                    inout_path_effects: Vec::new(),
+},
             }
         );
         assert_eq!(
@@ -388,14 +387,13 @@ function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
             facts.effects,
             CallableEffectSummary::Analyzed {
                 effects: CallableMayEffects {
-                    writes_caller_reachable: false,
-                    returns_caller_alias: false,
-                    throws_caller_alias: false,
                     escapes_caller_value: false,
                     requires_same_heap_identity: false,
                     invokes_unknown_target: false,
-                    may_suspend: false,
-                },
+                    may_pending: false,
+                    pending_effect_categories: Vec::new(),
+                    inout_path_effects: Vec::new(),
+},
             }
         );
         assert_eq!(

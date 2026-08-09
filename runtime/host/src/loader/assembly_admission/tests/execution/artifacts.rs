@@ -2187,13 +2187,20 @@ fn boolean_stream_contract() -> BoundaryOperationContract {
 
 fn no_effects(may_suspend: bool) -> CallableMayEffects {
     CallableMayEffects {
-        writes_caller_reachable: false,
-        returns_caller_alias: false,
-        throws_caller_alias: false,
         escapes_caller_value: false,
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
-        may_suspend,
+        may_pending: may_suspend,
+    
+        may_pending: false,
+        pending_effect_categories: Vec::new(),
+        inout_path_effects: Vec::new(),
+    }
+}
+
+        may_pending: false,
+        pending_effect_categories: Vec::new(),
+        inout_path_effects: Vec::new(),
     }
 }
 

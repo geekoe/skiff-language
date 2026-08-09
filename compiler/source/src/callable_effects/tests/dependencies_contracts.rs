@@ -53,7 +53,7 @@ fn exact_dependency_callee_does_not_poison_known_target() {
         CallableMayEffects {
             may_pending: true,
             pending_effect_categories: vec![PendingEffectCategory::Unknown],
-            ..dependency_effects
+            ..dependency_effects.clone()
         }
     );
     assert!(matches!(

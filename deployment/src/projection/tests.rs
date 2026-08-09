@@ -319,7 +319,12 @@ impl ProjectionFixture {
         else {
             unreachable!()
         };
-        effects.may_suspend = may_suspend;
+        effects.may_pending = may_suspend;
+        effects.pending_effect_categories = if may_suspend {
+            vec![PendingEffectCategory::Unknown]
+        } else {
+            Vec::new()
+        };
         let BoundaryCallableProjection::Available {
             implementation_requirements,
             ..
@@ -331,7 +336,14 @@ impl ProjectionFixture {
         else {
             unreachable!()
         };
-        implementation_requirements.complete_may_effects.may_suspend = may_suspend;
+        implementation_requirements.complete_may_effects.may_pending = may_suspend;
+        implementation_requirements
+            .complete_may_effects
+            .pending_effect_categories = if may_suspend {
+            vec![PendingEffectCategory::Unknown]
+        } else {
+            Vec::new()
+        };
         self.refresh_implementation_ref();
     }
 }
@@ -1091,12 +1103,11 @@ fn safe_facts() -> CallableSemanticFacts {
 
 fn no_effects() -> CallableMayEffects {
     CallableMayEffects {
-        writes_caller_reachable: false,
-        returns_caller_alias: false,
-        throws_caller_alias: false,
         escapes_caller_value: false,
         requires_same_heap_identity: false,
         invokes_unknown_target: false,
-        may_suspend: true,
+        may_pending: true,
+        pending_effect_categories: vec![PendingEffectCategory::Unknown],
+        inout_path_effects: Vec::new(),
     }
 }

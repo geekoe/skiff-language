@@ -63,7 +63,7 @@ pub(super) fn builtin_handler_validation_count() -> usize {
 pub(super) fn validate_builtin_handlers() -> RegistryValidationResult {
     validate_handler_entries(NATIVE_BINDINGS, REQUIRED_HANDLER_KEYS)?;
     validate_native_callable_semantics_registry(
-        STD_NATIVE_CALLABLE_SEMANTICS,
+        &STD_NATIVE_CALLABLE_SEMANTICS,
         STD_NATIVE_SIGNATURES,
         NATIVE_BINDINGS,
     )?;

@@ -155,11 +155,13 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     };
     assert_eq!(methods.len(), 1);
     let mutate_id = callable_id(&artifact, "mutate");
-    assert!(matches!(
-        &artifact.boundary_projections[&mutate_id],
-        BoundaryCallableProjection::Unavailable { reasons }
-            if reasons.contains(&BoundaryUnavailableReason::WritesCallerReachable)
-    ));
+    assert!(
+        matches!(
+            &artifact.boundary_projections[&mutate_id],
+            BoundaryCallableProjection::Available { .. }
+        ),
+        "ordinary aggregate mutation must project boundary-available under R-134"
+    );
     assert!(artifact
         .implementation_links
         .functions
@@ -442,7 +444,7 @@ fn implementation_throw_facts_change_build_but_not_local_abi_or_service_protocol
     let CallableEffectSummary::Analyzed { effects } = &mut facts.effects else {
         panic!("fixture effects must be analyzed")
     };
-    effects.throws_caller_alias = true;
+    effects.requires_same_heap_identity = true;
     let CallableProvenanceSummary::Analyzed { throw_origins, .. } = &mut facts.provenance else {
         panic!("fixture provenance must be analyzed")
     };
@@ -450,7 +452,7 @@ fn implementation_throw_facts_change_build_but_not_local_abi_or_service_protocol
     changed.boundary_projections.insert(
         callable_id,
         BoundaryCallableProjection::Unavailable {
-            reasons: vec![BoundaryUnavailableReason::ThrowsCallerAlias],
+            reasons: vec![BoundaryUnavailableReason::RequiresSameHeapIdentity],
         },
     );
 
@@ -500,10 +502,7 @@ fn caller_projection_path_changes_build_identity_but_not_local_abi() {
     state_projection.boundary_projections.insert(
         callable_id,
         BoundaryCallableProjection::Unavailable {
-            reasons: vec![
-                BoundaryUnavailableReason::WritesCallerReachable,
-                BoundaryUnavailableReason::ReturnsCallerAlias,
-            ],
+            reasons: vec![BoundaryUnavailableReason::RequiresSameHeapIdentity],
         },
     );
 

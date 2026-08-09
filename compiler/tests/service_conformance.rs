@@ -959,28 +959,25 @@ function mutate(input: Box) -> void {
             mutate_facts.effects,
             CallableEffectSummary::Analyzed {
                 effects: CallableMayEffects {
-                    writes_caller_reachable: true,
-                    returns_caller_alias: false,
-                    throws_caller_alias: false,
                     escapes_caller_value: false,
                     requires_same_heap_identity: false,
                     invokes_unknown_target: false,
-                    may_suspend: false,
-                }
+                    may_pending: false,
+                    pending_effect_categories: Vec::new(),
+                    inout_path_effects: Vec::new(),
+}
             }
         );
         assert!(matches!(
             mutate_facts.provenance,
             CallableProvenanceSummary::Analyzed { .. }
         ));
-        let BoundaryCallableProjection::Unavailable { reasons } =
-            &helper.artifact.boundary_projections[mutate_id]
-        else {
-            panic!("mutating helper must remain boundary unavailable");
-        };
-        assert!(reasons.contains(&BoundaryUnavailableReason::WritesCallerReachable));
-        assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownEffect));
-        assert!(!reasons.contains(&BoundaryUnavailableReason::UnknownCallTarget));
+        // R-134: ordinary aggregate mutation no longer makes the callable
+        // boundary-unavailable; only explicit InOut paths write caller places.
+        assert!(matches!(
+            &helper.artifact.boundary_projections[mutate_id],
+            BoundaryCallableProjection::Available { .. }
+        ));
         assert!(matches!(
             public_callable_projection(&project.package.artifact, "run"),
             BoundaryCallableProjection::Available { .. }

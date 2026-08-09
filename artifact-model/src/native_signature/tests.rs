@@ -183,9 +183,10 @@ fn json_merge_semantics_are_exact_fresh_and_detached() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,
-            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: false,        
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -209,9 +210,10 @@ fn date_from_epoch_milliseconds_semantics_match_exact_signature() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,
-            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: false,        
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -233,9 +235,10 @@ fn map_empty_semantics_match_exact_generic_signature() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,
-            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: false,        
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -276,9 +279,10 @@ fn date_parse_semantics_match_exact_signature() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,
-            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: false,        
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -315,9 +319,10 @@ fn bytes_from_base64_semantics_match_exact_signature() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,
-            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: false,        
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -354,9 +359,10 @@ fn bytes_from_hex_semantics_match_exact_signature() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,
-            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: false,        
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -393,9 +399,10 @@ fn bytes_concat_semantics_match_exact_signature() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,
-            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: false,        
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -439,9 +446,10 @@ fn http_request_native_semantics_match_exact_signatures() {
                 escapes_caller_value: false,
                 requires_same_heap_identity: false,
                 invokes_unknown_target: false,
-                may_pending: false,
-            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),            }
+                may_pending: false,            
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
         );
         assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -464,9 +472,10 @@ fn http_client_stream_semantics_match_exact_signature_and_remain_canonical() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: true,
-            pending_effect_categories: if true { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: true,        
+            pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -503,9 +512,10 @@ fn http_client_sse_semantics_match_exact_signature_and_remain_canonical() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: true,
-            pending_effect_categories: if true { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: true,        
+            pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -557,9 +567,10 @@ fn http_response_stream_event_constructor_semantics_match_exact_signatures() {
                 escapes_caller_value: false,
                 requires_same_heap_identity: false,
                 invokes_unknown_target: false,
-                may_pending: false,
-            pending_effect_categories: if false { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),            }
+                may_pending: false,            
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+}
         );
         assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -601,9 +612,10 @@ fn http_response_stream_emit_semantics_match_exact_signature() {
             escapes_caller_value: true,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: true,
-            pending_effect_categories: if true { vec![PendingEffectCategory::NativeCall] } else { Vec::new() },
-            inout_path_effects: Vec::new(),        }
+            may_pending: true,        
+            pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+            inout_path_effects: Vec::new(),
+}
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 

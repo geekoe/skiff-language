@@ -64,18 +64,11 @@ fn callable_effects(
     name: &str,
 ) -> skiff_artifact_model::CallableMayEffects {
     match &model.callable_effects().operations()[&SourceSymbolKey::new(MODULE_PATH, name)] {
-        CallableEffectSummary::Analyzed { effects } => *effects,
+        CallableEffectSummary::Analyzed { effects } => effects.clone(),
         CallableEffectSummary::Unknown { reason } => {
             panic!("{name} effects must be analyzed, found {reason:?}")
         }
     }
-
-            escapes_caller_value: false,
-            requires_same_heap_identity: false,
-            invokes_unknown_target: false,
-            may_pending: false,
-            pending_effect_categories: Vec::new(),
-            inout_path_effects: Vec::new(),
 }
 
 #[test]

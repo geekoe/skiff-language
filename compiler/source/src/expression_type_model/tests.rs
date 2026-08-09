@@ -499,7 +499,6 @@ fn package_and_service_test_effect_throw_use_open_nominal_payloads() {
                     requires_same_heap_identity: false,
                     invokes_unknown_target: false,
                     may_pending: false,
-                
                     pending_effect_categories: Vec::new(),
                     inout_path_effects: Vec::new(),
 },

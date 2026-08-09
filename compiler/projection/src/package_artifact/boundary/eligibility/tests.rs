@@ -40,14 +40,13 @@ fn identity_observation_survives_detachment_and_database_materialization() {
     let facts = CallableSemanticFacts {
         effects: CallableEffectSummary::Analyzed {
             effects: CallableMayEffects {
-                writes_caller_reachable: false,
-                returns_caller_alias: false,
-                throws_caller_alias: false,
                 escapes_caller_value: true,
                 requires_same_heap_identity: true,
                 invokes_unknown_target: false,
-                may_suspend: true,
-            },
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::Unknown],
+                inout_path_effects: Vec::new(),
+},
         },
         provenance: CallableProvenanceSummary::Analyzed {
             return_origins: vec![ValueProvenance::Fresh],
