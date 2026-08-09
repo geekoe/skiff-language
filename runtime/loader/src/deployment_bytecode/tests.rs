@@ -285,29 +285,97 @@ fn callable_package(
     );
     artifact.package_local_abi.implementation_symbols.insert(
         "manifest.run".to_string(),
-        PackageLocalAbiSymbol::Callable {
-            callable_id: callable.clone(),
-            signature: PackageCallableSignature {
-                type_params: Vec::new(),
-                parameters: self_bound_parameters(kind),
-                return_type: PackageTypeRef::Local {
-                    local_type: TypeRefIr::builtin("void"),
-                },
-                may_suspend: false,
-            },
-        },
+        callable_abi_symbol(callable, kind),
     );
-    artifact.callable_semantic_facts.insert(
-        callable.clone(),
-        CallableSemanticFacts {
-            effects: CallableEffectSummary::analysis_pending(),
-            provenance: CallableProvenanceSummary::Unknown {
-                reason: CallableProvenanceUnknownReason::AnalysisPending,
-            },
-            resolved_call_targets: BTreeMap::new(),
-        },
-    );
+    artifact
+        .callable_semantic_facts
+        .insert(callable.clone(), callable_semantic_facts());
     Arc::new(artifact)
+}
+
+fn add_callable_alias(
+    artifact: &mut PackageArtifact,
+    canonical: &PackageCallableId,
+    alias: &PackageCallableId,
+    symbol_path: &str,
+    kind: OperationCallableKind,
+    implementation_surface: bool,
+) {
+    let mut link = artifact.callable_links.get(canonical).unwrap().clone();
+    link.callable_id = alias.clone();
+    link.target.callable_abi_id = alias.as_str().to_string();
+    link.target.callable_kind = kind;
+    artifact.callable_links.insert(alias.clone(), link);
+    let symbols = if implementation_surface {
+        &mut artifact.package_local_abi.implementation_symbols
+    } else {
+        &mut artifact.package_local_abi.public_symbols
+    };
+    symbols.insert(symbol_path.to_string(), callable_abi_symbol(alias, kind));
+    artifact
+        .callable_semantic_facts
+        .insert(alias.clone(), callable_semantic_facts());
+}
+
+fn callable_abi_symbol(
+    callable: &PackageCallableId,
+    kind: OperationCallableKind,
+) -> PackageLocalAbiSymbol {
+    PackageLocalAbiSymbol::Callable {
+        callable_id: callable.clone(),
+        signature: PackageCallableSignature {
+            type_params: Vec::new(),
+            parameters: self_bound_parameters(kind),
+            return_type: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("void"),
+            },
+            may_suspend: false,
+        },
+    }
+}
+
+fn callable_semantic_facts() -> CallableSemanticFacts {
+    CallableSemanticFacts {
+        effects: CallableEffectSummary::analysis_pending(),
+        provenance: CallableProvenanceSummary::Unknown {
+            reason: CallableProvenanceUnknownReason::AnalysisPending,
+        },
+        resolved_call_targets: BTreeMap::new(),
+    }
+}
+
+fn with_effect_summary_ref(
+    bytecode: &ValidatedBytecodeArtifact,
+    callable: &PackageCallableId,
+) -> Arc<ValidatedBytecodeArtifact> {
+    let mut artifact = bytecode.artifact().clone();
+    artifact
+        .image
+        .functions
+        .get_mut("manifest::run")
+        .unwrap()
+        .effect_summary_ref = callable.clone();
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+}
+
+fn with_synthetic_callback(
+    bytecode: &ValidatedBytecodeArtifact,
+    owner: &PackageExecutableCoordinate,
+) -> Arc<ValidatedBytecodeArtifact> {
+    let mut artifact = bytecode.artifact().clone();
+    let mut callback = artifact.image.functions["manifest::run"].clone();
+    callback.function_key = "manifest::run$callback0".to_string();
+    callback.origin = BytecodeFunctionOrigin::SyntheticCallback {
+        owner: owner.clone(),
+        site_ordinal: 0,
+    };
+    artifact
+        .image
+        .functions
+        .insert(callback.function_key.clone(), callback);
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
 }
 
 fn self_bound_parameters(kind: OperationCallableKind) -> Vec<PackageCallableParameter> {
@@ -367,6 +435,262 @@ fn package_checked_constructor_joins_v4_callable_origin_and_self_manifests() {
         hydrated.function_key_for_callable(&callable),
         Some("manifest::run")
     );
+    assert_eq!(
+        hydrated.canonical_implementation_callable_for_executable(&coordinate),
+        Some(&callable)
+    );
+    assert_eq!(
+        hydrated.canonical_implementation_callable_for_function_key("manifest::run"),
+        Some(&callable)
+    );
+    assert_eq!(
+        hydrated.function_key_for_canonical_implementation_callable(&callable),
+        Some("manifest::run")
+    );
+}
+
+#[test]
+fn canonical_callable_index_ignores_public_aliases_that_share_one_origin() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(true);
+    let mut artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::ImplMethod,
+    )
+    .as_ref()
+    .clone();
+    let public_alias = PackageCallableId::new("callable:public:manifest:run");
+    add_callable_alias(
+        &mut artifact,
+        &canonical,
+        &public_alias,
+        "public.run",
+        OperationCallableKind::ImplMethod,
+        false,
+    );
+    let artifact = Arc::new(artifact);
+
+    let hydrated =
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode).unwrap();
+
+    assert_eq!(
+        hydrated.function_key_for_callable(&public_alias),
+        Some("manifest::run")
+    );
+    assert_eq!(
+        hydrated.canonical_implementation_callable_for_executable(&coordinate),
+        Some(&canonical)
+    );
+    assert_eq!(
+        hydrated.canonical_implementation_callable_for_function_key("manifest::run"),
+        Some(&canonical)
+    );
+    assert_eq!(
+        hydrated.function_key_for_canonical_implementation_callable(&public_alias),
+        None
+    );
+}
+
+#[test]
+fn canonical_callable_index_ignores_public_function_aliases() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(false);
+    let mut artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::InternalFunction,
+    )
+    .as_ref()
+    .clone();
+    let public_alias = PackageCallableId::new("callable:public:manifest:run");
+    add_callable_alias(
+        &mut artifact,
+        &canonical,
+        &public_alias,
+        "public.run",
+        OperationCallableKind::PublicFunction,
+        false,
+    );
+    let artifact = Arc::new(artifact);
+
+    let hydrated =
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode).unwrap();
+
+    assert_eq!(
+        hydrated.function_key_for_callable(&public_alias),
+        Some("manifest::run")
+    );
+    assert_eq!(
+        hydrated.canonical_implementation_callable_for_executable(&coordinate),
+        Some(&canonical)
+    );
+    assert_eq!(
+        hydrated.function_key_for_canonical_implementation_callable(&public_alias),
+        None
+    );
+}
+
+#[test]
+fn canonical_callable_index_rejects_public_effect_summary_drift() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(true);
+    let public_alias = PackageCallableId::new("callable:public:manifest:run");
+    let drifted_bytecode = with_effect_summary_ref(&bytecode, &public_alias);
+    let mut artifact = callable_package(
+        &drifted_bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::ImplMethod,
+    )
+    .as_ref()
+    .clone();
+    add_callable_alias(
+        &mut artifact,
+        &canonical,
+        &public_alias,
+        "public.run",
+        OperationCallableKind::ImplMethod,
+        false,
+    );
+    let artifact = Arc::new(artifact);
+
+    assert!(matches!(
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, drifted_bytecode),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::Callable,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn canonical_callable_index_rejects_ambiguous_implementation_owners() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(true);
+    let mut artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::ImplMethod,
+    )
+    .as_ref()
+    .clone();
+    let duplicate = PackageCallableId::new("callable:implementation:manifest:duplicate");
+    add_callable_alias(
+        &mut artifact,
+        &canonical,
+        &duplicate,
+        "manifest.duplicate",
+        OperationCallableKind::ImplMethod,
+        true,
+    );
+    let artifact = Arc::new(artifact);
+
+    assert!(matches!(
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::Callable,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn canonical_callable_index_rejects_missing_implementation_owner() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(true);
+    let mut artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::ImplMethod,
+    )
+    .as_ref()
+    .clone();
+    let symbol = artifact
+        .package_local_abi
+        .implementation_symbols
+        .remove("manifest.run")
+        .unwrap();
+    artifact
+        .package_local_abi
+        .public_symbols
+        .insert("public.run".to_string(), symbol);
+    let artifact = Arc::new(artifact);
+
+    assert!(matches!(
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::Callable,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn canonical_callable_index_rejects_wrong_coordinate_owner() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(true);
+    let mut artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::ImplMethod,
+    )
+    .as_ref()
+    .clone();
+    artifact
+        .callable_links
+        .get_mut(&canonical)
+        .unwrap()
+        .target
+        .executable_index += 1;
+    let artifact = Arc::new(artifact);
+
+    assert!(matches!(
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::Callable,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn canonical_callable_index_rejects_non_implementation_target_kind() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(false);
+    let artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::PublicFunction,
+    );
+
+    assert!(matches!(
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::Callable,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn canonical_callable_index_rejects_synthetic_callbacks_without_owner_manifest() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(false);
+    let bytecode = with_synthetic_callback(&bytecode, &coordinate);
+    let artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::InternalFunction,
+    );
+
+    assert!(matches!(
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::FunctionOrigin,
+            detail,
+            ..
+        }) if detail.contains("no independent package-owned callback manifest")
+    ));
 }
 
 #[test]

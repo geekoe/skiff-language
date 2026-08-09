@@ -309,6 +309,36 @@ impl HydratedBytecodePackage {
     pub fn function_key_for_callable(&self, callable: &PackageCallableId) -> Option<&str> {
         self.manifests.function_key_for_callable(callable)
     }
+
+    /// Returns the unique package implementation callable that canonically
+    /// owns one ordinary executable origin. Public aliases are never returned.
+    pub fn canonical_implementation_callable_for_executable(
+        &self,
+        executable: &PackageExecutableCoordinate,
+    ) -> Option<&PackageCallableId> {
+        self.manifests
+            .canonical_implementation_callable_for_executable(executable)
+    }
+
+    /// Returns the unique package implementation callable that canonically
+    /// owns one admitted ordinary function key.
+    pub fn canonical_implementation_callable_for_function_key(
+        &self,
+        function_key: &str,
+    ) -> Option<&PackageCallableId> {
+        self.manifests
+            .canonical_implementation_callable_for_function_key(function_key)
+    }
+
+    /// Resolves a canonical implementation callable back to its admitted
+    /// ordinary function. Public aliases are intentionally absent.
+    pub fn function_key_for_canonical_implementation_callable(
+        &self,
+        callable: &PackageCallableId,
+    ) -> Option<&str> {
+        self.manifests
+            .function_key_for_canonical_implementation_callable(callable)
+    }
 }
 
 /// Consumer-side symbolic service dependency facts.

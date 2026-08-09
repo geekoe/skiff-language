@@ -24,7 +24,15 @@ use super::{
 pub(super) struct HydratedPackageManifests {
     ordinary_functions: BTreeMap<PackageExecutableCoordinate, String>,
     callable_functions: BTreeMap<PackageCallableId, String>,
+    canonical_implementation_callables: CanonicalImplementationCallableIndex,
     constant_roots: BTreeSet<String>,
+}
+
+#[derive(Debug)]
+struct CanonicalImplementationCallableIndex {
+    by_executable: BTreeMap<PackageExecutableCoordinate, PackageCallableId>,
+    by_function_key: BTreeMap<String, PackageCallableId>,
+    by_callable: BTreeMap<PackageCallableId, String>,
 }
 
 impl HydratedPackageManifests {
@@ -37,12 +45,19 @@ impl HydratedPackageManifests {
         let ordinary_functions = validate_function_origins(reference, artifact, bytecode)?;
         let callable_functions =
             validate_callable_manifests(reference, artifact, bytecode, &ordinary_functions)?;
+        let canonical_implementation_callables = CanonicalImplementationCallableIndex::checked(
+            reference,
+            artifact,
+            bytecode,
+            &ordinary_functions,
+        )?;
         validate_actor_manifests(reference, artifact, bytecode, &callable_functions)?;
         validate_conformance_manifests(reference, bytecode, artifact, &callable_functions)?;
         let constant_roots = validate_constant_roots(reference, artifact, bytecode)?;
         Ok(Self {
             ordinary_functions,
             callable_functions,
+            canonical_implementation_callables,
             constant_roots,
         })
     }
@@ -56,6 +71,34 @@ impl HydratedPackageManifests {
 
     pub(super) fn function_key_for_callable(&self, callable: &PackageCallableId) -> Option<&str> {
         self.callable_functions.get(callable).map(String::as_str)
+    }
+
+    pub(super) fn canonical_implementation_callable_for_executable(
+        &self,
+        executable: &PackageExecutableCoordinate,
+    ) -> Option<&PackageCallableId> {
+        self.canonical_implementation_callables
+            .by_executable
+            .get(executable)
+    }
+
+    pub(super) fn canonical_implementation_callable_for_function_key(
+        &self,
+        function_key: &str,
+    ) -> Option<&PackageCallableId> {
+        self.canonical_implementation_callables
+            .by_function_key
+            .get(function_key)
+    }
+
+    pub(super) fn function_key_for_canonical_implementation_callable(
+        &self,
+        callable: &PackageCallableId,
+    ) -> Option<&str> {
+        self.canonical_implementation_callables
+            .by_callable
+            .get(callable)
+            .map(String::as_str)
     }
 }
 
@@ -129,30 +172,23 @@ fn validate_function_origins(
                 ),
             );
         }
-        if let Some(executable) = function.origin.ordinary_executable() {
-            if let Some(previous) =
-                ordinary.insert(executable.clone(), function.function_key.clone())
-            {
-                return manifest_error(
-                    reference,
-                    DeploymentBytecodeManifestKind::FunctionOrigin,
-                    format!(
-                        "ordinary executable {executable:?} is owned by both {previous:?} and {:?}",
-                        function.function_key
-                    ),
-                );
-            }
-        }
-        if !artifact
-            .callable_semantic_facts
-            .contains_key(&function.effect_summary_ref)
-        {
+        let Some(executable) = function.origin.ordinary_executable() else {
             return manifest_error(
                 reference,
-                DeploymentBytecodeManifestKind::Callable,
+                DeploymentBytecodeManifestKind::FunctionOrigin,
                 format!(
-                    "function {:?} effectSummaryRef {} is absent from callableSemanticFacts",
-                    function.function_key, function.effect_summary_ref
+                    "synthetic callback function {:?} has no independent package-owned callback manifest; owner coordinates alone do not establish canonical callable authority",
+                    function.function_key
+                ),
+            );
+        };
+        if let Some(previous) = ordinary.insert(executable.clone(), function.function_key.clone()) {
+            return manifest_error(
+                reference,
+                DeploymentBytecodeManifestKind::FunctionOrigin,
+                format!(
+                    "ordinary executable {executable:?} is owned by both {previous:?} and {:?}",
+                    function.function_key
                 ),
             );
         }
@@ -267,6 +303,160 @@ fn validate_callable_manifests(
         );
     }
     Ok(callables)
+}
+
+impl CanonicalImplementationCallableIndex {
+    fn checked(
+        reference: &PackageArtifactRef,
+        artifact: &PackageArtifact,
+        bytecode: &ValidatedBytecodeArtifact,
+        ordinary: &BTreeMap<PackageExecutableCoordinate, String>,
+    ) -> Result<Self, DeploymentBytecodeHydrationError> {
+        let mut index = Self {
+            by_executable: BTreeMap::new(),
+            by_function_key: BTreeMap::new(),
+            by_callable: BTreeMap::new(),
+        };
+        for symbol in artifact.package_local_abi.implementation_symbols.values() {
+            let PackageLocalAbiSymbol::Callable { callable_id, .. } = symbol else {
+                continue;
+            };
+            index.insert_implementation(reference, artifact, ordinary, callable_id)?;
+        }
+        index.validate_effect_summary_owners(reference, artifact, bytecode, ordinary)?;
+        Ok(index)
+    }
+
+    fn insert_implementation(
+        &mut self,
+        reference: &PackageArtifactRef,
+        artifact: &PackageArtifact,
+        ordinary: &BTreeMap<PackageExecutableCoordinate, String>,
+        callable_id: &PackageCallableId,
+    ) -> Result<(), DeploymentBytecodeHydrationError> {
+        let fact = artifact.callable_links.get(callable_id).ok_or_else(|| {
+            manifest_mismatch(
+                reference,
+                DeploymentBytecodeManifestKind::Callable,
+                format!("canonical implementation callable {callable_id} has no callable link"),
+            )
+        })?;
+        if !matches!(
+            fact.target.callable_kind,
+            OperationCallableKind::InternalFunction | OperationCallableKind::ImplMethod
+        ) {
+            return manifest_error(
+                reference,
+                DeploymentBytecodeManifestKind::Callable,
+                format!(
+                    "implementation callable {callable_id} has non-implementation target kind {:?}",
+                    fact.target.callable_kind
+                ),
+            );
+        }
+        let coordinate = target_coordinate(&fact.target);
+        let function_key = ordinary.get(&coordinate).ok_or_else(|| {
+            manifest_mismatch(
+                reference,
+                DeploymentBytecodeManifestKind::Callable,
+                format!(
+                    "canonical implementation callable {callable_id} targets {coordinate:?}, which is not an ordinary bytecode function origin"
+                ),
+            )
+        })?;
+        if let Some(previous) = self
+            .by_executable
+            .insert(coordinate.clone(), callable_id.clone())
+        {
+            return manifest_error(
+                reference,
+                DeploymentBytecodeManifestKind::Callable,
+                format!(
+                    "ordinary executable {coordinate:?} has ambiguous canonical implementation owners {previous} and {callable_id}"
+                ),
+            );
+        }
+        if let Some(previous) = self
+            .by_function_key
+            .insert(function_key.clone(), callable_id.clone())
+        {
+            return manifest_error(
+                reference,
+                DeploymentBytecodeManifestKind::Callable,
+                format!(
+                    "ordinary function {function_key:?} has ambiguous canonical implementation owners {previous} and {callable_id}"
+                ),
+            );
+        }
+        if let Some(previous) = self
+            .by_callable
+            .insert(callable_id.clone(), function_key.clone())
+        {
+            return manifest_error(
+                reference,
+                DeploymentBytecodeManifestKind::Callable,
+                format!(
+                    "canonical implementation callable {callable_id} ambiguously owns functions {previous:?} and {function_key:?}"
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_effect_summary_owners(
+        &self,
+        reference: &PackageArtifactRef,
+        artifact: &PackageArtifact,
+        bytecode: &ValidatedBytecodeArtifact,
+        ordinary: &BTreeMap<PackageExecutableCoordinate, String>,
+    ) -> Result<(), DeploymentBytecodeHydrationError> {
+        let functions = bytecode
+            .view()
+            .functions()
+            .iter()
+            .map(|function| (function.function_key.as_str(), function))
+            .collect::<BTreeMap<_, _>>();
+        for (coordinate, function_key) in ordinary {
+            let canonical = self.by_executable.get(coordinate).ok_or_else(|| {
+                manifest_mismatch(
+                    reference,
+                    DeploymentBytecodeManifestKind::Callable,
+                    format!(
+                        "ordinary function {function_key:?} at {coordinate:?} has no canonical implementation callable owner"
+                    ),
+                )
+            })?;
+            let function = functions.get(function_key.as_str()).copied().ok_or_else(|| {
+                manifest_mismatch(
+                    reference,
+                    DeploymentBytecodeManifestKind::FunctionOrigin,
+                    format!(
+                        "ordinary function {function_key:?} is absent from the admitted bytecode view"
+                    ),
+                )
+            })?;
+            if &function.effect_summary_ref != canonical {
+                return manifest_error(
+                    reference,
+                    DeploymentBytecodeManifestKind::Callable,
+                    format!(
+                        "ordinary function {function_key:?} effectSummaryRef {} is not its canonical implementation owner {canonical}",
+                        function.effect_summary_ref
+                    ),
+                );
+            }
+            if !artifact.callable_semantic_facts.contains_key(canonical) {
+                return manifest_error(
+                    reference,
+                    DeploymentBytecodeManifestKind::Callable,
+                    format!(
+                        "canonical implementation callable {canonical} for function {function_key:?} has no callableSemanticFacts row"
+                    ),
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 fn callable_signature<'a>(
