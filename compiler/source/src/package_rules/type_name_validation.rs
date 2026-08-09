@@ -26,7 +26,7 @@ pub(super) fn collect_package_std_type_root_violations(
     ty: &str,
     _imported_std_roots: &BTreeSet<&str>,
     _dependency_roots: &BTreeSet<&str>,
-    package_type_names: &BTreeSet<String>,
+    _package_type_names: &BTreeSet<String>,
     violations: &mut Vec<String>,
 ) {
     let registry = prelude_registry();
@@ -43,10 +43,6 @@ pub(super) fn collect_package_std_type_root_violations(
         } else if registry.known_type_symbol(ty).is_none() {
             violations.push(format!("{path}: unknown standard_library type {ty}"));
         }
-        return;
-    }
-
-    if package_type_names.contains(ty) || registry.is_prelude_type_name(ty) {
         return;
     }
 }

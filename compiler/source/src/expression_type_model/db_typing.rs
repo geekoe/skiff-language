@@ -395,9 +395,7 @@ impl<'a> OwnerChecker<'a> {
         )
         .resolve_metadata(target_name)
         {
-            Ok(Some(metadata)) => {
-                metadata.kind == skiff_artifact_model::DbObjectKindIr::Contract
-            }
+            Ok(Some(metadata)) => metadata.kind == skiff_artifact_model::DbObjectKindIr::Contract,
             _ => false,
         }
     }
@@ -413,7 +411,7 @@ fn db_operation_kind_text(operation: crate::shared::ast::DbOperationKind) -> &'s
 }
 
 fn projection_record_type(name: &str, target: &ResolvedTypeRef) -> ResolvedTypeRef {
-    let text = format!("{name}<{}>", target);
+    let text = format!("{name}<{target}>");
     ResolvedTypeRef::with_text(
         TypeRefIr::Builtin {
             name: name.to_string(),
@@ -441,7 +439,7 @@ fn db_lease_read_type() -> ResolvedTypeRef {
 }
 
 fn array_type(item: ResolvedTypeRef) -> ResolvedTypeRef {
-    let text = format!("Array<{}>", item);
+    let text = format!("Array<{item}>");
     ResolvedTypeRef::with_text(
         TypeRefIr::Builtin {
             name: BuiltinShape::Array.name().to_string(),

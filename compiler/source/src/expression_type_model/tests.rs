@@ -627,9 +627,11 @@ fn catch_leaves_reject_every_non_nominal_shape_at_throw_and_catch() {
     ];
 
     for (label, invalid_type, declarations) in cases {
-        let type_params = (label == "unconstrained generic")
-            .then_some("<T>")
-            .unwrap_or("");
+        let type_params = if label == "unconstrained generic" {
+            "<T>"
+        } else {
+            ""
+        };
         let source = format!(
             r#"
                   type RecordFailure {{ message: string }}

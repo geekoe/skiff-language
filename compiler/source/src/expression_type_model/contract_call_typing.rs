@@ -211,7 +211,7 @@ impl<'a, 'ctx> ContractCallTyping<'a, 'ctx> {
             Ok(resolved) => Some(match call.operation.contract.stream {
                 BoundaryStreamContract::ServerStream { .. } => (
                     {
-                        let text = format!("Stream<{}>", resolved);
+                        let text = format!("Stream<{resolved}>");
                         ResolvedTypeRef::with_text(
                             skiff_artifact_model::TypeRefIr::Builtin {
                                 name: BuiltinShape::Stream.name().to_string(),

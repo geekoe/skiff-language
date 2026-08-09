@@ -356,7 +356,7 @@ fn top_level_namespace_facts(ast: &SourceFile) -> NamespaceNameFacts {
         if let Some(name) = import
             .local_binding
             .as_deref()
-            .or_else(|| import.alias.as_deref())
+            .or(import.alias.as_deref())
             .or_else(|| import.path.last().map(String::as_str))
         {
             facts.value_names.insert(name.to_string());

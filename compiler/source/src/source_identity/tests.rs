@@ -224,7 +224,7 @@ fn p1b_case12_move_file_changes_anchor() {
 /// canonical_contract_schema_json(descriptor 事实),而非 source_identity()。
 /// - 空白改动、声明重排 → canonical schema 不变 → revision 不变。
 /// - descriptor 改变(字段/类型变化)→ canonical schema 改变 → revision 变。
-/// 端到端 revision 验证留给更上层的 manifest 集成测试。
+///   端到端 revision 验证留给更上层的 manifest 集成测试。
 #[test]
 fn p1b_case13_descriptor_change_does_not_change_anchor() {
     let pub_id = "test.run/mypkg";

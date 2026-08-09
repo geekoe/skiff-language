@@ -2349,6 +2349,30 @@ fn package_record_field_qualification_uses_the_exact_dependency_root() {
     );
 }
 
+fn assert_artifact_interface_method_mismatch_rejected(
+    artifact: &skiff_artifact_model::PackageArtifact,
+) {
+    let mut tampered_method = artifact.clone();
+    tampered_method
+        .implementation_links
+        .types
+        .get_mut("types.LlmClient")
+        .unwrap()
+        .interface_methods
+        .clear();
+    let error = index_artifact_package_types(
+        &tampered_method,
+        "llm-api",
+        PackageDependencyView::Public,
+        ArtifactPackageTypePathMode::DeclaredPublic,
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+        &mut BTreeMap::new(),
+    )
+    .expect_err("mismatched artifact interface facts must fail closed");
+    assert!(error.contains("interface facts disagree"));
+}
+
 #[test]
 fn artifact_exported_interface_facts_preserve_classification_and_methods() {
     use skiff_artifact_model::{
@@ -2782,25 +2806,7 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
     assert_eq!(symbol.symbol_path, "types.LlmClient");
     assert_eq!(symbol.abi_expectation.as_deref(), Some("abi"));
 
-    let mut tampered_method = artifact.clone();
-    tampered_method
-        .implementation_links
-        .types
-        .get_mut("types.LlmClient")
-        .unwrap()
-        .interface_methods
-        .clear();
-    let error = index_artifact_package_types(
-        &tampered_method,
-        "llm-api",
-        PackageDependencyView::Public,
-        ArtifactPackageTypePathMode::DeclaredPublic,
-        &mut BTreeMap::new(),
-        &mut BTreeMap::new(),
-        &mut BTreeMap::new(),
-    )
-    .expect_err("mismatched artifact interface facts must fail closed");
-    assert!(error.contains("interface facts disagree"));
+    assert_artifact_interface_method_mismatch_rejected(&artifact);
 
     let mut tampered_nested_path = artifact.clone();
     let TypeDescriptorIr::Record { fields } = tampered_nested_path

@@ -439,9 +439,7 @@ impl PreludeRegistry {
 }
 
 pub fn shared_native_alias_target(symbol: &str) -> Option<&'static str> {
-    shared_native_aliases()
-        .into_iter()
-        .find_map(|(alias, canonical)| (alias == symbol).then_some(canonical))
+    shared_native_aliases().find_map(|(alias, canonical)| (alias == symbol).then_some(canonical))
 }
 
 pub fn shared_native_binding_key(symbol: &str) -> Option<&'static str> {

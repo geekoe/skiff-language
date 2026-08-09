@@ -152,8 +152,8 @@ impl<'a> OwnerChecker<'a> {
     ) -> Result<Option<ResolvedTypeRef>, ()> {
         let signature = self.dependency_analysis.and_then(|dependency_analysis| {
             let (canonical_dependency_ref, callable) =
-                dependency_analysis.package_callable_by_source_path(&path)?;
-            let type_dependency_ref = dependency_source_address_parts(&path)
+                dependency_analysis.package_callable_by_source_path(path)?;
+            let type_dependency_ref = dependency_source_address_parts(path)
                 .map(|(dependency_ref, _)| dependency_ref)
                 .filter(|dependency_ref| {
                     self.type_resolution
@@ -203,7 +203,7 @@ impl<'a> OwnerChecker<'a> {
                 )
             })
             .collect::<Vec<_>>();
-        self.validate_dependency_package_call_params(key, &path, &expected, args, arg_types);
+        self.validate_dependency_package_call_params(key, path, &expected, args, arg_types);
 
         let exact_projection = match self
             .type_resolution
@@ -246,13 +246,13 @@ impl<'a> OwnerChecker<'a> {
         arg_types: &[(ExpressionKey, Option<ResolvedTypeRef>)],
     ) -> Result<Option<ResolvedTypeRef>, ()> {
         match self.type_resolution.resolve_representation_constructor(
-            &path,
+            path,
             type_args,
             &self.type_context,
         ) {
             Ok(Some(representation)) => {
                 self.validate_resolved_call_params(
-                    &path,
+                    path,
                     vec![("value".to_string(), representation.payload.clone())],
                     args,
                     arg_types,
@@ -289,13 +289,13 @@ impl<'a> OwnerChecker<'a> {
         let Some(return_type) = prelude_registry().native_return_type(path) else {
             return Ok(None);
         };
-        let native_context = native_return_type_context(&path, &self.type_context);
-        if let Some(params) = prelude_registry().native_params(&path) {
+        let native_context = native_return_type_context(path, &self.type_context);
+        if let Some(params) = prelude_registry().native_params(path) {
             let mut expected = self.resolve_callable_param_types(
-                &path,
+                path,
                 params.iter().map(String::as_str),
                 &native_context,
-                prelude_registry().builtin_type_params(&path).unwrap_or(&[]),
+                prelude_registry().builtin_type_params(path).unwrap_or(&[]),
                 type_args,
             );
             if native_context.module_path != self.module_path {
@@ -312,14 +312,14 @@ impl<'a> OwnerChecker<'a> {
                     .collect();
             }
             if expected.complete {
-                self.validate_resolved_call_params(&path, expected.params, args, arg_types);
+                self.validate_resolved_call_params(path, expected.params, args, arg_types);
             }
         }
         let resolved_return_type = self
             .resolve_callable_return_type(
                 &return_type,
                 &native_context,
-                prelude_registry().builtin_type_params(&path).unwrap_or(&[]),
+                prelude_registry().builtin_type_params(path).unwrap_or(&[]),
                 type_args,
             )
             .ok_or(())?;
@@ -447,7 +447,7 @@ impl<'a> OwnerChecker<'a> {
         let Some(signature) = self.type_resolution.resolve_package_callable(path).cloned() else {
             return Ok(None);
         };
-        let package_root = package_callable_public_root(&path, &signature.source_symbol);
+        let package_root = package_callable_public_root(path, &signature.source_symbol);
         let signature_context = TypeResolutionContext::with_type_params(
             &signature.module_path,
             signature.type_params.iter().cloned().collect(),
@@ -464,14 +464,14 @@ impl<'a> OwnerChecker<'a> {
             })
             .collect::<Vec<_>>();
         let expected = self.resolve_callable_param_types(
-            &path,
+            path,
             params.iter().map(String::as_str),
             &signature_context,
             &signature.type_params,
             type_args,
         );
         if expected.complete {
-            self.validate_resolved_call_params(&path, expected.params, args, arg_types);
+            self.validate_resolved_call_params(path, expected.params, args, arg_types);
         }
         if let Some(exact_signature) = signature.exact_signature {
             let substitutions = signature
@@ -517,12 +517,12 @@ impl<'a> OwnerChecker<'a> {
             &package_root,
             &signature.local_type_names,
         );
-        return Ok(self.resolve_callable_return_type(
+        Ok(self.resolve_callable_return_type(
             &package_return_type,
             &signature_context,
             &signature.type_params,
             type_args,
-        ));
+        ))
     }
 
     pub(super) fn known_path_call_type(
@@ -544,7 +544,7 @@ impl<'a> OwnerChecker<'a> {
                     .resolve_type_ref(ty, &self.type_context)
                     .ok()
                     .map(|item| {
-                        let text = format!("Array<{}>", item);
+                        let text = format!("Array<{item}>");
                         ResolvedTypeRef::with_text(
                             TypeRefIr::Builtin {
                                 name: BuiltinShape::Array.name().to_string(),
@@ -965,7 +965,7 @@ impl<'a> OwnerChecker<'a> {
             method_name,
             &self.type_context,
         )?;
-        let callable = format!("{}.{}", receiver_ty, method_name);
+        let callable = format!("{receiver_ty}.{method_name}");
         if !type_args.is_empty() {
             self.outputs.diagnostics.push(format!(
                 "{}: actor method `{callable}` does not accept explicit method type arguments",
@@ -1117,7 +1117,7 @@ impl<'a> OwnerChecker<'a> {
         let operation = self
             .type_resolution
             .any_interface_method_signature(&receiver_ty.ir, method_name)?;
-        let callable = format!("{}.{}", receiver_ty, method_name);
+        let callable = format!("{receiver_ty}.{method_name}");
         if !type_args.is_empty() {
             self.outputs.diagnostics.push(format!(
                 "{}: any interface method `{callable}` does not accept method type arguments",
@@ -1164,7 +1164,7 @@ impl<'a> OwnerChecker<'a> {
             .iter()
             .find(|operation| operation.name == method_name)
             .cloned()?;
-        let callable = format!("{}.{}", receiver_ty, method_name);
+        let callable = format!("{receiver_ty}.{method_name}");
         let substitutions =
             self.resolve_type_arg_substitutions(&callable, &operation.type_params, type_args);
         if substitutions.complete {

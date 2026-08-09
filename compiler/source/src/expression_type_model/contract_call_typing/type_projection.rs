@@ -400,17 +400,11 @@ fn package_type_json_compatible(
                 stable_schema_key,
                 package_schema_type_id,
             );
-            let compatible =
-                record
-                    .and_then(package_schema_representation)
-                    .is_some_and(|representation| {
-                        package_type_json_compatible(
-                            &representation,
-                            dependency_analysis,
-                            object_only,
-                        )
-                    });
-            compatible
+            record
+                .and_then(package_schema_representation)
+                .is_some_and(|representation| {
+                    package_type_json_compatible(&representation, dependency_analysis, object_only)
+                })
         }
         PackageTypeRef::Container { name, arguments } => match BuiltinShape::of_name(name) {
             Some(BuiltinShape::JsonObject) if arguments.is_empty() => true,
@@ -722,7 +716,7 @@ pub(super) fn resolved_contract_type(
         )),
         ContractTypeRef::Nullable { inner } => {
             let inner = resolved_contract_type(inner, alias)?;
-            let text = format!("{}?", inner);
+            let text = format!("{inner}?");
             Ok(ResolvedTypeRef::with_text(
                 TypeRefIr::Nullable {
                     inner: Box::new(inner.ir),
@@ -747,7 +741,7 @@ pub(super) fn resolved_contract_type(
                             .collect::<Result<_, _>>()?,
                     },
                 },
-                format!("any {}", interface),
+                format!("any {interface}"),
             ))
         }
         ContractTypeRef::Record { .. } => {

@@ -38,7 +38,7 @@ impl<'a> OwnerChecker<'a> {
         }
         let partial = ResolvedTypeRef::with_text(
             TypeRefIr::Record { fields: selected },
-            format!("subset<{}>", resolved),
+            format!("subset<{resolved}>"),
         );
         let key = self.peek_key();
         let actual = self.check_expr(value);

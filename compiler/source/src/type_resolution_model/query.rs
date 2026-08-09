@@ -4,10 +4,10 @@ impl TypeResolutionModel {
     pub fn package_dependency_abi_expectations(&self) -> BTreeMap<String, String> {
         self.package_artifact_identities
             .iter()
-            .filter_map(|(dependency_ref, (abi, _))| {
-                (self.canonical_package_dependency_ref(dependency_ref) == dependency_ref)
-                    .then(|| (dependency_ref.clone(), abi.as_str().to_string()))
+            .filter(|&(dependency_ref, _)| {
+                self.canonical_package_dependency_ref(dependency_ref) == dependency_ref
             })
+            .map(|(dependency_ref, (abi, _))| (dependency_ref.clone(), abi.as_str().to_string()))
             .collect()
     }
 
@@ -452,8 +452,7 @@ impl TypeResolutionModel {
     ) -> Result<CanonicalInterfaceSelectorResolution, String> {
         let Some(interface) = self.interface_instantiation_from_resolved(resolved, context)? else {
             return Err(format!(
-                "resolved type `{}` is not an interface instantiation",
-                resolved
+                "resolved type `{resolved}` is not an interface instantiation"
             ));
         };
         self.canonical_interface_selector_from_instantiation_resolution(
@@ -711,9 +710,7 @@ impl TypeResolutionModel {
         }
         let source_symbol_path =
             self.package_receiver_source_symbol_path(dependency_ref, &symbol.symbol_path);
-        let Some((module_path, name)) = source_symbol_path.rsplit_once('.') else {
-            return None;
-        };
+        let (module_path, name) = source_symbol_path.rsplit_once('.')?;
         if module_path.is_empty() || name.is_empty() {
             return None;
         }
@@ -811,8 +808,7 @@ impl TypeResolutionModel {
                         &schema_type.canonical_descriptor.descriptor
                     else {
                         return Err(format!(
-                            "constructor target `{}` is not a nominal record",
-                            target
+                            "constructor target `{target}` is not a nominal record"
                         ));
                     };
                     let type_params = &schema_type.canonical_descriptor.type_params;
@@ -865,10 +861,7 @@ impl TypeResolutionModel {
         }
 
         let named = self.resolved_named_type(&base, context).ok_or_else(|| {
-            format!(
-                "constructor target `{}` is not a resolved nominal type",
-                target
-            )
+            format!("constructor target `{target}` is not a resolved nominal type")
         })?;
         if named.resolution.type_params.len() != arguments.len() {
             return Err(format!(
@@ -885,14 +878,12 @@ impl TypeResolutionModel {
             } => (fields, canonical_fields),
             SourceTypeKind::Actor { .. } => {
                 return Err(format!(
-                    "actor `{}` is a nominal handle and cannot be constructed directly; use std.actor.get",
-                    target
+                    "actor `{target}` is a nominal handle and cannot be constructed directly; use std.actor.get"
                 ));
             }
             _ => {
                 return Err(format!(
-                    "constructor target `{}` is not a nominal record",
-                    target
+                    "constructor target `{target}` is not a nominal record"
                 ));
             }
         };
@@ -2650,13 +2641,16 @@ impl TypeResolutionModel {
         selected_path: &str,
     ) -> String {
         let canonical_dependency_ref = self.canonical_package_dependency_ref(dependency_ref);
-        let mut matches = self.package_type_source_paths.iter().filter_map(
-            |((candidate_dependency_ref, module_path, source_symbol), candidate_selected_path)| {
-                (candidate_dependency_ref == canonical_dependency_ref
-                    && candidate_selected_path == selected_path)
-                    .then(|| source_path(module_path, source_symbol))
-            },
-        );
+        let mut matches = self
+            .package_type_source_paths
+            .iter()
+            .filter(
+                |&((candidate_dependency_ref, _, _), candidate_selected_path)| {
+                    candidate_dependency_ref == canonical_dependency_ref
+                        && candidate_selected_path == selected_path
+                },
+            )
+            .map(|((_, module_path, source_symbol), _)| source_path(module_path, source_symbol));
         let Some(first) = matches.next() else {
             return selected_path.to_string();
         };

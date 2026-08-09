@@ -57,6 +57,12 @@ impl PublicationEntityModel {
     }
 }
 
+impl Default for PublicationEntityModel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 顶层声明表(架构 L166-175,L246)。覆盖当前 production source set 中所有顶层声明。
 ///
 /// **id 唯一合法构造点**:`push` 返回的 `TopLevelEntityId` 的 index 私有(见 `id.rs`),只能
@@ -124,6 +130,16 @@ impl PublicationEntityTable {
 
     pub fn len(&self) -> usize {
         self.entities.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+}
+
+impl Default for PublicationEntityTable {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

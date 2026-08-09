@@ -178,7 +178,7 @@ impl OwnerAnalyzer<'_> {
             if matches!(arg, CallArg::InOutPlace { .. }) {
                 continue;
             }
-            if let Some(reason) = self.loaned_place_use(arg.expr(), &loans) {
+            if let Some(reason) = Self::loaned_place_use(arg.expr(), &loans) {
                 self.diagnostic(format!(
                     "inout place is exclusively loaned; argument {index} of `{callee_path}` {reason}"
                 ));
@@ -187,18 +187,13 @@ impl OwnerAnalyzer<'_> {
     }
 
     /// Returns a description when `expr` references any loaned place.
-    fn loaned_place_use(&self, expr: &Expr, loans: &[WritablePlace]) -> Option<&'static str> {
+    fn loaned_place_use(expr: &Expr, loans: &[WritablePlace]) -> Option<&'static str> {
         let mut found: Option<&'static str> = None;
-        self.walk_expr_for_loans(expr, loans, &mut found);
+        Self::walk_expr_for_loans(expr, loans, &mut found);
         found
     }
 
-    fn walk_expr_for_loans(
-        &self,
-        expr: &Expr,
-        loans: &[WritablePlace],
-        found: &mut Option<&'static str>,
-    ) {
+    fn walk_expr_for_loans(expr: &Expr, loans: &[WritablePlace], found: &mut Option<&'static str>) {
         if found.is_some() {
             return;
         }
@@ -227,38 +222,38 @@ impl OwnerAnalyzer<'_> {
                 // The object is already represented by the complete place
                 // comparison above. The selector is an independently
                 // evaluated expression and may itself use another loan.
-                self.walk_expr_for_loans(index, loans, found);
+                Self::walk_expr_for_loans(index, loans, found);
             }
             Expr::Binary { left, right, .. } => {
-                self.walk_expr_for_loans(left, loans, found);
-                self.walk_expr_for_loans(right, loans, found);
+                Self::walk_expr_for_loans(left, loans, found);
+                Self::walk_expr_for_loans(right, loans, found);
             }
             Expr::Unary { expr, .. } | Expr::InterfaceBox { value: expr, .. } => {
-                self.walk_expr_for_loans(expr, loans, found);
+                Self::walk_expr_for_loans(expr, loans, found);
             }
             Expr::Ternary {
                 condition,
                 then_expr,
                 else_expr,
             } => {
-                self.walk_expr_for_loans(condition, loans, found);
-                self.walk_expr_for_loans(then_expr, loans, found);
-                self.walk_expr_for_loans(else_expr, loans, found);
+                Self::walk_expr_for_loans(condition, loans, found);
+                Self::walk_expr_for_loans(then_expr, loans, found);
+                Self::walk_expr_for_loans(else_expr, loans, found);
             }
             Expr::Call { callee, args } => {
-                self.walk_expr_for_loans(callee, loans, found);
+                Self::walk_expr_for_loans(callee, loans, found);
                 for arg in args {
-                    self.walk_expr_for_loans(arg.expr(), loans, found);
+                    Self::walk_expr_for_loans(arg.expr(), loans, found);
                 }
             }
             Expr::Record { fields, .. } => {
                 for (_, value) in fields {
-                    self.walk_expr_for_loans(value, loans, found);
+                    Self::walk_expr_for_loans(value, loans, found);
                 }
             }
             Expr::ObjectLiteral { entries } => {
                 for entry in entries {
-                    self.walk_expr_for_loans(&entry.value, loans, found);
+                    Self::walk_expr_for_loans(&entry.value, loans, found);
                 }
             }
             Expr::Patch { operations, .. } => {
@@ -266,13 +261,13 @@ impl OwnerAnalyzer<'_> {
                     match operation {
                         crate::shared::ast::PatchOperation::Set { value, .. }
                         | crate::shared::ast::PatchOperation::Inc { value, .. } => {
-                            self.walk_expr_for_loans(value, loans, found);
+                            Self::walk_expr_for_loans(value, loans, found);
                         }
                     }
                 }
             }
             Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
-                self.walk_expr_for_loans(&value.tail, loans, found);
+                Self::walk_expr_for_loans(&value.tail, loans, found);
             }
             Expr::Timeout { value, .. }
             | Expr::Throw { value }
@@ -280,7 +275,7 @@ impl OwnerAnalyzer<'_> {
             | Expr::Catch {
                 try_expr: value, ..
             } => {
-                self.walk_expr_for_loans(value, loans, found);
+                Self::walk_expr_for_loans(value, loans, found);
             }
             Expr::DbOperation(_)
             | Expr::DbQuery(_)

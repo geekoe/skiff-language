@@ -34,7 +34,7 @@ pub fn validate_reserved_names(path: &str, ast: &SourceFile, violations: &mut Ve
         let effective_name = import
             .local_binding
             .as_deref()
-            .or_else(|| import.alias.as_deref())
+            .or(import.alias.as_deref())
             .or_else(|| import.path.last().map(String::as_str));
         if let Some(name) = effective_name.filter(|name| is_reserved_prelude_name(name)) {
             violations.push(format!(

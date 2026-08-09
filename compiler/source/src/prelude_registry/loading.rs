@@ -48,7 +48,7 @@ impl PreludeRegistry {
             .revalidate()
             .map_err(|error| error.to_string())?;
         let std_registry_path = platform_sources.registry_path();
-        let std_registry_text = fs::read_to_string(&std_registry_path)
+        let std_registry_text = fs::read_to_string(std_registry_path)
             .map_err(|error| format!("failed to read {}: {error}", std_registry_path.display()))?;
 
         self.package_id = PRELUDE_REGISTRY_ID.to_string();
@@ -236,10 +236,10 @@ impl PreludeRegistry {
                     params: operation
                         .params
                         .iter()
-                        .map(|param| self.canonical_native_shape_type(&module_path, &param.ty.name))
+                        .map(|param| self.canonical_native_shape_type(module_path, &param.ty.name))
                         .collect(),
                     return_type: self
-                        .canonical_native_shape_type(&module_path, &operation.return_type.name),
+                        .canonical_native_shape_type(module_path, &operation.return_type.name),
                 },
             };
             self.insert_declared_native_binding(symbol, binding);
@@ -257,10 +257,10 @@ impl PreludeRegistry {
                     params: function
                         .params
                         .iter()
-                        .map(|param| self.canonical_native_shape_type(&module_path, &param.ty.name))
+                        .map(|param| self.canonical_native_shape_type(module_path, &param.ty.name))
                         .collect(),
                     return_type: self
-                        .canonical_native_shape_type(&module_path, &function.return_type.name),
+                        .canonical_native_shape_type(module_path, &function.return_type.name),
                 },
             };
             self.insert_declared_native_binding(symbol, binding);
@@ -280,10 +280,10 @@ impl PreludeRegistry {
                         type_params: method.type_params.clone(),
                         params: params
                             .into_iter()
-                            .map(|param| self.canonical_native_shape_type(&module_path, &param))
+                            .map(|param| self.canonical_native_shape_type(module_path, &param))
                             .collect(),
                         return_type: self
-                            .canonical_native_shape_type(&module_path, &method.return_type.name),
+                            .canonical_native_shape_type(module_path, &method.return_type.name),
                     },
                 };
                 self.insert_declared_native_binding(symbol, binding);
@@ -385,7 +385,7 @@ pub(super) fn collect_plain_files(
         let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
             continue;
         };
-        if !extensions.iter().any(|allowed| *allowed == extension) {
+        if !extensions.contains(&extension) {
             continue;
         }
         let Ok(relative) = path.strip_prefix(root) else {

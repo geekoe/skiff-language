@@ -66,7 +66,7 @@ impl TypeResolutionModel {
     ) -> Result<CatchLeaves, String> {
         let leaves = self.collect_catch_leaves(&ty.ir, context)?;
         if leaves.is_empty() {
-            return Err(format!("`{}` has no catch leaves", ty));
+            return Err(format!("`{ty}` has no catch leaves"));
         }
         Ok(CatchLeaves { leaves })
     }
@@ -78,20 +78,17 @@ impl TypeResolutionModel {
     ) -> Result<CatchLeaves, String> {
         let TypeRefIr::Builtin { name, args } = &exception.ir else {
             return Err(format!(
-                "rethrow operand must be Exception<E>, found `{}`",
-                exception
+                "rethrow operand must be Exception<E>, found `{exception}`"
             ));
         };
         let [payload] = args.as_slice() else {
             return Err(format!(
-                "rethrow operand must be Exception<E>, found `{}`",
-                exception
+                "rethrow operand must be Exception<E>, found `{exception}`"
             ));
         };
         if name != BuiltinShape::Exception.name() {
             return Err(format!(
-                "rethrow operand must be Exception<E>, found `{}`",
-                exception
+                "rethrow operand must be Exception<E>, found `{exception}`"
             ));
         }
 
@@ -199,7 +196,7 @@ impl TypeResolutionModel {
             .iter()
             .zip(arguments)
             .map(|(name, argument)| {
-                self.validate_instantiated_type_argument(&argument, context)?;
+                self.validate_instantiated_type_argument(argument, context)?;
                 Ok((name.clone(), argument.clone()))
             })
             .collect::<Result<BTreeMap<_, _>, String>>()?;
@@ -351,7 +348,7 @@ impl TypeResolutionModel {
         }
         let mut substitutions = BTreeMap::new();
         for (name, argument) in named.resolution.type_params.iter().zip(arguments) {
-            self.validate_instantiated_type_argument(&argument, context)?;
+            self.validate_instantiated_type_argument(argument, context)?;
             substitutions.insert(name.clone(), argument.clone());
         }
         if expected == 0 && !substitutions.is_empty() {

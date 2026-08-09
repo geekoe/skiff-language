@@ -249,12 +249,10 @@ impl<'a> crate::shared::ast_utils::AstVisitor for ConstPurityVisitor<'a> {
             crate::shared::ast::Expr::Literal(_) => {}
             crate::shared::ast::Expr::Unary { expr, .. } => {
                 self.visit_expr(expr);
-                return;
             }
             crate::shared::ast::Expr::Binary { left, right, .. } => {
                 self.visit_expr(left);
                 self.visit_expr(right);
-                return;
             }
             crate::shared::ast::Expr::Ternary {
                 condition,
@@ -264,7 +262,6 @@ impl<'a> crate::shared::ast_utils::AstVisitor for ConstPurityVisitor<'a> {
                 self.visit_expr(condition);
                 self.visit_expr(then_expr);
                 self.visit_expr(else_expr);
-                return;
             }
             crate::shared::ast::Expr::Identifier(name) => {
                 if !self.const_names.contains(name) {
@@ -296,32 +293,26 @@ impl<'a> crate::shared::ast_utils::AstVisitor for ConstPurityVisitor<'a> {
                     }
                 }
                 // The callee of a rejected call contributes nothing more.
-                return;
             }
             crate::shared::ast::Expr::Generic { callee, .. } => {
                 self.visit_expr(callee);
-                return;
             }
             crate::shared::ast::Expr::Field { object, .. } => {
                 self.visit_expr(object);
-                return;
             }
             crate::shared::ast::Expr::Index { object, index } => {
                 self.visit_expr(object);
                 self.visit_expr(index);
-                return;
             }
             crate::shared::ast::Expr::Record { fields, .. } => {
                 for (_, value) in fields {
                     self.visit_expr(value);
                 }
-                return;
             }
             crate::shared::ast::Expr::ObjectLiteral { entries } => {
                 for entry in entries {
                     self.visit_expr(&entry.value);
                 }
-                return;
             }
             crate::shared::ast::Expr::Patch { operations, .. } => {
                 for operation in operations {
@@ -332,19 +323,16 @@ impl<'a> crate::shared::ast_utils::AstVisitor for ConstPurityVisitor<'a> {
                         }
                     }
                 }
-                return;
             }
             crate::shared::ast::Expr::InterfaceBox { value, .. } => {
                 self.reject("contains an interface box (callback capability)");
                 self.visit_expr(value);
-                return;
             }
             crate::shared::ast::Expr::DependencySourceAddress(source) => {
                 self.reject(format!(
                     "references dependency value `{}/{}`",
                     source.dependency_ref, source.public_path
                 ));
-                return;
             }
             crate::shared::ast::Expr::DbOperation(_)
             | crate::shared::ast::Expr::DbQuery(_)
@@ -352,11 +340,9 @@ impl<'a> crate::shared::ast_utils::AstVisitor for ConstPurityVisitor<'a> {
             | crate::shared::ast::Expr::DbLeaseClaim(_)
             | crate::shared::ast::Expr::DbLeaseRead(_) => {
                 self.reject("contains a database operation");
-                return;
             }
             crate::shared::ast::Expr::Dispatch { .. } => {
                 self.reject("contains a dispatch expression");
-                return;
             }
             crate::shared::ast::Expr::ValueBlock(_)
             | crate::shared::ast::Expr::ConcurrentValue(_)
@@ -365,7 +351,6 @@ impl<'a> crate::shared::ast_utils::AstVisitor for ConstPurityVisitor<'a> {
             | crate::shared::ast::Expr::Rethrow { .. }
             | crate::shared::ast::Expr::Catch { .. } => {
                 self.reject("contains an execution-scoped expression");
-                return;
             }
         }
     }

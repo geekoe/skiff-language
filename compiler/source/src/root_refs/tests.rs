@@ -348,7 +348,7 @@ fn unknown_module_produces_error() {
         RootRefErrorReason::UnknownModule { module_path } => {
             assert_eq!(module_path, "does.not");
         }
-        other => panic!("unexpected error reason: {:?}", other),
+        other => panic!("unexpected error reason: {other:?}"),
     }
 }
 
@@ -393,7 +393,7 @@ fn unknown_symbol_produces_error() {
             assert_eq!(module_path, "m");
             assert_eq!(symbol, "Missing");
         }
-        other => panic!("unexpected error reason: {:?}", other),
+        other => panic!("unexpected error reason: {other:?}"),
     }
 }
 

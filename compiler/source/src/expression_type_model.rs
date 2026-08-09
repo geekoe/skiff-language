@@ -1667,7 +1667,7 @@ impl<'a> OwnerChecker<'a> {
                         self.module_path,
                         source.dependency_ref,
                         source.public_path,
-                        self.expression_span_label(&key),
+                        self.expression_span_label(key),
                         source.dependency_ref,
                         source.public_path
                     );
@@ -1716,7 +1716,7 @@ impl<'a> OwnerChecker<'a> {
             }
         };
         self.check_binary_operands(
-            &key,
+            key,
             op,
             left_ty.as_ref(),
             right_ty.as_ref(),
@@ -1732,12 +1732,13 @@ impl<'a> OwnerChecker<'a> {
         expr: &Expr,
         db_predicate_fields: Option<&BTreeMap<String, ResolvedTypeRef>>,
     ) -> Option<ResolvedTypeRef> {
-        let operand_ty = if db_predicate_fields.is_some() && matches!(op, UnaryOp::Not) {
-            self.check_db_predicate_expr(expr, db_predicate_fields.expect("checked above"))
-        } else {
-            self.check_expr(expr)
+        let operand_ty = match db_predicate_fields {
+            Some(fields) if matches!(op, UnaryOp::Not) => {
+                self.check_db_predicate_expr(expr, fields)
+            }
+            _ => self.check_expr(expr),
         };
-        self.check_unary_operand(&key, op, operand_ty.as_ref());
+        self.check_unary_operand(key, op, operand_ty.as_ref());
         self.unary_type(op)
     }
 
@@ -1764,7 +1765,7 @@ impl<'a> OwnerChecker<'a> {
                 (key, ty)
             })
             .collect::<Vec<_>>();
-        let result = self.call_type(&key, callee, args, &arg_types);
+        let result = self.call_type(key, callee, args, &arg_types);
         // Passing a path as an inout argument invalidates narrowing for that
         // path and its subpaths (R-196), exactly like an assignment write.
         for arg in args {
@@ -1792,14 +1793,12 @@ impl<'a> OwnerChecker<'a> {
                     "{}: interface boxing selector `{}` failed at {}: {error}",
                     self.module_path,
                     interface.name,
-                    self.expression_span_label(&key)
+                    self.expression_span_label(key)
                 ));
                 return None;
             }
         };
-        let Some(value_ty) = value_ty else {
-            return None;
-        };
+        let value_ty = value_ty?;
         let Some(receiver) = self
             .type_resolution
             .concrete_nominal_record_symbol(&value_ty, &self.type_context)
@@ -1807,7 +1806,7 @@ impl<'a> OwnerChecker<'a> {
             self.outputs.diagnostics.push(format!(
                 "{}: interface boxing source at {} must be a concrete nominal record, found {}",
                 self.module_path,
-                self.expression_span_label(&key),
+                self.expression_span_label(key),
                 value_ty
             ));
             return None;
@@ -1835,7 +1834,7 @@ impl<'a> OwnerChecker<'a> {
                     self.module_path,
                     receiver,
                     selector.source_text,
-                    self.expression_span_label(&key)
+                    self.expression_span_label(key)
                 ));
                 None
             }
@@ -1843,7 +1842,7 @@ impl<'a> OwnerChecker<'a> {
                 self.outputs.diagnostics.push(format!(
                     "{}: interface boxing conformance check failed at {}: {error}",
                     self.module_path,
-                    self.expression_span_label(&key)
+                    self.expression_span_label(key)
                 ));
                 None
             }
@@ -1912,7 +1911,7 @@ impl<'a> OwnerChecker<'a> {
                     "{}: unknown field `{field}` on {} at {}",
                     self.module_path,
                     object_ty,
-                    self.expression_span_label(&key)
+                    self.expression_span_label(key)
                 ));
             }
             field_ty
@@ -2014,7 +2013,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         value: &crate::shared::ast::ValueBlock,
     ) -> Option<ResolvedTypeRef> {
-        self.check_concurrent_block(&value.body, Some((&key, &value.tail)))
+        self.check_concurrent_block(&value.body, Some((key, &value.tail)))
     }
 
     fn check_timeout_expr(&mut self, key: &ExpressionKey, value: &Expr) -> Option<ResolvedTypeRef> {
@@ -2035,7 +2034,7 @@ impl<'a> OwnerChecker<'a> {
 
     fn check_throw_expr(&mut self, key: &ExpressionKey, value: &Expr) -> Option<ResolvedTypeRef> {
         if let Some(actual) = self.check_expr(value) {
-            self.validate_throw_payload(&key, &actual, "throw expression");
+            self.validate_throw_payload(key, &actual, "throw expression");
         }
         None
     }
@@ -2046,7 +2045,7 @@ impl<'a> OwnerChecker<'a> {
         exception: &Expr,
     ) -> Option<ResolvedTypeRef> {
         if let Some(actual) = self.check_expr(exception) {
-            self.validate_rethrow_operand(&key, &actual);
+            self.validate_rethrow_operand(key, &actual);
         }
         None
     }
@@ -2067,7 +2066,7 @@ impl<'a> OwnerChecker<'a> {
                 self.outputs.diagnostics.push(format!(
                     "{}: catch type cannot be resolved at {}: {error}",
                     self.module_path,
-                    self.expression_span_label(&key)
+                    self.expression_span_label(key)
                 ));
                 return None;
             }
@@ -2080,7 +2079,7 @@ impl<'a> OwnerChecker<'a> {
                 "{}: invalid catch type `{}` at {}: {error}",
                 self.module_path,
                 catch_ty,
-                self.expression_span_label(&key)
+                self.expression_span_label(key)
             ));
         }
         Some(catch_result_type(try_ty, catch_ty))
@@ -2489,7 +2488,7 @@ fn map_entry_projections(ty: &PackageTypeRef) -> Option<(PackageTypeRef, Package
 }
 
 fn catch_result_type(value: ResolvedTypeRef, error: ResolvedTypeRef) -> ResolvedTypeRef {
-    let text = format!("CatchResult<{}, {}>", value, error);
+    let text = format!("CatchResult<{value}, {error}>");
     ResolvedTypeRef::with_text(
         TypeRefIr::Builtin {
             name: BuiltinShape::CatchResult.name().to_string(),
@@ -2529,7 +2528,7 @@ fn resolved_type_from_ir(ty: &TypeRefIr) -> ResolvedTypeRef {
 }
 
 fn nullable_type(inner: ResolvedTypeRef) -> ResolvedTypeRef {
-    let text = format!("{}?", inner);
+    let text = format!("{inner}?");
     ResolvedTypeRef::with_text(
         TypeRefIr::Nullable {
             inner: Box::new(inner.ir),

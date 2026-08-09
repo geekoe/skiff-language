@@ -58,7 +58,7 @@ pub fn project_source_anchor(anchor: &SourceDeclarationAnchor) -> AbiSourceDecla
             .module_path()
             .segments()
             .iter()
-            .map(|s| s.clone())
+            .cloned()
             .collect(),
         symbol: anchor.selector().symbol().as_str().to_string(),
         kind: project_kind(anchor.kind()),

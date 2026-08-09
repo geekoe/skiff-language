@@ -17,7 +17,7 @@ impl<'a> OwnerChecker<'a> {
             field_types.push(value_ty);
         }
         self.validate_constructor(
-            &key,
+            key,
             type_name,
             type_args,
             fields,
@@ -31,7 +31,7 @@ impl<'a> OwnerChecker<'a> {
         key: &ExpressionKey,
         entries: &[crate::shared::ast::ObjectLiteralEntry],
     ) -> Option<ResolvedTypeRef> {
-        let source_fact = self.expression_sources.fact(&key);
+        let source_fact = self.expression_sources.fact(key);
         let mut fields = BTreeMap::new();
         let mut source_fields = Vec::with_capacity(entries.len());
         for (index, entry) in entries.iter().enumerate() {
