@@ -344,7 +344,7 @@ impl LinkedShapeEntry {
         nominal_type: TypeIndex,
         fields: Box<[LinkedShapeField]>,
     ) -> Result<Self, LinkedShapeError> {
-        let mut previous_name = None;
+        let mut previous_name: Option<&str> = None;
         for field in &fields {
             if let Some(previous_name) = previous_name {
                 if previous_name >= field.name() {

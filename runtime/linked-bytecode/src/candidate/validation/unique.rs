@@ -14,7 +14,7 @@ pub(super) fn validate_unique_keys(
     validate_package_order(parts)?;
 
     let mut function_keys = BTreeSet::new();
-    let mut previous_function_key = None;
+    let mut previous_function_key: Option<&crate::SpecializationKey> = None;
     for function in &parts.functions {
         if !function_keys.insert(function.key().clone()) {
             return Err(LinkedBytecodeCandidateError::DuplicateFunctionKey {
