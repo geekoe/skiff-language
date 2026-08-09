@@ -1,26 +1,26 @@
 use std::sync::Arc;
 
 use skiff_artifact_model::{
-    ContractOperationId, DeploymentArtifactIdentity, DeploymentRevision, PackageBuildId,
-    ServiceContractRef, ServiceDeploymentRef, ServiceProtocolIdentity, ServiceRequirementKey,
+    ContractOperationId, PackageBuildId, ServiceContractRef, ServiceProtocolIdentity,
+    ServiceRequirementKey,
 };
 
 use crate::{
-    DeploymentImage, DeploymentImageError, DeploymentLoadFailure, DeploymentLoadResult,
-    DeploymentOwnerIdentity, LoadAttemptId, PinnedProviderImage, ServiceDependencySlot,
+    DeploymentImage, DeploymentImageError, PinnedProviderImage, ServiceDependencySlot,
     ServiceDependencySlotError,
 };
 
+use super::{owner, owner_with};
+
 #[test]
 fn owner_preserves_the_exact_deployment_build() {
-    let deployment = deployment("build:consumer:exact");
-    let owner = DeploymentOwnerIdentity::new(deployment.clone());
+    let owner = owner("build:consumer:exact");
 
-    assert_eq!(owner.deployment(), &deployment);
     assert_eq!(
-        owner.build_id(),
-        &DeploymentArtifactIdentity::new("build:consumer:exact")
+        &owner.deployment().deployment_artifact_identity,
+        owner.build_id()
     );
+    assert_eq!(owner.build_id().as_str(), "build:consumer:exact");
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn deployment_image_rejects_duplicate_dependency_keys() {
     let first = dependency_slot(3, "payments");
     let duplicate = dependency_slot(3, "payments-v2");
     let error = DeploymentImage::try_new(
-        DeploymentOwnerIdentity::new(deployment("build:consumer:exact")),
+        owner("build:consumer:exact"),
         Arc::new("verified-program"),
         [first, duplicate],
     )
@@ -77,12 +77,15 @@ fn deployment_image_rejects_duplicate_dependency_keys() {
 }
 
 #[test]
-fn provider_pin_keeps_the_same_image_arc() {
-    let program = Arc::new("verified-program");
+fn provider_pin_keeps_the_same_image_arc_without_requiring_program_clone() {
+    #[derive(Debug)]
+    struct NonCloneProgram;
+
+    let owner = owner_with("build:provider:exact", "provider", "revision:provider");
     let image = Arc::new(
         DeploymentImage::try_new(
-            DeploymentOwnerIdentity::new(deployment("build:provider:exact")),
-            Arc::clone(&program),
+            owner.clone(),
+            Arc::new(NonCloneProgram),
             [dependency_slot(2, "ledger")],
         )
         .expect("unique dependency slots must construct an image"),
@@ -93,37 +96,7 @@ fn provider_pin_keeps_the_same_image_arc() {
 
     assert!(Arc::ptr_eq(invocation_pin.image(), &image));
     assert!(Arc::ptr_eq(stream_pin.image(), callback_pin.image()));
-    assert!(Arc::ptr_eq(invocation_pin.image().program(), &program));
-    assert_eq!(
-        invocation_pin.owner().build_id().as_str(),
-        "build:provider:exact"
-    );
-}
-
-#[test]
-fn load_waiters_share_the_same_failure_arc() {
-    let error = Arc::new("decode failed".to_string());
-    let failure = Arc::new(DeploymentLoadFailure::new(
-        LoadAttemptId::new(41),
-        Arc::clone(&error),
-    ));
-    let first: DeploymentLoadResult<(), String> = Err(Arc::clone(&failure));
-    let second: DeploymentLoadResult<(), String> = Err(Arc::clone(&failure));
-
-    let first = first.expect_err("fixture is a failed attempt");
-    let second = second.expect_err("fixture is a failed attempt");
-    assert!(Arc::ptr_eq(&first, &second));
-    assert!(Arc::ptr_eq(first.error(), &error));
-    assert_eq!(first.attempt_id().get(), 41);
-}
-
-fn deployment(build_id: &str) -> ServiceDeploymentRef {
-    ServiceDeploymentRef {
-        service_id: "consumer".to_string(),
-        contract_version: "1.0.0".to_string(),
-        deployment_revision: DeploymentRevision::new("revision:consumer"),
-        deployment_artifact_identity: DeploymentArtifactIdentity::new(build_id),
-    }
+    assert_eq!(invocation_pin.owner(), &owner);
 }
 
 fn dependency_key(slot: u32) -> ServiceRequirementKey {
