@@ -11,13 +11,13 @@ test "package-direct unary public instances preserve their exact receiver const"
 }
 
 test "package-direct server-stream public instances preserve their exact receiver const" {
-  let leftOutput = ""
+  var leftOutput = ""
   for event in paymentsPackage/left.events() {
     leftOutput = leftOutput.concat(event)
   }
   assert leftOutput == "leftleft-done"
 
-  let rightOutput = ""
+  var rightOutput = ""
   for event in paymentsPackage/right.events() {
     rightOutput = rightOutput.concat(event)
   }

@@ -21,7 +21,7 @@ function effectLookup(url: string, detail: string) -> string {
 }
 
 function effectEvents(url: string) -> string {
-  let output = ""
+  var output = ""
   let events: Stream<helper.EffectResponse> = helper/tools.events(helper.EffectRequest {
     method: "GET",
     url: url,
@@ -46,7 +46,7 @@ function rightLabel() -> string {
 }
 
 function leftEvents() -> string {
-  let output = ""
+  var output = ""
   for event in payments/left.events() {
     output = output.concat(event)
   }
@@ -54,7 +54,7 @@ function leftEvents() -> string {
 }
 
 function rightEvents() -> string {
-  let output = ""
+  var output = ""
   for event in payments/right.events() {
     output = output.concat(event)
   }

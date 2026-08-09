@@ -73,7 +73,7 @@ function copiedThenCatch(state: Array<string>) -> string {
 
 function caughtEffect(state: Array<string>, fail: bool) -> Array<bytes> {
   let result = catch<std.service.ProtocolError>(appendOnce(state, fail))
-  let output = Array.empty<bytes>()
+  var output = Array.empty<bytes>()
   if result.tag == "ok" {
     output.push(bytes.fromUtf8(result.value))
   }
@@ -81,7 +81,7 @@ function caughtEffect(state: Array<string>, fail: bool) -> Array<bytes> {
 }
 
 function optionalAliasThenCatch(value: bytes?, state: Array<string>) -> string {
-  let decoded = "missing"
+  var decoded = "missing"
   if value != null {
     decoded = alias(value).toUtf8String()
   }

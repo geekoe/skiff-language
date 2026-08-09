@@ -49,7 +49,7 @@ test "fresh return receiver chain control executes effect once" {
 }
 
 function joinChunks(chunks: Array<bytes>) -> string {
-  let output = ""
+  var output = ""
   for chunk in chunks {
     output = output.concat(chunk.toUtf8String())
   }
