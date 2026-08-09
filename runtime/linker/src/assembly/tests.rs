@@ -776,7 +776,7 @@ fn assembly_linker_projects_exact_package_db_target_into_every_execution_carrier
         .take(4)
         .map(|expression| match expression {
             LinkedExprIr::DbOperation { operation } => &operation.target,
-            LinkedExprIr::DbQuery { target, .. } => &target,
+            LinkedExprIr::DbQuery { target, .. } => target,
             LinkedExprIr::DbLeaseClaim { claim } => &claim.target,
             LinkedExprIr::DbLeaseRead { read } => &read.target,
             other => panic!("unexpected DB carrier: {other:?}"),

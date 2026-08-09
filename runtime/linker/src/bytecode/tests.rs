@@ -64,14 +64,14 @@ fn link_limits_are_a_complete_explicit_policy_value() {
 #[test]
 fn unavailable_work_is_an_explicit_obligation_at_a_typed_location() {
     let location = BytecodeLinkLocation::Constant {
-        package: skiff_artifact_model::PackageArtifactRef {
+        package: Box::new(skiff_artifact_model::PackageArtifactRef {
             package_id: "example.package".to_string(),
             package_version: "1.0.0".to_string(),
             package_build_id: skiff_artifact_model::PackageBuildId::new("build:example"),
             package_local_abi_identity: skiff_artifact_model::PackageLocalAbiIdentity::new(
                 "abi:example",
             ),
-        },
+        }),
         node_index: 7,
     };
     let error = BytecodeLinkError::ImplementationUnavailable {
@@ -115,14 +115,14 @@ fn generous_limits() -> LinkLimits {
 
 fn deployment_location() -> BytecodeLinkLocation {
     BytecodeLinkLocation::Deployment {
-        deployment: skiff_artifact_model::ServiceDeploymentRef {
+        deployment: Box::new(skiff_artifact_model::ServiceDeploymentRef {
             service_id: "example.service".to_string(),
             contract_version: "1.0.0".to_string(),
             deployment_revision: skiff_artifact_model::DeploymentRevision::new("revision:one"),
             deployment_artifact_identity: skiff_artifact_model::DeploymentArtifactIdentity::new(
                 "deployment:one",
             ),
-        },
+        }),
     }
 }
 

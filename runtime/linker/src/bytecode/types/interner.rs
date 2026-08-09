@@ -327,7 +327,7 @@ fn find_pool_type_after_substitution(
                 return None;
             };
             let location = BytecodeLinkLocation::Package {
-                package: package.reference().clone(),
+                package: Box::new(package.reference().clone()),
             };
             (substitute_type(ty, substitutions, &location).ok().as_ref() == Some(expected))
                 .then(|| u32::try_from(index).ok())

@@ -65,6 +65,173 @@ pub(super) struct CycleFixture {
     pub gateway_entry_identity: GatewayEntryIdentity,
 }
 
+fn helper_package_fixture(
+    helper_callable: &PackageCallableId,
+    operation_contract: &BoundaryOperationContract,
+) -> (FileIrUnit, PackageArtifact, Arc<[u8]>) {
+    let mut helper_file = file("helper.main");
+    helper_file.declarations.types.insert(
+        "LocalRecord".to_string(),
+        TypeDeclarationIr {
+            type_index: 0,
+            symbol: "helper.main.LocalRecord".to_string(),
+            source_span: None,
+        },
+    );
+    helper_file.declarations.db.insert(
+        "LocalRecord".to_string(),
+        skiff_artifact_model::DbDeclarationIr {
+            type_ref: TypeRefIr::LocalType { type_index: 0 },
+            type_name: "LocalRecord".to_string(),
+            collection_name: Some("helper_local_record".to_string()),
+            implements: None,
+            identity_fields: BTreeMap::new(),
+            kind: skiff_artifact_model::DbObjectKindIr::Object,
+            key: skiff_artifact_model::DbObjectKeyIr {
+                name: "id".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            },
+            fields: Vec::new(),
+            retention: None,
+            leases: Vec::new(),
+            indexes: Vec::new(),
+            source_span: None,
+        },
+    );
+    let helper_interface_index = helper_file.type_table.len() as u32;
+    let helper_interface_operation = InterfaceOperationIr {
+        name: "read".to_string(),
+        type_params: Vec::new(),
+        params: vec![FunctionTypeParamIr {
+            name: "self".to_string(),
+            ty: TypeRefIr::builtin("Self"),
+        }],
+        return_type: TypeRefIr::builtin("string"),
+        is_native: false,
+        is_provider: false,
+        is_static: false,
+        implicit_self: None,
+    };
+    helper_file.declarations.types.insert(
+        "Reader".to_string(),
+        TypeDeclarationIr {
+            type_index: helper_interface_index,
+            symbol: "helper.main.Reader".to_string(),
+            source_span: None,
+        },
+    );
+    helper_file.declarations.interfaces.insert(
+        "Reader".to_string(),
+        InterfaceDeclIr {
+            name: "Reader".to_string(),
+            type_params: Vec::new(),
+            operations: vec![helper_interface_operation.clone()],
+            source_span: None,
+        },
+    );
+    helper_file.type_table.push(TypeDeclIr {
+        name: "Reader".to_string(),
+        descriptor: TypeDescriptorIr::Interface,
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    });
+    skiff_artifact_identity::assign_file_ir_identity(&mut helper_file).unwrap();
+
+    let mut helper = package(
+        "example.helper",
+        &helper_file,
+        helper_callable.clone(),
+        operation_contract.clone(),
+    );
+    let helper_interface_methods = vec![InterfaceMethodSignature {
+        name: helper_interface_operation.name.clone(),
+        type_params: helper_interface_operation.type_params.clone(),
+        params: helper_interface_operation.params.clone(),
+        return_type: helper_interface_operation.return_type.clone(),
+        is_native: helper_interface_operation.is_native,
+        is_provider: helper_interface_operation.is_provider,
+        is_static: helper_interface_operation.is_static,
+        implicit_self: helper_interface_operation.implicit_self.clone(),
+    }];
+    helper.package_local_abi.public_symbols.insert(
+        "Reader".to_string(),
+        PackageLocalAbiSymbol::Type {
+            local_type_id: "type:Reader".to_string(),
+            descriptor: TypeDescriptorIr::Interface,
+            is_alias: false,
+            is_interface: true,
+            type_params: Vec::new(),
+            interface_methods: helper_interface_methods.clone(),
+            actor: None,
+        },
+    );
+    helper.package_local_abi.implementation_symbols.insert(
+        "helper.main.Reader".to_string(),
+        PackageLocalAbiSymbol::Type {
+            local_type_id: "type:example.helper:top-level:helper.main.Reader".to_string(),
+            descriptor: TypeDescriptorIr::Interface,
+            is_alias: false,
+            is_interface: true,
+            type_params: Vec::new(),
+            interface_methods: helper_interface_methods.clone(),
+            actor: None,
+        },
+    );
+    helper.implementation_links.types.insert(
+        "Reader".to_string(),
+        TypeExport {
+            file: file_ref(&helper_file),
+            type_index: helper_interface_index,
+            symbol: "Reader".to_string(),
+            is_interface: true,
+            descriptor: Some(TypeDescriptorIr::Interface),
+            type_params: Vec::new(),
+            interface_methods: helper_interface_methods.clone(),
+            actor: None,
+        },
+    );
+    helper.implementation_links.types.insert(
+        "helper.main.Reader".to_string(),
+        TypeExport {
+            file: file_ref(&helper_file),
+            type_index: helper_interface_index,
+            symbol: "helper.main.Reader".to_string(),
+            is_interface: true,
+            descriptor: Some(TypeDescriptorIr::Interface),
+            type_params: Vec::new(),
+            interface_methods: helper_interface_methods,
+            actor: None,
+        },
+    );
+    helper.implementation_links.types.insert(
+        "helper.main.LocalRecord".to_string(),
+        TypeExport {
+            file: file_ref(&helper_file),
+            type_index: 0,
+            symbol: "helper.main.LocalRecord".to_string(),
+            is_interface: false,
+            descriptor: Some(TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            }),
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+            actor: None,
+        },
+    );
+    let helper_resource: Arc<[u8]> = Arc::from(b"shared helper resource".as_slice());
+    helper.static_resources.push(PublicationResourceRef {
+        path: "assets/helper.txt".to_string(),
+        sha256: hex::encode(Sha256::digest(helper_resource.as_ref())),
+        byte_len: helper_resource.len() as u64,
+        content_type: Some("text/plain".to_string()),
+        artifact_path: None,
+    });
+    skiff_artifact_identity::assign_package_artifact_identities(&mut helper).unwrap();
+
+    (helper_file, helper, helper_resource)
+}
+
 impl CycleFixture {
     pub fn new() -> Self {
         let service_id = "example.cycle";
@@ -115,164 +282,8 @@ impl CycleFixture {
         let contract_ref = contract_ref(&contract);
 
         let helper_callable = PackageCallableId::new("pkg-callable:example.helper:entry");
-        let mut helper_file = file("helper.main");
-        helper_file.declarations.types.insert(
-            "LocalRecord".to_string(),
-            TypeDeclarationIr {
-                type_index: 0,
-                symbol: "helper.main.LocalRecord".to_string(),
-                source_span: None,
-            },
-        );
-        helper_file.declarations.db.insert(
-            "LocalRecord".to_string(),
-            skiff_artifact_model::DbDeclarationIr {
-                type_ref: TypeRefIr::LocalType { type_index: 0 },
-                type_name: "LocalRecord".to_string(),
-                collection_name: Some("helper_local_record".to_string()),
-                implements: None,
-                identity_fields: std::collections::BTreeMap::new(),
-                kind: skiff_artifact_model::DbObjectKindIr::Object,
-                key: skiff_artifact_model::DbObjectKeyIr {
-                    name: "id".to_string(),
-                    ty: TypeRefIr::builtin("string"),
-                },
-                fields: Vec::new(),
-                retention: None,
-                leases: Vec::new(),
-                indexes: Vec::new(),
-                source_span: None,
-            },
-        );
-        let helper_interface_index = helper_file.type_table.len() as u32;
-        let helper_interface_operation = InterfaceOperationIr {
-            name: "read".to_string(),
-            type_params: Vec::new(),
-            params: vec![FunctionTypeParamIr {
-                name: "self".to_string(),
-                ty: TypeRefIr::builtin("Self"),
-            }],
-            return_type: TypeRefIr::builtin("string"),
-            is_native: false,
-            is_provider: false,
-            is_static: false,
-            implicit_self: None,
-        };
-        helper_file.declarations.types.insert(
-            "Reader".to_string(),
-            TypeDeclarationIr {
-                type_index: helper_interface_index,
-                symbol: "helper.main.Reader".to_string(),
-                source_span: None,
-            },
-        );
-        helper_file.declarations.interfaces.insert(
-            "Reader".to_string(),
-            InterfaceDeclIr {
-                name: "Reader".to_string(),
-                type_params: Vec::new(),
-                operations: vec![helper_interface_operation.clone()],
-                source_span: None,
-            },
-        );
-        helper_file.type_table.push(TypeDeclIr {
-            name: "Reader".to_string(),
-            descriptor: TypeDescriptorIr::Interface,
-            type_params: Vec::new(),
-            implements: Vec::new(),
-            source_span: None,
-        });
-        skiff_artifact_identity::assign_file_ir_identity(&mut helper_file).unwrap();
-        let mut helper = package(
-            "example.helper",
-            &helper_file,
-            helper_callable.clone(),
-            operation_contract.clone(),
-        );
-        let helper_interface_methods = vec![InterfaceMethodSignature {
-            name: helper_interface_operation.name.clone(),
-            type_params: helper_interface_operation.type_params.clone(),
-            params: helper_interface_operation.params.clone(),
-            return_type: helper_interface_operation.return_type.clone(),
-            is_native: helper_interface_operation.is_native,
-            is_provider: helper_interface_operation.is_provider,
-            is_static: helper_interface_operation.is_static,
-            implicit_self: helper_interface_operation.implicit_self.clone(),
-        }];
-        helper.package_local_abi.public_symbols.insert(
-            "Reader".to_string(),
-            PackageLocalAbiSymbol::Type {
-                local_type_id: "type:Reader".to_string(),
-                descriptor: TypeDescriptorIr::Interface,
-                is_alias: false,
-                is_interface: true,
-                type_params: Vec::new(),
-                interface_methods: helper_interface_methods.clone(),
-                actor: None,
-            },
-        );
-        helper.package_local_abi.implementation_symbols.insert(
-            "helper.main.Reader".to_string(),
-            PackageLocalAbiSymbol::Type {
-                local_type_id: "type:example.helper:top-level:helper.main.Reader".to_string(),
-                descriptor: TypeDescriptorIr::Interface,
-                is_alias: false,
-                is_interface: true,
-                type_params: Vec::new(),
-                interface_methods: helper_interface_methods.clone(),
-                actor: None,
-            },
-        );
-        helper.implementation_links.types.insert(
-            "Reader".to_string(),
-            TypeExport {
-                file: file_ref(&helper_file),
-                type_index: helper_interface_index,
-                symbol: "Reader".to_string(),
-                is_interface: true,
-                descriptor: Some(TypeDescriptorIr::Interface),
-                type_params: Vec::new(),
-                interface_methods: helper_interface_methods.clone(),
-                actor: None,
-            },
-        );
-        helper.implementation_links.types.insert(
-            "helper.main.Reader".to_string(),
-            TypeExport {
-                file: file_ref(&helper_file),
-                type_index: helper_interface_index,
-                symbol: "helper.main.Reader".to_string(),
-                is_interface: true,
-                descriptor: Some(TypeDescriptorIr::Interface),
-                type_params: Vec::new(),
-                interface_methods: helper_interface_methods.clone(),
-                actor: None,
-            },
-        );
-        helper.implementation_links.types.insert(
-            "helper.main.LocalRecord".to_string(),
-            TypeExport {
-                file: file_ref(&helper_file),
-                type_index: 0,
-                symbol: "helper.main.LocalRecord".to_string(),
-                is_interface: false,
-                descriptor: Some(TypeDescriptorIr::Record {
-                    fields: BTreeMap::new(),
-                }),
-                type_params: Vec::new(),
-                interface_methods: Vec::new(),
-                actor: None,
-            },
-        );
-        let helper_resource: Arc<[u8]> = Arc::from(b"shared helper resource".as_slice());
-        helper.static_resources.push(PublicationResourceRef {
-            path: "assets/helper.txt".to_string(),
-            sha256: hex::encode(Sha256::digest(helper_resource.as_ref())),
-            byte_len: helper_resource.len() as u64,
-            content_type: Some("text/plain".to_string()),
-            artifact_path: None,
-        });
-        skiff_artifact_identity::assign_package_artifact_identities(&mut helper).unwrap();
+        let (helper_file, helper, helper_resource) =
+            helper_package_fixture(&helper_callable, &operation_contract);
         let helper_ref = package_ref(&helper);
 
         let service_call = ServiceCallRef {
@@ -1062,14 +1073,6 @@ pub(super) struct FixtureResolver {
     schema_indexes: Vec<(PackageSchemaIndexRef, Arc<PackageSchemaIndex>)>,
     files: BTreeMap<(PackageBuildId, String), Arc<FileIrUnit>>,
     resources: BTreeMap<(PackageBuildId, String), Arc<[u8]>>,
-}
-
-impl FixtureResolver {
-    pub fn file(&self, build_id: &PackageBuildId, identity: &str) -> &FileIrUnit {
-        self.files
-            .get(&(build_id.clone(), identity.to_string()))
-            .unwrap()
-    }
 }
 
 impl RuntimeAssemblyContentResolver for FixtureResolver {

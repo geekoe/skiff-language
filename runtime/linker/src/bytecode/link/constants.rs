@@ -33,7 +33,7 @@ impl DeploymentLinker<'_> {
                 return Err(BytecodeLinkError::ImplementationUnavailable {
                     obligation: BytecodeLinkObligation::ConstantInitializationPlan,
                     location: BytecodeLinkLocation::Constant {
-                        package: package.reference().clone(),
+                        package: Box::new(package.reference().clone()),
                         node_index: *constant_index,
                     },
                 });
@@ -55,7 +55,7 @@ impl DeploymentLinker<'_> {
                 return Err(BytecodeLinkError::ImplementationUnavailable {
                     obligation: BytecodeLinkObligation::ConstantInitializationPlan,
                     location: BytecodeLinkLocation::Constant {
-                        package: package.reference().clone(),
+                        package: Box::new(package.reference().clone()),
                         node_index,
                     },
                 });

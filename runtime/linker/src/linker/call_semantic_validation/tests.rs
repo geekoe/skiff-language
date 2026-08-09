@@ -3,7 +3,9 @@ use std::{cell::Cell, collections::BTreeMap};
 use skiff_artifact_model::NativeTarget;
 
 use super::*;
-use crate::program::{ExprRefIr, FileAddr, FunctionTypeParamIr, InterfaceOperationIr, UnitAddr};
+use crate::program::{
+    ExprRefIr, FileAddr, FunctionTypeParamIr, InterfaceOperationIr, LinkedTypeRef, UnitAddr,
+};
 
 struct FakeDelegate {
     declaration: InterfaceDeclIr,

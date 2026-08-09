@@ -15,6 +15,10 @@ use skiff_runtime_loader::{
 
 use super::LinkedActivationTemplate;
 
+type LinkedGatewayEntries =
+    BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), Arc<LinkedGatewayEntry>>;
+type LinkedGatewayIngress = BTreeMap<ServiceIngressKey, Arc<LinkedGatewayEntry>>;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkedGatewayCallable {
     callable_id: PackageCallableId,
@@ -131,10 +135,7 @@ pub(super) fn link_gateway_ingress(
     hydrated: &HydratedRuntimeAssembly,
     activations: &BTreeMap<ServiceDeploymentRef, LinkedActivationTemplate>,
     image: &SharedPackageLinkedImage,
-) -> anyhow::Result<(
-    BTreeMap<(ServiceDeploymentRef, GatewayEntryKey), Arc<LinkedGatewayEntry>>,
-    BTreeMap<ServiceIngressKey, Arc<LinkedGatewayEntry>>,
-)> {
+) -> anyhow::Result<(LinkedGatewayEntries, LinkedGatewayIngress)> {
     let mut entries = BTreeMap::new();
     for ((owner, key), source) in hydrated.gateway_entries() {
         let activation = activations
@@ -142,7 +143,7 @@ pub(super) fn link_gateway_ingress(
             .ok_or_else(|| anyhow::anyhow!("gateway entry {owner:?}/{key} has no activation"))?;
         if source.owner() != owner
             || source.gateway_entry_key() != key
-            || activation.deployment().gateway_entries.get(key).is_none()
+            || !activation.deployment().gateway_entries.contains_key(key)
         {
             anyhow::bail!("gateway entry {owner:?}/{key} mismatches its activation declaration");
         }

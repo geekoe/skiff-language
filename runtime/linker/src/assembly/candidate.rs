@@ -239,7 +239,7 @@ impl AssemblyLinkedCandidate {
     ) -> Result<&LinkedServiceBindingTemplate, AssemblyServiceCallError> {
         let activation_template = self.activations.get(activation).ok_or_else(|| {
             AssemblyServiceCallError::MissingActivation {
-                activation: activation.clone(),
+                activation: Box::new(activation.clone()),
             }
         })?;
         let key = ServiceRequirementKey {
@@ -250,12 +250,12 @@ impl AssemblyLinkedCandidate {
             .service_bindings
             .get(&key)
             .ok_or_else(|| AssemblyServiceCallError::MissingBinding {
-                activation: activation.clone(),
+                activation: Box::new(activation.clone()),
                 key: key.clone(),
             })?;
         if binding.contract.service_protocol_identity != *call.expected_protocol_identity() {
             return Err(AssemblyServiceCallError::ProtocolMismatch {
-                activation: activation.clone(),
+                activation: Box::new(activation.clone()),
                 key,
                 expected: call.expected_protocol_identity().clone(),
                 actual: binding.contract.service_protocol_identity.clone(),
@@ -263,7 +263,7 @@ impl AssemblyLinkedCandidate {
         }
         if !binding.used_operations.contains(call.operation_id()) {
             return Err(AssemblyServiceCallError::OperationNotBound {
-                activation: activation.clone(),
+                activation: Box::new(activation.clone()),
                 key,
                 operation: call.operation_id().clone(),
             });
@@ -285,22 +285,24 @@ impl AssemblyLinkedCandidate {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AssemblyServiceCallError {
     #[error("activation {activation:?} is not part of the linked assembly")]
-    MissingActivation { activation: ServiceDeploymentRef },
+    MissingActivation {
+        activation: Box<ServiceDeploymentRef>,
+    },
     #[error("activation {activation:?} has no service binding for {key:?}")]
     MissingBinding {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: ServiceRequirementKey,
     },
     #[error("activation {activation:?} service binding {key:?} protocol mismatch")]
     ProtocolMismatch {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: ServiceRequirementKey,
         expected: ServiceProtocolIdentity,
         actual: ServiceProtocolIdentity,
     },
     #[error("activation {activation:?} service binding {key:?} does not use {operation}")]
     OperationNotBound {
-        activation: ServiceDeploymentRef,
+        activation: Box<ServiceDeploymentRef>,
         key: ServiceRequirementKey,
         operation: ContractOperationId,
     },

@@ -93,30 +93,30 @@ impl BytecodeLinkObligation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BytecodeLinkLocation {
     Deployment {
-        deployment: ServiceDeploymentRef,
+        deployment: Box<ServiceDeploymentRef>,
     },
     Package {
-        package: PackageArtifactRef,
+        package: Box<PackageArtifactRef>,
     },
     ServiceDependency {
         key: ServiceRequirementKey,
     },
     Function {
-        package: PackageArtifactRef,
+        package: Box<PackageArtifactRef>,
         function_key: String,
     },
     Instruction {
-        package: PackageArtifactRef,
+        package: Box<PackageArtifactRef>,
         function_key: String,
         artifact_pc: u32,
     },
     Relocation {
-        package: PackageArtifactRef,
+        package: Box<PackageArtifactRef>,
         function_key: String,
         relocation_index: u32,
     },
     Constant {
-        package: PackageArtifactRef,
+        package: Box<PackageArtifactRef>,
         node_index: u32,
     },
 }

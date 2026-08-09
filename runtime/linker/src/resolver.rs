@@ -164,15 +164,6 @@ pub enum ProgramError {
         operation_abi_id: String,
     },
     #[error(
-        "service link target {module_path}.{symbol} is duplicated at {first_addr} and {duplicate_addr}"
-    )]
-    ServiceLinkTargetDuplicate {
-        module_path: String,
-        symbol: String,
-        first_addr: ExecutableAddr,
-        duplicate_addr: ExecutableAddr,
-    },
-    #[error(
         "package[{package_slot}] export symbol {symbol} is duplicated across export kinds: first {first_kind}, duplicate {duplicate_kind}"
     )]
     PackageExportDuplicateSymbol {
@@ -283,8 +274,8 @@ impl From<LinkedProgramResolveError> for ProgramError {
 }
 
 pub fn resolve_executable_from_units<'a>(
-    service_files: &'a Vec<Arc<LinkedFileUnit>>,
-    package_files: &'a Vec<Vec<Arc<LinkedFileUnit>>>,
+    service_files: &'a [Arc<LinkedFileUnit>],
+    package_files: &'a [Vec<Arc<LinkedFileUnit>>],
     addr: &ExecutableAddr,
 ) -> ProgramResult<ResolvedLinkedExecutable<'a>> {
     linked_program_resolver::resolve_executable_from_units(service_files, package_files, addr)
@@ -292,8 +283,8 @@ pub fn resolve_executable_from_units<'a>(
 }
 
 pub fn resolve_file_from_units<'a>(
-    service_files: &'a Vec<Arc<LinkedFileUnit>>,
-    package_files: &'a Vec<Vec<Arc<LinkedFileUnit>>>,
+    service_files: &'a [Arc<LinkedFileUnit>],
+    package_files: &'a [Vec<Arc<LinkedFileUnit>>],
     unit: &UnitAddr,
     file: &FileAddr,
 ) -> ProgramResult<&'a Arc<LinkedFileUnit>> {

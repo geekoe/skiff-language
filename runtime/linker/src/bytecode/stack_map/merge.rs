@@ -63,7 +63,7 @@ pub(super) fn merge_successors(
             Some(existing) if existing != &next => {
                 return Err(obligation_error(
                     BytecodeLinkLocation::Instruction {
-                        package: package.reference().clone(),
+                        package: Box::new(package.reference().clone()),
                         function_key: source.function_key.clone(),
                         artifact_pc: successor_pc,
                     },

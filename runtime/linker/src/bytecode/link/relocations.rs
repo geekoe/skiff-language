@@ -25,7 +25,7 @@ impl<'a> DeploymentLinker<'a> {
         owner: &ValidatedFunction,
     ) -> Result<SpecializationKey, BytecodeLinkError> {
         let location = BytecodeLinkLocation::Function {
-            package: caller.reference().clone(),
+            package: Box::new(caller.reference().clone()),
             function_key: owner.function_key.clone(),
         };
         match relocation {

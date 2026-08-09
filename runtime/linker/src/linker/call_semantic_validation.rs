@@ -1,18 +1,16 @@
-use std::collections::BTreeMap;
-
 use skiff_runtime_native_contract::{
     native_target_name, NativeCallValidation, NativeSignatureRegistry, NativeTypeArgRef,
 };
 
 use super::link_diagnostics::{
     canonical_linked_interface_method_abi_id, interface_instantiation_symbol,
-    interface_method_call_symbol, substitute_interface_method_type, unresolved_type_param_name,
+    interface_method_call_symbol, unresolved_type_param_name,
     validate_interface_operation_explicit_self,
 };
 use crate::{
     program::{
         CallIr, ConstAddr, ExecutableAddr, InterfaceDeclIr, LinkedCallTarget,
-        LinkedFunctionTypeParamIr, LinkedInterfaceInstantiationRef, LinkedTypeRef, ReceiverCallAbi,
+        LinkedInterfaceInstantiationRef, ReceiverCallAbi,
     },
     resolver::{ProgramError, ProgramResult},
 };
@@ -122,22 +120,9 @@ fn validate_interface_method_call_target(
             expected_kind: "non-empty interface method call methodAbiId",
         });
     }
-    let expected_slots = interface_method_slot_specs(
-        context,
-        interface,
-        interface,
-        declaration,
-        None,
-        InterfaceSlotSignatureShape::LocalReceiver,
-    )?;
-    let unresolved_slots = interface_method_slot_specs(
-        context,
-        interface,
-        unresolved_interface,
-        declaration,
-        None,
-        InterfaceSlotSignatureShape::LocalReceiver,
-    )?;
+    let expected_slots = interface_method_slot_specs(context, interface, interface, declaration)?;
+    let unresolved_slots =
+        interface_method_slot_specs(context, interface, unresolved_interface, declaration)?;
     let slot_index = slot as usize;
     let expected =
         expected_slots
@@ -162,19 +147,10 @@ fn validate_interface_method_call_target(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(super) enum InterfaceSlotSignatureShape {
-    LocalReceiver,
-    RemotePublicOperation,
-}
-
 #[derive(Debug, Clone)]
 pub(super) struct InterfaceMethodSlotSpec {
     pub(super) slot: u32,
-    pub(super) method_name: String,
     pub(super) method_abi_id: String,
-    pub(super) params: Vec<LinkedFunctionTypeParamIr>,
-    pub(super) return_type: LinkedTypeRef,
 }
 
 pub(super) fn interface_method_slot_specs(
@@ -182,8 +158,6 @@ pub(super) fn interface_method_slot_specs(
     linked_interface: &LinkedInterfaceInstantiationRef,
     method_identity_interface: &LinkedInterfaceInstantiationRef,
     declaration: &InterfaceDeclIr,
-    concrete_type: Option<&LinkedTypeRef>,
-    signature_shape: InterfaceSlotSignatureShape,
 ) -> ProgramResult<Vec<InterfaceMethodSlotSpec>> {
     if declaration.type_params.len() != linked_interface.canonical_type_args.len() {
         return Err(ProgramError::LinkSymbolUnresolved {
@@ -192,13 +166,6 @@ pub(super) fn interface_method_slot_specs(
             expected_kind: "interface type argument arity matching declaration",
         });
     }
-    let substitutions = declaration
-        .type_params
-        .iter()
-        .cloned()
-        .zip(linked_interface.canonical_type_args.iter().cloned())
-        .collect::<BTreeMap<_, _>>();
-
     declaration
         .operations
         .iter()
@@ -220,51 +187,12 @@ pub(super) fn interface_method_slot_specs(
                 });
             }
             validate_interface_operation_explicit_self(context, linked_interface, operation)?;
-            let params = operation
-                .params
-                .iter()
-                .enumerate()
-                .filter_map(|(param_index, param)| {
-                    if matches!(
-                        signature_shape,
-                        InterfaceSlotSignatureShape::RemotePublicOperation
-                    ) && param_index == 0
-                        && param.name == "self"
-                    {
-                        return None;
-                    }
-                    let ty = if param.name == "self" {
-                        concrete_type.cloned().unwrap_or_else(|| param.ty.clone())
-                    } else {
-                        match substitute_interface_method_type(
-                            &param.ty,
-                            &substitutions,
-                            concrete_type,
-                        ) {
-                            Ok(ty) => ty,
-                            Err(error) => return Some(Err(error)),
-                        }
-                    };
-                    Some(Ok(LinkedFunctionTypeParamIr {
-                        name: param.name.clone(),
-                        ty,
-                    }))
-                })
-                .collect::<ProgramResult<Vec<_>>>()?;
-            let return_type = substitute_interface_method_type(
-                &operation.return_type,
-                &substitutions,
-                concrete_type,
-            )?;
             Ok(InterfaceMethodSlotSpec {
                 slot: slot as u32,
-                method_name: operation.name.clone(),
                 method_abi_id: canonical_linked_interface_method_abi_id(
                     method_identity_interface,
                     &operation.name,
                 ),
-                params,
-                return_type,
             })
         })
         .collect()

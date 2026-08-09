@@ -226,7 +226,7 @@ impl<'a> DeploymentLinker<'a> {
                 unsatisfied(
                     BytecodeLinkObligation::ConcreteSpecialization,
                     BytecodeLinkLocation::Package {
-                        package: package.reference().clone(),
+                        package: Box::new(package.reference().clone()),
                     },
                     format!(
                         "artifact function {:?} is absent",
@@ -268,7 +268,7 @@ impl<'a> DeploymentLinker<'a> {
 
     pub(super) fn deployment_location(&self) -> BytecodeLinkLocation {
         BytecodeLinkLocation::Deployment {
-            deployment: self.deployment.reference().clone(),
+            deployment: Box::new(self.deployment.reference().clone()),
         }
     }
 
@@ -277,7 +277,7 @@ impl<'a> DeploymentLinker<'a> {
         package: &HydratedBytecodePackage,
     ) -> BytecodeLinkLocation {
         BytecodeLinkLocation::Package {
-            package: package.reference().clone(),
+            package: Box::new(package.reference().clone()),
         }
     }
 
@@ -287,7 +287,7 @@ impl<'a> DeploymentLinker<'a> {
         function: &ValidatedFunction,
     ) -> BytecodeLinkLocation {
         BytecodeLinkLocation::Function {
-            package: package.reference().clone(),
+            package: Box::new(package.reference().clone()),
             function_key: function.function_key.clone(),
         }
     }
@@ -299,7 +299,7 @@ impl<'a> DeploymentLinker<'a> {
         artifact_pc: u32,
     ) -> BytecodeLinkLocation {
         BytecodeLinkLocation::Instruction {
-            package: package.reference().clone(),
+            package: Box::new(package.reference().clone()),
             function_key: function.function_key.clone(),
             artifact_pc,
         }

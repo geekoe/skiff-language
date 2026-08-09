@@ -164,7 +164,7 @@ fn transfer_program_point(
         )
     })?;
     let location = BytecodeLinkLocation::Instruction {
-        package: context.source.package.reference().clone(),
+        package: Box::new(context.source.package.reference().clone()),
         function_key: context.source.function.function_key.clone(),
         artifact_pc,
     };
@@ -228,7 +228,7 @@ fn function_location(
     specialization: &SpecializationKey,
 ) -> BytecodeLinkLocation {
     BytecodeLinkLocation::Function {
-        package: package.reference().clone(),
+        package: Box::new(package.reference().clone()),
         function_key: specialization.artifact_function_key().as_str().to_string(),
     }
 }
