@@ -67,11 +67,9 @@ pub(crate) fn analyze_source_execution_semantics(
                 continue;
             }
             let owner = ExpressionOwnerKey::Function(function.name.clone());
-            let source_key = SourceSymbolKey::new(module_path, &function.name);
             let mut analyzer = OwnerAnalyzer::new(
                 module_path,
                 owner,
-                source_key,
                 function,
                 expression_sources,
                 &expression_keys,
@@ -93,14 +91,9 @@ pub(crate) fn analyze_source_execution_semantics(
                     type_name: implementation.target.clone(),
                     method: method.name.clone(),
                 };
-                let source_key = SourceSymbolKey::new(
-                    module_path,
-                    impl_method_declaration_name(&implementation.target, &method.name),
-                );
                 let mut analyzer = OwnerAnalyzer::new(
                     module_path,
                     owner,
-                    source_key,
                     method,
                     expression_sources,
                     &expression_keys,

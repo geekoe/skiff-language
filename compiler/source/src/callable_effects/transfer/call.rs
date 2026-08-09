@@ -2,11 +2,14 @@ use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
     builtin_receiver_callable_semantics, native_callable_semantics, BoundaryCallbackContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp, BuiltinReceiverOpSpec,
+    BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp,
     CallableProvenanceUnknownReason, PendingEffectCategory, ValueProjectionPath,
 };
 
-use crate::{shared::ast::{CallArg, Expr}, ExpressionKey, ResolvedCallTarget};
+use crate::{
+    shared::ast::{CallArg, Expr},
+    ExpressionKey, ResolvedCallTarget,
+};
 
 use super::{
     super::provenance::{AbstractValue, CallableState, EscapeLane, Origin},
@@ -499,7 +502,7 @@ impl Evaluator<'_, '_> {
                 .insert(Origin::DependencyReturn(callable_id));
         }
 
-        let mut thrown = self.map_value_origins(
+        let thrown = self.map_value_origins(
             &callee.throw_origins,
             &callee.throw_origins,
             actuals,
@@ -543,10 +546,7 @@ impl Evaluator<'_, '_> {
     }
 }
 
-fn receiver_store_value<'a>(
-    op: BuiltinReceiverOp,
-    args: &'a [AbstractValue],
-) -> Option<&'a AbstractValue> {
+fn receiver_store_value(op: BuiltinReceiverOp, args: &[AbstractValue]) -> Option<&AbstractValue> {
     match op.canonical_key {
         "receiver:Array.push@1" => args.first(),
         "receiver:Array.set@1" | "receiver:Map.set@1" | "receiver:JsonObject.set@1" => args.get(1),

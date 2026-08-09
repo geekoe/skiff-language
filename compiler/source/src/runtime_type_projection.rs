@@ -7,7 +7,7 @@ use skiff_artifact_model::{
 
 use crate::{
     package_export_resolver::PackageExportResolver,
-    shared::ast::{AliasDecl, SourceFile, TypeDecl, TypeRef},
+    shared::ast::{AliasDecl, TypeDecl},
     shared::id::SKIFF_STD_PUBLICATION_ID,
     shared::prelude_registry::prelude_registry,
     shared::type_syntax::{generic_parts, split_top_level, string_literal},
@@ -44,33 +44,6 @@ impl RuntimeBindings {
             aliases: BTreeMap::new(),
         }
     }
-
-    pub fn with_module_path(mut self, module_path: &str) -> Self {
-        self.module_path = Some(module_path.to_string());
-        self
-    }
-
-    pub fn with_source_types(mut self, ast: &SourceFile) -> Self {
-        self.type_decls = ast
-            .types
-            .iter()
-            .map(|ty| (ty.name.clone(), ty.clone()))
-            .collect();
-        self.aliases = ast
-            .aliases
-            .iter()
-            .map(|alias| (alias.name.clone(), alias.clone()))
-            .collect();
-        self
-    }
-}
-
-pub fn file_runtime_bindings(ast: &SourceFile, policy: ProviderRuntimePolicy) -> RuntimeBindings {
-    RuntimeBindings::new(policy).with_source_types(ast)
-}
-
-pub fn type_ref_descriptor(ty: &TypeRef, runtime_bindings: &RuntimeBindings) -> TypeRefIr {
-    type_text_descriptor(ty.name.trim(), runtime_bindings)
 }
 
 pub fn type_text_descriptor(ty: &str, runtime_bindings: &RuntimeBindings) -> TypeRefIr {

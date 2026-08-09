@@ -16,7 +16,6 @@ impl TypeResolutionModel {
     /// than a source dependency alias (notably package-owned interface
     /// identities projected from schema types), but those executable refs still
     /// need the same exact ABI fence as ordinary dependency refs.
-
     pub fn package_dependency_abi_expectations_by_package_id(&self) -> BTreeMap<String, String> {
         self.package_dependencies
             .iter()
@@ -36,7 +35,6 @@ impl TypeResolutionModel {
     /// Adds the published service APIs to the same external nominal-type model
     /// used by ordinary package dependencies. Service operation lowering keeps
     /// its own call target; only public type shapes are shared here.
-
     pub fn source_interface_conformance(
         &self,
         receiver: &SourceSymbolKey,
@@ -115,7 +113,6 @@ impl TypeResolutionModel {
     /// replacing every source or package alias with its RHS. Nominal
     /// declarations (records, representations, actors, interfaces, and named
     /// unions) remain named.
-
     pub fn expand_alias_type_ref_for_module(
         &self,
         module_path: &str,
@@ -1673,7 +1670,6 @@ impl TypeResolutionModel {
     /// Canonicalizing toward internal names is well-defined because every public
     /// name resolves to exactly one internal name, while internal-only names have
     /// no public name.
-
     pub(super) fn canonical_symbol_path(&self, symbol_path: &str) -> String {
         let stripped = symbol_path.strip_prefix("root.").unwrap_or(symbol_path);
         self.package_public_to_internal
@@ -2622,7 +2618,6 @@ impl TypeResolutionModel {
     /// Returns the manifest dependency's primary alias for either of its
     /// source-visible views. Lowering uses this to validate a source-only
     /// callee root without leaking that view into File IR.
-
     pub fn canonical_package_dependency_ref<'a>(&'a self, dependency_ref: &'a str) -> &'a str {
         self.package_dependency_canonical_refs
             .get(dependency_ref)
@@ -2679,7 +2674,6 @@ impl TypeResolutionModel {
     /// Resolve a package type by its symbol path alone, searching every indexed
     /// package. Used to recover the shape of a package type referenced through a
     /// package-internal `root.` path that did not carry its originating package id.
-
     pub(super) fn package_type_by_symbol_path(
         &self,
         symbol_path: &str,

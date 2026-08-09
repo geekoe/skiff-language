@@ -20,7 +20,6 @@ use super::{
 pub(super) struct OwnerAnalyzer<'a> {
     module_path: &'a str,
     owner: ExpressionOwnerKey,
-    source_key: SourceSymbolKey,
     function: &'a FunctionDecl,
     expression_sources: &'a ExpressionSourceMap,
     pub(super) expression_keys: &'a BTreeMap<usize, ExpressionKey>,
@@ -38,7 +37,6 @@ impl<'a> OwnerAnalyzer<'a> {
     pub(super) fn new(
         module_path: &'a str,
         owner: ExpressionOwnerKey,
-        source_key: SourceSymbolKey,
         function: &'a FunctionDecl,
         expression_sources: &'a ExpressionSourceMap,
         expression_keys: &'a BTreeMap<usize, ExpressionKey>,
@@ -54,7 +52,6 @@ impl<'a> OwnerAnalyzer<'a> {
         Self {
             module_path,
             owner,
-            source_key,
             function,
             expression_sources,
             expression_keys,

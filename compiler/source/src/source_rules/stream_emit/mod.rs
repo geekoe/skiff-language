@@ -15,7 +15,6 @@ mod types;
 
 #[cfg(test)]
 use statements::validate_emit_usage_in_stmt;
-use types::collect_emit_expression_call_violations_in_block;
 
 #[cfg(test)]
 pub fn collect_stream_function_return_types(
@@ -29,24 +28,6 @@ pub fn collect_stream_function_return_types(
         for method in &implementation.method_bodies {
             return_types.insert(method.name.clone(), method.return_type.name.clone());
         }
-    }
-}
-
-pub fn collect_stream_emit_expression_call_violations(
-    path: &str,
-    ast: &SourceFile,
-    violations: &mut Vec<String>,
-) {
-    for function in &ast.functions {
-        collect_emit_expression_call_violations_in_block(path, &function.body, violations);
-    }
-    for implementation in &ast.impls {
-        for method in &implementation.method_bodies {
-            collect_emit_expression_call_violations_in_block(path, &method.body, violations);
-        }
-    }
-    for test in &ast.tests {
-        collect_emit_expression_call_violations_in_block(path, &test.body, violations);
     }
 }
 

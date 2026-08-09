@@ -227,7 +227,6 @@ impl TypeResolutionModel {
     /// Returns the artifact ABI identity selected for each declared or
     /// compiler-owned package dependency. Lowering uses this to keep type
     /// annotations aligned with the exact artifact source resolution inspected.
-
     pub(crate) fn index_service_api_contracts(
         &mut self,
         dependencies: &SourceDependencyAnalysisInput,

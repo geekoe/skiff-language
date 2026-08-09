@@ -289,7 +289,6 @@ impl<'a> OwnerChecker<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-
     pub(super) fn materialize_target_typed_object_literal(
         &mut self,
         annotation: Option<&TypeRef>,

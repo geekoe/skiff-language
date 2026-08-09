@@ -39,6 +39,7 @@ mod source_file_facts;
 pub mod source_graph;
 pub mod source_identity;
 pub mod source_name_resolution;
+#[cfg(test)]
 pub(crate) mod source_rules;
 mod test_rules;
 pub(crate) mod type_projection;

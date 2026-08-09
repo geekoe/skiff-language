@@ -4,7 +4,6 @@ pub mod error;
 pub mod id;
 pub mod json_utils;
 pub mod lexer;
-pub mod package_export_resolver;
 pub mod package_interface_methods;
 pub mod parser;
 pub mod prelude_registry;

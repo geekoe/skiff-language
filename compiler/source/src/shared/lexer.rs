@@ -1,1 +1,1 @@
-pub use skiff_syntax::lexer::*;
+pub use skiff_syntax::lexer::{lex, Token, TokenKind};

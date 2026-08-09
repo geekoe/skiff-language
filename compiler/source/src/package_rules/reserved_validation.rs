@@ -1,8 +1,6 @@
 use crate::shared::ast::Block;
 use crate::shared::ast_utils::collect_reserved_binding_violations;
 
-use super::*;
-
 pub(super) fn validate_package_reserved_roots_in_block(
     path: &str,
     block: &Block,

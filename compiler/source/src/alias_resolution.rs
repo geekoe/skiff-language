@@ -113,15 +113,13 @@ fn source_aliases(ast: &SourceFile) -> BTreeMap<String, String> {
 fn qualify_alias_type_name_seen(
     raw: &str,
     local_aliases: &BTreeSet<String>,
-    qualified_aliases: &BTreeSet<String>,
+    _qualified_aliases: &BTreeSet<String>,
     qualify_local_alias: &impl Fn(&str) -> String,
 ) -> String {
     TypeExpr::parse_lossy(raw)
         .map_named_types(|name| {
             if local_aliases.contains(name) {
                 qualify_local_alias(name)
-            } else if qualified_aliases.contains(name) {
-                name.to_string()
             } else {
                 name.to_string()
             }

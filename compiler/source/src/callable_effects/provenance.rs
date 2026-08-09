@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
-    CallableProvenanceUnknownReason, PendingEffectCategory, ValueEscapeLane,
-    ValueProjectionPath, ValueProjectionStep, ValueProvenance, MAX_VALUE_PROJECTION_PATH_STEPS,
+    CallableProvenanceUnknownReason, PendingEffectCategory, ValueEscapeLane, ValueProjectionPath,
+    ValueProjectionStep, ValueProvenance, MAX_VALUE_PROJECTION_PATH_STEPS,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -226,12 +226,16 @@ impl AbstractValue {
         Self {
             direct_origins: origins.clone(),
             origins,
-            caller_references: reference
-                .then(|| BTreeSet::from([CallerReference::root(index)]))
-                .unwrap_or_default(),
-            direct_caller_references: reference
-                .then(|| BTreeSet::from([CallerReference::root(index)]))
-                .unwrap_or_default(),
+            caller_references: if reference {
+                BTreeSet::from([CallerReference::root(index)])
+            } else {
+                BTreeSet::new()
+            },
+            direct_caller_references: if reference {
+                BTreeSet::from([CallerReference::root(index)])
+            } else {
+                BTreeSet::new()
+            },
             unknown: false,
             reference,
             needs_fresh_root: false,
@@ -628,7 +632,10 @@ pub(super) fn join_effects(target: &mut CallableMayEffects, source: &CallableMay
     target.requires_same_heap_identity |= source.requires_same_heap_identity;
     target.invokes_unknown_target |= source.invokes_unknown_target;
     target.may_pending |= source.may_pending;
-    union_categories(&mut target.pending_effect_categories, &source.pending_effect_categories);
+    union_categories(
+        &mut target.pending_effect_categories,
+        &source.pending_effect_categories,
+    );
     target
         .inout_path_effects
         .extend(source.inout_path_effects.iter().cloned());
