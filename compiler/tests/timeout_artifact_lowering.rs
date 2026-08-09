@@ -83,7 +83,7 @@ function sequentialValue() -> string {
         // current schema prefix.
         assert!(file
             .file_ir_identity
-            .starts_with("skiff-file-ir-v12:sha256:"));
+            .starts_with("skiff-file-ir-v13:sha256:"));
         assert_eq!(
             skiff_artifact_identity::file_ir_identity(file).unwrap(),
             file.file_ir_identity
