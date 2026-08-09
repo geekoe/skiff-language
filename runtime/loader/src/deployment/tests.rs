@@ -3,27 +3,27 @@ use std::{
     sync::Arc,
 };
 
+use skiff_artifact_identity::{gateway_entry_identity, service_deployment_ref};
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     ContractDiagnosticText, ContractOperationId, ContractRequirement, ContractTypeRef,
     DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
-    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentRevision, GatewayAdapterPlan,
-    GatewayAdapterKind, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
-    GatewayHttpProtocolSurface, GatewayAdapterSource, GatewayDispatchMode,
-    GatewayExternalErrorProjection, GatewayExternalSchema, IngressProtocol, IngressSelector,
+    DeploymentIngressBinding, DeploymentRevision, GatewayAdapterKind, GatewayAdapterPlan,
+    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayHttpProtocolSurface, IngressProtocol, IngressSelector,
     PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirementKey,
     PackageRuntimeRequirements, PackageSchemaIndexRef, ServiceCallRef, ServiceContract,
     ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
-    ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
-use skiff_artifact_identity::{gateway_entry_identity, service_deployment_ref};
 
 use super::{
-    compose_deployment_assembly, compose_dependency_closure_assembly,
+    compose_dependency_closure_assembly, compose_deployment_assembly,
     DeploymentReleasePointerResolver,
 };
 use crate::RuntimeAssemblyContentResolver;
@@ -290,12 +290,8 @@ fn operation_contract() -> BoundaryOperationContract {
 
 fn bare_contract(service_id: &str) -> (ServiceContract, ContractOperationId) {
     let contract_version = "1.0.0";
-    let operation_id = skiff_artifact_identity::contract_operation_id(
-        service_id,
-        contract_version,
-        "op",
-    )
-    .unwrap();
+    let operation_id =
+        skiff_artifact_identity::contract_operation_id(service_id, contract_version, "op").unwrap();
     let mut contract = ServiceContract {
         schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
         service_id: service_id.to_string(),
@@ -309,6 +305,7 @@ fn bare_contract(service_id: &str) -> (ServiceContract, ContractOperationId) {
                 contract: operation_contract(),
             },
         )]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: service_id.to_string(),
@@ -348,6 +345,8 @@ fn bare_package(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: service_dependency
             .as_ref()
@@ -401,7 +400,11 @@ fn bare_deployment(
 }
 
 /// Consumer -> provider dependency chain under the same profile.
-fn dependency_chain_fixture() -> (ClosureTestResolver, ServiceDeploymentRef, ServiceDeploymentRef) {
+fn dependency_chain_fixture() -> (
+    ClosureTestResolver,
+    ServiceDeploymentRef,
+    ServiceDeploymentRef,
+) {
     let (provider_contract, provider_operation_id) = bare_contract("example.health");
     let provider_contract_ref = contract_ref(&provider_contract);
     let (consumer_contract, _) = bare_contract("example.consumer");
@@ -421,9 +424,7 @@ fn dependency_chain_fixture() -> (ClosureTestResolver, ServiceDeploymentRef, Ser
             alias: "health".to_string(),
             service_id: provider_contract_ref.service_id.clone(),
             contract_version: provider_contract_ref.contract_version.clone(),
-            expected_protocol_identity: provider_contract_ref
-                .service_protocol_identity
-                .clone(),
+            expected_protocol_identity: provider_contract_ref.service_protocol_identity.clone(),
         },
         service_binding_slot: 0,
         used_operations: BTreeSet::from([provider_operation_id.clone()]),
@@ -433,8 +434,11 @@ fn dependency_chain_fixture() -> (ClosureTestResolver, ServiceDeploymentRef, Ser
         contract_operation_id: provider_operation_id,
         expected_protocol_identity: provider_contract_ref.service_protocol_identity.clone(),
     };
-    let consumer_package =
-        bare_package("example.consumer", Some(consumer_requirement), vec![consumer_call]);
+    let consumer_package = bare_package(
+        "example.consumer",
+        Some(consumer_requirement),
+        vec![consumer_call],
+    );
     let consumer_package_ref = package_ref_of(&consumer_package);
     let consumer = bare_deployment(
         consumer_contract_ref.clone(),
@@ -456,10 +460,7 @@ fn dependency_chain_fixture() -> (ClosureTestResolver, ServiceDeploymentRef, Ser
             (provider_ref.clone(), Arc::new(provider)),
         ]),
         contracts: BTreeMap::from([
-            (
-                provider_contract_ref.clone(),
-                Arc::new(provider_contract),
-            ),
+            (provider_contract_ref.clone(), Arc::new(provider_contract)),
             (consumer_contract_ref.clone(), Arc::new(consumer_contract)),
         ]),
         packages: BTreeMap::from([
@@ -524,10 +525,7 @@ fn cycle_fixture() -> (ClosureTestResolver, ServiceDeploymentRef) {
             (back_ref.clone(), Arc::new(back)),
         ]),
         contracts: BTreeMap::from([
-            (
-                provider_contract_ref.clone(),
-                Arc::new(provider_contract),
-            ),
+            (provider_contract_ref.clone(), Arc::new(provider_contract)),
             (consumer_contract_ref.clone(), Arc::new(consumer_contract)),
         ]),
         packages: BTreeMap::from([
@@ -558,7 +556,10 @@ fn cycle_fixture() -> (ClosureTestResolver, ServiceDeploymentRef) {
 fn compose_dependency_closure_links_provider_into_one_assembly() {
     let (resolver, consumer_ref, provider_ref) = dependency_chain_fixture();
     let assembly = compose_dependency_closure_assembly(&consumer_ref, &resolver, "dev").unwrap();
-    assert_eq!(assembly.roots, vec![consumer_ref.clone(), provider_ref.clone()]);
+    assert_eq!(
+        assembly.roots,
+        vec![consumer_ref.clone(), provider_ref.clone()]
+    );
     assert_eq!(
         assembly.resolved_deployments,
         vec![consumer_ref.clone(), provider_ref.clone()]

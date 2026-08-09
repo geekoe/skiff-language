@@ -36,7 +36,10 @@ fn deployment_package_closure(
 ) -> anyhow::Result<BTreeMap<PackageBuildId, PackageArtifactRef>> {
     let mut bindings = BTreeMap::new();
     for binding in &deployment.package_bindings {
-        if bindings.insert(binding.key.clone(), &binding.package).is_some() {
+        if bindings
+            .insert(binding.key.clone(), &binding.package)
+            .is_some()
+        {
             anyhow::bail!(
                 "deployment {reference:?} repeats package binding {:?}",
                 binding.key
@@ -58,7 +61,7 @@ fn deployment_package_closure(
     }
     let mut used = BTreeSet::new();
     for build_id in closure.keys() {
-        for (key, _) in &bindings {
+        for key in bindings.keys() {
             if &key.caller_package_build_id == build_id {
                 used.insert(key.clone());
             }
@@ -268,18 +271,16 @@ where
                 for package_reference in
                     deployment_package_closure(&reference, &deployment)?.values()
                 {
-                    let package = resolver
-                        .resolve_package(package_reference)
-                        .with_context(|| {
-                            format!("failed to resolve package {package_reference:?}")
-                        })?;
+                    let package =
+                        resolver
+                            .resolve_package(package_reference)
+                            .with_context(|| {
+                                format!("failed to resolve package {package_reference:?}")
+                            })?;
                     closure.packages.insert(package_reference.clone());
                     for requirement in &package.service_requirements {
                         let contract = ServiceContractRef {
-                            service_id: requirement
-                                .contract_requirement
-                                .service_id
-                                .clone(),
+                            service_id: requirement.contract_requirement.service_id.clone(),
                             contract_version: requirement
                                 .contract_requirement
                                 .contract_version
@@ -341,7 +342,10 @@ where
     }
 
     /// Resolve + compose + hydrate one exact immutable deployment reference.
-    pub fn load_ref(&self, reference: &ServiceDeploymentRef) -> anyhow::Result<HydratedRuntimeAssembly> {
+    pub fn load_ref(
+        &self,
+        reference: &ServiceDeploymentRef,
+    ) -> anyhow::Result<HydratedRuntimeAssembly> {
         let deployment = self
             .resolver
             .resolve_deployment(reference)
