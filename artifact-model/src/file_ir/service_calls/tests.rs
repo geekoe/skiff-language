@@ -111,6 +111,7 @@ fn push_service_call(unit: &mut FileIrUnit, index: u32) {
                 reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },

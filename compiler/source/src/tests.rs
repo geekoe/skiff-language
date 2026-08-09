@@ -1,5 +1,6 @@
 use super::*;
 
+mod binding_inout_semantics;
 mod dispatch_source_semantics;
 mod timeout_source_semantics;
 

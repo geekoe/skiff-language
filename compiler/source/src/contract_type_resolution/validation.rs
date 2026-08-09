@@ -101,6 +101,12 @@ impl ContractTypeUseValidator<'_> {
 
     fn visit_operation(&mut self, operation: &InterfaceOperation) {
         for parameter in &operation.params {
+            if parameter.mode == crate::shared::ast::ParamMode::InOut {
+                self.violations.insert(format!(
+                    "interface requirement `{}` declares an inout parameter; inout is not allowed on interface requirements or method tables",
+                    operation.name
+                ));
+            }
             self.visit_type_ref(&parameter.ty);
         }
         self.visit_type_ref(&operation.return_type);

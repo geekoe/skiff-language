@@ -59,6 +59,11 @@ pub struct PackageDependencyCallableAnalysis {
     callable_id: PackageCallableId,
     semantic_facts: CallableSemanticFacts,
     signature: Option<PackageCallableSignature>,
+    /// Inout parameter positions by index (name for diagnostics). The Package
+    /// Local ABI signature wire does not yet carry parameter modes; this
+    /// channel lets exact package-direct inout calls be verified and stays
+    /// empty for wire-derived callees (fail closed).
+    inout_parameters: BTreeMap<usize, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -470,11 +475,22 @@ impl PackageDependencyCallableAnalysis {
             callable_id,
             semantic_facts,
             signature: None,
+            inout_parameters: BTreeMap::new(),
         }
     }
 
     pub fn with_signature(mut self, signature: PackageCallableSignature) -> Self {
         self.signature = Some(signature);
+        self
+    }
+
+    /// Declares inout parameter positions (by parameter index, name for
+    /// diagnostics) of this exact package-direct callee.
+    pub fn with_inout_parameters(
+        mut self,
+        inout_parameters: impl IntoIterator<Item = (usize, String)>,
+    ) -> Self {
+        self.inout_parameters = inout_parameters.into_iter().collect();
         self
     }
 
@@ -488,6 +504,10 @@ impl PackageDependencyCallableAnalysis {
 
     pub(crate) fn signature(&self) -> Option<&PackageCallableSignature> {
         self.signature.as_ref()
+    }
+
+    pub(crate) fn inout_parameters(&self) -> &BTreeMap<usize, String> {
+        &self.inout_parameters
     }
 }
 

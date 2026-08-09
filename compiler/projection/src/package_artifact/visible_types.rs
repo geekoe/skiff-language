@@ -36,6 +36,7 @@ pub(crate) fn projection_visible_executable_signature(
                 name: param.name.clone(),
                 slot: param.slot,
                 ty: projection_visible_type_ref(context_module, &param.ty, package_type_names),
+                mode: param.mode,
             })
             .collect(),
         return_type: projection_visible_type_ref(

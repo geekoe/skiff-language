@@ -48,6 +48,11 @@ pub enum ResolvedCallTarget {
         package_callable_id: PackageCallableId,
         expected_local_abi: PackageLocalAbiIdentity,
         exact_signature: Option<PackageCallableSignature>,
+        /// Inout parameter positions of the exact package-direct callee, by
+        /// parameter index. The Package Local ABI signature wire does not yet
+        /// carry parameter modes, so the dependency analysis supplies them
+        /// explicitly (empty for callees without inout parameters).
+        inout_parameters: BTreeMap<usize, String>,
     },
     InterfaceMethod {
         interface: InterfaceInstantiationRef,

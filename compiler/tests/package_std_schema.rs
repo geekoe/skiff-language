@@ -109,7 +109,7 @@ type Envelope { request: models.ModelRequest }
                 "request: schema.request\n",
                 r#"import models
 
-let request: models.ModelRequest = {}
+const request: models.ModelRequest = {}
 "#,
             ),
             (
@@ -117,7 +117,7 @@ let request: models.ModelRequest = {}
                 "make: schema.make\n",
                 r#"import models
 
-let make = models.make
+const make = models.make
 "#,
             ),
             (
@@ -344,14 +344,7 @@ function eventStatus(event: std.http.HttpSseEvent) -> integer? {
         );
         temp.write(
             "raw.skiff",
-            r#"const rawRequest: HttpRequest = {
-  method: "GET",
-  url: "https://example.com",
-  path: "/",
-  query: Array.empty<std.http.HttpQueryParam>(),
-  headers: Array.empty<std.http.HttpHeader>(),
-  body: bytes.fromUtf8(""),
-}
+            r#"const rawRequest: string = "GET"
 
 type RawEnvelope {
   request: HttpRequest,

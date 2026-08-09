@@ -499,7 +499,7 @@ mod tests {
             function run() -> number {
                 let result = addOne(1)
                 let second = internal.callees.addOne(result)
-                let list: Array<number> = Array.empty<number>()
+                var list: Array<number> = Array.empty<number>()
                 list.push(second)
                 return list.length()
             }
@@ -539,7 +539,7 @@ mod tests {
         let artifact = compile_package_file_ir(
             r#"
             function run() -> number {
-                let items: Array<string> = Array.empty<string>()
+                var items: Array<string> = Array.empty<string>()
                 items.push("ok")
                 let joined = string.join(items, ",")
                 let parsed = number.parse("1")
@@ -839,9 +839,10 @@ mod tests {
             }
 
             function run(session: Session, memberId: string) -> number {
-                session.players.push(memberId)
-                session.title = "updated"
-                return session.players.length()
+                var local = session
+                local.players.push(memberId)
+                local.title = "updated"
+                return local.players.length()
             }
         "#,
             "internal/mutable_paths.skiff",
@@ -850,7 +851,7 @@ mod tests {
         .expect("mutable path fixture should compile");
         let artifact_value = artifact.value();
         let run = executable_entry(&artifact_value, "run");
-        let session_slot = slot_index(run, "session", "param");
+        let local_slot = slot_index(run, "local", "local");
 
         let push = receiver_builtin_call(run, "Array", "push").expect("push call");
         let receiver = expr_for_ref(run, &push["args"][0]);
@@ -858,7 +859,7 @@ mod tests {
         assert_eq!(receiver["field"], "players");
         assert_eq!(
             load_slot(expr_for_ref(run, &receiver["object"])),
-            session_slot
+            local_slot
         );
 
         let assignment = find_stmt(run, |stmt| stmt["kind"] == "assign")
@@ -867,7 +868,7 @@ mod tests {
         assert_eq!(assignment["target"]["field"], "title");
         assert_eq!(
             load_slot(expr_for_ref(run, &assignment["target"]["object"])),
-            session_slot
+            local_slot
         );
     }
 
@@ -1141,8 +1142,9 @@ mod tests {
             type Item { value: string }
 
             function run(items: Map<string, Item>, key: string, value: Item) -> bool {
-                items.set(key, value)
-                return items.has(key)
+                var local = items
+                local.set(key, value)
+                return local.has(key)
             }
         "#,
             "internal/map_has_set.skiff",
@@ -1226,7 +1228,8 @@ mod tests {
         let artifact = compile_package_file_ir(
             r#"
             function removeField(value: JsonObject, field: string) -> bool {
-                return value.delete(field)
+                var local = value
+                return local.delete(field)
             }
         "#,
             "internal/json_object_delete.skiff",
@@ -1306,7 +1309,7 @@ mod tests {
 
             function run(runId: string, sourceRunId: string) -> void {
                 db transaction {
-                    let successorMetadata: Metadata = {
+                    var successorMetadata: Metadata = {
                       successorOf: runId,
                       reason: "failed-with-new-input",
                     }
@@ -1494,7 +1497,7 @@ version: 1.0.0
             }
 
             function run(event: Event) -> Array<Event> {
-                let events = Array.empty<Event>()
+                var events = Array.empty<Event>()
                 events.push(event)
                 return events
             }
@@ -1517,7 +1520,7 @@ version: 1.0.0
         let project = compile_root_alias_array_push(
             r#"
             function run() -> Array<root.types.Modality> {
-                let items = Array.empty<root.types.Modality>()
+                var items = Array.empty<root.types.Modality>()
                 items.push("text")
                 items.push("image")
                 return items
@@ -1544,7 +1547,7 @@ version: 1.0.0
         let nonmember = compile_root_alias_array_push(
             r#"
             function run() -> Array<root.types.Modality> {
-                let items = Array.empty<root.types.Modality>()
+                var items = Array.empty<root.types.Modality>()
                 items.push("document")
                 return items
             }
@@ -1583,7 +1586,7 @@ version: 1.0.0
         let artifact = compile_package_file_ir(
             r#"
             function run(delta: string) -> string {
-                let activeText = ""
+                var activeText = ""
                 activeText = activeText.concat(delta)
                 return activeText
             }

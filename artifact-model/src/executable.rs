@@ -41,6 +41,29 @@ pub struct ParamIr {
     pub name: String,
     pub slot: u32,
     pub ty: TypeRefIr,
+    /// `inout` parameter mode. Skipped when `Value` so legacy File IR stays
+    /// byte-identical; the MIR builder reads the mode from here.
+    #[serde(default, skip_serializing_if = "ParamModeIr::is_value")]
+    pub mode: ParamModeIr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields,
+    tag = "kind"
+)]
+pub enum ParamModeIr {
+    #[default]
+    Value,
+    InOut,
+}
+
+impl ParamModeIr {
+    pub fn is_value(&self) -> bool {
+        matches!(self, Self::Value)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -773,10 +796,37 @@ pub struct CallIr {
     pub site: InstructionSourceSite,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<ExprRefIr>,
+    /// Writable places passed `inout` at this call site. Positions align with
+    /// the callee's `ParamIr.mode`; the runtime legacy does not execute inout
+    /// calls, the representation exists for the emitter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inout_args: Vec<InOutArgIr>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub type_args: BTreeMap<String, TypeRefIr>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, MetadataValue>,
+}
+
+/// One `inout <place>` argument: the caller writable root slot and the exact
+/// selector path into it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InOutArgIr {
+    pub root_slot: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<InOutPathSegmentIr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields,
+    tag = "kind"
+)]
+pub enum InOutPathSegmentIr {
+    Field { name: String },
+    Index,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

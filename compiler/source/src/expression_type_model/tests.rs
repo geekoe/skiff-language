@@ -749,6 +749,55 @@ fn test_assertion_narrowing_fails_closed_for_invalidated_or_unstable_values() {
 }
 
 #[test]
+fn inout_call_clears_narrowing_exactly_like_assignment() {
+    // R-196: passing a stable path as an inout argument invalidates narrowing
+    // for that path and its subpaths, exactly like an assignment write.
+    for (source, label) in [
+        (
+            r#"
+                  type Payload { value: string }
+                  function maybe() -> Payload? { return Payload { value: "ok" } }
+                  function touch(inout value: Payload) -> void {
+                    value.value = "changed"
+                  }
+                  test "inout call invalidates narrowing" {
+                    var value: Payload? = maybe()
+                    assert value != null
+                    touch(inout value)
+                    assert value.value == "ok"
+                  }
+                "#,
+            "inout call on a root",
+        ),
+        (
+            r#"
+                  type Payload { value: string }
+                  type Doc { payload: Payload? }
+                  function maybe() -> Payload { return Payload { value: "ok" } }
+                  function touch(inout value: Payload) -> void {
+                    value.value = "changed"
+                  }
+                  test "inout member path invalidates subpath narrowing" {
+                    var doc = Doc { payload: maybe() }
+                    assert doc.payload != null
+                    touch(inout doc.payload)
+                    assert doc.payload.value == "ok"
+                  }
+                "#,
+            "inout call on a member path",
+        ),
+    ] {
+        let error = test_expression_type_result(source)
+            .expect_err("inout call must clear narrowing like an assignment")
+            .message();
+        assert!(
+            error.contains("nullable") || error.contains("unknown field"),
+            "{label} should retain the pre-loan narrowing facts, got:\n{error}"
+        );
+    }
+}
+
+#[test]
 fn self_field_resolution_keeps_actor_and_record_owners_distinct() {
     expression_type_result(
         r#"

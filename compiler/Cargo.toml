@@ -150,6 +150,10 @@ path = "tests/actor_routing_projection_publish.rs"
 name = "std_seed_authoring"
 path = "tests/std_seed_authoring.rs"
 
+[[test]]
+name = "binding_inout_semantics"
+path = "tests/binding_inout_semantics.rs"
+
 [dependencies]
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-artifact-model = { path = "../artifact-model" }

@@ -251,6 +251,11 @@ struct OwnerChecker<'a> {
     env: BTreeMap<String, ResolvedTypeRef>,
     contract_projection: ContractProjectionState,
     path_refinements: BTreeMap<String, ResolvedTypeRef>,
+    /// The declared/last-assigned type of each binding that currently carries
+    /// an env-level narrowing (root bindings narrow in `env`, member paths in
+    /// `path_refinements`). Write-side invalidation (assignment and inout
+    /// loans, R-196) restores the root from here.
+    narrowing_base: BTreeMap<String, ResolvedTypeRef>,
     transparent_value_targets: BTreeMap<ExpressionKey, ExpressionKey>,
     test_effect_declarations: BTreeMap<ExactTestEffectTarget, String>,
     db_transaction_depth: usize,
@@ -679,6 +684,7 @@ impl<'a> OwnerChecker<'a> {
             env,
             contract_projection,
             path_refinements: BTreeMap::new(),
+            narrowing_base: BTreeMap::new(),
             transparent_value_targets: BTreeMap::new(),
             test_effect_declarations: BTreeMap::new(),
             db_transaction_depth: 0,
@@ -1005,6 +1011,10 @@ impl<'a> OwnerChecker<'a> {
         }
         if let (Expr::Identifier(name), Some(actual)) = (target, actual) {
             self.env.insert(name.clone(), actual);
+            // The assignment establishes the binding's new base type; a later
+            // write-side invalidation must not revert to the pre-assignment
+            // narrowing base.
+            self.narrowing_base.remove(name);
             let projected = self
                 .contract_projection
                 .expression_type(&value_key)
@@ -1428,15 +1438,6 @@ impl<'a> OwnerChecker<'a> {
                     else_expr,
                 } => self.check_ternary_expr(&key, condition, then_expr, else_expr),
                 Expr::Call { callee, args } => {
-                    if args
-                        .iter()
-                        .any(|arg| matches!(arg, CallArg::InOutPlace { .. }))
-                    {
-                        self.outputs.diagnostics.push(format!(
-                            "{}: inout arguments are parsed but not yet supported",
-                            self.module_path
-                        ));
-                    }
                     self.check_call_expr(&key, callee, args)
                 }
                 Expr::Generic { callee, .. } => {
@@ -1635,7 +1636,15 @@ impl<'a> OwnerChecker<'a> {
                 (key, self.check_expr(arg.expr()))
             })
             .collect::<Vec<_>>();
-        self.call_type(&key, callee, args, &arg_types)
+        let result = self.call_type(&key, callee, args, &arg_types);
+        // Passing a path as an inout argument invalidates narrowing for that
+        // path and its subpaths (R-196), exactly like an assignment write.
+        for arg in args {
+            if let CallArg::InOutPlace { expr } = arg {
+                self.invalidate_path_refinements_for_write(expr);
+            }
+        }
+        result
     }
 
     fn check_interface_box_expr(

@@ -216,6 +216,7 @@ fn package_call(package_ref: PackageRefIr, package_callable_id: PackageCallableI
                 reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },

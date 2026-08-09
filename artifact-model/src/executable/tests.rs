@@ -28,6 +28,7 @@ fn throw_and_call_round_trip_required_source_sites() {
             reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
         },
         args: Vec::new(),
+        inout_args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
     };

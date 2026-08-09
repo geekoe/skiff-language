@@ -51,6 +51,8 @@ pub(crate) fn package_type_ref_from_source_type(
 pub struct SourceExecutableSignature {
     pub type_params: Vec<String>,
     pub parameters: Vec<PackageCallableParameter>,
+    /// Per-parameter inout mode, aligned with `parameters`.
+    pub inout: Vec<bool>,
     pub return_type: PackageTypeRef,
     pub receiver: SourceExecutableReceiver,
     pub may_suspend: bool,

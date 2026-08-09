@@ -141,6 +141,7 @@ fn reason_sort_key(reason: &BoundaryUnavailableReason) -> (u8, u8) {
         BoundaryUnavailableReason::NativeAdapterUnavailable => (6, 0),
         BoundaryUnavailableReason::UnsupportedBoundaryType => (7, 0),
         BoundaryUnavailableReason::UnsupportedStream => (8, 0),
+        BoundaryUnavailableReason::InOutNotAllowedAtServiceBoundary => (9, 0),
     }
 }
 

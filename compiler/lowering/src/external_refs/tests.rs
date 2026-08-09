@@ -126,6 +126,7 @@ fn service_call(index: u32) -> ExprIr {
                     reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },
                 args: Vec::new(),
+                inout_args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },

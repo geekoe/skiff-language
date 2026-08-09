@@ -136,6 +136,11 @@ impl ExecutableSignatureBuilder<'_> {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let inout = function
+            .params
+            .iter()
+            .map(|parameter| parameter.mode == crate::shared::ast::ParamMode::InOut)
+            .collect::<Vec<_>>();
         let return_type = self
             .resolver
             .resolve_source_type_ref(&function.return_type, &context)?;
@@ -144,6 +149,7 @@ impl ExecutableSignatureBuilder<'_> {
         let signature = SourceExecutableSignature {
             type_params,
             parameters,
+            inout,
             return_type,
             receiver,
             may_suspend,

@@ -1194,6 +1194,7 @@ impl<'a> FunctionLowerer<'a> {
                     reason: SyntheticInstructionSiteReason::CompilerDesugaring,
                 },
                 args: vec![block_arg],
+                inout_args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: db_builtin_metadata("transaction", None),
             },

@@ -2882,6 +2882,7 @@ fn typed_package_call_site_lowers_by_expression_key_without_local_abi_witness() 
             package_callable_id: package_callable_id.clone(),
             expected_local_abi: expected_local_abi.clone(),
             exact_signature: None,
+            inout_parameters: BTreeMap::new(),
         },
     )]));
     let package_aliases = BTreeMap::from([("utils".to_string(), vec![String::new()])]);
@@ -2942,6 +2943,7 @@ fn dependency_exact_signature_controls_lowered_suspend_flag_without_synthetic_ca
                         },
                         may_suspend,
                     }),
+                    inout_parameters: BTreeMap::new(),
                 },
             )]));
         lower_package_call(
@@ -3013,6 +3015,7 @@ fn package_call_target_alias_must_match_callee_root() {
             package_callable_id: PackageCallableId::new("callable:other.format"),
             expected_local_abi: PackageLocalAbiIdentity::new("local-abi:other"),
             exact_signature: None,
+            inout_parameters: BTreeMap::new(),
         },
     )]));
     let package_aliases = BTreeMap::from([

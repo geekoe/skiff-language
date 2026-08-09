@@ -170,6 +170,7 @@ fn service_call_target_and_ref_survive_publication_local_rewrite() {
                             reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                         },
                         args: Vec::new(),
+                        inout_args: Vec::new(),
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
                     },

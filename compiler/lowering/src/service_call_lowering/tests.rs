@@ -204,6 +204,7 @@ fn direct_package_call_target_is_not_rewritten_as_a_service_call() {
         package_callable_id: PackageCallableId::new("callable:format"),
         expected_local_abi: PackageLocalAbiIdentity::new("local-abi:utils"),
         exact_signature: None,
+        inout_parameters: BTreeMap::new(),
     };
     let targets = target_facts([(expression.clone(), package_target.clone())]);
 

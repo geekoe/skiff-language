@@ -183,6 +183,7 @@ fn push_package_call(file: &mut PublishedFileIrArtifact, package_ref: PackageRef
                 reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },

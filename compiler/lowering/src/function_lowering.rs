@@ -27,11 +27,12 @@ use skiff_syntax::{
 
 use crate::file_ir::{
     AssignTargetIr, BinaryOpIr, BlockIr, BoxSourceIr, CallIr, CallTargetIr, ExecutableBody, ExprIr,
-    ExprRefIr, FunctionTypeParamIr, InstructionSourceSite, InterfaceMethodSlotPlanIr,
-    InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr,
-    LiteralIr, MatchArmIr, MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef, PatternIr,
-    RecordPatternFieldIr, ServiceSymbolRef, SlotIr, SlotKind, StmtIr, StmtRefIr,
-    TestEffectExpectedIr, TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeRefIr, UnaryOpIr,
+    ExprRefIr, FunctionTypeParamIr, InOutArgIr, InOutPathSegmentIr, InstructionSourceSite,
+    InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr,
+    InterfaceMethodTablePlanIr, LiteralIr, MatchArmIr, MetadataValue, NativeTarget, PackageRefIr,
+    PackageSymbolRef, PatternIr, RecordPatternFieldIr, ServiceSymbolRef, SlotIr, SlotKind, StmtIr,
+    StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr, TestEffectRegisterTargetIr, TypeRefIr,
+    UnaryOpIr,
 };
 
 use super::{
@@ -996,6 +997,11 @@ impl<'a> FunctionLowerer<'a> {
                     if let Some(field_type) =
                         self.actor_self_fields.and_then(|fields| fields.get(field))
                     {
+                        if self.db_transaction_depth > 0 {
+                            return Err(CompileError::Semantic(format!(
+                                "cannot assign to actor self field `{field}` inside a db transaction in File IR unit function"
+                            )));
+                        }
                         // The ActorSelfField target does not lower the object
                         // expression, so consume the `self` identifier's
                         // preorder expression key here to keep every later
@@ -1013,6 +1019,11 @@ impl<'a> FunctionLowerer<'a> {
                             return Err(CompileError::Semantic(format!(
                             "cannot assign to field of readonly binding `{name}` in File IR unit function"
                         )));
+                        }
+                        if let Some(name) = self.immutable_assignment_base_identifier(object) {
+                            return Err(CompileError::Semantic(format!(
+                                "cannot assign to field of immutable binding `{name}` in File IR unit function"
+                            )));
                         }
                         self.lower_expr(object)?
                     },
@@ -1039,6 +1050,55 @@ impl<'a> FunctionLowerer<'a> {
             Expr::Field { object, .. } => self.readonly_assignment_base_identifier(object),
             _ => None,
         }
+    }
+
+    /// Root identifier of an assignment target chain that is an immutable
+    /// binding (let/ordinary parameter/const/loop/pattern binding): writing
+    /// any member path of it is rejected.
+    fn immutable_assignment_base_identifier<'b>(&self, target: &'b Expr) -> Option<&'b str> {
+        match target {
+            Expr::Identifier(name)
+                if self
+                    .bindings
+                    .get(name)
+                    .map(|binding| !binding.mutable)
+                    .unwrap_or(false) =>
+            {
+                Some(name.as_str())
+            }
+            Expr::Field { object, .. } => self.immutable_assignment_base_identifier(object),
+            _ => None,
+        }
+    }
+
+    /// Rejects a mutating receiver call whose receiver root is not writable
+    /// (immutable binding or readonly value): the mutator would mutate
+    /// through an immutable binding.
+    fn check_mutating_receiver_root(&self, object: &Expr, is_mutator: bool) -> Result<()> {
+        if !is_mutator {
+            return Ok(());
+        }
+        let mut chain = object;
+        while let Expr::Field { object, .. } = chain {
+            chain = object;
+        }
+        let Expr::Identifier(name) = chain else {
+            return Ok(());
+        };
+        let Some(binding) = self.bindings.get(name) else {
+            return Ok(());
+        };
+        if binding.readonly {
+            return Err(CompileError::Semantic(format!(
+                "cannot mutate through readonly binding `{name}` in File IR unit function"
+            )));
+        }
+        if !binding.mutable {
+            return Err(CompileError::Semantic(format!(
+                "cannot mutate through immutable binding `{name}` in File IR unit function"
+            )));
+        }
+        Ok(())
     }
 
     pub(super) fn consume_expression_key(&mut self) {
@@ -1468,14 +1528,6 @@ impl<'a> FunctionLowerer<'a> {
                 }
             }
             Expr::Call { callee, args } => {
-                if args
-                    .iter()
-                    .any(|arg| matches!(arg, CallArg::InOutPlace { .. }))
-                {
-                    return Err(CompileError::Semantic(
-                        "inout arguments are parsed but not yet supported".to_string(),
-                    ));
-                }
                 if let Some(payload) =
                     self.lower_representation_constructor_call(expression_key.as_ref(), callee, args)?
                 {
@@ -1696,17 +1748,98 @@ impl<'a> FunctionLowerer<'a> {
             _ => BTreeMap::new(),
         };
         for arg in args {
-            lowered_args.push(self.lower_expr(arg.expr())?);
+            match arg {
+                CallArg::Value(expr) => lowered_args.push(self.lower_expr(expr)?),
+                // An `inout <place>` argument carries no by-value payload: it
+                // lowers into `CallIr.inout_args` (root slot + selector path)
+                // only, and the place chain's expression keys are consumed
+                // there to keep preorder fact alignment (design §2.2).
+                CallArg::InOutPlace { .. } => {}
+            }
         }
+        let inout_args = match args
+            .iter()
+            .filter_map(|arg| match arg {
+                CallArg::InOutPlace { expr } => Some(self.lower_inout_arg(expr, &target)),
+                CallArg::Value(_) => None,
+            })
+            .collect::<Result<Vec<_>>>()?
+        {
+            inout if !inout.is_empty() => {
+                if !matches!(
+                    target,
+                    CallTargetIr::LocalExecutable { .. }
+                        | CallTargetIr::PublicationExecutable { .. }
+                        | CallTargetIr::PackageCallable { .. }
+                ) {
+                    return Err(CompileError::Semantic(format!(
+                        "inout arguments are only valid on exact local/package-direct call targets in File IR unit function"
+                    )));
+                }
+                inout
+            }
+            _ => Vec::new(),
+        };
         Ok(ExprIr::Call {
             call: CallIr {
                 target,
                 site: self.source_instruction_site(expression_key, "call")?,
                 args: lowered_args,
+                inout_args,
                 type_args,
                 metadata,
             },
         })
+    }
+
+    /// Lowers an `inout <place>` argument to its caller root slot plus exact
+    /// selector path. The source checker already validated the place and the
+    /// callee; this lowering stays defensive (no normal argument value is
+    /// emitted for the position — the representation exists for the emitter).
+    /// Each node of the place chain consumes its preorder expression key so
+    /// every later fact lookup stays aligned with the AST walk.
+    fn lower_inout_arg(&mut self, expr: &Expr, _target: &CallTargetIr) -> Result<InOutArgIr> {
+        let mut chain = expr;
+        let mut path = Vec::new();
+        loop {
+            match chain {
+                Expr::Generic { callee, .. } => {
+                    self.consume_expression_key();
+                    chain = callee;
+                }
+                Expr::Field { object, field } => {
+                    self.consume_expression_key();
+                    path.push(InOutPathSegmentIr::Field {
+                        name: field.clone(),
+                    });
+                    chain = object;
+                }
+                Expr::Identifier(name) => {
+                    self.consume_expression_key();
+                    let binding = self.bindings.get(name).ok_or_else(|| {
+                        CompileError::Semantic(format!(
+                            "inout argument root `{name}` is not a local binding in File IR unit function"
+                        ))
+                    })?;
+                    if !binding.mutable {
+                        return Err(CompileError::Semantic(format!(
+                            "inout argument root `{name}` is not a mutable var binding in File IR unit function"
+                        )));
+                    }
+                    path.reverse();
+                    return Ok(InOutArgIr {
+                        root_slot: binding.slot,
+                        path,
+                    });
+                }
+                _ => {
+                    return Err(CompileError::Semantic(
+                        "inout argument must be an exact local place in File IR unit function"
+                            .to_string(),
+                    ))
+                }
+            }
+        }
     }
 
     fn package_call_target(
@@ -1822,6 +1955,7 @@ impl<'a> FunctionLowerer<'a> {
             package_callable_id,
             expected_local_abi,
             exact_signature,
+            ..
         }) = expression_key.and_then(|key| self.resolved_call_targets.target(key))
         else {
             return Err(unsupported(format!(
@@ -2031,12 +2165,13 @@ impl<'a> FunctionLowerer<'a> {
         let ResolvedCallTarget::ReceiverBuiltin { op } = target else {
             return Ok(None);
         };
-        validate_supported_receiver_builtin_op(op).map_err(|error| {
+        let spec = validate_supported_receiver_builtin_op(op).map_err(|error| {
             unsupported(format!(
                 "typed receiver target `{}` is not canonical at ExpressionKey {expression_key:?}: {error}",
                 op.canonical_key
             ))
         })?;
+        self.check_mutating_receiver_root(object, spec.mutates_receiver)?;
         if op.method.as_str() != method_name {
             return Err(unsupported(format!(
                 "typed receiver target `{}` does not match callee method `{method_name}` at ExpressionKey {expression_key:?}",
@@ -2245,6 +2380,12 @@ impl<'a> FunctionLowerer<'a> {
             .and_then(|root| builtin_receiver_op_by_name(&root, method_name))
             .map(|op| CallTargetIr::ReceiverBuiltin { op })
         {
+            if let CallTargetIr::ReceiverBuiltin { op } = &target {
+                let mutates = validate_supported_receiver_builtin_op(op)
+                    .map(|spec| spec.mutates_receiver)
+                    .unwrap_or(false);
+                self.check_mutating_receiver_root(object, mutates)?;
+            }
             return Ok(Some(target));
         }
 

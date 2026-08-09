@@ -239,6 +239,16 @@ impl<'a> OwnerChecker<'a> {
             self.path_refinements.clear();
             return;
         };
+        // A root narrowing lives in `env`; a write through the bare root
+        // (whole-binding assignment or inout loan) reverts it to the recorded
+        // base (R-196). Member writes leave the root's nullability narrowing
+        // alone — only the member path and its subpaths lose their narrowing.
+        let root = path.split('.').next().unwrap_or(&path);
+        if path == root {
+            if let Some(base) = self.narrowing_base.remove(root) {
+                self.env.insert(root.to_string(), base);
+            }
+        }
         let descendant_prefix = format!("{path}.");
         self.path_refinements
             .retain(|refined, _| refined != &path && !refined.starts_with(&descendant_prefix));

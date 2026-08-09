@@ -754,6 +754,16 @@ fn lower_actor_declarations(
             .flat_map(|implementation| implementation.method_bodies.iter())
             .filter(|method| !method.is_static && method.name != "create")
             .map(|method| {
+                if method
+                    .params
+                    .iter()
+                    .any(|parameter| parameter.mode == skiff_syntax::ast::ParamMode::InOut)
+                {
+                    return Err(CompileError::Semantic(format!(
+                        "inout is not allowed on actor external method `{}.{}`; actor ABI boundaries materialize values",
+                        actor.name, method.name
+                    )));
+                }
                 let declaration_name = impl_method_declaration_name(&actor.name, &method.name);
                 let executable_index = executable_index
                     .entry(&declaration_name)

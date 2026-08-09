@@ -34,6 +34,13 @@ impl<'a> OwnerChecker<'a> {
     pub(super) fn apply_narrowing(&mut self, narrowing: &TypeNarrowing) {
         let projected_bindings = self.contract_projection.binding_snapshot();
         for (name, ty) in &narrowing.env {
+            // Record the pre-narrowing base once so write-side invalidation
+            // (assignment and inout loans, R-196) can restore it.
+            if !self.narrowing_base.contains_key(name) {
+                if let Some(previous) = self.env.get(name) {
+                    self.narrowing_base.insert(name.clone(), previous.clone());
+                }
+            }
             self.env.insert(name.clone(), ty.clone());
             let projected = match projected_bindings.get(name) {
                 Some(PackageTypeRef::Nullable { inner })

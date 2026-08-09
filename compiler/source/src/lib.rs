@@ -42,6 +42,7 @@ mod test_rules;
 pub(crate) mod type_projection;
 pub(crate) mod type_resolution_model;
 mod type_symbol_index;
+mod writable_places;
 
 use std::collections::BTreeMap;
 

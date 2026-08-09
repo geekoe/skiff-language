@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     ConstDeclarationIr, ConstIr, ConstLinkTargetIr, ExecutableBody, ExecutableDeclarationIr,
     ExecutableIr, ExecutableKind, ExecutableLinkTargetIr, FileIrUnit, FunctionTypeParamIr,
-    InterfaceDeclIr, InterfaceOperationIr, PackageExportIndex, ParamIr, SlotLayout, TypeDeclIr,
+    InterfaceDeclIr, InterfaceOperationIr, PackageExportIndex, ParamIr, ParamModeIr, SlotLayout, TypeDeclIr,
     TypeDeclarationIr, TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
 };
 
@@ -254,6 +254,7 @@ pub(super) fn public_instance_file_ir() -> FileIrUnit {
             name: "value".to_string(),
             slot: 1,
             ty: TypeRefIr::builtin("string"),
+            mode: ParamModeIr::Value,
         }],
         return_type: TypeRefIr::builtin("string"),
         self_type: Some(worker_type),

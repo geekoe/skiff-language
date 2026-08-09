@@ -718,11 +718,15 @@ fn lower_function_with_params(
         }
         // The body environment retains source spelling for expression
         // resolution only. Emitted parameter identity and shape come solely
-        // from the exact signature projected above.
+        // from the exact signature projected above. An `inout` parameter is a
+        // writable root while the loan is valid (design §3.1): the body may
+        // assign through the root and its exact paths, so the binding is
+        // declared mutable.
+        let inout = source_param.mode == skiff_syntax::ast::ParamMode::InOut;
         let slot = lowerer.declare_slot_with_type(
             &param.name,
             SlotKind::Param,
-            false,
+            inout,
             BindingReadonlyFlags::default(),
             Some(source_param.ty.name.clone()),
         )?;
@@ -730,6 +734,11 @@ fn lower_function_with_params(
             name: param.name.clone(),
             slot,
             ty: param.ty.clone(),
+            mode: if inout {
+                skiff_artifact_model::ParamModeIr::InOut
+            } else {
+                skiff_artifact_model::ParamModeIr::Value
+            },
         });
     }
 
@@ -771,6 +780,7 @@ fn lower_function_with_params(
                     reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
                 },
                 args,
+                inout_args: Vec::new(),
                 type_args,
                 metadata: BTreeMap::new(),
             },

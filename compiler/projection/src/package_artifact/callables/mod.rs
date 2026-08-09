@@ -97,6 +97,7 @@ pub(super) fn project_package_callable_surface(
             file_ir_units,
             package_schema_refs,
             resolved_package_schemas,
+            Some(callable.executable_index),
         )?;
         insert_callable_entry(
             &mut callable_links,

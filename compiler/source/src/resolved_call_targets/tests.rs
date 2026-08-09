@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::ExpressionOwnerKey;
 
 use super::*;
@@ -43,6 +45,7 @@ fn local_targets_project_to_source_callable_effect_owner_keys() {
         package_callable_id: PackageCallableId::new("callable:format"),
         expected_local_abi: PackageLocalAbiIdentity::new("abi:util"),
         exact_signature: None,
+        inout_parameters: BTreeMap::new(),
     };
     assert_eq!(dependency.source_callable_key(), None);
 

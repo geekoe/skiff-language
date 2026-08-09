@@ -242,6 +242,9 @@ pub enum BoundaryUnavailableReason {
     NativeAdapterUnavailable,
     UnsupportedBoundaryType,
     UnsupportedStream,
+    /// A callable carries an `inout` parameter. Inout loans cannot cross the
+    /// service boundary (value materialization always applies there).
+    InOutNotAllowedAtServiceBoundary,
 }
 
 /// All semantic facts are explicit even for a boundary-unavailable callable.

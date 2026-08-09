@@ -93,6 +93,28 @@ impl AstVisitor for ExpressionKeyIndexer<'_> {
     }
 }
 
+/// Expression key indexer for top-level const initializer values. Shares the
+/// preorder scheme of `ExpressionKeyIndexer` so expression keys agree with
+/// the resolved-call-targets collector.
+pub(super) struct ConstExpressionKeyIndexer<'a> {
+    pub(super) module_path: &'a str,
+    pub(super) owner: ExpressionOwnerKey,
+    pub(super) next_index: u32,
+    pub(super) keys: &'a mut BTreeMap<usize, ExpressionKey>,
+}
+
+impl AstVisitor for ConstExpressionKeyIndexer<'_> {
+    fn visit_expr(&mut self, expression: &Expr) {
+        let key = ExpressionKey::new(self.module_path, self.owner.clone(), self.next_index);
+        self.next_index = self
+            .next_index
+            .checked_add(1)
+            .expect("ExpressionSourceMap rejects expression preorder overflow");
+        self.keys.insert(expr_address(expression), key);
+        walk_expr(self, expression);
+    }
+}
+
 pub(super) fn top_level_value_names(ast: &SourceFile) -> BTreeSet<String> {
     let mut names = ast
         .imports

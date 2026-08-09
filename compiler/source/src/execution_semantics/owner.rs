@@ -13,7 +13,7 @@ use crate::{
 use super::{
     collectors::{expr_address, pattern_bindings, LocalNameCollector},
     model::{ExecutionSourceSite, SourceExecutionSemantics, TimeoutSourcePlan},
-    mutation::{binding_root_for_value, BindingRoot, Scope},
+    mutation::{binding_root_for_value, BindingEntry, BindingKind, BindingRoot, Scope},
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -26,6 +26,7 @@ pub(super) struct OwnerAnalyzer<'a> {
     pub(super) expression_keys: &'a BTreeMap<usize, ExpressionKey>,
     pub(super) resolved_targets: &'a ResolvedCallTargetFacts,
     pub(super) callable_effects: &'a SourceCallableEffectFacts,
+    pub(super) inout_param_indices: &'a BTreeMap<SourceSymbolKey, BTreeMap<usize, String>>,
     pub(super) semantics: &'a mut SourceExecutionSemantics,
     diagnostics: &'a mut Vec<String>,
     all_local_names: BTreeSet<String>,
@@ -43,6 +44,7 @@ impl<'a> OwnerAnalyzer<'a> {
         expression_keys: &'a BTreeMap<usize, ExpressionKey>,
         resolved_targets: &'a ResolvedCallTargetFacts,
         callable_effects: &'a SourceCallableEffectFacts,
+        inout_param_indices: &'a BTreeMap<SourceSymbolKey, BTreeMap<usize, String>>,
         top_level_value_names: BTreeSet<String>,
         semantics: &'a mut SourceExecutionSemantics,
         diagnostics: &'a mut Vec<String>,
@@ -58,6 +60,7 @@ impl<'a> OwnerAnalyzer<'a> {
             expression_keys,
             resolved_targets,
             callable_effects,
+            inout_param_indices,
             semantics,
             diagnostics,
             all_local_names: local_names.names,
@@ -70,10 +73,28 @@ impl<'a> OwnerAnalyzer<'a> {
             .function
             .params
             .iter()
-            .map(|parameter| (parameter.name.clone(), BindingRoot::Outer))
+            .map(|parameter| {
+                (
+                    parameter.name.clone(),
+                    BindingEntry {
+                        root: BindingRoot::Outer,
+                        kind: if parameter.mode == crate::shared::ast::ParamMode::InOut {
+                            BindingKind::InOutParam
+                        } else {
+                            BindingKind::Immutable
+                        },
+                    },
+                )
+            })
             .collect::<Scope>();
         if self.function.implicit_self.is_some() {
-            scope.insert("self".to_string(), BindingRoot::Outer);
+            scope.insert(
+                "self".to_string(),
+                BindingEntry {
+                    root: BindingRoot::Outer,
+                    kind: BindingKind::SelfValue,
+                },
+            );
         }
         self.validate_block(
             &self.function.body,
@@ -136,7 +157,19 @@ impl<'a> OwnerAnalyzer<'a> {
                 self.validate_expr(value, scope, context);
                 scope.insert(
                     name.clone(),
-                    binding_root_for_value(value, scope, context.in_lane, matches!(kind, LetKind::Var)),
+                    BindingEntry {
+                        root: binding_root_for_value(
+                            value,
+                            scope,
+                            context.in_lane,
+                            matches!(kind, LetKind::Var),
+                        ),
+                        kind: if matches!(kind, LetKind::Var) {
+                            BindingKind::Var
+                        } else {
+                            BindingKind::Immutable
+                        },
+                    },
                 );
             }
             Stmt::Assign { target, value } => {
@@ -178,11 +211,29 @@ impl<'a> OwnerAnalyzer<'a> {
                 let mut nested = scope.clone();
                 match binding {
                     ForBinding::Item { item } => {
-                        nested.insert(item.clone(), BindingRoot::LaneLocalOpaque);
+                        nested.insert(
+                            item.clone(),
+                            BindingEntry {
+                                root: BindingRoot::LaneLocalOpaque,
+                                kind: BindingKind::Immutable,
+                            },
+                        );
                     }
                     ForBinding::Entry { key, value } => {
-                        nested.insert(key.clone(), BindingRoot::LaneLocalOpaque);
-                        nested.insert(value.clone(), BindingRoot::LaneLocalOpaque);
+                        nested.insert(
+                            key.clone(),
+                            BindingEntry {
+                                root: BindingRoot::LaneLocalOpaque,
+                                kind: BindingKind::Immutable,
+                            },
+                        );
+                        nested.insert(
+                            value.clone(),
+                            BindingEntry {
+                                root: BindingRoot::LaneLocalOpaque,
+                                kind: BindingKind::Immutable,
+                            },
+                        );
                     }
                 }
                 self.validate_block(body, &mut nested, context);
@@ -201,7 +252,15 @@ impl<'a> OwnerAnalyzer<'a> {
                     nested.extend(
                         bindings
                             .into_iter()
-                            .map(|name| (name, BindingRoot::LaneLocalOpaque)),
+                            .map(|name| {
+                                (
+                                    name,
+                                    BindingEntry {
+                                        root: BindingRoot::LaneLocalOpaque,
+                                        kind: BindingKind::Immutable,
+                                    },
+                                )
+                            }),
                     );
                     self.validate_block(&arm.body, &mut nested, context);
                 }
@@ -271,6 +330,7 @@ impl<'a> OwnerAnalyzer<'a> {
                     self.validate_expr(argument.expr(), scope, context);
                 }
                 self.validate_mutating_call(expression, scope, context);
+                self.validate_inout_call(expression, args, scope, context);
             }
             Expr::InterfaceBox { value, .. } => self.validate_expr(value, scope, context),
             Expr::Field { object, .. } => self.validate_expr(object, scope, context),
@@ -330,7 +390,13 @@ impl<'a> OwnerAnalyzer<'a> {
                 self.validate_expr(&claim.key, scope, context);
                 let mut nested = scope.clone();
                 if let Some(binding) = &claim.binding {
-                    nested.insert(binding.clone(), BindingRoot::LaneLocalOpaque);
+                    nested.insert(
+                        binding.clone(),
+                        BindingEntry {
+                            root: BindingRoot::LaneLocalOpaque,
+                            kind: BindingKind::Immutable,
+                        },
+                    );
                 }
                 self.validate_block(&claim.body, &mut nested, context);
             }

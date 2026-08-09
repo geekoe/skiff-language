@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    shared::{ast::Expr, ast_utils::expr_path},
+    shared::ast::Expr,
+    writable_places::{place_from_expr, WritableRoot},
     ResolvedCallTarget,
 };
 
@@ -18,7 +19,27 @@ pub(super) enum BindingRoot {
     Scalar,
 }
 
-pub(super) type Scope = BTreeMap<String, BindingRoot>;
+/// Binding writability class (writable-place model, R-195).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum BindingKind {
+    /// Local `var` binding — a writable root.
+    Var,
+    /// `let` bindings, ordinary parameters, loop/pattern/with bindings and
+    /// top-level consts — never a writable root.
+    Immutable,
+    /// Actor `self` — `self.field` is a writable root.
+    SelfValue,
+    /// A currently valid `inout` loan parameter (callee side).
+    InOutParam,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct BindingEntry {
+    pub(super) root: BindingRoot,
+    pub(super) kind: BindingKind,
+}
+
+pub(super) type Scope = BTreeMap<String, BindingEntry>;
 
 impl OwnerAnalyzer<'_> {
     pub(super) fn validate_mutation_target(
@@ -30,23 +51,42 @@ impl OwnerAnalyzer<'_> {
         if !context.in_lane {
             return;
         }
-        let Some(root) =
-            expr_path(target).and_then(|path| path.split('.').next().map(str::to_string))
-        else {
+        let Some(place) = place_from_expr(target) else {
             self.diagnostic("concurrent mutation target has opaque root provenance");
             return;
         };
-        match scope.get(&root) {
-            Some(BindingRoot::LaneLocalFresh) => {}
-            Some(BindingRoot::Scalar) => {
+        let root_name = match &place.root {
+            WritableRoot::InOutParam(_) => {
+                self.diagnostic(
+                    "concurrent lane writes through an outer inout loan; inout-derived writes are forbidden",
+                );
+                return;
+            }
+            WritableRoot::ActorSelfField(_) => {
+                self.diagnostic("concurrent lane writes an actor self field");
+                return;
+            }
+            WritableRoot::VarBinding(name) => name,
+        };
+        let entry = scope.get(root_name).copied();
+        match entry.map(|entry| (entry.root, entry.kind)) {
+            Some((BindingRoot::LaneLocalFresh, BindingKind::Var)) => {}
+            Some((BindingRoot::Scalar, _)) => {
                 self.diagnostic(format!(
-                    "concurrent mutation target `{root}` is not a mutable lane-local fresh root"
+                    "concurrent mutation target `{root_name}` is not a mutable lane-local fresh root"
                 ));
             }
-            Some(BindingRoot::Outer | BindingRoot::LaneLocalOpaque) | None => {
+            Some((BindingRoot::Outer | BindingRoot::LaneLocalOpaque, BindingKind::Var))
+            | Some((BindingRoot::Outer, BindingKind::InOutParam))
+            | None => {
                 self.diagnostic(format!(
-                    "concurrent lane writes outer mutable root `{root}`; outer mutable root writes are forbidden"
+                    "concurrent lane writes outer mutable root `{root_name}`; outer mutable root writes are forbidden"
                 ))
+            }
+            _ => {
+                self.diagnostic(format!(
+                    "concurrent lane writes immutable binding `{root_name}`"
+                ));
             }
         }
     }
@@ -111,13 +151,54 @@ impl OwnerAnalyzer<'_> {
             }) => source_callable,
             _ => return,
         };
-        // TODO(WP3): re-derive via writable-place analysis. The concurrent
-        // local call may-write-outer-root gate previously read the retired
-        // `writesCallerReachable` aggregate flag; the effect wire no longer
-        // carries it (R-084), and the WP3 writable-place model will restore
-        // this check on var-derived paths. Until then the check is disabled so
-        // previously-valid programs are not blocked.
-        let _ = source_callable;
+        // Restored concurrent local-call gate (R-084/R-198): with the
+        // aggregate alias flags retired, the only caller-visible write channel
+        // is an explicit inout loan; sibling lanes may never issue inout
+        // calls, so any local call in a lane that would pass an outer
+        // var-derived (or inout-derived) place to an inout-taking callee is
+        // rejected through the writable-place model. Callees without inout
+        // parameters cannot write caller places under the new semantics.
+        let callee_has_inout = self
+            .inout_param_indices
+            .get(source_callable)
+            .is_some_and(|indices| !indices.is_empty());
+        if !callee_has_inout {
+            return;
+        }
+        let mut actuals = Vec::with_capacity(args.len() + usize::from(receiver_field.is_some()));
+        if matches!(
+            resolved_target,
+            Some(ResolvedCallTarget::LocalImplMethod { .. })
+        ) {
+            if let Some((receiver, _)) = receiver_field {
+                actuals.push(receiver);
+            }
+        }
+        actuals.extend(args.iter().map(|arg| arg.expr()));
+        for actual in actuals {
+            let Some(place) = place_from_expr(actual) else {
+                continue;
+            };
+            let root_name = match &place.root {
+                WritableRoot::VarBinding(name) => name.as_str(),
+                WritableRoot::InOutParam(_) | WritableRoot::ActorSelfField(_) => {
+                    self.diagnostic(format!(
+                        "concurrent local call `{}` may write outer mutable root through a loan; outer mutable root writes are forbidden",
+                        source_callable.symbol()
+                    ));
+                    continue;
+                }
+            };
+            let is_lane_local_fresh = scope
+                .get(root_name)
+                .is_some_and(|entry| entry.root == BindingRoot::LaneLocalFresh);
+            if !is_lane_local_fresh {
+                self.diagnostic(format!(
+                    "concurrent local call `{}` may write outer mutable root `{root_name}`; outer mutable root writes are forbidden",
+                    source_callable.symbol()
+                ));
+            }
+        }
     }
 
     pub(super) fn taint_lane_local_root_from_payloads<'expr>(
@@ -130,19 +211,26 @@ impl OwnerAnalyzer<'_> {
         if !context.in_lane {
             return;
         }
-        let Some(root) =
-            expr_path(target).and_then(|path| path.split('.').next().map(str::to_string))
-        else {
+        let Some(root) = place_from_expr(target).map(|place| place.root_name().to_string()) else {
             return;
         };
-        if scope.get(&root) != Some(&BindingRoot::LaneLocalFresh) {
+        if scope.get(&root) != Some(&BindingEntry {
+            root: BindingRoot::LaneLocalFresh,
+            kind: BindingKind::Var,
+        }) {
             return;
         }
         if payloads
             .into_iter()
             .any(|payload| !lane_local_payload_is_safe(payload, scope))
         {
-            scope.insert(root, BindingRoot::LaneLocalOpaque);
+            scope.insert(
+                root,
+                BindingEntry {
+                    root: BindingRoot::LaneLocalOpaque,
+                    kind: BindingKind::Var,
+                },
+            );
         }
     }
 }
@@ -158,9 +246,9 @@ pub(super) fn binding_root_for_value(
     }
     if definitely_lane_local_fresh(expression, scope) {
         BindingRoot::LaneLocalFresh
-    } else if let Some(root) = expr_path(expression)
-        .and_then(|path| path.split('.').next().map(str::to_string))
-        .and_then(|root| scope.get(&root).copied())
+    } else if let Some(root) = place_from_expr(expression)
+        .map(|place| place.root_name().to_string())
+        .and_then(|root| scope.get(&root).map(|entry| entry.root))
     {
         root
     } else if !mutable && matches!(expression, Expr::Literal(_)) {
@@ -225,11 +313,11 @@ fn lane_local_payload_is_safe(expression: &Expr, scope: &Scope) -> bool {
     if matches!(expression, Expr::Literal(_)) {
         return true;
     }
-    if let Some(root) = expr_path(expression)
-        .and_then(|path| path.split('.').next().map(str::to_string))
+    if let Some(root) = place_from_expr(expression)
+        .map(|place| place.root_name().to_string())
         .and_then(|root| scope.get(&root).copied())
     {
-        return matches!(root, BindingRoot::LaneLocalFresh | BindingRoot::Scalar);
+        return matches!(root.root, BindingRoot::LaneLocalFresh | BindingRoot::Scalar);
     }
     match expression {
         Expr::Binary { left, right, .. } => {
@@ -269,5 +357,345 @@ fn lane_local_payload_is_safe(expression: &Expr, scope: &Scope) -> bool {
         | Expr::DbLeaseClaim(_)
         | Expr::DbLeaseRead(_)
         | Expr::Dispatch { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use skiff_artifact_model::{BuiltinReceiverMethod, BuiltinReceiverOp, BuiltinReceiverRoot};
+
+    use crate::{
+        expression_model::ExpressionSourceMap,
+        shared::{
+            ast::{Expr, FunctionDecl, Stmt},
+            ast_utils::expr_path,
+            parser::parse_source,
+        },
+        ExpressionOwnerKey, ResolvedCallTarget, ResolvedCallTargetFacts, SourceCallableEffectFacts,
+        SourceSymbolKey,
+    };
+
+    use super::super::{
+        collectors::expr_address,
+        model::SourceExecutionSemantics,
+        mutation::{BindingEntry, BindingKind, BindingRoot, Scope},
+        owner::{OwnerAnalyzer, ValidationContext},
+    };
+
+    const MODULE_PATH: &str = "internal.binding_inout";
+
+    fn fixture_function(source: &str, name: &str) -> FunctionDecl {
+        let file = parse_source(source).expect("fixture should parse");
+        file.functions
+            .into_iter()
+            .find(|function| function.name == name)
+            .unwrap_or_else(|| panic!("fixture function {name} should be present"))
+    }
+
+    fn analyzer<'a>(
+        function: &'a FunctionDecl,
+        expression_sources: &'a ExpressionSourceMap,
+        expression_keys: &'a BTreeMap<usize, crate::ExpressionKey>,
+        resolved_targets: &'a ResolvedCallTargetFacts,
+        callable_effects: &'a SourceCallableEffectFacts,
+        inout_param_indices: &'a BTreeMap<SourceSymbolKey, BTreeMap<usize, String>>,
+        semantics: &'a mut SourceExecutionSemantics,
+        diagnostics: &'a mut Vec<String>,
+    ) -> OwnerAnalyzer<'a> {
+        OwnerAnalyzer::new(
+            MODULE_PATH,
+            ExpressionOwnerKey::Function("run".to_string()),
+            SourceSymbolKey::new(MODULE_PATH, "run"),
+            function,
+            expression_sources,
+            expression_keys,
+            resolved_targets,
+            callable_effects,
+            inout_param_indices,
+            BTreeSet::new(),
+            semantics,
+            diagnostics,
+        )
+    }
+
+    fn lane_scope() -> Scope {
+        BTreeMap::from([
+            (
+                "outer".to_string(),
+                BindingEntry {
+                    root: BindingRoot::Outer,
+                    kind: BindingKind::Var,
+                },
+            ),
+            (
+                "loan".to_string(),
+                BindingEntry {
+                    root: BindingRoot::Outer,
+                    kind: BindingKind::InOutParam,
+                },
+            ),
+            (
+                "laneFresh".to_string(),
+                BindingEntry {
+                    root: BindingRoot::LaneLocalFresh,
+                    kind: BindingKind::Var,
+                },
+            ),
+            (
+                "local".to_string(),
+                BindingEntry {
+                    root: BindingRoot::LaneLocalFresh,
+                    kind: BindingKind::Var,
+                },
+            ),
+            (
+                "locked".to_string(),
+                BindingEntry {
+                    root: BindingRoot::LaneLocalOpaque,
+                    kind: BindingKind::Immutable,
+                },
+            ),
+        ])
+    }
+
+    fn assign_targets(function: &FunctionDecl) -> Vec<&Expr> {
+        function
+            .body
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Stmt::Assign { target, .. } => Some(target),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn call_exprs(function: &FunctionDecl) -> Vec<&Expr> {
+        function
+            .body
+            .statements
+            .iter()
+            .filter_map(|statement| match statement {
+                Stmt::Expr(expr) => Some(expr),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn call_named<'a>(function: &'a FunctionDecl, method: &str) -> &'a Expr {
+        call_exprs(function)
+            .into_iter()
+            .find(|expr| match expr {
+                Expr::Call { callee, .. } => {
+                    expr_path(callee).is_some_and(|path| path.ends_with(method))
+                }
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("fixture should contain a call to {method}"))
+    }
+
+    /// R-198: a sibling lane must not write an outer captured var path, an
+    /// inout-derived path or any immutable binding; only a lane-local fresh
+    /// var root may be written.
+    #[test]
+    fn sibling_lane_writes_are_gated_on_writable_lane_local_roots() {
+        let function = fixture_function(
+            r#"
+                function run() -> void {
+                  var outer = 0
+                  var loan = 0
+                  var laneFresh = 0
+                  let locked = 0
+                  outer = 1
+                  loan = 2
+                  laneFresh = 3
+                  locked = 4
+                }
+            "#,
+            "run",
+        );
+        let targets = assign_targets(&function);
+        assert_eq!(targets.len(), 4);
+        let expression_sources = ExpressionSourceMap::default();
+        let expression_keys: BTreeMap<usize, crate::ExpressionKey> = BTreeMap::new();
+        let resolved_targets = ResolvedCallTargetFacts::empty();
+        let callable_effects = SourceCallableEffectFacts::default();
+        let inout_param_indices = BTreeMap::new();
+        let mut semantics = SourceExecutionSemantics::default();
+        let mut diagnostics = Vec::new();
+        let mut analyzer = analyzer(
+            &function,
+            &expression_sources,
+            &expression_keys,
+            &resolved_targets,
+            &callable_effects,
+            &inout_param_indices,
+            &mut semantics,
+            &mut diagnostics,
+        );
+        let scope = lane_scope();
+        let context = ValidationContext {
+            in_lane: true,
+            ..ValidationContext::default()
+        };
+        analyzer.validate_mutation_target(targets[0], &scope, context);
+        analyzer.validate_mutation_target(targets[1], &scope, context);
+        analyzer.validate_mutation_target(targets[2], &scope, context);
+        analyzer.validate_mutation_target(targets[3], &scope, context);
+        drop(analyzer);
+        assert_eq!(diagnostics.len(), 3, "unexpected diagnostics: {diagnostics:?}");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.contains("outer mutable root")),
+            "outer var write must be rejected: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().any(|d| d.contains("`loan`")),
+            "inout-derived write must be rejected: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.contains("immutable binding")),
+            "immutable write must be rejected: {diagnostics:?}"
+        );
+    }
+
+    /// R-198: a sibling lane must never issue an inout call.
+    #[test]
+    fn sibling_lanes_must_not_issue_inout_calls() {
+        let function = fixture_function(
+            r#"
+                function run() -> void {
+                  var x = 1
+                  inc(inout x)
+                }
+            "#,
+            "run",
+        );
+        let call = call_named(&function, "inc");
+        let expression_sources = ExpressionSourceMap::default();
+        let expression_keys: BTreeMap<usize, crate::ExpressionKey> = BTreeMap::new();
+        let resolved_targets = ResolvedCallTargetFacts::empty();
+        let callable_effects = SourceCallableEffectFacts::default();
+        let inout_param_indices = BTreeMap::new();
+        let mut semantics = SourceExecutionSemantics::default();
+        let mut diagnostics = Vec::new();
+        let mut analyzer = analyzer(
+            &function,
+            &expression_sources,
+            &expression_keys,
+            &resolved_targets,
+            &callable_effects,
+            &inout_param_indices,
+            &mut semantics,
+            &mut diagnostics,
+        );
+        analyzer.validate_inout_call(
+            call,
+            args_of(call),
+            &lane_scope(),
+            ValidationContext {
+                in_lane: true,
+                ..ValidationContext::default()
+            },
+        );
+        drop(analyzer);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.contains("sibling lane must not issue inout calls")),
+            "inout call inside a sibling lane must be rejected: {diagnostics:?}"
+        );
+    }
+
+    fn args_of(call: &Expr) -> &[crate::shared::ast::CallArg] {
+        let Expr::Call { args, .. } = call else {
+            panic!("expected a call expression");
+        };
+        args
+    }
+
+    /// R-198: a sibling lane may not mutate through a receiver mutator rooted
+    /// at an outer var, while a lane-local fresh var receiver stays allowed.
+    #[test]
+    fn sibling_lane_receiver_mutators_are_gated_on_lane_local_roots() {
+        let function = fixture_function(
+            r#"
+                function run() -> void {
+                  var items = Array.empty<number>()
+                  var local = Array.empty<number>()
+                  items.push(1)
+                  local.push(2)
+                }
+            "#,
+            "run",
+        );
+        let push_op = BuiltinReceiverOp::new(
+            BuiltinReceiverRoot::Array,
+            BuiltinReceiverMethod::Push,
+            skiff_artifact_model::RECEIVER_BUILTIN_CAPABILITY_VERSION,
+        )
+        .expect("Array.push op exists");
+        let calls = call_exprs(&function);
+        let expression_keys = calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                (
+                    expr_address(call),
+                    crate::ExpressionKey::new(
+                        MODULE_PATH,
+                        ExpressionOwnerKey::Function("run".to_string()),
+                        index as u32,
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let target_facts = calls
+            .iter()
+            .map(|call| {
+                let key = expression_keys[&expr_address(call)].clone();
+                (
+                    key,
+                    ResolvedCallTarget::ReceiverBuiltin { op: push_op },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let expression_sources = ExpressionSourceMap::default();
+        let resolved_targets = ResolvedCallTargetFacts::from_targets(target_facts);
+        let callable_effects = SourceCallableEffectFacts::default();
+        let inout_param_indices = BTreeMap::new();
+        let mut semantics = SourceExecutionSemantics::default();
+        let mut diagnostics = Vec::new();
+        let mut analyzer = analyzer(
+            &function,
+            &expression_sources,
+            &expression_keys,
+            &resolved_targets,
+            &callable_effects,
+            &inout_param_indices,
+            &mut semantics,
+            &mut diagnostics,
+        );
+        let scope = lane_scope();
+        let context = ValidationContext {
+            in_lane: true,
+            ..ValidationContext::default()
+        };
+        for call in &calls {
+            analyzer.validate_mutating_call(call, &mut scope.clone(), context);
+        }
+        drop(analyzer);
+        assert_eq!(diagnostics.len(), 1, "unexpected diagnostics: {diagnostics:?}");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.contains("outer mutable root")),
+            "outer-var receiver mutation must be rejected: {diagnostics:?}"
+        );
     }
 }
