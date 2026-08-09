@@ -4,7 +4,9 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_linked_bytecode::{
     LinkedBytecodeCandidate, LinkedFunction, LinkedInstructionTarget,
+    LinkedPackageBytecodeProvenance,
 };
+use skiff_runtime_loader::HydratedBytecodePackage;
 
 use crate::bytecode::{
     link_deployment, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
@@ -35,6 +37,11 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         provenance.declared_bytecode_identity(),
         fixture.bytecode_reference.bytecode_identity
     );
+    let hydrated_package = hydrated
+        .packages()
+        .get(&fixture.package_reference.package_build_id)
+        .unwrap();
+    assert_exact_v5_provenance(provenance, hydrated_package);
 
     assert_eq!(candidate.functions().len(), 2);
     let root = function(&candidate, ROOT_FUNCTION);
@@ -219,4 +226,38 @@ fn function<'a>(candidate: &'a LinkedBytecodeCandidate, key: &str) -> &'a Linked
         .iter()
         .find(|function| function.key().artifact_function_key().as_str() == key)
         .unwrap()
+}
+
+fn assert_exact_v5_provenance(
+    provenance: &LinkedPackageBytecodeProvenance,
+    package: &HydratedBytecodePackage,
+) {
+    let admitted = package.bytecode();
+    let view = admitted.view();
+
+    assert_eq!(provenance.magic(), "skiff-bytecode");
+    assert_eq!(provenance.schema_version(), "skiff-bytecode-v5");
+    assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v4");
+    assert_eq!(provenance.schema_version(), view.schema_version());
+    assert_eq!(provenance.isa_version(), view.isa_version());
+    assert_eq!(
+        provenance.opcode_table_fingerprint(),
+        view.opcode_table_fingerprint()
+    );
+    assert_eq!(
+        provenance.authorities().native_value_lifecycle_registry(),
+        view.native_value_lifecycle_registry()
+    );
+    assert_eq!(
+        provenance.authorities().value_lifecycle_policy(),
+        view.value_lifecycle_policy()
+    );
+    assert_eq!(
+        provenance.authorities().host_effect_registry(),
+        view.host_effect_registry()
+    );
+    assert_eq!(
+        provenance.authorities().intrinsic_registry(),
+        view.intrinsic_registry()
+    );
 }

@@ -4,7 +4,8 @@ use skiff_artifact_model::{
     contract_for_opcode, BytecodeRelocation, OperandKind, ValidatedFunction, BYTECODE_MAGIC,
 };
 use skiff_runtime_linked_bytecode::{
-    BytecodePackageIndex, LinkedPackageBytecodeProvenance, SpecializationKey,
+    BytecodePackageIndex, LinkedBytecodeAuthorityPins, LinkedPackageBytecodeProvenance,
+    SpecializationKey,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -125,6 +126,19 @@ impl<'a> DeploymentLinker<'a> {
                     location: self.deployment_location(),
                 })?;
                 let view = package.bytecode().view();
+                let authorities = LinkedBytecodeAuthorityPins::new(
+                    view.native_value_lifecycle_registry().clone(),
+                    view.value_lifecycle_policy().clone(),
+                    view.host_effect_registry().clone(),
+                    view.intrinsic_registry().clone(),
+                )
+                .map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ExactPackageClosure,
+                        self.package_location(package),
+                        error.to_string(),
+                    )
+                })?;
                 LinkedPackageBytecodeProvenance::new(
                     BytecodePackageIndex::new(index),
                     package.reference().package_build_id.clone(),
@@ -134,7 +148,7 @@ impl<'a> DeploymentLinker<'a> {
                     view.schema_version(),
                     view.isa_version(),
                     view.opcode_table_fingerprint(),
-                    view.native_value_lifecycle_registry().clone(),
+                    authorities,
                 )
                 .map_err(|error| {
                     unsatisfied(

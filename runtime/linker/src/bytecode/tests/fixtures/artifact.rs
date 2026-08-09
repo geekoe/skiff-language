@@ -35,6 +35,9 @@ pub(super) fn bytecode_artifact(program: RootProgram) -> BytecodeArtifact {
         opcode_table_fingerprint: opcode_table_fingerprint(),
         native_value_lifecycle_registry:
             skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
+        host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
+        intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
         bytecode_identity: "unassigned".to_string(),
         image: BytecodeImage {
             functions,
