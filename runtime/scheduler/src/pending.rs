@@ -400,12 +400,15 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+type SharedPendingCell<R, S, O> = Arc<PendingCell<R, S, O>>;
+type PendingCellTable<R, S, O> = HashMap<PendingTicket, SharedPendingCell<R, S, O>>;
+
 struct RegistryInner<R, S, O> {
-    cells: Mutex<HashMap<PendingTicket, Arc<PendingCell<R, S, O>>>>,
+    cells: Mutex<PendingCellTable<R, S, O>>,
 }
 
 impl<R, S, O> RegistryInner<R, S, O> {
-    fn remove_exact(&self, ticket: PendingTicket, expected: &Arc<PendingCell<R, S, O>>) {
+    fn remove_exact(&self, ticket: PendingTicket, expected: &SharedPendingCell<R, S, O>) {
         let mut cells = lock_unpoisoned(&self.cells);
         if cells
             .get(&ticket)
@@ -419,7 +422,7 @@ impl<R, S, O> RegistryInner<R, S, O> {
 /// Cloneable authority handed to a host operation after roots are escrowed.
 /// Every clone races through the same single-winner terminal arbiter.
 pub struct CompletionHandle<R, S, O> {
-    cell: Arc<PendingCell<R, S, O>>,
+    cell: SharedPendingCell<R, S, O>,
     registry: Weak<RegistryInner<R, S, O>>,
 }
 
@@ -705,7 +708,9 @@ mod tests {
         Dropped(RootDisposition),
     }
 
-    struct RecordingRoots(Arc<Mutex<Vec<RootEvent>>>);
+    type RootEventLog = Arc<Mutex<Vec<RootEvent>>>;
+
+    struct RecordingRoots(RootEventLog);
 
     impl VmRootSource for RecordingRoots {
         fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
@@ -794,13 +799,10 @@ mod tests {
     }
 
     type Registry = PendingRegistry<u64, &'static str, &'static str>;
+    type TestCompletion = super::CompletionHandle<u64, &'static str, &'static str>;
+    type PendingFixture = (TestCompletion, RootEventLog);
 
-    fn begin(
-        registry: &Registry,
-    ) -> (
-        super::CompletionHandle<u64, &'static str, &'static str>,
-        Arc<Mutex<Vec<RootEvent>>>,
-    ) {
+    fn begin(registry: &Registry) -> PendingFixture {
         let events = Arc::new(Mutex::new(Vec::new()));
         let handle = registry
             .begin(RootEscrow::new(Box::new(RecordingRoots(Arc::clone(
