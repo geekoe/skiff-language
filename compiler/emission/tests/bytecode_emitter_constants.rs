@@ -175,7 +175,7 @@ fn representation_annotation_without_an_owned_child_edge_fails_closed() {
 }
 
 #[test]
-fn record_shapes_are_relocated_after_module_owned_type_qualification() {
+fn record_shape_without_nominal_field_facts_fails_closed() {
     fn owner(module_path: &str) -> (MirUnit, FrozenConstantBundle) {
         let mut file_ir = FileIrUnit::empty(module_path, "source-hash");
         file_ir.type_table = vec![
@@ -221,55 +221,20 @@ fn record_shapes_are_relocated_after_module_owned_type_qualification() {
 
     let (alpha_mir, alpha_bundle) = owner("alpha_shape");
     let (zeta_mir, zeta_bundle) = owner("zeta_shape");
-    let artifact = emit_constants(&[zeta_mir, alpha_mir], &[zeta_bundle, alpha_bundle]);
-
-    let pooled_types = artifact
-        .image
-        .pools
-        .types
-        .iter()
-        .map(|entry| match entry {
-            BytecodePoolEntry::TypeRef { ty } => ty,
-            _ => panic!("types pool is homogeneous"),
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        pooled_types,
-        vec![
-            &TypeRefIr::PublicationType {
-                module_path: "alpha_shape".to_string(),
-                type_index: 0,
-            },
-            &TypeRefIr::PublicationType {
-                module_path: "zeta_shape".to_string(),
-                type_index: 0,
-            },
-        ]
-    );
-
-    let field_type_rows = artifact
-        .image
-        .pools
-        .shapes
-        .iter()
-        .map(|entry| match entry {
-            BytecodePoolEntry::ShapeRef { shape } => shape.field_types.clone(),
-            _ => panic!("shapes pool is homogeneous"),
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(field_type_rows, vec![vec![0], vec![1]]);
-
-    let graph_shape_refs = artifact
-        .image
-        .frozen_constant_graph
-        .nodes
-        .iter()
-        .filter_map(|node| match node {
-            FrozenConstantNode::Record { shape_index, .. } => Some(*shape_index),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(graph_shape_refs, vec![0, 1]);
+    let error = emit_bytecode_artifact(
+        &[zeta_mir, alpha_mir],
+        &[zeta_bundle, alpha_bundle],
+        &BytecodeValueTransferPlans::default(),
+        &opcode_table_fingerprint(),
+    )
+    .expect_err("record constants require nominal field and lifecycle facts");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedConstantNode {
+            construct: "Record",
+            ..
+        }
+    ));
 }
 
 #[test]

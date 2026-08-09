@@ -326,15 +326,18 @@ fn relocate_node(
                     field_count: shape.field_count(),
                 });
             }
-            let shape_index = *shape_map.get(*shape_index as usize).ok_or_else(|| {
+            let _ = shape_map.get(*shape_index as usize).ok_or_else(|| {
                 BytecodeEmissionError::InvalidConstantGraph {
                     symbol: symbol.to_string(),
                     message: format!("shape relocation {shape_index} is absent"),
                 }
             })?;
-            Ok(FrozenConstantNode::Record {
-                shape_index,
-                children: relocate_children(children)?,
+            let _ = relocate_children(children)?;
+            Err(BytecodeEmissionError::UnsupportedConstantNode {
+                symbol: symbol.to_string(),
+                node_index,
+                construct: "Record",
+                reason: "the frozen shape sidecar has no nominal owner, field names, or explicit field transfer plans",
             })
         }
         FrozenConstantNode::TypeRef { .. } => Err(
