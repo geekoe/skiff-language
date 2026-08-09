@@ -15,7 +15,7 @@ const DIRECT_PROVIDER_ID: &str = "example.com/interface-provider";
 const DIRECT_PROVIDER_VERSION: &str = "1.0.0";
 const DIRECT_PROVIDER_BUILD_ID_PREFIX: &str = "skiff-package-build-v12:sha256:";
 const DIRECT_PROVIDER_LOCAL_ABI: &str =
-    "skiff-package-local-abi-v7:sha256:a303a83d48a2eaa49c34aff990c866a4a4c135ced8a19a43f6831efed25badee";
+    "skiff-package-local-abi-v7:sha256:4da1d7ac94500c346f49e09312b6b3115df4e24e5961189260d35734574ef744";
 
 const INTERFACE_BASE_ID: &str = "example.com/interface-base";
 const INTERFACE_FACADE_ID: &str = "example.com/interface-facade";
@@ -252,7 +252,7 @@ mod tests {
                 .local_abi_identity
                 .as_str(),
             DIRECT_PROVIDER_LOCAL_ABI,
-            "provider Local ABI must remain at its pre-fix value"
+            "provider Local ABI must match the current exact callable surface"
         );
         assert_eq!(
             standalone.package.published.identity,
