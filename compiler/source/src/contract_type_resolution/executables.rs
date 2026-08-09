@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{CallableEffectSummary, PackageCallableParameter};
+use skiff_artifact_model::{CallableEffectSummary, PackageCallableParameter, ParamModeIr};
 
 use crate::{
     parsed_sources::ParsedCompilerSource,
@@ -133,6 +133,10 @@ impl ExecutableSignatureBuilder<'_> {
                     ty: self
                         .resolver
                         .resolve_source_type_ref(&parameter.ty, &context)?,
+                    mode: match parameter.mode {
+                        crate::shared::ast::ParamMode::Value => ParamModeIr::Value,
+                        crate::shared::ast::ParamMode::InOut => ParamModeIr::InOut,
+                    },
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;

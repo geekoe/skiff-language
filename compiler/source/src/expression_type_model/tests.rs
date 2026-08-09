@@ -501,7 +501,7 @@ fn package_and_service_test_effect_throw_use_open_nominal_payloads() {
                     may_pending: false,
                     pending_effect_categories: Vec::new(),
                     inout_path_effects: Vec::new(),
-},
+                },
             },
             provenance: CallableProvenanceSummary::Unknown {
                 reason: CallableProvenanceUnknownReason::AnalysisPending,
@@ -516,6 +516,7 @@ fn package_and_service_test_effect_throw_use_open_nominal_payloads() {
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),
             },
+            mode: skiff_artifact_model::ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("string"),

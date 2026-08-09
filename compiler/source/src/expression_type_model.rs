@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    builtin_receiver_op_spec_by_name, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr,
-    PackageSymbolRef, PackageTypeRef, TypeRefIr,
+    builtin_receiver_op_spec_by_name, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, BuiltinReceiverPublicReturnType,
+    LiteralIr, PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamModeIr, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
     catch_result_branches, contains_type_param, debug_text, is_null_type, map_entry,
@@ -814,6 +815,29 @@ impl<'a> OwnerChecker<'a> {
                 operation,
             } => {
                 let contract = &operation.contract;
+                let mut parameters = Vec::with_capacity(contract.parameters.len());
+                for parameter in &contract.parameters {
+                    if !matches!(
+                        &parameter.value_plan,
+                        BoundaryValuePlan::Linkable {
+                            carrier: BoundaryValueCarrier::DetachedValueGraph,
+                            encoding: BoundaryValueEncoding::CanonicalValue,
+                            owner: BoundaryValueOwner::Caller,
+                            lifetime: BoundaryValueLifetime::Call,
+                        }
+                    ) {
+                        self.outputs.diagnostics.push(format!(
+                            "{}: compiler test effect target `{target}` parameter `{}` is not proven to use the ordinary boundary value calling mode",
+                            self.module_path, parameter.name
+                        ));
+                        return false;
+                    }
+                    parameters.push(skiff_artifact_model::PackageCallableParameter {
+                        name: parameter.name.clone(),
+                        ty: package_type_ref_from_contract_type(&parameter.ty),
+                        mode: ParamModeIr::Value,
+                    });
+                }
                 let return_type = match &contract.stream {
                     skiff_artifact_model::BoundaryStreamContract::Unary => {
                         package_type_ref_from_contract_type(&contract.return_value.ty)
@@ -836,14 +860,7 @@ impl<'a> OwnerChecker<'a> {
                 (
                     skiff_artifact_model::PackageCallableSignature {
                         type_params: Vec::new(),
-                        parameters: contract
-                            .parameters
-                            .iter()
-                            .map(|parameter| skiff_artifact_model::PackageCallableParameter {
-                                name: parameter.name.clone(),
-                                ty: package_type_ref_from_contract_type(&parameter.ty),
-                            })
-                            .collect(),
+                        parameters,
                         return_type,
                         may_suspend: true,
                     },
@@ -1437,9 +1454,7 @@ impl<'a> OwnerChecker<'a> {
                     then_expr,
                     else_expr,
                 } => self.check_ternary_expr(&key, condition, then_expr, else_expr),
-                Expr::Call { callee, args } => {
-                    self.check_call_expr(&key, callee, args)
-                }
+                Expr::Call { callee, args } => self.check_call_expr(&key, callee, args),
                 Expr::Generic { callee, .. } => {
                     if diagnose_unknown_field {
                         self.check_expr(callee)

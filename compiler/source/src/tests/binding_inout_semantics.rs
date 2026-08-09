@@ -19,7 +19,7 @@ use skiff_artifact_model::{
     PackageArtifact, PackageBuildId, PackageCallableId, PackageCallableParameter,
     PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageTypeRef,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, TypeRefIr, ValueProvenance,
+    TypeRefIr, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_input::{CompilerPlatformSources, PackageDependency};
 
@@ -180,6 +180,7 @@ fn package_direct_inout_dependency() -> SourceDependencyAnalysisInput {
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("number"),
             },
+            mode: skiff_artifact_model::ParamModeIr::InOut,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("void"),
@@ -209,6 +210,7 @@ fn package_direct_inout_dependency() -> SourceDependencyAnalysisInput {
             ty: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("number"),
             },
+            mode: skiff_artifact_model::ParamModeIr::Value,
         }],
         return_type: PackageTypeRef::Local {
             local_type: TypeRefIr::builtin("void"),

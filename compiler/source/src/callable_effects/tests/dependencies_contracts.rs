@@ -102,6 +102,7 @@ fn dependency_exact_signature_controls_caller_suspension() {
                 ty: PackageTypeRef::Local {
                     local_type: TypeRefIr::builtin("string"),
                 },
+                mode: skiff_artifact_model::ParamModeIr::Value,
             }],
             return_type: PackageTypeRef::Local {
                 local_type: TypeRefIr::builtin("string"),

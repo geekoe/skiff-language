@@ -20,6 +20,7 @@ pub(super) fn substitute_requirement(
                 Ok(PackageCallableParameter {
                     name: parameter.name.clone(),
                     ty: substitute_package_type(&parameter.ty, substitutions)?,
+                    mode: parameter.mode,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?,

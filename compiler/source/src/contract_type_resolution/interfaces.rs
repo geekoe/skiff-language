@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::PackageCallableParameter;
+use skiff_artifact_model::{PackageCallableParameter, ParamModeIr};
 
 use crate::{
     parsed_sources::ParsedCompilerSource,
@@ -139,6 +139,10 @@ fn exact_requirement_signature(
             Ok(PackageCallableParameter {
                 name: parameter.name.clone(),
                 ty: resolver.resolve_source_type_ref(&parameter.ty, &context)?,
+                mode: match parameter.mode {
+                    crate::shared::ast::ParamMode::Value => ParamModeIr::Value,
+                    crate::shared::ast::ParamMode::InOut => ParamModeIr::InOut,
+                },
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
