@@ -156,7 +156,7 @@ fn decode_never_panics_and_always_reports_structured_errors() {
     let mut state = 0x1234_5678u32;
     let word = |state: &mut u32| {
         *state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        (*state >> 8) & 0xFFFF_FFFF
+        *state >> 8
     };
     for _ in 0..500 {
         let length = (state % 64) as usize;

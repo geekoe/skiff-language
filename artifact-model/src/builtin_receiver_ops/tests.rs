@@ -92,14 +92,13 @@ fn callable_semantics_registry_is_sparse_exact_and_safe() {
         .expect("JsonObject.delete must remain a supported runtime receiver op");
     assert!(builtin_receiver_callable_semantics(deleting_json_object).is_some());
 
-    for missing in [builtin_receiver_op_by_name("string", "replaceAll").unwrap()] {
-        assert_eq!(
-            builtin_receiver_callable_semantics(missing),
-            None,
-            "{} must remain fail closed",
-            missing.canonical_key
-        );
-    }
+    let missing = builtin_receiver_op_by_name("string", "replaceAll").unwrap();
+    assert_eq!(
+        builtin_receiver_callable_semantics(missing),
+        None,
+        "{} must remain fail closed",
+        missing.canonical_key
+    );
 }
 
 #[test]

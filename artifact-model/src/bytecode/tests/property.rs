@@ -316,6 +316,9 @@ fn assert_structured_validation_error(error: &StructuralValidationError) {
 ///
 /// The input is interpreted as little-endian `u32` words; trailing 1–3 bytes
 /// are ignored. Both decode and validate run; neither may panic.
+// cargo-fuzz injects `cfg(fuzzing)` through RUSTFLAGS; it is intentionally not
+// modeled as an ordinary crate feature.
+#[allow(unexpected_cfgs)]
 #[cfg(fuzzing)]
 pub fn fuzz_bytecode_decode_words(data: &[u8]) {
     let words: Vec<u32> = data

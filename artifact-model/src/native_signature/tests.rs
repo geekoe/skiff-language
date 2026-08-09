@@ -124,8 +124,8 @@ fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
             .any(|signature| signature.binding_key == semantics.binding_key));
         let is_emit_response = semantics.binding_key == "std.http.stream.emitResponse";
         assert_eq!(semantics.effects.escapes_caller_value, is_emit_response);
-        assert_eq!(semantics.effects.requires_same_heap_identity, false);
-        assert_eq!(semantics.effects.invokes_unknown_target, false);
+        assert!(!semantics.effects.requires_same_heap_identity);
+        assert!(!semantics.effects.invokes_unknown_target);
         let is_pending = is_emit_response
             || matches!(
                 semantics.binding_key,
