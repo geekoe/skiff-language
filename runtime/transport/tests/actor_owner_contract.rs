@@ -179,7 +179,7 @@ struct OwnerJson {
 // ActorOwnershipRegistry reference model
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct OwnershipCounters {
     reservations: usize,
     commits: usize,
@@ -191,23 +191,6 @@ struct OwnershipCounters {
     epoch_mismatches: usize,
     rejected_commits: usize,
     rejected_aborts: usize,
-}
-
-impl Default for OwnershipCounters {
-    fn default() -> Self {
-        Self {
-            reservations: 0,
-            commits: 0,
-            aborts: 0,
-            conflicts: 0,
-            renewals: 0,
-            releases: 0,
-            expired: 0,
-            epoch_mismatches: 0,
-            rejected_commits: 0,
-            rejected_aborts: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

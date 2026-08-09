@@ -7,6 +7,10 @@
 //! TEST-ONLY reference model. Not production code; W-session must implement
 //! the same semantics from the contract doc and consume the shared corpus.
 
+// This standalone integration-test crate is compiled only as a test target;
+// wrapping the whole file in `cfg(test)` would add indentation without scope.
+#![allow(clippy::tests_outside_test_module)]
+
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

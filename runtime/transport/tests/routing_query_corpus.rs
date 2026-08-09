@@ -6,6 +6,10 @@
 //! TEST-ONLY reference model. Not production code; W-routing-query must
 //! implement the frozen projection and consume the same fixtures.
 
+// This standalone integration-test crate is compiled only as a test target;
+// wrapping the whole file in `cfg(test)` would add indentation without scope.
+#![allow(clippy::tests_outside_test_module)]
+
 use std::collections::HashSet;
 
 use serde::Deserialize;
@@ -197,13 +201,13 @@ fn candidate_query(
 ) -> Vec<String> {
     let mut candidates = Vec::new();
     for session in sessions {
-        if !session.registered
-            || session.cancelled
-            || session.revision != directory_revision
-        {
+        if !session.registered || session.cancelled || session.revision != directory_revision {
             continue;
         }
-        let build_id_eligible = session.loaded_build_ids.iter().any(|id| id == &query.build_id)
+        let build_id_eligible = session
+            .loaded_build_ids
+            .iter()
+            .any(|id| id == &query.build_id)
             || (session.lazy_load && session.artifact_root == *router_artifact_root);
         if !build_id_eligible {
             continue;

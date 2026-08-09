@@ -6,6 +6,10 @@
 //! runtime cancel/disconnect, captured writer fence and generation close.
 //! Not production code.
 
+// This standalone integration-test crate is compiled only as a test target;
+// wrapping the whole file in `cfg(test)` would add indentation without scope.
+#![allow(clippy::tests_outside_test_module)]
+
 use std::collections::HashMap;
 
 const OUTBOUND_PER_GENERATION: usize = 2;
@@ -242,7 +246,7 @@ impl BrokerRef {
         let count = affected.len();
         for peer_key in &affected {
             let gen_key = self.outbound_by_peer.get(peer_key).cloned().expect("owner");
-            self.settle_outbound(&gen_key, &peer_key);
+            self.settle_outbound(&gen_key, peer_key);
         }
         count
     }

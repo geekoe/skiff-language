@@ -8,6 +8,10 @@
 //! semantics (owner/invariant in the contract docs) and consume the same
 //! fixtures.
 
+// This standalone integration-test crate is compiled only as a test target;
+// wrapping the whole file in `cfg(test)` would add indentation without scope.
+#![allow(clippy::tests_outside_test_module)]
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -147,9 +151,9 @@ fn load_catalog() -> Catalog {
 
 #[derive(Debug, Clone)]
 enum CatalogFrame {
-    ConnectionRequest,
-    ConnectionCancel,
-    ConnectionResponse,
+    Request,
+    Cancel,
+    Response,
 }
 
 fn decode_catalog_frame(entry: &FrameEntry) -> CatalogFrame {
@@ -167,7 +171,7 @@ fn decode_catalog_frame(entry: &FrameEntry) -> CatalogFrame {
                 "connection request header JSON must match"
             );
             let _ = (header.deadline.is_some(), payload);
-            CatalogFrame::ConnectionRequest
+            CatalogFrame::Request
         }
         "ConnectionCancel" => {
             let header =
@@ -180,7 +184,7 @@ fn decode_catalog_frame(entry: &FrameEntry) -> CatalogFrame {
                 entry.header,
                 "connection cancel header JSON must match"
             );
-            CatalogFrame::ConnectionCancel
+            CatalogFrame::Cancel
         }
         "ConnectionResponse" => {
             let (header, payload) =
@@ -194,7 +198,7 @@ fn decode_catalog_frame(entry: &FrameEntry) -> CatalogFrame {
                 "connection response header JSON must match"
             );
             let _ = (header.outcome, payload);
-            CatalogFrame::ConnectionResponse
+            CatalogFrame::Response
         }
         other => panic!("unknown decodeAs {other}"),
     }
@@ -214,19 +218,19 @@ fn frame_catalog_is_byte_exact_and_complete() {
     for (name, entry) in &catalog.frames {
         let semantic = decode_catalog_frame(entry);
         let expected_frame_type = match &semantic {
-            CatalogFrame::ConnectionRequest => "connection.request",
-            CatalogFrame::ConnectionCancel => "connection.request.cancel",
-            CatalogFrame::ConnectionResponse => "connection.response",
+            CatalogFrame::Request => "connection.request",
+            CatalogFrame::Cancel => "connection.request.cancel",
+            CatalogFrame::Response => "connection.response",
         };
         assert_eq!(
             entry.frame_type, expected_frame_type,
             "{name}: frameType must match decodeAs"
         );
         match &semantic {
-            CatalogFrame::ConnectionRequest | CatalogFrame::ConnectionCancel => {
+            CatalogFrame::Request | CatalogFrame::Cancel => {
                 assert_eq!(entry.direction, "RuntimeToRouter");
             }
-            CatalogFrame::ConnectionResponse => {
+            CatalogFrame::Response => {
                 assert_eq!(entry.direction, "RouterToRuntime");
             }
         }
@@ -698,7 +702,7 @@ fn parse_safe_integer(node: Option<&LexNode>) -> Option<i128> {
     if negative {
         exact = -exact;
     }
-    if exact > 9_007_199_254_740_991 || exact < -9_007_199_254_740_991 {
+    if !(-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&exact) {
         return None;
     }
     Some(exact)
@@ -1769,7 +1773,7 @@ fn generate_frame_catalog_document() -> Value {
         "ConnectionCancel",
         "connection.request.cancel",
         encode_connection_request_cancel_frame(&cancel_header()).unwrap(),
-        serde_json::to_value(&cancel_header()).unwrap(),
+        serde_json::to_value(cancel_header()).unwrap(),
     );
 
     add(
@@ -1782,7 +1786,7 @@ fn generate_frame_catalog_document() -> Value {
             br#"{"ok":true}"#,
         )
         .unwrap(),
-        serde_json::to_value(&response_header(ConnectionResponseOutcome::Success)).unwrap(),
+        serde_json::to_value(response_header(ConnectionResponseOutcome::Success)).unwrap(),
     );
     let mut remote_header = response_header(ConnectionResponseOutcome::Remote);
     remote_header.remote = Some(ConnectionRemoteErrorFrameHeader {

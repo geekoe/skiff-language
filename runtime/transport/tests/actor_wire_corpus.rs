@@ -384,7 +384,7 @@ mod tests {
         }
     }
 
-    fn expected_frame_type<'a>(name: &'a str) -> &'a str {
+    fn expected_frame_type(name: &str) -> &str {
         if name == "actor.owner.control.activateInitial" {
             "actor.owner.control"
         } else {

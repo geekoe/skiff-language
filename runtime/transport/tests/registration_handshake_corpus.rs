@@ -7,6 +7,10 @@
 //! W-session implementation. W-session must implement the frozen semantics
 //! (owner/invariant in the M4 contract) and consume the same fixtures.
 
+// This standalone integration-test crate is compiled only as a test target;
+// wrapping the whole file in `cfg(test)` would add indentation without scope.
+#![allow(clippy::tests_outside_test_module)]
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 

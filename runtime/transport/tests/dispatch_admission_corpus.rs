@@ -7,6 +7,10 @@
 //! TEST-ONLY reference model. Not production code; W-dispatch must implement
 //! the frozen semantics and consume the same fixtures.
 
+// This standalone integration-test crate is compiled only as a test target;
+// wrapping the whole file in `cfg(test)` would add indentation without scope.
+#![allow(clippy::tests_outside_test_module)]
+
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Deserialize;
