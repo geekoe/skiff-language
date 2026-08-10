@@ -9,6 +9,7 @@ mod manifests;
 mod property;
 mod roundtrip;
 mod schema_snapshot;
+mod source_coverage;
 
 use std::collections::BTreeMap;
 
@@ -120,6 +121,30 @@ pub(crate) fn main_function_words() -> Vec<u32> {
         0xFFFF_FFEB,
         0x25,
     ]
+}
+
+fn source_map_source(start_pc: u32, end_pc: u32, start_line: u32, end_line: u32) -> SourceMapEntry {
+    SourceMapEntry {
+        start_pc,
+        end_pc,
+        site: crate::InstructionSourceSite::Source {
+            span: crate::SourceSpanRef {
+                source_id: 0,
+                start: crate::SourcePosition::new(start_line, 1),
+                end: crate::SourcePosition::new(end_line, 1),
+            },
+        },
+    }
+}
+
+fn source_map_synthetic(start_pc: u32, end_pc: u32) -> SourceMapEntry {
+    SourceMapEntry {
+        start_pc,
+        end_pc,
+        site: crate::InstructionSourceSite::Synthetic {
+            reason: crate::SyntheticInstructionSiteReason::RuntimeControlFlow,
+        },
+    }
 }
 
 pub(crate) fn main_function() -> RelocatableBytecodeFunction {
@@ -237,28 +262,11 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
             },
         ],
         source_map: vec![
-            SourceMapEntry {
-                start_pc: 0,
-                end_pc: 10,
-                site: crate::InstructionSourceSite::Source {
-                    span: crate::SourceSpanRef {
-                        source_id: 0,
-                        start: crate::SourcePosition::new(1, 1),
-                        end: crate::SourcePosition::new(3, 1),
-                    },
-                },
-            },
-            SourceMapEntry {
-                start_pc: 10,
-                end_pc: 28,
-                site: crate::InstructionSourceSite::Source {
-                    span: crate::SourceSpanRef {
-                        source_id: 0,
-                        start: crate::SourcePosition::new(3, 1),
-                        end: crate::SourcePosition::new(9, 1),
-                    },
-                },
-            },
+            source_map_source(0, 10, 1, 3),
+            source_map_synthetic(10, 11),
+            source_map_source(11, 17, 3, 9),
+            source_map_synthetic(17, 18),
+            source_map_source(18, 28, 3, 9),
         ],
     }
 }
@@ -294,7 +302,7 @@ pub(crate) fn helper_function() -> RelocatableBytecodeFunction {
             statement_id: "s:helper:entry".to_string(),
             charge_kind: StatementChargeKind::FunctionEntry,
         }],
-        source_map: Vec::new(),
+        source_map: vec![source_map_synthetic(0, 1)],
     }
 }
 
@@ -330,7 +338,7 @@ pub(crate) fn callback_function() -> RelocatableBytecodeFunction {
             statement_id: "s:callback:entry".to_string(),
             charge_kind: StatementChargeKind::FunctionEntry,
         }],
-        source_map: Vec::new(),
+        source_map: vec![source_map_synthetic(0, 1)],
     }
 }
 

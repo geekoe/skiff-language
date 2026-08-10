@@ -127,6 +127,23 @@ fn legal_words(rng: &mut WordGen) -> Vec<u32> {
         .collect()
 }
 
+fn legal_source_map(words: &[u32]) -> Vec<SourceMapEntry> {
+    let requires_source = words.iter().any(|&word| {
+        let opcode = u8::try_from(word).expect("legal opcode fits in u8");
+        matches!(
+            opcode_contract_for(opcode)
+                .expect("legal opcode has a canonical contract")
+                .source,
+            SourceContract::Required { .. }
+        )
+    });
+    if requires_source {
+        vec![source_map_synthetic(0, words.len() as u32)]
+    } else {
+        Vec::new()
+    }
+}
+
 /// Minimal legal artifact shell around one function whose body is `words`:
 /// no pools, no constant graph, no debug table, empty frame. Every pool,
 /// relocation, table, slot or branch operand in `words` is therefore checked
@@ -254,7 +271,13 @@ fn legal_seed_artifacts_are_deterministic() {
     for seed in SEEDS {
         let mut rng = WordGen::new(seed);
         let words = legal_words(&mut rng);
-        let artifact = shell_artifact(words.clone());
+        let mut artifact = shell_artifact(words.clone());
+        artifact
+            .image
+            .functions
+            .get_mut("module::f")
+            .expect("legal shell function exists")
+            .source_map = legal_source_map(&words);
 
         let view = structurally_validate(&artifact).expect("legal words must validate");
         let first = decoder.decode_function(&words).expect("legal words decode");

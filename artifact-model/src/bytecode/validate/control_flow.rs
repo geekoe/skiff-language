@@ -2,7 +2,10 @@ use crate::bytecode::decode::{decode_branch_target, DecodedFunction, DecodedInst
 use crate::bytecode::dto::{
     limits, BytecodeArtifact, BytecodePoolEntry, BytecodePools, RelocatableBytecodeFunction,
 };
-use crate::bytecode::opcodes::{Arity, Opcode, OperandKind, OperandRole, PoolCategory};
+use crate::bytecode::opcodes::{
+    contract_for_opcode, Arity, Opcode, OperandKind, OperandRole, PoolCategory, SourceContract,
+    SourceOriginConstraint,
+};
 
 use super::{
     descriptor_mismatch, entry_is_kind, header_error, index_out_of_bounds, limit_error,
@@ -611,45 +614,40 @@ fn validate_source_map(
         previous_end = Some(entry.end_pc);
     }
     for instruction in &decoded.instructions {
-        if !opcode_requires_source(instruction.descriptor.kind) {
+        let SourceContract::Required { origin, .. } =
+            contract_for_opcode(instruction.descriptor.kind).source
+        else {
             continue;
-        }
+        };
         let coverage = function
             .source_map
             .iter()
             .filter(|entry| entry.start_pc <= instruction.pc && instruction.pc < entry.end_pc)
-            .count();
-        if coverage != 1 {
+            .collect::<Vec<_>>();
+        let [entry] = coverage.as_slice() else {
             return Err(table_error(
                 key,
                 format!(
-                    "{} at pc {} requires exactly one source/synthetic site (found {coverage})",
+                    "{} at pc {} requires exactly one source/synthetic site (found {})",
+                    instruction.descriptor.mnemonic,
+                    instruction.pc,
+                    coverage.len()
+                ),
+            ));
+        };
+        if origin == SourceOriginConstraint::SyntheticOnly
+            && !matches!(&entry.site, crate::InstructionSourceSite::Synthetic { .. })
+        {
+            return Err(table_error(
+                key,
+                format!(
+                    "{} at pc {} requires a synthetic instruction source site",
                     instruction.descriptor.mnemonic, instruction.pc
                 ),
             ));
         }
     }
     Ok(())
-}
-
-fn opcode_requires_source(opcode: Opcode) -> bool {
-    matches!(
-        opcode,
-        Opcode::CallLocal
-            | Opcode::CallLocalInOut
-            | Opcode::TailCallLocal
-            | Opcode::CallService
-            | Opcode::CallActor
-            | Opcode::CallInterface
-            | Opcode::InvokeCallback
-            | Opcode::StreamNext
-            | Opcode::EmitStream
-            | Opcode::Throw
-            | Opcode::Rethrow
-            | Opcode::Trap
-            | Opcode::InvokeHost
-            | Opcode::InvokeIntrinsic
-    )
 }
 
 fn validate_switch_tables(

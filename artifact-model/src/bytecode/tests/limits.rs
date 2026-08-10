@@ -60,6 +60,24 @@ fn checkpoint_function(
     slot_count: u32,
 ) -> RelocatableBytecodeFunction {
     let module_path = key.split_once("::").map_or("module", |(module, _)| module);
+    let words = vec![
+        descriptor_for_opcode(Opcode::BudgetCheckpoint)
+            .opcode
+            .into();
+        instruction_count
+    ];
+    let source_map = if words.is_empty() {
+        Vec::new()
+    } else {
+        assert!(matches!(
+            contract_for_opcode(Opcode::BudgetCheckpoint).source,
+            SourceContract::Required {
+                origin: SourceOriginConstraint::SyntheticOnly,
+                ..
+            }
+        ));
+        vec![source_map_synthetic(0, words.len() as u32)]
+    };
     RelocatableBytecodeFunction {
         function_key: key.to_string(),
         origin: BytecodeFunctionOrigin::Executable {
@@ -71,7 +89,7 @@ fn checkpoint_function(
         },
         type_parameters: Vec::new(),
         self_type_ref: None,
-        words: vec![0x14; instruction_count],
+        words,
         relocations: Vec::new(),
         call_loan_layouts: Vec::new(),
         frame_layout: FrameLayout {
@@ -97,7 +115,7 @@ fn checkpoint_function(
             })
             .into_iter()
             .collect(),
-        source_map: Vec::new(),
+        source_map,
     }
 }
 
