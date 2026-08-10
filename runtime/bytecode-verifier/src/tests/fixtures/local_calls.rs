@@ -1,5 +1,6 @@
 mod effects;
 mod statements;
+mod tail_matrix;
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -26,6 +27,8 @@ use skiff_runtime_linked_bytecode::{
 use skiff_runtime_loader::{DeploymentBytecodeLoader, HydratedDeploymentBytecode};
 
 use super::{bytecode_statement_manifest_identity, candidate_parts, contract, ExactResolver};
+
+pub(crate) use tail_matrix::{loader_backed_tail_case, TailMatrixCase, TailMatrixFixture};
 
 const CALLER_FUNCTION: &str = "fixture::caller";
 const TARGET_FUNCTION: &str = "fixture::target";
@@ -184,6 +187,14 @@ fn package(
     bytecode: &ValidatedBytecodeArtifact,
     corruption: LocalCallCandidateCorruption,
 ) -> PackageArtifact {
+    package_with_caller_summary(bytecode, corruption, effects::canonical_summary())
+}
+
+fn package_with_caller_summary(
+    bytecode: &ValidatedBytecodeArtifact,
+    corruption: LocalCallCandidateCorruption,
+    caller_summary: CallableEffectSummary,
+) -> PackageArtifact {
     let package_id = "example.local-authority";
     let caller = callable(CALLER_CALLABLE);
     let target = callable(TARGET_CALLABLE);
@@ -259,10 +270,7 @@ fn package(
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
         callable_semantic_facts: BTreeMap::from([
-            (
-                caller,
-                effects::semantic_facts(effects::canonical_summary()),
-            ),
+            (caller, effects::semantic_facts(caller_summary)),
             (target, effects::semantic_facts(target_summary.clone())),
             (target_alias.clone(), target_alias_facts),
         ]),

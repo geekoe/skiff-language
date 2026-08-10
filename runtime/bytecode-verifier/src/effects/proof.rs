@@ -221,16 +221,29 @@ fn prove_instruction(
             }
             Ok(())
         }
-        Opcode::CallLocal => prove_local_call(
+        Opcode::CallLocal => prove_exact_local_call(
             caller_index,
             instruction,
             caller,
             control_flow_and_calls,
             verified,
+            None,
         ),
+        Opcode::TailCallLocal => {
+            let target = control_flow_and_calls
+                .proved_tail_call_target(caller_index, instruction)
+                .ok_or_else(|| tail_unavailable(location))?;
+            prove_exact_local_call(
+                caller_index,
+                instruction,
+                caller,
+                control_flow_and_calls,
+                verified,
+                Some(target),
+            )
+        }
         Opcode::SwitchTag
         | Opcode::Trap
-        | Opcode::TailCallLocal
         | Opcode::CallService
         | Opcode::CallActor
         | Opcode::CallInterface
@@ -278,12 +291,13 @@ fn prove_instruction(
     }
 }
 
-fn prove_local_call(
+fn prove_exact_local_call(
     caller_index: FunctionIndex,
     instruction: InstructionIndex,
     caller: &VerifiedFunctionEffects,
     control_flow_and_calls: &ControlFlowAndCallFacts,
     verified: &VerifiedCallableEffects,
+    proved_tail_target: Option<FunctionIndex>,
 ) -> Result<(), VerificationError> {
     let location = instruction_location(caller_index, instruction);
     let plan = control_flow_and_calls
@@ -299,6 +313,12 @@ fn prove_local_call(
     let ExactTargetCoordinate::LocalFunction(target_index) = plan.target() else {
         return Err(unavailable(location));
     };
+    if proved_tail_target.is_some_and(|target| target != target_index) {
+        return Err(tail_violation(
+            location,
+            "tail-call transfer proof disagrees with the exact effect edge",
+        ));
+    }
     let target = verified
         .function(target_index)
         .ok_or_else(|| violation_error(location, "effect call target has no dense certificate"))?;
@@ -317,6 +337,21 @@ fn prove_local_call(
             Err(unavailable(location))
         }
         PendingPlan::Never | PendingPlan::ActualWithResume(_) => Err(unavailable(location)),
+    }
+}
+
+fn tail_unavailable(location: VerificationLocation) -> VerificationError {
+    VerificationError::ProofUnavailable {
+        obligation: VerificationObligation::TailCall,
+        location,
+    }
+}
+
+fn tail_violation(location: VerificationLocation, detail: impl Into<String>) -> VerificationError {
+    VerificationError::SemanticViolation {
+        obligation: VerificationObligation::TailCall,
+        location,
+        detail: detail.into(),
     }
 }
 

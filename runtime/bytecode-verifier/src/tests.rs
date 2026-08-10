@@ -18,6 +18,7 @@ mod control_flow;
 pub(crate) mod fixtures;
 mod frozen_constants;
 mod stack_state;
+mod tail_calls;
 mod targets;
 
 fn limits() -> VerificationLimits {

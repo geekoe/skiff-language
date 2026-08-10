@@ -1,5 +1,6 @@
 mod cfg;
 mod resume;
+mod tail;
 mod targets;
 mod transfer;
 
@@ -21,6 +22,7 @@ pub(crate) use self::targets::{ExactCallPlan, ExactTargetCoordinate, PendingPlan
 pub(crate) struct ControlFlowAndCallFacts {
     control_flow: ControlFlowFacts,
     exact_targets: ExactTargetAndCallFacts,
+    tail_calls: tail::VerifiedTailCallFacts,
     instructions: VerifiedInstructionFacts,
     _empty_resume: resume::EmptyResumeProof,
 }
@@ -43,6 +45,16 @@ impl ControlFlowAndCallFacts {
         instruction: InstructionIndex,
     ) -> Option<&ExactCallPlan> {
         self.exact_targets.call_plan(function, instruction)
+    }
+
+    pub(crate) fn proved_tail_call_target(
+        &self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> Option<FunctionIndex> {
+        self.tail_calls
+            .proof(function, instruction)
+            .map(tail::VerifiedTailCallProof::target)
     }
 
     pub(crate) fn instruction_rows(&self) -> &[VerifiedFunctionInstructions] {
@@ -283,13 +295,20 @@ pub(crate) fn prove_control_flow_and_stack(
         &facts,
         limits,
     )?;
-    transfer::prove_stack_and_slot_state(candidate, concrete_values, &targets, &mut facts, limits)?;
+    let tail_calls = transfer::prove_stack_and_slot_state(
+        candidate,
+        concrete_values,
+        &targets,
+        &mut facts,
+        limits,
+    )?;
     let empty_resume =
         resume::prove_resume_sites(candidate, concrete_values, &targets, &facts, limits)?;
     let instructions = VerifiedInstructionFacts::try_from_candidate(candidate, &facts)?;
     Ok(ControlFlowAndCallFacts {
         control_flow: facts,
         exact_targets: targets,
+        tail_calls,
         instructions,
         _empty_resume: empty_resume,
     })
@@ -348,4 +367,5 @@ pub(crate) fn prove_stack_and_slot_state_for_test(
         &mut control_flow,
         limits,
     )
+    .map(drop)
 }

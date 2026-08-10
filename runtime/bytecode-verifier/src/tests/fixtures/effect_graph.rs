@@ -35,6 +35,7 @@ pub(crate) struct EffectGraphFunction {
     pub(crate) may_suspend: bool,
     pub(crate) target: Option<u32>,
     pub(crate) call_kind: EffectGraphCallKind,
+    pub(crate) trailing_return: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -131,7 +132,7 @@ fn artifact_function(
     ordinal: usize,
     function: &EffectGraphFunction,
 ) -> RelocatableBytecodeFunction {
-    let (words, relocations) = match (function.call_kind, function.target) {
+    let (mut words, relocations) = match (function.call_kind, function.target) {
         (EffectGraphCallKind::Ordinary, Some(target)) => (
             vec![0x20, 0, 0, 0, 0x14, 0x25],
             vec![BytecodeRelocation::LocalExecutableRef {
@@ -168,6 +169,9 @@ fn artifact_function(
         | (EffectGraphCallKind::InOut, None) => (vec![0x25], Vec::new()),
         (EffectGraphCallKind::Resume, Some(_)) => panic!("resume fixture cannot have a target"),
     };
+    if function.trailing_return && matches!(function.call_kind, EffectGraphCallKind::Tail) {
+        words.push(0x25);
+    }
     RelocatableBytecodeFunction {
         function_key: function_key(ordinal),
         origin: BytecodeFunctionOrigin::Executable {
@@ -344,7 +348,7 @@ fn linked_function(
     keys: &[SpecializationKey],
     function: &EffectGraphFunction,
 ) -> LinkedFunction {
-    let instructions = match (function.call_kind, function.target) {
+    let mut instructions = match (function.call_kind, function.target) {
         (EffectGraphCallKind::Ordinary, Some(target)) => {
             vec![linked_call(target), linked_budget(), linked_return(5)]
         }
@@ -360,6 +364,9 @@ fn linked_function(
         }
         (EffectGraphCallKind::Resume, Some(_)) => panic!("resume fixture cannot have a target"),
     };
+    if function.trailing_return && matches!(function.call_kind, EffectGraphCallKind::Tail) {
+        instructions.push(linked_return(3));
+    }
     let states = (0..instructions.len())
         .map(|instruction| {
             LinkedProgramPointState::new(

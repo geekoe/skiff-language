@@ -32,6 +32,7 @@ pub(crate) mod stack_state;
 
 pub(super) use local_calls::TARGET_FUNCTION_INDEX;
 pub(crate) use local_calls::{loader_backed_local_call, LocalCallCandidateCorruption};
+pub(crate) use local_calls::{loader_backed_tail_case, TailMatrixCase, TailMatrixFixture};
 pub(super) use owner_authority::{
     owner_authority_fixture, OwnerAuthorityFixture, OwnerRequirementMode, OwnerTypeSurface,
     OWNER_CALLER_PACKAGE_ID, OWNER_DEPENDENCY_ALIAS, OWNER_SCHEMA_KEY, OWNER_SELF_TYPE_PATH,

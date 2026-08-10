@@ -1,4 +1,5 @@
 mod slots;
+mod tail;
 mod values;
 
 use skiff_artifact_model::{
@@ -9,7 +10,7 @@ use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedBytecodeCandidate, LinkedFunction, LinkedInstruction, TypeIndex,
 };
 
-use super::super::{AbstractValue, ProgramPointState};
+use super::super::{tail::VerifiedTailCallProof, AbstractValue, ProgramPointState};
 use super::ExactTargetAndCallFacts;
 use crate::{
     concrete_values::{ConcreteValueFacts, ImplicitBuiltin},
@@ -25,10 +26,16 @@ struct Context<'a> {
     candidate: &'a LinkedBytecodeCandidate,
     function: &'a LinkedFunction,
     instruction: &'a LinkedInstruction,
+    instruction_index: InstructionIndex,
     contract: &'static OpcodeContract,
     call: Option<CallTypes>,
     facts: &'a ConcreteValueFacts,
     location: VerificationLocation,
+}
+
+pub(super) enum InstructionTransfer {
+    Continue(ProgramPointState),
+    Tail(VerifiedTailCallProof),
 }
 
 pub(super) fn apply(
@@ -38,7 +45,7 @@ pub(super) fn apply(
     before: &ProgramPointState,
     facts: &ConcreteValueFacts,
     targets: &ExactTargetAndCallFacts,
-) -> Result<ProgramPointState, VerificationError> {
+) -> Result<InstructionTransfer, VerificationError> {
     let location = VerificationLocation::Instruction {
         function: function.index(),
         instruction: instruction_index,
@@ -47,9 +54,8 @@ pub(super) fn apply(
         .instructions()
         .get(instruction_index.get() as usize)
         .ok_or_else(|| violation(location, "instruction coordinate is out of bounds"))?;
-    require_supported(instruction.opcode(), location)?;
-    let call = targets
-        .call_plan(function.index(), instruction_index)
+    let exact_call = targets.call_plan(function.index(), instruction_index);
+    let call = exact_call
         .map(|plan| {
             if plan
                 .parameters()
@@ -72,21 +78,28 @@ pub(super) fn apply(
         candidate,
         function,
         instruction,
+        instruction_index,
         contract: contract_for_opcode(instruction.opcode()),
         call,
         facts,
         location,
     };
 
+    if instruction.opcode() == Opcode::TailCallLocal {
+        let plan = exact_call.ok_or_else(|| tail::unavailable(location))?;
+        return tail::prove(before, &context, plan).map(InstructionTransfer::Tail);
+    }
+    require_supported(instruction.opcode(), location)?;
+
     let (mut stack, inputs) = consume_inputs(before, &context)?;
     let next_slots = slots::apply(before, &inputs, &context)?;
     produce_outputs(&mut stack, before, &inputs, &context)?;
-    Ok(ProgramPointState {
+    Ok(InstructionTransfer::Continue(ProgramPointState {
         stack: stack.into_boxed_slice(),
         slots: next_slots.into_boxed_slice(),
         active_regions: before.active_regions.clone(),
         writable_loans: before.writable_loans.clone(),
-    })
+    }))
 }
 
 fn require_supported(

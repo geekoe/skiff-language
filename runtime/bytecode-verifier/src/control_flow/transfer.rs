@@ -8,6 +8,7 @@ use skiff_runtime_linked_bytecode::{
 };
 
 use super::{
+    tail::{VerifiedTailCallFacts, VerifiedTailCallProof},
     ControlFlowEdgeKind, ControlFlowFacts, ExactTargetAndCallFacts, FunctionFlowFacts,
     ProgramPointState,
 };
@@ -25,13 +26,14 @@ pub(super) fn prove_stack_and_slot_state(
     targets: &ExactTargetAndCallFacts,
     control_flow: &mut ControlFlowFacts,
     limits: &VerificationLimits,
-) -> Result<(), VerificationError> {
+) -> Result<VerifiedTailCallFacts, VerificationError> {
     if candidate.functions().len() != control_flow.functions.len() {
         return Err(violation(
             VerificationLocation::Image,
             "CFG function facts are not dense with the candidate",
         ));
     }
+    let mut tail_rows = Vec::with_capacity(candidate.functions().len());
     for (ordinal, (function, flow)) in candidate
         .functions()
         .iter()
@@ -49,9 +51,16 @@ pub(super) fn prove_stack_and_slot_state(
                 "candidate functions are not dense",
             ));
         }
-        prove_function(function, candidate, concrete_values, targets, flow, limits)?;
+        tail_rows.push(prove_function(
+            function,
+            candidate,
+            concrete_values,
+            targets,
+            flow,
+            limits,
+        )?);
     }
-    Ok(())
+    VerifiedTailCallFacts::try_from_dense(candidate, targets, tail_rows)
 }
 
 fn prove_function(
@@ -61,7 +70,7 @@ fn prove_function(
     targets: &ExactTargetAndCallFacts,
     flow: &mut FunctionFlowFacts,
     limits: &VerificationLimits,
-) -> Result<(), VerificationError> {
+) -> Result<Vec<Option<VerifiedTailCallProof>>, VerificationError> {
     let instruction_count = function.instructions().len();
     if flow.successors.len() != instruction_count {
         return Err(violation(
@@ -76,6 +85,7 @@ fn prove_function(
     states[0] = Some(entry);
     let mut worklist = VecDeque::from([0_usize]);
     let mut computed_max = 0_u32;
+    let mut tail_proofs = vec![None; instruction_count];
 
     while let Some(ordinal) = worklist.pop_front() {
         let instruction = instruction_index(function, ordinal)?;
@@ -86,7 +96,7 @@ fn prove_function(
             .cloned()
             .ok_or_else(|| violation(location, "worklist instruction has no input state"))?;
         computed_max = record_depth(computed_max, &before, limits, location)?;
-        let after = instruction::apply(
+        let transfer = instruction::apply(
             candidate,
             function,
             instruction,
@@ -94,28 +104,48 @@ fn prove_function(
             concrete_values,
             targets,
         )?;
-        computed_max = record_depth(computed_max, &after, limits, location)?;
 
-        for edge in &flow.successors[ordinal] {
-            if edge.kind != ControlFlowEdgeKind::Ordinary {
-                return Err(VerificationError::ProofUnavailable {
-                    obligation: VerificationObligation::ExceptionRegion,
-                    location,
-                });
-            }
-            let target = edge.target.get() as usize;
-            let target_location = instruction_location(function, edge.target);
-            let Some(target_state) = states.get_mut(target) else {
-                return Err(violation(target_location, "CFG successor is out of bounds"));
-            };
-            match target_state {
-                None => {
-                    *target_state = Some(after.clone());
-                    worklist.push_back(target);
+        match transfer {
+            instruction::InstructionTransfer::Tail(proof) => {
+                if !flow.successors[ordinal].is_empty() {
+                    return Err(tail_violation(
+                        location,
+                        "tail-call terminal unexpectedly has a CFG successor",
+                    ));
                 }
-                Some(current) => {
-                    if state::merge(current, &after, concrete_values, target_location)? {
-                        worklist.push_back(target);
+                if let Some(previous) = tail_proofs[ordinal].replace(proof) {
+                    if previous != proof {
+                        return Err(tail_violation(
+                            location,
+                            "tail-call proof changed while merging input state",
+                        ));
+                    }
+                }
+            }
+            instruction::InstructionTransfer::Continue(after) => {
+                computed_max = record_depth(computed_max, &after, limits, location)?;
+                for edge in &flow.successors[ordinal] {
+                    if edge.kind != ControlFlowEdgeKind::Ordinary {
+                        return Err(VerificationError::ProofUnavailable {
+                            obligation: VerificationObligation::ExceptionRegion,
+                            location,
+                        });
+                    }
+                    let target = edge.target.get() as usize;
+                    let target_location = instruction_location(function, edge.target);
+                    let Some(target_state) = states.get_mut(target) else {
+                        return Err(violation(target_location, "CFG successor is out of bounds"));
+                    };
+                    match target_state {
+                        None => {
+                            *target_state = Some(after.clone());
+                            worklist.push_back(target);
+                        }
+                        Some(current) => {
+                            if state::merge(current, &after, concrete_values, target_location)? {
+                                worklist.push_back(target);
+                            }
+                        }
                     }
                 }
             }
@@ -147,7 +177,7 @@ fn prove_function(
     state::compare_hint(function, &completed_states, concrete_values)?;
     flow.states_before = completed_states.into_boxed_slice();
     flow.computed_max_operand_depth = computed_max;
-    Ok(())
+    Ok(tail_proofs)
 }
 
 fn record_depth(
@@ -209,6 +239,14 @@ const fn instruction_location(
 fn violation(location: VerificationLocation, detail: impl Into<String>) -> VerificationError {
     VerificationError::SemanticViolation {
         obligation: VerificationObligation::StackAndSlotState,
+        location,
+        detail: detail.into(),
+    }
+}
+
+fn tail_violation(location: VerificationLocation, detail: impl Into<String>) -> VerificationError {
+    VerificationError::SemanticViolation {
+        obligation: VerificationObligation::TailCall,
         location,
         detail: detail.into(),
     }

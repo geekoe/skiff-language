@@ -16,7 +16,10 @@ use super::{candidate_parts, exact_hydration_with_types};
 mod calls;
 mod constants;
 
-pub(crate) use calls::{call_argument_mismatch_fixture, call_result_fixture};
+pub(crate) use calls::{
+    call_argument_mismatch_fixture, call_result_fixture, tail_argument_mismatch_fixture,
+    tail_copy_live_fixture, tail_live_cleanup_fixture, tail_residue_fixture, tail_result_fixture,
+};
 pub(crate) use constants::constant_fixture;
 
 pub(crate) struct StackFixture {
@@ -139,6 +142,19 @@ fn call_local(argument_count: u32, result_count: u32) -> LinkedInstruction {
         0,
     )
     .expect("local-call test instruction is valid")
+}
+
+fn tail_call(argument_count: u32) -> LinkedInstruction {
+    LinkedInstruction::new(
+        Opcode::TailCallLocal,
+        Box::new([0, argument_count]),
+        Box::new([LinkedResolvedOperand::new(
+            0,
+            LinkedInstructionTarget::Function(FunctionIndex::new(1)),
+        )]),
+        0,
+    )
+    .expect("tail-call test instruction is valid")
 }
 
 fn linked_types(

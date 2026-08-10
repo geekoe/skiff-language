@@ -6,6 +6,9 @@ use crate::{
 };
 
 use super::fixtures::{
+    effect_graph::{
+        analyzed, bottom, loader_backed_effect_graph, EffectGraphCallKind, EffectGraphFunction,
+    },
     generous_limits, loader_backed_local_call, LocalCallCandidateCorruption, TARGET_FUNCTION_INDEX,
 };
 
@@ -72,6 +75,47 @@ fn exact_rows_become_dense_reclassified_schedule_without_double_charge() {
             .unwrap()
             .len(),
         3
+    );
+}
+
+#[test]
+fn loader_backed_tail_expression_becomes_one_tail_hop() {
+    let functions = vec![
+        EffectGraphFunction {
+            summary: analyzed(bottom()),
+            may_suspend: false,
+            target: Some(1),
+            call_kind: EffectGraphCallKind::Tail,
+            trailing_return: false,
+        },
+        EffectGraphFunction {
+            summary: analyzed(bottom()),
+            may_suspend: false,
+            target: None,
+            call_kind: EffectGraphCallKind::Ordinary,
+            trailing_return: false,
+        },
+    ];
+    let (hydrated, candidate) = loader_backed_effect_graph(functions);
+    let schedule = crate::verifier::prove_statement_schedule_for_test(
+        &hydrated,
+        &candidate,
+        &generous_limits(),
+    )
+    .expect("exact tail attribution must produce a verified schedule");
+
+    let events = schedule
+        .events_at(FunctionIndex::new(0), InstructionIndex::new(0))
+        .expect("tail instruction is in the dense schedule");
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].charge_kind(), StatementChargeKind::TailHop);
+    assert!(matches!(
+        events[0].attribution_id(),
+        StatementAttributionId::Expression { .. }
+    ));
+    assert_eq!(
+        schedule.frame_entry_charge_kind(TARGET_FUNCTION_INDEX),
+        Some(StatementChargeKind::FunctionEntry)
     );
 }
 

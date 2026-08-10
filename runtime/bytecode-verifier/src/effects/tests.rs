@@ -55,6 +55,7 @@ fn unknown_never_becomes_no_pending_from_either_local_abi_value() {
             may_suspend,
             target: None,
             call_kind: EffectGraphCallKind::Ordinary,
+            trailing_return: false,
         }])
         .expect_err("unknown canonical effects cannot mint a certificate");
         assert_eq!(
@@ -185,21 +186,69 @@ fn deep_local_chain_uses_iterative_dense_scans() {
 }
 
 #[test]
-fn tail_call_local_still_fails_at_the_earlier_stack_gate() {
+fn tail_call_local_uses_the_exact_post_fixed_effect_edge() {
     let mut caller = function(bottom(), Some(1));
     caller.call_kind = EffectGraphCallKind::Tail;
-    let error = verify_graph(vec![caller, function(bottom(), None)])
-        .expect_err("TailCallLocal remains outside the stack slice");
-    assert_eq!(
+    verify_graph(vec![caller.clone(), function(bottom(), None)])
+        .expect("an exact bottom tail edge must verify");
+
+    let mut pending = bottom();
+    pending.may_pending = true;
+    pending.pending_effect_categories = vec![PendingEffectCategory::ServiceCall];
+    let error = verify_graph(vec![caller, function(pending.clone(), None)])
+        .expect_err("a tail caller may not underclaim target pending effects");
+    assert!(matches!(
         error,
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::StackAndSlotState,
-            location: VerificationLocation::Instruction {
-                function: FunctionIndex::new(0),
-                instruction: InstructionIndex::new(0),
-            },
-        }
-    );
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::EffectAndNoPending,
+            location: VerificationLocation::Instruction { function, instruction },
+            detail,
+        } if function == FunctionIndex::new(0)
+            && instruction == InstructionIndex::new(0)
+            && detail.contains("pending category")
+    ));
+
+    let mut pending_caller = function(pending.clone(), Some(1));
+    pending_caller.call_kind = EffectGraphCallKind::Tail;
+    let image = verify_graph(vec![pending_caller, function(pending, None)])
+        .expect("a post-fixed pending tail edge must verify");
+    assert!(!image
+        .function_effects(FunctionIndex::new(0))
+        .expect("caller effect facts")
+        .no_pending());
+}
+
+#[test]
+fn loader_backed_tail_is_a_terminal_cfg_instruction() {
+    let mut caller = function(bottom(), Some(1));
+    caller.call_kind = EffectGraphCallKind::Tail;
+    caller.trailing_return = true;
+    let error = verify_graph(vec![caller, function(bottom(), None)])
+        .expect_err("an instruction after an exact tail call must be unreachable");
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ControlFlow,
+            location: VerificationLocation::Instruction { function, instruction },
+            detail,
+        } if function == FunctionIndex::new(0)
+            && instruction == InstructionIndex::new(1)
+            && detail.contains("unreachable")
+    ));
+}
+
+#[test]
+fn tail_self_and_mutual_recursion_use_iterative_post_fixed_edges() {
+    let mut recursive = function(bottom(), Some(0));
+    recursive.call_kind = EffectGraphCallKind::Tail;
+    verify_graph(vec![recursive]).expect("tail self recursion must not recurse in the verifier");
+
+    let mut left = function(bottom(), Some(1));
+    left.call_kind = EffectGraphCallKind::Tail;
+    let mut right = function(bottom(), Some(0));
+    right.call_kind = EffectGraphCallKind::Tail;
+    verify_graph(vec![left, right])
+        .expect("mutual tail recursion must use exact local post-fixed edges");
 }
 
 #[test]
@@ -251,6 +300,7 @@ fn function(effects: CallableMayEffects, target: Option<u32>) -> EffectGraphFunc
         summary: analyzed(effects),
         target,
         call_kind: EffectGraphCallKind::Ordinary,
+        trailing_return: false,
     }
 }
 
