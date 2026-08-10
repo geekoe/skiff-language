@@ -16,7 +16,8 @@ use skiff_runtime_model::vm_value::ValueSlot;
 
 use crate::{
     admission::prove_admission,
-    concrete_values::{prove_types_and_plans, ConcreteValueFacts},
+    concrete_values::prove_types_and_plans,
+    control_flow,
     VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
 };
 
@@ -422,7 +423,8 @@ fn prove_hydrated_candidate_semantics(
     limits: &VerificationLimits,
 ) -> Result<(), VerificationError> {
     let concrete_values = prove_types_and_plans(hydrated, candidate, limits)?;
-    prove_control_flow_and_stack(candidate, &concrete_values, limits)?;
+    let _control_flow =
+        control_flow::prove_control_flow_and_stack(candidate, &concrete_values, limits)?;
     prove_frozen_constant_safety(candidate, limits)
 }
 
@@ -436,17 +438,6 @@ pub(super) fn prove_candidate_semantics(
 ) -> Result<(), VerificationError> {
     Err(VerificationError::ProofUnavailable {
         obligation: VerificationObligation::ConcreteTypeAndShape,
-        location: VerificationLocation::Image,
-    })
-}
-
-fn prove_control_flow_and_stack(
-    _candidate: &LinkedBytecodeCandidate,
-    _concrete_values: &ConcreteValueFacts,
-    _limits: &VerificationLimits,
-) -> Result<(), VerificationError> {
-    Err(VerificationError::ProofUnavailable {
-        obligation: VerificationObligation::ControlFlow,
         location: VerificationLocation::Image,
     })
 }

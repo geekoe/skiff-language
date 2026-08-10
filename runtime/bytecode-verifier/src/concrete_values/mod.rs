@@ -3,7 +3,7 @@ mod resolver;
 mod types;
 
 use skiff_artifact_model::{NativeValueLifecycleResolution, TypeRefIr};
-use skiff_runtime_linked_bytecode::LinkedBytecodeCandidate;
+use skiff_runtime_linked_bytecode::{LinkedBytecodeCandidate, TypeIndex};
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use crate::{VerificationError, VerificationLimits};
@@ -23,6 +23,28 @@ pub(crate) struct ConcreteValueFacts {
 pub(crate) struct ConcreteTypeFact {
     normalized_type: TypeRefIr,
     lifecycle: NativeValueLifecycleResolution,
+}
+
+impl ConcreteValueFacts {
+    /// Returns the independently derived fact for one dense linked type.
+    #[allow(dead_code)]
+    pub(crate) fn type_fact(&self, index: TypeIndex) -> Option<&ConcreteTypeFact> {
+        usize::try_from(index.get())
+            .ok()
+            .and_then(|index| self.types.get(index))
+    }
+}
+
+impl ConcreteTypeFact {
+    #[allow(dead_code)]
+    pub(crate) const fn normalized_type(&self) -> &TypeRefIr {
+        &self.normalized_type
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn lifecycle(&self) -> &NativeValueLifecycleResolution {
+        &self.lifecycle
+    }
 }
 
 /// P2 orchestration seam: resolve exact hydrated facts, independently

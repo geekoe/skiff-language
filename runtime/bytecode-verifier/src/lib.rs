@@ -7,6 +7,7 @@
 
 mod admission;
 mod concrete_values;
+mod control_flow;
 mod error;
 mod limits;
 mod verifier;
