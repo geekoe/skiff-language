@@ -13,7 +13,10 @@ pub use deployment_bytecode::{
     DeploymentBytecodeManifestKind, DeploymentBytecodeReference, HydratedBytecodePackage,
     HydratedDeploymentBytecode, HydratedServiceDependency,
 };
-pub use filesystem_resolver::FilesystemRuntimeAssemblyContentResolver;
+pub use filesystem_resolver::{
+    load_deployment_bytecode_from_store, FilesystemDeploymentBytecodeContentResolver,
+    FilesystemRuntimeAssemblyContentResolver,
+};
 pub use runtime_assembly::{
     HydratedGatewayCallable, HydratedGatewayEntry, HydratedPackageCodeSlot,
     HydratedRuntimeAssembly, HydratedStaticResource, ResolvedServiceSchema,
