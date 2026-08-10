@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 
 mod common;
 use common::{package_project::compile_package_project, TestDir};
-use skiff_artifact_model::PackageArtifact;
+use skiff_artifact_identity::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX;
+use skiff_artifact_model::{
+    derive_bytecode_statement_manifest_identity, PackageArtifact, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+};
 
 fn assert_file_refs_are_lightweight_canonical(artifact: &serde_json::Value) {
     let files = artifact["files"]
@@ -48,6 +51,23 @@ mod tests {
 
         assert_eq!(artifact, project.package.artifact);
         assert_eq!(artifact.package_id, "example.com/artifact-model");
+        assert_eq!(
+            PACKAGE_ARTIFACT_SCHEMA_VERSION,
+            "skiff-package-artifact-v14"
+        );
+        assert_eq!(
+            PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+            "skiff-package-build-v13:sha256"
+        );
+        assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
+        assert!(artifact
+            .package_build_id
+            .as_str()
+            .starts_with("skiff-package-build-v13:sha256:"));
+        assert_eq!(
+            artifact.bytecode_statement_manifest_identity,
+            derive_bytecode_statement_manifest_identity(&artifact.package_id, &[]).unwrap()
+        );
         assert!(!artifact.files.is_empty());
         assert_file_refs_are_lightweight_canonical(&value);
         assert_eq!(
@@ -60,6 +80,7 @@ mod tests {
             BTreeSet::from([
                 "actorImplementations",
                 "boundaryProjections",
+                "bytecodeStatementManifestIdentity",
                 "bytecodeSchemaRecords",
                 "callableLinks",
                 "callableSemanticFacts",

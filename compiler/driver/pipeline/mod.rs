@@ -97,7 +97,7 @@ pub fn compile_package(
         &pre_source_package_schemas,
         canonical_artifact_store.as_ref(),
     )?;
-    let mut projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
+    let projected = project_compiled_package_artifact(PackageArtifactProjectionInput {
         package_id: &package_id,
         package_version: &package_version,
         projection: projection.view(),
@@ -108,7 +108,7 @@ pub fn compile_package(
         service_call_refs,
     })
     .map_err(package_projection_error)?;
-    bytecode_lane::attach_bytecode_reference(&mut projected, &bytecode)?;
+    let projected = bytecode_lane::attach_bytecode_execution(&projected, &bytecode)?;
     let file_ir_units = publish_file_ir_artifacts(projection.view())?;
     let package = publish_projected_package_artifact(&projected, &file_ir_units)?;
     PackageCompileOutput::try_new(package, bytecode, public_instance_operations)

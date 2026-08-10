@@ -1,11 +1,14 @@
-use skiff_artifact_identity::assign_package_artifact_identities;
+use skiff_artifact_model::{derive_bytecode_statement_manifest_identity, PackageArtifact};
 use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
     CompiledPackage,
 };
 use skiff_compiler_contract::ServicePublicInstanceOperationFacts;
 use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
-use skiff_compiler_projection::package_artifact::ProjectedPackageArtifact;
+use skiff_compiler_projection::package_artifact::{
+    attach_package_execution as attach_projected_package_execution, PackageExecutionAttachment,
+    ProjectedPackageArtifact,
+};
 
 use crate::shared::package_compile_error::PackageCompileError;
 
@@ -60,36 +63,7 @@ impl PackageCompileOutput {
         bytecode: PackageBytecodeLane,
         public_instance_operations: ServicePublicInstanceOperationFacts,
     ) -> Result<Self, PackageCompileError> {
-        match (&bytecode, package.artifact.bytecode.as_ref()) {
-            (PackageBytecodeLane::Disabled, None) => {}
-            (PackageBytecodeLane::Disabled, Some(reference)) => {
-                return Err(PackageCompileError::BytecodeProjection {
-                    message: format!(
-                        "disabled bytecode lane produced PackageArtifact reference {}",
-                        reference.bytecode_identity
-                    ),
-                });
-            }
-            (PackageBytecodeLane::Enabled(handoff), Some(reference))
-                if reference == handoff.reference() => {}
-            (PackageBytecodeLane::Enabled(handoff), Some(reference)) => {
-                return Err(PackageCompileError::BytecodeProjection {
-                    message: format!(
-                        "PackageArtifact bytecode reference {} does not match admitted handoff {}",
-                        reference.bytecode_identity,
-                        handoff.reference().bytecode_identity
-                    ),
-                });
-            }
-            (PackageBytecodeLane::Enabled(handoff), None) => {
-                return Err(PackageCompileError::BytecodeProjection {
-                    message: format!(
-                        "enabled bytecode handoff {} is absent from PackageArtifact identity projection",
-                        handoff.reference().bytecode_identity
-                    ),
-                });
-            }
-        }
+        validate_package_execution_state(&package.artifact, &bytecode)?;
         Ok(Self {
             package,
             bytecode,
@@ -159,14 +133,14 @@ fn finish_bytecode_lane(
     }
 }
 
-/// Temporary fail-closed seam while the canonical emitter input is incomplete.
+/// Temporary fail-closed seam while the canonical emitter output is incomplete.
 ///
-/// The emitter checkpoint requires a source-owned value-transfer plan for
-/// every function, but no such bundle is exposed by source/lowering yet and
-/// the emission crate has no final `emit_bytecode_artifact` entrypoint. The
-/// driver therefore cannot legally construct an artifact. It reports the
-/// enabled failure after typed MIR exists instead of inventing SnapshotShare
-/// plans, reopening File IR, or falling back to the disabled lane.
+/// The bytecode emitter does not yet return an independently constructed
+/// statement manifest, and function-bearing input remains fail-closed while
+/// exact function metadata is incomplete. The driver therefore cannot create
+/// a handoff by reconstructing a manifest from bytecode rows. It reports the
+/// enabled failure after typed MIR exists instead of fabricating authority or
+/// falling back to the disabled lane.
 fn emit_enabled_bytecode(
     compiled: &CompiledPackage,
 ) -> Result<BytecodeCompilationHandoff, PackageCompileError> {
@@ -175,60 +149,99 @@ fn emit_enabled_bytecode(
     })
 }
 
-/// Binds an admitted path-free bytecode reference into package identity
-/// projection before any package candidate bytes or paths are materialized.
-pub(super) fn attach_bytecode_reference(
-    projected: &mut ProjectedPackageArtifact,
+/// Attaches one exact admitted execution handoff without mutating the source
+/// projection.
+///
+/// The projection boundary treats both attachment fields as untrusted and
+/// returns a newly identity-assigned value. This driver then checks the
+/// returned package id, bytecode reference, and statement manifest against the
+/// same handoff. Every error therefore leaves `projected` unchanged.
+pub(super) fn attach_bytecode_execution(
+    projected: &ProjectedPackageArtifact,
+    bytecode: &PackageBytecodeLane,
+) -> Result<ProjectedPackageArtifact, PackageCompileError> {
+    let PackageBytecodeLane::Enabled(handoff) = bytecode else {
+        validate_package_execution_state(&projected.artifact, bytecode)?;
+        return Ok(projected.clone());
+    };
+
+    let manifest_receipt = handoff.statement_manifest_receipt();
+    let attached = attach_projected_package_execution(
+        projected,
+        PackageExecutionAttachment {
+            bytecode: handoff.reference().clone(),
+            statement_manifest_identity: manifest_receipt.identity().clone(),
+        },
+    )
+    .map_err(|error| bytecode_projection_error(error.to_string()))?;
+    validate_package_execution_state(&attached.artifact, bytecode)?;
+    Ok(attached)
+}
+
+fn validate_package_execution_state(
+    artifact: &PackageArtifact,
     bytecode: &PackageBytecodeLane,
 ) -> Result<(), PackageCompileError> {
-    if let Some(existing) = projected.artifact.bytecode.as_ref() {
-        return Err(PackageCompileError::BytecodeProjection {
-            message: format!(
-                "PackageArtifact projection unexpectedly pre-populated bytecode reference {}",
-                existing.bytecode_identity
-            ),
-        });
-    }
-
-    let PackageBytecodeLane::Enabled(handoff) = bytecode else {
-        return Ok(());
-    };
-    projected.artifact.bytecode = Some(handoff.reference().clone());
-    assign_package_artifact_identities(&mut projected.artifact).map_err(|error| {
-        PackageCompileError::BytecodeProjection {
-            message: format!(
-                "failed to recompute PackageArtifact identity with bytecode {}: {error}",
-                handoff.reference().bytecode_identity
-            ),
+    match bytecode {
+        PackageBytecodeLane::Disabled => validate_disabled_execution_state(artifact),
+        PackageBytecodeLane::Enabled(handoff) => {
+            let manifest_receipt = handoff.statement_manifest_receipt();
+            if artifact.package_id != manifest_receipt.package_id() {
+                return Err(bytecode_projection_error(format!(
+                    "PackageArtifact package id {} does not match admitted statement manifest package id {}",
+                    artifact.package_id,
+                    manifest_receipt.package_id()
+                )));
+            }
+            if artifact.bytecode.as_ref() != Some(handoff.reference()) {
+                return Err(bytecode_projection_error(format!(
+                    "PackageArtifact bytecode reference does not exactly match admitted handoff {}",
+                    handoff.reference().bytecode_identity
+                )));
+            }
+            if &artifact.bytecode_statement_manifest_identity != manifest_receipt.identity() {
+                return Err(bytecode_projection_error(format!(
+                    "PackageArtifact statement manifest {} does not exactly match admitted handoff {}",
+                    artifact.bytecode_statement_manifest_identity,
+                    manifest_receipt.identity()
+                )));
+            }
+            Ok(())
         }
-    })?;
+    }
+}
+
+fn validate_disabled_execution_state(
+    artifact: &PackageArtifact,
+) -> Result<(), PackageCompileError> {
+    if let Some(reference) = artifact.bytecode.as_ref() {
+        return Err(bytecode_projection_error(format!(
+            "disabled bytecode lane produced PackageArtifact reference {}",
+            reference.bytecode_identity
+        )));
+    }
+    let expected = derive_bytecode_statement_manifest_identity(&artifact.package_id, &[]).map_err(
+        |error| {
+            bytecode_projection_error(format!(
+                "failed to derive canonical empty statement manifest for package {}: {error}",
+                artifact.package_id
+            ))
+        },
+    )?;
+    if artifact.bytecode_statement_manifest_identity != expected {
+        return Err(bytecode_projection_error(format!(
+            "disabled bytecode lane produced statement manifest {}, expected package-specific canonical empty manifest {}",
+            artifact.bytecode_statement_manifest_identity, expected
+        )));
+    }
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn explicitly_disabled_outcome_is_the_only_none_lane() {
-        let lane = finish_bytecode_lane(BytecodeCompilationOutcome::disabled()).unwrap();
-
-        assert_eq!(lane, PackageBytecodeLane::Disabled);
-        assert!(!lane.is_enabled());
-        assert!(lane.handoff().is_none());
-        assert!(lane.receipt().is_none());
-    }
-
-    #[test]
-    fn enabled_failure_is_propagated_instead_of_becoming_disabled() {
-        let error = finish_bytecode_lane(BytecodeCompilationOutcome::failed(
-            PackageCompileError::BytecodeEmitterUnavailable { mir_unit_count: 3 },
-        ))
-        .unwrap_err();
-
-        assert!(matches!(
-            error,
-            PackageCompileError::BytecodeEmitterUnavailable { mir_unit_count: 3 }
-        ));
+fn bytecode_projection_error(message: impl Into<String>) -> PackageCompileError {
+    PackageCompileError::BytecodeProjection {
+        message: message.into(),
     }
 }
+
+#[cfg(test)]
+mod tests;

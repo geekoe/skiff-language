@@ -5,9 +5,10 @@ use crate::input::{
 };
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
-    PackageBuildId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
-    PackageSymbolRef, ParamModeIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    derive_bytecode_statement_manifest_identity, PackageBuildId, PackageImplementationLinks,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements,
+    PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageSymbolRef, ParamModeIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::source_graph::{CompilerSourceFile, PublicationSourceGraph};
@@ -315,6 +316,12 @@ fn package_artifact(package_id: &str, local_abi: &str) -> PackageArtifact {
         package_build_id: PackageBuildId::new("build"),
         files: Vec::new(),
         static_resources: Vec::new(),
+        bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            package_id,
+            &[],
+        )
+        .unwrap(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new(local_abi),
             public_symbols: BTreeMap::new(),
@@ -338,7 +345,6 @@ fn package_artifact(package_id: &str, local_abi: &str) -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
-        bytecode: None,
     }
 }
 

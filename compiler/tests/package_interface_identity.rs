@@ -13,7 +13,7 @@ use skiff_compiler_source::{
 
 const DIRECT_PROVIDER_ID: &str = "example.com/interface-provider";
 const DIRECT_PROVIDER_VERSION: &str = "1.0.0";
-const DIRECT_PROVIDER_BUILD_ID_PREFIX: &str = "skiff-package-build-v12:sha256:";
+const DIRECT_PROVIDER_BUILD_ID_PREFIX: &str = "skiff-package-build-v13:sha256:";
 const DIRECT_PROVIDER_LOCAL_ABI: &str =
     "skiff-package-local-abi-v7:sha256:4da1d7ac94500c346f49e09312b6b3115df4e24e5961189260d35734574ef744";
 

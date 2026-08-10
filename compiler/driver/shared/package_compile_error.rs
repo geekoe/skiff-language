@@ -28,7 +28,7 @@ pub enum PackageCompileError {
         source: skiff_compiler_contract::ContractDefinitionError,
     },
     #[error(
-        "bytecode emission was explicitly enabled after source lowering produced {mir_unit_count} typed MIR unit(s), but this compiler build has no canonical emitter entrypoint or source-owned value-transfer plan bundle"
+        "bytecode emission was explicitly enabled after source lowering produced {mir_unit_count} typed MIR unit(s), but this compiler build has no independent statement-manifest emission handoff for a canonical bytecode attachment"
     )]
     BytecodeEmitterUnavailable { mir_unit_count: usize },
     #[error("bytecode emission failed: {source}")]

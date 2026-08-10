@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 use super::*;
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
-    PackageBuildId, PackageCallableId, PackageCallableRef, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
-    PackageSchemaIndexRef, PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    derive_bytecode_statement_manifest_identity, PackageBuildId, PackageCallableId,
+    PackageCallableRef, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageSymbolRef,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 #[test]
@@ -583,6 +584,12 @@ fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
         package_build_id: PackageBuildId::new("unassigned"),
         files: Vec::new(),
         static_resources: Vec::new(),
+        bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            package_id,
+            &[],
+        )
+        .unwrap(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
@@ -610,7 +617,6 @@ fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
-        bytecode: None,
     };
     assign_package_artifact_identities(&mut artifact).unwrap();
     artifact

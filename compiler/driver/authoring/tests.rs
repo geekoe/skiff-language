@@ -8,9 +8,9 @@ use super::{
 use serde_json::json;
 use skiff_artifact_identity::{package_schema_index_identity, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX};
 use skiff_artifact_model::{
-    DeploymentArtifactIdentity, DeploymentRevision, PackageArtifact, PackageArtifactRef,
-    PackageBinding, PackageBuildId, PackageLocalAbiIdentity, PackageRequirement,
-    PackageRequirementKey, ServiceDeploymentRef,
+    derive_bytecode_statement_manifest_identity, DeploymentArtifactIdentity, DeploymentRevision,
+    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageLocalAbiIdentity,
+    PackageRequirement, PackageRequirementKey, ServiceDeploymentRef,
 };
 use skiff_compiler_input::{package_config::read_user_package_manifest, CompilerPlatformSources};
 use skiff_compiler_source::prelude_registry::{
@@ -310,13 +310,16 @@ fn package(
 ) -> PackageArtifact {
     let package_schema_index_identity =
         package_schema_index_identity(id, &Default::default()).unwrap();
+    let bytecode_statement_manifest_identity =
+        derive_bytecode_statement_manifest_identity(id, &[]).unwrap();
     serde_json::from_value(json!({
-        "schemaVersion": "skiff-package-artifact-v13",
+        "schemaVersion": "skiff-package-artifact-v14",
         "packageId": id,
         "packageVersion": version,
         "packageBuildId": format!("build:{id}:{version}:{local_abi}"),
         "files": [],
         "staticResources": [],
+        "bytecodeStatementManifestIdentity": bytecode_statement_manifest_identity,
         "packageLocalAbi": {
             "localAbiIdentity": local_abi,
             "publicSymbols": {}
