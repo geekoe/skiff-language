@@ -42,7 +42,7 @@ impl<'a> DeploymentLinker<'a> {
         let keys = self.discover_closure(roots)?;
         let function_indices = canonical_function_indices(&keys, deployment_location.clone())?;
 
-        let mut type_linker = TypeLinker::new(self.limits);
+        let mut type_linker = TypeLinker::new(self.deployment, self.limits);
         let frames = keys
             .iter()
             .map(|key| self.link_frame(key, &mut type_linker))

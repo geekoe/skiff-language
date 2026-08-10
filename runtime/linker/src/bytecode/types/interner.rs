@@ -5,14 +5,16 @@ use skiff_runtime_linked_bytecode::{
     ArtifactTypeIndex, LinkedArtifactPoolOrigin, LinkedContainerLayout, LinkedContainerPosition,
     LinkedTypeEntry, SpecializationKey, TypeIndex,
 };
-use skiff_runtime_loader::HydratedBytecodePackage;
+use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
 use crate::bytecode::{
     limits::LinkLimitTracker, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
     BytecodeLinkObligation, LinkLimits,
 };
 
-use super::{substitution::substitute_type, validation::type_metrics};
+use super::{
+    normalization::normalize_type, substitution::substitute_type, validation::type_metrics,
+};
 
 type TypeOriginKey = (PackageBuildId, u32, SpecializationKey);
 
@@ -20,14 +22,19 @@ type TypeOriginKey = (PackageBuildId, u32, SpecializationKey);
 /// The independent verifier can therefore trace every concrete type back to
 /// the validated owner without treating the linked row as authority.
 pub(in crate::bytecode) struct TypeLinker<'a> {
+    deployment: &'a HydratedDeploymentBytecode,
     tracker: LinkLimitTracker<'a>,
     origins: BTreeMap<TypeOriginKey, TypeIndex>,
     entries: Vec<Option<LinkedTypeEntry>>,
 }
 
 impl<'a> TypeLinker<'a> {
-    pub(in crate::bytecode) fn new(limits: &'a LinkLimits) -> Self {
+    pub(in crate::bytecode) fn new(
+        deployment: &'a HydratedDeploymentBytecode,
+        limits: &'a LinkLimits,
+    ) -> Self {
         Self {
+            deployment,
             tracker: LinkLimitTracker::new(limits),
             origins: BTreeMap::new(),
             entries: Vec::new(),
@@ -159,6 +166,7 @@ impl<'a> TypeLinker<'a> {
             ));
         };
         let concrete = substitute_type(ty, substitutions, &location)?;
+        let concrete = normalize_type(self.deployment, package, &concrete, &location)?;
         let (nodes, depth) = type_metrics(&concrete, &location)?;
         self.tracker.check_type_depth(depth, location.clone())?;
         let bytes = skiff_canonical_json::canonical_json_bytes(&concrete).map_err(|error| {
@@ -278,8 +286,9 @@ impl<'a> TypeLinker<'a> {
         expected: &TypeRefIr,
         location: BytecodeLinkLocation,
     ) -> Result<LinkedContainerPosition, BytecodeLinkError> {
-        let artifact_index = find_pool_type_after_substitution(package, expected, substitutions)
-            .ok_or_else(|| {
+        let artifact_index =
+            find_pool_type_after_substitution(self.deployment, package, expected, substitutions)?
+                .ok_or_else(|| {
                 obligation_error(
                     location.clone(),
                     "container position has no exact admitted type-pool origin".to_string(),
@@ -311,28 +320,25 @@ fn find_pool_type(package: &HydratedBytecodePackage, expected: &TypeRefIr) -> Op
 }
 
 fn find_pool_type_after_substitution(
+    deployment: &HydratedDeploymentBytecode,
     package: &HydratedBytecodePackage,
     expected: &TypeRefIr,
     substitutions: &BTreeMap<String, TypeRefIr>,
-) -> Option<u32> {
-    package
-        .bytecode()
-        .view()
-        .pools()
-        .types
-        .iter()
-        .enumerate()
-        .find_map(|(index, entry)| {
-            let BytecodePoolEntry::TypeRef { ty } = entry else {
-                return None;
-            };
-            let location = BytecodeLinkLocation::Package {
-                package: Box::new(package.reference().clone()),
-            };
-            (substitute_type(ty, substitutions, &location).ok().as_ref() == Some(expected))
-                .then(|| u32::try_from(index).ok())
-                .flatten()
-        })
+) -> Result<Option<u32>, BytecodeLinkError> {
+    for (index, entry) in package.bytecode().view().pools().types.iter().enumerate() {
+        let BytecodePoolEntry::TypeRef { ty } = entry else {
+            continue;
+        };
+        let location = BytecodeLinkLocation::Package {
+            package: Box::new(package.reference().clone()),
+        };
+        let concrete = substitute_type(ty, substitutions, &location)?;
+        let concrete = normalize_type(deployment, package, &concrete, &location)?;
+        if &concrete == expected {
+            return Ok(u32::try_from(index).ok());
+        }
+    }
+    Ok(None)
 }
 
 fn obligation_error(location: BytecodeLinkLocation, detail: String) -> BytecodeLinkError {

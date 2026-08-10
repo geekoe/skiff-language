@@ -6,10 +6,12 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    BytecodeArtifact, BytecodeArtifactRef, CallableEffectSummary, CallableMayEffects,
-    CallableProvenanceSummary, CallableSemanticFacts, ContractOperationId, PackageArtifact,
-    PackageArtifactRef, PackageCallableId, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef,
+    BytecodeArtifact, BytecodeArtifactRef, BytecodePoolEntry, CallableEffectSummary,
+    CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, ContractOperationId,
+    ContractTypeDescriptor, PackageArtifact, PackageArtifactRef, PackageBinding, PackageCallableId,
+    PackageRequirement, PackageRequirementKey, PackageSchemaCanonicalDescriptor,
+    PackageSchemaTypeRecord, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, TypeRefIr,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
@@ -23,6 +25,10 @@ pub(super) const HELPER_CALLABLE: &str =
 pub(super) const ENTRY_ALIAS: &str = "pkg-callable:example.bytecode-link:fixture.public_root";
 pub(super) const ROOT_FUNCTION: &str = "fixture::root";
 pub(super) const HELPER_FUNCTION: &str = "fixture::helper";
+pub(super) const OWNER_IMPLEMENTATION_PATH: &str = "fixture.Owner";
+pub(super) const OWNER_PUBLIC_PATH: &str = "Owner";
+pub(super) const PRIVATE_IMPLEMENTATION_PATH: &str = "fixture.Private";
+pub(super) const SCHEMA_STABLE_KEY: &str = "fixture.Schema";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RootProgram {
@@ -77,6 +83,14 @@ impl Fixture {
         Self::new(RootProgram::ServiceDependency, false)
     }
 
+    pub(super) fn normalization() -> Self {
+        Self::new_with_options(RootProgram::LocalCall, false, true, true, false)
+    }
+
+    pub(super) fn conflicting_normalization() -> Self {
+        Self::new_with_options(RootProgram::LocalCall, false, true, false, true)
+    }
+
     pub(super) fn hydrate(&self) -> HydratedDeploymentBytecode {
         DeploymentBytecodeLoader::new(&self.resolver)
             .load(&self.deployment_reference)
@@ -84,9 +98,39 @@ impl Fixture {
     }
 
     fn new(program: RootProgram, entry_alias: bool) -> Self {
-        let bytecode = artifact::admitted_bytecode(program);
+        Self::new_with_options(program, entry_alias, false, false, false)
+    }
+
+    fn new_with_options(
+        program: RootProgram,
+        entry_alias: bool,
+        include_normalization_surface: bool,
+        self_dependency: bool,
+        conflicting_type_surfaces: bool,
+    ) -> Self {
+        let bytecode = if include_normalization_surface {
+            normalization_bytecode(program)
+        } else {
+            artifact::admitted_bytecode(program)
+        };
         let alias = entry_alias.then(|| PackageCallableId::new(ENTRY_ALIAS));
-        let mut package = package::package(&bytecode, program, alias.as_ref());
+        let mut package = package::package(
+            &bytecode,
+            program,
+            alias.as_ref(),
+            include_normalization_surface,
+            conflicting_type_surfaces,
+        );
+        if self_dependency {
+            package.package_requirements = vec![PackageRequirement {
+                alias: "selfdep".to_string(),
+                package_id: package.package_id.clone(),
+                exact_version: package.package_version.clone(),
+                expected_local_abi: package.package_local_abi.local_abi_identity.clone(),
+                expected_package_build: None,
+            }];
+            skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
+        }
 
         let mut contracts = BTreeMap::new();
         let (own_contract, own_contract_reference, operation) = records::contract(
@@ -116,12 +160,23 @@ impl Fixture {
 
         let package_reference = records::package_reference(&package);
         let entry_callable = alias.unwrap_or_else(|| PackageCallableId::new(ROOT_CALLABLE));
+        let package_bindings = self_dependency
+            .then(|| PackageBinding {
+                key: PackageRequirementKey {
+                    caller_package_build_id: package_reference.package_build_id.clone(),
+                    package_requirement_alias: "selfdep".to_string(),
+                },
+                package: package_reference.clone(),
+            })
+            .into_iter()
+            .collect();
         let (deployment, deployment_reference) = records::deployment(
             package_reference.clone(),
             own_contract_reference,
             operation.clone(),
             entry_callable,
             service_selector,
+            package_bindings,
         );
         let bytecode_reference = bytecode.reference().clone();
         let resolver = InMemoryResolver {
@@ -145,6 +200,53 @@ impl Fixture {
             operation,
         }
     }
+}
+
+pub(super) fn schema_record() -> PackageSchemaTypeRecord {
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Enumeration {
+            variants: vec!["ready".to_string()],
+        },
+    };
+    let package_schema_type_id = skiff_artifact_model::derive_package_schema_type_id(
+        "example.bytecode-link",
+        SCHEMA_STABLE_KEY,
+        &descriptor,
+    )
+    .unwrap();
+    PackageSchemaTypeRecord {
+        package_id: "example.bytecode-link".to_string(),
+        stable_schema_key: SCHEMA_STABLE_KEY.to_string(),
+        package_schema_type_id,
+        canonical_descriptor: descriptor,
+    }
+}
+
+pub(super) fn schema_type() -> TypeRefIr {
+    let record = schema_record();
+    TypeRefIr::PackageSchema {
+        package_id: record.package_id,
+        stable_schema_key: record.stable_schema_key,
+        package_schema_type_id: record.package_schema_type_id,
+    }
+}
+
+fn normalization_bytecode(program: RootProgram) -> Arc<ValidatedBytecodeArtifact> {
+    let mut artifact = artifact::bytecode_artifact(program);
+    artifact
+        .image
+        .pools
+        .types
+        .push(BytecodePoolEntry::TypeRef { ty: schema_type() });
+    artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
+        ty: TypeRefIr::PublicationType {
+            module_path: "fixture".to_string(),
+            type_index: 0,
+        },
+    });
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
 }
 
 struct InMemoryResolver {

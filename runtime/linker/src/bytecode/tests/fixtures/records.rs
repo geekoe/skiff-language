@@ -7,9 +7,9 @@ use skiff_artifact_model::{
     BoundaryValuePlan, ContractDiagnosticText, ContractOperationId, ContractRequirement,
     ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentOperationBinding, DeploymentRevision, PackageArtifact, PackageArtifactRef,
-    PackageCallableId, ServiceCallRef, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    PackageBinding, PackageCallableId, ServiceCallRef, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
+    ServiceSelectorBinding, SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::RootProgram;
@@ -57,6 +57,7 @@ pub(super) fn deployment(
     operation: ContractOperationId,
     callable: PackageCallableId,
     service_selector: Option<ServiceSelectorBinding>,
+    package_bindings: Vec<PackageBinding>,
 ) -> (
     Arc<ServiceDeployment>,
     skiff_artifact_model::ServiceDeploymentRef,
@@ -71,7 +72,7 @@ pub(super) fn deployment(
             contract_operation_id: operation,
             package_callable_id: callable,
         }],
-        package_bindings: Vec::new(),
+        package_bindings,
         service_selectors: service_selector.into_iter().collect(),
         gateway_entries: BTreeMap::new(),
         ingress: Vec::new(),

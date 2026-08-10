@@ -13,6 +13,7 @@ use super::{
 
 mod deployment;
 mod fixtures;
+mod normalization;
 
 #[test]
 fn entry_contract_borrows_exact_hydration_and_returns_only_a_candidate() {
@@ -233,7 +234,9 @@ fn type_substitution_is_recursive_and_never_leaves_an_unknown_parameter() {
 #[test]
 fn from_type_transfer_plans_remain_fail_closed() {
     let limits = generous_limits();
-    let linker = TypeLinker::new(&limits);
+    let fixture = fixtures::Fixture::exact_local();
+    let hydrated = fixture.hydrate();
+    let linker = TypeLinker::new(&hydrated, &limits);
     let location = deployment_location();
 
     assert!(matches!(
