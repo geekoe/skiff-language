@@ -23,7 +23,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn package_global_string_and_array_with_exact_plans_reach_resume_site_proof() {
+fn package_global_string_and_array_with_exact_plans_reach_frozen_constant_safety() {
     let ArrayCandidate {
         hydrated,
         candidate,
@@ -34,7 +34,7 @@ fn package_global_string_and_array_with_exact_plans_reach_resume_site_proof() {
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ResumeSite,
+            obligation: VerificationObligation::FrozenConstantSafety,
             location: VerificationLocation::Image,
         }
     );

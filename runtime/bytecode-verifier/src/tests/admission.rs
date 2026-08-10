@@ -14,7 +14,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn exact_empty_admission_reaches_resume_site_proof() {
+fn exact_empty_admission_reaches_frozen_constant_safety() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
     let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
@@ -22,7 +22,7 @@ fn exact_empty_admission_reaches_resume_site_proof() {
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ResumeSite,
+            obligation: VerificationObligation::FrozenConstantSafety,
             location: VerificationLocation::Image,
         }
     );
