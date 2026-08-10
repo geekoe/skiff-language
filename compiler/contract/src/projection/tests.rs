@@ -1,11 +1,11 @@
 use skiff_artifact_model::{
-    BoundaryCallbackExpirationError, BoundaryCallbackLifetime, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryParameter, BoundaryReturn, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    PackageBuildId, PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexIdentity,
-    PackageSchemaIndexRef, PackageSchemaTypeRef, PackageTypeRef, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    derive_bytecode_statement_manifest_identity, BoundaryCallbackExpirationError,
+    BoundaryCallbackLifetime, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryParameter, BoundaryReturn, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, PackageBuildId,
+    PackageCallableSignature, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+    PackageSchemaTypeRef, PackageTypeRef, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use crate::{ServicePublicInstanceInterfaceOperations, ServicePublicInstanceOperationSlot};
@@ -441,6 +441,12 @@ fn package_fixture() -> PackageArtifact {
         package_build_id: PackageBuildId::new("build"),
         files: Vec::new(),
         static_resources: Vec::new(),
+        bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            "example.package",
+            &[],
+        )
+        .unwrap(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("abi"),
             public_symbols,
@@ -464,7 +470,6 @@ fn package_fixture() -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections,
         service_call_refs: Vec::new(),
-        bytecode: None,
     }
 }
 
