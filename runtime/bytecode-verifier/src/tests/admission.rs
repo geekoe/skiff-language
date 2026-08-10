@@ -14,7 +14,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn exact_empty_admission_reaches_frozen_constant_safety() {
+fn exact_empty_admission_reaches_statement_attribution_gate() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
     let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
@@ -22,7 +22,7 @@ fn exact_empty_admission_reaches_frozen_constant_safety() {
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::FrozenConstantSafety,
+            obligation: VerificationObligation::SourceAndStatementAttribution,
             location: VerificationLocation::Image,
         }
     );

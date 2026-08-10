@@ -25,7 +25,7 @@ use crate::{
 use super::fixtures::{candidate_for, exact_hydration, generous_limits};
 
 #[test]
-fn empty_hydration_advances_through_resume_to_frozen_constant_safety() {
+fn empty_hydration_advances_through_resume_to_statement_attribution_gate() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
     let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
@@ -33,7 +33,7 @@ fn empty_hydration_advances_through_resume_to_frozen_constant_safety() {
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::FrozenConstantSafety,
+            obligation: VerificationObligation::SourceAndStatementAttribution,
             location: VerificationLocation::Image,
         }
     );

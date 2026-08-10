@@ -23,7 +23,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn package_global_string_and_array_with_exact_plans_reach_frozen_constant_safety() {
+fn package_global_string_and_array_with_exact_plans_reach_statement_attribution_gate() {
     let ArrayCandidate {
         hydrated,
         candidate,
@@ -34,7 +34,7 @@ fn package_global_string_and_array_with_exact_plans_reach_frozen_constant_safety
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::FrozenConstantSafety,
+            obligation: VerificationObligation::SourceAndStatementAttribution,
             location: VerificationLocation::Image,
         }
     );

@@ -6,6 +6,7 @@
 //! consumes the exact opaque deployment hydration and candidate together.
 
 mod admission;
+mod attribution;
 mod concrete_values;
 mod control_flow;
 mod error;
