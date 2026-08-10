@@ -126,24 +126,43 @@ fn link_statement_entries(
     function: &ValidatedFunction,
     location: BytecodeLinkLocation,
 ) -> Result<Vec<LinkedStatementEntry>, BytecodeLinkError> {
-    function
-        .statement_entries
-        .iter()
-        .map(|entry| {
-            LinkedStatementEntry::new(
-                instruction_index(function, entry.pc, location.clone())?,
-                entry.statement_id.clone(),
-                entry.charge_kind,
+    let mut linked = Vec::with_capacity(function.statement_entries.len());
+    let mut header_cursor = 0_usize;
+
+    for (entry_index, entry) in function.statement_entries.iter().enumerate() {
+        while function
+            .header_pcs
+            .get(header_cursor)
+            .is_some_and(|header| *header < entry.pc)
+        {
+            header_cursor += 1;
+        }
+        if function.header_pcs.get(header_cursor) != Some(&entry.pc) {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::SourceAndStatementTables,
+                location,
+                format!(
+                    "statement entry {entry_index} pc {} is not an admitted instruction header",
+                    entry.pc
+                ),
+            ));
+        }
+        let instruction = u32::try_from(header_cursor).map_err(|_| {
+            unsatisfied(
+                BytecodeLinkObligation::SourceAndStatementTables,
+                location.clone(),
+                "statement instruction index does not fit u32".to_string(),
             )
-            .map_err(|error| {
-                unsatisfied(
-                    BytecodeLinkObligation::SourceAndStatementTables,
-                    location.clone(),
-                    error.to_string(),
-                )
-            })
-        })
-        .collect()
+        })?;
+        linked.push(LinkedStatementEntry::new(
+            InstructionIndex::new(instruction),
+            entry.sequence_ordinal,
+            entry.attribution_id,
+            entry.site.clone(),
+        ));
+    }
+
+    Ok(linked)
 }
 
 fn link_source_map(

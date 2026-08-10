@@ -26,6 +26,7 @@ pub(super) const HELPER_CALLABLE: &str =
 pub(super) const ENTRY_ALIAS: &str = "pkg-callable:example.bytecode-link:fixture.public_root";
 pub(super) const ROOT_FUNCTION: &str = "fixture::root";
 pub(super) const HELPER_FUNCTION: &str = "fixture::helper";
+pub(super) const CALLBACK_FUNCTION: &str = "fixture::root$callback0";
 pub(super) const OWNER_IMPLEMENTATION_PATH: &str = "fixture.Owner";
 pub(super) const OWNER_PUBLIC_PATH: &str = "Owner";
 pub(super) const PRIVATE_IMPLEMENTATION_PATH: &str = "fixture.Private";
@@ -56,6 +57,7 @@ struct NormalizationDependency {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RootProgram {
     LocalCall,
+    SyntheticTarget,
     ServiceDependency,
     Interface,
     Host,
@@ -84,6 +86,10 @@ impl Fixture {
 
     pub(super) fn aliased_entry() -> Self {
         Self::new(RootProgram::LocalCall, true)
+    }
+
+    pub(super) fn synthetic_target() -> Self {
+        Self::new(RootProgram::SyntheticTarget, false)
     }
 
     pub(super) fn interface() -> Self {
@@ -433,6 +439,15 @@ fn analyzed_facts() -> CallableSemanticFacts {
         },
         resolved_call_targets: BTreeMap::new(),
     }
+}
+
+pub(super) fn synthetic_callback_callable() -> PackageCallableId {
+    skiff_artifact_model::derive_synthetic_callback_callable_id(
+        "example.bytecode-link",
+        &PackageCallableId::new(ROOT_CALLABLE),
+        0,
+    )
+    .unwrap()
 }
 
 fn no_effects() -> CallableMayEffects {

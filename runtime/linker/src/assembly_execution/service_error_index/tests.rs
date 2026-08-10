@@ -760,6 +760,9 @@ fn package(
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &[])
+                .expect("empty package statement manifest is canonical"),
     });
     let artifact_ref = PackageArtifactRef {
         package_id: package_id.to_string(),

@@ -370,6 +370,9 @@ fn provider_package_with_actor(
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(PROVIDER_ID, &[])
+                .expect("empty provider statement manifest is canonical"),
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
     (file, package, abi)
@@ -562,6 +565,9 @@ fn consumer_package(file: &FileIrUnit, provider: &PackageArtifact) -> PackageArt
         )]),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(CONSUMER_ID, &[])
+                .expect("empty consumer statement manifest is canonical"),
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
     package

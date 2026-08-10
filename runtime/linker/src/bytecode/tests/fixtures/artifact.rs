@@ -7,13 +7,15 @@ use skiff_artifact_model::{
     BytecodeSpecialization, FrameLayout, FrozenConstantGraph, HostEffectReference,
     HostEffectSignature, InstructionSourceSite, IntrinsicReference, NativeTarget,
     PackageCallableId, PackageExecutableCoordinate, ParameterSlotDecl, RelocatableBytecodeFunction,
-    ResumeDescriptor, ResumeErrorMode, SourceMapEntry, StatementChargeKind, StatementEntry,
-    SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan, ValueTransferPlan,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    ResumeDescriptor, ResumeErrorMode, SourceMapEntry, SourcePosition, SourceSpanRef,
+    StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason, TypeRefIr,
+    ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION,
 };
 
 use super::{
-    no_effects, RootProgram, HELPER_CALLABLE, HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
+    no_effects, synthetic_callback_callable, RootProgram, CALLBACK_FUNCTION, HELPER_CALLABLE,
+    HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
 };
 
 const MODULE: &str = "fixture";
@@ -35,6 +37,9 @@ pub(super) fn bytecode_artifact(program: RootProgram) -> BytecodeArtifact {
     let mut functions = BTreeMap::new();
     functions.insert(ROOT_FUNCTION.to_string(), root_function(program));
     functions.insert(HELPER_FUNCTION.to_string(), helper_function());
+    if program == RootProgram::SyntheticTarget {
+        functions.insert(CALLBACK_FUNCTION.to_string(), callback_function());
+    }
     BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
@@ -101,11 +106,7 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
         exception_regions: Vec::new(),
         active_regions: Vec::new(),
         switch_tables: Vec::new(),
-        statement_entries: vec![StatementEntry {
-            pc: 0,
-            statement_id: "fixture:root:entry".to_string(),
-            charge_kind: StatementChargeKind::FunctionEntry,
-        }],
+        statement_entries: root_statement_entries(program),
         source_map,
     }
 }
@@ -127,12 +128,78 @@ fn helper_function() -> RelocatableBytecodeFunction {
         exception_regions: Vec::new(),
         active_regions: Vec::new(),
         switch_tables: Vec::new(),
-        statement_entries: vec![StatementEntry {
-            pc: 0,
-            statement_id: "fixture:helper:entry".to_string(),
-            charge_kind: StatementChargeKind::FunctionEntry,
-        }],
+        statement_entries: Vec::new(),
         source_map: Vec::new(),
+    }
+}
+
+fn callback_function() -> RelocatableBytecodeFunction {
+    RelocatableBytecodeFunction {
+        function_key: CALLBACK_FUNCTION.to_string(),
+        origin: BytecodeFunctionOrigin::SyntheticCallback {
+            owner: coordinate(0),
+            site_ordinal: 0,
+        },
+        type_parameters: Vec::new(),
+        self_type_ref: None,
+        words: vec![0x25],
+        relocations: Vec::new(),
+        call_loan_layouts: Vec::new(),
+        frame_layout: empty_frame(),
+        max_operand_depth: 0,
+        effect_summary_ref: synthetic_callback_callable(),
+        exception_regions: Vec::new(),
+        active_regions: Vec::new(),
+        switch_tables: Vec::new(),
+        statement_entries: Vec::new(),
+        source_map: Vec::new(),
+    }
+}
+
+fn root_statement_entries(program: RootProgram) -> Vec<StatementEntry> {
+    if !matches!(
+        program,
+        RootProgram::LocalCall | RootProgram::SyntheticTarget | RootProgram::ServiceDependency
+    ) {
+        return Vec::new();
+    }
+    vec![
+        StatementEntry {
+            pc: 0,
+            sequence_ordinal: 0,
+            attribution_id: StatementAttributionId::Statement {
+                statement_index: 0,
+                occurrence_ordinal: 0,
+            },
+            site: source_site(1),
+        },
+        StatementEntry {
+            pc: 0,
+            sequence_ordinal: 1,
+            attribution_id: StatementAttributionId::Expression {
+                expression_index: 0,
+                occurrence_ordinal: 0,
+            },
+            site: source_site(2),
+        },
+        StatementEntry {
+            pc: 4,
+            sequence_ordinal: 0,
+            attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+            },
+        },
+    ]
+}
+
+fn source_site(source_id: u64) -> InstructionSourceSite {
+    InstructionSourceSite::Source {
+        span: SourceSpanRef {
+            source_id,
+            start: SourcePosition::new(1, 1),
+            end: SourcePosition::new(1, 2),
+        },
     }
 }
 
@@ -149,6 +216,18 @@ fn root_body(
             vec![0x20, 0, 0, 0, 0x25],
             vec![BytecodeRelocation::LocalExecutableRef {
                 function_key: HELPER_FUNCTION.to_string(),
+                specialization: BytecodeSpecialization {
+                    type_arguments: Vec::new(),
+                    concrete_receiver: None,
+                },
+            }],
+            None,
+            vec![source_map(0, 4)],
+        ),
+        RootProgram::SyntheticTarget => (
+            vec![0x20, 0, 0, 0, 0x25],
+            vec![BytecodeRelocation::LocalExecutableRef {
+                function_key: CALLBACK_FUNCTION.to_string(),
                 specialization: BytecodeSpecialization {
                     type_arguments: Vec::new(),
                     concrete_receiver: None,

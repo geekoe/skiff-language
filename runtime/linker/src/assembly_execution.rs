@@ -438,6 +438,9 @@ mod task_route_tests {
             boundary_projections: BTreeMap::new(),
             service_call_refs: Vec::new(),
             bytecode: None,
+            bytecode_statement_manifest_identity:
+                skiff_artifact_model::derive_bytecode_statement_manifest_identity(PACKAGE_ID, &[])
+                    .expect("empty package statement manifest is canonical"),
         }
     }
 

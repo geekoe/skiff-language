@@ -1,6 +1,10 @@
-use skiff_artifact_identity::{ArtifactIdentityError, ValidatedBytecodeArtifact};
+use skiff_artifact_identity::{
+    ArtifactIdentityError, ValidatedBytecodeArtifact, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+};
 use skiff_artifact_model::{
-    InstructionSourceSite, Opcode, StructuralValidationError, SyntheticInstructionSiteReason,
+    derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
+    InstructionSourceSite, Opcode, SourcePosition, SourceSpanRef, StatementAttributionId,
+    StructuralValidationError, SyntheticInstructionSiteReason, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedBytecodeCandidate, LinkedFunction, LinkedInstructionTarget,
@@ -41,7 +45,38 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         .packages()
         .get(&fixture.package_reference.package_build_id)
         .unwrap();
-    assert_exact_v5_provenance(provenance, hydrated_package);
+    assert_exact_v6_provenance(provenance, hydrated_package);
+    assert_eq!(
+        hydrated_package.artifact().schema_version,
+        "skiff-package-artifact-v14"
+    );
+    assert_eq!(
+        hydrated_package.artifact().schema_version,
+        PACKAGE_ARTIFACT_SCHEMA_VERSION
+    );
+    assert!(fixture
+        .package_reference
+        .package_build_id
+        .as_str()
+        .starts_with("skiff-package-build-v13:sha256"));
+    assert!(fixture
+        .package_reference
+        .package_build_id
+        .as_str()
+        .starts_with(PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX));
+    let statement_manifest = statement_manifest(hydrated_package);
+    assert_eq!(
+        hydrated_package
+            .artifact()
+            .bytecode_statement_manifest_identity,
+        statement_manifest
+    );
+    assert_ne!(
+        statement_manifest,
+        derive_bytecode_statement_manifest_identity(&hydrated_package.artifact().package_id, &[],)
+            .unwrap(),
+        "bytecode-bearing fixture must not reuse its package-specific empty manifest"
+    );
 
     assert_eq!(candidate.functions().len(), 2);
     let root = function(&candidate, ROOT_FUNCTION);
@@ -51,6 +86,7 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
     assert_eq!(root.instructions()[0].operands(), &[0, 0, 0]);
     assert_eq!(root.instructions()[0].artifact_pc(), 0);
     assert_eq!(root.instructions()[1].opcode(), Opcode::Return);
+    assert_eq!(root.instructions()[1].artifact_pc(), 4);
     assert_eq!(
         root.instructions()[0].resolved_operands()[0].target(),
         LinkedInstructionTarget::Function(helper.index())
@@ -60,11 +96,41 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         0
     );
 
-    assert_eq!(root.tables().statement_entries().len(), 1);
+    let statements = root.tables().statement_entries();
+    assert_eq!(statements.len(), 3);
     assert_eq!(
-        root.tables().statement_entries()[0].statement_id(),
-        "fixture:root:entry"
+        statements
+            .iter()
+            .map(|entry| (entry.instruction().get(), entry.sequence_ordinal()))
+            .collect::<Vec<_>>(),
+        vec![(0, 0), (0, 1), (1, 0)]
     );
+    assert_eq!(
+        statements
+            .iter()
+            .map(|entry| entry.attribution_id())
+            .collect::<Vec<_>>(),
+        vec![
+            StatementAttributionId::Statement {
+                statement_index: 0,
+                occurrence_ordinal: 0,
+            },
+            StatementAttributionId::Expression {
+                expression_index: 0,
+                occurrence_ordinal: 0,
+            },
+            StatementAttributionId::Generated { ordinal: 0 },
+        ]
+    );
+    assert_eq!(statements[0].site(), &source_site(1));
+    assert_eq!(statements[1].site(), &source_site(2));
+    assert_eq!(
+        statements[2].site(),
+        &InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+        }
+    );
+    assert!(helper.tables().statement_entries().is_empty());
     assert_eq!(root.tables().source_map().len(), 1);
     let source = &root.tables().source_map()[0];
     assert_eq!(source.start().get(), 0);
@@ -123,6 +189,21 @@ fn production_entry_rejects_entry_alias_to_canonical_effect_owner() {
             location: BytecodeLinkLocation::Deployment { .. },
             detail,
         }) if detail.contains("aliases canonical implementation")
+    ));
+}
+
+#[test]
+fn production_entry_rejects_synthetic_callback_as_an_ordinary_local_target() {
+    let fixture = Fixture::synthetic_target();
+    let hydrated = fixture.hydrate();
+
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::RelocationResolution,
+            location: BytecodeLinkLocation::Function { .. },
+            detail,
+        }) if detail.contains("has no canonical callable")
     ));
 }
 
@@ -228,7 +309,36 @@ fn function<'a>(candidate: &'a LinkedBytecodeCandidate, key: &str) -> &'a Linked
         .unwrap()
 }
 
-fn assert_exact_v5_provenance(
+fn statement_manifest(
+    package: &HydratedBytecodePackage,
+) -> skiff_artifact_model::BytecodeStatementManifestIdentity {
+    let mut functions = package
+        .bytecode()
+        .view()
+        .functions()
+        .iter()
+        .map(|function| {
+            BytecodeFunctionStatementManifest::new(
+                function.origin.clone(),
+                function.statement_entries.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    functions.sort_by(|left, right| left.origin.cmp(&right.origin));
+    derive_bytecode_statement_manifest_identity(&package.artifact().package_id, &functions).unwrap()
+}
+
+fn source_site(source_id: u64) -> InstructionSourceSite {
+    InstructionSourceSite::Source {
+        span: SourceSpanRef {
+            source_id,
+            start: SourcePosition::new(1, 1),
+            end: SourcePosition::new(1, 2),
+        },
+    }
+}
+
+fn assert_exact_v6_provenance(
     provenance: &LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
 ) {
@@ -236,7 +346,7 @@ fn assert_exact_v5_provenance(
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");
-    assert_eq!(provenance.schema_version(), "skiff-bytecode-v5");
+    assert_eq!(provenance.schema_version(), "skiff-bytecode-v6");
     assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v4");
     assert_eq!(provenance.schema_version(), view.schema_version());
     assert_eq!(provenance.isa_version(), view.isa_version());

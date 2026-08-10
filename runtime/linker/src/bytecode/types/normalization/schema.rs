@@ -14,7 +14,7 @@ impl TypeNormalizer<'_> {
         let owner = self.unique_package_owner(package_id)?;
         if owner.artifact().schema_version != PACKAGE_ARTIFACT_SCHEMA_VERSION {
             return Err(self.error(format!(
-                "PackageSchema owner {package_id:?} is not a v13 PackageArtifact"
+                "PackageSchema owner {package_id:?} is not a v14 PackageArtifact"
             )));
         }
         let record = owner
@@ -31,7 +31,7 @@ impl TypeNormalizer<'_> {
             || &record.package_schema_type_id != package_schema_type_id
         {
             return Err(self.error(format!(
-                "PackageSchema {package_id}:{stable_schema_key}:{package_schema_type_id} disagrees with its v13 bytecode descriptor triple"
+                "PackageSchema {package_id}:{stable_schema_key}:{package_schema_type_id} disagrees with its v14 bytecode descriptor triple"
             )));
         }
         Ok(TypeRefIr::PackageSchema {

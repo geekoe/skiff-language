@@ -2,18 +2,20 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    BoundaryCallableProjection, BoundaryImplementationRequirements, ExecutableExport,
+    derive_bytecode_statement_manifest_identity, BoundaryCallableProjection,
+    BoundaryImplementationRequirements, BytecodeFunctionStatementManifest, ExecutableExport,
     ExecutableSignatureIr, FileIrRef, OperationCallableKind, OperationTargetRef, PackageArtifact,
     PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableSignature,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageTypeRef,
-    TypeDescriptorIr, TypeExport, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
+    PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageSyntheticCallbackOwner,
+    PackageTypeRef, TypeDescriptorIr, TypeExport, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::{
-    analyzed_facts, no_effects, schema_record, DependencyTypeSurfaceConflict, RootProgram,
-    DEPENDENCY_PACKAGE_ID, HELPER_CALLABLE, OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH,
-    PRIVATE_IMPLEMENTATION_PATH, ROOT_CALLABLE,
+    analyzed_facts, no_effects, schema_record, synthetic_callback_callable,
+    DependencyTypeSurfaceConflict, RootProgram, DEPENDENCY_PACKAGE_ID, HELPER_CALLABLE,
+    OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH, PRIVATE_IMPLEMENTATION_PATH, ROOT_CALLABLE,
 };
 
 pub(super) fn package(
@@ -87,6 +89,11 @@ pub(super) fn package(
         (root_callable, analyzed_facts()),
         (helper_callable, analyzed_facts()),
     ]);
+    let synthetic_callback =
+        (program == RootProgram::SyntheticTarget).then(synthetic_callback_callable);
+    if let Some(callback) = &synthetic_callback {
+        callable_semantic_facts.insert(callback.clone(), analyzed_facts());
+    }
     let mut boundary_projections = BTreeMap::new();
     if let Some(alias) = entry_alias {
         callable_links.insert(
@@ -124,6 +131,7 @@ pub(super) fn package(
         files: vec![file],
         static_resources: Vec::new(),
         bytecode: Some(bytecode.reference().clone()),
+        bytecode_statement_manifest_identity: statement_manifest_identity(package_id, bytecode),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols,
@@ -158,7 +166,18 @@ pub(super) fn package(
             ..PackageImplementationLinks::default()
         },
         callable_links,
-        synthetic_callback_owners: Vec::new(),
+        synthetic_callback_owners: synthetic_callback
+            .map(|package_callable_id| PackageSyntheticCallbackOwner {
+                owner: PackageExecutableCoordinate {
+                    file_ir_identity: "file-ir:fixture".to_string(),
+                    module_path: "fixture".to_string(),
+                    executable_index: 0,
+                },
+                site_ordinal: 0,
+                package_callable_id,
+            })
+            .into_iter()
+            .collect(),
         bytecode_schema_records: include_normalization_surface
             .then(schema_record)
             .map(|record| (record.package_schema_type_id.clone(), record))
@@ -245,6 +264,10 @@ pub(super) fn dependency_type_owner_package(
         files: vec![file_ref()],
         static_resources: Vec::new(),
         bytecode: Some(bytecode.reference().clone()),
+        bytecode_statement_manifest_identity: statement_manifest_identity(
+            DEPENDENCY_PACKAGE_ID,
+            bytecode,
+        ),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols,
@@ -280,6 +303,25 @@ pub(super) fn dependency_type_owner_package(
         .unwrap();
     skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
     artifact
+}
+
+fn statement_manifest_identity(
+    package_id: &str,
+    bytecode: &ValidatedBytecodeArtifact,
+) -> skiff_artifact_model::BytecodeStatementManifestIdentity {
+    let mut functions = bytecode
+        .view()
+        .functions()
+        .iter()
+        .map(|function| {
+            BytecodeFunctionStatementManifest::new(
+                function.origin.clone(),
+                function.statement_entries.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    functions.sort_by(|left, right| left.origin.cmp(&right.origin));
+    derive_bytecode_statement_manifest_identity(package_id, &functions).unwrap()
 }
 
 fn empty_record_descriptor() -> TypeDescriptorIr {
