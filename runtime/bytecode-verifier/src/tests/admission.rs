@@ -10,11 +10,12 @@ use crate::{
 
 use super::fixtures::{
     candidate_for, candidate_for_concrete_types, candidate_for_with_authority_corruption,
-    exact_hydration, exact_hydration_with_types, generous_limits, AuthorityPinCorruption,
+    exact_hydration, exact_hydration_with_types, generous_limits, loader_backed_local_call,
+    AuthorityPinCorruption, LocalCallCandidateCorruption,
 };
 
 #[test]
-fn exact_empty_admission_reaches_statement_attribution_gate() {
+fn exact_empty_admission_reaches_effect_and_no_pending_gate() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
     let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
@@ -22,7 +23,7 @@ fn exact_empty_admission_reaches_statement_attribution_gate() {
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::SourceAndStatementAttribution,
+            obligation: VerificationObligation::EffectAndNoPending,
             location: VerificationLocation::Image,
         }
     );
@@ -172,6 +173,43 @@ fn package_budget_is_enforced_before_binding() {
 }
 
 #[test]
+fn fixed_image_and_function_ceilings_precede_attribution_row_scans() {
+    let (hydrated, candidate) = loader_backed_local_call(LocalCallCandidateCorruption::None);
+    let mut limits = generous_limits();
+    limits.max_image_table_entries = 1;
+    limits.max_functions = 0;
+    limits.max_statement_events_per_pc = 0;
+    let error = verify(hydrated, candidate, &limits).unwrap_err();
+    assert_eq!(
+        error,
+        VerificationError::LimitExceeded {
+            limit: VerificationLimit::ImageTableEntries,
+            actual: 2,
+            max: 1,
+            location: VerificationLocation::Table {
+                table: CandidateTable::Functions,
+                row: 0,
+            },
+        }
+    );
+
+    let (hydrated, candidate) = loader_backed_local_call(LocalCallCandidateCorruption::None);
+    let mut limits = generous_limits();
+    limits.max_functions = 1;
+    limits.max_statement_events_per_pc = 0;
+    let error = verify(hydrated, candidate, &limits).unwrap_err();
+    assert_eq!(
+        error,
+        VerificationError::LimitExceeded {
+            limit: VerificationLimit::Functions,
+            actual: 2,
+            max: 1,
+            location: VerificationLocation::Image,
+        }
+    );
+}
+
+#[test]
 fn out_of_bounds_type_origin_coordinate_is_rejected_by_p1() {
     let hydrated = exact_hydration_with_types(vec![TypeRefIr::builtin("string")]);
     let build_id = hydrated.packages().keys().next().unwrap().clone();
@@ -196,4 +234,36 @@ fn out_of_bounds_type_origin_coordinate_is_rejected_by_p1() {
             detail,
         } if detail.contains("exact admitted artifact row")
     ));
+}
+
+#[test]
+fn statement_instruction_sequence_id_and_site_corruption_fail_in_p1() {
+    let cases = [
+        (
+            LocalCallCandidateCorruption::StatementInstruction,
+            "instruction",
+        ),
+        (
+            LocalCallCandidateCorruption::StatementSequence,
+            "sequence ordinal",
+        ),
+        (
+            LocalCallCandidateCorruption::StatementAttributionId,
+            "attribution id",
+        ),
+        (LocalCallCandidateCorruption::StatementSite, "source site"),
+    ];
+    for (corruption, expected) in cases {
+        let (hydrated, candidate) = loader_backed_local_call(corruption);
+        let error = verify(hydrated, candidate, &generous_limits())
+            .expect_err("corrupt raw statement placement must fail before P2");
+        assert!(matches!(
+            error,
+            VerificationError::SemanticViolation {
+                obligation: VerificationObligation::ExactHydrationBinding,
+                location: VerificationLocation::Function { .. },
+                detail,
+            } if detail.contains(expected)
+        ));
+    }
 }

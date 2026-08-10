@@ -21,8 +21,14 @@ pub struct VerificationLimits {
     pub max_exception_regions_per_function: u64,
     /// Maximum switch targets summed across one function.
     pub max_switch_targets_per_function: u64,
-    /// Maximum statement and source-map rows summed across one function.
-    pub max_debug_entries_per_function: u64,
+    /// Maximum authenticated statement events at one instruction PC.
+    pub max_statement_events_per_pc: u64,
+    /// Maximum authenticated statement events in one function.
+    pub max_statement_events_per_function: u64,
+    /// Maximum authenticated statement events across the image.
+    pub max_total_statement_events: u64,
+    /// Maximum source-map ranges in one function.
+    pub max_source_map_entries_per_function: u64,
     /// Maximum rows in each image-local target or data table.
     pub max_image_table_entries: u64,
     /// Maximum call, callback, record or collection arity.

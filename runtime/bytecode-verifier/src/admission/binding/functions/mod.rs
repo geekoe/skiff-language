@@ -8,6 +8,7 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
+use crate::admission::facts::ExactFunctionStatementBinding;
 use crate::{VerificationError, VerificationLocation};
 
 use super::{row_u32, semantic_violation, table_location, TargetCoverage};
@@ -15,9 +16,10 @@ use super::{row_u32, semantic_violation, table_location, TargetCoverage};
 pub(super) fn prove_functions(
     hydrated: &HydratedDeploymentBytecode,
     candidate: &LinkedBytecodeCandidate,
-) -> Result<TargetCoverage, VerificationError> {
+) -> Result<(TargetCoverage, Vec<ExactFunctionStatementBinding>), VerificationError> {
     prove_exact_local_target_coverage(hydrated, candidate)?;
     let mut coverage = TargetCoverage::default();
+    let mut statement_functions = Vec::with_capacity(candidate.functions().len());
     for function in candidate.functions() {
         let location = VerificationLocation::Function {
             function: function.index(),
@@ -40,7 +42,9 @@ pub(super) fn prove_functions(
         })?;
         prove_function_identity(package, function, source, candidate)?;
         prove_frame(function, source, candidate)?;
-        tables::prove_function_tables(package, function, source, candidate)?;
+        statement_functions.push(tables::prove_function_tables(
+            package, function, source, candidate,
+        )?);
         tables::prove_resume_sites(package, function, source, candidate)?;
         instructions::prove_instructions(
             hydrated,
@@ -51,7 +55,7 @@ pub(super) fn prove_functions(
             &mut coverage,
         )?;
     }
-    Ok(coverage)
+    Ok((coverage, statement_functions))
 }
 
 fn prove_exact_local_target_coverage(

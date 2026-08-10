@@ -5,6 +5,7 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
+use crate::admission::facts::{ExactFunctionStatementBinding, ExactStatementEntry};
 use crate::{VerificationError, VerificationLocation};
 
 use super::{boundary_index_for_pc, instruction_index_for_pc, prove_type_origin};
@@ -15,13 +16,14 @@ pub(super) fn prove_function_tables(
     function: &LinkedFunction,
     source: &ValidatedFunction,
     candidate: &LinkedBytecodeCandidate,
-) -> Result<(), VerificationError> {
+) -> Result<ExactFunctionStatementBinding, VerificationError> {
     prove_exception_regions(package, function, source, candidate)?;
     prove_active_regions(function, source)?;
     prove_switch_tables(package, function, source, candidate)?;
     prove_call_loan_layouts(function, source, candidate)?;
-    prove_statement_entries(function, source)?;
-    prove_source_map(function, source)
+    let statements = prove_statement_entries(function, source)?;
+    prove_source_map(function, source)?;
+    Ok(statements)
 }
 
 fn prove_exception_regions(
@@ -233,7 +235,7 @@ fn prove_call_loan_layouts(
 fn prove_statement_entries(
     function: &LinkedFunction,
     source: &ValidatedFunction,
-) -> Result<(), VerificationError> {
+) -> Result<ExactFunctionStatementBinding, VerificationError> {
     let location = function_location(function);
     if function.statement_entries().len() != source.statement_entries.len() {
         return Err(semantic_violation(
@@ -241,23 +243,48 @@ fn prove_statement_entries(
             "linked statement-table coverage differs from the admitted function",
         ));
     }
+    let mut entries = Vec::with_capacity(source.statement_entries.len());
     for (linked, artifact) in function
         .statement_entries()
         .iter()
         .zip(&source.statement_entries)
     {
-        let exact = linked.instruction()
-            == instruction_index_for_pc(source, artifact.pc, location)?
-            && linked.statement_id() == artifact.statement_id
-            && linked.charge_kind() == artifact.charge_kind;
-        if !exact {
+        let instruction = instruction_index_for_pc(source, artifact.pc, location)?;
+        if linked.sequence_ordinal() != artifact.sequence_ordinal {
             return Err(semantic_violation(
                 location,
-                "linked statement entry differs from its admitted artifact row",
+                "linked statement sequence ordinal differs from its admitted artifact row",
             ));
         }
+        if linked.instruction() != instruction {
+            return Err(semantic_violation(
+                location,
+                "linked statement instruction differs from its admitted artifact PC header",
+            ));
+        }
+        if linked.attribution_id() != artifact.attribution_id {
+            return Err(semantic_violation(
+                location,
+                "linked statement attribution id differs from its admitted artifact row",
+            ));
+        }
+        if linked.site() != &artifact.site {
+            return Err(semantic_violation(
+                location,
+                "linked statement source site differs from its admitted artifact row",
+            ));
+        }
+        entries.push(ExactStatementEntry::new(
+            instruction,
+            artifact.sequence_ordinal,
+            artifact.attribution_id,
+            artifact.site.clone(),
+        ));
     }
-    Ok(())
+    Ok(ExactFunctionStatementBinding::new(
+        function.index(),
+        entries.into_boxed_slice(),
+    ))
 }
 
 fn prove_source_map(

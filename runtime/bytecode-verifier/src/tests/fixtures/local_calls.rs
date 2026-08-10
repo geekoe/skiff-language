@@ -1,3 +1,5 @@
+mod statements;
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
@@ -7,25 +9,23 @@ use skiff_artifact_model::{
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
     CallableProvenanceUnknownReason, CallableSemanticFacts, DeploymentArtifactIdentity,
     DeploymentDiagnosticText, DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph,
-    InstructionSourceSite, OperationCallableKind, OperationTargetRef, PackageArtifact,
-    PackageCallableId, PackageCallableLinkFact, PackageCallableSignature,
-    PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
-    PackageSchemaIndexRef, PackageTypeRef, RelocatableBytecodeFunction, ServiceDeployment,
-    SourceMapEntry, StatementChargeKind, StatementEntry, SyntheticInstructionSiteReason, TypeRefIr,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    OperationCallableKind, OperationTargetRef, PackageArtifact, PackageCallableId,
+    PackageCallableLinkFact, PackageCallableSignature, PackageExecutableCoordinate,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageTypeRef, RelocatableBytecodeFunction,
+    ServiceDeployment, TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
-    ArtifactFunctionKey, FunctionIndex, InstructionBoundaryIndex, InstructionIndex,
-    LinkedBytecodeCandidate, LinkedCallableEffectDeclaration, LinkedExactLocalTarget,
-    LinkedFrameLayout, LinkedFunction, LinkedFunctionTables, LinkedInstruction,
-    LinkedInstructionTarget, LinkedProgramPointState, LinkedResolvedOperand, LinkedSourceMapEntry,
-    LinkedStackMapCandidate, LinkedStatementEntry, SpecializationKey,
+    ArtifactFunctionKey, FunctionIndex, InstructionIndex, LinkedBytecodeCandidate,
+    LinkedCallableEffectDeclaration, LinkedExactLocalTarget, LinkedFrameLayout, LinkedFunction,
+    LinkedFunctionTables, LinkedInstruction, LinkedInstructionTarget, LinkedProgramPointState,
+    LinkedResolvedOperand, LinkedSourceMapEntry, LinkedStackMapCandidate, LinkedStatementEntry,
+    SpecializationKey,
 };
 use skiff_runtime_loader::{DeploymentBytecodeLoader, HydratedDeploymentBytecode};
 
-use super::{candidate_parts, contract, ExactResolver};
+use super::{bytecode_statement_manifest_identity, candidate_parts, contract, ExactResolver};
 
 const CALLER_FUNCTION: &str = "fixture::caller";
 const TARGET_FUNCTION: &str = "fixture::target";
@@ -40,13 +40,17 @@ pub(crate) enum LocalCallCandidateCorruption {
     TargetDeclarativeSummary,
     TargetEffectOwner,
     TargetCanonicalFunction,
+    StatementInstruction,
+    StatementSequence,
+    StatementAttributionId,
+    StatementSite,
 }
 
 pub(crate) fn loader_backed_local_call(
     corruption: LocalCallCandidateCorruption,
 ) -> (HydratedDeploymentBytecode, LinkedBytecodeCandidate) {
     let bytecode = admitted_bytecode();
-    let package = package(bytecode.reference().clone());
+    let package = package(bytecode.as_ref());
     let contract = contract();
     let mut deployment = ServiceDeployment {
         schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
@@ -128,7 +132,7 @@ fn caller_artifact_function() -> RelocatableBytecodeFunction {
         },
         type_parameters: Vec::new(),
         self_type_ref: None,
-        words: vec![0x20, 0, 0, 0, 0x25],
+        words: vec![0x20, 0, 0, 0, 0x14, 0x25],
         relocations: vec![BytecodeRelocation::LocalExecutableRef {
             function_key: TARGET_FUNCTION.to_string(),
             specialization: BytecodeSpecialization {
@@ -143,16 +147,8 @@ fn caller_artifact_function() -> RelocatableBytecodeFunction {
         exception_regions: Vec::new(),
         active_regions: Vec::new(),
         switch_tables: Vec::new(),
-        statement_entries: vec![StatementEntry {
-            pc: 0,
-            statement_id: "fixture:caller:entry".to_string(),
-            charge_kind: StatementChargeKind::FunctionEntry,
-        }],
-        source_map: vec![SourceMapEntry {
-            start_pc: 0,
-            end_pc: 4,
-            site: call_site(),
-        }],
+        statement_entries: statements::artifact_entries(),
+        source_map: statements::artifact_source_map(),
     }
 }
 
@@ -173,16 +169,12 @@ fn target_artifact_function() -> RelocatableBytecodeFunction {
         exception_regions: Vec::new(),
         active_regions: Vec::new(),
         switch_tables: Vec::new(),
-        statement_entries: vec![StatementEntry {
-            pc: 0,
-            statement_id: "fixture:target:entry".to_string(),
-            charge_kind: StatementChargeKind::FunctionEntry,
-        }],
+        statement_entries: Vec::new(),
         source_map: Vec::new(),
     }
 }
 
-fn package(bytecode: skiff_artifact_model::BytecodeArtifactRef) -> PackageArtifact {
+fn package(bytecode: &ValidatedBytecodeArtifact) -> PackageArtifact {
     let package_id = "example.local-authority";
     let caller = callable(CALLER_CALLABLE);
     let target = callable(TARGET_CALLABLE);
@@ -194,7 +186,11 @@ fn package(bytecode: skiff_artifact_model::BytecodeArtifactRef) -> PackageArtifa
         package_build_id: skiff_artifact_model::PackageBuildId::new("unassigned"),
         files: vec![file.clone()],
         static_resources: Vec::new(),
-        bytecode: Some(bytecode),
+        bytecode: Some(bytecode.reference().clone()),
+        bytecode_statement_manifest_identity: bytecode_statement_manifest_identity(
+            package_id,
+            Some(bytecode),
+        ),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
@@ -272,14 +268,11 @@ fn candidate(
         linked_function(
             FunctionIndex::new(0),
             caller_key.clone(),
-            vec![linked_call(), linked_return(4)],
+            vec![linked_call(), linked_budget(), linked_return(5)],
             callable(CALLER_CALLABLE),
             canonical_summary(),
-            vec![LinkedSourceMapEntry::new(
-                InstructionIndex::new(0),
-                InstructionBoundaryIndex::new(1),
-                call_site(),
-            )],
+            statements::linked_entries(corruption),
+            statements::linked_source_map(),
         ),
         linked_function(
             TARGET_FUNCTION_INDEX,
@@ -287,6 +280,7 @@ fn candidate(
             vec![linked_return(0)],
             target_effect_owner,
             target_summary,
+            Box::new([]),
             Vec::new(),
         ),
     ];
@@ -305,13 +299,9 @@ fn linked_function(
     instructions: Vec<LinkedInstruction>,
     effect_owner: PackageCallableId,
     effect_summary: CallableEffectSummary,
+    statement_entries: Box<[LinkedStatementEntry]>,
     source_map: Vec<LinkedSourceMapEntry>,
 ) -> LinkedFunction {
-    let statement_id = if index == TARGET_FUNCTION_INDEX {
-        "fixture:target:entry"
-    } else {
-        "fixture:caller:entry"
-    };
     let states = (0..instructions.len())
         .map(|instruction| {
             LinkedProgramPointState::new(
@@ -338,12 +328,7 @@ fn linked_function(
             Box::new([]),
             Box::new([]),
             Box::new([]),
-            Box::new([LinkedStatementEntry::new(
-                InstructionIndex::new(0),
-                statement_id,
-                StatementChargeKind::FunctionEntry,
-            )
-            .unwrap()]),
+            statement_entries,
             source_map.into_boxed_slice(),
         ),
         stack_map,
@@ -359,6 +344,16 @@ fn linked_call() -> LinkedInstruction {
             LinkedInstructionTarget::Function(TARGET_FUNCTION_INDEX),
         )]),
         0,
+    )
+    .unwrap()
+}
+
+fn linked_budget() -> LinkedInstruction {
+    LinkedInstruction::new(
+        skiff_artifact_model::Opcode::BudgetCheckpoint,
+        Box::new([]),
+        Box::new([]),
+        4,
     )
     .unwrap()
 }
@@ -474,12 +469,6 @@ fn coordinate(executable_index: u32) -> PackageExecutableCoordinate {
         file_ir_identity: "file-ir:local-authority".to_string(),
         module_path: "fixture".to_string(),
         executable_index,
-    }
-}
-
-fn call_site() -> InstructionSourceSite {
-    InstructionSourceSite::Synthetic {
-        reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
     }
 }
 

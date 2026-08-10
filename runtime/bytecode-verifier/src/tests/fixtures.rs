@@ -3,13 +3,14 @@ use std::{collections::BTreeMap, sync::Arc};
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeArtifactRef,
-    BytecodeImage, BytecodePoolEntry, BytecodePools, ContractDiagnosticText,
-    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentRevision, FrozenConstantGraph,
-    PackageArtifact, PackageArtifactRef, PackageBuildId, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-    ServiceProtocolIdentity, ShapeDeclaration, TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    BytecodeFunctionStatementManifest, BytecodeImage, BytecodePoolEntry, BytecodePools,
+    BytecodeStatementManifestIdentity, ContractDiagnosticText, DeploymentArtifactIdentity,
+    DeploymentDiagnosticText, DeploymentRevision, FrozenConstantGraph, PackageArtifact,
+    PackageArtifactRef, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
+    ShapeDeclaration, TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
@@ -111,7 +112,7 @@ pub(super) fn exact_hydration_with_types_and_shapes(
 }
 
 fn hydrate_bytecode(bytecode: Arc<ValidatedBytecodeArtifact>) -> HydratedDeploymentBytecode {
-    let package = package(bytecode.reference().clone());
+    let package = package(bytecode.as_ref());
     let contract = contract();
     let mut deployment = ServiceDeployment {
         schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
@@ -189,7 +190,7 @@ fn admit_bytecode(
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
 }
 
-fn package(bytecode: BytecodeArtifactRef) -> PackageArtifact {
+fn package(bytecode: &ValidatedBytecodeArtifact) -> PackageArtifact {
     let package_id = "example.verifier";
     let schema_identity =
         skiff_artifact_identity::package_schema_index_identity(package_id, &BTreeMap::new())
@@ -201,7 +202,11 @@ fn package(bytecode: BytecodeArtifactRef) -> PackageArtifact {
         package_build_id: PackageBuildId::new("unassigned"),
         files: Vec::new(),
         static_resources: Vec::new(),
-        bytecode: Some(bytecode),
+        bytecode: Some(bytecode.reference().clone()),
+        bytecode_statement_manifest_identity: bytecode_statement_manifest_identity(
+            package_id,
+            Some(bytecode),
+        ),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
@@ -228,6 +233,25 @@ fn package(bytecode: BytecodeArtifactRef) -> PackageArtifact {
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
     artifact
+}
+
+fn bytecode_statement_manifest_identity(
+    package_id: &str,
+    bytecode: Option<&ValidatedBytecodeArtifact>,
+) -> BytecodeStatementManifestIdentity {
+    let mut functions = bytecode
+        .into_iter()
+        .flat_map(|bytecode| bytecode.view().functions())
+        .map(|function| {
+            BytecodeFunctionStatementManifest::new(
+                function.origin.clone(),
+                function.statement_entries.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    functions.sort_by(|left, right| left.origin.cmp(&right.origin));
+    skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &functions)
+        .unwrap()
 }
 
 fn contract() -> ServiceContract {
@@ -366,7 +390,10 @@ pub(super) fn generous_limits() -> VerificationLimits {
         max_control_flow_edges_per_function: u64::MAX,
         max_exception_regions_per_function: u64::MAX,
         max_switch_targets_per_function: u64::MAX,
-        max_debug_entries_per_function: u64::MAX,
+        max_statement_events_per_pc: u64::MAX,
+        max_statement_events_per_function: u64::MAX,
+        max_total_statement_events: u64::MAX,
+        max_source_map_entries_per_function: u64::MAX,
         max_image_table_entries: u64::MAX,
         max_arity: u64::MAX,
         max_callback_captures_per_callback: u64::MAX,

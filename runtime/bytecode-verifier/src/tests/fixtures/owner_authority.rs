@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, sync::Arc};
 
+use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     ContractTypeDescriptor, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentRevision, FileIrRef, PackageArtifact, PackageArtifactRef, PackageBinding,
@@ -10,7 +11,7 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_loader::{DeploymentBytecodeLoader, HydratedDeploymentBytecode};
 
-use super::{bytecode, contract, package, ExactResolver};
+use super::{bytecode, bytecode_statement_manifest_identity, contract, package, ExactResolver};
 
 pub(in crate::tests) const OWNER_CALLER_PACKAGE_ID: &str = "example.verifier-owner";
 pub(in crate::tests) const OWNER_TARGET_PACKAGE_ID: &str = "example.verifier-type-provider";
@@ -62,8 +63,12 @@ pub(in crate::tests) fn owner_authority_fixture(
         ],
         Vec::new(),
     );
-    let mut target_package = package(target_bytecode.reference().clone());
-    retag_package(&mut target_package, OWNER_TARGET_PACKAGE_ID);
+    let mut target_package = package(target_bytecode.as_ref());
+    retag_package(
+        &mut target_package,
+        OWNER_TARGET_PACKAGE_ID,
+        target_bytecode.as_ref(),
+    );
     let descriptor = empty_record_descriptor();
     let inner = exact_package_symbol(OWNER_TARGET_PACKAGE_ID, OWNER_INNER_TYPE_PATH, None);
     match surface {
@@ -152,8 +157,12 @@ pub(in crate::tests) fn owner_authority_fixture(
         ));
     }
     let caller_bytecode = bytecode(caller_types, Vec::new());
-    let mut caller_package = package(caller_bytecode.reference().clone());
-    retag_package(&mut caller_package, OWNER_CALLER_PACKAGE_ID);
+    let mut caller_package = package(caller_bytecode.as_ref());
+    retag_package(
+        &mut caller_package,
+        OWNER_CALLER_PACKAGE_ID,
+        caller_bytecode.as_ref(),
+    );
     install_implementation_type(&mut caller_package, OWNER_SELF_TYPE_PATH, 0, descriptor);
     let requirement = |alias: &str, exact_build: bool| PackageRequirement {
         alias: alias.to_string(),
@@ -231,10 +240,16 @@ pub(in crate::tests) fn owner_authority_fixture(
     }
 }
 
-fn retag_package(package: &mut PackageArtifact, package_id: &str) {
+fn retag_package(
+    package: &mut PackageArtifact,
+    package_id: &str,
+    bytecode: &ValidatedBytecodeArtifact,
+) {
     package.package_id = package_id.to_string();
     package.package_version = "1.0.0".to_string();
     package.package_schema_index.package_id = package_id.to_string();
+    package.bytecode_statement_manifest_identity =
+        bytecode_statement_manifest_identity(package_id, Some(bytecode));
     reassign_package_identities(package);
 }
 

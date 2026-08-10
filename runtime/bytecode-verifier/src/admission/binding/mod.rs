@@ -11,17 +11,21 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
+use crate::admission::{AdmissionFacts, ExactStatementBinding};
 use crate::{VerificationError, VerificationLocation, VerificationObligation};
 
 pub(super) fn prove_exact_binding(
     hydrated: &HydratedDeploymentBytecode,
     candidate: &LinkedBytecodeCandidate,
-) -> Result<(), VerificationError> {
+) -> Result<AdmissionFacts, VerificationError> {
     packages::prove_owner_and_packages(hydrated, candidate)?;
     data::prove_artifact_origins(hydrated, candidate)?;
-    let coverage = functions::prove_functions(hydrated, candidate)?;
+    let (coverage, statement_functions) = functions::prove_functions(hydrated, candidate)?;
     entries::prove_entry_and_target_tables(hydrated, candidate, &coverage)?;
-    data::prove_constant_roots(hydrated, candidate)
+    data::prove_constant_roots(hydrated, candidate)?;
+    Ok(AdmissionFacts::new(ExactStatementBinding::new(
+        statement_functions.into_boxed_slice(),
+    )))
 }
 
 #[derive(Debug, Default)]

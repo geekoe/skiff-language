@@ -8,9 +8,11 @@ use skiff_runtime_model::vm_value::ValueSlot;
 use crate::{
     verify, VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
     VerifiedCodeEntry, VerifiedConstantHeap, VerifiedLinkedBytecodeImage,
+    VerifiedStatementSchedule,
 };
 
 mod admission;
+mod attribution;
 mod concrete_values;
 mod control_flow;
 pub(crate) mod fixtures;
@@ -28,7 +30,10 @@ fn limits() -> VerificationLimits {
         max_control_flow_edges_per_function: 0,
         max_exception_regions_per_function: 0,
         max_switch_targets_per_function: 0,
-        max_debug_entries_per_function: 0,
+        max_statement_events_per_pc: 0,
+        max_statement_events_per_function: 0,
+        max_total_statement_events: 0,
+        max_source_map_entries_per_function: 0,
         max_image_table_entries: 0,
         max_arity: 0,
         max_callback_captures_per_callback: 0,
@@ -91,6 +96,14 @@ fn verified_constant_heap_exposes_only_typed_read_access() {
         VerifiedConstantHeap::get;
 
     let _ = get;
+}
+
+#[test]
+fn verified_image_carries_only_read_access_to_its_statement_schedule() {
+    let schedule: fn(&VerifiedLinkedBytecodeImage) -> &VerifiedStatementSchedule =
+        VerifiedLinkedBytecodeImage::statement_schedule;
+
+    let _ = schedule;
 }
 
 #[test]

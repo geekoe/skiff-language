@@ -40,6 +40,27 @@ struct ExactLocalInvocation {
 }
 
 impl ControlFlowFacts {
+    pub(crate) fn proves_function_shape(
+        &self,
+        function: FunctionIndex,
+        instruction_count: usize,
+    ) -> bool {
+        self.functions
+            .get(function.get() as usize)
+            .is_some_and(|facts| facts.states_before.len() == instruction_count)
+    }
+
+    pub(crate) fn proves_reachable_instruction(
+        &self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> bool {
+        self.functions
+            .get(function.get() as usize)
+            .and_then(|facts| facts.states_before.get(instruction.get() as usize))
+            .is_some()
+    }
+
     /// Iterates only the exact-local invocation coordinates independently
     /// derived by the CFG proof. The dense caller ordinal is kept as `usize`
     /// so conversion into the candidate's typed index remains fallible at the

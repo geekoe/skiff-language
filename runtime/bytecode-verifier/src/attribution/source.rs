@@ -3,11 +3,42 @@ use skiff_artifact_model::{
     SourceContract, SourceOriginConstraint,
 };
 use skiff_runtime_linked_bytecode::{
-    InstructionIndex, LinkedActiveRegionKind, LinkedBytecodeCandidate, LinkedFunction,
-    LinkedInstruction, LinkedInstructionTarget, LinkedSourceMapEntry,
+    FunctionIndex, InstructionIndex, LinkedActiveRegionKind, LinkedBytecodeCandidate,
+    LinkedFunction, LinkedInstruction, LinkedInstructionTarget, LinkedSourceMapEntry,
 };
 
 use crate::{VerificationError, VerificationLocation, VerificationObligation};
+
+/// Private token proving that source attribution was independently checked
+/// for the same dense function/instruction shape consumed by statement P2.
+#[derive(Debug)]
+pub(crate) struct SourceAttributionFacts {
+    functions: Box<[SourceFunctionFacts]>,
+}
+
+#[derive(Debug)]
+struct SourceFunctionFacts {
+    function: FunctionIndex,
+    instruction_count: usize,
+    source_map_entries: usize,
+}
+
+impl SourceAttributionFacts {
+    pub(super) fn proves_function(
+        &self,
+        function: FunctionIndex,
+        instruction_count: usize,
+        source_map_entries: usize,
+    ) -> bool {
+        self.functions
+            .get(function.get() as usize)
+            .is_some_and(|facts| {
+                facts.function == function
+                    && facts.instruction_count == instruction_count
+                    && facts.source_map_entries == source_map_entries
+            })
+    }
+}
 
 /// Independently proves the canonical source route for every linked PC.
 ///
@@ -16,11 +47,19 @@ use crate::{VerificationError, VerificationLocation, VerificationObligation};
 /// ranges are checked again before the canonical opcode contract is applied.
 pub(crate) fn prove_source_attribution(
     candidate: &LinkedBytecodeCandidate,
-) -> Result<(), VerificationError> {
+) -> Result<SourceAttributionFacts, VerificationError> {
+    let mut functions = Vec::with_capacity(candidate.functions().len());
     for function in candidate.functions() {
         prove_function(function)?;
+        functions.push(SourceFunctionFacts {
+            function: function.index(),
+            instruction_count: function.instructions().len(),
+            source_map_entries: function.source_map().len(),
+        });
     }
-    Ok(())
+    Ok(SourceAttributionFacts {
+        functions: functions.into_boxed_slice(),
+    })
 }
 
 fn prove_function(function: &LinkedFunction) -> Result<(), VerificationError> {

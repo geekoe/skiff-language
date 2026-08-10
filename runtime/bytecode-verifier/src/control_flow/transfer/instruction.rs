@@ -106,6 +106,7 @@ fn require_supported(
         | Opcode::Jump
         | Opcode::JumpIfTrue
         | Opcode::JumpIfFalse
+        | Opcode::BudgetCheckpoint
         | Opcode::CallLocal
         | Opcode::Return
         | Opcode::Not => Ok(()),

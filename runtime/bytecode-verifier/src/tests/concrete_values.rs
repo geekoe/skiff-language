@@ -23,7 +23,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn package_global_string_and_array_with_exact_plans_reach_statement_attribution_gate() {
+fn package_global_string_and_array_with_exact_plans_reach_effect_gate() {
     let ArrayCandidate {
         hydrated,
         candidate,
@@ -34,7 +34,7 @@ fn package_global_string_and_array_with_exact_plans_reach_statement_attribution_
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::SourceAndStatementAttribution,
+            obligation: VerificationObligation::EffectAndNoPending,
             location: VerificationLocation::Image,
         }
     );

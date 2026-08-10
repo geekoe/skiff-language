@@ -13,6 +13,7 @@ mod error;
 mod limits;
 mod verifier;
 
+pub use attribution::{VerifiedStatementEvent, VerifiedStatementSchedule};
 pub use error::{
     VerificationError, VerificationLimit, VerificationLocation, VerificationObligation,
 };

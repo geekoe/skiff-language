@@ -1,3 +1,5 @@
+mod attribution;
+
 use skiff_runtime_linked_bytecode::{
     CandidateTable, LinkedBytecodeCandidate, LinkedCallableSignature, LinkedInterfaceTableKind,
     LinkedNativeCallableSignature,
@@ -22,6 +24,7 @@ pub(super) fn prove_checked_budgets(
         limits.max_functions,
         VerificationLocation::Image,
     )?;
+    attribution::check_attribution_budgets(candidate, limits)?;
 
     let mut total_instructions = 0_u64;
     for function in candidate.functions() {
@@ -155,7 +158,6 @@ fn check_function_budgets(
         location,
     )?;
     check_switch_targets(function, limits, location)?;
-    check_debug_entries(function, limits, location)?;
     check_arity(count(function.frame().parameters())?, limits, location)?;
     check_arity(count(function.frame().result_types())?, limits, location)?;
     for layout in function.call_loan_layouts() {
@@ -186,22 +188,6 @@ fn check_switch_targets(
         VerificationLimit::SwitchTargetsPerFunction,
         targets,
         limits.max_switch_targets_per_function,
-        location,
-    )
-}
-
-fn check_debug_entries(
-    function: &skiff_runtime_linked_bytecode::LinkedFunction,
-    limits: &VerificationLimits,
-    location: VerificationLocation,
-) -> Result<(), VerificationError> {
-    let debug_entries = count(function.statement_entries())?
-        .checked_add(count(function.source_map())?)
-        .ok_or_else(|| arithmetic_overflow(location, "counting function debug entries"))?;
-    check_limit(
-        VerificationLimit::DebugEntriesPerFunction,
-        debug_entries,
-        limits.max_debug_entries_per_function,
         location,
     )
 }

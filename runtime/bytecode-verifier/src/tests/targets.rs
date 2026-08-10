@@ -27,7 +27,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn loader_backed_local_target_authority_advances_to_statement_attribution_gate() {
+fn loader_backed_local_target_authority_advances_to_effect_gate() {
     let (hydrated, candidate) = loader_backed_local_call(LocalCallCandidateCorruption::None);
     let error = verify(hydrated, candidate, &generous_limits())
         .expect_err("exact hydrated local authority must cross P3 target proof");
@@ -35,7 +35,7 @@ fn loader_backed_local_target_authority_advances_to_statement_attribution_gate()
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::SourceAndStatementAttribution,
+            obligation: VerificationObligation::EffectAndNoPending,
             location: VerificationLocation::Image,
         }
     );
