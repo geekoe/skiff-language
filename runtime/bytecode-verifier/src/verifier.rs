@@ -28,7 +28,7 @@ use crate::{
     VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
 };
 
-pub(super) use constants::prove_and_build_empty_constant_heap;
+pub(super) use constants::prove_and_build_constant_heap;
 pub use constants::VerifiedConstantHeap;
 pub use entries::{CodeEntryLookupError, VerifiedCodeEntry, VerifiedCodeEntryKind};
 #[derive(Debug)]
@@ -327,7 +327,7 @@ fn prove_hydrated_candidate_semantics(
         &control_flow,
         &statement_schedule,
     )?;
-    let constant_heap = prove_and_build_empty_constant_heap(hydrated, candidate)?;
+    let constant_heap = prove_and_build_constant_heap(hydrated, candidate)?;
     let resume_sites = control_flow.into_resume_sites();
     Ok(VerifiedSemanticFacts {
         constant_heap,

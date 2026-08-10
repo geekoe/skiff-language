@@ -17,6 +17,7 @@ mod concrete_values;
 mod control_flow;
 pub(crate) mod fixtures;
 mod frozen_constants;
+mod scalar;
 mod stack_state;
 mod tail_calls;
 mod targets;

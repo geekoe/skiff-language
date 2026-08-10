@@ -123,6 +123,17 @@ fn require_supported(
         | Opcode::CallLocal
         | Opcode::Return
         | Opcode::Not
+        | Opcode::Negate
+        | Opcode::Add
+        | Opcode::Subtract
+        | Opcode::Multiply
+        | Opcode::Divide
+        | Opcode::Equal
+        | Opcode::NotEqual
+        | Opcode::LessThan
+        | Opcode::LessOrEqual
+        | Opcode::GreaterThan
+        | Opcode::GreaterOrEqual
         | Opcode::StreamNext => Ok(()),
         _ => Err(unavailable(location)),
     }
@@ -208,6 +219,26 @@ fn validate_input_source(
             ImplicitBuiltin::Number,
             context.location,
         ),
+        ValueSource::ComparablePair => {
+            if input.len() != 2 {
+                return Err(violation(
+                    context.location,
+                    "comparison pair arity is not exactly two",
+                ));
+            }
+            let [left, right] = input else {
+                unreachable!("comparison pair length was checked to be two");
+            };
+            let AbstractValue::Concrete(left_ty) = *left;
+            let AbstractValue::Concrete(right_ty) = *right;
+            if context.facts.semantically_equal(left_ty, right_ty) != Some(true) {
+                return Err(violation(
+                    context.location,
+                    "comparison inputs do not have one exact concrete type and plan",
+                ));
+            }
+            Ok(())
+        }
         ValueSource::TargetParameters { .. } => {
             let call = context
                 .call
@@ -279,6 +310,12 @@ fn output_values(
             count,
             context.facts,
             ImplicitBuiltin::Bool,
+            context.location,
+        ),
+        ValueSource::Number => values::singleton_implicit(
+            count,
+            context.facts,
+            ImplicitBuiltin::Number,
             context.location,
         ),
         ValueSource::Constant { operand } => {

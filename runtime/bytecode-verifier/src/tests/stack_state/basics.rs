@@ -2,8 +2,7 @@ use skiff_artifact_model::{Opcode, ParamModeIr, TypeRefIr};
 use skiff_runtime_linked_bytecode::FunctionIndex;
 
 use super::{
-    assert_instruction_violation, hint, instruction_location, live, moved, prove, spec,
-    uninitialized, WithHints,
+    assert_instruction_violation, hint, live, moved, prove, spec, uninitialized, WithHints,
 };
 use crate::{
     tests::fixtures::stack_state::{
@@ -162,13 +161,13 @@ fn copy_of_non_shareable_value_is_rejected() {
 }
 
 #[test]
-fn comparison_policy_gap_is_unavailable_after_valid_operands() {
+fn comparison_pair_is_proven_when_bool_output_is_concrete() {
     let fixture = fixture(
-        vec![TypeRefIr::builtin("string")],
+        vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("bool")],
         spec(
             vec![0, 0],
             vec![(0, ParamModeIr::Value), (1, ParamModeIr::Value)],
-            Vec::new(),
+            vec![1],
             vec![
                 slot_instruction(Opcode::LoadSlot, 0),
                 slot_instruction(Opcode::LoadSlot, 1),
@@ -176,15 +175,15 @@ fn comparison_policy_gap_is_unavailable_after_valid_operands() {
                 plain(Opcode::Return),
             ],
             2,
-        ),
+        )
+        .with_hints(vec![
+            hint(&[], &[live(0), live(0)]),
+            hint(&[0], &[live(0), live(0)]),
+            hint(&[0, 0], &[live(0), live(0)]),
+            hint(&[1], &[live(0), live(0)]),
+        ]),
     );
-    assert_eq!(
-        prove(&fixture).unwrap_err(),
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::StackAndSlotState,
-            location: instruction_location(2),
-        }
-    );
+    prove(&fixture).expect("ComparablePair and bool output are supported");
 }
 
 #[test]

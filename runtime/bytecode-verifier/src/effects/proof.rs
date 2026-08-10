@@ -211,7 +211,18 @@ fn prove_instruction(
         | Opcode::JumpIfFalse
         | Opcode::BudgetCheckpoint
         | Opcode::Return
-        | Opcode::Not => {
+        | Opcode::Not
+        | Opcode::Negate
+        | Opcode::Add
+        | Opcode::Subtract
+        | Opcode::Multiply
+        | Opcode::Divide
+        | Opcode::Equal
+        | Opcode::NotEqual
+        | Opcode::LessThan
+        | Opcode::LessOrEqual
+        | Opcode::GreaterThan
+        | Opcode::GreaterOrEqual => {
             if control_flow_and_calls
                 .exact_call_plan(caller_index, instruction)
                 .is_some()
@@ -300,18 +311,7 @@ fn prove_instruction(
         | Opcode::EnterRegion
         | Opcode::LeaveRegion
         | Opcode::InvokeHost
-        | Opcode::InvokeIntrinsic
-        | Opcode::Negate
-        | Opcode::Add
-        | Opcode::Subtract
-        | Opcode::Multiply
-        | Opcode::Divide
-        | Opcode::Equal
-        | Opcode::NotEqual
-        | Opcode::LessThan
-        | Opcode::LessOrEqual
-        | Opcode::GreaterThan
-        | Opcode::GreaterOrEqual => Err(unavailable(location)),
+        | Opcode::InvokeIntrinsic => Err(unavailable(location)),
     }
 }
 

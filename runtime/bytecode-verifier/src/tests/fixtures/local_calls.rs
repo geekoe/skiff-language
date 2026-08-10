@@ -1,4 +1,5 @@
 mod effects;
+mod scalar;
 mod statements;
 mod tail_matrix;
 
@@ -28,6 +29,7 @@ use skiff_runtime_loader::{DeploymentBytecodeLoader, HydratedDeploymentBytecode}
 
 use super::{bytecode_statement_manifest_identity, candidate_parts, contract, ExactResolver};
 
+pub(crate) use scalar::loader_backed_scalar;
 pub(crate) use tail_matrix::{loader_backed_tail_case, TailMatrixCase, TailMatrixFixture};
 
 const CALLER_FUNCTION: &str = "fixture::caller";
