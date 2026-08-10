@@ -1,16 +1,17 @@
+mod active_regions;
+mod source_map;
+mod statements;
+mod switch_tables;
+
 use crate::bytecode::decode::{decode_branch_target, DecodedFunction, DecodedInstruction};
 use crate::bytecode::dto::{
     limits, BytecodeArtifact, BytecodePoolEntry, BytecodePools, RelocatableBytecodeFunction,
 };
-use crate::bytecode::opcodes::{
-    contract_for_opcode, Arity, Opcode, OperandKind, OperandRole, PoolCategory, SourceContract,
-    SourceOriginConstraint,
-};
+use crate::bytecode::opcodes::{Arity, Opcode, OperandKind, OperandRole, PoolCategory};
 
 use super::{
-    descriptor_mismatch, entry_is_kind, header_error, index_out_of_bounds, limit_error,
-    table_error, validate_type_pool_ref, StructuralValidationError, ValidatedFunction,
-    ValidatedResumeSite,
+    entry_is_kind, header_error, index_out_of_bounds, limit_error, table_error,
+    validate_type_pool_ref, StructuralValidationError, ValidatedFunction, ValidatedResumeSite,
 };
 
 pub(super) fn validate_resume_sites(
@@ -220,10 +221,10 @@ pub(super) fn validate_tables(
 ) -> Result<(), StructuralValidationError> {
     let header_pcs = &decoded.header_pcs;
     validate_exception_regions(key, function, header_pcs, pools)?;
-    validate_active_regions(key, function, decoded)?;
-    validate_statement_entries(key, function, header_pcs)?;
-    validate_source_map(key, function, decoded)?;
-    validate_switch_tables(key, function, header_pcs, pools)?;
+    active_regions::validate_active_regions(key, function, decoded)?;
+    statements::validate_statement_entries(key, function, header_pcs)?;
+    source_map::validate_source_map(key, function, decoded)?;
+    switch_tables::validate_switch_tables(key, function, header_pcs, pools)?;
     Ok(())
 }
 
@@ -410,288 +411,6 @@ fn validate_exception_regions(
         }
         previous_region = Some((region.start_pc, region.end_pc));
         open_regions.push((index, region.end_pc));
-    }
-    Ok(())
-}
-
-fn validate_active_regions(
-    key: &str,
-    function: &RelocatableBytecodeFunction,
-    decoded: &DecodedFunction,
-) -> Result<(), StructuralValidationError> {
-    let mut enter_counts = vec![0u32; function.active_regions.len()];
-    let mut leave_counts = vec![0u32; function.active_regions.len()];
-    for instruction in &decoded.instructions {
-        let Some(region_index) = instruction
-            .descriptor
-            .operand_word(OperandRole::ActiveRegion, &instruction.operand_words)
-        else {
-            continue;
-        };
-        let counts = match instruction.descriptor.kind {
-            Opcode::EnterRegion => &mut enter_counts,
-            Opcode::LeaveRegion => &mut leave_counts,
-            _ => {
-                return Err(descriptor_mismatch(
-                    key,
-                    instruction.pc,
-                    "ActiveRegion role".to_string(),
-                ));
-            }
-        };
-        counts[region_index as usize] = counts[region_index as usize].saturating_add(1);
-    }
-    let mut previous: Option<(u32, u32)> = None;
-    let mut open_regions = Vec::<(usize, u32)>::new();
-    for (index, region) in function.active_regions.iter().enumerate() {
-        if region.start_pc >= region.end_pc {
-            return Err(table_error(
-                key,
-                format!(
-                    "activeRegions[{index}] startPc {} >= endPc {}",
-                    region.start_pc, region.end_pc
-                ),
-            ));
-        }
-        if decoded.header_pcs.binary_search(&region.start_pc).is_err()
-            || (region.end_pc != function.words.len() as u32
-                && decoded.header_pcs.binary_search(&region.end_pc).is_err())
-        {
-            return Err(table_error(
-                key,
-                format!("activeRegions[{index}] boundaries are not instruction boundaries"),
-            ));
-        }
-        if let Some((start, end)) = previous {
-            if region.start_pc < start || (region.start_pc == start && region.end_pc >= end) {
-                return Err(table_error(
-                    key,
-                    format!("activeRegions[{index}] is not in canonical outer-first order"),
-                ));
-            }
-        }
-        while open_regions
-            .last()
-            .is_some_and(|(_, end)| *end <= region.start_pc)
-        {
-            open_regions.pop();
-        }
-        if let Some((parent_index, parent_end)) = open_regions.last() {
-            if region.end_pc > *parent_end {
-                return Err(table_error(
-                    key,
-                    format!(
-                        "activeRegions[{index}] crosses activeRegions[{parent_index}] ending at {parent_end}"
-                    ),
-                ));
-            }
-        }
-        match &region.kind {
-            crate::bytecode::dto::ActiveRegionKind::Timeout { duration_ms, .. } => {
-                if *duration_ms == 0 {
-                    return Err(table_error(
-                        key,
-                        format!("activeRegions[{index}] timeout durationMs must be positive"),
-                    ));
-                }
-            }
-        }
-        if enter_counts[index] != 1 || leave_counts[index] != 1 {
-            return Err(table_error(
-                key,
-                format!(
-                    "activeRegions[{index}] must have exactly one enter and leave (got {}, {})",
-                    enter_counts[index], leave_counts[index]
-                ),
-            ));
-        }
-        previous = Some((region.start_pc, region.end_pc));
-        open_regions.push((index, region.end_pc));
-    }
-    Ok(())
-}
-
-fn validate_statement_entries(
-    key: &str,
-    function: &RelocatableBytecodeFunction,
-    header_pcs: &[u32],
-) -> Result<(), StructuralValidationError> {
-    let mut previous_pc: Option<u32> = None;
-    let mut saw_function_entry = false;
-    for (index, entry) in function.statement_entries.iter().enumerate() {
-        if let Some(previous_pc) = previous_pc {
-            if previous_pc >= entry.pc {
-                return Err(table_error(
-                    key,
-                    format!(
-                        "statementEntries[{index}] pc {} is not strictly ascending (previous {previous_pc})",
-                        entry.pc
-                    ),
-                ));
-            }
-        }
-        if header_pcs.binary_search(&entry.pc).is_err() {
-            return Err(table_error(
-                key,
-                format!(
-                    "statementEntries[{index}] pc {} is not an instruction header",
-                    entry.pc
-                ),
-            ));
-        }
-        if entry.statement_id.is_empty() {
-            return Err(table_error(
-                key,
-                format!("statementEntries[{index}].statementId must not be empty"),
-            ));
-        }
-        if entry.charge_kind == crate::bytecode::dto::StatementChargeKind::FunctionEntry {
-            if saw_function_entry || entry.pc != 0 {
-                return Err(table_error(
-                    key,
-                    format!("statementEntries[{index}] has invalid duplicate/non-zero FunctionEntry charge"),
-                ));
-            }
-            saw_function_entry = true;
-        }
-        previous_pc = Some(entry.pc);
-    }
-    if !function.words.is_empty() && !saw_function_entry {
-        return Err(table_error(
-            key,
-            "non-empty function must declare one FunctionEntry charge".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_source_map(
-    key: &str,
-    function: &RelocatableBytecodeFunction,
-    decoded: &DecodedFunction,
-) -> Result<(), StructuralValidationError> {
-    let word_count = function.words.len() as u32;
-    let mut previous_end: Option<u32> = None;
-    for (index, entry) in function.source_map.iter().enumerate() {
-        if entry.start_pc >= entry.end_pc {
-            return Err(table_error(
-                key,
-                format!(
-                    "sourceMap[{index}] start {} >= end {}",
-                    entry.start_pc, entry.end_pc
-                ),
-            ));
-        }
-        if entry.end_pc > word_count {
-            return Err(table_error(
-                key,
-                format!(
-                    "sourceMap[{index}] end {} outside function word range {word_count}",
-                    entry.end_pc
-                ),
-            ));
-        }
-        if decoded.header_pcs.binary_search(&entry.start_pc).is_err()
-            || (entry.end_pc != word_count
-                && decoded.header_pcs.binary_search(&entry.end_pc).is_err())
-        {
-            return Err(table_error(
-                key,
-                format!("sourceMap[{index}] range is not instruction-boundary aligned"),
-            ));
-        }
-        if let Some(previous_end) = previous_end {
-            if previous_end > entry.start_pc {
-                return Err(table_error(
-                    key,
-                    format!(
-                        "sourceMap[{index}] start {} overlaps previous entry ending at {previous_end}",
-                        entry.start_pc
-                    ),
-                ));
-            }
-        }
-        previous_end = Some(entry.end_pc);
-    }
-    for instruction in &decoded.instructions {
-        let SourceContract::Required { origin, .. } =
-            contract_for_opcode(instruction.descriptor.kind).source
-        else {
-            continue;
-        };
-        let coverage = function
-            .source_map
-            .iter()
-            .filter(|entry| entry.start_pc <= instruction.pc && instruction.pc < entry.end_pc)
-            .collect::<Vec<_>>();
-        let [entry] = coverage.as_slice() else {
-            return Err(table_error(
-                key,
-                format!(
-                    "{} at pc {} requires exactly one source/synthetic site (found {})",
-                    instruction.descriptor.mnemonic,
-                    instruction.pc,
-                    coverage.len()
-                ),
-            ));
-        };
-        if origin == SourceOriginConstraint::SyntheticOnly
-            && !matches!(&entry.site, crate::InstructionSourceSite::Synthetic { .. })
-        {
-            return Err(table_error(
-                key,
-                format!(
-                    "{} at pc {} requires a synthetic instruction source site",
-                    instruction.descriptor.mnemonic, instruction.pc
-                ),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn validate_switch_tables(
-    key: &str,
-    function: &RelocatableBytecodeFunction,
-    header_pcs: &[u32],
-    pools: &BytecodePools,
-) -> Result<(), StructuralValidationError> {
-    for (index, table) in function.switch_tables.iter().enumerate() {
-        if header_pcs.binary_search(&table.default_pc).is_err() {
-            return Err(table_error(
-                key,
-                format!(
-                    "switchTables[{index}].defaultPc {} is not an instruction header",
-                    table.default_pc
-                ),
-            ));
-        }
-        let mut previous_tag = None;
-        for (case_index, case) in table.cases.iter().enumerate() {
-            validate_type_pool_ref(
-                pools,
-                case.tag_type_ref,
-                &format!("functions[{key}].switchTables[{index}].cases[{case_index}].tagTypeRef"),
-            )?;
-            if previous_tag.is_some_and(|tag| tag >= case.tag_type_ref) {
-                return Err(table_error(
-                    key,
-                    format!(
-                        "switchTables[{index}].cases tagTypeRef values are not strictly ascending"
-                    ),
-                ));
-            }
-            if header_pcs.binary_search(&case.target_pc).is_err() {
-                return Err(table_error(
-                    key,
-                    format!(
-                        "switchTables[{index}].cases[{case_index}].targetPc {} is not an instruction header",
-                        case.target_pc
-                    ),
-                ));
-            }
-            previous_tag = Some(case.tag_type_ref);
-        }
     }
     Ok(())
 }
