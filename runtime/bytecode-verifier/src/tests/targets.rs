@@ -18,10 +18,81 @@ use skiff_runtime_linked_bytecode::{
 
 use crate::{
     concrete_values::ConcreteValueFacts, control_flow::prove_exact_local_call_plan_for_test,
-    VerificationError, VerificationLocation, VerificationObligation,
+    verify, VerificationError, VerificationLocation, VerificationObligation,
 };
 
-use super::fixtures::generous_limits;
+use super::fixtures::{
+    generous_limits, loader_backed_local_call, LocalCallCandidateCorruption, TARGET_FUNCTION_INDEX,
+};
+
+#[test]
+fn loader_backed_local_target_authority_advances_to_stack_state_proof() {
+    let (hydrated, candidate) = loader_backed_local_call(LocalCallCandidateCorruption::None);
+    let error = verify(hydrated, candidate, &generous_limits())
+        .expect_err("exact hydrated local authority must cross P3 target proof");
+
+    assert_eq!(
+        error,
+        VerificationError::ProofUnavailable {
+            obligation: VerificationObligation::StackAndSlotState,
+            location: VerificationLocation::Image,
+        }
+    );
+}
+
+#[test]
+fn loader_backed_target_summary_drift_is_stopped_by_exact_binding() {
+    let (hydrated, candidate) =
+        loader_backed_local_call(LocalCallCandidateCorruption::TargetDeclarativeSummary);
+    let error = verify(hydrated, candidate, &generous_limits())
+        .expect_err("candidate effect summary drift must fail closed");
+
+    assert_exact_function_binding_rejection(error);
+}
+
+#[test]
+fn loader_backed_target_effect_owner_drift_is_stopped_by_exact_binding() {
+    let (hydrated, candidate) =
+        loader_backed_local_call(LocalCallCandidateCorruption::TargetEffectOwner);
+    let error = verify(hydrated, candidate, &generous_limits())
+        .expect_err("candidate effect owner drift must fail closed");
+
+    assert_exact_function_binding_rejection(error);
+}
+
+#[test]
+fn loader_backed_wrong_canonical_function_authority_is_stopped_by_exact_binding() {
+    let (hydrated, candidate) =
+        loader_backed_local_call(LocalCallCandidateCorruption::TargetCanonicalFunction);
+    let error = verify(hydrated, candidate, &generous_limits())
+        .expect_err("candidate canonical-function drift must fail closed");
+
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ExactHydrationBinding,
+            location: VerificationLocation::Instruction {
+                function,
+                instruction,
+            },
+            detail,
+        } if function == FunctionIndex::new(0)
+            && instruction == InstructionIndex::new(0)
+            && detail.contains("local executable relocation target")
+    ));
+}
+
+fn assert_exact_function_binding_rejection(error: VerificationError) {
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ExactHydrationBinding,
+            location: VerificationLocation::Function { function },
+            detail,
+        } if function == TARGET_FUNCTION_INDEX
+            && detail.contains("differ from the admitted artifact")
+    ));
+}
 
 #[test]
 fn exact_call_local_zero_arity_plan_is_proved() {

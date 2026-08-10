@@ -23,6 +23,12 @@ use skiff_runtime_loader::{
 
 use crate::VerificationLimits;
 
+mod local_calls;
+
+pub(super) use local_calls::{
+    loader_backed_local_call, LocalCallCandidateCorruption, TARGET_FUNCTION_INDEX,
+};
+
 #[derive(Debug)]
 struct ExactResolver {
     deployment: Arc<ServiceDeployment>,
