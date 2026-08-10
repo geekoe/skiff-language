@@ -25,9 +25,10 @@ pub use authority::{
     LinkedBytecodeAuthorityPinsError,
 };
 pub use candidate::{
-    CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedBytecodeCandidate,
-    LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedBytecodeHeaderField,
-    LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError,
+    CandidateLocation, CandidateReferenceKind, CandidateTable, CandidateTypeStructureLimit,
+    LinkedBytecodeCandidate, LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts,
+    LinkedBytecodeHeaderField, LinkedPackageBytecodeProvenance,
+    LinkedPackageBytecodeProvenanceError,
 };
 pub use frame::{LinkedFrameLayout, LinkedFrameLayoutError, LinkedParameterSlot};
 pub use function::{LinkedCallableEffectDeclaration, LinkedFunction, LinkedFunctionTables};
