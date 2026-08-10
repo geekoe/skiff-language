@@ -8,13 +8,14 @@ use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     BytecodeArtifact, BytecodeArtifactRef, BytecodePoolEntry, CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, ContractOperationId,
-    ContractTypeDescriptor, PackageArtifact, PackageArtifactRef, PackageBinding, PackageCallableId,
-    PackageRequirement, PackageRequirementKey, PackageSchemaCanonicalDescriptor,
+    ContractTypeDescriptor, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    PackageCallableId, PackageRequirement, PackageRequirementKey, PackageSchemaCanonicalDescriptor,
     PackageSchemaTypeRecord, ServiceContract, ServiceContractRef, ServiceDeployment,
     ServiceDeploymentRef, TypeRefIr,
 };
 use skiff_runtime_loader::{
-    DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
+    DeploymentBytecodeContentResolver, DeploymentBytecodeHydrationError, DeploymentBytecodeLoader,
+    HydratedDeploymentBytecode,
 };
 
 use artifact::bytecode_artifact;
@@ -28,7 +29,29 @@ pub(super) const HELPER_FUNCTION: &str = "fixture::helper";
 pub(super) const OWNER_IMPLEMENTATION_PATH: &str = "fixture.Owner";
 pub(super) const OWNER_PUBLIC_PATH: &str = "Owner";
 pub(super) const PRIVATE_IMPLEMENTATION_PATH: &str = "fixture.Private";
+pub(super) const DEPENDENCY_ALIAS: &str = "dependency";
+pub(super) const DEPENDENCY_PACKAGE_ID: &str = "example.bytecode-link-dependency";
 pub(super) const SCHEMA_STABLE_KEY: &str = "fixture.Schema";
+
+#[derive(Debug, Clone, Copy)]
+pub(super) enum DependencyTypeSurfaceConflict {
+    Descriptor,
+    TypeParameters,
+    InterfaceFlag,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DependencyBuildPin {
+    Exact,
+    Unpinned,
+    Wrong,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NormalizationDependency {
+    pin: DependencyBuildPin,
+    conflict: Option<DependencyTypeSurfaceConflict>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RootProgram {
@@ -84,28 +107,60 @@ impl Fixture {
     }
 
     pub(super) fn normalization() -> Self {
-        Self::new_with_options(RootProgram::LocalCall, false, true, true, false)
+        Self::normalization_with(DependencyBuildPin::Exact, None, false)
+    }
+
+    pub(super) fn unpinned_normalization() -> Self {
+        Self::normalization_with(DependencyBuildPin::Unpinned, None, false)
+    }
+
+    pub(super) fn wrong_pinned_normalization() -> Self {
+        Self::normalization_with(DependencyBuildPin::Wrong, None, false)
     }
 
     pub(super) fn conflicting_normalization() -> Self {
-        Self::new_with_options(RootProgram::LocalCall, false, true, false, true)
+        Self::normalization_with(DependencyBuildPin::Exact, None, true)
+    }
+
+    pub(super) fn conflicting_dependency_normalization(
+        conflict: DependencyTypeSurfaceConflict,
+    ) -> Self {
+        Self::normalization_with(DependencyBuildPin::Exact, Some(conflict), false)
     }
 
     pub(super) fn hydrate(&self) -> HydratedDeploymentBytecode {
-        DeploymentBytecodeLoader::new(&self.resolver)
-            .load(&self.deployment_reference)
-            .unwrap()
+        self.try_hydrate().unwrap()
+    }
+
+    pub(super) fn try_hydrate(
+        &self,
+    ) -> Result<HydratedDeploymentBytecode, DeploymentBytecodeHydrationError> {
+        DeploymentBytecodeLoader::new(&self.resolver).load(&self.deployment_reference)
     }
 
     fn new(program: RootProgram, entry_alias: bool) -> Self {
-        Self::new_with_options(program, entry_alias, false, false, false)
+        Self::new_with_options(program, entry_alias, false, None, false)
+    }
+
+    fn normalization_with(
+        pin: DependencyBuildPin,
+        conflict: Option<DependencyTypeSurfaceConflict>,
+        conflicting_type_surfaces: bool,
+    ) -> Self {
+        Self::new_with_options(
+            RootProgram::LocalCall,
+            false,
+            true,
+            Some(NormalizationDependency { pin, conflict }),
+            conflicting_type_surfaces,
+        )
     }
 
     fn new_with_options(
         program: RootProgram,
         entry_alias: bool,
         include_normalization_surface: bool,
-        self_dependency: bool,
+        normalization_dependency: Option<NormalizationDependency>,
         conflicting_type_surfaces: bool,
     ) -> Self {
         let bytecode = if include_normalization_surface {
@@ -121,13 +176,25 @@ impl Fixture {
             include_normalization_surface,
             conflicting_type_surfaces,
         );
-        if self_dependency {
+        let dependency = normalization_dependency.map(|dependency| {
+            let bytecode = artifact::empty_admitted_bytecode();
+            let package = package::dependency_type_owner_package(&bytecode, dependency.conflict);
+            let reference = records::package_reference(&package);
+            (dependency.pin, reference, Arc::new(package), bytecode)
+        });
+        if let Some((pin, dependency_reference, _, _)) = &dependency {
             package.package_requirements = vec![PackageRequirement {
-                alias: "selfdep".to_string(),
-                package_id: package.package_id.clone(),
-                exact_version: package.package_version.clone(),
-                expected_local_abi: package.package_local_abi.local_abi_identity.clone(),
-                expected_package_build: None,
+                alias: DEPENDENCY_ALIAS.to_string(),
+                package_id: dependency_reference.package_id.clone(),
+                exact_version: dependency_reference.package_version.clone(),
+                expected_local_abi: dependency_reference.package_local_abi_identity.clone(),
+                expected_package_build: match pin {
+                    DependencyBuildPin::Exact => {
+                        Some(dependency_reference.package_build_id.clone())
+                    }
+                    DependencyBuildPin::Unpinned => None,
+                    DependencyBuildPin::Wrong => Some(PackageBuildId::new("build:wrong")),
+                },
             }];
             skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
         }
@@ -160,13 +227,14 @@ impl Fixture {
 
         let package_reference = records::package_reference(&package);
         let entry_callable = alias.unwrap_or_else(|| PackageCallableId::new(ROOT_CALLABLE));
-        let package_bindings = self_dependency
-            .then(|| PackageBinding {
+        let package_bindings = dependency
+            .as_ref()
+            .map(|(_, dependency_reference, _, _)| PackageBinding {
                 key: PackageRequirementKey {
                     caller_package_build_id: package_reference.package_build_id.clone(),
-                    package_requirement_alias: "selfdep".to_string(),
+                    package_requirement_alias: DEPENDENCY_ALIAS.to_string(),
                 },
-                package: package_reference.clone(),
+                package: dependency_reference.clone(),
             })
             .into_iter()
             .collect();
@@ -179,18 +247,31 @@ impl Fixture {
             package_bindings,
         );
         let bytecode_reference = bytecode.reference().clone();
+        let mut packages = BTreeMap::from([(package_reference.clone(), Arc::new(package))]);
+        let mut bytecodes = BTreeMap::from([(
+            (
+                package_reference.clone(),
+                bytecode_reference.bytecode_identity.clone(),
+            ),
+            bytecode,
+        )]);
+        if let Some((_, dependency_reference, dependency_package, dependency_bytecode)) = dependency
+        {
+            bytecodes.insert(
+                (
+                    dependency_reference.clone(),
+                    dependency_bytecode.reference().bytecode_identity.clone(),
+                ),
+                dependency_bytecode,
+            );
+            packages.insert(dependency_reference, dependency_package);
+        }
         let resolver = InMemoryResolver {
             deployment_reference: deployment_reference.clone(),
             deployment,
             contracts,
-            packages: BTreeMap::from([(package_reference.clone(), Arc::new(package))]),
-            bytecodes: BTreeMap::from([(
-                (
-                    package_reference.clone(),
-                    bytecode_reference.bytecode_identity.clone(),
-                ),
-                bytecode,
-            )]),
+            packages,
+            bytecodes,
         };
         Self {
             resolver,

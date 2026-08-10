@@ -5,7 +5,9 @@ use skiff_artifact_model::{
     PackageCallableId, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeRefIr,
 };
 use skiff_runtime_linked_bytecode::{ArtifactFunctionKey, SpecializationKey};
-use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
+use skiff_runtime_loader::{
+    DeploymentBytecodeHydrationError, HydratedBytecodePackage, HydratedDeploymentBytecode,
+};
 
 use crate::bytecode::{
     types::{normalize_type, TypeLinker},
@@ -13,8 +15,8 @@ use crate::bytecode::{
 };
 
 use super::fixtures::{
-    self, Fixture, OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH, PRIVATE_IMPLEMENTATION_PATH,
-    ROOT_CALLABLE,
+    self, DependencyTypeSurfaceConflict, Fixture, DEPENDENCY_ALIAS, DEPENDENCY_PACKAGE_ID,
+    OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH, PRIVATE_IMPLEMENTATION_PATH, ROOT_CALLABLE,
 };
 use super::generous_limits;
 
@@ -70,6 +72,7 @@ fn type_linker_interns_only_the_owner_complete_type() {
 fn canonicalizes_recursive_owner_forms_and_interface_identity() {
     let hydrated = Fixture::normalization().hydrate();
     let package = implementation_package(&hydrated);
+    let dependency = dependency_package(&hydrated);
     let location = package_location(package);
     let interface_identity = TypeRefIr::ServiceSymbol {
         symbol: ServiceSymbolRef {
@@ -113,7 +116,8 @@ fn canonicalizes_recursive_owner_forms_and_interface_identity() {
 
     let normalized = normalize_type(&hydrated, package, &source, &location).unwrap();
     let exact_implementation = exact_type(package, OWNER_IMPLEMENTATION_PATH);
-    let exact_public = exact_type(package, OWNER_PUBLIC_PATH);
+    let exact_dependency_public = exact_type(dependency, OWNER_PUBLIC_PATH);
+    let exact_self_public = exact_type(package, OWNER_PUBLIC_PATH);
     let TypeRefIr::Record { fields } = normalized else {
         panic!("normalization must preserve the record shape");
     };
@@ -128,7 +132,7 @@ fn canonicalizes_recursive_owner_forms_and_interface_identity() {
     let TypeRefIr::Union { items } = &arguments[0] else {
         panic!("normalization must preserve recursive union arguments");
     };
-    assert_eq!(items[0], exact_public);
+    assert_eq!(items[0], exact_dependency_public);
     assert_eq!(
         items[1],
         TypeRefIr::Nullable {
@@ -141,7 +145,7 @@ fn canonicalizes_recursive_owner_forms_and_interface_identity() {
     let normalized_identity =
         serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).unwrap();
     assert_eq!(normalized_identity, exact_implementation);
-    assert_eq!(interface.canonical_type_args, vec![exact_public]);
+    assert_eq!(interface.canonical_type_args, vec![exact_self_public]);
     assert_eq!(
         interface.interface_abi_id.as_bytes(),
         skiff_canonical_json::canonical_json_bytes(&normalized_identity)
@@ -152,9 +156,10 @@ fn canonicalizes_recursive_owner_forms_and_interface_identity() {
 }
 
 #[test]
-fn enforces_dependency_public_surface_and_exact_abi() {
-    let hydrated = Fixture::normalization().hydrate();
+fn allows_unpinned_public_dependency_types_and_matching_dual_surfaces() {
+    let hydrated = Fixture::unpinned_normalization().hydrate();
     let package = implementation_package(&hydrated);
+    let dependency = dependency_package(&hydrated);
     let location = package_location(package);
 
     assert_eq!(
@@ -165,21 +170,108 @@ fn enforces_dependency_public_surface_and_exact_abi() {
             &location,
         )
         .unwrap(),
-        exact_type(package, OWNER_PUBLIC_PATH)
+        exact_type(dependency, OWNER_PUBLIC_PATH)
     );
-    assert!(matches!(
+    assert_eq!(
+        normalize_type(
+            &hydrated,
+            package,
+            &dependency_type(OWNER_IMPLEMENTATION_PATH, None),
+            &location,
+        )
+        .unwrap(),
+        exact_type(dependency, OWNER_IMPLEMENTATION_PATH),
+        "matching public and implementation rows remain usable as a public type"
+    );
+}
+
+#[test]
+fn allows_exact_build_pinned_private_dependency_types() {
+    let hydrated = Fixture::normalization().hydrate();
+    let package = implementation_package(&hydrated);
+    let dependency = dependency_package(&hydrated);
+    let location = package_location(package);
+
+    let expected = exact_type(dependency, PRIVATE_IMPLEMENTATION_PATH);
+    assert_eq!(
         normalize_type(
             &hydrated,
             package,
             &dependency_type(PRIVATE_IMPLEMENTATION_PATH, None),
             &location,
-        ),
-        Err(BytecodeLinkError::UnsatisfiedObligation {
-            obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-            detail,
-            ..
-        }) if detail.contains("not public")
+        )
+        .unwrap(),
+        expected
+    );
+    assert_eq!(
+        normalize_type(&hydrated, package, &expected, &location).unwrap(),
+        expected,
+        "an exact PackageId form may recover only its caller's direct pinned requirement"
+    );
+}
+
+#[test]
+fn rejects_unpinned_private_dependency_types_for_alias_and_package_id() {
+    let hydrated = Fixture::unpinned_normalization().hydrate();
+    let package = implementation_package(&hydrated);
+    let dependency = dependency_package(&hydrated);
+    let location = package_location(package);
+
+    for private in [
+        dependency_type(PRIVATE_IMPLEMENTATION_PATH, None),
+        exact_type(dependency, PRIVATE_IMPLEMENTATION_PATH),
+    ] {
+        assert!(matches!(
+            normalize_type(&hydrated, package, &private, &location),
+            Err(BytecodeLinkError::UnsatisfiedObligation {
+                obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                detail,
+                ..
+            }) if detail.contains("no unique direct exact-build authority")
+        ));
+    }
+}
+
+#[test]
+fn rejects_wrong_dependency_build_pin_before_private_authority_exists() {
+    assert!(matches!(
+        Fixture::wrong_pinned_normalization().try_hydrate(),
+        Err(DeploymentBytecodeHydrationError::PackageRequirementMismatch { .. })
     ));
+}
+
+#[test]
+fn rejects_conflicting_dependency_type_surfaces() {
+    for conflict in [
+        DependencyTypeSurfaceConflict::Descriptor,
+        DependencyTypeSurfaceConflict::TypeParameters,
+        DependencyTypeSurfaceConflict::InterfaceFlag,
+    ] {
+        let hydrated = Fixture::conflicting_dependency_normalization(conflict).hydrate();
+        let package = implementation_package(&hydrated);
+        let location = package_location(package);
+        assert!(matches!(
+            normalize_type(
+                &hydrated,
+                package,
+                &dependency_type(OWNER_IMPLEMENTATION_PATH, None),
+                &location,
+            ),
+            Err(BytecodeLinkError::UnsatisfiedObligation {
+                obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                detail,
+                ..
+            }) if detail.contains("ambiguous across different public and implementation semantics")
+        ));
+    }
+}
+
+#[test]
+fn retains_self_implementation_authority_and_checks_exact_abi() {
+    let hydrated = Fixture::normalization().hydrate();
+    let package = implementation_package(&hydrated);
+    let location = package_location(package);
+
     assert_eq!(
         normalize_type(
             &hydrated,
@@ -294,6 +386,16 @@ fn implementation_package(hydrated: &HydratedDeploymentBytecode) -> &HydratedByt
         .unwrap()
 }
 
+fn dependency_package(hydrated: &HydratedDeploymentBytecode) -> &HydratedBytecodePackage {
+    let mut packages = hydrated
+        .packages()
+        .values()
+        .filter(|package| package.reference().package_id == DEPENDENCY_PACKAGE_ID);
+    let dependency = packages.next().unwrap();
+    assert!(packages.next().is_none());
+    dependency
+}
+
 fn package_location(package: &HydratedBytecodePackage) -> BytecodeLinkLocation {
     BytecodeLinkLocation::Package {
         package: Box::new(package.reference().clone()),
@@ -304,7 +406,7 @@ fn dependency_type(symbol_path: &str, abi_expectation: Option<&str>) -> TypeRefI
     TypeRefIr::PackageSymbol {
         symbol: PackageSymbolRef {
             package: PackageRefIr::Dependency {
-                dependency_ref: "selfdep".to_string(),
+                dependency_ref: DEPENDENCY_ALIAS.to_string(),
             },
             symbol_path: symbol_path.to_string(),
             abi_expectation: abi_expectation.map(str::to_string),
@@ -313,10 +415,18 @@ fn dependency_type(symbol_path: &str, abi_expectation: Option<&str>) -> TypeRefI
 }
 
 fn self_type(symbol_path: &str, abi_expectation: Option<&str>) -> TypeRefIr {
+    package_id_type("example.bytecode-link", symbol_path, abi_expectation)
+}
+
+fn package_id_type(
+    package_id: &str,
+    symbol_path: &str,
+    abi_expectation: Option<&str>,
+) -> TypeRefIr {
     TypeRefIr::PackageSymbol {
         symbol: PackageSymbolRef {
             package: PackageRefIr::PackageId {
-                package_id: "example.bytecode-link".to_string(),
+                package_id: package_id.to_string(),
             },
             symbol_path: symbol_path.to_string(),
             abi_expectation: abi_expectation.map(str::to_string),
@@ -325,7 +435,8 @@ fn self_type(symbol_path: &str, abi_expectation: Option<&str>) -> TypeRefIr {
 }
 
 fn exact_type(package: &HydratedBytecodePackage, symbol_path: &str) -> TypeRefIr {
-    self_type(
+    package_id_type(
+        &package.reference().package_id,
         symbol_path,
         Some(package.reference().package_local_abi_identity.as_str()),
     )

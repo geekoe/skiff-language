@@ -1,3 +1,5 @@
+mod dependency;
+
 use skiff_artifact_model::{
     PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, TypeExport, TypeRefIr,
 };
@@ -6,6 +8,7 @@ use skiff_runtime_loader::HydratedBytecodePackage;
 use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation};
 
 use super::{obligation_error, TypeNormalizer};
+use dependency::require_dependency_type;
 
 impl TypeNormalizer<'_> {
     pub(super) fn normalize_publication_type(
@@ -71,9 +74,15 @@ impl TypeNormalizer<'_> {
     ) -> Result<TypeRefIr, BytecodeLinkError> {
         let target = match &symbol.package {
             PackageRefIr::Dependency { dependency_ref } => {
-                let target = self.resolve_dependency(dependency_ref)?;
+                let (target, has_exact_build_authority) =
+                    self.resolve_dependency(dependency_ref)?;
                 self.check_abi_expectation(symbol, target)?;
-                require_public_type(target, &symbol.symbol_path, self.location)?;
+                require_dependency_type(
+                    target,
+                    &symbol.symbol_path,
+                    has_exact_build_authority,
+                    self.location,
+                )?;
                 target
             }
             PackageRefIr::PackageId { package_id } => {
@@ -82,7 +91,12 @@ impl TypeNormalizer<'_> {
                 if target.reference().package_build_id == self.caller.reference().package_build_id {
                     self.require_self_type(&symbol.symbol_path)?;
                 } else {
-                    require_public_type(target, &symbol.symbol_path, self.location)?;
+                    require_dependency_type(
+                        target,
+                        &symbol.symbol_path,
+                        self.has_unique_direct_exact_build_authority(target),
+                        self.location,
+                    )?;
                 }
                 target
             }
@@ -93,7 +107,7 @@ impl TypeNormalizer<'_> {
     fn resolve_dependency(
         &self,
         dependency_ref: &str,
-    ) -> Result<&HydratedBytecodePackage, BytecodeLinkError> {
+    ) -> Result<(&HydratedBytecodePackage, bool), BytecodeLinkError> {
         let mut requirements = self
             .caller
             .artifact()
@@ -159,7 +173,9 @@ impl TypeNormalizer<'_> {
                 "dependency alias {dependency_ref:?} does not resolve to its unique package owner"
             )));
         }
-        Ok(target)
+        let has_exact_build_authority = requirement.expected_package_build.as_ref()
+            == Some(&target.reference().package_build_id);
+        Ok((target, has_exact_build_authority))
     }
 
     pub(super) fn unique_package_owner(
@@ -344,32 +360,6 @@ fn unique_canonical_export<'a>(
 fn canonical_implementation_path(export: &TypeExport) -> Option<String> {
     (!export.file.module_path.is_empty() && !export.symbol.is_empty())
         .then(|| format!("{}.{}", export.file.module_path, export.symbol))
-}
-
-fn require_public_type(
-    target: &HydratedBytecodePackage,
-    symbol_path: &str,
-    location: &BytecodeLinkLocation,
-) -> Result<(), BytecodeLinkError> {
-    let symbol = target
-        .artifact()
-        .package_local_abi
-        .public_symbols
-        .get(symbol_path)
-        .ok_or_else(|| {
-            obligation_error(
-                location.clone(),
-                format!(
-                    "package type {symbol_path:?} is not public in exact target {}",
-                    target.reference().package_build_id
-                ),
-            )
-        })?;
-    require_type_symbol(
-        symbol,
-        location,
-        format!("public package type {symbol_path:?}"),
-    )
 }
 
 fn require_type_symbol(

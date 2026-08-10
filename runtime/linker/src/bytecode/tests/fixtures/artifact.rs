@@ -24,6 +24,13 @@ pub(super) fn admitted_bytecode(program: RootProgram) -> Arc<ValidatedBytecodeAr
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
 }
 
+pub(super) fn empty_admitted_bytecode() -> Arc<ValidatedBytecodeArtifact> {
+    let mut artifact = bytecode_artifact(RootProgram::LocalCall);
+    artifact.image.functions.clear();
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+}
+
 pub(super) fn bytecode_artifact(program: RootProgram) -> BytecodeArtifact {
     let mut functions = BTreeMap::new();
     functions.insert(ROOT_FUNCTION.to_string(), root_function(program));

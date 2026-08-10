@@ -11,8 +11,9 @@ use skiff_artifact_model::{
 };
 
 use super::{
-    analyzed_facts, no_effects, schema_record, RootProgram, HELPER_CALLABLE,
-    OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH, PRIVATE_IMPLEMENTATION_PATH, ROOT_CALLABLE,
+    analyzed_facts, no_effects, schema_record, DependencyTypeSurfaceConflict, RootProgram,
+    DEPENDENCY_PACKAGE_ID, HELPER_CALLABLE, OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH,
+    PRIVATE_IMPLEMENTATION_PATH, ROOT_CALLABLE,
 };
 
 pub(super) fn package(
@@ -171,6 +172,104 @@ pub(super) fn package(
         runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
         callable_semantic_facts,
         boundary_projections,
+        service_call_refs: Vec::new(),
+    };
+    artifact.package_schema_index.package_schema_index_identity =
+        skiff_artifact_identity::package_schema_index_identity(
+            &artifact.package_id,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
+    artifact
+}
+
+pub(super) fn dependency_type_owner_package(
+    bytecode: &ValidatedBytecodeArtifact,
+    conflict: Option<DependencyTypeSurfaceConflict>,
+) -> PackageArtifact {
+    let descriptor = empty_record_descriptor();
+    let mut shared_public = public_type_symbol(OWNER_IMPLEMENTATION_PATH, descriptor.clone());
+    if let PackageLocalAbiSymbol::Type {
+        descriptor: public_descriptor,
+        is_interface,
+        type_params,
+        ..
+    } = &mut shared_public
+    {
+        match conflict {
+            Some(DependencyTypeSurfaceConflict::Descriptor) => {
+                *public_descriptor = TypeDescriptorIr::Alias {
+                    target: TypeRefIr::builtin("string"),
+                };
+            }
+            Some(DependencyTypeSurfaceConflict::TypeParameters) => {
+                type_params.push("T".to_string());
+            }
+            Some(DependencyTypeSurfaceConflict::InterfaceFlag) => {
+                *is_interface = true;
+            }
+            None => {}
+        }
+    }
+    let implementation_symbols = BTreeMap::from([
+        (
+            OWNER_IMPLEMENTATION_PATH.to_string(),
+            implementation_type_symbol(
+                DEPENDENCY_PACKAGE_ID,
+                OWNER_IMPLEMENTATION_PATH,
+                descriptor.clone(),
+            ),
+        ),
+        (
+            PRIVATE_IMPLEMENTATION_PATH.to_string(),
+            implementation_type_symbol(
+                DEPENDENCY_PACKAGE_ID,
+                PRIVATE_IMPLEMENTATION_PATH,
+                descriptor.clone(),
+            ),
+        ),
+    ]);
+    let public_symbols = BTreeMap::from([
+        (
+            OWNER_PUBLIC_PATH.to_string(),
+            public_type_symbol(OWNER_PUBLIC_PATH, descriptor.clone()),
+        ),
+        (OWNER_IMPLEMENTATION_PATH.to_string(), shared_public),
+    ]);
+    let mut artifact = PackageArtifact {
+        schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+        package_id: DEPENDENCY_PACKAGE_ID.to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: PackageBuildId::new("unassigned"),
+        files: vec![file_ref()],
+        static_resources: Vec::new(),
+        bytecode: Some(bytecode.reference().clone()),
+        package_local_abi: PackageLocalAbi {
+            local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
+            public_symbols,
+            implementation_symbols,
+        },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: DEPENDENCY_PACKAGE_ID.to_string(),
+            package_schema_index_identity: PackageSchemaIndexIdentity::new("unassigned"),
+        },
+        package_schema_type_records: BTreeMap::new(),
+        implementation_links: PackageImplementationLinks {
+            types: type_links(descriptor),
+            ..PackageImplementationLinks::default()
+        },
+        callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
+        package_requirements: Vec::new(),
+        contract_requirements: Vec::new(),
+        service_requirements: Vec::new(),
+        runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
+        callable_semantic_facts: BTreeMap::new(),
+        boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
     };
     artifact.package_schema_index.package_schema_index_identity =
