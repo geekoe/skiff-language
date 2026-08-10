@@ -12,7 +12,7 @@ pub mod service_contract;
 
 pub use bytecode_handoff::{
     BytecodeCompilationAuthorityPins, BytecodeCompilationHandoff, BytecodeCompilationHandoffError,
-    BytecodeCompilationOutcome, BytecodeCompilationReceipt,
+    BytecodeCompilationOutcome, BytecodeCompilationReceipt, BytecodeStatementManifestReceipt,
 };
 pub use package_callable_signatures::ProjectionInputBuildError;
 

@@ -5,29 +5,73 @@ use skiff_artifact_identity::{
     FILE_IR_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
-    descriptor_for_opcode, BytecodeArtifact, BytecodeArtifactRef, BytecodeFunctionOrigin,
-    BytecodeImage, BytecodePools, FrameLayout, FrozenConstantGraph, Opcode, PackageCallableId,
-    PackageExecutableCoordinate, RelocatableBytecodeFunction, StatementChargeKind, StatementEntry,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    derive_bytecode_statement_manifest_identity, descriptor_for_opcode, BytecodeArtifact,
+    BytecodeArtifactRef, BytecodeFunctionOrigin, BytecodeFunctionStatementManifest, BytecodeImage,
+    BytecodePools, BytecodeStatementManifestIdentity, FrameLayout, FrozenConstantGraph,
+    InstructionSourceSite, Opcode, PackageCallableId, PackageExecutableCoordinate,
+    RelocatableBytecodeFunction, SourcePosition, SourceSpanRef, StatementAttributionId,
+    StatementEntry, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    BYTECODE_STATEMENT_MANIFEST_IDENTITY_PREFIX,
 };
 
 use super::*;
 
-fn canonical_artifact() -> BytecodeArtifact {
-    let function_key = "module::main".to_string();
-    let return_ = u32::from(descriptor_for_opcode(Opcode::Return).opcode);
-    let function = RelocatableBytecodeFunction {
-        function_key: function_key.clone(),
-        origin: BytecodeFunctionOrigin::Executable {
-            executable: PackageExecutableCoordinate {
-                file_ir_identity: format!("{FILE_IR_IDENTITY_PREFIX}:{}", "a".repeat(64)),
-                module_path: "module".to_string(),
-                executable_index: 0,
-            },
+const PACKAGE_ID: &str = "example.pkg";
+
+fn origin(executable_index: u32) -> BytecodeFunctionOrigin {
+    BytecodeFunctionOrigin::Executable {
+        executable: PackageExecutableCoordinate {
+            file_ir_identity: format!("{FILE_IR_IDENTITY_PREFIX}:{}", "a".repeat(64)),
+            module_path: "module".to_string(),
+            executable_index,
         },
+    }
+}
+
+fn source_site(source_id: u64) -> InstructionSourceSite {
+    InstructionSourceSite::Source {
+        span: SourceSpanRef {
+            source_id,
+            start: SourcePosition::new(1, 1),
+            end: SourcePosition::new(1, 2),
+        },
+    }
+}
+
+fn statement_entries() -> Vec<StatementEntry> {
+    vec![
+        StatementEntry {
+            pc: 0,
+            sequence_ordinal: 0,
+            attribution_id: StatementAttributionId::Statement {
+                statement_index: 0,
+                occurrence_ordinal: 0,
+            },
+            site: source_site(1),
+        },
+        StatementEntry {
+            pc: 0,
+            sequence_ordinal: 1,
+            attribution_id: StatementAttributionId::Expression {
+                expression_index: 0,
+                occurrence_ordinal: 0,
+            },
+            site: source_site(2),
+        },
+    ]
+}
+
+fn function(
+    function_key: &str,
+    executable_index: u32,
+    statement_entries: Vec<StatementEntry>,
+) -> RelocatableBytecodeFunction {
+    RelocatableBytecodeFunction {
+        function_key: function_key.to_string(),
+        origin: origin(executable_index),
         type_parameters: Vec::new(),
         self_type_ref: None,
-        words: vec![return_],
+        words: vec![u32::from(descriptor_for_opcode(Opcode::Return).opcode)],
         relocations: Vec::new(),
         call_loan_layouts: Vec::new(),
         frame_layout: FrameLayout {
@@ -41,17 +85,18 @@ fn canonical_artifact() -> BytecodeArtifact {
             slot_plans: Vec::new(),
         },
         max_operand_depth: 0,
-        effect_summary_ref: PackageCallableId::new("operation:module:main"),
+        effect_summary_ref: PackageCallableId::new(format!("operation:module:{executable_index}")),
         exception_regions: Vec::new(),
         active_regions: Vec::new(),
         switch_tables: Vec::new(),
-        statement_entries: vec![StatementEntry {
-            pc: 0,
-            statement_id: "statement:module:main:entry".to_string(),
-            charge_kind: StatementChargeKind::FunctionEntry,
-        }],
+        statement_entries,
         source_map: Vec::new(),
-    };
+    }
+}
+
+fn canonical_artifact() -> BytecodeArtifact {
+    let event_function = function("module::event", 0, statement_entries());
+    let zero_event_function = function("module::zero", 1, Vec::new());
     let mut artifact = BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
@@ -64,7 +109,13 @@ fn canonical_artifact() -> BytecodeArtifact {
         intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
         bytecode_identity: "identity-is-assigned-after-structural-validation".to_string(),
         image: BytecodeImage {
-            functions: BTreeMap::from([(function_key, function)]),
+            functions: BTreeMap::from([
+                (event_function.function_key.clone(), event_function),
+                (
+                    zero_event_function.function_key.clone(),
+                    zero_event_function,
+                ),
+            ]),
             pools: BytecodePools::default(),
             constant_roots: BTreeMap::new(),
             frozen_constant_graph: FrozenConstantGraph::default(),
@@ -75,15 +126,61 @@ fn canonical_artifact() -> BytecodeArtifact {
     artifact
 }
 
-#[test]
-fn canonical_artifact_and_reference_produce_an_exact_receipt() {
-    let artifact = canonical_artifact();
+fn canonical_manifest(artifact: &BytecodeArtifact) -> Vec<BytecodeFunctionStatementManifest> {
+    let mut functions = artifact
+        .image
+        .functions
+        .values()
+        .map(|function| {
+            BytecodeFunctionStatementManifest::new(
+                function.origin.clone(),
+                function.statement_entries.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    functions.sort_by(|left, right| left.origin.cmp(&right.origin));
+    functions
+}
+
+fn manifest_identity(
+    package_id: &str,
+    manifest: &[BytecodeFunctionStatementManifest],
+) -> BytecodeStatementManifestIdentity {
+    derive_bytecode_statement_manifest_identity(package_id, manifest).unwrap()
+}
+
+fn try_handoff(
+    package_id: &str,
+    manifest: Vec<BytecodeFunctionStatementManifest>,
+    identity: BytecodeStatementManifestIdentity,
+    artifact: BytecodeArtifact,
+) -> Result<BytecodeCompilationHandoff, BytecodeCompilationHandoffError> {
     let reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
-    let handoff = BytecodeCompilationHandoff::try_new(artifact.clone(), reference.clone()).unwrap();
-    let authorities = handoff.receipt().authorities();
+    BytecodeCompilationHandoff::try_new(
+        package_id.to_string(),
+        manifest,
+        identity,
+        artifact,
+        reference,
+    )
+}
+
+#[test]
+fn exact_join_retains_manifest_and_receipts_inside_one_handoff() {
+    let artifact = canonical_artifact();
+    let manifest = canonical_manifest(&artifact);
+    let identity = manifest_identity(PACKAGE_ID, &manifest);
+    let handoff = try_handoff(
+        PACKAGE_ID,
+        manifest.clone(),
+        identity.clone(),
+        artifact.clone(),
+    )
+    .unwrap();
+    let manifest_receipt = handoff.statement_manifest_receipt();
 
     assert_eq!(handoff.artifact(), &artifact);
-    assert_eq!(handoff.reference(), &reference);
+    assert_eq!(handoff.statement_manifest(), manifest.as_slice());
     assert_eq!(handoff.reference().artifact_path, None);
     assert_eq!(
         handoff.receipt().bytecode_identity(),
@@ -95,188 +192,172 @@ fn canonical_artifact_and_reference_produce_an_exact_receipt() {
         handoff.receipt().opcode_table_fingerprint(),
         artifact.opcode_table_fingerprint
     );
-    assert_eq!(
-        authorities.native_value_lifecycle_registry(),
-        &artifact.native_value_lifecycle_registry
-    );
-    assert_eq!(
-        authorities.value_lifecycle_policy(),
-        &artifact.value_lifecycle_policy
-    );
-    assert_eq!(
-        authorities.host_effect_registry(),
-        &artifact.host_effect_registry
-    );
-    assert_eq!(
-        authorities.intrinsic_registry(),
-        &artifact.intrinsic_registry
-    );
-    assert_eq!(handoff.receipt().function_count(), 1);
-    assert_eq!(handoff.receipt().word_count(), 1);
+    assert_eq!(handoff.receipt().function_count(), 2);
+    assert_eq!(handoff.receipt().word_count(), 2);
     assert_eq!(handoff.receipt().relocation_count(), 0);
-
-    let (actual_artifact, actual_reference, actual_receipt) = handoff.into_parts();
-    assert_eq!(actual_artifact, artifact);
-    assert_eq!(actual_reference, reference);
-    assert_eq!(
-        actual_receipt.bytecode_identity(),
-        artifact.bytecode_identity
-    );
+    assert_eq!(manifest_receipt.package_id(), PACKAGE_ID);
+    assert_eq!(manifest_receipt.identity(), &identity);
+    assert_eq!(manifest_receipt.function_count(), 2);
+    assert_eq!(manifest_receipt.event_count(), 2);
+    assert!(handoff.statement_manifest()[1].statement_entries.is_empty());
 }
 
 #[test]
-fn fixture_carries_every_required_v5_manifest_field() {
+fn fixture_carries_current_bytecode_and_statement_schema() {
     let artifact = canonical_artifact();
     let wire = serde_json::to_value(&artifact).unwrap();
-    let function = &wire["image"]["functions"]["module::main"];
+    let entry = &wire["image"]["functions"]["module::event"]["statementEntries"][0];
 
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v5");
-    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v3:sha256");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v6");
+    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v4:sha256");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
-        "skiff-bytecode-artifact-v3"
+        "skiff-bytecode-artifact-v4"
     );
-    assert!(artifact
-        .bytecode_identity
-        .starts_with("skiff-bytecode-image-v3:sha256:"));
-    assert_eq!(wire["magic"], BYTECODE_MAGIC);
-    assert_eq!(wire["schemaVersion"], BYTECODE_SCHEMA_VERSION);
-    assert_eq!(wire["isaVersion"], BYTECODE_ISA_VERSION);
-    assert_eq!(
-        wire["opcodeTableFingerprint"],
-        artifact.opcode_table_fingerprint
-    );
-    assert_eq!(
-        wire["nativeValueLifecycleRegistry"],
-        serde_json::to_value(skiff_artifact_model::native_value_lifecycle_registry_identity())
-            .unwrap()
-    );
-    assert_eq!(
-        wire["valueLifecyclePolicy"],
-        serde_json::to_value(skiff_artifact_model::value_lifecycle_policy_identity()).unwrap()
-    );
-    assert_eq!(
-        wire["hostEffectRegistry"],
-        serde_json::to_value(skiff_artifact_model::host_effect_registry_identity()).unwrap()
-    );
-    assert_eq!(
-        wire["intrinsicRegistry"],
-        serde_json::to_value(skiff_artifact_model::intrinsic_registry_identity()).unwrap()
-    );
-    assert_eq!(wire["image"]["constantRoots"], serde_json::json!({}));
-    assert_eq!(
-        function["origin"],
-        serde_json::json!({
-            "kind": "executable",
-            "executable": {
-                "fileIrIdentity": format!("{FILE_IR_IDENTITY_PREFIX}:{}", "a".repeat(64)),
-                "modulePath": "module",
-                "executableIndex": 0,
-            },
-        })
-    );
-    assert_eq!(function["selfTypeRef"], serde_json::Value::Null);
-    assert_eq!(function["callLoanLayouts"], serde_json::json!([]));
-    assert_eq!(
-        function["frameLayout"]["writableLocalSlots"],
-        serde_json::json!([])
-    );
+    assert_eq!(entry["sequenceOrdinal"], 0);
+    assert!(entry.get("attributionId").is_some());
+    assert!(entry.get("site").is_some());
+    assert!(entry.get("statementId").is_none());
+    assert!(entry.get("chargeKind").is_none());
 }
 
 #[test]
-fn semantic_authority_drift_is_rejected_before_handoff() {
-    type AuthorityMutation = (&'static str, fn(&mut BytecodeArtifact));
+fn package_and_declared_identity_are_both_exact() {
+    let artifact = canonical_artifact();
+    let manifest = canonical_manifest(&artifact);
+    let identity = manifest_identity(PACKAGE_ID, &manifest);
 
-    let mutations: [AuthorityMutation; 4] = [
-        ("native value lifecycle registry", |artifact| {
-            artifact
-                .native_value_lifecycle_registry
-                .fingerprint
-                .push_str(":corrupt");
+    assert!(matches!(
+        try_handoff("other.pkg", manifest.clone(), identity, artifact.clone()),
+        Err(BytecodeCompilationHandoffError::InvalidStatementManifest { .. })
+    ));
+
+    let wrong_identity = BytecodeStatementManifestIdentity::parse(format!(
+        "{BYTECODE_STATEMENT_MANIFEST_IDENTITY_PREFIX}:{}",
+        "0".repeat(64)
+    ))
+    .unwrap();
+    assert!(matches!(
+        try_handoff(PACKAGE_ID, manifest, wrong_identity, artifact),
+        Err(BytecodeCompilationHandoffError::InvalidStatementManifest { .. })
+    ));
+}
+
+#[test]
+fn manifest_origins_must_exact_cover_admitted_functions() {
+    let artifact = canonical_artifact();
+    let mut missing = canonical_manifest(&artifact);
+    let missing_origin = missing.pop().unwrap().origin;
+    let identity = manifest_identity(PACKAGE_ID, &missing);
+    assert!(matches!(
+        try_handoff(PACKAGE_ID, missing, identity, artifact.clone()),
+        Err(BytecodeCompilationHandoffError::MissingStatementManifestOrigin { origin })
+            if origin == missing_origin
+    ));
+
+    let mut extra = canonical_manifest(&artifact);
+    let extra_origin = origin(2);
+    extra.push(BytecodeFunctionStatementManifest::new(
+        extra_origin.clone(),
+        Vec::new(),
+    ));
+    let identity = manifest_identity(PACKAGE_ID, &extra);
+    assert!(matches!(
+        try_handoff(PACKAGE_ID, extra, identity, artifact),
+        Err(BytecodeCompilationHandoffError::ExtraStatementManifestOrigin { origin })
+            if origin == extra_origin
+    ));
+}
+
+#[test]
+fn pc_attribution_id_and_site_drift_fail_the_exact_row_join() {
+    type EntryMutation = fn(&mut [StatementEntry]);
+    let mutations: [(&str, EntryMutation); 3] = [
+        ("pc", |entries| {
+            entries[0].pc = 1;
+            entries[1].pc = 1;
         }),
-        ("value lifecycle policy", |artifact| {
-            artifact
-                .value_lifecycle_policy
-                .fingerprint
-                .push_str(":corrupt");
+        ("attribution id", |entries| {
+            entries[0].attribution_id = StatementAttributionId::Statement {
+                statement_index: 1,
+                occurrence_ordinal: 0,
+            };
         }),
-        ("host-effect registry", |artifact| {
-            artifact
-                .host_effect_registry
-                .fingerprint
-                .push_str(":corrupt");
-        }),
-        ("intrinsic registry", |artifact| {
-            artifact.intrinsic_registry.fingerprint.push_str(":corrupt");
-        }),
+        ("site", |entries| entries[0].site = source_site(99)),
     ];
 
-    for (authority, mutate) in mutations {
-        let mut artifact = canonical_artifact();
-        mutate(&mut artifact);
-        let reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
-
+    for (field, mutate) in mutations {
+        let artifact = canonical_artifact();
+        let mut manifest = canonical_manifest(&artifact);
+        mutate(&mut manifest[0].statement_entries);
+        let identity = manifest_identity(PACKAGE_ID, &manifest);
         assert!(
             matches!(
-                BytecodeCompilationHandoff::try_new(artifact, reference),
-                Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
+                try_handoff(PACKAGE_ID, manifest, identity, artifact),
+                Err(BytecodeCompilationHandoffError::StatementManifestEntriesMismatch { .. })
             ),
-            "{authority} drift must fail closed"
+            "{field} drift must fail closed"
         );
     }
 }
 
 #[test]
-fn legacy_schema_and_identity_generations_are_rejected_before_handoff() {
-    let mut stale_schema = canonical_artifact();
-    stale_schema.schema_version = "skiff-bytecode-v4".to_string();
-    let reference = BytecodeArtifactRef::new(stale_schema.bytecode_identity.clone());
-    assert!(matches!(
-        BytecodeCompilationHandoff::try_new(stale_schema, reference),
-        Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
-    ));
-
-    let mut stale_identity = canonical_artifact();
-    stale_identity.bytecode_identity = format!("skiff-bytecode-image-v2:sha256:{}", "0".repeat(64));
-    let reference = BytecodeArtifactRef::new(stale_identity.bytecode_identity.clone());
-    assert!(matches!(
-        BytecodeCompilationHandoff::try_new(stale_identity, reference),
-        Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
-    ));
-}
-
-#[test]
-fn noncanonical_artifact_is_rejected_before_handoff() {
-    let mut artifact = canonical_artifact();
-    artifact.bytecode_identity = format!("{BYTECODE_IDENTITY_PREFIX}:{}", "0".repeat(64));
-    let reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
-
-    assert!(matches!(
-        BytecodeCompilationHandoff::try_new(artifact, reference),
-        Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
-    ));
-}
-
-#[test]
-fn reference_must_name_the_admitted_artifact() {
+fn sequence_drift_fails_manifest_canonicality_before_join() {
     let artifact = canonical_artifact();
+    let mut manifest = canonical_manifest(&artifact);
+    let identity = manifest_identity(PACKAGE_ID, &manifest);
+    manifest[0].statement_entries[1].sequence_ordinal = 2;
+
+    let error = try_handoff(PACKAGE_ID, manifest, identity, artifact).unwrap_err();
+    assert!(matches!(
+        &error,
+        BytecodeCompilationHandoffError::InvalidStatementManifest { .. }
+    ));
+    assert!(error.to_string().contains("sequenceOrdinal"));
+}
+
+#[test]
+fn artifact_admission_and_reference_identity_still_fail_closed() {
+    let artifact = canonical_artifact();
+    let manifest = canonical_manifest(&artifact);
+    let identity = manifest_identity(PACKAGE_ID, &manifest);
+    let mut noncanonical = artifact.clone();
+    noncanonical.bytecode_identity = format!("{BYTECODE_IDENTITY_PREFIX}:{}", "0".repeat(64));
+    assert!(matches!(
+        try_handoff(PACKAGE_ID, manifest.clone(), identity.clone(), noncanonical),
+        Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
+    ));
+
     let reference =
         BytecodeArtifactRef::new(format!("{BYTECODE_IDENTITY_PREFIX}:{}", "0".repeat(64)));
-
     assert!(matches!(
-        BytecodeCompilationHandoff::try_new(artifact, reference),
+        BytecodeCompilationHandoff::try_new(
+            PACKAGE_ID.to_string(),
+            manifest,
+            identity,
+            artifact,
+            reference,
+        ),
         Err(BytecodeCompilationHandoffError::ReferenceIdentityMismatch { .. })
     ));
 }
 
 #[test]
-fn reference_path_is_reserved_for_the_upper_store_writer() {
+fn reference_path_is_still_reserved_for_the_upper_store_writer() {
     let artifact = canonical_artifact();
+    let manifest = canonical_manifest(&artifact);
+    let identity = manifest_identity(PACKAGE_ID, &manifest);
     let mut reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
     reference.artifact_path = Some("records/premature.json".to_string());
 
     assert!(matches!(
-        BytecodeCompilationHandoff::try_new(artifact, reference),
+        BytecodeCompilationHandoff::try_new(
+            PACKAGE_ID.to_string(),
+            manifest,
+            identity,
+            artifact,
+            reference,
+        ),
         Err(BytecodeCompilationHandoffError::PrematureArtifactPath { artifact_path })
             if artifact_path == "records/premature.json"
     ));
@@ -284,25 +365,19 @@ fn reference_path_is_reserved_for_the_upper_store_writer() {
 
 #[test]
 fn lane_outcome_never_turns_enabled_failure_into_disabled() {
-    let disabled = BytecodeCompilationOutcome::<&str>::disabled();
-    assert!(disabled.into_result().unwrap().is_none());
+    assert!(BytecodeCompilationOutcome::<&str>::disabled()
+        .into_result()
+        .unwrap()
+        .is_none());
 
     let artifact = canonical_artifact();
-    let handoff = BytecodeCompilationHandoff::try_new(
-        artifact.clone(),
-        BytecodeArtifactRef::new(artifact.bytecode_identity.clone()),
-    )
-    .unwrap();
-    let enabled = BytecodeCompilationOutcome::<&str>::enabled(handoff);
-    assert_eq!(
-        enabled
-            .into_result()
-            .unwrap()
-            .unwrap()
-            .artifact()
-            .bytecode_identity,
-        artifact.bytecode_identity
-    );
+    let manifest = canonical_manifest(&artifact);
+    let identity = manifest_identity(PACKAGE_ID, &manifest);
+    let handoff = try_handoff(PACKAGE_ID, manifest, identity, artifact).unwrap();
+    assert!(BytecodeCompilationOutcome::<&str>::enabled(handoff)
+        .into_result()
+        .unwrap()
+        .is_some());
 
     let failed = BytecodeCompilationOutcome::from_enabled_result(Err("emission failed"));
     assert_eq!(failed.into_result().unwrap_err(), "emission failed");
