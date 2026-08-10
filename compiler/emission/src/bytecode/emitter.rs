@@ -62,7 +62,7 @@ pub fn emit_bytecode_artifact(
 
 #[cfg(test)]
 mod tests {
-    use skiff_artifact_identity::validate_bytecode_identity;
+    use skiff_artifact_identity::{validate_bytecode_identity, BYTECODE_IDENTITY_PREFIX};
     use skiff_artifact_model::{
         host_effect_registry_identity, intrinsic_registry_identity,
         native_value_lifecycle_registry_identity, opcode_table_fingerprint,
@@ -78,8 +78,9 @@ mod tests {
         let artifact =
             emit_bytecode_artifact(&[], &[], &BytecodeValueTransferPlans::empty()).unwrap();
 
-        assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v5");
+        assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v6");
         assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v4");
+        assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v4:sha256");
         assert_eq!(artifact.magic, BYTECODE_MAGIC);
         assert_eq!(artifact.schema_version, BYTECODE_SCHEMA_VERSION);
         assert_eq!(artifact.isa_version, BYTECODE_ISA_VERSION);
@@ -100,7 +101,9 @@ mod tests {
             host_effect_registry_identity()
         );
         assert_eq!(&artifact.intrinsic_registry, intrinsic_registry_identity());
-        assert!(!artifact.bytecode_identity.is_empty());
+        assert!(artifact
+            .bytecode_identity
+            .starts_with("skiff-bytecode-image-v4:sha256:"));
         assert!(artifact.image.functions.is_empty());
         assert!(artifact.image.constant_roots.is_empty());
         validate_bytecode_identity(&artifact).unwrap();

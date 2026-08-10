@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{
     assign_package_artifact_identities, validate_package_artifact_identities,
+    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
-    config_shape_from_package_requirements, FileIrRef, FileIrUnit, PackageArtifact, PackageBuildId,
-    PackageConfigRequirement, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    config_shape_from_package_requirements, derive_bytecode_statement_manifest_identity, FileIrRef,
+    FileIrUnit, PackageArtifact, PackageBuildId, PackageConfigRequirement,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
     PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PublicationResourceRef,
     PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
@@ -14,6 +16,28 @@ use skiff_compiler_core::json_utils::sha256_hex;
 use super::*;
 
 mod requirements;
+
+#[test]
+fn fixture_uses_the_current_package_epoch_and_canonical_empty_statement_manifest() {
+    let (artifact, _, _) = fixture();
+
+    assert_eq!(
+        PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        "skiff-package-artifact-v14"
+    );
+    assert_eq!(
+        PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+        "skiff-package-build-v13:sha256"
+    );
+    assert!(artifact
+        .package_build_id
+        .as_str()
+        .starts_with("skiff-package-build-v13:sha256:"));
+    assert_eq!(
+        artifact.bytecode_statement_manifest_identity.as_str(),
+        "skiff-bytecode-statement-manifest-v1:sha256:0350b69056203fd496b78959a6ab3c48c3624a8ef4a6927e12dfb8e541026671"
+    );
+}
 
 #[test]
 fn single_materializer_attaches_storage_paths_and_preserves_canonical_identity() {
@@ -211,6 +235,7 @@ fn fixture() -> (
     PublishedFileIrArtifact,
     PublishedResourceArtifact,
 ) {
+    let package_id = "example.com/pkg";
     let bytes = b"package resource".to_vec();
     let resource_hash = sha256_hex(&bytes);
     let mut file_unit = FileIrUnit::empty("api", "source-hash");
@@ -247,19 +272,25 @@ fn fixture() -> (
     };
     let mut artifact = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
-        package_id: "example.com/pkg".to_string(),
+        package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
         files: vec![file_ref],
         static_resources: vec![resource_ref],
+        bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            package_id,
+            &[],
+        )
+        .expect("empty statement manifest identity is canonical"),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
             implementation_symbols: BTreeMap::new(),
         },
         package_schema_index: PackageSchemaIndexRef {
-            package_id: "example.com/pkg".to_string(),
-            package_schema_index_identity: empty_schema_index("example.com/pkg")
+            package_id: package_id.to_string(),
+            package_schema_index_identity: empty_schema_index(package_id)
                 .package_schema_index_identity,
         },
         package_schema_type_records: BTreeMap::new(),
@@ -276,7 +307,6 @@ fn fixture() -> (
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
-        bytecode: None,
     };
     assign_package_artifact_identities(&mut artifact).unwrap();
     (artifact, published_file, published_resource)
