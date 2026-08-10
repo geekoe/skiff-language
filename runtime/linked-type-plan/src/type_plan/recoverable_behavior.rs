@@ -493,9 +493,9 @@ mod tests {
     use std::{collections::BTreeMap, sync::Arc};
 
     use skiff_artifact_model::{
-        PackageArtifact, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
-        PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef,
-        PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        derive_bytecode_statement_manifest_identity, PackageArtifact, PackageBuildId,
+        PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+        PackageRuntimeRequirements, PackageSchemaIndexRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
     use skiff_runtime_linked_program::{
         PackageCodeSlotIndex, PublicationResourceTable, RuntimeExecutionPackage, UnitAddr,
@@ -514,6 +514,12 @@ mod tests {
             package_build_id: PackageBuildId::new(format!("{package_id}:build")),
             files: Vec::new(),
             static_resources: Vec::new(),
+            bytecode: None,
+            bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+                package_id,
+                &[],
+            )
+            .expect("empty bytecode statement manifest is canonical"),
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new(format!("{package_id}:abi")),
                 public_symbols: BTreeMap::new(),
@@ -531,6 +537,8 @@ mod tests {
             package_schema_type_records: BTreeMap::new(),
             implementation_links: PackageImplementationLinks::default(),
             callable_links: BTreeMap::new(),
+            synthetic_callback_owners: Vec::new(),
+            bytecode_schema_records: BTreeMap::new(),
             actor_implementations: Vec::new(),
             local_interface_conformances: Vec::new(),
             package_requirements: Vec::new(),
@@ -540,7 +548,6 @@ mod tests {
             callable_semantic_facts: BTreeMap::new(),
             boundary_projections: BTreeMap::new(),
             service_call_refs: Vec::new(),
-            bytecode: None,
         };
         Arc::new(
             RuntimeExecutionPackage::try_new(

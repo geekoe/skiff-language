@@ -15,6 +15,9 @@ pub(crate) fn test_runtime_package(
             })
         })
         .collect::<Vec<_>>();
+    let bytecode_statement_manifest_identity =
+        skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &[])
+            .expect("empty bytecode statement manifest is canonical");
     let artifact = serde_json::from_value(serde_json::json!({
         "schemaVersion": skiff_artifact_model::PACKAGE_ARTIFACT_SCHEMA_VERSION,
         "packageId": package_id,
@@ -22,6 +25,7 @@ pub(crate) fn test_runtime_package(
         "packageBuildId": format!("test-build:{slot}:{package_id}"),
         "files": file_refs,
         "staticResources": [],
+        "bytecodeStatementManifestIdentity": bytecode_statement_manifest_identity,
         "packageLocalAbi": {
             "localAbiIdentity": format!("test-abi:{slot}:{package_id}"),
             "publicSymbols": {}
@@ -33,6 +37,8 @@ pub(crate) fn test_runtime_package(
         "packageSchemaTypeRecords": {},
         "implementationLinks": {},
         "callableLinks": {},
+        "syntheticCallbackOwners": [],
+        "bytecodeSchemaRecords": {},
         "actorImplementations": [],
         "localInterfaceConformances": [],
         "packageRequirements": [],
