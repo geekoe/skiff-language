@@ -8,8 +8,8 @@ use skiff_runtime_deployment_image::{
     DeploymentOwnerIdentity, DeploymentProgramEntry, DeploymentProgramFacts, ServiceDependencySlot,
 };
 use skiff_runtime_linked_bytecode::{
-    ConstantIndex, FunctionIndex, LinkedBytecodeCandidate, LinkedCallableSignature, LinkedFunction,
-    LinkedGatewayCallableRole,
+    CandidateTable, ConstantIndex, FunctionIndex, LinkedBytecodeCandidate, LinkedCallableSignature,
+    LinkedFunction, LinkedGatewayCallableRole,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 use skiff_runtime_model::vm_value::ValueSlot;
@@ -207,11 +207,12 @@ impl DeploymentProgramFacts for VerifiedLinkedBytecodeImage {
 
 /// Immutable values materialized from the verified frozen constant graph.
 ///
-/// Fields and construction are private to the verifier. An aggregate value is
-/// represented by a [`ValueSlot`] of kind `ConstRef`; that handle is meaningful
-/// only together with the same pinned [`VerifiedLinkedBytecodeImage`]. Scalar
-/// immediates may be returned directly. This type never accepts values or
-/// handles supplied by a caller.
+/// Fields and construction are private to the verifier. Every future non-empty
+/// value is represented by a [`ValueSlot`] of kind `ConstRef`; that handle is
+/// meaningful only together with the same pinned
+/// [`VerifiedLinkedBytecodeImage`]. The current conservative checkpoint can
+/// construct only an empty heap. This type never accepts values or handles
+/// supplied by a caller.
 ///
 /// ```compile_fail
 /// use skiff_runtime_bytecode_verifier::VerifiedConstantHeap;
@@ -405,9 +406,8 @@ fn establish_verification_seal(
     limits: &VerificationLimits,
 ) -> Result<SealedDeploymentFacts, VerificationError> {
     prove_admission(hydrated, candidate, limits)?;
-    prove_hydrated_candidate_semantics(hydrated, candidate, limits)?;
+    let constant_heap = prove_hydrated_candidate_semantics(hydrated, candidate, limits)?;
     let entry_maps = distill_verified_entry_maps(candidate)?;
-    let constant_heap = build_verified_constant_heap(candidate, limits)?;
 
     Ok(SealedDeploymentFacts {
         owner: DeploymentOwnerIdentity::new(hydrated.reference().clone()),
@@ -422,13 +422,13 @@ fn prove_hydrated_candidate_semantics(
     hydrated: &HydratedDeploymentBytecode,
     candidate: &LinkedBytecodeCandidate,
     limits: &VerificationLimits,
-) -> Result<(), VerificationError> {
+) -> Result<VerifiedConstantHeap, VerificationError> {
     let concrete_values = prove_types_and_plans(hydrated, candidate, limits)?;
     let _control_flow =
         control_flow::prove_control_flow_and_stack(hydrated, candidate, &concrete_values, limits)?;
     prove_source_attribution(candidate)?;
     prove_statement_attribution(candidate)?;
-    prove_frozen_constant_safety(candidate, limits)
+    prove_and_build_empty_constant_heap(hydrated, candidate)
 }
 
 /// A candidate alone can never enter P2 because concrete type resolution
@@ -445,28 +445,77 @@ pub(super) fn prove_candidate_semantics(
     })
 }
 
-fn prove_frozen_constant_safety(
-    _candidate: &LinkedBytecodeCandidate,
-    _limits: &VerificationLimits,
-) -> Result<(), VerificationError> {
-    Err(VerificationError::ProofUnavailable {
-        obligation: VerificationObligation::FrozenConstantSafety,
-        location: VerificationLocation::Image,
-    })
+pub(super) fn prove_and_build_empty_constant_heap(
+    hydrated: &HydratedDeploymentBytecode,
+    candidate: &LinkedBytecodeCandidate,
+) -> Result<VerifiedConstantHeap, VerificationError> {
+    let source_has_constant_authority = hydrated.packages().values().any(|package| {
+        let view = package.bytecode().view();
+        !view.pools().constants.is_empty()
+            || !view.constant_roots().is_empty()
+            || !view.frozen_constant_graph().nodes.is_empty()
+    });
+    let candidate_location = first_candidate_constant_location(candidate);
+
+    match (source_has_constant_authority, candidate_location) {
+        (false, None) => Ok(VerifiedConstantHeap {
+            values: Box::new([]),
+            _seal: VerifiedConstantHeapSeal,
+        }),
+        (true, Some(location)) => Err(VerificationError::ProofUnavailable {
+            obligation: VerificationObligation::FrozenConstantSafety,
+            location,
+        }),
+        (true, None) => Err(frozen_constant_violation(
+            VerificationLocation::Image,
+            "candidate erased non-empty frozen constant authority from the exact hydration",
+        )),
+        (false, Some(location)) => Err(frozen_constant_violation(
+            location,
+            "candidate introduced frozen constant authority absent from the exact hydration",
+        )),
+    }
 }
 
-pub(super) fn build_verified_constant_heap(
-    _candidate: &LinkedBytecodeCandidate,
-    _limits: &VerificationLimits,
-) -> Result<VerifiedConstantHeap, VerificationError> {
-    // Materialization must independently prove every immediate and ConstRef,
-    // including same-image handle ownership. Returning an empty heap here for
-    // an arbitrary candidate would create a second seal bypass, so this seam
-    // remains explicitly unavailable until that proof lands.
-    Err(VerificationError::ProofUnavailable {
+fn first_candidate_constant_location(
+    candidate: &LinkedBytecodeCandidate,
+) -> Option<VerificationLocation> {
+    candidate
+        .constants()
+        .first()
+        .map(|constant| VerificationLocation::Table {
+            table: CandidateTable::Constants,
+            row: constant.index().get(),
+        })
+        .or_else(|| {
+            candidate
+                .constant_roots()
+                .first()
+                .map(|_| VerificationLocation::Table {
+                    table: CandidateTable::ConstantRoots,
+                    row: 0,
+                })
+        })
+        .or_else(|| {
+            candidate
+                .frozen_constant_nodes()
+                .first()
+                .map(|node| VerificationLocation::Table {
+                    table: CandidateTable::FrozenConstantNodes,
+                    row: node.index().get(),
+                })
+        })
+}
+
+fn frozen_constant_violation(
+    location: VerificationLocation,
+    detail: impl Into<String>,
+) -> VerificationError {
+    VerificationError::SemanticViolation {
         obligation: VerificationObligation::FrozenConstantSafety,
-        location: VerificationLocation::Image,
-    })
+        location,
+        detail: detail.into(),
+    }
 }
 
 fn distill_verified_entry_maps(

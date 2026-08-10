@@ -14,6 +14,7 @@ mod admission;
 mod concrete_values;
 mod control_flow;
 pub(crate) mod fixtures;
+mod frozen_constants;
 mod stack_state;
 mod targets;
 
@@ -101,20 +102,6 @@ fn empty_candidate_alone_cannot_mint_a_verified_seal() {
         error,
         VerificationError::ProofUnavailable {
             obligation: VerificationObligation::ConcreteTypeAndShape,
-            location: VerificationLocation::Image,
-        }
-    );
-}
-
-#[test]
-fn empty_candidate_alone_cannot_mint_a_constant_heap() {
-    let error = super::verifier::build_verified_constant_heap(&empty_candidate(), &limits())
-        .expect_err("constant materialization must remain fail closed");
-
-    assert_eq!(
-        error,
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::FrozenConstantSafety,
             location: VerificationLocation::Image,
         }
     );

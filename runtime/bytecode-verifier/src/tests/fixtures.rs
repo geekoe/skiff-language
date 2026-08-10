@@ -23,6 +23,7 @@ use skiff_runtime_loader::{
 
 use crate::VerificationLimits;
 
+pub(crate) mod frozen_constants;
 mod local_calls;
 mod owner_authority;
 pub(crate) mod stack_state;
@@ -106,6 +107,10 @@ pub(super) fn exact_hydration_with_types_and_shapes(
     shapes: Vec<ShapeDeclaration>,
 ) -> HydratedDeploymentBytecode {
     let bytecode = bytecode(types, shapes);
+    hydrate_bytecode(bytecode)
+}
+
+fn hydrate_bytecode(bytecode: Arc<ValidatedBytecodeArtifact>) -> HydratedDeploymentBytecode {
     let package = package(bytecode.reference().clone());
     let contract = contract();
     let mut deployment = ServiceDeployment {
@@ -153,6 +158,14 @@ fn bytecode(
             .collect(),
         ..BytecodePools::default()
     };
+    admit_bytecode(pools, BTreeMap::new(), FrozenConstantGraph::default())
+}
+
+fn admit_bytecode(
+    pools: BytecodePools,
+    constant_roots: BTreeMap<String, u32>,
+    frozen_constant_graph: FrozenConstantGraph,
+) -> Arc<ValidatedBytecodeArtifact> {
     let mut artifact = BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
@@ -167,8 +180,8 @@ fn bytecode(
         image: BytecodeImage {
             functions: BTreeMap::new(),
             pools,
-            constant_roots: BTreeMap::new(),
-            frozen_constant_graph: FrozenConstantGraph::default(),
+            constant_roots,
+            frozen_constant_graph,
             debug_table: None,
         },
     };
