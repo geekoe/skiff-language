@@ -9,11 +9,13 @@ mod admission;
 mod attribution;
 mod concrete_values;
 mod control_flow;
+mod effects;
 mod error;
 mod limits;
 mod verifier;
 
 pub use attribution::{VerifiedStatementEvent, VerifiedStatementSchedule};
+pub use effects::{VerifiedCallableEffects, VerifiedFunctionEffects};
 pub use error::{
     VerificationError, VerificationLimit, VerificationLocation, VerificationObligation,
 };

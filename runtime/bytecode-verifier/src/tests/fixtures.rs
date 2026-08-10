@@ -24,6 +24,7 @@ use skiff_runtime_loader::{
 
 use crate::VerificationLimits;
 
+pub(crate) mod effect_graph;
 pub(crate) mod frozen_constants;
 mod local_calls;
 mod owner_authority;
@@ -380,7 +381,7 @@ fn candidate_parts(
     }
 }
 
-pub(super) fn generous_limits() -> VerificationLimits {
+pub(crate) fn generous_limits() -> VerificationLimits {
     VerificationLimits {
         max_functions: u64::MAX,
         max_total_instructions: u64::MAX,

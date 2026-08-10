@@ -23,21 +23,15 @@ use super::fixtures::{
 };
 
 #[test]
-fn package_global_string_and_array_with_exact_plans_reach_effect_gate() {
+fn package_global_string_and_array_with_exact_plans_complete_empty_effect_proof() {
     let ArrayCandidate {
         hydrated,
         candidate,
     } = array_candidate(snapshot_release_plan(), false);
     let candidate = candidate.expect("exact concrete type candidate passes local validation");
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
-
-    assert_eq!(
-        error,
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::EffectAndNoPending,
-            location: VerificationLocation::Image,
-        }
-    );
+    let image = verify(hydrated, candidate, &generous_limits())
+        .expect("function-free concrete values have a vacuous effect proof");
+    assert!(image.functions().is_empty());
 }
 
 #[test]

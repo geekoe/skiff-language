@@ -16,18 +16,12 @@ use super::fixtures::{
 };
 
 #[test]
-fn exact_empty_admission_reaches_effect_and_no_pending_gate() {
+fn exact_empty_admission_completes_the_vacuous_effect_proof() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
-
-    assert_eq!(
-        error,
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::EffectAndNoPending,
-            location: VerificationLocation::Image,
-        }
-    );
+    let image = verify(hydrated, candidate, &generous_limits())
+        .expect("empty image has a real vacuous effect certificate");
+    assert_eq!(image.functions().len(), 0);
 }
 
 #[test]
@@ -67,7 +61,7 @@ fn exact_effect_binding_is_dense_and_keeps_unknown_separate_from_abi_false() {
 }
 
 #[test]
-fn analyzed_no_pending_binding_remains_exact_but_gate_stays_closed() {
+fn analyzed_target_does_not_upgrade_unknown_caller_effects() {
     let (hydrated, candidate) =
         loader_backed_local_call(LocalCallCandidateCorruption::TargetAnalyzedNoPending);
     let admission = prove_admission(&hydrated, &candidate, &generous_limits())
@@ -83,12 +77,14 @@ fn analyzed_no_pending_binding_remains_exact_but_gate_stays_closed() {
     ));
 
     let error = verify(hydrated, candidate, &generous_limits())
-        .expect_err("plumbed analyzed facts must not implement the semantic gate");
+        .expect_err("unknown caller must remain fail closed");
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
             obligation: VerificationObligation::EffectAndNoPending,
-            location: VerificationLocation::Image,
+            location: VerificationLocation::Function {
+                function: skiff_runtime_linked_bytecode::FunctionIndex::new(0),
+            },
         }
     );
 }

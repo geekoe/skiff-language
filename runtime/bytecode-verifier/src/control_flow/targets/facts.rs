@@ -130,6 +130,24 @@ impl ExactTargetAndCallFacts {
             })
             .and_then(Option::as_ref)
     }
+
+    #[cfg(test)]
+    pub(in crate::control_flow) fn corrupt_effect_for_test(
+        &mut self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        canonical_callable: PackageCallableId,
+        summary: CallableEffectSummary,
+    ) -> bool {
+        self.calls_by_function
+            .get_mut(function.get() as usize)
+            .and_then(|instructions| instructions.get_mut(instruction.get() as usize))
+            .and_then(Option::as_mut)
+            .map(|plan| {
+                plan.effect = ExactEffectFacts::new(canonical_callable, summary);
+            })
+            .is_some()
+    }
 }
 
 /// One exact verified call plan. Lifecycle plans are not copied here: every

@@ -48,7 +48,6 @@ impl ExactCanonicalEffectBinding {
         Self { functions }
     }
 
-    #[cfg(test)]
     pub(crate) fn functions(&self) -> &[ExactFunctionEffectBinding] {
         &self.functions
     }
@@ -252,17 +251,14 @@ impl ExactFunctionEffectBinding {
         }
     }
 
-    #[cfg(test)]
     pub(crate) const fn canonical_callable(&self) -> &PackageCallableId {
         &self.canonical_callable
     }
 
-    #[cfg(test)]
     pub(crate) const fn summary(&self) -> &CallableEffectSummary {
         &self.summary
     }
 
-    #[cfg(test)]
     pub(crate) fn local_abi_declarations(&self) -> &[ExactLocalAbiEffectDeclaration] {
         &self.local_abi_declarations
     }

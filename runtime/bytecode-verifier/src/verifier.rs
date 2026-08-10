@@ -1,6 +1,5 @@
 mod constants;
 mod entries;
-mod gates;
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -23,15 +22,14 @@ use crate::{
         prove_source_attribution, prove_statement_attribution, VerifiedStatementSchedule,
     },
     concrete_values::prove_types_and_plans,
-    control_flow, VerificationError, VerificationLimits, VerificationLocation,
-    VerificationObligation,
+    control_flow,
+    effects::{prove_effect_and_no_pending, VerifiedCallableEffects, VerifiedFunctionEffects},
+    VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
 };
 
 pub(super) use constants::prove_and_build_empty_constant_heap;
 pub use constants::VerifiedConstantHeap;
 pub use entries::{CodeEntryLookupError, VerifiedCodeEntry, VerifiedCodeEntryKind};
-use gates::prove_effect_and_no_pending;
-
 #[derive(Debug)]
 struct VerificationSeal;
 
@@ -42,6 +40,7 @@ struct SealedDeploymentFacts {
     entry_maps: VerifiedEntryMaps,
     constant_heap: VerifiedConstantHeap,
     statement_schedule: VerifiedStatementSchedule,
+    callable_effects: VerifiedCallableEffects,
     seal: VerificationSeal,
 }
 
@@ -49,6 +48,7 @@ struct SealedDeploymentFacts {
 struct VerifiedSemanticFacts {
     constant_heap: VerifiedConstantHeap,
     statement_schedule: VerifiedStatementSchedule,
+    callable_effects: VerifiedCallableEffects,
 }
 
 #[derive(Debug)]
@@ -120,6 +120,7 @@ pub struct VerifiedLinkedBytecodeImage {
     entry_maps: VerifiedEntryMaps,
     constant_heap: VerifiedConstantHeap,
     statement_schedule: VerifiedStatementSchedule,
+    callable_effects: VerifiedCallableEffects,
     _seal: VerificationSeal,
 }
 
@@ -152,6 +153,11 @@ impl VerifiedLinkedBytecodeImage {
     /// Returns the verifier-derived immutable semantic charging schedule.
     pub const fn statement_schedule(&self) -> &VerifiedStatementSchedule {
         &self.statement_schedule
+    }
+
+    /// Returns authoritative analyzed effects for one dense function.
+    pub fn function_effects(&self, function: FunctionIndex) -> Option<&VerifiedFunctionEffects> {
+        self.callable_effects.function(function)
     }
 
     /// Resolves a verified service operation entry while pinning this exact
@@ -229,8 +235,8 @@ impl DeploymentProgramFacts for VerifiedLinkedBytecodeImage {
 ///
 /// Both inputs are consumed so a successful result owns the exact facts that
 /// were cross-checked. Admission independently proves bounded exact hydration,
-/// artifact and candidate correspondence before the still-unimplemented
-/// semantic proof families fail closed. No partial admission can mint a seal.
+/// artifact and candidate correspondence before every supported semantic
+/// proof family completes. Unsupported slices fail closed before seal minting.
 ///
 /// ```compile_fail
 /// use skiff_runtime_bytecode_verifier::{verify, VerificationLimits};
@@ -257,6 +263,7 @@ pub fn verify(
         entry_maps: facts.entry_maps,
         constant_heap: facts.constant_heap,
         statement_schedule: facts.statement_schedule,
+        callable_effects: facts.callable_effects,
         _seal: facts.seal,
     })
 }
@@ -276,6 +283,7 @@ fn establish_verification_seal(
         entry_maps,
         constant_heap: semantics.constant_heap,
         statement_schedule: semantics.statement_schedule,
+        callable_effects: semantics.callable_effects,
         seal: VerificationSeal,
     })
 }
@@ -297,7 +305,7 @@ fn prove_hydrated_candidate_semantics(
         control_flow.control_flow(),
         limits,
     )?;
-    prove_effect_and_no_pending(
+    let callable_effects = prove_effect_and_no_pending(
         admission.effect_binding(),
         &control_flow,
         &statement_schedule,
@@ -306,6 +314,7 @@ fn prove_hydrated_candidate_semantics(
     Ok(VerifiedSemanticFacts {
         constant_heap,
         statement_schedule,
+        callable_effects,
     })
 }
 

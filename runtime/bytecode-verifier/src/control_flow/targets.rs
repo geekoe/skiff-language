@@ -14,8 +14,7 @@ use crate::{
 };
 
 pub(super) use facts::ExactTargetAndCallFacts;
-#[cfg(test)]
-pub(in crate::control_flow) use facts::ExactTargetCoordinate;
+pub(crate) use facts::{ExactCallPlan, ExactTargetCoordinate, PendingPlan};
 
 /// Proves exact instruction targets, callable signatures and call plans.
 pub(super) fn prove_exact_targets_and_call_plans(

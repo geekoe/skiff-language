@@ -3,6 +3,7 @@ mod resume;
 mod targets;
 mod transfer;
 
+use skiff_artifact_model::Opcode;
 use skiff_runtime_linked_bytecode::{
     ActiveRegionIndex, FrameSlotIndex, FunctionIndex, InstructionIndex, LinkedBytecodeCandidate,
     TypeIndex, WritablePathIndex,
@@ -12,6 +13,7 @@ use skiff_runtime_loader::HydratedDeploymentBytecode;
 use crate::{concrete_values::ConcreteValueFacts, VerificationError, VerificationLimits};
 
 use self::targets::ExactTargetAndCallFacts;
+pub(crate) use self::targets::{ExactCallPlan, ExactTargetCoordinate, PendingPlan};
 
 /// Complete P3 orchestration result. Later gates consume these proof products
 /// without rescanning linked target declarations or inferring resume absence.
@@ -19,6 +21,7 @@ use self::targets::ExactTargetAndCallFacts;
 pub(crate) struct ControlFlowAndCallFacts {
     control_flow: ControlFlowFacts,
     exact_targets: ExactTargetAndCallFacts,
+    instructions: VerifiedInstructionFacts,
     _empty_resume: resume::EmptyResumeProof,
 }
 
@@ -34,6 +37,34 @@ impl ControlFlowAndCallFacts {
         )
     }
 
+    pub(crate) fn exact_call_plan(
+        &self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> Option<&ExactCallPlan> {
+        self.exact_targets.call_plan(function, instruction)
+    }
+
+    pub(crate) fn instruction_rows(&self) -> &[VerifiedFunctionInstructions] {
+        &self.instructions.functions
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_call_effect_for_test(
+        &mut self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        canonical_callable: skiff_artifact_model::PackageCallableId,
+        summary: skiff_artifact_model::CallableEffectSummary,
+    ) -> bool {
+        self.exact_targets.corrupt_effect_for_test(
+            function,
+            instruction,
+            canonical_callable,
+            summary,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn proves_exact_local_call(
         &self,
@@ -46,6 +77,84 @@ impl ControlFlowAndCallFacts {
             .is_some_and(|plan| {
                 plan.target() == targets::ExactTargetCoordinate::LocalFunction(target)
             })
+    }
+}
+
+/// Dense opcode snapshot sealed only after the complete P3 proof succeeds.
+#[derive(Debug)]
+struct VerifiedInstructionFacts {
+    functions: Box<[VerifiedFunctionInstructions]>,
+}
+
+/// One dense function's verified opcode sequence. Callable operands remain
+/// exclusively authoritative through `ExactTargetAndCallFacts`.
+#[derive(Debug)]
+pub(crate) struct VerifiedFunctionInstructions {
+    function: FunctionIndex,
+    opcodes: Box<[Opcode]>,
+}
+
+impl VerifiedFunctionInstructions {
+    pub(crate) const fn function(&self) -> FunctionIndex {
+        self.function
+    }
+
+    pub(crate) fn opcodes(&self) -> &[Opcode] {
+        &self.opcodes
+    }
+}
+
+impl VerifiedInstructionFacts {
+    fn try_from_candidate(
+        candidate: &LinkedBytecodeCandidate,
+        control_flow: &ControlFlowFacts,
+    ) -> Result<Self, VerificationError> {
+        let functions = candidate
+            .functions()
+            .iter()
+            .enumerate()
+            .map(|(ordinal, function)| {
+                let expected = u32::try_from(ordinal)
+                    .map(FunctionIndex::new)
+                    .map_err(|_| {
+                        instruction_snapshot_violation(
+                            crate::VerificationLocation::Image,
+                            "dense opcode function ordinal does not fit u32",
+                        )
+                    })?;
+                let location = crate::VerificationLocation::Function { function: expected };
+                if function.index() != expected
+                    || !control_flow.proves_function_shape(expected, function.instructions().len())
+                {
+                    return Err(instruction_snapshot_violation(
+                        location,
+                        "dense opcode snapshot disagrees with proved CFG shape",
+                    ));
+                }
+                Ok(VerifiedFunctionInstructions {
+                    function: expected,
+                    opcodes: function
+                        .instructions()
+                        .iter()
+                        .map(|instruction| instruction.opcode())
+                        .collect(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            functions: functions.into_boxed_slice(),
+        })
+    }
+}
+
+fn instruction_snapshot_violation(
+    location: crate::VerificationLocation,
+    detail: impl Into<String>,
+) -> VerificationError {
+    VerificationError::SemanticViolation {
+        obligation: crate::VerificationObligation::ControlFlow,
+        location,
+        detail: detail.into(),
     }
 }
 
@@ -177,9 +286,11 @@ pub(crate) fn prove_control_flow_and_stack(
     transfer::prove_stack_and_slot_state(candidate, concrete_values, &targets, &mut facts, limits)?;
     let empty_resume =
         resume::prove_resume_sites(candidate, concrete_values, &targets, &facts, limits)?;
+    let instructions = VerifiedInstructionFacts::try_from_candidate(candidate, &facts)?;
     Ok(ControlFlowAndCallFacts {
         control_flow: facts,
         exact_targets: targets,
+        instructions,
         _empty_resume: empty_resume,
     })
 }

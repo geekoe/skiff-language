@@ -7,7 +7,7 @@ use skiff_runtime_model::vm_value::ValueSlot;
 
 use crate::{
     verify, VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
-    VerifiedCodeEntry, VerifiedConstantHeap, VerifiedLinkedBytecodeImage,
+    VerifiedCodeEntry, VerifiedConstantHeap, VerifiedFunctionEffects, VerifiedLinkedBytecodeImage,
     VerifiedStatementSchedule,
 };
 
@@ -104,6 +104,16 @@ fn verified_image_carries_only_read_access_to_its_statement_schedule() {
         VerifiedLinkedBytecodeImage::statement_schedule;
 
     let _ = schedule;
+}
+
+#[test]
+fn verified_image_exposes_only_dense_read_access_to_function_effects() {
+    let effects: fn(
+        &VerifiedLinkedBytecodeImage,
+        skiff_runtime_linked_bytecode::FunctionIndex,
+    ) -> Option<&VerifiedFunctionEffects> = VerifiedLinkedBytecodeImage::function_effects;
+
+    let _ = effects;
 }
 
 #[test]

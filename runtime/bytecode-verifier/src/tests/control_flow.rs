@@ -25,18 +25,12 @@ use crate::{
 use super::fixtures::{candidate_for, exact_hydration, generous_limits};
 
 #[test]
-fn empty_hydration_advances_through_resume_to_effect_gate() {
+fn empty_hydration_completes_vacuous_effect_proof_after_resume() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
-
-    assert_eq!(
-        error,
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::EffectAndNoPending,
-            location: VerificationLocation::Image,
-        }
-    );
+    let image = verify(hydrated, candidate, &generous_limits())
+        .expect("empty P3 facts must produce a vacuous effect certificate");
+    assert!(image.functions().is_empty());
 }
 
 #[test]
