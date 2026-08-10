@@ -1,4 +1,4 @@
-use skiff_artifact_model::{ParamModeIr, PendingMode};
+use skiff_artifact_model::{CallableEffectSummary, PackageCallableId, ParamModeIr, PendingMode};
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, CallLoanLayoutIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex,
     InterfaceTableIndex, IntrinsicIndex, LinkedBytecodeCandidate, ResumeSiteIndex,
@@ -136,6 +136,8 @@ impl ExactTargetAndCallFacts {
 pub(crate) struct ExactCallPlan {
     call_site: CallSiteCoordinate,
     target: ExactTargetCoordinate,
+    effect: ExactEffectFacts,
+    receiver_projection: ReceiverProjection,
     parameters: Box<[ExactParameterPosition]>,
     results: Box<[ExactResultPosition]>,
     pending: PendingPlan,
@@ -145,9 +147,12 @@ pub(crate) struct ExactCallPlan {
 
 impl ExactCallPlan {
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) const fn new(
         call_site: CallSiteCoordinate,
         target: ExactTargetCoordinate,
+        effect: ExactEffectFacts,
+        receiver_projection: ReceiverProjection,
         parameters: Box<[ExactParameterPosition]>,
         results: Box<[ExactResultPosition]>,
         pending: PendingPlan,
@@ -157,6 +162,8 @@ impl ExactCallPlan {
         Self {
             call_site,
             target,
+            effect,
+            receiver_projection,
             parameters,
             results,
             pending,
@@ -173,6 +180,16 @@ impl ExactCallPlan {
     #[allow(dead_code)]
     pub(crate) const fn target(&self) -> ExactTargetCoordinate {
         self.target
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn effect(&self) -> &ExactEffectFacts {
+        &self.effect
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn receiver_projection(&self) -> ReceiverProjection {
+        self.receiver_projection
     }
 
     #[allow(dead_code)]
@@ -199,6 +216,57 @@ impl ExactCallPlan {
     pub(crate) const fn loan_layout(&self) -> Option<CallLoanLayoutCoordinate> {
         self.loan_layout
     }
+}
+
+/// Exact callable identity and its independently authorized effect summary.
+/// Unknown summaries remain unknown for every downstream proof.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExactEffectFacts {
+    canonical_callable: PackageCallableId,
+    summary: CallableEffectSummary,
+}
+
+impl ExactEffectFacts {
+    #[allow(dead_code)]
+    pub(super) const fn new(
+        canonical_callable: PackageCallableId,
+        summary: CallableEffectSummary,
+    ) -> Self {
+        Self {
+            canonical_callable,
+            summary,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn canonical_callable(&self) -> &PackageCallableId {
+        &self.canonical_callable
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn summary(&self) -> &CallableEffectSummary {
+        &self.summary
+    }
+}
+
+/// Receiver position and provenance proved for one exact call.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReceiverProjection {
+    None,
+    ExplicitSelfFirst {
+        receiver: TypeIndex,
+        source: ReceiverSource,
+    },
+}
+
+/// Source from which an explicit first receiver is projected.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReceiverSource {
+    OrdinaryArgument,
+    InterfaceCarrier,
 }
 
 /// Exact image-local coordinate selected for a call instruction.
