@@ -11,7 +11,9 @@ use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 use crate::{VerificationError, VerificationLocation};
 
 use super::{instruction_index_for_pc, source_function};
-use crate::admission::binding::{semantic_violation, TargetCoverage};
+use crate::admission::binding::{
+    semantic_violation, type_origins::prove_inline_type_relocation, TargetCoverage,
+};
 
 pub(super) fn prove_instructions(
     hydrated: &HydratedDeploymentBytecode,
@@ -460,13 +462,7 @@ fn prove_value_relocation_target(
                 .types()
                 .get(index.get() as usize)
                 .ok_or_else(|| semantic_violation(location, "type target is out of bounds"))?;
-            let exact = linked.type_ref() == ty
-                && linked.origin().package_build_id() == &package.reference().package_build_id
-                && linked
-                    .origin()
-                    .specialization()
-                    .is_none_or(|specialization| specialization == function.key());
-            exact_or_error(exact, location, "inline type relocation target")
+            prove_inline_type_relocation(package, function, linked, ty, location)
         }
         (BytecodeRelocation::ShapeRef { shape_index }, LinkedInstructionTarget::Shape(index)) => {
             let linked = candidate

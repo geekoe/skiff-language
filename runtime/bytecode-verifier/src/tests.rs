@@ -13,7 +13,7 @@ use crate::{
 mod admission;
 mod concrete_values;
 mod control_flow;
-mod fixtures;
+pub(crate) mod fixtures;
 mod targets;
 
 fn limits() -> VerificationLimits {

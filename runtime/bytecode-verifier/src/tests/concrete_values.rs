@@ -75,6 +75,23 @@ fn residual_type_parameter_is_rejected_as_nonconcrete() {
 }
 
 #[test]
+fn exact_raw_origin_with_wrong_normalized_body_is_rejected_by_p2() {
+    let raw = TypeRefIr::builtin("string");
+    let hydrated = exact_hydration_with_types(vec![raw]);
+    let linked = type_entry(&hydrated, 0, TypeRefIr::builtin("bytes"), None);
+    let candidate = candidate_for_concrete_types(&hydrated, vec![linked], Vec::new())
+        .expect("the candidate-local table accepts an independently proved type body");
+    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+
+    assert_types_violation(
+        error,
+        VerificationObligation::ConcreteTypeAndShape,
+        0,
+        &["normalized admitted raw type"],
+    );
+}
+
+#[test]
 fn concrete_type_node_budget_is_enforced_for_a_nonempty_table() {
     let (hydrated, candidate) = scalar_candidate(string_type());
     let mut limits = generous_limits();

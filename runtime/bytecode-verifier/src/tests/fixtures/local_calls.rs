@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeFunctionOrigin,
-    BytecodeImage, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
+    BytecodeImage, BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
     CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
     CallableProvenanceUnknownReason, CallableSemanticFacts, DeploymentArtifactIdentity,
     DeploymentDiagnosticText, DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph,
@@ -35,14 +35,14 @@ const TARGET_CALLABLE: &str = "pkg-callable:example.local-authority:top-level:fi
 pub(in crate::tests) const TARGET_FUNCTION_INDEX: FunctionIndex = FunctionIndex::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::tests) enum LocalCallCandidateCorruption {
+pub(crate) enum LocalCallCandidateCorruption {
     None,
     TargetDeclarativeSummary,
     TargetEffectOwner,
     TargetCanonicalFunction,
 }
 
-pub(in crate::tests) fn loader_backed_local_call(
+pub(crate) fn loader_backed_local_call(
     corruption: LocalCallCandidateCorruption,
 ) -> (HydratedDeploymentBytecode, LinkedBytecodeCandidate) {
     let bytecode = admitted_bytecode();
@@ -96,7 +96,20 @@ fn admitted_bytecode() -> Arc<ValidatedBytecodeArtifact> {
                 (CALLER_FUNCTION.to_string(), caller_artifact_function()),
                 (TARGET_FUNCTION.to_string(), target_artifact_function()),
             ]),
-            pools: BytecodePools::default(),
+            pools: BytecodePools {
+                types: vec![
+                    BytecodePoolEntry::TypeRef {
+                        ty: TypeRefIr::builtin("string"),
+                    },
+                    BytecodePoolEntry::TypeRef {
+                        ty: TypeRefIr::builtin("string"),
+                    },
+                    BytecodePoolEntry::TypeRef {
+                        ty: TypeRefIr::builtin("bytes"),
+                    },
+                ],
+                ..BytecodePools::default()
+            },
             constant_roots: BTreeMap::new(),
             frozen_constant_graph: FrozenConstantGraph::default(),
             debug_table: None,

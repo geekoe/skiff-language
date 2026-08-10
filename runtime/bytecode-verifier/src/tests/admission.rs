@@ -1,5 +1,7 @@
+use skiff_artifact_model::TypeRefIr;
 use skiff_runtime_linked_bytecode::{
-    CandidateTable, LinkedBytecodeCandidate, LinkedBytecodeCandidateParts,
+    ArtifactTypeIndex, CandidateTable, LinkedArtifactPoolOrigin, LinkedBytecodeCandidate,
+    LinkedBytecodeCandidateParts, LinkedTypeEntry, TypeIndex,
 };
 
 use crate::{
@@ -7,8 +9,8 @@ use crate::{
 };
 
 use super::fixtures::{
-    candidate_for, candidate_for_with_authority_corruption, exact_hydration, generous_limits,
-    AuthorityPinCorruption,
+    candidate_for, candidate_for_concrete_types, candidate_for_with_authority_corruption,
+    exact_hydration, exact_hydration_with_types, generous_limits, AuthorityPinCorruption,
 };
 
 #[test]
@@ -167,4 +169,31 @@ fn package_budget_is_enforced_before_binding() {
             },
         }
     );
+}
+
+#[test]
+fn out_of_bounds_type_origin_coordinate_is_rejected_by_p1() {
+    let hydrated = exact_hydration_with_types(vec![TypeRefIr::builtin("string")]);
+    let build_id = hydrated.packages().keys().next().unwrap().clone();
+    let linked = LinkedTypeEntry::new(
+        TypeIndex::new(0),
+        LinkedArtifactPoolOrigin::new(build_id, ArtifactTypeIndex::new(1), None).unwrap(),
+        TypeRefIr::builtin("string"),
+        None,
+    );
+    let candidate = candidate_for_concrete_types(&hydrated, vec![linked], Vec::new())
+        .expect("candidate-local validation cannot authorize an admitted pool coordinate");
+    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ExactHydrationBinding,
+            location: VerificationLocation::Table {
+                table: CandidateTable::Types,
+                row: 0,
+            },
+            detail,
+        } if detail.contains("exact admitted artifact row")
+    ));
 }

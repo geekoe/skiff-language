@@ -13,38 +13,12 @@ pub(super) fn prove_artifact_origins(
     hydrated: &HydratedDeploymentBytecode,
     candidate: &LinkedBytecodeCandidate,
 ) -> Result<(), VerificationError> {
-    prove_type_origins(hydrated, candidate)?;
+    super::type_origins::prove_type_origins(hydrated, candidate)?;
     prove_shape_origins(hydrated, candidate)?;
     prove_constant_origins(hydrated, candidate)?;
     prove_node_origins(hydrated, candidate)?;
     prove_capture_origins(hydrated, candidate)?;
     prove_path_origins(hydrated, candidate)
-}
-
-fn prove_type_origins(
-    hydrated: &HydratedDeploymentBytecode,
-    candidate: &LinkedBytecodeCandidate,
-) -> Result<(), VerificationError> {
-    for row in candidate.types() {
-        let location = table_location(CandidateTable::Types, row.index().get());
-        let package = package_for_origin(hydrated, candidate, row.origin(), location)?;
-        let source = package
-            .bytecode()
-            .view()
-            .pools()
-            .types
-            .get(row.origin().artifact_index().get() as usize);
-        let Some(BytecodePoolEntry::TypeRef { ty }) = source else {
-            return Err(origin_row_mismatch(location, "type"));
-        };
-        if row.origin().specialization().is_none() && row.type_ref() != ty {
-            return Err(semantic_violation(
-                location,
-                "package-global linked type differs from its exact artifact type row",
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn prove_shape_origins(
