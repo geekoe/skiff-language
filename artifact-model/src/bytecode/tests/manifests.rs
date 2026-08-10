@@ -1,4 +1,4 @@
-//! Bytecode v5 manifest ownership and cross-row structural invariants.
+//! Bytecode v6 manifest ownership and cross-row structural invariants.
 
 use crate::bytecode::dto::{
     BytecodeFunctionOrigin, BytecodePoolEntry, BytecodeRelocation, CallLoanBinding,
@@ -482,6 +482,10 @@ fn call_local_inout_checks_table_and_selector_count_without_guessing_values() {
             writable_path_ref: 0,
         }],
     }];
+    helper.statement_entries[0].attribution_id = StatementAttributionId::Expression {
+        expression_index: 0,
+        occurrence_ordinal: 0,
+    };
     helper.source_map = vec![SourceMapEntry {
         start_pc: 0,
         end_pc: 5,

@@ -23,6 +23,7 @@ use crate::{
     publication_abi::InterfaceInstantiationRef,
     refs::{BytecodeArtifactRef, FileIrRef},
     resources::PublicationResourceRef,
+    statement_attribution::BytecodeStatementManifestIdentity,
     symbols::ServiceSymbolRef,
     types::{TypeDescriptorIr, TypeRefIr},
 };
@@ -246,6 +247,11 @@ pub struct PackageArtifact {
     /// identity enters the build preimage only when present (D18).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bytecode: Option<BytecodeArtifactRef>,
+    /// Package-owned commitment to every function origin and source-event PC
+    /// placement in the attached bytecode image. Required even for the
+    /// canonical empty manifest; paired attach/loader validation owns the
+    /// exact-cover comparison against hydrated bytecode.
+    pub bytecode_statement_manifest_identity: BytecodeStatementManifestIdentity,
     pub package_local_abi: PackageLocalAbi,
     pub package_schema_index: PackageSchemaIndexRef,
     pub package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,

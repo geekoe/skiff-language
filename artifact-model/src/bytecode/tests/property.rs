@@ -149,13 +149,22 @@ fn legal_source_map(words: &[u32]) -> Vec<SourceMapEntry> {
 /// relocation, table, slot or branch operand in `words` is therefore checked
 /// as out of bounds or mis-typed before any index access (C5/C6/C7).
 fn shell_artifact(words: Vec<u32>) -> BytecodeArtifact {
-    let statement_entries = (!words.is_empty())
-        .then(|| crate::bytecode::dto::StatementEntry {
-            pc: 0,
-            statement_id: "entry".to_string(),
-            charge_kind: crate::bytecode::dto::StatementChargeKind::FunctionEntry,
+    let budget_checkpoint = descriptor_for_opcode(Opcode::BudgetCheckpoint).opcode as u32;
+    let statement_entries = words
+        .iter()
+        .enumerate()
+        .filter(|(_, word)| **word == budget_checkpoint)
+        .enumerate()
+        .map(|(ordinal, (pc, _))| crate::StatementEntry {
+            pc: pc as u32,
+            sequence_ordinal: 0,
+            attribution_id: crate::StatementAttributionId::Generated {
+                ordinal: ordinal as u32,
+            },
+            site: crate::InstructionSourceSite::Synthetic {
+                reason: crate::SyntheticInstructionSiteReason::RuntimeControlFlow,
+            },
         })
-        .into_iter()
         .collect();
     let mut functions = BTreeMap::new();
     functions.insert(

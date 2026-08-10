@@ -5,8 +5,9 @@ use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use sha2::Digest;
 
 use crate::{
-    PackageArtifact, PackageCallableId, PackageExecutableCoordinate, PackageLocalAbiSymbol,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    validate_bytecode_statement_manifest_identity,
+    validate_bytecode_statement_manifest_identity_lexical, PackageArtifact, PackageCallableId,
+    PackageExecutableCoordinate, PackageLocalAbiSymbol, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 pub const PACKAGE_SYNTHETIC_CALLBACK_CALLABLE_IDENTITY_SCHEMA_MARKER: &str =
@@ -100,6 +101,26 @@ pub fn validate_package_build_authority(
         ));
     }
     validate_lexical("packageId", &artifact.package_id)?;
+    validate_bytecode_statement_manifest_identity_lexical(
+        &artifact.bytecode_statement_manifest_identity,
+    )
+    .map_err(|error| {
+        PackageBuildAuthorityValidationError::new(format!(
+            "invalid bytecodeStatementManifestIdentity: {error}"
+        ))
+    })?;
+    if artifact.bytecode.is_none() {
+        validate_bytecode_statement_manifest_identity(
+            &artifact.package_id,
+            &[],
+            &artifact.bytecode_statement_manifest_identity,
+        )
+        .map_err(|error| {
+            PackageBuildAuthorityValidationError::new(format!(
+                "package without bytecode must declare the canonical empty statement manifest: {error}"
+            ))
+        })?;
+    }
     let (public_callables, implementation_callables) = callable_surfaces(artifact)?;
     let ordinary_callables = public_callables
         .union(&implementation_callables)

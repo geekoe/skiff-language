@@ -47,6 +47,7 @@ pub mod runtime_config_snapshot;
 pub mod schema;
 pub mod service_contract;
 pub mod service_unit;
+pub mod statement_attribution;
 pub mod symbols;
 pub mod targets;
 pub mod types;
@@ -254,6 +255,14 @@ pub use service_unit::{
     GatewayRoute, OperationIngressKind, OperationMode, OperationParam, OperationRouteBinding,
     ServiceConfigMetadata, ServiceMeta, ServiceOperation, ServiceOperationTarget,
     ServiceReceiverOperationTarget, ServiceTimeoutConfig, TaskTargetIr, TaskTargetKindIr,
+};
+pub use statement_attribution::{
+    derive_bytecode_statement_manifest_identity, validate_bytecode_statement_manifest_identity,
+    validate_bytecode_statement_manifest_identity_lexical, validate_statement_entries_canonical,
+    BytecodeFunctionStatementManifest, BytecodeStatementManifestIdentity,
+    StatementAttributionClass, StatementAttributionId, StatementEntry,
+    StatementEntryValidationError, StatementManifestIdentityError,
+    BYTECODE_STATEMENT_MANIFEST_IDENTITY_PREFIX, BYTECODE_STATEMENT_MANIFEST_SCHEMA_MARKER,
 };
 pub use symbols::{
     PackageCallableRef, PackageRefIr, PackageSymbolRef, ServiceDependencySymbolRef,

@@ -735,6 +735,8 @@ fn package_validator_requires_exact_public_callable_coverage() {
     let runtime = empty_runtime_requirements();
     let callable_id = PackageCallableId::new("pkg-callable:example.pkg:run");
     let projection = canonical_boundary_callable_projection(&signature, &facts, &runtime);
+    let statement_manifest_identity =
+        crate::derive_bytecode_statement_manifest_identity("example.pkg", &[]).unwrap();
     let mut artifact = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: "example.pkg".to_string(),
@@ -743,6 +745,7 @@ fn package_validator_requires_exact_public_callable_coverage() {
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity: statement_manifest_identity,
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("abi"),
             public_symbols: BTreeMap::from([(

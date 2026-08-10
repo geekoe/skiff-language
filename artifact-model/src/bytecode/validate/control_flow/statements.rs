@@ -1,57 +1,87 @@
+use crate::bytecode::decode::DecodedInstruction;
 use crate::bytecode::dto::RelocatableBytecodeFunction;
+use crate::bytecode::opcodes::{contract_for_opcode, StatementContract};
+use crate::validate_statement_entries_canonical;
 
 use super::super::{table_error, StructuralValidationError};
 
 pub(super) fn validate_statement_entries(
     key: &str,
     function: &RelocatableBytecodeFunction,
-    header_pcs: &[u32],
+    instructions: &[DecodedInstruction],
 ) -> Result<(), StructuralValidationError> {
-    let mut previous_pc: Option<u32> = None;
-    let mut saw_function_entry = false;
-    for (index, entry) in function.statement_entries.iter().enumerate() {
-        if let Some(previous_pc) = previous_pc {
-            if previous_pc >= entry.pc {
-                return Err(table_error(
-                    key,
-                    format!(
-                        "statementEntries[{index}] pc {} is not strictly ascending (previous {previous_pc})",
-                        entry.pc
-                    ),
-                ));
-            }
-        }
-        if header_pcs.binary_search(&entry.pc).is_err() {
-            return Err(table_error(
+    validate_statement_entries_canonical(&function.statement_entries)
+        .map_err(|error| table_error(key, error.to_string()))?;
+
+    // Both inputs are canonical by PC, so header membership and required-event
+    // checks share one O(I + E) merge cursor.
+    let entries = &function.statement_entries;
+    let mut entry_cursor = 0_usize;
+    for instruction in instructions {
+        if entries
+            .get(entry_cursor)
+            .is_some_and(|entry| entry.pc < instruction.pc)
+        {
+            return Err(non_header_error(
                 key,
-                format!(
-                    "statementEntries[{index}] pc {} is not an instruction header",
-                    entry.pc
-                ),
+                entry_cursor,
+                entries[entry_cursor].pc,
             ));
         }
-        if entry.statement_id.is_empty() {
-            return Err(table_error(
-                key,
-                format!("statementEntries[{index}].statementId must not be empty"),
-            ));
+
+        let pc_entry_start = entry_cursor;
+        while entries
+            .get(entry_cursor)
+            .is_some_and(|entry| entry.pc == instruction.pc)
+        {
+            entry_cursor = entry_cursor.checked_add(1).ok_or_else(|| {
+                table_error(key, "statement entry cursor overflowed usize".to_string())
+            })?;
         }
-        if entry.charge_kind == crate::bytecode::dto::StatementChargeKind::FunctionEntry {
-            if saw_function_entry || entry.pc != 0 {
-                return Err(table_error(
-                    key,
-                    format!("statementEntries[{index}] has invalid duplicate/non-zero FunctionEntry charge"),
-                ));
-            }
-            saw_function_entry = true;
-        }
-        previous_pc = Some(entry.pc);
+        validate_opcode_requirement(key, instruction, &entries[pc_entry_start..entry_cursor])?;
     }
-    if !function.words.is_empty() && !saw_function_entry {
+
+    if let Some(entry) = entries.get(entry_cursor) {
+        return Err(non_header_error(key, entry_cursor, entry.pc));
+    }
+    Ok(())
+}
+
+fn validate_opcode_requirement(
+    key: &str,
+    instruction: &DecodedInstruction,
+    entries: &[crate::StatementEntry],
+) -> Result<(), StructuralValidationError> {
+    let contract = contract_for_opcode(instruction.descriptor.kind);
+    let StatementContract::RequiredEvent {
+        charge_kind,
+        attribution,
+    } = contract.statement
+    else {
+        return Ok(());
+    };
+    let matching = entries
+        .iter()
+        .filter(|entry| entry.attribution_id.class() == attribution)
+        .count();
+    if matching != 1 {
         return Err(table_error(
             key,
-            "non-empty function must declare one FunctionEntry charge".to_string(),
+            format!(
+                "{} at pc {} derives {} and requires exactly one {} source event at that pc (found {matching})",
+                contract.mnemonic,
+                instruction.pc,
+                charge_kind.name(),
+                attribution.name(),
+            ),
         ));
     }
     Ok(())
+}
+
+fn non_header_error(key: &str, index: usize, pc: u32) -> StructuralValidationError {
+    table_error(
+        key,
+        format!("statementEntries[{index}] pc {pc} is not an instruction header"),
+    )
 }

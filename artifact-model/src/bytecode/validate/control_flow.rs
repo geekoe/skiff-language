@@ -222,7 +222,7 @@ pub(super) fn validate_tables(
     let header_pcs = &decoded.header_pcs;
     validate_exception_regions(key, function, header_pcs, pools)?;
     active_regions::validate_active_regions(key, function, decoded)?;
-    statements::validate_statement_entries(key, function, header_pcs)?;
+    statements::validate_statement_entries(key, function, &decoded.instructions)?;
     source_map::validate_source_map(key, function, decoded)?;
     switch_tables::validate_switch_tables(key, function, header_pcs, pools)?;
     Ok(())

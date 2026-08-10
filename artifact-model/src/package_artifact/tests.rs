@@ -2,6 +2,12 @@ use serde_json::json;
 
 use super::*;
 
+fn empty_statement_manifest_identity(package_id: &str) -> String {
+    crate::derive_bytecode_statement_manifest_identity(package_id, &[])
+        .unwrap()
+        .to_string()
+}
+
 #[test]
 fn package_schema_type_reference_is_not_a_legacy_abi_type() {
     let ty = PackageTypeRef::PackageSchema {
@@ -131,13 +137,15 @@ fn any_interface_wire_rejects_missing_or_opaque_interface_target() {
 
 #[test]
 fn package_artifact_wire_rejects_legacy_aggregate_fields() {
+    let statement_manifest_identity = empty_statement_manifest_identity("example.pkg");
     let value = json!({
-        "schemaVersion": "skiff-package-artifact-v13",
+        "schemaVersion": "skiff-package-artifact-v14",
         "packageId": "example.pkg",
         "packageVersion": "1.0.0",
         "packageBuildId": "build",
         "files": [],
         "staticResources": [],
+        "bytecodeStatementManifestIdentity": statement_manifest_identity,
         "packageLocalAbi": { "localAbiIdentity": "abi", "publicSymbols": {} },
         "packageSchemaIndex": {
             "packageId": "example.pkg",
@@ -219,6 +227,7 @@ fn package_artifact_wire_rejects_legacy_aggregate_fields() {
     assert!(serde_json::from_value::<PackageArtifact>(missing_service_call_refs).is_err());
 
     for field in [
+        "bytecodeStatementManifestIdentity",
         "syntheticCallbackOwners",
         "bytecodeSchemaRecords",
         "actorImplementations",
@@ -231,6 +240,10 @@ fn package_artifact_wire_rejects_legacy_aggregate_fields() {
             "missing {field} must fail closed"
         );
     }
+
+    let mut malformed_manifest_identity = value.clone();
+    malformed_manifest_identity["bytecodeStatementManifestIdentity"] = json!("manifest:fake");
+    assert!(serde_json::from_value::<PackageArtifact>(malformed_manifest_identity).is_err());
 
     let decoded = serde_json::from_value::<PackageArtifact>(value.clone()).unwrap();
     let encoded = serde_json::to_value(decoded).unwrap();
@@ -311,13 +324,15 @@ fn package_build_authority_vectors_reject_duplicate_or_noncanonical_rows() {
         ],
     ] {
         let wire = serde_json::to_value(rows).unwrap();
+        let statement_manifest_identity = empty_statement_manifest_identity("example.pkg");
         let wrapper = json!({
-            "schemaVersion": "skiff-package-artifact-v13",
+            "schemaVersion": "skiff-package-artifact-v14",
             "packageId": "example.pkg",
             "packageVersion": "1.0.0",
             "packageBuildId": "build",
             "files": [],
             "staticResources": [],
+            "bytecodeStatementManifestIdentity": statement_manifest_identity,
             "packageLocalAbi": { "localAbiIdentity": "abi", "publicSymbols": {} },
             "packageSchemaIndex": {
                 "packageId": "example.pkg",
@@ -352,13 +367,15 @@ fn package_local_conformances_reject_duplicate_or_noncanonical_rows() {
             "methods": []
         })
     };
+    let statement_manifest_identity = empty_statement_manifest_identity("example.pkg");
     let base = json!({
-        "schemaVersion": "skiff-package-artifact-v13",
+        "schemaVersion": "skiff-package-artifact-v14",
         "packageId": "example.pkg",
         "packageVersion": "1.0.0",
         "packageBuildId": "build",
         "files": [],
         "staticResources": [],
+        "bytecodeStatementManifestIdentity": statement_manifest_identity,
         "packageLocalAbi": { "localAbiIdentity": "abi", "publicSymbols": {} },
         "packageSchemaIndex": {
             "packageId": "example.pkg",

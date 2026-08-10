@@ -10,6 +10,7 @@ mod property;
 mod roundtrip;
 mod schema_snapshot;
 mod source_coverage;
+mod statement_attribution;
 
 use std::collections::BTreeMap;
 
@@ -20,10 +21,10 @@ use crate::bytecode::dto::{
     DebugBinding, DebugTable, ExceptionRegion, FrameLayout, FrozenBehaviorBinding,
     FrozenConstantGraph, FrozenConstantNode, HostEffectReference, HostEffectSignature,
     ParameterSlotDecl, RelocatableBytecodeFunction, ResourceDropPlan, ResumeDescriptor,
-    ResumeErrorMode, ShapeDeclaration, ShapeFieldDeclaration, SourceMapEntry, StatementChargeKind,
-    StatementEntry, SwitchCase, SwitchTable, ValueDropPlan, ValueTransferPlan,
-    ValueTransferPlanKind, WritablePathDeclaration, WritablePathSegment, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    ResumeErrorMode, ShapeDeclaration, ShapeFieldDeclaration, SourceMapEntry,
+    StatementAttributionId, StatementEntry, SwitchCase, SwitchTable, ValueDropPlan,
+    ValueTransferPlan, ValueTransferPlanKind, WritablePathDeclaration, WritablePathSegment,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::opcode_table_fingerprint;
 use crate::types::TypeRefIr;
@@ -147,6 +148,22 @@ fn source_map_synthetic(start_pc: u32, end_pc: u32) -> SourceMapEntry {
     }
 }
 
+fn statement_source_site(start_line: u32, end_line: u32) -> crate::InstructionSourceSite {
+    crate::InstructionSourceSite::Source {
+        span: crate::SourceSpanRef {
+            source_id: 0,
+            start: crate::SourcePosition::new(start_line, 1),
+            end: crate::SourcePosition::new(end_line, 1),
+        },
+    }
+}
+
+fn statement_synthetic_site() -> crate::InstructionSourceSite {
+    crate::InstructionSourceSite::Synthetic {
+        reason: crate::SyntheticInstructionSiteReason::RuntimeControlFlow,
+    }
+}
+
 pub(crate) fn main_function() -> RelocatableBytecodeFunction {
     RelocatableBytecodeFunction {
         function_key: "module::main".to_string(),
@@ -246,19 +263,43 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
         }],
         statement_entries: vec![
             StatementEntry {
-                pc: 0,
-                statement_id: "s:main:0".to_string(),
-                charge_kind: StatementChargeKind::FunctionEntry,
+                pc: 6,
+                sequence_ordinal: 0,
+                attribution_id: StatementAttributionId::Statement {
+                    statement_index: 0,
+                    occurrence_ordinal: 0,
+                },
+                site: statement_source_site(2, 3),
+            },
+            StatementEntry {
+                pc: 6,
+                sequence_ordinal: 1,
+                attribution_id: StatementAttributionId::Expression {
+                    expression_index: 0,
+                    occurrence_ordinal: 0,
+                },
+                site: statement_source_site(2, 4),
             },
             StatementEntry {
                 pc: 10,
-                statement_id: "s:main:1".to_string(),
-                charge_kind: StatementChargeKind::Statement,
+                sequence_ordinal: 0,
+                attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+                site: statement_synthetic_site(),
+            },
+            StatementEntry {
+                pc: 17,
+                sequence_ordinal: 0,
+                attribution_id: StatementAttributionId::Generated { ordinal: 1 },
+                site: statement_synthetic_site(),
             },
             StatementEntry {
                 pc: 25,
-                statement_id: "s:main:2".to_string(),
-                charge_kind: StatementChargeKind::LoopCheck,
+                sequence_ordinal: 0,
+                attribution_id: StatementAttributionId::Statement {
+                    statement_index: 1,
+                    occurrence_ordinal: 0,
+                },
+                site: statement_source_site(8, 9),
             },
         ],
         source_map: vec![
@@ -299,8 +340,9 @@ pub(crate) fn helper_function() -> RelocatableBytecodeFunction {
         switch_tables: Vec::new(),
         statement_entries: vec![StatementEntry {
             pc: 0,
-            statement_id: "s:helper:entry".to_string(),
-            charge_kind: StatementChargeKind::FunctionEntry,
+            sequence_ordinal: 0,
+            attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+            site: statement_synthetic_site(),
         }],
         source_map: vec![source_map_synthetic(0, 1)],
     }
@@ -335,8 +377,9 @@ pub(crate) fn callback_function() -> RelocatableBytecodeFunction {
         switch_tables: Vec::new(),
         statement_entries: vec![StatementEntry {
             pc: 0,
-            statement_id: "s:callback:entry".to_string(),
-            charge_kind: StatementChargeKind::FunctionEntry,
+            sequence_ordinal: 0,
+            attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+            site: statement_synthetic_site(),
         }],
         source_map: vec![source_map_synthetic(0, 1)],
     }

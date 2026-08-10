@@ -3,11 +3,20 @@ use sha2::Digest;
 
 use super::*;
 
+mod attribution;
+mod execution;
+
+use attribution::{
+    AttributionChargeProjection, FrameEntryStatementProjection, RegionProjection, SourceProjection,
+    StatementProjection,
+};
+use execution::{ControlProjection, PendingProjection};
+
 /// Version of the canonical opcode-contract JSON projection. This is
 /// deliberately independent from both the artifact schema and ISA versions:
 /// changing projection shape increments this number, while changing any
 /// projected contract fact changes only the fingerprint.
-pub const OPCODE_CONTRACT_FORMAT: u8 = 1;
+pub const OPCODE_CONTRACT_FORMAT: u8 = 2;
 
 /// Canonical JSON bytes whose SHA-256 digest is persisted in the existing
 /// `opcodeTableFingerprint` artifact header field.
@@ -15,21 +24,65 @@ pub fn opcode_contract_canonical_json() -> Vec<u8> {
     opcode_contracts_canonical_json(OPCODE_CONTRACTS)
 }
 
-/// Fingerprint of every wire, typed and execution-policy fact in the unique
-/// 63-row opcode contract table.
+/// Fingerprint of the default attribution charges, frame-entry rule and every
+/// wire, typed and execution-policy fact in the unique 63-row opcode table.
 pub fn opcode_table_fingerprint() -> String {
     opcode_contracts_fingerprint(OPCODE_CONTRACTS)
 }
 
 pub(crate) fn opcode_contracts_fingerprint(contracts: &[OpcodeContract]) -> String {
-    hex::encode(sha2::Sha256::digest(opcode_contracts_canonical_json(
+    opcode_contracts_fingerprint_with_frame(FRAME_ENTRY_STATEMENT_CONTRACT, contracts)
+}
+
+pub(crate) fn opcode_contracts_fingerprint_with_frame(
+    frame_entry: FrameEntryStatementContract,
+    contracts: &[OpcodeContract],
+) -> String {
+    opcode_contracts_fingerprint_with_statement_authority(
+        ATTRIBUTION_CHARGE_CONTRACT,
+        frame_entry,
         contracts,
-    )))
+    )
+}
+
+pub(crate) fn opcode_contracts_fingerprint_with_statement_authority(
+    attribution_charges: AttributionChargeContract,
+    frame_entry: FrameEntryStatementContract,
+    contracts: &[OpcodeContract],
+) -> String {
+    hex::encode(sha2::Sha256::digest(
+        opcode_contracts_canonical_json_with_statement_authority(
+            attribution_charges,
+            frame_entry,
+            contracts,
+        ),
+    ))
 }
 
 pub(crate) fn opcode_contracts_canonical_json(contracts: &[OpcodeContract]) -> Vec<u8> {
+    opcode_contracts_canonical_json_with_frame(FRAME_ENTRY_STATEMENT_CONTRACT, contracts)
+}
+
+pub(crate) fn opcode_contracts_canonical_json_with_frame(
+    frame_entry: FrameEntryStatementContract,
+    contracts: &[OpcodeContract],
+) -> Vec<u8> {
+    opcode_contracts_canonical_json_with_statement_authority(
+        ATTRIBUTION_CHARGE_CONTRACT,
+        frame_entry,
+        contracts,
+    )
+}
+
+fn opcode_contracts_canonical_json_with_statement_authority(
+    attribution_charges: AttributionChargeContract,
+    frame_entry: FrameEntryStatementContract,
+    contracts: &[OpcodeContract],
+) -> Vec<u8> {
     let projection = ContractSetProjection {
         contract_format: OPCODE_CONTRACT_FORMAT,
+        attribution_charges: AttributionChargeProjection::from(attribution_charges),
+        frame_entry_statement: FrameEntryStatementProjection::from(frame_entry),
         opcodes: contracts.iter().map(OpcodeProjection::from).collect(),
     };
     skiff_canonical_json::canonical_json_bytes(&projection)
@@ -40,6 +93,8 @@ pub(crate) fn opcode_contracts_canonical_json(contracts: &[OpcodeContract]) -> V
 #[serde(rename_all = "camelCase")]
 struct ContractSetProjection {
     contract_format: u8,
+    attribution_charges: AttributionChargeProjection,
+    frame_entry_statement: FrameEntryStatementProjection,
     opcodes: Vec<OpcodeProjection>,
 }
 
@@ -55,6 +110,7 @@ struct OpcodeProjection {
     pending: PendingProjection,
     checkpoint: CheckpointProjection,
     exception: ExceptionProjection,
+    statement: StatementProjection,
     source: SourceProjection,
     region: RegionProjection,
     capabilities: Vec<&'static str>,
@@ -76,6 +132,7 @@ impl From<&OpcodeContract> for OpcodeProjection {
             pending: PendingProjection::from(contract.pending),
             checkpoint: CheckpointProjection::from(contract.checkpoint),
             exception: ExceptionProjection::from(contract.exception),
+            statement: StatementProjection::from(contract.statement),
             source: SourceProjection::from(contract.source),
             region: RegionProjection::from(contract.region),
             capabilities: contract
@@ -257,101 +314,6 @@ impl From<&SlotEffectContract> for SlotEffectProjection {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ControlProjection {
-    kind: &'static str,
-    target: Option<&'static str>,
-    branch_when: Option<&'static str>,
-}
-
-impl From<ControlContract> for ControlProjection {
-    fn from(control: ControlContract) -> Self {
-        match control {
-            ControlContract::Fallthrough => Self::new("fallthrough", None, None),
-            ControlContract::Jump { target } => Self::new("jump", Some(target), None),
-            ControlContract::Branch { target, when } => {
-                Self::new("branch", Some(target), Some(when.name()))
-            }
-            ControlContract::Switch { table } => Self::new("switch", Some(table), None),
-            ControlContract::Return => Self::new("return", None, None),
-            ControlContract::TailCall => Self::new("tailCall", None, None),
-            ControlContract::Raise => Self::new("raise", None, None),
-            ControlContract::Rethrow => Self::new("rethrow", None, None),
-        }
-    }
-}
-
-impl ControlProjection {
-    fn new(
-        kind: &'static str,
-        target: Option<OperandRole>,
-        branch_when: Option<&'static str>,
-    ) -> Self {
-        Self {
-            kind,
-            target: target.map(OperandRole::name),
-            branch_when,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PendingProjection {
-    kind: &'static str,
-    target: Option<&'static str>,
-    loan_layout: Option<&'static str>,
-    resume: Option<&'static str>,
-    mode: Option<&'static str>,
-}
-
-impl From<PendingContract> for PendingProjection {
-    fn from(pending: PendingContract) -> Self {
-        match pending {
-            PendingContract::Never => Self::new("never", None, None, None, None),
-            PendingContract::TransitiveTarget { target } => {
-                Self::new("transitiveTarget", Some(target), None, None, None)
-            }
-            PendingContract::NoPendingTarget {
-                target,
-                loan_layout,
-            } => Self::new(
-                "noPendingTarget",
-                Some(target),
-                Some(loan_layout),
-                None,
-                None,
-            ),
-            PendingContract::ActualWithResume { resume, mode } => Self::new(
-                "actualWithResume",
-                None,
-                None,
-                Some(resume),
-                Some(mode.name()),
-            ),
-        }
-    }
-}
-
-impl PendingProjection {
-    fn new(
-        kind: &'static str,
-        target: Option<OperandRole>,
-        loan_layout: Option<OperandRole>,
-        resume: Option<OperandRole>,
-        mode: Option<&'static str>,
-    ) -> Self {
-        Self {
-            kind,
-            target: target.map(OperandRole::name),
-            loan_layout: loan_layout.map(OperandRole::name),
-            resume: resume.map(OperandRole::name),
-            mode,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 struct CheckpointProjection {
     kind: &'static str,
     budget_stop: Option<FailureDispositionProjection>,
@@ -470,92 +432,6 @@ impl From<FailureDisposition> for FailureDispositionProjection {
                 kind: "invariantTerminal",
                 identity: None,
             },
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SourceProjection {
-    kind: &'static str,
-    use_kind: Option<&'static str>,
-    origin: Option<&'static str>,
-    operand: Option<&'static str>,
-}
-
-impl From<SourceContract> for SourceProjection {
-    fn from(source: SourceContract) -> Self {
-        match source {
-            SourceContract::None => Self::new("none", None, None, None),
-            SourceContract::Required { use_kind, origin } => {
-                Self::new("required", Some(use_kind.name()), Some(origin.name()), None)
-            }
-            SourceContract::PreserveOriginal => Self::new("preserveOriginal", None, None, None),
-            SourceContract::ActiveRegion { operand } => {
-                Self::new("activeRegion", None, None, Some(operand))
-            }
-        }
-    }
-}
-
-impl SourceProjection {
-    fn new(
-        kind: &'static str,
-        use_kind: Option<&'static str>,
-        origin: Option<&'static str>,
-        operand: Option<OperandRole>,
-    ) -> Self {
-        Self {
-            kind,
-            use_kind,
-            origin,
-            operand: operand.map(OperandRole::name),
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RegionProjection {
-    normal: RegionEffectProjection,
-    raised: RegionEffectProjection,
-}
-
-impl From<RegionContract> for RegionProjection {
-    fn from(region: RegionContract) -> Self {
-        Self {
-            normal: RegionEffectProjection::from(region.normal),
-            raised: RegionEffectProjection::from(region.raised),
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RegionEffectProjection {
-    kind: &'static str,
-    operand: Option<&'static str>,
-}
-
-impl From<RegionEffect> for RegionEffectProjection {
-    fn from(effect: RegionEffect) -> Self {
-        match effect {
-            RegionEffect::NotApplicable => Self::new("notApplicable", None),
-            RegionEffect::Preserve => Self::new("preserve", None),
-            RegionEffect::Enter { operand } => Self::new("enter", Some(operand)),
-            RegionEffect::Leave { operand } => Self::new("leave", Some(operand)),
-            RegionEffect::ExitFunction => Self::new("exitFunction", None),
-            RegionEffect::TailReplace => Self::new("tailReplace", None),
-            RegionEffect::Unwind => Self::new("unwind", None),
-        }
-    }
-}
-
-impl RegionEffectProjection {
-    fn new(kind: &'static str, operand: Option<OperandRole>) -> Self {
-        Self {
-            kind,
-            operand: operand.map(OperandRole::name),
         }
     }
 }

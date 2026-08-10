@@ -9,11 +9,13 @@
 
 mod fingerprint;
 mod model;
+mod statement;
 mod table;
 mod typed;
 
 pub use fingerprint::*;
 pub use model::*;
+pub use statement::*;
 pub use table::*;
 pub use typed::*;
 

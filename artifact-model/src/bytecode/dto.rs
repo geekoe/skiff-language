@@ -10,6 +10,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::types::TypeRefIr;
 
+pub use crate::statement_attribution::{StatementAttributionId, StatementEntry};
+
 /// Trusted compile-time resource limits (§4.2). All counts/offsets/indices
 /// are validated against these before use (C2).
 pub mod limits {
@@ -49,7 +51,7 @@ pub mod limits {
     pub const MAX_SWITCH_TABLE_TARGETS: u64 = 65_536;
     /// `typeParameters` of a single function.
     pub const MAX_TYPE_PARAMETERS: u64 = 64;
-    /// Bytes of a single debug binding/statementId string.
+    /// Bytes of a single debug binding string.
     pub const MAX_DEBUG_STRING_BYTES: u64 = 1024 * 1024;
     /// Total debug table canonical serialized bytes.
     pub const MAX_DEBUG_TABLE_BYTES: u64 = 64 * 1024 * 1024;
@@ -60,7 +62,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v5";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v6";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v4";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -234,7 +236,7 @@ pub enum BytecodeConstantRef {
 /// Build-independent origin of one relocatable function. Synthetic callbacks
 /// are anchored to the exact ordinary executable and a producer-owned site
 /// ordinal; neither variant carries paths or a package build id.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -810,27 +812,6 @@ pub struct SwitchCase {
     /// Exact tag type; references the types pool.
     pub tag_type_ref: u32,
     pub target_pc: u32,
-}
-
-/// Statement binding for profiling/attribution.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StatementEntry {
-    pub pc: u32,
-    pub statement_id: String,
-    pub charge_kind: StatementChargeKind,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StatementChargeKind {
-    FunctionEntry,
-    Statement,
-    Expression,
-    LocalCall,
-    TailHop,
-    LoopCheck,
-    GeneratedChunk,
 }
 
 /// Source range mapping (within-function word range).

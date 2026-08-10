@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    CallableEffectSummary, CallableProvenanceSummary, CallableProvenanceUnknownReason,
-    CallableSemanticFacts, FileIrRef, OperationCallableKind, OperationTargetRef, PackageArtifact,
-    PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableSignature,
-    PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
-    PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageTypeRef, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    derive_bytecode_statement_manifest_identity, CallableEffectSummary, CallableProvenanceSummary,
+    CallableProvenanceUnknownReason, CallableSemanticFacts, FileIrRef, OperationCallableKind,
+    OperationTargetRef, PackageArtifact, PackageBuildId, PackageCallableId,
+    PackageCallableLinkFact, PackageCallableSignature, PackageExecutableCoordinate,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageTypeRef,
+    TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 mod schema_records;
@@ -60,6 +60,11 @@ fn authority_artifact() -> PackageArtifact {
         files: vec![file.clone()],
         static_resources: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            PACKAGE_ID,
+            &[],
+        )
+        .unwrap(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unchanged"),
             public_symbols: BTreeMap::new(),
@@ -101,4 +106,15 @@ fn authority_artifact() -> PackageArtifact {
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
     }
+}
+
+#[test]
+fn package_without_bytecode_requires_its_own_canonical_empty_statement_manifest() {
+    let mut artifact = authority_artifact();
+    artifact.bytecode_statement_manifest_identity =
+        derive_bytecode_statement_manifest_identity("other.pkg", &[]).unwrap();
+    let error = crate::validate_package_build_authority(&artifact).unwrap_err();
+    assert!(error
+        .message()
+        .contains("canonical empty statement manifest"));
 }

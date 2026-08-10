@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use crate::bytecode::dto::{
     limits, BytecodeArtifact, BytecodeConstantRef, BytecodeFunctionOrigin, BytecodeImage,
     BytecodePoolEntry, BytecodePools, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
-    FrozenConstantNode, RelocatableBytecodeFunction, StatementChargeKind, StatementEntry,
-    SwitchCase, SwitchTable, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    FrozenConstantNode, RelocatableBytecodeFunction, SwitchCase, SwitchTable, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::opcode_table_fingerprint;
 use crate::types::{LiteralIr, TypeRefIr};
@@ -52,32 +52,15 @@ fn minimal_artifact(functions: BTreeMap<String, RelocatableBytecodeFunction>) ->
     }
 }
 
-/// Function body of `instruction_count` `budget_checkpoint` instructions
-/// (each one word, no operands, no extra tables).
-fn checkpoint_function(
+/// Function body of `instruction_count` `return` instructions (each one word,
+/// no operands, source events or extra tables).
+fn basic_function(
     key: &str,
     instruction_count: usize,
     slot_count: u32,
 ) -> RelocatableBytecodeFunction {
     let module_path = key.split_once("::").map_or("module", |(module, _)| module);
-    let words = vec![
-        descriptor_for_opcode(Opcode::BudgetCheckpoint)
-            .opcode
-            .into();
-        instruction_count
-    ];
-    let source_map = if words.is_empty() {
-        Vec::new()
-    } else {
-        assert!(matches!(
-            contract_for_opcode(Opcode::BudgetCheckpoint).source,
-            SourceContract::Required {
-                origin: SourceOriginConstraint::SyntheticOnly,
-                ..
-            }
-        ));
-        vec![source_map_synthetic(0, words.len() as u32)]
-    };
+    let words = vec![descriptor_for_opcode(Opcode::Return).opcode.into(); instruction_count];
     RelocatableBytecodeFunction {
         function_key: key.to_string(),
         origin: BytecodeFunctionOrigin::Executable {
@@ -107,15 +90,8 @@ fn checkpoint_function(
         exception_regions: Vec::new(),
         active_regions: Vec::new(),
         switch_tables: Vec::new(),
-        statement_entries: (!key.is_empty() && instruction_count > 0)
-            .then(|| StatementEntry {
-                pc: 0,
-                statement_id: "entry".to_string(),
-                charge_kind: StatementChargeKind::FunctionEntry,
-            })
-            .into_iter()
-            .collect(),
-        source_map,
+        statement_entries: Vec::new(),
+        source_map: Vec::new(),
     }
 }
 
@@ -126,7 +102,7 @@ fn single_function_artifact(
     let mut functions = BTreeMap::new();
     functions.insert(
         "module::f".to_string(),
-        checkpoint_function("module::f", instruction_count, slot_count),
+        basic_function("module::f", instruction_count, slot_count),
     );
     (minimal_artifact(functions), "module::f".to_string())
 }
@@ -416,7 +392,7 @@ fn max_functions_boundary() {
         let mut functions = BTreeMap::new();
         for index in 0..count {
             let key = format!("module::f{index}");
-            let mut function = checkpoint_function(&key, 1, 0);
+            let mut function = basic_function(&key, 1, 0);
             let BytecodeFunctionOrigin::Executable { executable } = &mut function.origin else {
                 unreachable!();
             };
@@ -592,8 +568,8 @@ fn max_constant_graph_nodes_boundary() {
 fn max_table_entries_is_defense_in_depth() {
     // 1_000_001 table entries cannot exist without 1_000_001 instruction
     // headers, which trips MAX_WORDS_PER_FUNCTION first.
-    let mut function = checkpoint_function("module::f", 1, 0);
-    function.words = vec![0x14; 1_000_001];
+    let mut function = basic_function("module::f", 1, 0);
+    function.words = vec![0x25; 1_000_001];
     let mut functions = BTreeMap::new();
     functions.insert("module::f".to_string(), function);
     let error = assert_rejected(&minimal_artifact(functions));

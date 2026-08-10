@@ -14,6 +14,7 @@ pub struct OpcodeContract {
     pub pending: PendingContract,
     pub checkpoint: CheckpointContract,
     pub exception: ExceptionContract,
+    pub statement: StatementContract,
     pub source: SourceContract,
     pub region: RegionContract,
     pub capabilities: &'static [CapabilityRequirement],
@@ -63,7 +64,7 @@ macro_rules! opcode_rows {
                 pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: []
             },
@@ -81,7 +82,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::ShareableValue]
             },
@@ -99,7 +100,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::MovableValue]
             },
@@ -113,7 +114,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::MovableValue]
             },
@@ -127,7 +128,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::DroppableValue]
             },
@@ -140,7 +141,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::ShareableValue]
             },
@@ -155,7 +156,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::ShareableValue]
             },
@@ -170,7 +171,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::MovableValue]
             },
@@ -181,7 +182,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::DroppableValue]
             },
@@ -192,7 +193,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Jump { target: OperandRole::BranchTarget },
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: []
             },
@@ -203,7 +204,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Branch { target: OperandRole::BranchTarget, when: BranchWhen::True },
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: []
             },
@@ -214,7 +215,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Branch { target: OperandRole::BranchTarget, when: BranchWhen::False },
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: []
             },
@@ -225,7 +226,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Switch { table: OperandRole::SwitchTable },
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::None,
+                statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::NominalTag]
             },
@@ -240,6 +241,10 @@ macro_rules! opcode_rows {
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[
                     FailureContract::terminal(FailureKind::BudgetStop, FailureTrigger::BudgetExceeded)
                 ]),
+                statement: StatementContract::RequiredEvent {
+                    charge_kind: StatementChargeKind::LoopCheck,
+                    attribution: crate::StatementAttributionClass::Generated,
+                },
                 source: SourceContract::Required {
                     use_kind: SourceUse::GeneratedFailure,
                     origin: SourceOriginConstraint::SyntheticOnly
@@ -256,7 +261,7 @@ macro_rules! opcode_rows {
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[
                     FailureContract::terminal(FailureKind::Assertion, FailureTrigger::AssertionFalse)
                 ]),
-                source: SourceContract::Required {
+                statement: StatementContract::None, source: SourceContract::Required {
                     use_kind: SourceUse::Assertion,
                     origin: SourceOriginConstraint::SourceOrSynthetic
                 },
@@ -276,6 +281,10 @@ macro_rules! opcode_rows {
                 pending: PendingContract::TransitiveTarget { target: OperandRole::LocalTarget },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::PropagateTarget { target: OperandRole::LocalTarget }, &[]),
+                statement: StatementContract::RequiredEvent {
+                    charge_kind: StatementChargeKind::LocalCall,
+                    attribution: crate::StatementAttributionClass::Expression,
+                },
                 source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: [CapabilityRequirement::ExactLocalTarget]
@@ -292,6 +301,10 @@ macro_rules! opcode_rows {
                 pending: PendingContract::TransitiveTarget { target: OperandRole::LocalTarget },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::PropagateTarget { target: OperandRole::LocalTarget }, &[]),
+                statement: StatementContract::RequiredEvent {
+                    charge_kind: StatementChargeKind::TailHop,
+                    attribution: crate::StatementAttributionClass::Expression,
+                },
                 source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::TailReplace, RegionEffect::Unwind),
                 capabilities: [CapabilityRequirement::ExactLocalTarget, CapabilityRequirement::TailEligible]
@@ -310,6 +323,7 @@ macro_rules! opcode_rows {
                 pending: PendingContract::ActualWithResume { resume: OperandRole::ResumeRef, mode: PendingMode::ServiceBoundary },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::RaiseAtCurrentSite, &[]),
+                statement: StatementContract::None,
                 source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: []
@@ -328,7 +342,7 @@ macro_rules! opcode_rows {
                 pending: PendingContract::ActualWithResume { resume: OperandRole::ResumeRef, mode: PendingMode::ActorBoundary },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::RaiseAtCurrentSite, &[]),
-                source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -349,7 +363,7 @@ macro_rules! opcode_rows {
                 pending: PendingContract::ActualWithResume { resume: OperandRole::ResumeRef, mode: PendingMode::InterfaceBoundary },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::RaiseAtCurrentSite, &[]),
-                source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -357,7 +371,7 @@ macro_rules! opcode_rows {
                 stack_in: [(Arity::FunctionResultCount, ValueSource::FunctionResults)], stack_out: [],
                 slots: SlotContract::None, control: ControlContract::Return,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::ExitFunction, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -375,6 +389,10 @@ macro_rules! opcode_rows {
                 pending: PendingContract::NoPendingTarget { target: OperandRole::LocalTarget, loan_layout: OperandRole::CallLoanLayout },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::PropagateTarget { target: OperandRole::LocalTarget }, &[]),
+                statement: StatementContract::RequiredEvent {
+                    charge_kind: StatementChargeKind::LocalCall,
+                    attribution: crate::StatementAttributionClass::Expression,
+                },
                 source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: [CapabilityRequirement::ExactLocalTarget, CapabilityRequirement::InOutLoan, CapabilityRequirement::NoPendingTarget]
@@ -386,7 +404,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::InterfaceCarrier { interface: OperandRole::InterfaceTarget })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::LocalInterfaceTable]
             },
@@ -397,7 +415,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::InterfaceCarrier { interface: OperandRole::InterfaceTarget })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::RemoteInterfaceTable]
             },
@@ -412,7 +430,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::CallbackClosure { target: OperandRole::CallbackTarget })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::CallbackCapture]
             },
@@ -434,7 +452,7 @@ macro_rules! opcode_rows {
                 pending: PendingContract::ActualWithResume { resume: OperandRole::ResumeRef, mode: PendingMode::CallbackBoundary },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::RaiseAtCurrentSite, &[]),
-                source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::CallSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: [CapabilityRequirement::CallbackInvocation]
             },
@@ -448,7 +466,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::ShapeValue { shape: OperandRole::ShapeRef })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::VerifiedShape]
             },
@@ -462,7 +480,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::ShapeField { shape: OperandRole::ShapeRef, ordinal: OperandRole::FieldOrdinal })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::VerifiedShape]
             },
@@ -503,7 +521,7 @@ macro_rules! opcode_rows {
                         FailureTrigger::InternalCowInvariant
                     )
                 ]),
-                source: SourceContract::Required { use_kind: SourceUse::InstructionFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::InstructionFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: [
                     CapabilityRequirement::VerifiedWritablePath,
@@ -517,7 +535,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::RepresentationValue { ty: OperandRole::TypeRef })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::RepresentationType]
             },
@@ -528,7 +546,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::ArrayBuilder { element_type: OperandRole::ElementTypeRef })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::ArrayBuilderToken]
             },
@@ -541,7 +559,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::StackInput { group: 0 })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::ArrayBuilderToken]
             },
@@ -551,7 +569,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::ArrayFromBuilder { builder_input: 0 })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::ArrayBuilderToken]
             },
@@ -568,7 +586,7 @@ macro_rules! opcode_rows {
                         COLLECTION_INDEX_OUT_OF_BOUNDS_ERROR
                     )
                 ]),
-                source: SourceContract::Required { use_kind: SourceUse::InstructionFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::InstructionFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -580,7 +598,7 @@ macro_rules! opcode_rows {
                 ]),
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -593,7 +611,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::MapBuilder { key_type: OperandRole::KeyTypeRef, value_type: OperandRole::ValueTypeRef })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::MapBuilderToken]
             },
@@ -607,7 +625,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::StackInput { group: 0 })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::MapBuilderToken]
             },
@@ -617,7 +635,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::MapFromBuilder { builder_input: 0 })],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
                 capabilities: [CapabilityRequirement::MapBuilderToken]
             },
@@ -634,7 +652,7 @@ macro_rules! opcode_rows {
                         COLLECTION_MISSING_KEY_ERROR
                     )
                 ]),
-                source: SourceContract::Required { use_kind: SourceUse::InstructionFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::InstructionFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -650,7 +668,7 @@ macro_rules! opcode_rows {
                 ]),
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -659,7 +677,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::Number)],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -668,7 +686,7 @@ macro_rules! opcode_rows {
                 stack_out: [(Arity::Fixed(1), ValueSource::Number)],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -686,7 +704,7 @@ macro_rules! opcode_rows {
                         FailureTrigger::IndexOutOfBounds
                     )
                 ]),
-                source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SyntheticOnly },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SyntheticOnly },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: [
                     CapabilityRequirement::InternalGenerated,
@@ -708,7 +726,7 @@ macro_rules! opcode_rows {
                 pending: PendingContract::ActualWithResume { resume: OperandRole::ResumeRef, mode: PendingMode::StreamRead },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::RaiseAtCurrentSite, &[]),
-                source: SourceContract::Required { use_kind: SourceUse::StreamSite, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::StreamSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: [CapabilityRequirement::StreamConsumer]
             },
@@ -720,7 +738,7 @@ macro_rules! opcode_rows {
                 pending: PendingContract::ActualWithResume { resume: OperandRole::ResumeRef, mode: PendingMode::StreamBackpressure },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::RaiseAtCurrentSite, &[]),
-                source: SourceContract::Required { use_kind: SourceUse::StreamSite, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::StreamSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: [CapabilityRequirement::StreamProducer]
             },
@@ -731,7 +749,7 @@ macro_rules! opcode_rows {
                 slots: SlotContract::None, control: ControlContract::Raise,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::ThrowValue { type_ref: OperandRole::TypeRef }, &[]),
-                source: SourceContract::Required { use_kind: SourceUse::ThrowOrigin, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::ThrowOrigin, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::NotApplicable, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -744,7 +762,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Rethrow, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::PreserveOriginal { source_slot: OperandRole::SourceSlot }, &[]),
-                source: SourceContract::PreserveOriginal,
+                statement: StatementContract::None, source: SourceContract::PreserveOriginal,
                 region: RegionContract::new(RegionEffect::NotApplicable, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -754,7 +772,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::ActiveRegion { operand: OperandRole::ActiveRegion },
+                statement: StatementContract::None, source: SourceContract::ActiveRegion { operand: OperandRole::ActiveRegion },
                 region: RegionContract::new(RegionEffect::Enter { operand: OperandRole::ActiveRegion }, RegionEffect::NotApplicable),
                 capabilities: []
             },
@@ -765,7 +783,7 @@ macro_rules! opcode_rows {
                 control: ControlContract::Fallthrough, pending: PendingContract::Never,
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::None, &[]),
-                source: SourceContract::ActiveRegion { operand: OperandRole::ActiveRegion },
+                statement: StatementContract::None, source: SourceContract::ActiveRegion { operand: OperandRole::ActiveRegion },
                 region: RegionContract::new(RegionEffect::Leave { operand: OperandRole::ActiveRegion }, RegionEffect::NotApplicable),
                 capabilities: []
             },
@@ -783,7 +801,7 @@ macro_rules! opcode_rows {
                 pending: PendingContract::ActualWithResume { resume: OperandRole::ResumeRef, mode: PendingMode::HostEffect },
                 checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::RaiseAtCurrentSite, &[]),
-                source: SourceContract::Required { use_kind: SourceUse::EffectSite, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::EffectSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: [CapabilityRequirement::TrustedHostAdapter]
             },
@@ -799,7 +817,7 @@ macro_rules! opcode_rows {
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
                 exception: ExceptionContract::new(ExceptionBehavior::RaiseAtCurrentSite, &[]),
-                source: SourceContract::Required { use_kind: SourceUse::EffectSite, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::EffectSite, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind),
                 capabilities: [CapabilityRequirement::TrustedIntrinsic]
             },
@@ -808,7 +826,7 @@ macro_rules! opcode_rows {
                 stack_in: [(Arity::Fixed(1), ValueSource::Bool)], stack_out: [(Arity::Fixed(1), ValueSource::Bool)],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -822,7 +840,7 @@ macro_rules! opcode_rows {
                         FailureTrigger::NonFiniteResult
                     )
                 ]),
-                source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -836,7 +854,7 @@ macro_rules! opcode_rows {
                         FailureTrigger::NonFiniteResult
                     )
                 ]),
-                source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -850,7 +868,7 @@ macro_rules! opcode_rows {
                         FailureTrigger::NonFiniteResult
                     )
                 ]),
-                source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -864,7 +882,7 @@ macro_rules! opcode_rows {
                         FailureTrigger::NonFiniteResult
                     )
                 ]),
-                source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -882,7 +900,7 @@ macro_rules! opcode_rows {
                         FailureTrigger::NonFiniteResult
                     )
                 ]),
-                source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
+                statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::GeneratedFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::Unwind), capabilities: []
             },
             {
@@ -890,7 +908,7 @@ macro_rules! opcode_rows {
                 stack_in: [(Arity::Fixed(2), ValueSource::ComparablePair)], stack_out: [(Arity::Fixed(1), ValueSource::Bool)],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -898,7 +916,7 @@ macro_rules! opcode_rows {
                 stack_in: [(Arity::Fixed(2), ValueSource::ComparablePair)], stack_out: [(Arity::Fixed(1), ValueSource::Bool)],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -906,7 +924,7 @@ macro_rules! opcode_rows {
                 stack_in: [(Arity::Fixed(2), ValueSource::Number)], stack_out: [(Arity::Fixed(1), ValueSource::Bool)],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -914,7 +932,7 @@ macro_rules! opcode_rows {
                 stack_in: [(Arity::Fixed(2), ValueSource::Number)], stack_out: [(Arity::Fixed(1), ValueSource::Bool)],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -922,7 +940,7 @@ macro_rules! opcode_rows {
                 stack_in: [(Arity::Fixed(2), ValueSource::Number)], stack_out: [(Arity::Fixed(1), ValueSource::Bool)],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             },
             {
@@ -930,7 +948,7 @@ macro_rules! opcode_rows {
                 stack_in: [(Arity::Fixed(2), ValueSource::Number)], stack_out: [(Arity::Fixed(1), ValueSource::Bool)],
                 slots: SlotContract::None, control: ControlContract::Fallthrough,
                 pending: PendingContract::Never, checkpoint: CheckpointContract::None,
-                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), source: SourceContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
                 region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable), capabilities: []
             }
         }
@@ -948,6 +966,7 @@ macro_rules! define_opcode_contracts {
         pending: $pending:expr,
         checkpoint: $checkpoint:expr,
         exception: $exception:expr,
+        statement: $statement:expr,
         source: $source:expr,
         region: $region:expr,
         capabilities: [$($capability:expr),* $(,)?]
@@ -1000,6 +1019,7 @@ macro_rules! define_opcode_contracts {
                 pending: $pending,
                 checkpoint: $checkpoint,
                 exception: $exception,
+                statement: $statement,
                 source: $source,
                 region: $region,
                 capabilities: &[$($capability),*],

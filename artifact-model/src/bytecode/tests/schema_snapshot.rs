@@ -1,11 +1,11 @@
-//! Frozen v5 wire-shape snapshot and fail-closed serde tests.
+//! Frozen v6 wire-shape snapshot and fail-closed serde tests.
 
 use super::*;
 
-/// Compact golden projection: it freezes every v5 seam that downstream
+/// Compact golden projection: it freezes every v6 seam that downstream
 /// emission/linking consumes without duplicating the canonical fixture's
 /// large literal payload.
-const GOLDEN_V5_SHAPE: &str = r#"{
+const GOLDEN_V6_SHAPE: &str = r#"{
   "artifact":["bytecodeIdentity","hostEffectRegistry","image","intrinsicRegistry","isaVersion","magic","nativeValueLifecycleRegistry","opcodeTableFingerprint","schemaVersion","valueLifecyclePolicy"],
   "image":["constantRoots","debugTable","frozenConstantGraph","functions","pools"],
   "function":["activeRegions","callLoanLayouts","effectSummaryRef","exceptionRegions","frameLayout","functionKey","maxOperandDepth","origin","relocations","selfTypeRef","sourceMap","statementEntries","switchTables","words"],
@@ -14,6 +14,8 @@ const GOLDEN_V5_SHAPE: &str = r#"{
   "callLoanBinding":["parameterOrdinal","rootSlot","writablePathRef"],
   "localRelocation":["functionKey","kind","specialization"],
   "specialization":["concreteReceiver","typeArguments"],
+  "statementEntry":["attributionId","pc","sequenceOrdinal","site"],
+  "statementAttributionId":["expressionIndex","kind","occurrenceOrdinal"],
   "constantEntry":["kind","plan","reference","typeRef"],
   "resume":["errorMode","expectedStackHeightBeforeResult","functionKey","kind","resultPlans","resultTypeRefs","resumePc","sitePc"]
 }"#;
@@ -30,7 +32,7 @@ fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
 }
 
 #[test]
-fn canonical_fixture_matches_v5_wire_shape_snapshot() {
+fn canonical_fixture_matches_v6_wire_shape_snapshot() {
     let value = serde_json::to_value(canonical_artifact()).expect("fixture JSON");
     let main = &value["image"]["functions"]["module::main"];
     let projection = serde_json::json!({
@@ -42,13 +44,15 @@ fn canonical_fixture_matches_v5_wire_shape_snapshot() {
         "callLoanBinding": sorted_keys(&main["callLoanLayouts"][0]["loans"][0]),
         "localRelocation": sorted_keys(&main["relocations"][0]),
         "specialization": sorted_keys(&main["relocations"][0]["specialization"]),
+        "statementEntry": sorted_keys(&main["statementEntries"][1]),
+        "statementAttributionId": sorted_keys(&main["statementEntries"][1]["attributionId"]),
         "constantEntry": sorted_keys(&value["image"]["pools"]["constants"][0]),
         "resume": sorted_keys(&value["image"]["pools"]["resume"][0]),
     });
-    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V5_SHAPE).expect("golden JSON");
+    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V6_SHAPE).expect("golden JSON");
     assert_eq!(projection, golden);
 
-    assert_eq!(value["schemaVersion"], "skiff-bytecode-v5");
+    assert_eq!(value["schemaVersion"], "skiff-bytecode-v6");
     assert_eq!(value["isaVersion"], "skiff-bytecode-isa-v4");
     assert_eq!(
         value["nativeValueLifecycleRegistry"]["fingerprint"],
@@ -273,8 +277,8 @@ fn schema_rejects_unknown_tagged_enum_variants() {
 }
 
 #[test]
-fn version_constants_freeze_schema_v5_and_isa_v4() {
+fn version_constants_freeze_schema_v6_and_isa_v4() {
     assert_eq!(BYTECODE_MAGIC, "skiff-bytecode");
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v5");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v6");
     assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v4");
 }

@@ -422,7 +422,7 @@ fn typed_scalar_opcode_stack_contracts_are_fixed() {
 fn opcode_table_fingerprint_with_operand_roles_is_frozen() {
     assert_eq!(
         opcode_table_fingerprint(),
-        "c54041ca0091b74490b78175a2e2c568c1e5b073116fa4c8b448030f284ca700"
+        "89d4d4d42abe321353bb4377bdbfa4f641eb82e0d23ed288e03d0da7a4103509"
     );
 }
 

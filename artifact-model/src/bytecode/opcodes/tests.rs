@@ -188,10 +188,96 @@ fn generated_descriptor_and_full_contract_are_consistent() {
 }
 
 #[test]
+fn frame_and_opcode_statement_charge_rules_are_exact() {
+    assert_eq!(
+        ATTRIBUTION_CHARGE_CONTRACT,
+        AttributionChargeContract {
+            statement: StatementChargeKind::Statement,
+            expression: StatementChargeKind::Expression,
+            generated: StatementChargeKind::GeneratedChunk,
+        }
+    );
+    for (attribution, charge_kind) in [
+        (
+            crate::StatementAttributionClass::Statement,
+            StatementChargeKind::Statement,
+        ),
+        (
+            crate::StatementAttributionClass::Expression,
+            StatementChargeKind::Expression,
+        ),
+        (
+            crate::StatementAttributionClass::Generated,
+            StatementChargeKind::GeneratedChunk,
+        ),
+    ] {
+        assert_eq!(
+            default_statement_charge_kind_for_attribution(attribution),
+            charge_kind
+        );
+    }
+    assert_eq!(
+        FRAME_ENTRY_STATEMENT_CONTRACT,
+        FrameEntryStatementContract {
+            charge_kind: StatementChargeKind::FunctionEntry,
+        }
+    );
+    let required = [
+        (
+            Opcode::CallLocal,
+            StatementChargeKind::LocalCall,
+            crate::StatementAttributionClass::Expression,
+        ),
+        (
+            Opcode::CallLocalInOut,
+            StatementChargeKind::LocalCall,
+            crate::StatementAttributionClass::Expression,
+        ),
+        (
+            Opcode::TailCallLocal,
+            StatementChargeKind::TailHop,
+            crate::StatementAttributionClass::Expression,
+        ),
+        (
+            Opcode::BudgetCheckpoint,
+            StatementChargeKind::LoopCheck,
+            crate::StatementAttributionClass::Generated,
+        ),
+    ];
+    for (opcode, charge_kind, attribution) in required {
+        assert_eq!(
+            contract_for_opcode(opcode).statement,
+            StatementContract::RequiredEvent {
+                charge_kind,
+                attribution,
+            }
+        );
+    }
+    for contract in OPCODE_CONTRACTS {
+        if !required
+            .iter()
+            .any(|(opcode, _, _)| *opcode == contract.kind)
+        {
+            assert_eq!(contract.statement, StatementContract::None, "{contract}");
+        }
+    }
+}
+
+#[test]
 fn canonical_projection_contains_the_decided_runtime_semantics() {
     let projection: Value =
         serde_json::from_slice(&opcode_contract_canonical_json()).expect("canonical JSON");
-    assert_eq!(projection["contractFormat"], 1);
+    assert_eq!(projection["contractFormat"], 2);
+    assert_eq!(projection["attributionCharges"]["statement"], "statement");
+    assert_eq!(projection["attributionCharges"]["expression"], "expression");
+    assert_eq!(
+        projection["attributionCharges"]["generated"],
+        "generatedChunk"
+    );
+    assert_eq!(
+        projection["frameEntryStatement"]["chargeKind"],
+        "functionEntry"
+    );
     assert_eq!(projection["opcodes"].as_array().map(Vec::len), Some(63));
 
     let opcode = |mnemonic: &str| -> &Value {
@@ -261,6 +347,19 @@ fn canonical_projection_contains_the_decided_runtime_semantics() {
         "activeRegionSite"
     );
     assert_eq!(checkpoint["source"]["useKind"], "generatedFailure");
+    assert_eq!(checkpoint["statement"]["kind"], "requiredEvent");
+    assert_eq!(checkpoint["statement"]["chargeKind"], "loopCheck");
+    assert_eq!(checkpoint["statement"]["attribution"], "generated");
+
+    let local_call = opcode("call_local");
+    assert_eq!(local_call["statement"]["chargeKind"], "localCall");
+    assert_eq!(local_call["statement"]["attribution"], "expression");
+
+    let tail_call = opcode("tail_call_local");
+    assert_eq!(tail_call["statement"]["chargeKind"], "tailHop");
+    assert_eq!(tail_call["statement"]["attribution"], "expression");
+
+    assert_eq!(opcode("call_service")["statement"]["kind"], "none");
 
     let rethrow = opcode("rethrow");
     assert_eq!(rethrow["exception"]["behavior"]["kind"], "preserveOriginal");
@@ -322,6 +421,9 @@ fn every_top_level_contract_field_changes_the_fingerprint() {
     assert_changed("checked failures", &|contracts| {
         contracts[0].exception.failures = contract_for_opcode(Opcode::Divide).exception.failures;
     });
+    assert_changed("statement", &|contracts| {
+        contracts[0].statement = contract_for_opcode(Opcode::CallLocal).statement;
+    });
     assert_changed("source", &|contracts| {
         contracts[0].source = contract_for_opcode(Opcode::Trap).source;
     });
@@ -334,12 +436,38 @@ fn every_top_level_contract_field_changes_the_fingerprint() {
     assert_changed("capabilities", &|contracts| {
         contracts[0].capabilities = contract_for_opcode(Opcode::NewArrayBuilder).capabilities;
     });
+
+    let changed_frame = FrameEntryStatementContract {
+        charge_kind: StatementChargeKind::Statement,
+    };
+    assert_ne!(
+        super::fingerprint::opcode_contracts_fingerprint_with_frame(
+            changed_frame,
+            OPCODE_CONTRACTS,
+        ),
+        baseline,
+        "frame-entry rule is missing from the canonical projection"
+    );
+
+    let changed_attribution = AttributionChargeContract {
+        generated: StatementChargeKind::Expression,
+        ..ATTRIBUTION_CHARGE_CONTRACT
+    };
+    assert_ne!(
+        super::fingerprint::opcode_contracts_fingerprint_with_statement_authority(
+            changed_attribution,
+            FRAME_ENTRY_STATEMENT_CONTRACT,
+            OPCODE_CONTRACTS,
+        ),
+        baseline,
+        "attribution charge rule is missing from the canonical projection"
+    );
 }
 
 #[test]
 fn opcode_contract_fingerprint_is_frozen() {
     assert_eq!(
         opcode_table_fingerprint(),
-        "c54041ca0091b74490b78175a2e2c568c1e5b073116fa4c8b448030f284ca700"
+        "89d4d4d42abe321353bb4377bdbfa4f641eb82e0d23ed288e03d0da7a4103509"
     );
 }

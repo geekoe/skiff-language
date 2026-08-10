@@ -1363,16 +1363,6 @@ fn validate_function_limits(
             ));
         }
     }
-    for (index, entry) in function.statement_entries.iter().enumerate() {
-        if entry.statement_id.len() as u64 > limits::MAX_DEBUG_STRING_BYTES {
-            return Err(limit_error(
-                "MAX_DEBUG_STRING_BYTES",
-                limits::MAX_DEBUG_STRING_BYTES,
-                entry.statement_id.len() as u64,
-                &location(&format!("statementEntries[{index}].statementId")),
-            ));
-        }
-    }
     Ok(())
 }
 
