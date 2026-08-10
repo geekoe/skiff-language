@@ -5,6 +5,12 @@ deployment-image boundary is **contract landed**. Linker semantics, verifier pro
 implementation and production composition remain **implementation pending**. This status does not make
 Phase 3A, 3B, 4 or 5 `candidate`, `candidate-pass` or `complete`.
 
+Statement-attribution epoch checkpoint: artifact model `3262d535` and identity `2c6da16d` freeze bytecode v6/
+ISA v4/identity v4 and `skiff-package-artifact-v14`/`skiff-package-build-v13:sha256`. Compiler source-event/
+real-function emission, the verifier-owned statement schedule and VM schedule consumption are not accepted yet.
+Verification must remain `ProofUnavailable` and VM entry unreachable rather than executing from raw statement
+rows.
+
 This plan records how implementation work may run ahead in parallel without changing the ordered phase
 acceptance contract in [`../phases/README.md`](../phases/README.md). The final architecture remains the one in
 [`../../../architecture/bytecode-vm.md`](../../../architecture/bytecode-vm.md); this file owns task
@@ -43,6 +49,7 @@ C1-C9 admitted exact deployment/package content
        +-- move the original hydration + candidate --> semantic verifier
                                                         -> private VerificationSeal
                                                         -> Arc<VerifiedLinkedBytecodeImage>
+                                                             |-- immutable verified statement schedule
                                                              |-- DeploymentProgramFacts
                                                              |     -> Arc<DeploymentImage<...>>
                                                              |-- verified lookup -> VerifiedCodeEntry
@@ -136,6 +143,9 @@ reverse edge in the new bytecode path.
 - `VerifiedLinkedBytecodeImage` has private fields and a private verification seal. It has no `Default`,
   `From<LinkedBytecodeCandidate>`, unchecked/test-support constructor, mutable candidate access or caller-supplied
   owner.
+- Persisted/linked `StatementEntry` rows remain untrusted candidate metadata. Only the verifier may combine their
+  typed placements with the fingerprinted default/frame/opcode charge contract and store an immutable verified
+  statement schedule in the sealed image. The VM has no raw-row charging path.
 - `VerifiedCodeEntry` is constructed only by entry lookup on `Arc<VerifiedLinkedBytecodeImage>`. It pins that
   exact program allocation and carries the verified entry kind, function and signature; a raw `FunctionIndex`
   cannot construct it.
@@ -163,16 +173,27 @@ signature is not evidence that its semantic implementation or phase acceptance i
 
 - Public, self-contained MIR owns expression DAG/type, resolved target/type arguments, liveness, region,
   effect/value-transfer and source facts. Emitter does not reopen File IR to infer them.
-- The emitter owns the complete `skiff-bytecode-v5` header and accepts no caller override. Its required pins are
+- The emitter owns the complete `skiff-bytecode-v6` header and accepts no caller override. Its required pins are
   the opcode contract, native lifecycle registry, value lifecycle policy, host effect registry and intrinsic
-  registry; ISA remains `skiff-bytecode-isa-v4`, and identity uses generation v3. The admitted handoff receipt
+  registry; ISA remains `skiff-bytecode-isa-v4`, and identity uses generation v4
+  (`skiff-bytecode-image-v4:sha256`). The admitted handoff receipt
   retains the four registry/policy identities as one authority-pin group plus the opcode fingerprint.
+- Typed source events are emitted as `StatementEntry { pc, sequenceOrdinal, attributionId, site }`; rows at one pc
+  use dense sequence ordinals. Default Statement/Expression/Generated charges, rowless FunctionEntry and
+  per-opcode reclassification are part of the fingerprinted opcode contract, never caller/row-supplied values.
+- The independent package statement manifest commits package id, every function origin including zero-event
+  functions, and every full placement including pc. Only PackageArtifact persists the required pin. Bytecode ref
+  plus manifest pin attach atomically, and `skiff-package-artifact-v14`/
+  `skiff-package-build-v13:sha256` identity is recomputed without changing Local ABI.
+- Loader recomputes that identity from every function origin/row in the admitted bytecode image and exact-matches
+  the Package pin; compiler receipts, non-empty subsets and raw Package text are not runtime proof.
 - `ConstEvaluator`, bounds and structured error are public.
 - The validated bytecode view retains `typeParameters`, `effectSummaryRef` and debug table facts.
 - The canonical opcode table exposes one semantic `Opcode` enum; downstream code never matches copied numeric
   opcode literals.
 - The emitter entry, bytecode lane DTO and receipt/store order land as interface code before their separate
-  crate implementations.
+  crate implementations. Until source facts and real-function emission exact-join that independent manifest,
+  enabled bytecode compilation fails closed; a function-bearing package cannot be reported as emitted.
 
 ### C1: value, candidate and generic image vocabulary
 
@@ -180,6 +201,8 @@ signature is not evidence that its semantic implementation or phase acceptance i
 - `runtime/linked-bytecode`: typed image-local indices, exact artifact-bearing `SpecializationKey`, linked
   instruction/function/region/resume/source/statement/value-transfer structures and
   `LinkedBytecodeCandidate`.
+- Linked statement structures retain typed raw placement only; they do not carry a trusted charge kind or a
+  verifier seal.
 - Candidate naming is explicit. It is public linker output and verifier input, and is never accepted by VM APIs.
 - `runtime/deployment-image`: generic `DeploymentProgramFacts`, `DeploymentProgramEntry`, `DeploymentImage<P>`,
   exact-build cache and checked entry/provider pin vocabulary, with no verifier dependency.
@@ -192,11 +215,11 @@ The canonical public interfaces are:
 | --- | --- | --- | --- |
 | loader | `DeploymentBytecodeLoader::load(&ServiceDeploymentRef) -> Result<HydratedDeploymentBytecode, _>` | returns one owned opaque hydration; exact admitted content and symbolic service facts only | contract landed; phase acceptance pending |
 | linker | `link_deployment(&HydratedDeploymentBytecode, &LinkLimits) -> Result<LinkedBytecodeCandidate, _>` | borrows hydration and returns only an untrusted candidate | contract landed; implementation pending/fail-closed |
-| verifier | `verify(HydratedDeploymentBytecode, LinkedBytecodeCandidate, &VerificationLimits) -> Result<VerifiedLinkedBytecodeImage, _>` | consumes both values, independently cross-validates them and is the only seal constructor | contract landed; proof implementation pending/fail-closed |
+| verifier | `verify(HydratedDeploymentBytecode, LinkedBytecodeCandidate, &VerificationLimits) -> Result<VerifiedLinkedBytecodeImage, _>` | consumes both values, independently cross-validates them, derives immutable statement schedule from typed rows + fingerprinted contracts, and is the only seal constructor | contract landed; statement proof currently `ProofUnavailable`, therefore fail-closed |
 | verified program | `VerifiedLinkedBytecodeImage::operation_entry(self: &Arc<Self>, ...)` / `gateway_entry(self: &Arc<Self>, ...) -> Result<VerifiedCodeEntry, _>` | entry constructors are private and retain the exact verified program `Arc` | contract landed; semantic coverage pending |
 | generic image | `DeploymentImage::<P>::try_new(Arc<P>) where P: DeploymentProgramFacts` | derives owner and slots only from program facts | contract landed; production verified composition pending |
 | exact entry pin | `PinnedDeploymentEntry::<P, E>::try_new(Arc<DeploymentImage<P>>, E)` | rechecks exact owner and same program allocation | contract landed; production verified composition pending |
-| VM | accepts owned `PinnedDeploymentEntry<VerifiedLinkedBytecodeImage, VerifiedCodeEntry>` plus narrow ports/limits | no raw candidate/image/index, generic entry or unchecked constructor | target contract; implementation pending |
+| VM | accepts owned `PinnedDeploymentEntry<VerifiedLinkedBytecodeImage, VerifiedCodeEntry>` plus narrow ports/limits | no raw candidate/image/index, generic entry, unchecked constructor or raw statement-row scan; semantic charging reads verified schedule only | target contract; schedule consumption pending |
 | scheduler | consumes VM control/fiber types | depends on and re-enters only through VM | target contract; implementation pending |
 
 The intended composition, once the pending implementations exist, is mechanically:
@@ -212,7 +235,8 @@ VM(pinned, ports, limits)
 ```
 
 There is intentionally no candidate-only verification overload, no separate owner argument to `verify`, and no
-image constructor accepting owner/service slots alongside the verified program.
+image constructor accepting owner/service slots alongside the verified program. There is likewise no overload
+that skips statement-schedule proof or lets VM accept `LinkedStatementEntry` rows directly.
 
 ### C3: owner, cache and VM ports
 
@@ -267,7 +291,8 @@ After the B0 interfaces are committed:
 - `runtime/bytecode-verifier` may land its public seal/error/entry interface after loader, candidate and generic
   image contracts exist;
 - verifier semantic work proceeds against the exact hydration/candidate pair and must independently rederive
-  owner, service slots, entries, constant safety and every semantic obligation.
+  owner, service slots, entries, constant safety, statement schedule and every semantic obligation. Exact copying
+  of admitted rows proves transport fidelity only; it does not prove the charge schedule.
 
 Linker and verifier internals may overlap only after their shared data contracts are stable. An unchecked verified
 constructor, candidate-only verification or hand-built hydration is not an acceptable parallelization seam.
@@ -281,6 +306,8 @@ Only after the verifier can actually mint a seal and the exact checked entry pin
 - compiler and first-party conformance deployment coverage.
 
 The existence of the verifier signature while it still returns `ProofUnavailable` does not unlock VM execution.
+In particular, the current VM raw-row charging code is unreachable migration debt, not delivered statement
+attribution; it must be replaced by verified-schedule consumption before the seal can become available.
 
 ### Wave C2: scheduler
 
@@ -334,6 +361,9 @@ Stop the affected worker and return the contract question to the main agent if a
 9. a VM direct dependency on loader, linker or linked-bytecode, or a scheduler path that bypasses VM admission;
 10. marking an implementation or phase complete because interface contracts compile while linker/verifier/VM/
     scheduler behavior or required evidence remains pending.
+11. trusting persisted/linked statement rows as executable charges, accepting row-owned `chargeKind`, omitting
+    zero-event function origins from the package manifest, or letting VM derive FunctionEntry/default/opcode
+    charges outside the verifier-produced schedule.
 
 The same stopping rule applies to any new reverse edge or cycle in the canonical crate DAG.
 
@@ -346,7 +376,8 @@ first-party, deterministic evidence epoch with:
    hydration+candidate -> generic image derived from verified program facts -> exact verified entry pin -> VM
    execution through production loader/request adapters;
 2. no raw candidate/image-index or unchecked entry path and no tree call or fallback inside the VM deployment;
-3. local/non-tail/tail, throw/catch, hard fuel, source/statement attribution;
+3. local/non-tail/tail, throw/catch, hard fuel, and source/statement attribution through the immutable verified
+   schedule, including same-PC ordering, opcode reclassification and rowless FunctionEntry;
 4. Ready/Pending races, single wake/claim/root transfer, child/adapter trampoline and stream backpressure;
 5. typed owner boundary, DB-only transaction/unwind, local/remote/callback carrier coverage;
 6. GC roots, COW/value transfer, constant load, affine resource/drop and recoverable logical-value coverage;

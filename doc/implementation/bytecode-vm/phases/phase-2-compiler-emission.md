@@ -1,6 +1,8 @@
 # Phase 2: compiler facts, typed lowering and bytecode emission
 
-状态：planned；依赖Phase 1 complete
+状态：planned；依赖Phase 1 complete。v6 artifact/identity与部分compiler boundary接口已落地，但真实函数
+emission、independent statement manifest及本页验收尚未完成；enabled lane必须fail closed，不能因empty image或
+handoff类型存在而升级状态。
 
 ## 1. 目标
 
@@ -15,11 +17,17 @@
 3. Typed MIR/CFG拥有slot types、blocks/edges、exception regions、liveness/value-transfer、source/statement entry与
    synthetic callback body。
 4. Deterministic emitter生成wordcode、relocations、generic templates、frame/max-stack metadata和constant graph。
-   Emitter不接收caller-supplied header override；它从canonical owner精确写入v5的opcode contract、native
-   lifecycle registry、value lifecycle policy、host effect registry与intrinsic registry pins。
+   Emitter不接收caller-supplied header override；它从canonical owner精确写入`skiff-bytecode-v6`的opcode
+   contract、native lifecycle registry、value lifecycle policy、host effect registry与intrinsic registry pins；
+   ISA保持`skiff-bytecode-isa-v4`。
 5. Bounded deterministic const evaluator把top-level const变成frozen constant graph；新artifact不再把const保存为
    request-time executable body。
 6. 至少一个真实Package以及完整Agine build closure能输出新artifact并通过Phase 1 structural validator。
+7. Source-owned typed events生成`StatementEntry { pc, sequenceOrdinal, attributionId, site }`；same-PC sequence稠密，
+   default/opcode reclassification由fingerprinted contract拥有，FunctionEntry不占row。
+8. Independent statement manifest覆盖packageId、全部function origin（含zero-event）与完整placement（含pc）；
+   Bytecode ref+Package-only pin成对attach并重算`skiff-package-artifact-v14`/
+   `skiff-package-build-v13:sha256` identity，loader可独立重算一致。
 
 ## 3. 迁移约束
 
@@ -44,8 +52,10 @@ git diff --check
 ### 4.2 阶段专属证明
 
 - 同一source facts重复编译产生相同wordcode/tables/identity；source traversal/map insertion顺序不影响输出。
-- emission handoff保留完整v5 authority pins，任一pin mutation都在C1–C9 admission失败；identity使用
-  `skiff-bytecode-image-v3:sha256`且ISA仍为`skiff-bytecode-isa-v4`，不得把pin mismatch变成disabled/legacy lane。
+- emission handoff保留完整v6 authority pins，任一pin mutation都在C1–C9 admission失败；identity使用
+  `skiff-bytecode-image-v4:sha256`且ISA仍为`skiff-bytecode-isa-v4`，不得把pin mismatch变成disabled/legacy lane。
+- statement row证明覆盖typed id、same-PC dense sequence、occurrence density、site和opcode-required exact-one；
+  independent manifest对package/origin/zero-event/pc drift敏感，不能从artifact rows反向自证。
 - direct/mutual/generic/self calls保留exact symbolic target和canonical type arguments。
 - tail position只发射显式`tail_call_local`候选；参数evaluation顺序和source site完整。
 - `NoPending`、move-only/affine、use-after-move、非法`InOut`和callback escape负例在source/emission边界拒绝。
@@ -53,7 +63,9 @@ git diff --check
   相同const输入产生相同frozen graph和identity。
 - 真实Agine closure的self-describing manifest从admitted artifact/receipt列出每个bytecode artifact的identity、
   schema、ISA、opcode fingerprint、native lifecycle registry/value lifecycle policy/host effect registry/
-  intrinsic registry四个完整authority identity，以及function/word/relocation数量，并全部structural-valid；
+  intrinsic registry四个完整authority identity、`skiff-package-artifact-v14`/
+  `skiff-package-build-v13:sha256`、statement manifest identity，以及
+  function（含zero-event）/event/word/relocation数量，并全部structural-valid；
   不得只记录matched布尔值或依赖读取时的ambient registry回查。
 - 旧evaluator不能作为`var`/value semantics/const/`InOut`变更的正确性oracle；这些使用reference-derived
   golden tests。
@@ -73,8 +85,11 @@ bytecode。Manifest必须分开记录两条lane，不能声称chat已在VM执行
 - lowering或emitter重新做name/type/conformance inference。
 - runtime call-site仍需`TypeParam`推断或临时编译才能解释artifact。
 - 为兼容旧源码保留双重`let`/`const`语义。
+- emitter缺失source event/origin/placement facts却发布function-bearingartifact，或把enabled失败降级为disabled lane。
 
 ## 6. Handoff
 
 Phase 3B只消费structurally validated bytecode view；Phase 3A可以并行准备exact-build owner设计，但必须从
 Phase 2 complete checkpoint集成。
+Phase 3B还必须从typed raw rows与fingerprinted default/frame/opcode contract构造immutable statement schedule；
+在该proof可用前verification返回`ProofUnavailable`，VM不得扫描raw rows。

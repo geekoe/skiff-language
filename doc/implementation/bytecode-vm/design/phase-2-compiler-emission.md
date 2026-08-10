@@ -5,6 +5,12 @@
 2026-08-10 bracket/index amendment：syntax/source/runtime contract landed；typed lowering、OpcodeContract、
 emitter/verifier/runtime implementation pending。
 
+2026-08-10 statement-attribution amendment：artifact/identity基线`3262d535`/`2c6da16d`已冻结Bytecode v6、
+ISA v4、identity v4与`skiff-package-artifact-v14`/`skiff-package-build-v13:sha256`。compiler
+handoff/source-event接口不等于真实函数emission完成；在
+independent full-origin manifest、typed placements及全部Phase 2 gate完成前，function-bearing emission必须fail
+closed。runtime verifier schedule与VM消费也不属于本阶段已交付事实。
+
 本文是 Phase 2（`phases/phase-2-compiler-emission.md`）的详细设计。它把权威契约
 `doc/architecture/bytecode-vm.md`、`doc/reference/static-semantics.md`、`doc/reference/syntax.md`、
 `doc/reference/any-interface.md` 与 requirement ledger 中 Phase 2 部分（R-010、R-011、R-025、R-026(部分)、
@@ -116,7 +122,7 @@ pub struct MirFunction {
     pub slots: Vec<MirSlot>,                                   // { slot, name, kind, ty }
     pub blocks: Vec<MirBlock>,                                 // 显式 CFG
     pub regions: Vec<MirRegion>,                               // 表达式/语句级 exception region 描述
-    pub statements: Vec<MirStatementEntry>,                    // statement index -> Option<SourceSpanRef>
+    pub source_events: Vec<MirSourceEvent>,                    // typed Statement/Expression key + exact site
     pub may_pending: bool,
     pub effect_summary_ref: String,                            // PackageCallableId / operation ABI id
     pub source_span: Option<SourceSpanRef>,
@@ -131,6 +137,11 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
 
 - MIR 构建 = FileIrUnit 后处理 + source facts（effects 按 callable 取，`may_pending`/`effect_summary_ref`
   经 compile pipeline 传入 `lower`）。
+- Source model一次遍历每个owner并分别保留statement与expression的typed key/site；二者即使span相等也不能合并。
+  source collection不制造Generated event；compiler desugaring/emitter只能以显式synthetic site追加Generated。
+- MIR保留每个function的build-independent `BytecodeFunctionOrigin`输入与typed source events。statement/expression
+  index是owner-local source preorder，不是File IR/wordcode index；同一source event若产生多个placement，emitter
+  分配dense `occurrenceOrdinal`。零event function仍须产出origin manifest row。
 - liveness：标准 dataflow（may 语义，slot 粒度），产出 `MirLiveness`（每个 `MirFunction` 一份）。
 - 每个 `ExprIr::Index` 和 writable/inout path 内的 index segment 都必须有 source-owned typed
   fact：concrete receiver kind（Array/Map/JsonObject）、exact selector/result type、segment source span、
@@ -161,13 +172,14 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
   `pub fn emit_bytecode_artifact(units: &[MirUnit], constants: &[FrozenConstantBundle],
   transfer_plans: &BytecodeValueTransferPlans) -> Result<BytecodeArtifact, BytecodeEmissionError>`。
 - Phase 2 不接受 caller-supplied header 或 fingerprint。Emitter 必须从 compile-time canonical owners 直接写入
-  v5 header：`opcode_table_fingerprint()`、`native_value_lifecycle_registry_identity()`、
+  v6 header：`opcode_table_fingerprint()`、`native_value_lifecycle_registry_identity()`、
   `value_lifecycle_policy_identity()`、`host_effect_registry_identity()` 与
-  `intrinsic_registry_identity()`；schema 固定为 `skiff-bytecode-v5`，ISA 固定为
+  `intrinsic_registry_identity()`；schema 固定为 `skiff-bytecode-v6`，ISA 固定为
   `skiff-bytecode-isa-v4`。任一 pin 无法取得或 admission 不精确匹配都使 enabled emission 失败，不能降级为
   disabled/legacy lane。
-- `assign_bytecode_identity` 使用 generation v3（marker `skiff-bytecode-artifact-v3`，prefix
-  `skiff-bytecode-image-v3:sha256`）并把全部五个 pin 纳入 preimage。Phase 2 handoff receipt 必须把四个
+- `assign_bytecode_identity` 使用 generation v4（marker `skiff-bytecode-artifact-v4`，prefix
+  `skiff-bytecode-image-v4:sha256`）并把全部五个 pin与完整typed statement rows纳入preimage。Phase 2
+  handoff receipt 必须把四个
   registry/policy identity 成组保留在 authority-pins value 中，同时单独保留 opcode fingerprint；不能只留下
   schema/ISA/bytecode identity 后让 publication 或 Runtime 从 ambient tables 重建语义。
 - exact pin 是 Phase 2 handoff 的必要条件：value lifecycle policy 决定 owner normalization 与递归
@@ -217,13 +229,26 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
 - frame metadata：`FrameLayout`（slot_count/parameter_slots/result_count/result_plans/slot_plans）；
   plan 声明规则：普通参数/结果/let slot = SnapshotShare；inout 参数 slot = MoveOnly；var slot 默认
   SnapshotShare（drop/transfer 语义证明归 6B）。
-- Statement/source：`StatementEntry { pc, statement_id }`（`"s:{module}:{stmt_index}"`）、
-  `SourceMapEntry`（word 区间 → SourceSpanRef 位置）、`DebugTable`（绑定名 → slot）。
+- Statement/source：emitter只写
+  `StatementEntry { pc, sequenceOrdinal, attributionId, site }`。`attributionId`是typed
+  Statement/Expression（各含source index+dense occurrence ordinal）或Generated（dense ordinal）；同一pc按实际
+  emission次序分配0-based dense `sequenceOrdinal`，不能按site排序。legacy `statementId`/`chargeKind`不得出现。
+  `SourceMapEntry`继续表达word区间→`InstructionSourceSite`，`DebugTable`只保留绑定名→slot。
+- Statement charge不由emitter逐row选择。Statement/Expression/Generated默认charge、rowless FunctionEntry以及
+  call-local/tail-hop/loop-check等opcode reclassification来自fingerprinted canonical opcode contract。对于
+  `RequiredEvent` opcode，emitter必须在该pc放置exactly one所需class event；它不能额外合成第二个charge row。
+- Emitter从independent MIR/source-event输入另建按`BytecodeFunctionOrigin`严格排序的
+  `BytecodeFunctionStatementManifest`，覆盖**全部**function（含zero-event）和完整placement。handoff以packageId
+  派生`skiff-bytecode-statement-manifest-v1:sha256` identity，并把独立manifest与admitted artifact按origin/rows
+  exact-join；不能从artifact rows反向生成“独立”manifest以自证。该compiler join只约束publication输入；loader
+  仍须从store读取的admitted完整image重算identity并与Package-only pin exact-match。
 - 错误模型：`BytecodeEmissionError`（structured enum），任一错误使该 package 的 bytecode 产出失败
   （fail closed，不写部分记录）。
 
 上述 header/handoff 接口落地只冻结 Phase 2 的输入输出边界；在真实函数 emission、closure manifest 与本阶段
-全部 gate 完成前，Phase 2 状态仍按 phase page 记为 planned，不因 v5 pin 接线而升级。
+全部 gate 完成前，Phase 2 状态仍按 phase page 记为 planned，不因v6 pin或manifest接口接线而升级。当前emitter
+若缺exact function origin/source-event/placement facts，必须对function-bearing input返回structured
+`UnsupportedConstruct`；只有empty image成功不能作为真实Package交付证据。
 
 ### 2.7 迁移 lane（WP6/CLI）
 
@@ -234,10 +259,15 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
   `bytecodeIdentity`、`schemaVersion`、
   `isaVersion`、`opcodeTableFingerprint`，以及四个完整 authority identity：
   `nativeValueLifecycleRegistry`、`valueLifecyclePolicy`、`hostEffectRegistry`、`intrinsicRegistry`；随后记录
-  function/word/relocation 计数。Manifest 不得只写 authority 名称、布尔“matched”结果，或要求消费者再从
+  Package v14/build v13、`bytecodeStatementManifestIdentity`及function（含zero-event）/event/word/relocation
+  计数。Manifest 不得只写 authority 名称、布尔“matched”结果，或要求消费者再从
   当前 process registry 回查，因而单独保存的 evidence 在 authority 更新后仍能说明当时 admit 的精确语义。
 - emit_bytecode=true 时：pipeline 在 publish 前发射 → `assign_bytecode_identity` →
-  `write_package_bytecode`（bytecode record 先于 package record）→ `PackageArtifact.bytecode = Some(ref)`。
+  handoff exact-join independent statement manifest → `write_package_bytecode`（bytecode record先于package record）→
+  从canonical unattached state成对附加`PackageArtifact.bytecode = Some(ref)`与
+  `bytecodeStatementManifestIdentity` → 重算`skiff-package-build-v13:sha256` identity → 写
+  `skiff-package-artifact-v14` record。
+  attachment不改变Package Local ABI；任一步失败不写partial Package record。
 - 默认 false 保证 legacy lane（stable release pointer / dev watch）不发布新 schema（阶段页 §3 迁移约束）。
 
 ---
@@ -299,6 +329,9 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
 | 确定性 | 同一 fixture 两次编译（bytecode on）byte 级一致；BTreeMap 遍历序不敏感；identity 相同 |
 | exact targets | fixture 含 direct/mutual/generic/self call，断言 relocation kind + function_key/type args canonical |
 | tail_call_local | `return f(x)` 在 tail 位置发射 0x21 + LocalExecutableRef；非 tail 不发射；args 求值序与 site 完整 |
+| statement placement | typed Statement/Expression/Generated ids；same-PC dense sequence；重复source event的occurrence ordinal稠密；legacy statementId/chargeKind absent |
+| charge derivation | default class charge、rowless FunctionEntry与opcode reclassification由fingerprinted contract导出；RequiredEvent exact-one；不重复计费 |
+| statement manifest | identity对packageId、all origins（含zero-event）、pc/sequence/id/site mutation敏感；independent manifest与artifact exact join；Package-only pin，attach原子 |
 | strict bracket read | Array/Map/JsonObject 正例；receiver → selector 各一次；Array OOB 与 Map/JsonObject missing 命中精确 source site 和标准 catchable error；`Map.get` missing 仍返回 `null` |
 | indexed assignment | selector outer-to-inner → RHS → 单次 atomic store；Array replace-only、Map/JsonObject terminal upsert、intermediate missing 无部分 mutation |
 | indexed `InOut` | 混合 arguments 按 source ordinal 单次求值；全 path exist 后 atomic multi-loan；失败无部分 loan；callee throw 保留已写入值 |
@@ -311,7 +344,8 @@ pub struct MirLiveness { /* per-block live-in/out: BTreeMap<block, Vec<slot>> */
 | 真实 closure | 隔离 artifact root 上 `skiff package publish --emit-bytecode` 编译完整 Agine closure，
   `bytecode-verify --manifest` 输出 manifest（三仓 commit、compiler SHA；每 package 的 identity、schema、ISA、
   opcode fingerprint、native lifecycle registry/value lifecycle policy/host effect registry/intrinsic registry
-  四个完整 authority identity，以及 function/word/relocation 计数），全部 structural-valid |
+  四个完整 authority identity、Package v14/build v13、statement manifest identity，以及
+  function/event/word/relocation计数），全部structural-valid且loader recomputation一致 |
 | golden 非 oracle | var/let/const/InOut 行为用 reference-derived golden（fixture 直接断言），不引用旧 evaluator 输出 |
 
 Focused gate（同一候选）：`verify --only compiler`、`--only skiff-tests`、`--only foundation`、
@@ -333,6 +367,7 @@ bytecode 生成证明。
 | D7 | callback 面：interface carrier 三 carrier（box_local/remote + call_interface）发射；make_callback 不发射；负例覆盖 loan capture | 采纳 |
 | D8 | 迁移：脚本 const→let + 编译器驱动 let→var；不引入 inout 用法 | 采纳 |
 | D9 | 不做 worktree/分支，直接在 main 串行合流；工兵按写界提交 | 采纳（用户已定） |
+| D10 | v6 statement epoch：source-owned typed events；emitter只定placement；independent all-origin manifest；Package-only pin；charge由fingerprinted default/frame/opcode contract导出 | 已由`3262d535`/`2c6da16d`冻结 |
 
 ## 6. 工兵任务包（DAG 与写界）
 
@@ -360,10 +395,11 @@ Wave 3（并行 5 工兵，写界完全分离）：
 Wave 4：
   WP6  emitter（crate: compiler/emission + compiler/driver + compiler/compiled）
        写界：compiler/emission/src/bytecode/** + Cargo.toml(新依赖 lowering) + driver pipeline/CLI(--emit-bytecode
-       /bytecode-verify) + compiled projection_input(bytecode 标志透传) + emission 测试
+       /bytecode-verify) + compiled projection_input(bytecode 标志透传) + independent statement manifest/handoff
+       exact join + atomic Package execution attachment + emission 测试
        依赖接口：§2.4 MirUnit/§2.5 const graph/§2.6 emitter 入口（WP4/WP5 合流后启动）
        自验收：cargo test -p skiff-compiler-emission；合流后 cargo test -p skiff-compiler
-  WP8  证明与测试（确定性/golden/负例/closure manifest bytecode-verify）[依赖 WP6]
+  WP8  证明与测试（确定性/golden/负例/typed placement/all-origin manifest/closure bytecode-verify）[依赖 WP6]
 Wave 5：
   WP9  rebuild + router-live:agine（legacy lane）+ 隔离 Agine bytecode 生成证明 + results 文档
 ```
@@ -379,6 +415,9 @@ Wave 5：
 
 - 语义级 wordcode 正确性（stack effects 一致性、region 语义、move/share 追踪）未在本阶段证明——
   由 Phase 3B semantic verifier 拒绝/证明；本阶段 manifest 明确不声称"可执行语义"。
+- v6 raw statement rows与Package manifest通过C1–C9/loader exact join仍不等于runtime charge proof。Phase 3B必须
+  从typed rows + fingerprinted default/frame/opcode contract构建immutable schedule；在此之前 verifier保持
+  `ProofUnavailable`，VM不得扫描raw rows。
 - make_callback/synthetic callback closure 发射、InOut writable-region 编码、const 内 local call 求值
   属 Phase 3B/6A/6B。
 - Bracket/index typed MIR facts、strict error edge、linked snapshot lifecycle、nested atomic store 与 atomic

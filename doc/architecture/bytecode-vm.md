@@ -153,13 +153,13 @@ ISA（Instruction Set Architecture）是持久化 bytecode 的语义契约，包
 ISA 不包括 runtime 内存地址、decoded Rust enum 大小、dispatch optimization、superinstruction 或 JIT machine
 code。
 
-当前持久化 envelope 是 bytecode schema `skiff-bytecode-v5`、ISA
-`skiff-bytecode-isa-v4` 与 bytecode identity generation v3（schema marker
-`skiff-bytecode-artifact-v3`，identity prefix `skiff-bytecode-image-v3:sha256`）。v5 header 除
+当前持久化 envelope 是 bytecode schema `skiff-bytecode-v6`、ISA
+`skiff-bytecode-isa-v4` 与 bytecode identity generation v4（schema marker
+`skiff-bytecode-artifact-v4`，identity prefix `skiff-bytecode-image-v4:sha256`）。v6 header 除
 magic/schema/ISA/declared identity 外，必须携带并精确钉住以下五个 semantic authority：
 
 - opcode contract：`opcodeTableFingerprint`，覆盖 numeric/semantic opcode identity、operand role、stack
-  effect 与允许的 relocation kind；
+  effect、允许的 relocation kind，以及default/frame-entry/per-opcode statement charging rule；
 - native lifecycle registry：`nativeValueLifecycleRegistry` 的 exact registry id、version 与 fingerprint；
 - value lifecycle policy：`valueLifecyclePolicy` 的 exact version 与 fingerprint；
 - host effect registry：`hostEffectRegistry` 的 exact registry id、version 与 fingerprint；
@@ -171,10 +171,17 @@ compile-time authority 做 exact equality；缺失、未知或任何 identity/fi
 linked candidate 与 verifier 必须成组保留这些 pin，后续层不得从 ambient registry 重建、替换或只比较
 display id/version。
 
-v5 只扩展 persisted header、admission 与 identity preimage，没有改变 opcode number、operand layout、stack
-effect 或 instruction semantics，因此 ISA 保持 v4；identity preimage 则新增完整 authority pins，所以 bytecode
-identity 必须升级到 generation v3。同一 wordcode 若带不同 authority pin 不是同一个 executable artifact，
-并必须产生不同 bytecode identity 与上层 build identity。
+v6 在 v5 的 required authority header 上，把 source-event attribution 改成 typed、placement-bearing rows，并把
+default attribution charge、rowless function-entry charge 和 per-opcode reclassification rule 纳入同一个
+`opcodeTableFingerprint`。它没有改变 opcode number、operand layout 或 operand-stack semantics，因此 ISA 保持
+v4；persisted rows、fingerprint preimage 与完整 image 都改变，所以 bytecode identity 升级到 generation v4。
+同一 wordcode 若带不同 authority pin、source-event placement 或 statement charge contract，不是同一个
+executable artifact，并必须产生不同 bytecode identity 与上层 build identity。
+
+承载 bytecode ref 的 PackageArtifact 当前 schema 是 `skiff-package-artifact-v14`，Package build identity prefix
+是 `skiff-package-build-v13:sha256`。必填的 package-owned statement manifest identity 进入 build preimage，但
+不进入 Package Local ABI preimage；因此 attribution、placement 或 bytecode 内容变化必须产生新 Package build，
+同时不能无意改变 Package Local ABI identity。
 
 ### 3.2 Wordcode
 
@@ -190,6 +197,7 @@ Artifact bytecode 使用 wordcode：
 ```text
 RelocatableBytecodeFunction
   functionKey
+  origin: BytecodeFunctionOrigin
   typeParameters
   words: [u32]
   relocations: [BytecodeRelocation]
@@ -406,7 +414,8 @@ Bounded decoder 和 structural validator 在 linker 读取任何 artifact-contro
 - instruction word 边界完整，opcode operand 数正确；
 - local pool/slot/relocation/table index 在界内，relocation declared kind 与使用 opcode 相容；
 - jump/switch/handler/resume target 指向本函数 instruction header；
-- exception/source/statement/capture table 结构有序、无重叠非法区间；
+- exception/source/statement/capture table 结构有序、无重叠非法区间；statement rows只落在instruction header，
+  same-PC `sequenceOrdinal`从0稠密，typed attribution occurrence无洞，且每个opcode-required event恰有一条；
 - frozen constant graph 是 bounded、无 cycle 的合法 graph encoding；
 - artifact identity、内容 hash 与引用记录一致。
 
@@ -442,7 +451,8 @@ Link 后 verifier 至少证明：
 - 每个slot/parameter/result/container field的`ValueTransferPlan`完整；move-only/affine resource不会经过copy、dup、
   普通snapshot store或多consumer stream路径，所有overwrite/frame-pop/unwind edge都有exact drop；
 - callback capture layout 与 synthetic body slot/signature/effect profile一致且不违反 escape policy；
-- source/statement tables 覆盖所有 call、throw、effect 和 generated failure site；
+- source/statement tables 覆盖所有 call、throw、effect 和 generated failure site；verifier 从 typed rows 与
+  fingerprinted charge contract 重建 immutable statement schedule，不能把 linked/raw rows 当成已验证 schedule；
 - frame/stack/constant/object size 不溢出 runtime resource accounting；
 - 每个 CFG cycle 经过 `budget_checkpoint` 或等价受信 checkpoint。
 
@@ -1188,23 +1198,58 @@ fuel即使面对损坏artifact/validator bug也界定两次stop poll之间的最
 
 ### 16.2 Semantic charging and profiling
 
-Emitter为statement/expression/function entry/local call/tail hop/loop/generated chunk等当前语义点生成稳定charge
-metadata。Metadata只声明canonical charge kind/source attribution；数量与合法pc由schema规则决定，post-link
-verifier从CFG/opcode重算并拒绝缺失、重复或伪造entry。VM可批量提交unit，但quickening、micro-op数或machine
-instruction数不能改变语义unit，也不能影响raw hard fuel。
+Emitter为statement/expression/local call/tail hop/loop/generated chunk等当前语义点生成稳定source-event
+placement；function entry由canonical frame-entry contract拥有。Persisted row只声明typed source-event identity、
+placement与site，不能自报`chargeKind`；默认charge、function-entry rule与opcode reclassification全部由
+fingerprinted canonical opcode contract拥有。数量与合法pc由
+schema规则决定，post-link verifier从CFG/opcode和admitted typed rows重算并拒绝缺失、重复或伪造entry。VM可
+批量提交unit，但quickening、micro-op数或machine instruction数不能改变语义unit，也不能影响raw hard fuel。
 
 Artifact分开保存：
 
 ```text
-StatementEntry { pc, statementId/function attribution }
+StatementEntry {
+  pc
+  sequenceOrdinal
+  attributionId:
+    Statement { statementIndex, occurrenceOrdinal }
+    | Expression { expressionIndex, occurrenceOrdinal }
+    | Generated { ordinal }
+  site: InstructionSourceSite
+}
 SourceMapEntry { pc range, InstructionSourceSite }
 ```
 
-每次控制流进入statement entry恰好记录一次。Source map覆盖call、throw、effect、DB、timeout、每个可失败
-bracket/index path segment 和 generated instruction。一个 strict collection failure 使用它自己的 segment
-source site，`Array.set` 越界使用 receiver call site；`rethrow` 保留原 exception envelope 与原
-source，不把 rethrow instruction 改成新 throw
-source。挂起/恢复不重复已进入statement，也不漏记resume后的新statement。
+`StatementEntry`按`pc`非降序排列；同一pc可以有多个source event，`sequenceOrdinal`必须从0开始连续、无洞，
+并精确给出该pc的执行次序。function-local attribution id必须唯一；同一statement/expression index的
+`occurrenceOrdinal`以及generated ordinal分别稠密。Generated id只能配synthetic site；statement/expression
+可以保留source或synthetic site。legacy `statementId`与row-owned `chargeKind`都不在v6 wire中。
+
+默认映射是Statement→`Statement`、Expression→`Expression`、Generated→`GeneratedChunk`。某opcode若声明
+`RequiredEvent { attributionClass, chargeKind }`，该pc必须恰有一个对应class的row；verifier把该row重分类为
+opcode charge（例如local call、tail hop或loop check），不得额外合成第二个row或双重计费。Function entry则由
+独立的frame-entry contract在每次frame invocation精确生成一次`FunctionEntry`，从不占用statement row。
+默认映射、frame-entry rule以及每个opcode的statement rule全部参与`opcodeTableFingerprint`，不能由VM的
+ambient switch或raw row字段替代。
+
+PackageArtifact只持久化一个`bytecodeStatementManifestIdentity` pin；BytecodeArtifact、deployment与VM不复制
+第二个可漂移pin。manifest preimage覆盖schema marker、exact package id，以及按`BytecodeFunctionOrigin`严格
+排序的全部函数；零event函数也必须保留origin，每个函数的完整entry placement（含pc、sequence ordinal、
+attribution id与site）全部参与identity。无bytecode的package必须声明该package id下的canonical empty
+manifest。compiler publication必须把bytecode ref与manifest pin成对附加并重算Package build identity；loader
+必须从已admit的完整bytecode function set重算manifest并与Package pin exact-match，不能信任compiler receipt、
+function key子集或“只有非空函数”的投影。
+
+Post-link verifier在mint seal前构造immutable verified schedule：row pc解析成linked instruction index，按
+same-PC sequence保序，应用上述default/reclassification与rowless function-entry contract，并重新证明opcode所需
+event的exact coverage。VM只消费这个schedule；`LinkedStatementEntry`或artifact raw rows即使已被exact-copy也仍是
+untrusted metadata，不能由VM直接扫描计费。在schedule proof未实现或不完整时，verification必须返回
+`ProofUnavailable`并使VM entry不可达，不能把raw rows透传成临时执行路径。
+
+每次控制流进入verified statement schedule entry恰好记录一次。Source map覆盖call、throw、effect、DB、timeout、
+每个可失败bracket/index path segment 和 generated instruction。一个 strict collection failure 使用它自己的
+segment source site，`Array.set` 越界使用 receiver call site；`rethrow` 保留原 exception envelope 与原source，
+不把rethrow instruction改成新throw source。挂起/恢复不重复已进入statement，也不漏记resume后的新statement。
 
 Frame保存exact call site；throw/effect error使用当前source site。Non-tail local frame按unwind生成stack trace；
 tail replacement遵守bounded diagnostic contract。Cross-service/provider frame通过canonical error channel投影，
@@ -1252,6 +1297,8 @@ implementation benchmark plan绑定workload、release profile、机器、统计�
 - Package/Service契约拒绝service/gateway/interface/callback `InOut`，Package Local ABI保留该mode和
   `maySuspend` summary；
 - artifact schema由单一opcode/operand/stack-effect声明生成；
+- typed statement rows、package-owned manifest pin、loader recomputation与verifier-produced immutable schedule形成
+  exact chain；same-PC sequence稠密，零event函数不从manifest消失，FunctionEntry无row，VM不读取raw rows计费；
 - generic Package template在deployment link形成finite deterministic concrete specialization closure，linked image
   无`TypeParam`或runtime generic environment；polymorphic recursion/上限超出稳定fail closed；
 - pre-link structural validator不能被linker绕过，post-link semantic verifier对未知target/type fail closed；
