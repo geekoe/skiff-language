@@ -11,6 +11,8 @@ use super::{BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTran
 pub(crate) struct ValidatedEmissionInputs<'a> {
     pub(crate) constants: BTreeMap<String, ValidatedConstant<'a>>,
     pub(crate) functions: BTreeMap<String, &'a MirFunction>,
+    pub(crate) function_plans: BTreeMap<String, &'a FunctionValueTransferPlans>,
+    pub(crate) units: BTreeMap<String, &'a MirUnit>,
 }
 
 pub(crate) struct ValidatedConstant<'a> {
@@ -120,6 +122,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
         }
 
         let mut functions = BTreeMap::new();
+        let mut function_plans = BTreeMap::new();
         for (module_path, unit) in &units_by_module {
             for function in &unit.functions {
                 function.validate_expression_indices()?;
@@ -137,6 +140,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
                     }
                 })?;
                 validate_plan_counts(&function_key, function, plans)?;
+                function_plans.insert(function_key.clone(), plans);
                 functions.insert(function_key, function);
             }
         }
@@ -151,6 +155,8 @@ impl<'a> ValidatedEmissionInputs<'a> {
         Ok(Self {
             constants,
             functions,
+            function_plans,
+            units: units_by_module,
         })
     }
 }

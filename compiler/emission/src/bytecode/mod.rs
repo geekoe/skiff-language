@@ -14,9 +14,12 @@
 mod constants;
 mod emitter;
 mod error;
+mod functions;
 mod inputs;
 mod plans;
 
 pub use emitter::emit_bytecode_artifact;
 pub use error::BytecodeEmissionError;
-pub use plans::{BytecodeValueTransferPlans, FunctionValueTransferPlans};
+pub use plans::{
+    derive_bytecode_value_transfer_plans, BytecodeValueTransferPlans, FunctionValueTransferPlans,
+};

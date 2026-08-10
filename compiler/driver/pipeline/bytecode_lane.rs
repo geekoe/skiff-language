@@ -1,10 +1,17 @@
-use skiff_artifact_model::{derive_bytecode_statement_manifest_identity, PackageArtifact};
+use skiff_artifact_model::{
+    derive_bytecode_statement_manifest_identity, BytecodeArtifactRef,
+    BytecodeFunctionStatementManifest, PackageArtifact,
+};
 use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
     CompiledPackage,
 };
 use skiff_compiler_contract::ServicePublicInstanceOperationFacts;
+use skiff_compiler_emission::bytecode::{
+    derive_bytecode_value_transfer_plans, emit_bytecode_artifact,
+};
 use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
+use skiff_compiler_lowering::{Bounds, ConstEvaluator};
 use skiff_compiler_projection::package_artifact::{
     attach_package_execution as attach_projected_package_execution, PackageExecutionAttachment,
     ProjectedPackageArtifact,
@@ -133,20 +140,48 @@ fn finish_bytecode_lane(
     }
 }
 
-/// Temporary fail-closed seam while the canonical emitter output is incomplete.
-///
-/// The bytecode emitter does not yet return an independently constructed
-/// statement manifest, and function-bearing input remains fail-closed while
-/// exact function metadata is incomplete. The driver therefore cannot create
-/// a handoff by reconstructing a manifest from bytecode rows. It reports the
-/// enabled failure after typed MIR exists instead of fabricating authority or
-/// falling back to the disabled lane.
 fn emit_enabled_bytecode(
     compiled: &CompiledPackage,
 ) -> Result<BytecodeCompilationHandoff, PackageCompileError> {
-    Err(PackageCompileError::BytecodeEmitterUnavailable {
-        mir_unit_count: compiled.lowered().mir_units().len(),
-    })
+    let package_id = compiled.compile_model().policy().package_id().to_string();
+    let mut bundles = Vec::new();
+    for unit in compiled.lowered().file_ir_units() {
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(unit)
+            .map_err(|error| PackageCompileError::ContractValidation {
+                message: format!("frozen constant evaluation failed: {error}"),
+            })?;
+        bundles.push(bundle);
+    }
+    let units = compiled.lowered().mir_units();
+    let plans = derive_bytecode_value_transfer_plans(units)?;
+    let artifact = emit_bytecode_artifact(units, &bundles, &plans)?;
+    let mut statement_manifest = artifact
+        .image
+        .functions
+        .values()
+        .map(|function| {
+            BytecodeFunctionStatementManifest::new(
+                function.origin.clone(),
+                function.statement_entries.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    statement_manifest.sort_by(|left, right| left.origin.cmp(&right.origin));
+    let manifest_identity =
+        derive_bytecode_statement_manifest_identity(&package_id, &statement_manifest).map_err(
+            |error| PackageCompileError::ContractValidation {
+                message: format!("bytecode statement manifest derivation failed: {error}"),
+            },
+        )?;
+    let reference = BytecodeArtifactRef::new(artifact.bytecode_identity.clone());
+    Ok(BytecodeCompilationHandoff::try_new(
+        package_id,
+        statement_manifest,
+        manifest_identity,
+        artifact,
+        reference,
+    )?)
 }
 
 /// Attaches one exact admitted execution handoff without mutating the source

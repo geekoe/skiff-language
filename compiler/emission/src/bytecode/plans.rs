@@ -1,6 +1,114 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::ValueTransferPlan;
+use skiff_artifact_model::{
+    native_value_lifecycle_registry, NativeValueDropPlan, NativeValueLifecycleConcrete,
+    ValueDropPlan, ValueTransferPlan,
+};
+use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
+
+use super::{
+    inputs::{canonical_function_key, is_void},
+    BytecodeEmissionError,
+};
+
+/// Derives explicit transfer plans from MIR and the pinned native lifecycle
+/// registry.
+///
+/// Constants retain their owner-qualified `FromType` plan. Function slots and
+/// results are resolved to concrete `SnapshotShare` plans; missing or
+/// non-snapshot lifecycle facts fail closed instead of being inferred.
+pub fn derive_bytecode_value_transfer_plans(
+    units: &[MirUnit],
+) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
+    let mut functions = BTreeMap::new();
+    for unit in units {
+        for function in &unit.functions {
+            let function_key = canonical_function_key(&unit.module_path, &function.symbol)?;
+            let mut slot_plans = Vec::with_capacity(function.slots.len());
+            for slot in &function.slots {
+                let ty = slot
+                    .ty
+                    .as_ref()
+                    .ok_or_else(|| unsupported_slot_type(&function_key, slot))?;
+                slot_plans.push(concrete_snapshot_plan(
+                    &function_key,
+                    &format!("slot `{}`", slot.name),
+                    ty,
+                )?);
+            }
+            let result_plans = if is_void(&function.return_type) {
+                Vec::new()
+            } else {
+                vec![concrete_snapshot_plan(
+                    &function_key,
+                    "return value",
+                    &function.return_type,
+                )?]
+            };
+            functions.insert(
+                function_key,
+                FunctionValueTransferPlans {
+                    slot_plans,
+                    result_plans,
+                },
+            );
+        }
+    }
+    let constants = units
+        .iter()
+        .flat_map(|unit| &unit.constants)
+        .map(|constant| {
+            (
+                constant.symbol.clone(),
+                ValueTransferPlan::FromType {
+                    ty: constant.ty.clone(),
+                },
+            )
+        })
+        .collect();
+    Ok(BytecodeValueTransferPlans::new(functions, constants))
+}
+
+fn concrete_snapshot_plan(
+    function_key: &str,
+    location: &str,
+    ty: &skiff_artifact_model::TypeRefIr,
+) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+    let resolution = native_value_lifecycle_registry()
+        .lookup(ty)
+        .map_err(|error| BytecodeEmissionError::UnsupportedConstruct {
+            function_key: function_key.to_string(),
+            construct: "value lifecycle lookup",
+            location: format!(" {location}: {error}"),
+        })?;
+    let NativeValueLifecycleConcrete::SnapshotShare { drop } = resolution.lifecycle else {
+        return Err(BytecodeEmissionError::UnsupportedConstruct {
+            function_key: function_key.to_string(),
+            construct: "non-snapshot value lifecycle",
+            location: format!(" {location}"),
+        });
+    };
+    let drop = match drop {
+        NativeValueDropPlan::Trivial => ValueDropPlan::Trivial,
+        NativeValueDropPlan::SnapshotRelease => ValueDropPlan::SnapshotRelease,
+        NativeValueDropPlan::NativeAdapter { .. } => {
+            return Err(BytecodeEmissionError::UnsupportedConstruct {
+                function_key: function_key.to_string(),
+                construct: "native adapter value drop",
+                location: format!(" {location}"),
+            })
+        }
+    };
+    Ok(ValueTransferPlan::SnapshotShare { drop })
+}
+
+fn unsupported_slot_type(function_key: &str, slot: &MirSlot) -> BytecodeEmissionError {
+    BytecodeEmissionError::UnsupportedConstruct {
+        function_key: function_key.to_string(),
+        construct: "slot without an exact type",
+        location: format!(" slot `{}`", slot.name),
+    }
+}
 
 /// Explicit source-owned transfer facts for every bytecode function and
 /// implementation constant.

@@ -10,7 +10,7 @@ use skiff_artifact_model::{
 };
 
 #[test]
-fn explicitly_enabled_bytecode_fails_closed_after_source_lowering() {
+fn explicitly_enabled_bytecode_emits_and_attaches_an_empty_scalar_handoff() {
     let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler manifest must have a repository parent")
@@ -49,17 +49,115 @@ fn explicitly_enabled_bytecode_fails_closed_after_source_lowering() {
     );
 
     crate::source_compile::reset_test_compile_count();
-    let error = compile_package(input).unwrap_err();
+    let output = compile_package(input).unwrap();
 
-    assert!(matches!(
-        error,
-        PackageCompileError::BytecodeEmitterUnavailable { .. }
-    ));
+    let handoff = output.bytecode_handoff().expect("enabled bytecode handoff");
+    assert!(output.bytecode().is_enabled());
+    assert_eq!(handoff.receipt().function_count(), 0);
+    assert_eq!(handoff.receipt().word_count(), 0);
+    assert_eq!(handoff.receipt().relocation_count(), 0);
+    assert_eq!(
+        output.package().artifact.bytecode.as_ref(),
+        Some(handoff.reference())
+    );
+    assert_eq!(
+        &output
+            .package()
+            .artifact
+            .bytecode_statement_manifest_identity,
+        handoff.statement_manifest_receipt().identity()
+    );
     assert_eq!(
         crate::source_compile::test_compile_count(),
         1,
         "enabled bytecode selection must reach the ordinary source/lowering pipeline"
     );
+}
+
+#[test]
+fn explicitly_enabled_bytecode_emits_a_scalar_function() {
+    let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler manifest must have a repository parent")
+        .to_path_buf();
+    let platform_sources =
+        crate::CompilerPlatformSources::new(&repository_root).expect("repository platform sources");
+    let package_id =
+        skiff_compiler_core::id::PublicationId::parse("example.com/bytecode-scalar").unwrap();
+    let temp = std::env::temp_dir().join(format!(
+        "skiff-bytecode-scalar-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp).unwrap();
+    let source_path = temp.join("main.skiff");
+    let text = "function helper(value: number) -> number { return value + 1 }\nfunction run(value: number) -> number { return helper(value) }\nfunction choose(value: number) -> number { if value > 0 { return 1 } return 0 }\n";
+    std::fs::write(&source_path, text).unwrap();
+    let source_tree = crate::SourceTree {
+        root: temp.clone(),
+        sources: vec![crate::SourceTreeFile {
+            module_path: "main".to_string(),
+            file_path: std::path::PathBuf::from("main.skiff"),
+            is_test_file: false,
+            byte_len: text.len() as u64,
+        }],
+    };
+    let compiler_source = skiff_compiler_source::source_graph::CompilerSourceFile::parse(
+        std::path::PathBuf::from("main.skiff"),
+        "main".to_string(),
+        false,
+        false,
+        text.to_string(),
+        source_path.display().to_string(),
+    )
+    .unwrap();
+    let package = crate::PackageSourceInput::new(
+        crate::PublicationManifest::new(
+            package_id,
+            "1.0.0".to_string(),
+            skiff_compiler_input::PublicationApiSpec::empty(),
+            Vec::new(),
+            crate::ManifestProvenance {
+                owner: crate::ManifestOwner::UserOrBuiltinPackage,
+                path: std::path::PathBuf::new(),
+                synthetic: true,
+            },
+        ),
+        source_tree,
+        crate::PublicationSourceGraph::from_compiler_sources(vec![compiler_source]),
+        Vec::new(),
+    );
+    let aliases = BTreeMap::new();
+    let input = PackageCompileInput::new(
+        &platform_sources,
+        &package,
+        &aliases,
+        "example.com/bytecode-scalar",
+        true,
+    );
+
+    let output = compile_package(input).unwrap();
+    let handoff = output.bytecode_handoff().expect("enabled bytecode handoff");
+    assert_eq!(handoff.receipt().function_count(), 3);
+    assert!(handoff.receipt().word_count() > 0);
+    assert!(handoff.receipt().relocation_count() > 0);
+    assert!(handoff.artifact().image.functions.contains_key("main::run"));
+    assert!(handoff
+        .artifact()
+        .image
+        .functions
+        .contains_key("main::helper"));
+    assert!(handoff
+        .artifact()
+        .image
+        .functions
+        .contains_key("main::choose"));
+    assert!(handoff.artifact().image.functions.contains_key("main::run"));
+
+    std::fs::remove_dir_all(temp).unwrap();
 }
 
 #[test]

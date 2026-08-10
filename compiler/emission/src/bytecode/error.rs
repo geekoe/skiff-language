@@ -198,16 +198,3 @@ pub enum BytecodeEmissionError {
     #[error("emitted bytecode identity assignment failed: {0}")]
     ArtifactIdentity(#[from] skiff_artifact_identity::ArtifactIdentityError),
 }
-
-impl BytecodeEmissionError {
-    pub(crate) fn unsupported_function(
-        function_key: impl Into<String>,
-        construct: &'static str,
-    ) -> Self {
-        Self::UnsupportedConstruct {
-            function_key: function_key.into(),
-            construct,
-            location: String::new(),
-        }
-    }
-}

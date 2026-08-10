@@ -8,8 +8,8 @@ use skiff_artifact_model::{
 use skiff_compiler_lowering::{mir::MirUnit, FrozenConstantBundle};
 
 use super::{
-    constants::build_constant_image, inputs::ValidatedEmissionInputs, BytecodeEmissionError,
-    BytecodeValueTransferPlans,
+    constants::build_constant_image, functions::emit_functions, inputs::ValidatedEmissionInputs,
+    BytecodeEmissionError, BytecodeValueTransferPlans,
 };
 
 /// Emits one canonical package bytecode image from public, self-contained MIR.
@@ -28,14 +28,8 @@ pub fn emit_bytecode_artifact(
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
     let inputs = ValidatedEmissionInputs::validate(units, constants, transfer_plans)?;
 
-    if let Some((function_key, _)) = inputs.functions.first_key_value() {
-        return Err(BytecodeEmissionError::unsupported_function(
-            function_key,
-            "bytecode functions until MIR owns exact origin, receiver, writable-local, and loan manifest facts",
-        ));
-    }
-
-    let constants = build_constant_image(&inputs)?;
+    let mut constants = build_constant_image(&inputs)?;
+    let emitted_functions = emit_functions(&inputs, &mut constants)?;
 
     let mut artifact = BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
@@ -48,7 +42,7 @@ pub fn emit_bytecode_artifact(
         intrinsic_registry: intrinsic_registry_identity().clone(),
         bytecode_identity: String::new(),
         image: BytecodeImage {
-            functions: Default::default(),
+            functions: emitted_functions,
             pools: constants.pools,
             constant_roots: constants.roots,
             frozen_constant_graph: constants.graph,

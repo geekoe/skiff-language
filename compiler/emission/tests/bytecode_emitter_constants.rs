@@ -121,6 +121,9 @@ mod tests {
             )),
             effect_summary: CallableEffectSummary::analysis_pending(),
             source_span: None,
+            source_event_plan: skiff_compiler_lowering::mir::MirSourceEventPlan::unavailable(
+                skiff_compiler_lowering::mir::MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
         }
     }
 

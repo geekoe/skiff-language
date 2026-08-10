@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    bytecode::limits, BytecodeConstantRef, BytecodePoolEntry, BytecodePools, FrozenConstantGraph,
-    FrozenConstantNode, NominalTypeRefBaseIr, TypeRefIr, ValueTransferPlan,
+    bytecode::limits, BytecodeConstantRef, BytecodePoolEntry, BytecodePools, ExprIr,
+    FrozenConstantGraph, FrozenConstantNode, NominalTypeRefBaseIr, TypeRefIr, ValueTransferPlan,
 };
 use skiff_compiler_core::type_ref::{map_type_ref, walk_type_ref};
+use skiff_compiler_lowering::mir::{MirFunction, MirUnit};
 
 use super::{inputs::ValidatedEmissionInputs, BytecodeEmissionError};
 
@@ -12,6 +13,72 @@ pub(crate) struct ConstantImage {
     pub(crate) pools: BytecodePools,
     pub(crate) roots: BTreeMap<String, u32>,
     pub(crate) graph: FrozenConstantGraph,
+    type_indices: BTreeMap<String, u32>,
+}
+
+impl ConstantImage {
+    pub(crate) fn type_index(
+        &self,
+        module_path: &str,
+        ty: &TypeRefIr,
+        context: &str,
+    ) -> Result<u32, BytecodeEmissionError> {
+        let qualified = qualify_local_types(module_path, ty);
+        let key = type_key(&qualified, context)?;
+        self.type_indices.get(&key).copied().ok_or_else(|| {
+            BytecodeEmissionError::CanonicalSerialization {
+                context: context.to_string(),
+                message: "qualified type disappeared from the canonical pool".to_string(),
+            }
+        })
+    }
+
+    pub(crate) fn intern_type(
+        &mut self,
+        module_path: &str,
+        ty: &TypeRefIr,
+        context: &str,
+    ) -> Result<u32, BytecodeEmissionError> {
+        let qualified = qualify_local_types(module_path, ty);
+        let key = type_key(&qualified, context)?;
+        if let Some(index) = self.type_indices.get(&key) {
+            return Ok(*index);
+        }
+        let index = checked_index(self.pools.types.len(), "indexing canonical types")?;
+        self.pools
+            .types
+            .push(BytecodePoolEntry::TypeRef { ty: qualified });
+        self.type_indices.insert(key, index);
+        Ok(index)
+    }
+
+    pub(crate) fn add_literal_constant(
+        &mut self,
+        module_path: &str,
+        literal: &skiff_artifact_model::LiteralIr,
+        ty: &TypeRefIr,
+        context: &str,
+    ) -> Result<u32, BytecodeEmissionError> {
+        let type_ref = self.intern_type(module_path, ty, context)?;
+        let node_index = checked_index(
+            self.graph.nodes.len(),
+            "indexing function literal constant graph nodes",
+        )?;
+        self.graph.nodes.push(FrozenConstantNode::Literal {
+            literal: literal.clone(),
+        });
+        let plan = ValueTransferPlan::FromType { ty: ty.clone() };
+        let pool_index = checked_index(
+            self.pools.constants.len(),
+            "indexing function literal constant pool",
+        )?;
+        self.pools.constants.push(BytecodePoolEntry::ConstantRef {
+            reference: BytecodeConstantRef::LocalNode { node_index },
+            type_ref,
+            plan,
+        });
+        Ok(pool_index)
+    }
 }
 
 pub(crate) fn build_constant_image(
@@ -70,7 +137,76 @@ fn collect_canonical_types(
             )?;
         }
     }
+    for (function_key, function) in &inputs.functions {
+        let module_path = function.origin.module_path.as_str();
+        let unit = inputs.units.get(module_path).ok_or_else(|| {
+            BytecodeEmissionError::CanonicalSerialization {
+                context: format!("function `{function_key}` owner"),
+                message: "MIR unit disappeared from validated inputs".to_string(),
+            }
+        })?;
+        collect_function_types(
+            &mut types,
+            unit,
+            function_key,
+            function,
+            module_path,
+            unit.type_table.len(),
+        )?;
+    }
     Ok(types)
+}
+
+fn collect_function_types(
+    types: &mut BTreeMap<String, TypeRefIr>,
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    module_path: &str,
+    type_count: usize,
+) -> Result<(), BytecodeEmissionError> {
+    let mut insert = |ty: &TypeRefIr, label: &str| -> Result<(), BytecodeEmissionError> {
+        let context = format!("function `{function_key}` {label}");
+        validate_local_types(module_path, type_count, &context, ty)?;
+        insert_type(types, qualify_local_types(module_path, ty), context)
+    };
+    insert(&function.return_type, "return type")?;
+    for parameter in &function.params {
+        insert(&parameter.ty, &format!("parameter `{}`", parameter.name))?;
+    }
+    if let Some(ty) = &function.self_type {
+        insert(ty, "self type")?;
+    }
+    if let Some(receiver) = &function.receiver {
+        insert(&receiver.ty, "receiver type")?;
+    }
+    for slot in &function.slots {
+        if let Some(ty) = &slot.ty {
+            insert(ty, &format!("slot `{}` type", slot.name))?;
+        }
+    }
+    for expression in &function.expressions {
+        insert(
+            &expression.ty,
+            &format!("expression {} type", expression.index),
+        )?;
+        if let ExprIr::Call { call } = &expression.expression {
+            if let Some(ty) = &call.concrete_receiver {
+                insert(
+                    ty,
+                    &format!("expression {} concrete receiver", expression.index),
+                )?;
+            }
+            for ty in call.type_args.values() {
+                insert(
+                    ty,
+                    &format!("expression {} type argument", expression.index),
+                )?;
+            }
+        }
+    }
+    let _ = unit;
+    Ok(())
 }
 
 fn merge_graphs(
@@ -140,6 +276,7 @@ fn merge_graphs(
         pools,
         roots,
         graph: FrozenConstantGraph { nodes },
+        type_indices: type_indices.clone(),
     })
 }
 
