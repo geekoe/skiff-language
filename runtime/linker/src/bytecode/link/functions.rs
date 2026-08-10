@@ -13,6 +13,7 @@ use crate::bytecode::{
 };
 
 use super::{
+    constants::LinkedConstantTables,
     relocations::{RelocationContext, RelocationSource},
     unsatisfied, DeploymentLinker,
 };
@@ -112,6 +113,7 @@ impl DeploymentLinker<'_> {
         index: FunctionIndex,
         function_indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         frames: &[LinkedFrameLayout],
+        constant_tables: &LinkedConstantTables,
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<LinkedFunction, BytecodeLinkError> {
         let (package, source) = self.source_function(key)?;
@@ -127,8 +129,13 @@ impl DeploymentLinker<'_> {
             self.link_function_tables(package, source, key, type_linker, &substitutions)?;
         let instructions = {
             let relocation_source = RelocationSource::new(package, source, key, &substitutions);
-            let mut relocation_context =
-                RelocationContext::new(self, relocation_source, function_indices, type_linker);
+            let mut relocation_context = RelocationContext::new(
+                self,
+                relocation_source,
+                function_indices,
+                constant_tables,
+                type_linker,
+            );
             source
                 .instructions
                 .iter()
@@ -144,7 +151,13 @@ impl DeploymentLinker<'_> {
         })?;
         let stack_map = build_stack_map(
             StackMapSource::new(package, key, source),
-            StackMapLinked::new(&instructions, &frame, frames, tables.switch_tables()),
+            StackMapLinked::new(
+                &instructions,
+                &frame,
+                frames,
+                tables.switch_tables(),
+                constant_tables.constants(),
+            ),
             type_linker,
             &substitutions,
         )?;

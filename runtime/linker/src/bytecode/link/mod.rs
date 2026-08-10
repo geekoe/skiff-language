@@ -43,6 +43,7 @@ impl<'a> DeploymentLinker<'a> {
         let function_indices = canonical_function_indices(&keys, deployment_location.clone())?;
 
         let mut type_linker = TypeLinker::new(self.deployment, self.limits);
+        let constant_tables = self.link_constant_tables(&mut type_linker)?;
         let frames = keys
             .iter()
             .map(|key| self.link_frame(key, &mut type_linker))
@@ -57,7 +58,14 @@ impl<'a> DeploymentLinker<'a> {
                         "canonical specialization has no final function index".to_string(),
                     )
                 })?;
-                self.link_function(key, index, &function_indices, &frames, &mut type_linker)
+                self.link_function(
+                    key,
+                    index,
+                    &function_indices,
+                    &frames,
+                    &constant_tables,
+                    &mut type_linker,
+                )
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -80,6 +88,7 @@ impl<'a> DeploymentLinker<'a> {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let types = type_linker.finish(deployment_location.clone())?;
+        let (constants, constant_roots, frozen_constant_nodes) = constant_tables.into_parts();
 
         for count in [
             packages.len(),
@@ -109,9 +118,9 @@ impl<'a> DeploymentLinker<'a> {
             intrinsics: Vec::new(),
             types,
             shapes: Vec::new(),
-            constants: Vec::new(),
-            constant_roots: Vec::new(),
-            frozen_constant_nodes: Vec::new(),
+            constants,
+            constant_roots,
+            frozen_constant_nodes,
             resume_sites: Vec::new(),
             writable_paths: Vec::new(),
         })

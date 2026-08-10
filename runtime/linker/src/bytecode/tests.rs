@@ -11,6 +11,7 @@ use super::{
     BytecodeLinkLocation, BytecodeLinkObligation, LinkLimits,
 };
 
+mod constants;
 mod deployment;
 mod fixtures;
 mod normalization;

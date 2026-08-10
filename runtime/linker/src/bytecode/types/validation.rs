@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    native_value_lifecycle_registry, NativeResourceDropPlan, NativeValueAdapterRole,
-    NativeValueDropPlan, NativeValueLifecycleConcrete, ResourceDropPlan, TypeRefIr, ValueDropPlan,
-    ValueTransferPlan,
+    native_value_lifecycle_registry, LiteralIr, NativeResourceDropPlan, NativeValueAdapterRole,
+    NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete, ResourceDropPlan,
+    TypeRefIr, ValueDropPlan, ValueTransferPlan,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
@@ -71,6 +71,52 @@ impl TypeLinker<'_> {
         Ok(link_native_lifecycle(resolution.lifecycle))
     }
 
+    /// Eliminates a constant-local `FromType` only after checking that it names
+    /// the exact linked type and that the authoritative lifecycle is an
+    /// ordinary snapshot. Frame-local `FromType` remains unsupported.
+    pub(in crate::bytecode) fn link_constant_plan(
+        &self,
+        declared: &ValueTransferPlan,
+        concrete_type: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
+        let registry_type = lifecycle_registry_type(concrete_type);
+        let resolution = native_value_lifecycle_registry()
+            .lookup(&registry_type)
+            .map_err(|error| constant_plan_error(location.clone(), error.to_string()))?;
+        if resolution.embedding != NativeValueEmbedding::Ordinary
+            || !matches!(
+                &resolution.lifecycle,
+                NativeValueLifecycleConcrete::SnapshotShare { .. }
+            )
+        {
+            return Err(constant_plan_error(
+                location,
+                "frozen constant type is not an Ordinary SnapshotShare value".to_string(),
+            ));
+        }
+        let expected = link_native_lifecycle(resolution.lifecycle);
+        let actual = match declared {
+            ValueTransferPlan::FromType { ty } if ty == concrete_type => expected.clone(),
+            ValueTransferPlan::FromType { .. } => {
+                return Err(constant_plan_error(
+                    location,
+                    "constant FromType plan does not name its exact linked type".to_string(),
+                ));
+            }
+            concrete => self
+                .link_transfer_plan(concrete, &BTreeMap::new(), location.clone())
+                .map_err(|error| constant_plan_error(location.clone(), error.to_string()))?,
+        };
+        if actual != expected {
+            return Err(constant_plan_error(
+                location,
+                "constant plan differs from its authoritative concrete lifecycle".to_string(),
+            ));
+        }
+        Ok(actual)
+    }
+
     fn link_value_drop(
         &self,
         drop: &ValueDropPlan,
@@ -120,6 +166,26 @@ impl TypeLinker<'_> {
                 })
             }
         }
+    }
+}
+
+fn lifecycle_registry_type(ty: &TypeRefIr) -> TypeRefIr {
+    match ty {
+        TypeRefIr::Literal { value } => TypeRefIr::builtin(match value {
+            LiteralIr::Null => "null",
+            LiteralIr::Bool { .. } => "bool",
+            LiteralIr::Number { .. } => "number",
+            LiteralIr::String { .. } => "string",
+        }),
+        _ => ty.clone(),
+    }
+}
+
+fn constant_plan_error(location: BytecodeLinkLocation, detail: String) -> BytecodeLinkError {
+    BytecodeLinkError::UnsatisfiedObligation {
+        obligation: BytecodeLinkObligation::ConstantInitializationPlan,
+        location,
+        detail,
     }
 }
 

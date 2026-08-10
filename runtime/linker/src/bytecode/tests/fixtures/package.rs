@@ -13,7 +13,7 @@ use skiff_artifact_model::{
 };
 
 use super::{
-    analyzed_facts, no_effects, schema_record, synthetic_callback_callable,
+    analyzed_facts, constants, no_effects, schema_record, synthetic_callback_callable,
     DependencyTypeSurfaceConflict, RootProgram, DEPENDENCY_PACKAGE_ID, HELPER_CALLABLE,
     OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH, PRIVATE_IMPLEMENTATION_PATH, ROOT_CALLABLE,
 };
@@ -59,6 +59,7 @@ pub(super) fn package(
             callable_symbol(helper_callable.clone(), callable_signature(false)),
         ),
     ]);
+    implementation_symbols.extend(constants::implementation_symbols(bytecode, package_id));
     let mut public_symbols = BTreeMap::new();
     if include_normalization_surface {
         implementation_symbols.insert(
@@ -163,6 +164,7 @@ pub(super) fn package(
                 })
                 .into_iter()
                 .collect(),
+            constants: constants::implementation_links(bytecode),
             ..PackageImplementationLinks::default()
         },
         callable_links,
@@ -231,7 +233,7 @@ pub(super) fn dependency_type_owner_package(
             None => {}
         }
     }
-    let implementation_symbols = BTreeMap::from([
+    let mut implementation_symbols = BTreeMap::from([
         (
             OWNER_IMPLEMENTATION_PATH.to_string(),
             implementation_type_symbol(
@@ -249,6 +251,10 @@ pub(super) fn dependency_type_owner_package(
             ),
         ),
     ]);
+    implementation_symbols.extend(constants::implementation_symbols(
+        bytecode,
+        DEPENDENCY_PACKAGE_ID,
+    ));
     let public_symbols = BTreeMap::from([
         (
             OWNER_PUBLIC_PATH.to_string(),
@@ -280,6 +286,7 @@ pub(super) fn dependency_type_owner_package(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks {
             types: type_links(descriptor),
+            constants: constants::implementation_links(bytecode),
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),

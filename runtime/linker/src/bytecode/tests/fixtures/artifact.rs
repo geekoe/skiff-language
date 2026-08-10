@@ -14,8 +14,8 @@ use skiff_artifact_model::{
 };
 
 use super::{
-    no_effects, synthetic_callback_callable, RootProgram, CALLBACK_FUNCTION, HELPER_CALLABLE,
-    HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
+    constants, no_effects, synthetic_callback_callable, RootProgram, CALLBACK_FUNCTION,
+    HELPER_CALLABLE, HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
 };
 
 const MODULE: &str = "fixture";
@@ -33,6 +33,15 @@ pub(super) fn empty_admitted_bytecode() -> Arc<ValidatedBytecodeArtifact> {
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
 }
 
+pub(super) fn constant_only_admitted_bytecode(
+    program: constants::ConstantProgram,
+) -> Arc<ValidatedBytecodeArtifact> {
+    let mut artifact = bytecode_artifact(RootProgram::Constant(program));
+    artifact.image.functions.clear();
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+}
+
 pub(super) fn bytecode_artifact(program: RootProgram) -> BytecodeArtifact {
     let mut functions = BTreeMap::new();
     functions.insert(ROOT_FUNCTION.to_string(), root_function(program));
@@ -40,7 +49,7 @@ pub(super) fn bytecode_artifact(program: RootProgram) -> BytecodeArtifact {
     if program == RootProgram::SyntheticTarget {
         functions.insert(CALLBACK_FUNCTION.to_string(), callback_function());
     }
-    BytecodeArtifact {
+    let mut artifact = BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
         schema_version: BYTECODE_SCHEMA_VERSION.to_string(),
         isa_version: BYTECODE_ISA_VERSION.to_string(),
@@ -58,7 +67,11 @@ pub(super) fn bytecode_artifact(program: RootProgram) -> BytecodeArtifact {
             frozen_constant_graph: FrozenConstantGraph { nodes: Vec::new() },
             debug_table: None,
         },
+    };
+    if let RootProgram::Constant(constant) = program {
+        constants::populate_bytecode(&mut artifact, constant);
     }
+    artifact
 }
 
 fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
@@ -101,7 +114,10 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
             result_plans: Vec::new(),
             slot_plans: (slot_count == 1).then_some(slot_plan).into_iter().collect(),
         },
-        max_operand_depth: u32::from(matches!(program, RootProgram::Interface)),
+        max_operand_depth: u32::from(matches!(
+            program,
+            RootProgram::Interface | RootProgram::Constant(_)
+        )),
         effect_summary_ref: PackageCallableId::new(ROOT_CALLABLE),
         exception_regions: Vec::new(),
         active_regions: Vec::new(),
@@ -290,6 +306,7 @@ fn root_body(
             vec![source_map(0, 4)],
         ),
         RootProgram::FromType => (vec![0x25], Vec::new(), None, Vec::new()),
+        RootProgram::Constant(_) => (vec![0x00, 0, 0x08, 0x25], Vec::new(), None, Vec::new()),
     }
 }
 

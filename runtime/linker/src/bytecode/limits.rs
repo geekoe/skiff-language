@@ -63,6 +63,8 @@ pub(super) struct LinkLimitTracker<'a> {
     total_function_table_entries: u64,
     expanded_type_nodes: u64,
     expanded_type_bytes: u64,
+    constant_graph_nodes: u64,
+    constant_graph_edges: u64,
 }
 
 impl<'a> LinkLimitTracker<'a> {
@@ -75,6 +77,8 @@ impl<'a> LinkLimitTracker<'a> {
             total_function_table_entries: 0,
             expanded_type_nodes: 0,
             expanded_type_bytes: 0,
+            constant_graph_nodes: 0,
+            constant_graph_edges: 0,
         }
     }
 
@@ -254,6 +258,40 @@ impl<'a> LinkLimitTracker<'a> {
             BytecodeLinkLimit::ExpandedTypeBytes,
             self.expanded_type_bytes,
             self.limits.max_expanded_type_bytes,
+            location,
+        )
+    }
+
+    pub(super) fn add_constant_graph(
+        &mut self,
+        nodes: u64,
+        edges: u64,
+        location: BytecodeLinkLocation,
+    ) -> Result<(), BytecodeLinkError> {
+        self.constant_graph_nodes = checked_total(
+            self.constant_graph_nodes,
+            nodes,
+            BytecodeLinkObligation::ConstantInitializationPlan,
+            location.clone(),
+            "summing frozen constant graph nodes",
+        )?;
+        check_limit(
+            BytecodeLinkLimit::ConstantGraphNodes,
+            self.constant_graph_nodes,
+            self.limits.max_constant_graph_nodes,
+            location.clone(),
+        )?;
+        self.constant_graph_edges = checked_total(
+            self.constant_graph_edges,
+            edges,
+            BytecodeLinkObligation::ConstantInitializationPlan,
+            location.clone(),
+            "summing frozen constant graph edges",
+        )?;
+        check_limit(
+            BytecodeLinkLimit::ConstantGraphEdges,
+            self.constant_graph_edges,
+            self.limits.max_constant_graph_edges,
             location,
         )
     }

@@ -1,6 +1,6 @@
 use skiff_artifact_model::{contract_for_opcode, OperandRole, TypeRefIr, ValueSource};
 use skiff_runtime_linked_bytecode::{
-    LinkedFrameLayout, LinkedInstruction, LinkedInstructionTarget, LinkedStackValue,
+    ConstantIndex, LinkedFrameLayout, LinkedInstruction, LinkedInstructionTarget, LinkedStackValue,
 };
 
 use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation};
@@ -17,6 +17,26 @@ pub(super) fn source_values(
     match source {
         ValueSource::Bool => scalar_value(context, "bool", location),
         ValueSource::Number => scalar_value(context, "number", location),
+        ValueSource::Constant { operand } => {
+            let constant = constant_target(instruction, operand, location.clone())?;
+            let position = usize::try_from(constant.get()).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    format!("constant index {} does not fit usize", constant.get()),
+                )
+            })?;
+            let row = context
+                .constants
+                .get(position)
+                .filter(|row| row.index() == constant)
+                .ok_or_else(|| {
+                    obligation_error(
+                        location,
+                        format!("constant target {} is out of bounds", constant.get()),
+                    )
+                })?;
+            Ok(vec![LinkedStackValue::new(row.ty(), row.plan().clone())])
+        }
         ValueSource::Slot { operand } => {
             let slot = operand_word(instruction, operand, location.clone())? as usize;
             let ty = context
@@ -81,6 +101,39 @@ pub(super) fn source_values(
             location,
         }),
     }
+}
+
+fn constant_target(
+    instruction: &LinkedInstruction,
+    role: OperandRole,
+    location: BytecodeLinkLocation,
+) -> Result<ConstantIndex, BytecodeLinkError> {
+    let ordinal = contract_for_opcode(instruction.opcode())
+        .operand_position(role)
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("operand role {} is absent", role.name()),
+            )
+        })?;
+    let ordinal = u32::try_from(ordinal).map_err(|_| {
+        obligation_error(
+            location.clone(),
+            "operand ordinal does not fit u32".to_string(),
+        )
+    })?;
+    let Some(LinkedInstructionTarget::Constant(constant)) = instruction
+        .resolved_operands()
+        .iter()
+        .find(|resolved| resolved.operand_ordinal() == ordinal)
+        .map(|resolved| resolved.target())
+    else {
+        return Err(obligation_error(
+            location,
+            format!("constant operand role {} is unresolved", role.name()),
+        ));
+    };
+    Ok(constant)
 }
 
 pub(super) fn operand_word(

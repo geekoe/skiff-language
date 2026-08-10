@@ -15,7 +15,9 @@ use crate::bytecode::{
     types::TypeLinker, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
 };
 
-use super::{tables::instruction_index, unsatisfied, DeploymentLinker};
+use super::{
+    constants::LinkedConstantTables, tables::instruction_index, unsatisfied, DeploymentLinker,
+};
 
 impl<'a> DeploymentLinker<'a> {
     pub(super) fn resolve_direct_target(
@@ -226,6 +228,7 @@ pub(super) struct RelocationContext<'a, 'deployment, 'limits> {
     linker: &'a DeploymentLinker<'deployment>,
     source: RelocationSource<'a>,
     function_indices: &'a BTreeMap<SpecializationKey, FunctionIndex>,
+    constant_tables: &'a LinkedConstantTables,
     type_linker: &'a mut TypeLinker<'limits>,
 }
 
@@ -234,12 +237,14 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
         linker: &'a DeploymentLinker<'deployment>,
         source: RelocationSource<'a>,
         function_indices: &'a BTreeMap<SpecializationKey, FunctionIndex>,
+        constant_tables: &'a LinkedConstantTables,
         type_linker: &'a mut TypeLinker<'limits>,
     ) -> Self {
         Self {
             linker,
             source,
             function_indices,
+            constant_tables,
             type_linker,
         }
     }
@@ -341,10 +346,10 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                     location,
                 )?,
             )),
-            LinkedOperandKind::Constant => Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ConstantInitializationPlan,
-                location,
-            }),
+            LinkedOperandKind::Constant => self
+                .constant_tables
+                .resolve(self.source.package, raw, location)
+                .map(LinkedInstructionTarget::Constant),
             LinkedOperandKind::Shape => Err(BytecodeLinkError::ImplementationUnavailable {
                 obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,

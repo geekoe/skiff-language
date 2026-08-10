@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{contract_for_opcode, TypeRefIr, ValidatedFunction};
 use skiff_runtime_linked_bytecode::{
-    LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackMapCandidate,
-    LinkedStackValue, LinkedSwitchTable, SpecializationKey,
+    LinkedConstantEntry, LinkedFrameLayout, LinkedInstruction, LinkedSlotState,
+    LinkedStackMapCandidate, LinkedStackValue, LinkedSwitchTable, SpecializationKey,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -47,6 +47,7 @@ pub(super) struct StackMapLinked<'a> {
     frame: &'a LinkedFrameLayout,
     all_frames: &'a [LinkedFrameLayout],
     switch_tables: &'a [LinkedSwitchTable],
+    constants: &'a [LinkedConstantEntry],
 }
 
 impl<'a> StackMapLinked<'a> {
@@ -55,12 +56,14 @@ impl<'a> StackMapLinked<'a> {
         frame: &'a LinkedFrameLayout,
         all_frames: &'a [LinkedFrameLayout],
         switch_tables: &'a [LinkedSwitchTable],
+        constants: &'a [LinkedConstantEntry],
     ) -> Self {
         Self {
             instructions,
             frame,
             all_frames,
             switch_tables,
+            constants,
         }
     }
 }
@@ -69,6 +72,7 @@ struct StackMapContext<'a, 'limits> {
     source: StackMapSource<'a>,
     frame: &'a LinkedFrameLayout,
     all_frames: &'a [LinkedFrameLayout],
+    constants: &'a [LinkedConstantEntry],
     type_linker: &'a mut TypeLinker<'limits>,
     substitutions: &'a BTreeMap<String, TypeRefIr>,
 }
@@ -83,6 +87,7 @@ pub(super) fn build_stack_map(
         source,
         frame: linked.frame,
         all_frames: linked.all_frames,
+        constants: linked.constants,
         type_linker,
         substitutions,
     };

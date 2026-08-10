@@ -1,4 +1,5 @@
 mod artifact;
+mod constants;
 mod package;
 mod records;
 
@@ -19,6 +20,7 @@ use skiff_runtime_loader::{
 };
 
 use artifact::bytecode_artifact;
+pub(super) use constants::ConstantProgram;
 
 pub(super) const ROOT_CALLABLE: &str = "pkg-callable:example.bytecode-link:top-level:fixture.root";
 pub(super) const HELPER_CALLABLE: &str =
@@ -52,6 +54,7 @@ enum DependencyBuildPin {
 struct NormalizationDependency {
     pin: DependencyBuildPin,
     conflict: Option<DependencyTypeSurfaceConflict>,
+    constant: Option<ConstantProgram>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +66,7 @@ pub(super) enum RootProgram {
     Host,
     Intrinsic,
     FromType,
+    Constant(ConstantProgram),
 }
 
 impl RootProgram {
@@ -157,7 +161,11 @@ impl Fixture {
             RootProgram::LocalCall,
             false,
             true,
-            Some(NormalizationDependency { pin, conflict }),
+            Some(NormalizationDependency {
+                pin,
+                conflict,
+                constant: None,
+            }),
             conflicting_type_surfaces,
         )
     }
@@ -183,7 +191,10 @@ impl Fixture {
             conflicting_type_surfaces,
         );
         let dependency = normalization_dependency.map(|dependency| {
-            let bytecode = artifact::empty_admitted_bytecode();
+            let bytecode = dependency.constant.map_or_else(
+                artifact::empty_admitted_bytecode,
+                artifact::constant_only_admitted_bytecode,
+            );
             let package = package::dependency_type_owner_package(&bytecode, dependency.conflict);
             let reference = records::package_reference(&package);
             (dependency.pin, reference, Arc::new(package), bytecode)

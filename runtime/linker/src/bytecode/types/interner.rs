@@ -16,7 +16,7 @@ use super::{
     normalization::normalize_type, substitution::substitute_type, validation::type_metrics,
 };
 
-type TypeOriginKey = (PackageBuildId, u32, SpecializationKey);
+type TypeOriginKey = (PackageBuildId, u32, Option<SpecializationKey>);
 
 /// Deployment-wide interner keyed by exact artifact row and specialization.
 /// The independent verifier can therefore trace every concrete type back to
@@ -52,7 +52,7 @@ impl<'a> TypeLinker<'a> {
         let origin_key = (
             package.reference().package_build_id.clone(),
             artifact_index,
-            specialization.clone(),
+            Some(specialization.clone()),
         );
         if let Some(index) = self.origins.get(&origin_key) {
             return Ok(*index);
@@ -88,6 +88,70 @@ impl<'a> TypeLinker<'a> {
             container_layout,
         ));
         Ok(index)
+    }
+
+    /// Interns one package-global type row without manufacturing a function
+    /// specialization. Frozen package constants are image-global authority and
+    /// therefore retain `specialization == None` in the linked origin.
+    pub(in crate::bytecode) fn intern_package_global_type(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        artifact_index: u32,
+        location: BytecodeLinkLocation,
+    ) -> Result<(TypeIndex, TypeRefIr), BytecodeLinkError> {
+        let origin_key = (
+            package.reference().package_build_id.clone(),
+            artifact_index,
+            None,
+        );
+        if let Some(index) = self.origins.get(&origin_key).copied() {
+            let position = usize::try_from(index.get()).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    format!(
+                        "package-global concrete type index {} does not fit usize",
+                        index.get()
+                    ),
+                )
+            })?;
+            let concrete = self
+                .entries
+                .get(position)
+                .and_then(Option::as_ref)
+                .map(|entry| entry.type_ref().clone())
+                .ok_or_else(|| {
+                    obligation_error(
+                        location,
+                        format!(
+                            "package-global concrete type row {} was reserved but not completed",
+                            index.get()
+                        ),
+                    )
+                })?;
+            return Ok((index, concrete));
+        }
+
+        let substitutions = BTreeMap::new();
+        let concrete =
+            self.concrete_type(package, artifact_index, &substitutions, location.clone())?;
+        let (index, entry_position) = self.reserve(origin_key, location.clone())?;
+        let origin = LinkedArtifactPoolOrigin::new(
+            package.reference().package_build_id.clone(),
+            ArtifactTypeIndex::new(artifact_index),
+            None,
+        )
+        .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
+        let reserved = self.entries.get_mut(entry_position).ok_or_else(|| {
+            obligation_error(
+                location,
+                format!(
+                    "reserved package-global concrete type row {} is absent",
+                    index.get()
+                ),
+            )
+        })?;
+        *reserved = Some(LinkedTypeEntry::new(index, origin, concrete.clone(), None));
+        Ok((index, concrete))
     }
 
     pub(in crate::bytecode) fn intern_builtin(
