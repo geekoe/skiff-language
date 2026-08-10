@@ -1,5 +1,6 @@
 use base64::Engine as _;
 use serde_json::{json, Value};
+use skiff_artifact_identity::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX;
 use skiff_artifact_model::MetadataValue;
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_runtime_boundary::payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef};
@@ -50,7 +51,6 @@ use super::eval_context::EvalContext;
 const TASK_SUBMIT_METADATA_KEY: &str = "dispatchSubmit";
 const SERVICE_BUILD_IDENTITY_PREFIX: &str = "skiff-service-build-v1:sha256:";
 const PACKAGE_TEST_BUILD_IDENTITY_PREFIX: &str = "skiff-package-test-build-v1:sha256:";
-const PACKAGE_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v10:sha256:";
 const TASK_SUBMIT_TARGET: &str = "task.submit.request";
 /// Bounded ambiguous-acceptance retries for one internal submission. Every
 /// attempt reuses the TaskId generated before the first physical write.
@@ -547,7 +547,9 @@ fn duration_millis_from_value(value: &RuntimeValueCarrier) -> Result<u64> {
 fn task_submit_build_id(request_build_id: &str) -> Option<String> {
     (request_build_id.starts_with(SERVICE_BUILD_IDENTITY_PREFIX)
         || request_build_id.starts_with(PACKAGE_TEST_BUILD_IDENTITY_PREFIX)
-        || request_build_id.starts_with(PACKAGE_BUILD_IDENTITY_PREFIX))
+        || request_build_id
+            .strip_prefix(PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX)
+            .is_some_and(|digest| digest.starts_with(':')))
     .then(|| request_build_id.to_string())
 }
 
@@ -564,7 +566,10 @@ fn current_activation_identity(
 
 #[cfg(test)]
 mod task_activation_identity_tests {
-    use super::{current_activation_identity, task_submit_build_id, RuntimeError};
+    use super::{
+        current_activation_identity, task_submit_build_id, RuntimeError,
+        PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+    };
 
     #[test]
     fn task_submit_rejects_missing_current_activation_before_control_send() {
@@ -575,10 +580,20 @@ mod task_activation_identity_tests {
     }
 
     #[test]
-    fn task_submit_preserves_canonical_assembly_package_build_identity() {
-        let build_id =
-            "skiff-package-build-v10:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        assert_eq!(task_submit_build_id(build_id).as_deref(), Some(build_id));
+    fn task_submit_preserves_current_package_build_identity_and_rejects_v10() {
+        let build_id = format!(
+            "{PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX}:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            task_submit_build_id(&build_id).as_deref(),
+            Some(build_id.as_str())
+        );
+        assert_eq!(
+            task_submit_build_id(
+                "skiff-package-build-v10:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ),
+            None
+        );
         assert_eq!(task_submit_build_id("legacy-build"), None);
     }
 }
