@@ -1,21 +1,24 @@
 use super::*;
 
 use skiff_artifact_model::{
-    bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeConstantRef,
-    BytecodeFunctionOrigin, BytecodeImage, BytecodePoolEntry, BytecodePools, CallableEffectSummary,
-    CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
-    ContractDiagnosticText, ContractTypeDescriptor, ContractTypeRef, DeploymentArtifactIdentity,
-    DeploymentDiagnosticText, DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph,
-    FrozenConstantNode, LiteralIr, OperationCallableKind, OperationTargetRef, PackageCallableId,
+    bytecode::opcodes::opcode_table_fingerprint, derive_bytecode_statement_manifest_identity,
+    BytecodeArtifact, BytecodeConstantRef, BytecodeFunctionOrigin,
+    BytecodeFunctionStatementManifest, BytecodeImage, BytecodePoolEntry, BytecodePools,
+    BytecodeStatementManifestIdentity, CallableEffectSummary, CallableProvenanceSummary,
+    CallableProvenanceUnknownReason, CallableSemanticFacts, ContractDiagnosticText,
+    ContractTypeDescriptor, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph, FrozenConstantNode,
+    InstructionSourceSite, LiteralIr, OperationCallableKind, OperationTargetRef, PackageCallableId,
     PackageCallableLinkFact, PackageCallableParameter, PackageCallableSignature,
     PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
     PackageSchemaCanonicalDescriptor, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
     PackageSchemaTypeRecord, PackageSyntheticCallbackOwner, PackageTypeRef, ParameterSlotDecl,
-    RelocatableBytecodeFunction, ServiceProtocolIdentity, ServiceSelectorBinding,
-    StatementChargeKind, StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    RelocatableBytecodeFunction, ServiceProtocolIdentity, ServiceSelectorBinding, SourceMapEntry,
+    StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason, TypeRefIr,
+    ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
@@ -134,6 +137,11 @@ fn package_artifact(
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            package_id,
+            &[],
+        )
+        .unwrap(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new(format!("abi:{package_id}")),
             public_symbols: BTreeMap::new(),
@@ -175,6 +183,25 @@ fn package_reference(artifact: &PackageArtifact) -> PackageArtifactRef {
         package_build_id: artifact.package_build_id.clone(),
         package_local_abi_identity: artifact.package_local_abi.local_abi_identity.clone(),
     }
+}
+
+fn statement_manifest_identity(
+    package_id: &str,
+    bytecode: &ValidatedBytecodeArtifact,
+) -> BytecodeStatementManifestIdentity {
+    let mut functions = bytecode
+        .view()
+        .functions()
+        .iter()
+        .map(|function| {
+            BytecodeFunctionStatementManifest::new(
+                function.origin.clone(),
+                function.statement_entries.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    functions.sort_by(|left, right| left.origin.cmp(&right.origin));
+    derive_bytecode_statement_manifest_identity(package_id, &functions).unwrap()
 }
 
 fn contract_reference(service_id: &str) -> ServiceContractRef {
@@ -317,10 +344,19 @@ fn callable_bytecode(
             switch_tables: Vec::new(),
             statement_entries: vec![StatementEntry {
                 pc: 0,
-                statement_id: "manifest:entry".to_string(),
-                charge_kind: StatementChargeKind::FunctionEntry,
+                sequence_ordinal: 0,
+                attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::RuntimeControlFlow,
+                },
             }],
-            source_map: Vec::new(),
+            source_map: vec![SourceMapEntry {
+                start_pc: 0,
+                end_pc: 1,
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::RuntimeControlFlow,
+                },
+            }],
         },
     );
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
@@ -368,6 +404,8 @@ fn callable_package(
     artifact
         .callable_semantic_facts
         .insert(callable.clone(), callable_semantic_facts());
+    artifact.bytecode_statement_manifest_identity =
+        statement_manifest_identity(&artifact.package_id, bytecode);
     Arc::new(artifact)
 }
 
@@ -523,8 +561,8 @@ fn package_checked_constructor_admits_only_exact_token_and_exposes_opaque_getter
 }
 
 #[test]
-fn package_checked_constructor_pins_exact_v5_header_view_and_reference() {
-    let bytecode = admitted_bytecode("v5-header");
+fn package_checked_constructor_pins_exact_v6_header_view_and_reference() {
+    let bytecode = admitted_bytecode("v6-header");
     let artifact = package_artifact(
         "example.package",
         "build:package",
@@ -640,7 +678,7 @@ fn bytecode_admission_rejects_intrinsic_registry_pin_drift_before_loader() {
 }
 
 #[test]
-fn package_checked_constructor_joins_v5_callable_origin_and_self_manifests() {
+fn package_checked_constructor_joins_v6_callable_origin_and_self_manifests() {
     let (bytecode, coordinate, callable) = callable_bytecode(true);
     let artifact = callable_package(
         &bytecode,
@@ -1382,3 +1420,4 @@ fn deployment_schema_closure_rejects_missing_and_extra_descriptor_rows() {
 
 mod load;
 mod package_types;
+mod statement_attribution;

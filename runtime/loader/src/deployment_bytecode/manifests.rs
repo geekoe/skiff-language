@@ -5,8 +5,9 @@ use std::{
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    host_effect_registry_identity, intrinsic_registry_identity,
-    native_value_lifecycle_registry_identity, value_lifecycle_policy_identity, BytecodeConstantRef,
+    derive_bytecode_statement_manifest_identity, host_effect_registry_identity,
+    intrinsic_registry_identity, native_value_lifecycle_registry_identity,
+    value_lifecycle_policy_identity, BytecodeConstantRef, BytecodeFunctionStatementManifest,
     BytecodePoolEntry, BytecodeRelocation, BytecodeSpecialization, ContractOperationId,
     HostEffectSignature, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
     NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact, PackageArtifactRef,
@@ -68,6 +69,7 @@ impl HydratedPackageManifests {
             &ordinary_functions,
             &canonical_implementation_callables,
         )?;
+        validate_statement_attribution_manifest(reference, artifact, bytecode)?;
         validate_actor_manifests(reference, artifact, bytecode, &callable_functions)?;
         validate_conformance_manifests(reference, bytecode, artifact, &callable_functions)?;
         let constant_roots = validate_constant_roots(reference, artifact, bytecode)?;
@@ -211,7 +213,46 @@ fn validate_header(
         return manifest_error(
             reference,
             DeploymentBytecodeManifestKind::Header,
-            "admitted v5 header/view/reference facts are not exact".to_string(),
+            "admitted v6 header/view/reference facts are not exact".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_statement_attribution_manifest(
+    reference: &PackageArtifactRef,
+    artifact: &PackageArtifact,
+    bytecode: &ValidatedBytecodeArtifact,
+) -> Result<(), DeploymentBytecodeHydrationError> {
+    let mut functions = bytecode
+        .view()
+        .functions()
+        .iter()
+        .map(|function| {
+            BytecodeFunctionStatementManifest::new(
+                function.origin.clone(),
+                function.statement_entries.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    functions.sort_by(|left, right| left.origin.cmp(&right.origin));
+
+    let derived = derive_bytecode_statement_manifest_identity(&artifact.package_id, &functions)
+        .map_err(|error| {
+            manifest_mismatch(
+                reference,
+                DeploymentBytecodeManifestKind::StatementAttribution,
+                format!("statement attribution identity cannot be derived: {error}"),
+            )
+        })?;
+    if derived != artifact.bytecode_statement_manifest_identity {
+        return manifest_error(
+            reference,
+            DeploymentBytecodeManifestKind::StatementAttribution,
+            format!(
+                "package declares {}, but admitted bytecode functions derive {derived}",
+                artifact.bytecode_statement_manifest_identity
+            ),
         );
     }
     Ok(())

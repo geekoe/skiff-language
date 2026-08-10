@@ -329,6 +329,9 @@ fn bare_package(
         package_build_id: PackageBuildId::new(format!("build:{package_id}")),
         files: Vec::new(),
         static_resources: Vec::new(),
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &[])
+                .unwrap(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new(format!("abi:{package_id}")),
             public_symbols: BTreeMap::new(),

@@ -352,6 +352,12 @@ impl Fixture {
             package_build_id: PackageBuildId::new("unassigned"),
             files: vec![file_ref.clone()],
             static_resources: vec![resource_ref],
+            bytecode_statement_manifest_identity:
+                skiff_artifact_model::derive_bytecode_statement_manifest_identity(
+                    "example.health-provider",
+                    &[],
+                )
+                .unwrap(),
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
                 public_symbols: BTreeMap::from([(

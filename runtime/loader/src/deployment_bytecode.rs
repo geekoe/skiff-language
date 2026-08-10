@@ -66,6 +66,7 @@ pub enum DeploymentBytecodeManifestKind {
     Header,
     FunctionOrigin,
     SyntheticCallback,
+    StatementAttribution,
     SelfType,
     Callable,
     Actor,
