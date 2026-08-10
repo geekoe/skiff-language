@@ -5,7 +5,7 @@ mod resolver;
 mod types;
 
 use skiff_artifact_model::{NativeValueLifecycleResolution, TypeRefIr};
-use skiff_runtime_linked_bytecode::{LinkedBytecodeCandidate, TypeIndex};
+use skiff_runtime_linked_bytecode::{LinkedBytecodeCandidate, LinkedValueTransferPlan, TypeIndex};
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use crate::{VerificationError, VerificationLimits};
@@ -149,6 +149,17 @@ impl ConcreteValueFacts {
     pub(crate) fn implicit_representative(&self, builtin: ImplicitBuiltin) -> Option<TypeIndex> {
         let class = self.implicit_builtins.classes[builtin.ordinal()]?;
         self.class(class).map(|class| class.representative)
+    }
+
+    /// Checks a candidate-declared plan against the independently classified
+    /// complete lifecycle without exposing or duplicating the bridge into
+    /// linked-bytecode vocabulary.
+    pub(crate) fn matches_declared_plan(
+        &self,
+        coordinate: TypeIndex,
+        declared: &LinkedValueTransferPlan,
+    ) -> bool {
+        plans::matches_declared_plan(self, coordinate, declared)
     }
 
     fn class(&self, id: ConcreteTypeClassId) -> Option<&ConcreteTypeClass> {

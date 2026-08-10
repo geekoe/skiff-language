@@ -27,7 +27,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn loader_backed_local_target_authority_advances_to_stack_state_proof() {
+fn loader_backed_local_target_authority_advances_to_resume_site_proof() {
     let (hydrated, candidate) = loader_backed_local_call(LocalCallCandidateCorruption::None);
     let error = verify(hydrated, candidate, &generous_limits())
         .expect_err("exact hydrated local authority must cross P3 target proof");
@@ -35,7 +35,7 @@ fn loader_backed_local_target_authority_advances_to_stack_state_proof() {
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::StackAndSlotState,
+            obligation: VerificationObligation::ResumeSite,
             location: VerificationLocation::Image,
         }
     );

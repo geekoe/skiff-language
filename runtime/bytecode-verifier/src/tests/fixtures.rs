@@ -25,6 +25,7 @@ use crate::VerificationLimits;
 
 mod local_calls;
 mod owner_authority;
+pub(crate) mod stack_state;
 
 pub(super) use local_calls::TARGET_FUNCTION_INDEX;
 pub(crate) use local_calls::{loader_backed_local_call, LocalCallCandidateCorruption};

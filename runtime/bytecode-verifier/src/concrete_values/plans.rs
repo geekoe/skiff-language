@@ -69,6 +69,21 @@ pub(super) fn prove_position(
     Ok(())
 }
 
+pub(super) fn matches_declared_plan(
+    facts: &ConcreteValueFacts,
+    ty: TypeIndex,
+    declared: &LinkedValueTransferPlan,
+) -> bool {
+    facts
+        .types
+        .get(ty.get() as usize)
+        .filter(|fact| fact.coordinate == ty)
+        .is_some_and(|fact| {
+            recursive_shape(declared).is_none()
+                && bridge_lifecycle(&fact.lifecycle.lifecycle).eq(declared)
+        })
+}
+
 pub(super) fn table_location(
     table: CandidateTable,
     row: usize,

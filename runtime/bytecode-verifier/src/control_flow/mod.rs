@@ -61,10 +61,15 @@ impl ControlFlowFacts {
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProgramPointState {
-    stack: Box<[TypeIndex]>,
+    stack: Box<[AbstractValue]>,
     slots: Box<[AbstractSlotState]>,
     active_regions: Box<[ActiveRegionIndex]>,
     writable_loans: Box<[AbstractWritableLoan]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AbstractValue {
+    Concrete(TypeIndex),
 }
 
 #[allow(dead_code)]
@@ -142,5 +147,32 @@ pub(crate) fn prove_exact_local_call_plan_for_test(
         caller,
         site,
         target,
+    )
+}
+
+#[cfg(test)]
+/// Isolated P3 seam. Callers establish the candidate/P1 binding premise;
+/// loader-backed `verify` tests cover that premise end to end.
+pub(crate) fn prove_stack_and_slot_state_for_test(
+    hydrated: &HydratedDeploymentBytecode,
+    candidate: &LinkedBytecodeCandidate,
+    limits: &VerificationLimits,
+) -> Result<(), VerificationError> {
+    let concrete_values =
+        crate::concrete_values::prove_types_and_plans(hydrated, candidate, limits)?;
+    let mut control_flow = cfg::prove_control_flow(candidate, limits)?;
+    let targets = targets::prove_exact_targets_and_call_plans(
+        hydrated,
+        candidate,
+        &concrete_values,
+        &control_flow,
+        limits,
+    )?;
+    transfer::prove_stack_and_slot_state(
+        candidate,
+        &concrete_values,
+        &targets,
+        &mut control_flow,
+        limits,
     )
 }
