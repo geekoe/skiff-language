@@ -31,6 +31,16 @@ pub enum VmVerifiedInvariant {
     ResultTransferPlan,
     ExternalInOutParameter,
     FrameLayoutOverflow,
+    StatementScheduleFunctionMissing {
+        function: FunctionIndex,
+    },
+    StatementScheduleInstructionMissing {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    },
+    StatementScheduleFrameEntryKind,
+    StatementScheduleEventKind,
+    StatementScheduleEventCursor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

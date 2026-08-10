@@ -15,6 +15,7 @@ mod error;
 mod fiber;
 mod frame;
 mod limits;
+mod statement;
 
 pub use budget::{VmBudget, VmBudgetError, VmSemanticCharge, VmSemanticChargeKind};
 pub use control::{

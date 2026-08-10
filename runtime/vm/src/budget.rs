@@ -1,5 +1,6 @@
 use std::{fmt, num::NonZeroU32};
 
+use skiff_artifact_model::{InstructionSourceSite, StatementAttributionId, StatementChargeKind};
 use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 
 /// Terminal reason returned by the trusted execution-budget owner.
@@ -29,10 +30,12 @@ impl std::error::Error for VmBudgetError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmSemanticChargeKind<'a> {
     FunctionEntry,
-    Statement { statement_id: &'a str },
-    LocalCall,
-    TailCall,
-    BudgetCheckpoint,
+    SourceEvent {
+        sequence_ordinal: u32,
+        attribution_id: StatementAttributionId,
+        site: &'a InstructionSourceSite,
+        charge_kind: StatementChargeKind,
+    },
 }
 
 /// One stable language-level charge, independent of decoded micro-op count.
@@ -44,15 +47,34 @@ pub struct VmSemanticCharge<'a> {
 }
 
 impl<'a> VmSemanticCharge<'a> {
-    pub const fn new(
+    pub(crate) const fn function_entry(
         function: FunctionIndex,
         instruction: InstructionIndex,
-        kind: VmSemanticChargeKind<'a>,
     ) -> Self {
         Self {
             function,
             instruction,
-            kind,
+            kind: VmSemanticChargeKind::FunctionEntry,
+        }
+    }
+
+    pub(crate) const fn source_event(
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        sequence_ordinal: u32,
+        attribution_id: StatementAttributionId,
+        site: &'a InstructionSourceSite,
+        charge_kind: StatementChargeKind,
+    ) -> Self {
+        Self {
+            function,
+            instruction,
+            kind: VmSemanticChargeKind::SourceEvent {
+                sequence_ordinal,
+                attribution_id,
+                site,
+                charge_kind,
+            },
         }
     }
 
@@ -75,6 +97,10 @@ impl<'a> VmSemanticCharge<'a> {
 /// `1..=maximum`; the VM rejects any larger grant instead of allowing policy
 /// to weaken its trusted polling quantum. Replenishment also polls deadline
 /// and internal stop before returning fuel.
+///
+/// An error from `charge_semantic` means that semantic unit was not committed.
+/// The VM retains its same-PC event cursor so a permitted retry starts at that
+/// exact event rather than replaying an already committed prefix.
 pub trait VmBudget {
     fn replenish_raw_fuel(&mut self, maximum: NonZeroU32) -> Result<NonZeroU32, VmBudgetError>;
 
