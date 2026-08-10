@@ -4,17 +4,18 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    AssemblyIdentity, CallIr, CallTargetIr, CanonicalPackageLinkPlan, ConstExport, ConstIr,
-    ContractOperationId, ContractRequirement, DbDeclarationIr, DbObjectKeyIr, DbObjectKindIr,
-    ExecutableBody, ExecutableIr, ExecutableKind, ExprIr, FileIrRef, FileIrUnit,
-    InstructionSourceSite, OperationCallableKind, PackageArtifact, PackageArtifactRef,
-    PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableRef,
-    PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageRequirementKey,
-    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageSymbolRef,
-    PublicationResourceRef, RuntimeAssembly, ServiceCallRef, ServiceProtocolIdentity,
-    ServiceRequirement, SlotLayout, SyntheticInstructionSiteReason, TypeDeclIr, TypeDeclarationIr,
-    TypeDescriptorIr, TypeExport, TypeRefIr, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    derive_bytecode_statement_manifest_identity, AssemblyIdentity, CallIr, CallTargetIr,
+    CanonicalPackageLinkPlan, ConstExport, ConstIr, ContractOperationId, ContractRequirement,
+    DbDeclarationIr, DbObjectKeyIr, DbObjectKindIr, ExecutableBody, ExecutableIr, ExecutableKind,
+    ExprIr, FileIrRef, FileIrUnit, InstructionSourceSite, OperationCallableKind, PackageArtifact,
+    PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId, PackageCallableLinkFact,
+    PackageCallableRef, PackageCodeSlot, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
+    PackageRequirementKey, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
+    PackageSymbolRef, PublicationResourceRef, RuntimeAssembly, ServiceCallRef,
+    ServiceProtocolIdentity, ServiceRequirement, SlotLayout, SyntheticInstructionSiteReason,
+    TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeExport, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
 };
 use skiff_runtime_model::resource::LoadedPublicationResource;
 
@@ -1297,12 +1298,18 @@ fn artifact(
     file: &FileIrUnit,
 ) -> PackageArtifact {
     PackageArtifact {
-        schema_version: "skiff-package-artifact-v2".to_string(),
+        schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: build_id(build),
         files: vec![file_ref(file)],
         static_resources: Vec::new(),
+        bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            package_id,
+            &[],
+        )
+        .expect("empty package statement manifest should be canonical"),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: local_abi(local_abi_identity),
             public_symbols: BTreeMap::new(),
@@ -1319,6 +1326,8 @@ fn artifact(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
@@ -1328,7 +1337,6 @@ fn artifact(
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
-        bytecode: None,
     }
 }
 

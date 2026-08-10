@@ -113,14 +113,18 @@ fn image(
                 })
                 .collect::<Vec<_>>();
             let package_id = format!("test.package.{slot}");
+            let bytecode_statement_manifest_identity =
+                skiff_artifact_model::derive_bytecode_statement_manifest_identity(&package_id, &[])
+                    .expect("empty package statement manifest should be canonical");
             let artifact: skiff_artifact_model::PackageArtifact =
                 serde_json::from_value(serde_json::json!({
-                "schemaVersion": "skiff-package-artifact-v9",
+                "schemaVersion": skiff_artifact_model::PACKAGE_ARTIFACT_SCHEMA_VERSION,
                 "packageId": package_id,
                 "packageVersion": "1.0.0",
                 "packageBuildId": format!("test-build:{slot}"),
                 "files": file_refs,
                 "staticResources": [],
+                "bytecodeStatementManifestIdentity": bytecode_statement_manifest_identity,
                 "packageLocalAbi": {
                     "localAbiIdentity": format!("test-abi:{slot}"),
                     "publicSymbols": {}
@@ -132,6 +136,8 @@ fn image(
                 "packageSchemaTypeRecords": {},
                 "implementationLinks": {},
                 "callableLinks": {},
+                "syntheticCallbackOwners": [],
+                "bytecodeSchemaRecords": {},
                 "actorImplementations": [],
                 "localInterfaceConformances": [],
                 "packageRequirements": [],

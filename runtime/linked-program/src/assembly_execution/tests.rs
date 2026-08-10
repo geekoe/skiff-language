@@ -14,8 +14,8 @@ use crate::{
 };
 
 const PACKAGE_ID: &str = "example.db-model";
-const PACKAGE_BUILD: &str = "skiff-package-build-v10:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-const FORGED_PACKAGE_BUILD: &str = "skiff-package-build-v10:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const PACKAGE_BUILD: &str = "skiff-package-build-v13:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const FORGED_PACKAGE_BUILD: &str = "skiff-package-build-v13:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const PACKAGE_LOCAL_ABI: &str = "skiff-package-local-abi-v7:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const FILE_ID: &str =
     "skiff-file-ir-v13:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
@@ -556,7 +556,7 @@ fn linked_file() -> LinkedFileUnit {
 
 fn package_artifact(file: &artifact::FileIrUnit) -> artifact::PackageArtifact {
     artifact::PackageArtifact {
-        schema_version: "skiff-package-artifact-v2".to_string(),
+        schema_version: artifact::PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: PACKAGE_ID.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: artifact::PackageBuildId::new(PACKAGE_BUILD),
@@ -567,6 +567,10 @@ fn package_artifact(file: &artifact::FileIrUnit) -> artifact::PackageArtifact {
             source_ast_hash: Some(file.source_ast_hash.clone()),
         }],
         static_resources: Vec::new(),
+        bytecode: None,
+        bytecode_statement_manifest_identity:
+            artifact::derive_bytecode_statement_manifest_identity(PACKAGE_ID, &[])
+                .expect("empty package statement manifest should be canonical"),
         package_local_abi: artifact::PackageLocalAbi {
             local_abi_identity: artifact::PackageLocalAbiIdentity::new(PACKAGE_LOCAL_ABI),
             public_symbols: BTreeMap::new(),
@@ -583,6 +587,8 @@ fn package_artifact(file: &artifact::FileIrUnit) -> artifact::PackageArtifact {
         package_schema_type_records: BTreeMap::new(),
         implementation_links: artifact::PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
@@ -592,7 +598,6 @@ fn package_artifact(file: &artifact::FileIrUnit) -> artifact::PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
-        bytecode: None,
     }
 }
 
