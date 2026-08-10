@@ -12,8 +12,8 @@ use skiff_compiler_source::{
     },
     ExpressionOwnerKey, ExpressionTypeModel, LocalDbObjectIndex, PackageInterfaceMethodIndex,
     PublicationDbMetadataIndex, PublicationTypeSymbolIndex, ResolvedCallTargetFacts,
-    SourceExecutableReceiver, SourceExecutableSignature, SourceExecutableSignatureFacts,
-    SourceExecutionSemantics, SourceSymbolKey, TypeResolutionModel,
+    SourceEventFacts, SourceExecutableReceiver, SourceExecutableSignature,
+    SourceExecutableSignatureFacts, SourceExecutionSemantics, SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ConstDecl, FunctionDecl, ImplDecl, Stmt, TypeRef},
@@ -29,7 +29,7 @@ use super::{
         native_target_from_symbol, BindingReadonlyFlags, FunctionLowerer, FunctionLoweringContext,
         LocalTypeFieldIndex, LoweredExecutableReceiver, LoweredExecutableSignature,
     },
-    mir::{MirIndexAccessFacts, MirSourceFacts},
+    mir::{MirIndexAccessFacts, MirSourceEventPlan, MirSourceFacts},
     service_call_lowering::LoweredServiceCalls,
     source_unit_lowering::{push_source_span, source_span_ref, symbol},
     type_lowering::{
@@ -215,6 +215,7 @@ fn lower_const_initializer_body(
             interface_semantics,
             type_resolution,
             expression_types,
+            source_events: None,
             execution_semantics,
             callable_return_types,
             local_type_fields,
@@ -406,6 +407,7 @@ pub(super) fn lower_executables(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    source_events: Option<&SourceEventFacts>,
     execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
@@ -461,6 +463,7 @@ pub(super) fn lower_executables(
             source_alias_targets,
             type_resolution,
             expression_types,
+            source_events,
             execution_semantics,
             callable_return_types,
             local_type_fields,
@@ -528,6 +531,7 @@ pub(super) fn lower_executables(
                 source_alias_targets,
                 type_resolution,
                 expression_types,
+                source_events,
                 execution_semantics,
                 callable_return_types,
                 local_type_fields,
@@ -610,6 +614,7 @@ fn push_executable(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    source_events: Option<&SourceEventFacts>,
     execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
@@ -621,7 +626,7 @@ fn push_executable(
     unit: &mut FileIrUnit,
     next_span_id: &mut u64,
 ) -> Result<()> {
-    let (executable, index_accesses) = lower_function_with_params(
+    let (executable, index_accesses, source_event_plan) = lower_function_with_params(
         function,
         kind,
         executable_symbol.clone(),
@@ -645,6 +650,7 @@ fn push_executable(
         source_alias_targets,
         type_resolution,
         expression_types,
+        source_events,
         execution_semantics,
         callable_return_types,
         local_type_fields,
@@ -654,7 +660,12 @@ fn push_executable(
         service_calls,
     )?;
     mir_source_facts
-        .insert_executable(module_path, current_index, index_accesses)
+        .insert_executable(
+            module_path,
+            current_index,
+            index_accesses,
+            source_event_plan,
+        )
         .map_err(CompileError::Semantic)?;
     let source_span = source_span_ref(function.span);
 
@@ -703,6 +714,7 @@ fn lower_function_with_params(
     source_alias_targets: &BTreeMap<String, String>,
     type_resolution: &TypeResolutionModel,
     expression_types: Option<&ExpressionTypeModel>,
+    source_events: Option<&SourceEventFacts>,
     execution_semantics: Option<&SourceExecutionSemantics>,
     callable_return_types: &BTreeMap<String, CallableReturnType>,
     local_type_fields: &LocalTypeFieldIndex,
@@ -710,7 +722,11 @@ fn lower_function_with_params(
     executable_signatures: &BTreeMap<u32, LoweredExecutableSignature>,
     exact_executable_signatures: &SourceExecutableSignatureFacts,
     service_calls: &LoweredServiceCalls,
-) -> Result<(ExecutableIr, BTreeMap<u32, MirIndexAccessFacts>)> {
+) -> Result<(
+    ExecutableIr,
+    BTreeMap<u32, MirIndexAccessFacts>,
+    MirSourceEventPlan,
+)> {
     validate_bare_return_statements(function, &executable_symbol)?;
     let exact_signature = executable_signatures.get(&current_index).ok_or_else(|| {
         CompileError::Semantic(format!(
@@ -751,6 +767,7 @@ fn lower_function_with_params(
             interface_semantics,
             type_resolution,
             expression_types,
+            source_events,
             execution_semantics,
             callable_return_types,
             local_type_fields,
@@ -916,10 +933,15 @@ fn lower_function_with_params(
             },
             exact_signature.return_type.clone(),
         );
-        entry.statements.push(lowerer.push_stmt(
+        let return_statement = lowerer.push_stmt(
             StmtIr::Return { value: Some(call) },
             Some(source_span_ref(function.span)),
-        ));
+        );
+        lowerer.record_generated_statement_event(
+            return_statement.statement,
+            SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+        )?;
+        entry.statements.push(return_statement);
     } else {
         for stmt in &function.body.statements {
             entry.statements.push(lowerer.lower_stmt(stmt)?);
@@ -927,6 +949,7 @@ fn lower_function_with_params(
     }
     lowerer.body.blocks.push(entry);
     lowerer.validate_execution_plans_consumed()?;
+    let source_event_plan = lowerer.source_event_plan()?;
     let index_accesses = std::mem::take(&mut lowerer.index_accesses);
     let slots = SlotLayout {
         frame_size: lowerer.slots.len() as u32,
@@ -949,6 +972,7 @@ fn lower_function_with_params(
             source_span: Some(source_span_ref(function.span)),
         },
         index_accesses,
+        source_event_plan,
     ))
 }
 

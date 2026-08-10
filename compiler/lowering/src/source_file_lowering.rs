@@ -19,8 +19,9 @@ use skiff_compiler_source::{
     source_graph::CompilerSourceFile,
     type_indices, ExpressionSourceMap, ExpressionTypeModel, LocalDbObjectIndex,
     PackageInterfaceMethodIndex, PublicationDbMetadataIndex, PublicationTypeSymbolIndex,
-    ResolvedCallTargetFacts, SourceDependencyAnalysisInput, SourceExecutableSignatureFacts,
-    SourceExecutionSemantics, SourceInterfaceSignatureFacts, SourceSymbolKey, TypeResolutionModel,
+    ResolvedCallTargetFacts, SourceDependencyAnalysisInput, SourceEventFacts,
+    SourceExecutableSignatureFacts, SourceExecutionSemantics, SourceInterfaceSignatureFacts,
+    SourceSymbolKey, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{ActorCreateDecl, ConstDecl, FunctionDecl, SourceFile},
@@ -56,6 +57,7 @@ pub(crate) struct PackageSourceLoweringInput<'a, 'context, 'publication> {
     pub source_alias_targets: &'a BTreeMap<String, String>,
     pub type_resolution: &'a TypeResolutionModel,
     pub expression_types: Option<&'a ExpressionTypeModel>,
+    pub source_events: Option<&'a SourceEventFacts>,
     /// Full package lowering must provide the compiler-validated execution
     /// plan. Standalone helpers keep this absent and fail closed if execution
     /// syntax is encountered.
@@ -216,6 +218,7 @@ fn compile_parsed_source_file_ir_unit_with_lowering_context(
         source_alias_targets: parsed.alias_targets(),
         type_resolution: &type_resolution,
         expression_types: Some(&expression_types),
+        source_events: None,
         execution_semantics: None,
         callable_return_types: &callable_return_types,
         executable_signatures: &executable_signatures,
@@ -379,6 +382,7 @@ fn lower_source_file_ir_unit(
         source_alias_targets,
         type_resolution,
         expression_types,
+        source_events,
         execution_semantics,
         callable_return_types,
         executable_signatures: exact_executable_signatures,
@@ -506,6 +510,7 @@ fn lower_source_file_ir_unit(
         source_alias_targets,
         type_resolution,
         expression_types,
+        source_events,
         execution_semantics,
         &callable_return_types,
         &local_type_fields,

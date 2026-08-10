@@ -21,6 +21,7 @@ pub mod source_metadata;
 mod source_unit_lowering;
 pub mod storage_projection;
 mod suspend_analysis;
+mod task_call;
 mod type_inference;
 mod type_lowering;
 

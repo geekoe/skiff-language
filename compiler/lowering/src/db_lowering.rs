@@ -1703,7 +1703,7 @@ impl<'a> FunctionLowerer<'a> {
         expr: &Expr,
         db: &DbMetadataIr,
     ) -> Result<DbPredicateIr> {
-        self.consume_expression_key();
+        self.consume_expression_key()?;
         match expr {
             Expr::Binary {
                 op: BinaryOp::And,
@@ -1820,7 +1820,7 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     fn consume_db_query_field_path_expression_keys(&mut self, expr: &Expr) -> Result<()> {
-        self.consume_expression_key();
+        self.consume_expression_key()?;
         match expr {
             Expr::Identifier(_) => Ok(()),
             Expr::Field { object, .. } => self.consume_db_query_field_path_expression_keys(object),

@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     AssignTargetIr, BlockIr, ConcurrentLaneIr, ConcurrentPlanIr, ExprIr, InstructionSourceSite,
-    LiteralIr, SlotKind, StmtIr, TypeRefIr,
+    LiteralIr, SlotKind, StmtIr, SyntheticInstructionSiteReason, TypeRefIr,
 };
 use skiff_compiler_source::{
     ConcurrentLaneKind, ConcurrentSourcePlan, ExecutionSourceSite, TimeoutSourcePlan,
@@ -58,6 +58,10 @@ impl FunctionLowerer<'_> {
             },
             None,
         );
+        self.record_generated_statement_event(
+            then_stmt.statement,
+            SyntheticInstructionSiteReason::CompilerDesugaring,
+        )?;
         self.body.blocks.push(BlockIr {
             label: then_label.clone(),
             statements: vec![then_stmt],
@@ -69,6 +73,10 @@ impl FunctionLowerer<'_> {
             },
             None,
         );
+        self.record_generated_statement_event(
+            else_stmt.statement,
+            SyntheticInstructionSiteReason::CompilerDesugaring,
+        )?;
         self.body.blocks.push(BlockIr {
             label: else_label.clone(),
             statements: vec![else_stmt],
@@ -88,6 +96,10 @@ impl FunctionLowerer<'_> {
             },
             None,
         );
+        self.record_generated_statement_event(
+            init_stmt.statement,
+            SyntheticInstructionSiteReason::CompilerDesugaring,
+        )?;
         let body_stmt = self.push_stmt(
             StmtIr::If {
                 condition,
@@ -96,6 +108,10 @@ impl FunctionLowerer<'_> {
             },
             None,
         );
+        self.record_generated_statement_event(
+            body_stmt.statement,
+            SyntheticInstructionSiteReason::CompilerDesugaring,
+        )?;
         self.body.blocks.push(BlockIr {
             label: body_label.clone(),
             statements: vec![init_stmt, body_stmt],

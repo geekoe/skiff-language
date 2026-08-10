@@ -196,6 +196,7 @@ fn lower_model_with_external_types(
                     .alias_targets_for_module(parsed.module_path()),
                 type_resolution: model.type_resolution(),
                 expression_types: Some(model.expression_types()),
+                source_events: None,
                 execution_semantics: Some(model.execution_semantics()),
                 callable_return_types: &callable_return_types,
                 executable_signatures: model.executable_signatures(),

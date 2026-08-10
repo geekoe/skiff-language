@@ -12,7 +12,7 @@ use skiff_compiler_source::{
     ConstructorFieldValueSource, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
     LocalDbObjectIndex, PackageInterfaceMethodIndex, PublicationDbMetadataIndex,
     PublicationTypeSymbolIndex, ResolvedCallTarget, ResolvedCallTargetFacts, ResolvedTypeRef,
-    SourceExecutableSignatureFacts, SourceExecutionSemantics, SourceSymbolKey,
+    SourceEventFacts, SourceExecutableSignatureFacts, SourceExecutionSemantics, SourceSymbolKey,
     TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_syntax::{
@@ -34,7 +34,10 @@ use crate::file_ir::{
     SlotKind, SourceSpanRef, StmtIr, StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr,
     TestEffectRegisterTargetIr, TypeRefIr, UnaryOpIr,
 };
-use crate::mir::MirIndexAccessFacts;
+use crate::mir::{
+    ExpressionEventKind, MirIndexAccessFacts, MirSourceEventCollector, MirSourceEventPlan,
+};
+use crate::task_call::TASK_SUBMIT_METADATA_KEY;
 
 use super::{
     callable_return_types::CallableReturnType,
@@ -54,7 +57,6 @@ mod call_abi;
 mod execution;
 mod object_literal;
 
-const TASK_SUBMIT_METADATA_KEY: &str = "dispatchSubmit";
 const TASK_FUNCTION_TARGET_PREFIX: &str = "function:";
 
 pub(super) fn native_target_from_symbol(symbol: &str) -> NativeTarget {
@@ -109,6 +111,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) local_db_objects: &'a LocalDbObjectIndex,
     pub(super) type_param_scope: BTreeSet<String>,
     pub(super) expression_owner: Option<ExpressionOwnerKey>,
+    source_event_collector: MirSourceEventCollector<'a>,
     pub(super) interface_semantics: &'a InterfaceSemantics,
     pub(super) type_resolution: &'a TypeResolutionModel,
     pub(super) expression_types: Option<&'a ExpressionTypeModel>,
@@ -160,6 +163,7 @@ pub(super) struct FunctionLoweringContext<'a> {
     pub(super) interface_semantics: &'a InterfaceSemantics,
     pub(super) type_resolution: &'a TypeResolutionModel,
     pub(super) expression_types: Option<&'a ExpressionTypeModel>,
+    pub(super) source_events: Option<&'a SourceEventFacts>,
     pub(super) execution_semantics: Option<&'a SourceExecutionSemantics>,
     pub(super) callable_return_types: &'a BTreeMap<String, CallableReturnType>,
     pub(super) local_type_fields: &'a LocalTypeFieldIndex,
@@ -210,6 +214,7 @@ impl<'a> FunctionLowerer<'a> {
             interface_semantics,
             type_resolution,
             expression_types,
+            source_events,
             execution_semantics,
             callable_return_types,
             local_type_fields,
@@ -218,6 +223,8 @@ impl<'a> FunctionLowerer<'a> {
             exact_executable_signatures,
             service_calls,
         } = context;
+        let source_event_collector =
+            MirSourceEventCollector::new(module_path, expression_owner.clone(), source_events);
         Self {
             type_indices,
             package_aliases,
@@ -234,6 +241,7 @@ impl<'a> FunctionLowerer<'a> {
             local_db_objects,
             type_param_scope,
             expression_owner,
+            source_event_collector,
             interface_semantics,
             type_resolution,
             expression_types,
@@ -382,6 +390,10 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<StmtRefIr> {
+        let source_statement_key = self
+            .source_event_collector
+            .next_statement_key()
+            .map_err(source_event_error)?;
         let statement_span = self.current_statement_span();
         let lowered = match stmt {
             Stmt::CompilerTestEffectRegister {
@@ -392,7 +404,7 @@ impl<'a> FunctionLowerer<'a> {
                 outcome,
                 ..
             } => {
-                let target_key = self.next_expression_key().ok_or_else(|| {
+                let target_key = self.next_expression_key()?.ok_or_else(|| {
                     CompileError::Semantic(
                         "compiler test setup has no expression owner".to_string(),
                     )
@@ -777,16 +789,36 @@ impl<'a> FunctionLowerer<'a> {
                 // slot instead of emitting an ExprIr node. It still occupies one
                 // canonical source ExpressionKey, so consume that key before
                 // lowering any following expression.
-                self.consume_expression_key();
+                self.consume_expression_key()?;
                 StmtIr::Rethrow { exception_slot }
             }
         };
-        Ok(self.push_stmt(lowered, statement_span))
+        let tail_expression = match &lowered {
+            StmtIr::Return { value: Some(value) } => Some(value.expression),
+            _ => None,
+        };
+        let reference = self.push_stmt(lowered, statement_span);
+        self.source_event_collector
+            .record_statement(source_statement_key, reference.statement)
+            .map_err(source_event_error)?;
+        if let Some(expression_index) = tail_expression {
+            self.source_event_collector
+                .promote_tail_local_candidate(reference.statement, expression_index)
+                .map_err(source_event_error)?;
+        }
+        Ok(reference)
     }
 
     fn lower_task_stmt(&mut self, call: &Expr, timing: Option<&DispatchTiming>) -> Result<StmtIr> {
-        self.consume_expression_key();
+        let dispatch_key = self.take_expression_key()?;
         let call_ref = self.lower_task_call(call, timing)?;
+        self.source_event_collector
+            .record_expression(
+                dispatch_key,
+                call_ref.expression,
+                ExpressionEventKind::Expression,
+            )
+            .map_err(source_event_error)?;
         Ok(StmtIr::Dispatch { call: call_ref })
     }
 
@@ -821,6 +853,9 @@ impl<'a> FunctionLowerer<'a> {
         };
         call.metadata
             .insert(TASK_SUBMIT_METADATA_KEY.to_string(), metadata);
+        self.source_event_collector
+            .mark_dispatched_call(call_ref.expression)
+            .map_err(source_event_error)?;
         Ok(call_ref)
     }
 
@@ -1069,7 +1104,7 @@ impl<'a> FunctionLowerer<'a> {
     fn lower_assign_target(&mut self, target: &Expr) -> Result<AssignTargetIr> {
         match target {
             Expr::Identifier(name) => {
-                self.next_expression_key();
+                self.next_expression_key()?;
                 let Some(binding) = self.bindings.get(name) else {
                     return Err(CompileError::Semantic(format!(
                         "unresolved assignment target `{name}` in File IR unit function"
@@ -1083,7 +1118,7 @@ impl<'a> FunctionLowerer<'a> {
                 Ok(AssignTargetIr::Slot { slot: binding.slot })
             }
             Expr::Field { object, field } => {
-                self.next_expression_key();
+                self.next_expression_key()?;
                 if matches!(object.as_ref(), Expr::Identifier(name) if name == "self") {
                     if let Some(field_type) =
                         self.actor_self_fields.and_then(|fields| fields.get(field))
@@ -1097,7 +1132,7 @@ impl<'a> FunctionLowerer<'a> {
                         // expression, so consume the `self` identifier's
                         // preorder expression key here to keep every later
                         // fact lookup aligned.
-                        self.consume_expression_key();
+                        self.consume_expression_key()?;
                         return Ok(AssignTargetIr::ActorSelfField {
                             field: field.clone(),
                             field_type: field_type.clone(),
@@ -1122,7 +1157,7 @@ impl<'a> FunctionLowerer<'a> {
                 })
             }
             Expr::Index { object, index } => {
-                let expression_key = self.next_expression_key();
+                let expression_key = self.next_expression_key()?;
                 if let Some(name) = self.readonly_assignment_base_identifier(object) {
                     return Err(CompileError::Semantic(format!(
                         "cannot assign through index of readonly binding `{name}` in File IR unit function"
@@ -1221,14 +1256,32 @@ impl<'a> FunctionLowerer<'a> {
         Ok(())
     }
 
-    pub(super) fn consume_expression_key(&mut self) {
-        self.next_expression_key();
+    pub(super) fn consume_expression_key(&mut self) -> Result<()> {
+        self.next_expression_key().map(|_| ())
     }
 
-    fn next_expression_key(&mut self) -> Option<ExpressionKey> {
+    fn next_expression_key(&mut self) -> Result<Option<ExpressionKey>> {
+        let key = self.take_expression_key()?;
+        self.source_event_collector
+            .note_unrepresented_expression(key.clone())
+            .map_err(source_event_error)?;
+        Ok(key)
+    }
+
+    fn take_expression_key(&mut self) -> Result<Option<ExpressionKey>> {
         let key = self.peek_expression_key();
-        self.next_expression_index += 1;
-        key
+        self.next_expression_index =
+            self.next_expression_index.checked_add(1).ok_or_else(|| {
+                CompileError::Semantic("source expression preorder exceeds u32::MAX".to_string())
+            })?;
+        Ok(key)
+    }
+
+    fn take_collapsed_expression_key(&mut self, keys: &mut Vec<ExpressionKey>) -> Result<()> {
+        if let Some(key) = self.take_expression_key()? {
+            keys.push(key);
+        }
+        Ok(())
     }
 
     fn peek_expression_key(&self) -> Option<ExpressionKey> {
@@ -1239,6 +1292,62 @@ impl<'a> FunctionLowerer<'a> {
                 self.next_expression_index,
             )
         })
+    }
+
+    fn finish_source_expression(
+        &mut self,
+        key: Option<ExpressionKey>,
+        collapsed_keys: &[ExpressionKey],
+        reference: ExprRefIr,
+    ) -> Result<ExprRefIr> {
+        let kind = match self.body.expressions.get(reference.expression as usize) {
+            Some(ExprIr::Call { call })
+                if matches!(
+                    &call.target,
+                    CallTargetIr::LocalExecutable { .. }
+                        | CallTargetIr::PublicationExecutable { .. }
+                        | CallTargetIr::PackageCallable { .. }
+                ) =>
+            {
+                ExpressionEventKind::LocalCall
+            }
+            Some(_) => ExpressionEventKind::Expression,
+            None => {
+                return Err(CompileError::Semantic(format!(
+                    "source expression maps to missing final File IR expression {}",
+                    reference.expression
+                )))
+            }
+        };
+        self.source_event_collector
+            .record_expression(key, reference.expression, kind)
+            .map_err(source_event_error)?;
+        for collapsed_key in collapsed_keys {
+            self.source_event_collector
+                .record_expression(
+                    Some(collapsed_key.clone()),
+                    reference.expression,
+                    ExpressionEventKind::Expression,
+                )
+                .map_err(source_event_error)?;
+        }
+        Ok(reference)
+    }
+
+    pub(super) fn source_event_plan(&self) -> Result<MirSourceEventPlan> {
+        self.source_event_collector
+            .finish()
+            .map_err(source_event_error)
+    }
+
+    pub(super) fn record_generated_statement_event(
+        &mut self,
+        statement_index: u32,
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason,
+    ) -> Result<()> {
+        self.source_event_collector
+            .record_generated_statement(statement_index, reason)
+            .map_err(source_event_error)
     }
 
     fn retain_index_access(
@@ -1616,20 +1725,37 @@ impl<'a> FunctionLowerer<'a> {
     fn consume_static_callee_expression_keys(&mut self, callee: &Expr) -> Result<()> {
         match callee {
             Expr::Identifier(_) => {
-                self.next_expression_key();
+                self.next_expression_key()?;
                 Ok(())
             }
             Expr::Field { object, .. } => {
-                self.next_expression_key();
+                self.next_expression_key()?;
                 self.consume_static_callee_expression_keys(object)
             }
             Expr::DependencySourceAddress(_) => {
-                self.next_expression_key();
+                self.next_expression_key()?;
                 Ok(())
             }
             Expr::Generic { callee, .. } => {
-                self.next_expression_key();
+                self.next_expression_key()?;
                 self.consume_static_callee_expression_keys(callee)
+            }
+            _ => Err(unsupported_call(callee)),
+        }
+    }
+
+    fn collect_static_callee_expression_keys(
+        &mut self,
+        callee: &Expr,
+        collapsed_keys: &mut Vec<ExpressionKey>,
+    ) -> Result<()> {
+        match callee {
+            Expr::Identifier(_) | Expr::DependencySourceAddress(_) => {
+                self.take_collapsed_expression_key(collapsed_keys)
+            }
+            Expr::Field { object, .. } | Expr::Generic { callee: object, .. } => {
+                self.take_collapsed_expression_key(collapsed_keys)?;
+                self.collect_static_callee_expression_keys(object, collapsed_keys)
             }
             _ => Err(unsupported_call(callee)),
         }
@@ -1644,17 +1770,20 @@ impl<'a> FunctionLowerer<'a> {
         expr: &Expr,
         expected_target: Option<&TypeRefIr>,
     ) -> Result<ExprRefIr> {
-        let expression_key = self.next_expression_key();
+        let expression_key = self.take_expression_key()?;
         if let Some(symbol) = expr_path(expr)
             .and_then(|path| self.type_resolution.resolve_package_constant(&path))
             .map(|constant| (constant.symbol.clone(), constant.ty.clone()))
         {
-            self.consume_static_package_value_descendants(expr)?;
-            return Ok(self.push_expr(
+            let mut collapsed_keys = Vec::new();
+            self.collect_static_package_value_descendants(expr, &mut collapsed_keys)?;
+            let reference = self.push_expr(
                 ExprIr::LoadPackageConst { symbol: symbol.0 },
                 execution_type_ref(&symbol.1),
-            ));
+            );
+            return self.finish_source_expression(expression_key, &collapsed_keys, reference);
         }
+        let mut collapsed_keys = Vec::new();
         let lowered = match expr {
             Expr::Literal(literal) => ExprIr::Literal {
                 value: lower_literal(literal)?,
@@ -1709,7 +1838,7 @@ impl<'a> FunctionLowerer<'a> {
                         // object expression, so consume the `self`
                         // identifier's preorder expression key here to keep
                         // every later fact lookup aligned.
-                        self.consume_expression_key();
+                        self.consume_expression_key()?;
                         ExprIr::ActorSelfField {
                             field: field.clone(),
                             field_type: field_type.clone(),
@@ -1742,15 +1871,23 @@ impl<'a> FunctionLowerer<'a> {
                 }
             }
             Expr::Call { callee, args } => {
-                if let Some(payload) =
+                if let Some((payload, representation_keys)) =
                     self.lower_representation_constructor_call(expression_key.as_ref(), callee, args)?
                 {
-                    return Ok(payload);
+                    return self.finish_source_expression(
+                        expression_key,
+                        &representation_keys,
+                        payload,
+                    );
                 }
-                self.lower_call(expression_key.as_ref(), callee, args)?
+                let (call, call_keys) =
+                    self.lower_call(expression_key.as_ref(), callee, args)?;
+                collapsed_keys = call_keys;
+                call
             }
             Expr::Dispatch { call, timing } => {
-                return self.lower_task_expr(call, timing.as_ref());
+                let reference = self.lower_task_expr(call, timing.as_ref())?;
+                return self.finish_source_expression(expression_key, &[], reference);
             }
             Expr::Generic { .. } => {
                 return Err(unsupported(
@@ -1826,7 +1963,8 @@ impl<'a> FunctionLowerer<'a> {
                 ));
             }
         }
-        Ok(self.push_expr(lowered, expression_ty))
+        let reference = self.push_expr(lowered, expression_ty);
+        self.finish_source_expression(expression_key, &collapsed_keys, reference)
     }
 
     /// Static type of a lowered File IR expression. The source-owned
@@ -1892,10 +2030,18 @@ impl<'a> FunctionLowerer<'a> {
         }
     }
 
-    fn consume_static_package_value_descendants(&mut self, expr: &Expr) -> Result<()> {
+    fn collect_static_package_value_descendants(
+        &mut self,
+        expr: &Expr,
+        collapsed_keys: &mut Vec<ExpressionKey>,
+    ) -> Result<()> {
         match expr {
-            Expr::Field { object, .. } => self.consume_static_callee_expression_keys(object),
-            Expr::Generic { callee, .. } => self.consume_static_callee_expression_keys(callee),
+            Expr::Field { object, .. } => {
+                self.collect_static_callee_expression_keys(object, collapsed_keys)
+            }
+            Expr::Generic { callee, .. } => {
+                self.collect_static_callee_expression_keys(callee, collapsed_keys)
+            }
             Expr::Identifier(_) | Expr::DependencySourceAddress(_) => Ok(()),
             _ => Err(CompileError::Semantic(
                 "package constant does not have a static dependency source path".to_string(),
@@ -1963,10 +2109,11 @@ impl<'a> FunctionLowerer<'a> {
         expression_key: Option<&ExpressionKey>,
         callee: &Expr,
         args: &[CallArg],
-    ) -> Result<ExprIr> {
+    ) -> Result<(ExprIr, Vec<ExpressionKey>)> {
+        let mut collapsed_keys = Vec::new();
         let (callee, type_arg_refs) = match callee {
             Expr::Generic { callee, type_args } => {
-                self.next_expression_key();
+                self.take_collapsed_expression_key(&mut collapsed_keys)?;
                 (callee.as_ref(), type_args.as_slice())
             }
             _ => (callee, &[][..]),
@@ -1975,12 +2122,12 @@ impl<'a> FunctionLowerer<'a> {
         let mut receiver_type_arguments = Vec::new();
         let mut concrete_receiver = None;
         let target = if let Some(target) = self.package_call_target(expression_key, callee)? {
-            self.consume_static_callee_expression_keys(callee)?;
+            self.collect_static_callee_expression_keys(callee, &mut collapsed_keys)?;
             target
         } else if let Some(service_call_ref_index) = expression_key
             .and_then(|expression| self.service_calls.service_call_ref_index(expression))
         {
-            self.consume_static_callee_expression_keys(callee)?;
+            self.collect_static_callee_expression_keys(callee, &mut collapsed_keys)?;
             CallTargetIr::ServiceCall {
                 service_call_ref_index,
             }
@@ -1988,7 +2135,7 @@ impl<'a> FunctionLowerer<'a> {
             if let Some((target, type_arguments, receiver_ty)) =
                 self.resolved_package_receiver_call_target(expression_key, object, field)?
             {
-                self.next_expression_key();
+                self.take_collapsed_expression_key(&mut collapsed_keys)?;
                 lowered_args.push(self.lower_expr(object)?);
                 receiver_type_arguments = type_arguments;
                 concrete_receiver = Some(receiver_ty);
@@ -1996,31 +2143,31 @@ impl<'a> FunctionLowerer<'a> {
             } else if let Some((target, type_arguments, receiver_ty)) =
                 self.resolved_local_impl_receiver_call_target(expression_key, object, field)?
             {
-                self.next_expression_key();
+                self.take_collapsed_expression_key(&mut collapsed_keys)?;
                 lowered_args.push(self.lower_expr(object)?);
                 receiver_type_arguments = type_arguments;
                 concrete_receiver = Some(receiver_ty);
                 target
             } else if let Some(target) = self.actor_method_call_target(expression_key)? {
-                self.next_expression_key();
+                self.take_collapsed_expression_key(&mut collapsed_keys)?;
                 lowered_args.push(self.lower_expr(object)?);
                 target
             } else if let Some(target) =
                 self.resolved_receiver_builtin_call_target(expression_key, object, field)?
             {
-                self.next_expression_key();
+                self.take_collapsed_expression_key(&mut collapsed_keys)?;
                 lowered_args.push(self.lower_expr(object)?);
                 target
             } else if let Some(target) = self.lower_receiver_call_target(object, field)? {
-                self.next_expression_key();
+                self.take_collapsed_expression_key(&mut collapsed_keys)?;
                 lowered_args.push(self.lower_expr(object)?);
                 target
             } else {
-                self.consume_static_callee_expression_keys(callee)?;
+                self.collect_static_callee_expression_keys(callee, &mut collapsed_keys)?;
                 self.lower_static_call_target(expression_key, callee)?
             }
         } else {
-            self.consume_static_callee_expression_keys(callee)?;
+            self.collect_static_callee_expression_keys(callee, &mut collapsed_keys)?;
             self.lower_static_call_target(expression_key, callee)?
         };
         let lowered_type_arguments = receiver_type_arguments
@@ -2072,17 +2219,20 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
         self.validate_direct_call_modes(expression_key, &target, concrete_receiver.as_ref(), args)?;
-        Ok(ExprIr::Call {
-            call: CallIr {
-                target,
-                concrete_receiver,
-                site: self.source_instruction_site(expression_key, "call")?,
-                args: lowered_args,
-                inout_args,
-                type_args,
-                metadata,
+        Ok((
+            ExprIr::Call {
+                call: CallIr {
+                    target,
+                    concrete_receiver,
+                    site: self.source_instruction_site(expression_key, "call")?,
+                    args: lowered_args,
+                    inout_args,
+                    type_args,
+                    metadata,
+                },
             },
-        })
+            collapsed_keys,
+        ))
     }
 
     /// Lowers an `inout <place>` argument to its caller root slot plus exact
@@ -2108,11 +2258,11 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<u32> {
         match expr {
             Expr::Generic { callee, .. } => {
-                self.consume_expression_key();
+                self.consume_expression_key()?;
                 self.lower_inout_place(callee, path)
             }
             Expr::Field { object, field } => {
-                self.consume_expression_key();
+                self.consume_expression_key()?;
                 let root_slot = self.lower_inout_place(object, path)?;
                 path.push(InOutPathSegmentIr::Field {
                     name: field.clone(),
@@ -2120,7 +2270,7 @@ impl<'a> FunctionLowerer<'a> {
                 Ok(root_slot)
             }
             Expr::Index { object, index } => {
-                let expression_key = self.next_expression_key();
+                let expression_key = self.next_expression_key()?;
                 let root_slot = self.lower_inout_place(object, path)?;
                 let selector = self.lower_expr(index)?;
                 self.retain_index_access(expression_key.as_ref(), object, None, selector)?;
@@ -2128,7 +2278,7 @@ impl<'a> FunctionLowerer<'a> {
                 Ok(root_slot)
             }
             Expr::Identifier(name) => {
-                self.consume_expression_key();
+                self.consume_expression_key()?;
                 let binding = self.bindings.get(name).ok_or_else(|| {
                     CompileError::Semantic(format!(
                         "inout argument root `{name}` is not a local binding in File IR unit function"
@@ -2619,7 +2769,7 @@ impl<'a> FunctionLowerer<'a> {
         expression_key: Option<&ExpressionKey>,
         callee: &Expr,
         args: &[CallArg],
-    ) -> Result<Option<ExprRefIr>> {
+    ) -> Result<Option<(ExprRefIr, Vec<ExpressionKey>)>> {
         let representation_validation = expression_key
             .and_then(|key| {
                 self.expression_types.and_then(|expression_types| {
@@ -2630,14 +2780,15 @@ impl<'a> FunctionLowerer<'a> {
         if let Some(validation) = representation_validation {
             let payload_expression = validation.payload;
             let wrapper_type = validation.target.ir;
+            let mut collapsed_keys = Vec::new();
             let callee = match callee {
                 Expr::Generic { callee, .. } => {
-                    self.next_expression_key();
+                    self.take_collapsed_expression_key(&mut collapsed_keys)?;
                     callee.as_ref()
                 }
                 _ => callee,
             };
-            self.consume_static_callee_expression_keys(callee)?;
+            self.collect_static_callee_expression_keys(callee, &mut collapsed_keys)?;
             let [payload] = args else {
                 return Err(CompileError::Semantic(
                     "representation constructor lowering expected exactly one payload argument"
@@ -2654,12 +2805,15 @@ impl<'a> FunctionLowerer<'a> {
                 )));
             }
             let payload = self.lower_expr(payload.expr())?;
-            return Ok(Some(self.push_expr(
-                ExprIr::RepresentationWrap {
-                    value: payload,
-                    type_ref: wrapper_type.clone(),
-                },
-                wrapper_type,
+            return Ok(Some((
+                self.push_expr(
+                    ExprIr::RepresentationWrap {
+                        value: payload,
+                        type_ref: wrapper_type.clone(),
+                    },
+                    wrapper_type,
+                ),
+                collapsed_keys,
             )));
         }
         Ok(None)
@@ -3600,6 +3754,10 @@ fn positional_type_arguments(
         .enumerate()
         .map(|(index, ty)| (format!("T{index}"), ty))
         .collect()
+}
+
+fn source_event_error(error: crate::mir::MirSourceEventPlanError) -> CompileError {
+    CompileError::Semantic(format!("invalid MIR source event plan: {error}"))
 }
 
 fn is_receiver_call_object(object: &Expr, is_local_binding: &impl Fn(&str) -> bool) -> bool {

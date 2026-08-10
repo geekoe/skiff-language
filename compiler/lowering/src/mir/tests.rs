@@ -838,6 +838,9 @@ fn liveness_hand_computed_small_fixture() {
         ],
         regions: Vec::new(),
         statements: Vec::new(),
+        source_event_plan: crate::mir::MirSourceEventPlan::unavailable(
+            crate::mir::MirSourceEventUnavailableReason::SourceFactsNotProvided,
+        ),
         liveness: MirLiveness::default(),
         effect_summary_ref: PackageCallableId::new("pkg-callable:test:top-level:m.f"),
         effect_summary: CallableEffectSummary::analysis_pending(),

@@ -87,6 +87,7 @@
 
 mod abi;
 mod contract;
+mod events;
 mod facts;
 mod index;
 
@@ -95,6 +96,13 @@ pub mod liveness;
 
 pub use abi::{MirCallArgument, MirDirectCallFacts, MirReceiverFacts};
 pub use contract::{MirBuildError, MirContractError};
+pub(crate) use events::{
+    finalize_mir_source_event_plan, ExpressionEventKind, MirSourceEventCollector,
+};
+pub use events::{
+    MirControlFlowEdge, MirEmissionAnchor, MirSourceEvent, MirSourceEventPlan,
+    MirSourceEventPlanError, MirSourceEventUnavailableReason, MirStatementPlacement,
+};
 pub use facts::{
     MirCallWritableFacts, MirForInBinding, MirForInFacts, MirForInItemKind, MirInOutLoan,
     MirInOutPathSegment, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
@@ -165,6 +173,10 @@ pub struct MirFunction {
     /// One entry per `MirStmt` across `blocks` in block-id order
     /// (`statement_index` = index into the File IR statement stream).
     pub statements: Vec<MirStatementEntry>,
+    /// Checked final-index source-event placements, or a structured reason
+    /// why this executable cannot yet be emitted. Unavailable is never an
+    /// alias for an available zero-event plan.
+    pub source_event_plan: MirSourceEventPlan,
     pub liveness: MirLiveness,
     pub effect_summary_ref: PackageCallableId,
     pub effect_summary: CallableEffectSummary,

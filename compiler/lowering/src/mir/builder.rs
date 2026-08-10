@@ -20,8 +20,9 @@ use super::{
     liveness::compute_liveness,
     MirBlock, MirBuildError, MirConcurrentLaneIr, MirConcurrentPlanIr, MirConst, MirExecutableKind,
     MirExpression, MirFunction, MirIndexAccessFacts, MirLiveness, MirMatchArmIr, MirParam,
-    MirParamMode, MirRegion, MirSlot, MirSlotKind, MirSourceFacts, MirStatementEntry, MirStmt,
-    MirStmtKind, MirUnit,
+    MirParamMode, MirRegion, MirSlot, MirSlotKind, MirSourceEventPlan,
+    MirSourceEventUnavailableReason, MirSourceFacts, MirStatementEntry, MirStmt, MirStmtKind,
+    MirUnit,
 };
 
 mod actor_authority;
@@ -87,11 +88,23 @@ pub fn build_mir_units_with_source_facts(
     resolved_call_targets: &ResolvedCallTargetFacts,
     source_facts: &MirSourceFacts,
 ) -> Result<Vec<MirUnit>, MirBuildError> {
-    for ((module_path, executable_index), _) in source_facts.owners() {
-        let Some(unit) = units.iter().find(|unit| &unit.module_path == module_path) else {
+    let source_fact_owners = source_facts
+        .owners()
+        .map(|(owner, _)| owner.clone())
+        .chain(
+            source_facts
+                .event_plan_owners()
+                .map(|(owner, _)| owner.clone()),
+        )
+        .collect::<BTreeSet<_>>();
+    for (module_path, executable_index) in source_fact_owners {
+        let Some(unit) = units
+            .iter()
+            .find(|unit| unit.module_path.as_str() == module_path.as_str())
+        else {
             return Err(MirBuildError::InvalidSourceFactOwner {
-                module_path: module_path.clone(),
-                executable_index: *executable_index,
+                module_path,
+                executable_index,
                 message: "owner module is absent from the MIR build input".to_string(),
             });
         };
@@ -99,11 +112,11 @@ pub fn build_mir_units_with_source_facts(
             .declarations
             .executables
             .values()
-            .any(|declaration| declaration.executable_index == *executable_index);
-        if !declared || unit.executables.get(*executable_index as usize).is_none() {
+            .any(|declaration| declaration.executable_index == executable_index);
+        if !declared || unit.executables.get(executable_index as usize).is_none() {
             return Err(MirBuildError::InvalidSourceFactOwner {
-                module_path: module_path.clone(),
-                executable_index: *executable_index,
+                module_path,
+                executable_index,
                 message: "owner executable is absent from the File IR unit".to_string(),
             });
         }
@@ -334,6 +347,20 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
             message,
         })?;
     let (blocks, regions, statements) = cfg.finish();
+    let source_event_plan = source_facts
+        .source_event_plan(&unit.module_path, executable_index)
+        .cloned()
+        .unwrap_or_else(|| {
+            MirSourceEventPlan::unavailable(MirSourceEventUnavailableReason::SourceFactsNotProvided)
+        });
+    let source_event_plan =
+        super::finalize_mir_source_event_plan(source_event_plan, &expressions, &blocks).map_err(
+            |error| MirBuildError::InvalidSourceFactOwner {
+                module_path: unit.module_path.clone(),
+                executable_index,
+                message: error.to_string(),
+            },
+        )?;
     let mut function = MirFunction {
         executable_index,
         origin: PackageExecutableCoordinate {
@@ -354,6 +381,7 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
         blocks,
         regions,
         statements,
+        source_event_plan,
         liveness: MirLiveness::default(),
         effect_summary_ref,
         effect_summary,

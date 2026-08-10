@@ -123,6 +123,7 @@ impl LoweredPackage {
                             .alias_targets_for_module(module_path),
                         type_resolution: model.type_resolution(),
                         expression_types: Some(model.expression_types()),
+                        source_events: Some(model.source_events()),
                         execution_semantics: Some(model.execution_semantics()),
                         callable_return_types: &callable_return_types,
                         executable_signatures: model.executable_signatures(),
