@@ -1,6 +1,7 @@
 # Phase 3B: deployment linker, monomorphization and semantic verifier
 
-状态：planned；依赖Phase 3A complete
+状态：planned（implementation handoff：
+[`phase-3b-implementation-handoff.md`](../results/phase-3b-implementation-handoff.md)）；依赖Phase 3A complete
 
 ## 1. 目标
 
