@@ -18,16 +18,17 @@ use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    BytecodeArtifact, BytecodeArtifactRef, BytecodeFunctionOrigin, BytecodeImage,
-    BytecodePoolEntry, BytecodePools, ContractDiagnosticText, DebugBinding, DebugTable,
-    DeploymentArtifactIdentity, DeploymentRevision, FileIrRef, FileIrUnit, FrameLayout,
-    FrozenConstantGraph, PackageArtifact, PackageBuildId, PackageCallableId,
+    BytecodeArtifact, BytecodeArtifactRef, BytecodeFunctionOrigin,
+    BytecodeFunctionStatementManifest, BytecodeImage, BytecodePoolEntry, BytecodePools,
+    ContractDiagnosticText, DebugBinding, DebugTable, DeploymentArtifactIdentity,
+    DeploymentRevision, FileIrRef, FileIrUnit, FrameLayout, FrozenConstantGraph,
+    InstructionSourceSite, PackageArtifact, PackageBuildId, PackageCallableId,
     PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    RelocatableBytecodeFunction, ServiceContract, ServiceProtocolIdentity, StatementChargeKind,
-    StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION,
+    RelocatableBytecodeFunction, ServiceContract, ServiceProtocolIdentity, SourceMapEntry,
+    StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason, TypeRefIr,
+    ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -74,6 +75,12 @@ fn package_fixture() -> PackageArtifact {
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(
+                "example.com/checkpoint",
+                &[],
+            )
+            .unwrap(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
@@ -464,6 +471,9 @@ fn coordinate_collision_pair_has_independent_records_and_cas() {
         )
         .unwrap(),
     };
+    slash.bytecode_statement_manifest_identity =
+        skiff_artifact_model::derive_bytecode_statement_manifest_identity(&slash.package_id, &[])
+            .unwrap();
     assign_package_artifact_identities(&mut slash).unwrap();
     let mut adjacent_dots = package_fixture();
     adjacent_dots.package_id = "a.b/c..d".to_string();
@@ -475,6 +485,12 @@ fn coordinate_collision_pair_has_independent_records_and_cas() {
         )
         .unwrap(),
     };
+    adjacent_dots.bytecode_statement_manifest_identity =
+        skiff_artifact_model::derive_bytecode_statement_manifest_identity(
+            &adjacent_dots.package_id,
+            &[],
+        )
+        .unwrap();
     assign_package_artifact_identities(&mut adjacent_dots).unwrap();
 
     let slash_path = store.write_package_artifact(&slash).unwrap();
@@ -792,10 +808,19 @@ fn bytecode_fixture() -> BytecodeArtifact {
             switch_tables: Vec::new(),
             statement_entries: vec![StatementEntry {
                 pc: 0,
-                statement_id: "s:main:entry".to_string(),
-                charge_kind: StatementChargeKind::FunctionEntry,
+                sequence_ordinal: 0,
+                attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::RuntimeControlFlow,
+                },
             }],
-            source_map: Vec::new(),
+            source_map: vec![SourceMapEntry {
+                start_pc: 0,
+                end_pc: 1,
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::RuntimeControlFlow,
+                },
+            }],
         },
     );
     BytecodeArtifact {
@@ -832,6 +857,26 @@ fn bytecode_fixture() -> BytecodeArtifact {
     }
 }
 
+fn bytecode_statement_manifest(
+    package_id: &str,
+    bytecode: &BytecodeArtifact,
+) -> skiff_artifact_model::BytecodeStatementManifestIdentity {
+    let mut functions = bytecode
+        .image
+        .functions
+        .values()
+        .map(|function| {
+            BytecodeFunctionStatementManifest::new(
+                function.origin.clone(),
+                function.statement_entries.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    functions.sort_by(|left, right| left.origin.cmp(&right.origin));
+    skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &functions)
+        .unwrap()
+}
+
 fn bytecode_identity_leaf(character: char) -> String {
     format!(
         "{BYTECODE_IDENTITY_PREFIX}:{}",
@@ -847,6 +892,14 @@ fn bytecode_record_write_read_and_fail_closed_paths() {
     assign_bytecode_identity(&mut bytecode).unwrap();
     let reference = BytecodeArtifactRef::new(bytecode.bytecode_identity.clone());
     package.bytecode = Some(reference.clone());
+    package.bytecode_statement_manifest_identity =
+        bytecode_statement_manifest(&package.package_id, &bytecode);
+    assert_ne!(
+        package.bytecode_statement_manifest_identity,
+        skiff_artifact_model::derive_bytecode_statement_manifest_identity(&package.package_id, &[])
+            .unwrap(),
+        "a bytecode-bearing package must commit to the complete non-empty function manifest"
+    );
     assign_package_artifact_identities(&mut package).unwrap();
     let package_ref = package_artifact_ref(&package).unwrap();
 
@@ -862,13 +915,11 @@ fn bytecode_record_write_read_and_fail_closed_paths() {
         store.root().join(canonical.as_relative_path().as_path())
     );
     store.write_package_artifact(&package).unwrap();
+    let stored_package = store.read_package_artifact(&package_ref).unwrap();
+    assert_eq!(stored_package.bytecode.as_ref(), Some(&reference));
     assert_eq!(
-        store
-            .read_package_artifact(&package_ref)
-            .unwrap()
-            .bytecode
-            .as_ref(),
-        Some(&reference)
+        stored_package.bytecode_statement_manifest_identity,
+        package.bytecode_statement_manifest_identity
     );
 
     let validated = store

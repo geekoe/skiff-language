@@ -6,10 +6,10 @@ use skiff_artifact_identity::{
     service_deployment_ref,
 };
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
-    BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractDiagnosticText, ContractRequirement, DeploymentArtifactIdentity,
+    derive_bytecode_statement_manifest_identity, BoundaryCallbackContract, BoundaryEffectGuarantee,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, ContractDiagnosticText, ContractRequirement, DeploymentArtifactIdentity,
     DeploymentDiagnosticText, DeploymentIngressBinding, DeploymentOperationBinding,
     DeploymentRevision, GatewayEntryKey, IngressProtocol, IngressSelector, PackageArtifact,
     PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
@@ -134,6 +134,11 @@ pub fn package(
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            package_id,
+            &[],
+        )
+        .unwrap(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),

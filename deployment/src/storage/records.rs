@@ -721,10 +721,10 @@ mod package_schema_tests {
         assign_package_artifact_identities, package_schema_index_identity, package_schema_type_id,
     };
     use skiff_artifact_model::{
-        ContractTypeDescriptor, ContractTypeNameability, PackageBuildId,
-        PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-        PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor, PackageSchemaIndexEntry,
-        PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        derive_bytecode_statement_manifest_identity, ContractTypeDescriptor,
+        ContractTypeNameability, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
+        PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor,
+        PackageSchemaIndexEntry, PACKAGE_ARTIFACT_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -841,6 +841,11 @@ mod package_schema_tests {
             files: Vec::new(),
             static_resources: Vec::new(),
             bytecode: None,
+            bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+                &index.package_id,
+                &[],
+            )
+            .unwrap(),
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
                 public_symbols: BTreeMap::new(),

@@ -105,6 +105,11 @@ impl ProjectionFixture {
             files: vec![file.clone()],
             static_resources: Vec::new(),
             bytecode: None,
+            bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+                package_id,
+                &[],
+            )
+            .unwrap(),
             package_local_abi: PackageLocalAbi {
                 local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
                 public_symbols: BTreeMap::from([(
@@ -996,6 +1001,11 @@ fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
             artifact_path: None,
         }],
         bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            "example.util",
+            &[],
+        )
+        .unwrap(),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
