@@ -983,11 +983,59 @@ pub struct ProjectionFileArtifactSource {
 #[cfg(test)]
 mod resolved_package_schema_tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use skiff_artifact_model::{
-        ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor,
-        PackageSchemaIndexEntry,
+        derive_bytecode_statement_manifest_identity, ContractTypeDescriptor, ContractTypeRef,
+        PackageSchemaCanonicalDescriptor, PackageSchemaIndexEntry,
     };
+
+    const PACKAGE_ID: &str = "example.com/models";
+
+    fn package_build_id(hex_digit: char) -> PackageBuildId {
+        PackageBuildId::new(format!(
+            "skiff-package-build-v13:sha256:{}",
+            hex_digit.to_string().repeat(64)
+        ))
+    }
+
+    fn package_artifact_wire() -> Value {
+        json!({
+            "schemaVersion": "skiff-package-artifact-v14",
+            "packageId": PACKAGE_ID,
+            "packageVersion": "1.2.3",
+            "packageBuildId": package_build_id('b'),
+            "files": [],
+            "staticResources": [],
+            "bytecodeStatementManifestIdentity":
+                derive_bytecode_statement_manifest_identity(PACKAGE_ID, &[]).unwrap(),
+            "packageLocalAbi": { "localAbiIdentity": "abi", "publicSymbols": {} },
+            "packageSchemaIndex": {
+                "packageId": PACKAGE_ID,
+                "packageSchemaIndexIdentity": "index"
+            },
+            "packageSchemaTypeRecords": {
+                "type:user": {
+                    "packageId": PACKAGE_ID,
+                    "packageSchemaTypeId": "type:user"
+                }
+            },
+            "implementationLinks": {},
+            "callableLinks": {},
+            "syntheticCallbackOwners": [],
+            "bytecodeSchemaRecords": {},
+            "actorImplementations": [],
+            "localInterfaceConformances": [],
+            "packageRequirements": [],
+            "contractRequirements": [],
+            "serviceRequirements": [],
+            "runtimeRequirements": {
+                "config": []
+            },
+            "callableSemanticFacts": {},
+            "boundaryProjections": {},
+            "serviceCallRefs": []
+        })
+    }
 
     fn schema(
         public_path: Option<&str>,
@@ -996,12 +1044,12 @@ mod resolved_package_schema_tests {
         let type_id = PackageSchemaTypeId::new("type:user");
         ResolvedPackageSchema::new(
             "models".to_string(),
-            "example.com/models".to_string(),
+            PACKAGE_ID.to_string(),
             "1.2.3".to_string(),
-            PackageBuildId::new("build"),
+            package_build_id('a'),
             PackageLocalAbiIdentity::new("abi"),
             PackageSchemaIndex {
-                package_id: "example.com/models".to_string(),
+                package_id: PACKAGE_ID.to_string(),
                 package_schema_index_identity: "index".into(),
                 types: BTreeMap::from([(
                     "api.User".to_string(),
@@ -1015,7 +1063,7 @@ mod resolved_package_schema_tests {
             BTreeMap::from([(
                 type_id.clone(),
                 PackageSchemaTypeRecord {
-                    package_id: "example.com/models".to_string(),
+                    package_id: PACKAGE_ID.to_string(),
                     stable_schema_key: "api.User".to_string(),
                     package_schema_type_id: type_id,
                     canonical_descriptor: PackageSchemaCanonicalDescriptor {
@@ -1037,7 +1085,7 @@ mod resolved_package_schema_tests {
             "providers".to_string(),
             "example.com/providers".to_string(),
             "1.2.3".to_string(),
-            PackageBuildId::new("build"),
+            package_build_id('a'),
             PackageLocalAbiIdentity::new("abi"),
             PackageSchemaIndex {
                 package_id: "example.com/providers".to_string(),
@@ -1079,12 +1127,12 @@ mod resolved_package_schema_tests {
         let type_id = PackageSchemaTypeId::new("type:generic");
         let error = ResolvedPackageSchema::new(
             "models".to_string(),
-            "example.com/models".to_string(),
+            PACKAGE_ID.to_string(),
             "1.2.3".to_string(),
-            PackageBuildId::new("build"),
+            package_build_id('a'),
             PackageLocalAbiIdentity::new("abi"),
             PackageSchemaIndex {
-                package_id: "example.com/models".to_string(),
+                package_id: PACKAGE_ID.to_string(),
                 package_schema_index_identity: "index".into(),
                 types: BTreeMap::from([(
                     "api.Box".to_string(),
@@ -1098,7 +1146,7 @@ mod resolved_package_schema_tests {
             BTreeMap::from([(
                 type_id.clone(),
                 PackageSchemaTypeRecord {
-                    package_id: "example.com/models".to_string(),
+                    package_id: PACKAGE_ID.to_string(),
                     stable_schema_key: "api.Box".to_string(),
                     package_schema_type_id: type_id.clone(),
                     canonical_descriptor: PackageSchemaCanonicalDescriptor {
@@ -1129,42 +1177,10 @@ mod resolved_package_schema_tests {
     #[test]
     fn exact_binding_rejects_wrong_abi_and_build() {
         let schema = schema(Some("api.User"), ContractTypeNameability::PublicNameable).unwrap();
-        let artifact = serde_json::from_value::<PackageArtifact>(json!({
-            "schemaVersion": "skiff-package-artifact-v12",
-            "packageId": "example.com/models",
-            "packageVersion": "1.2.3",
-            "packageBuildId": "wrong-build",
-            "files": [],
-            "staticResources": [],
-            "packageLocalAbi": { "localAbiIdentity": "abi", "publicSymbols": {} },
-            "packageSchemaIndex": {
-                "packageId": "example.com/models",
-                "packageSchemaIndexIdentity": "index"
-            },
-            "packageSchemaTypeRecords": {
-                "type:user": {
-                    "packageId": "example.com/models",
-                    "packageSchemaTypeId": "type:user"
-                }
-            },
-            "implementationLinks": {},
-            "callableLinks": {},
-            "actorImplementations": [],
-            "localInterfaceConformances": [],
-            "packageRequirements": [],
-            "contractRequirements": [],
-            "serviceRequirements": [],
-            "runtimeRequirements": {
-                "config": []
-            },
-            "callableSemanticFacts": {},
-            "boundaryProjections": {},
-            "serviceCallRefs": []
-        }))
-        .unwrap();
+        let artifact = serde_json::from_value::<PackageArtifact>(package_artifact_wire()).unwrap();
         let requirement = PackageRequirement {
             alias: "models".to_string(),
-            package_id: "example.com/models".to_string(),
+            package_id: PACKAGE_ID.to_string(),
             exact_version: "1.2.3".to_string(),
             expected_local_abi: PackageLocalAbiIdentity::new("abi"),
             expected_package_build: None,
@@ -1182,6 +1198,35 @@ mod resolved_package_schema_tests {
             schema.validate_exact_binding(&wrong_abi, &artifact),
             Err(ResolvedPackageSchemaError::RequirementMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn package_artifact_wire_requires_v14_authority_fields_and_roundtrips() {
+        let wire = package_artifact_wire();
+        let artifact = serde_json::from_value::<PackageArtifact>(wire.clone()).unwrap();
+
+        assert_eq!(artifact.schema_version, "skiff-package-artifact-v14");
+        assert_eq!(artifact.package_build_id, package_build_id('b'));
+        assert_eq!(
+            artifact.bytecode_statement_manifest_identity,
+            derive_bytecode_statement_manifest_identity(PACKAGE_ID, &[]).unwrap()
+        );
+        assert!(artifact.synthetic_callback_owners.is_empty());
+        assert!(artifact.bytecode_schema_records.is_empty());
+        assert_eq!(serde_json::to_value(artifact).unwrap(), wire);
+
+        for field in [
+            "bytecodeStatementManifestIdentity",
+            "syntheticCallbackOwners",
+            "bytecodeSchemaRecords",
+        ] {
+            let mut missing = package_artifact_wire();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<PackageArtifact>(missing).is_err(),
+                "{field} must remain required on the PackageArtifact wire"
+            );
+        }
     }
 
     #[test]
