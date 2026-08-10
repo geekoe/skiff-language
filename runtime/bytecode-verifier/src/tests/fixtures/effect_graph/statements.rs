@@ -78,6 +78,29 @@ pub(super) fn artifact_resume_source_map() -> Vec<SourceMapEntry> {
     }]
 }
 
+pub(super) fn artifact_stream_source_map() -> Vec<SourceMapEntry> {
+    vec![SourceMapEntry {
+        start_pc: 0,
+        end_pc: 3,
+        site: budget_site(),
+    }]
+}
+
+pub(super) fn artifact_double_stream_source_map() -> Vec<SourceMapEntry> {
+    vec![
+        SourceMapEntry {
+            start_pc: 0,
+            end_pc: 3,
+            site: budget_site(),
+        },
+        SourceMapEntry {
+            start_pc: 3,
+            end_pc: 6,
+            site: budget_site(),
+        },
+    ]
+}
+
 pub(super) fn artifact_inout_source_map() -> Vec<SourceMapEntry> {
     vec![SourceMapEntry {
         start_pc: 0,
@@ -143,6 +166,29 @@ pub(super) fn linked_resume_source_map() -> Box<[LinkedSourceMapEntry]> {
         InstructionBoundaryIndex::new(1),
         budget_site(),
     )])
+}
+
+pub(super) fn linked_stream_source_map() -> Box<[LinkedSourceMapEntry]> {
+    Box::new([LinkedSourceMapEntry::new(
+        InstructionIndex::new(0),
+        InstructionBoundaryIndex::new(1),
+        budget_site(),
+    )])
+}
+
+pub(super) fn linked_double_stream_source_map() -> Box<[LinkedSourceMapEntry]> {
+    Box::new([
+        LinkedSourceMapEntry::new(
+            InstructionIndex::new(0),
+            InstructionBoundaryIndex::new(1),
+            budget_site(),
+        ),
+        LinkedSourceMapEntry::new(
+            InstructionIndex::new(1),
+            InstructionBoundaryIndex::new(2),
+            budget_site(),
+        ),
+    ])
 }
 
 pub(super) fn linked_inout_source_map() -> Box<[LinkedSourceMapEntry]> {

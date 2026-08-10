@@ -1,22 +1,27 @@
 use skiff_artifact_model::{
-    CallableEffectSummary, CallableMayEffects, InOutPathEffect, PackageCallableId,
-    PendingEffectCategory,
+    CallableEffectSummary, CallableMayEffects, InOutPathEffect, InstructionSourceSite,
+    PackageCallableId, PendingEffectCategory, ResumeErrorMode, SyntheticInstructionSiteReason,
 };
-use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
+use skiff_runtime_linked_bytecode::{
+    FrameSlotIndex, FunctionIndex, InstructionIndex, LinkedValueDropPlan, LinkedValueTransferPlan,
+    TypeIndex,
+};
 
 use super::prove_effect_and_no_pending;
 use crate::{
     admission::prove_admission,
+    attribution::prove_source_attribution,
     concrete_values::prove_types_and_plans,
     control_flow::prove_control_flow_and_stack,
     tests::fixtures::{
         effect_graph::{
-            analyzed, bottom, loader_backed_effect_graph, EffectGraphCallKind, EffectGraphFunction,
+            analyzed, bottom, loader_backed_effect_graph,
+            loader_backed_effect_graph_with_resume_swap, EffectGraphCallKind, EffectGraphFunction,
         },
         generous_limits,
     },
     verifier::prove_statement_schedule_for_test,
-    verify, VerificationError, VerificationLocation, VerificationObligation,
+    verify, VerificationError, VerificationLocation, VerificationObligation, VerifiedResumeKind,
 };
 
 #[test]
@@ -144,8 +149,16 @@ fn call_plan_effect_owner_mismatch_is_rejected_defensively() {
     let limits = generous_limits();
     let admission = prove_admission(&hydrated, &candidate, &limits).unwrap();
     let concrete = prove_types_and_plans(&hydrated, &candidate, &limits).unwrap();
-    let mut control =
-        prove_control_flow_and_stack(&hydrated, &candidate, &concrete, &limits).unwrap();
+    let source = prove_source_attribution(&candidate).unwrap();
+    let mut control = prove_control_flow_and_stack(
+        &hydrated,
+        &candidate,
+        &concrete,
+        admission.resume_binding(),
+        &source,
+        &limits,
+    )
+    .unwrap();
     let schedule = prove_statement_schedule_for_test(&hydrated, &candidate, &limits).unwrap();
     assert!(control.corrupt_call_effect_for_test(
         FunctionIndex::new(0),
@@ -270,6 +283,103 @@ fn actual_with_resume_still_fails_at_the_earlier_resume_gate() {
 }
 
 #[test]
+fn stream_next_stream_read_mints_a_nonempty_resume_certificate() {
+    let image = verify_graph(vec![stream_function(stream_effects())])
+        .expect("StreamNext/StreamRead must verify from exact stream authority");
+    let [resume] = image.resume_sites().rows() else {
+        panic!("exactly one resume certificate was expected")
+    };
+    assert_eq!(resume.function(), FunctionIndex::new(0));
+    assert_eq!(resume.site(), InstructionIndex::new(0));
+    assert_eq!(resume.resume(), InstructionIndex::new(1));
+    assert_eq!(resume.expected_stack_height_before_result(), 0);
+    assert_eq!(resume.result_type(), TypeIndex::new(0));
+    assert_eq!(
+        resume.result_plan(),
+        &LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        }
+    );
+    assert_eq!(resume.error_mode(), ResumeErrorMode::RaiseAtSite);
+    assert_eq!(
+        resume.original_site(),
+        &InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::RuntimeControlFlow,
+        }
+    );
+    assert_eq!(
+        resume.kind(),
+        &VerifiedResumeKind::StreamRead {
+            endpoint_slot: FrameSlotIndex::new(0),
+            item_type: TypeIndex::new(0),
+        }
+    );
+    assert!(!image
+        .function_effects(FunctionIndex::new(0))
+        .expect("stream function effects")
+        .no_pending());
+}
+
+#[test]
+fn reachable_stream_next_cannot_mint_no_pending() {
+    let error = verify_graph(vec![stream_function(bottom())])
+        .expect_err("StreamNext requires canonical Stream pending authority");
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::EffectAndNoPending,
+            location: VerificationLocation::Instruction { function, instruction },
+            detail,
+        } if function == FunctionIndex::new(0)
+            && instruction == InstructionIndex::new(0)
+            && detail.contains("Stream pending")
+    ));
+}
+
+#[test]
+fn swapped_resume_targets_fail_at_exact_hydration_binding() {
+    let mut function = stream_function(stream_effects());
+    function.call_kind = EffectGraphCallKind::StreamReadTwice;
+    let functions = vec![function];
+    let (hydrated, candidate) = loader_backed_effect_graph_with_resume_swap(functions);
+    let error = verify(hydrated, candidate, &generous_limits())
+        .expect_err("raw descriptor and typed resume row may not be swapped");
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ExactHydrationBinding,
+            location: VerificationLocation::Instruction { function, instruction },
+            detail,
+        } if function == FunctionIndex::new(0)
+            && instruction == InstructionIndex::new(0)
+            && detail.contains("exact descriptor")
+    ));
+}
+
+#[test]
+fn repeated_stream_read_preserves_the_nonempty_stack_prefix() {
+    let mut function = stream_function(stream_effects());
+    function.call_kind = EffectGraphCallKind::StreamReadTwice;
+    let image = verify_graph(vec![function])
+        .expect("two exact stream reads with a retained prefix must verify");
+    let [first, second] = image.resume_sites().rows() else {
+        panic!("two resume certificates were expected")
+    };
+    assert_eq!(first.expected_stack_height_before_result(), 0);
+    assert_eq!(second.site(), InstructionIndex::new(1));
+    assert_eq!(second.resume(), InstructionIndex::new(2));
+    assert_eq!(second.expected_stack_height_before_result(), 1);
+    assert_eq!(second.result_type(), TypeIndex::new(0));
+    assert_eq!(
+        second.kind(),
+        &VerifiedResumeKind::StreamRead {
+            endpoint_slot: FrameSlotIndex::new(0),
+            item_type: TypeIndex::new(0),
+        }
+    );
+}
+
+#[test]
 fn call_local_inout_still_fails_at_the_earlier_target_plan_gate() {
     let mut caller = function(bottom(), Some(1));
     caller.call_kind = EffectGraphCallKind::InOut;
@@ -302,6 +412,19 @@ fn function(effects: CallableMayEffects, target: Option<u32>) -> EffectGraphFunc
         call_kind: EffectGraphCallKind::Ordinary,
         trailing_return: false,
     }
+}
+
+fn stream_function(effects: CallableMayEffects) -> EffectGraphFunction {
+    let mut function = function(effects, None);
+    function.call_kind = EffectGraphCallKind::StreamRead;
+    function
+}
+
+fn stream_effects() -> CallableMayEffects {
+    let mut effects = bottom();
+    effects.may_pending = true;
+    effects.pending_effect_categories = vec![PendingEffectCategory::Stream];
+    effects
 }
 
 fn assert_call_underclaim(caller: CallableMayEffects, callee: CallableMayEffects, keyword: &str) {

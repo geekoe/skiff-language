@@ -12,6 +12,7 @@ mod control_flow;
 mod effects;
 mod error;
 mod limits;
+mod resume;
 mod verifier;
 
 pub use attribution::{VerifiedStatementEvent, VerifiedStatementSchedule};
@@ -20,6 +21,7 @@ pub use error::{
     VerificationError, VerificationLimit, VerificationLocation, VerificationObligation,
 };
 pub use limits::VerificationLimits;
+pub use resume::{VerifiedResumeKind, VerifiedResumeSite, VerifiedResumeSites};
 pub use verifier::{
     verify, CodeEntryLookupError, VerifiedCodeEntry, VerifiedCodeEntryKind, VerifiedConstantHeap,
     VerifiedLinkedBytecodeImage,

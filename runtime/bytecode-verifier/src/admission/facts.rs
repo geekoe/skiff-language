@@ -5,21 +5,28 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 
+mod resume;
+
+pub(crate) use resume::{ExactResumeBinding, ExactResumeEntry};
+
 /// Private P1 facts derived from the exact hydration/candidate pair.
 #[derive(Debug)]
 pub(crate) struct AdmissionFacts {
     statements: ExactStatementBinding,
     effects: ExactCanonicalEffectBinding,
+    resumes: ExactResumeBinding,
 }
 
 impl AdmissionFacts {
     pub(super) const fn new(
         statements: ExactStatementBinding,
         effects: ExactCanonicalEffectBinding,
+        resumes: ExactResumeBinding,
     ) -> Self {
         Self {
             statements,
             effects,
+            resumes,
         }
     }
 
@@ -29,6 +36,10 @@ impl AdmissionFacts {
 
     pub(crate) const fn effect_binding(&self) -> &ExactCanonicalEffectBinding {
         &self.effects
+    }
+
+    pub(crate) const fn resume_binding(&self) -> &ExactResumeBinding {
+        &self.resumes
     }
 }
 

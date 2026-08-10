@@ -2,6 +2,7 @@ mod classes;
 mod normalization;
 mod plans;
 mod resolver;
+mod streams;
 mod types;
 
 use skiff_artifact_model::{NativeValueLifecycleResolution, TypeRefIr};
@@ -160,6 +161,16 @@ impl ConcreteValueFacts {
         declared: &LinkedValueTransferPlan,
     ) -> bool {
         plans::matches_declared_plan(self, coordinate, declared)
+    }
+
+    /// Derives the item class from the independently normalized `Stream<T>`
+    /// endpoint rather than trusting a resume result declaration.
+    pub(crate) fn stream_item_type(
+        &self,
+        endpoint: TypeIndex,
+        location: crate::VerificationLocation,
+    ) -> Result<TypeIndex, VerificationError> {
+        streams::derive_item_type(self, endpoint, location)
     }
 
     fn class(&self, id: ConcreteTypeClassId) -> Option<&ConcreteTypeClass> {

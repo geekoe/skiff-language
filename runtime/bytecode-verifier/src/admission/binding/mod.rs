@@ -11,7 +11,7 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
-use crate::admission::{AdmissionFacts, ExactStatementBinding};
+use crate::admission::{AdmissionFacts, ExactResumeBinding, ExactStatementBinding};
 use crate::{VerificationError, VerificationLocation, VerificationObligation};
 
 pub(super) fn prove_exact_binding(
@@ -23,9 +23,21 @@ pub(super) fn prove_exact_binding(
     let functions = functions::prove_functions(hydrated, candidate)?;
     entries::prove_entry_and_target_tables(hydrated, candidate, &functions.coverage)?;
     data::prove_constant_roots(hydrated, candidate)?;
+    let mut resumes = functions.resumes;
+    resumes.sort_unstable_by_key(|row| row.index().get());
+    for (ordinal, row) in resumes.iter().enumerate() {
+        let expected = row_u32(CandidateTable::ResumeSites, ordinal)?;
+        if row.index().get() != expected {
+            return Err(semantic_violation(
+                table_location(CandidateTable::ResumeSites, expected),
+                "exact resume bindings are not dense in linked table order",
+            ));
+        }
+    }
     Ok(AdmissionFacts::new(
         ExactStatementBinding::new(functions.statements.into_boxed_slice()),
         crate::admission::ExactCanonicalEffectBinding::new(functions.effects.into_boxed_slice()),
+        ExactResumeBinding::new(resumes.into_boxed_slice()),
     ))
 }
 

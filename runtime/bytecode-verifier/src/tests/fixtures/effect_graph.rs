@@ -2,32 +2,32 @@ use std::{collections::BTreeMap, sync::Arc};
 
 mod identities;
 mod inout;
+mod instructions;
+mod linked;
 mod resume;
 mod statements;
+mod summaries;
+
+pub(crate) use summaries::{analyzed, bottom};
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeFunctionOrigin,
     BytecodeImage, BytecodeRelocation, BytecodeSpecialization, CallableEffectSummary,
-    CallableMayEffects, CallableProvenanceSummary, CallableProvenanceUnknownReason,
-    CallableSemanticFacts, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentRevision, FileIrRef, FrozenConstantGraph, OperationCallableKind, OperationTargetRef,
-    PackageArtifact, PackageBuildId, PackageCallableLinkFact, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
+    CallableProvenanceSummary, CallableProvenanceUnknownReason, CallableSemanticFacts,
+    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentRevision, FileIrRef,
+    FrozenConstantGraph, OperationCallableKind, OperationTargetRef, PackageArtifact,
+    PackageBuildId, PackageCallableLinkFact, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
     PackageSchemaIndexRef, PackageTypeRef, RelocatableBytecodeFunction, ServiceDeployment,
     TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
     PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
-use skiff_runtime_linked_bytecode::{
-    FunctionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedCallableEffectDeclaration,
-    LinkedExactLocalTarget, LinkedFunction, LinkedFunctionTables, LinkedInstruction,
-    LinkedInstructionTarget, LinkedProgramPointState, LinkedResolvedOperand, LinkedSourceMapEntry,
-    LinkedStackMapCandidate, LinkedStatementEntry, SpecializationKey,
-};
+use skiff_runtime_linked_bytecode::LinkedBytecodeCandidate;
 use skiff_runtime_loader::{DeploymentBytecodeLoader, HydratedDeploymentBytecode};
 
-use self::identities::{callable, coordinate, function_key, specialization, symbol};
-use super::{bytecode_statement_manifest_identity, candidate_parts, contract, ExactResolver};
+use self::identities::{callable, coordinate, function_key, symbol};
+use super::{bytecode_statement_manifest_identity, contract, ExactResolver};
 
 #[derive(Clone)]
 pub(crate) struct EffectGraphFunction {
@@ -43,26 +43,40 @@ pub(crate) enum EffectGraphCallKind {
     Ordinary,
     Tail,
     Resume,
+    StreamRead,
+    StreamReadTwice,
     InOut,
 }
 
-pub(crate) fn analyzed(effects: CallableMayEffects) -> CallableEffectSummary {
-    CallableEffectSummary::Analyzed { effects }
-}
+impl EffectGraphCallKind {
+    pub(super) const fn is_stream_read(self) -> bool {
+        matches!(self, Self::StreamRead | Self::StreamReadTwice)
+    }
 
-pub(crate) fn bottom() -> CallableMayEffects {
-    CallableMayEffects {
-        escapes_caller_value: false,
-        requires_same_heap_identity: false,
-        invokes_unknown_target: false,
-        may_pending: false,
-        pending_effect_categories: Vec::new(),
-        inout_path_effects: Vec::new(),
+    pub(super) const fn resume_site_count(self) -> u32 {
+        match self {
+            Self::Resume | Self::StreamRead => 1,
+            Self::StreamReadTwice => 2,
+            Self::Ordinary | Self::Tail | Self::InOut => 0,
+        }
     }
 }
 
 pub(crate) fn loader_backed_effect_graph(
     functions: Vec<EffectGraphFunction>,
+) -> (HydratedDeploymentBytecode, LinkedBytecodeCandidate) {
+    loader_backed_effect_graph_with_swap(functions, false)
+}
+
+pub(crate) fn loader_backed_effect_graph_with_resume_swap(
+    functions: Vec<EffectGraphFunction>,
+) -> (HydratedDeploymentBytecode, LinkedBytecodeCandidate) {
+    loader_backed_effect_graph_with_swap(functions, true)
+}
+
+fn loader_backed_effect_graph_with_swap(
+    functions: Vec<EffectGraphFunction>,
+    swap_resume_targets: bool,
 ) -> (HydratedDeploymentBytecode, LinkedBytecodeCandidate) {
     let bytecode = admitted_bytecode(&functions);
     let package = package(bytecode.as_ref(), &functions);
@@ -95,7 +109,7 @@ pub(crate) fn loader_backed_effect_graph(
     let hydrated = DeploymentBytecodeLoader::new(&resolver)
         .load(&reference)
         .unwrap();
-    let candidate = linked_candidate(&hydrated, &functions);
+    let candidate = linked::candidate(&hydrated, &functions, swap_resume_targets);
     (hydrated, candidate)
 }
 
@@ -103,7 +117,16 @@ fn admitted_bytecode(functions: &[EffectGraphFunction]) -> Arc<ValidatedBytecode
     let image_functions = functions
         .iter()
         .enumerate()
-        .map(|(ordinal, function)| (function_key(ordinal), artifact_function(ordinal, function)))
+        .map(|(ordinal, function)| {
+            (
+                function_key(ordinal),
+                artifact_function(
+                    ordinal,
+                    function,
+                    resume::descriptor_index(functions, ordinal),
+                ),
+            )
+        })
         .collect();
     let mut artifact = BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
@@ -131,6 +154,7 @@ fn admitted_bytecode(functions: &[EffectGraphFunction]) -> Arc<ValidatedBytecode
 fn artifact_function(
     ordinal: usize,
     function: &EffectGraphFunction,
+    resume_index: u32,
 ) -> RelocatableBytecodeFunction {
     let (mut words, relocations) = match (function.call_kind, function.target) {
         (EffectGraphCallKind::Ordinary, Some(target)) => (
@@ -153,7 +177,24 @@ fn artifact_function(
                 },
             }],
         ),
-        (EffectGraphCallKind::Resume, None) => (vec![0x61, 0, 0x25], Vec::new()),
+        (EffectGraphCallKind::Resume, None) => (vec![0x61, resume_index, 0x25], Vec::new()),
+        (EffectGraphCallKind::StreamRead, None) => {
+            (vec![0x60, 0, resume_index, 0x08, 0x25], Vec::new())
+        }
+        (EffectGraphCallKind::StreamReadTwice, None) => (
+            vec![
+                0x60,
+                0,
+                resume_index,
+                0x60,
+                0,
+                resume_index + 1,
+                0x08,
+                0x08,
+                0x25,
+            ],
+            Vec::new(),
+        ),
         (EffectGraphCallKind::InOut, Some(target)) => (
             vec![0x26, 0, 0, 0, 0, 0x25],
             vec![BytecodeRelocation::LocalExecutableRef {
@@ -167,7 +208,11 @@ fn artifact_function(
         (EffectGraphCallKind::Ordinary, None)
         | (EffectGraphCallKind::Tail, None)
         | (EffectGraphCallKind::InOut, None) => (vec![0x25], Vec::new()),
-        (EffectGraphCallKind::Resume, Some(_)) => panic!("resume fixture cannot have a target"),
+        (EffectGraphCallKind::Resume, Some(_))
+        | (EffectGraphCallKind::StreamRead, Some(_))
+        | (EffectGraphCallKind::StreamReadTwice, Some(_)) => {
+            panic!("resume fixture cannot have a target")
+        }
     };
     if function.trailing_return && matches!(function.call_kind, EffectGraphCallKind::Tail) {
         words.push(0x25);
@@ -194,10 +239,14 @@ fn artifact_function(
                 EffectGraphCallKind::Ordinary => statements::artifact_entries(),
                 EffectGraphCallKind::Tail => statements::artifact_tail_entries(),
                 EffectGraphCallKind::Resume => Vec::new(),
+                EffectGraphCallKind::StreamRead => Vec::new(),
+                EffectGraphCallKind::StreamReadTwice => Vec::new(),
                 EffectGraphCallKind::InOut => statements::artifact_call_only_entries(),
             }),
         source_map: match function.call_kind {
             EffectGraphCallKind::Resume => statements::artifact_resume_source_map(),
+            EffectGraphCallKind::StreamRead => statements::artifact_stream_source_map(),
+            EffectGraphCallKind::StreamReadTwice => statements::artifact_double_stream_source_map(),
             EffectGraphCallKind::Ordinary => function
                 .target
                 .map_or_else(Vec::new, |_| statements::artifact_source_map()),
@@ -228,7 +277,7 @@ fn package(
                     callable_id: callable(ordinal),
                     signature: skiff_artifact_model::PackageCallableSignature {
                         type_params: Vec::new(),
-                        parameters: Vec::new(),
+                        parameters: inout::package_parameters(function.call_kind),
                         return_type: PackageTypeRef::Local {
                             local_type: TypeRefIr::builtin("void"),
                         },
@@ -315,159 +364,4 @@ fn package(
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
     artifact
-}
-
-fn linked_candidate(
-    hydrated: &HydratedDeploymentBytecode,
-    functions: &[EffectGraphFunction],
-) -> LinkedBytecodeCandidate {
-    let package = hydrated.packages().values().next().unwrap();
-    let build = package.reference().package_build_id.clone();
-    let keys = (0..functions.len())
-        .map(|ordinal| specialization(&build, ordinal))
-        .collect::<Vec<_>>();
-    let linked_functions = functions
-        .iter()
-        .enumerate()
-        .map(|(ordinal, function)| linked_function(ordinal, &keys, function))
-        .collect();
-    let mut parts = candidate_parts(hydrated, None, None);
-    parts.functions = linked_functions;
-    parts.exact_local_targets = keys
-        .into_iter()
-        .enumerate()
-        .map(|(ordinal, key)| LinkedExactLocalTarget::new(key, FunctionIndex::new(ordinal as u32)))
-        .collect();
-    parts.resume_sites = resume::linked_sites(functions);
-    inout::extend_linked_parts(&mut parts, &build, functions);
-    LinkedBytecodeCandidate::try_from_parts(parts).unwrap()
-}
-
-fn linked_function(
-    ordinal: usize,
-    keys: &[SpecializationKey],
-    function: &EffectGraphFunction,
-) -> LinkedFunction {
-    let mut instructions = match (function.call_kind, function.target) {
-        (EffectGraphCallKind::Ordinary, Some(target)) => {
-            vec![linked_call(target), linked_budget(), linked_return(5)]
-        }
-        (EffectGraphCallKind::Tail, Some(target)) => vec![linked_tail_call(target)],
-        (EffectGraphCallKind::Resume, None) => vec![resume::linked_emit_stream(), linked_return(2)],
-        (EffectGraphCallKind::InOut, Some(target)) => {
-            vec![inout::linked_call(target), linked_return(5)]
-        }
-        (EffectGraphCallKind::Ordinary, None)
-        | (EffectGraphCallKind::Tail, None)
-        | (EffectGraphCallKind::InOut, None) => {
-            vec![linked_return(0)]
-        }
-        (EffectGraphCallKind::Resume, Some(_)) => panic!("resume fixture cannot have a target"),
-    };
-    if function.trailing_return && matches!(function.call_kind, EffectGraphCallKind::Tail) {
-        instructions.push(linked_return(3));
-    }
-    let states = (0..instructions.len())
-        .map(|instruction| {
-            LinkedProgramPointState::new(
-                InstructionIndex::new(instruction as u32),
-                Box::new([]),
-                inout::linked_slot_states(function.call_kind),
-                Box::new([]),
-                Box::new([]),
-            )
-        })
-        .collect::<Vec<_>>();
-    let max_operand_depth = resume::max_operand_depth(function.call_kind);
-    let stack_map = LinkedStackMapCandidate::try_new(
-        states.into_boxed_slice(),
-        instructions.len(),
-        inout::slot_count(function.call_kind),
-        max_operand_depth,
-    )
-    .unwrap();
-    let statement_entries: Box<[LinkedStatementEntry]> = match (function.call_kind, function.target)
-    {
-        (EffectGraphCallKind::Ordinary, Some(_)) => statements::linked_entries(),
-        (EffectGraphCallKind::Tail, Some(_)) => statements::linked_tail_entries(),
-        (EffectGraphCallKind::InOut, Some(_)) => statements::linked_call_only_entries(),
-        (EffectGraphCallKind::Resume, None)
-        | (EffectGraphCallKind::Ordinary, None)
-        | (EffectGraphCallKind::Tail, None)
-        | (EffectGraphCallKind::InOut, None) => Vec::new().into_boxed_slice(),
-        (EffectGraphCallKind::Resume, Some(_)) => panic!("resume fixture cannot have a target"),
-    };
-    let source_map: Box<[LinkedSourceMapEntry]> = match (function.call_kind, function.target) {
-        (EffectGraphCallKind::Resume, None) => statements::linked_resume_source_map(),
-        (EffectGraphCallKind::Ordinary, Some(_)) => statements::linked_source_map(),
-        (EffectGraphCallKind::Tail, Some(_)) => statements::linked_tail_source_map(),
-        (EffectGraphCallKind::InOut, Some(_)) => statements::linked_inout_source_map(),
-        (EffectGraphCallKind::Ordinary, None)
-        | (EffectGraphCallKind::Tail, None)
-        | (EffectGraphCallKind::InOut, None) => Vec::new().into_boxed_slice(),
-        (EffectGraphCallKind::Resume, Some(_)) => panic!("resume fixture cannot have a target"),
-    };
-    LinkedFunction::new(
-        FunctionIndex::new(ordinal as u32),
-        keys[ordinal].clone(),
-        instructions.into_boxed_slice(),
-        inout::linked_frame(function.call_kind),
-        max_operand_depth,
-        LinkedCallableEffectDeclaration::new(callable(ordinal), function.summary.clone()),
-        LinkedFunctionTables::new(
-            Box::new([]),
-            Box::new([]),
-            Box::new([]),
-            inout::linked_loan_layouts(function.call_kind),
-            statement_entries,
-            source_map,
-        ),
-        stack_map,
-    )
-}
-
-fn linked_call(target: u32) -> LinkedInstruction {
-    LinkedInstruction::new(
-        skiff_artifact_model::Opcode::CallLocal,
-        Box::new([0, 0, 0]),
-        Box::new([LinkedResolvedOperand::new(
-            0,
-            LinkedInstructionTarget::Function(FunctionIndex::new(target)),
-        )]),
-        0,
-    )
-    .unwrap()
-}
-
-fn linked_tail_call(target: u32) -> LinkedInstruction {
-    LinkedInstruction::new(
-        skiff_artifact_model::Opcode::TailCallLocal,
-        Box::new([0, 0]),
-        Box::new([LinkedResolvedOperand::new(
-            0,
-            LinkedInstructionTarget::Function(FunctionIndex::new(target)),
-        )]),
-        0,
-    )
-    .unwrap()
-}
-
-fn linked_budget() -> LinkedInstruction {
-    LinkedInstruction::new(
-        skiff_artifact_model::Opcode::BudgetCheckpoint,
-        Box::new([]),
-        Box::new([]),
-        4,
-    )
-    .unwrap()
-}
-
-fn linked_return(pc: u32) -> LinkedInstruction {
-    LinkedInstruction::new(
-        skiff_artifact_model::Opcode::Return,
-        Box::new([]),
-        Box::new([]),
-        pc,
-    )
-    .unwrap()
 }

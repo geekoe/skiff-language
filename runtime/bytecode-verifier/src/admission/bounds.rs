@@ -129,6 +129,13 @@ fn check_image_tables(
             VerificationLocation::Table { table, row: 0 },
         )?;
     }
+    for (row, resume) in candidate.resume_sites().iter().enumerate() {
+        check_arity(
+            count(resume.result_types())?,
+            limits,
+            table_location(CandidateTable::ResumeSites, row_u32(row)?),
+        )?;
+    }
     Ok(())
 }
 

@@ -9,8 +9,9 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
-use crate::admission::facts::ExactFunctionEffectBinding;
-use crate::admission::facts::ExactFunctionStatementBinding;
+use crate::admission::facts::{
+    ExactFunctionEffectBinding, ExactFunctionStatementBinding, ExactResumeEntry,
+};
 use crate::{VerificationError, VerificationLocation};
 
 use super::{row_u32, semantic_violation, table_location, TargetCoverage};
@@ -19,6 +20,7 @@ pub(super) struct ProvedFunctionBindings {
     pub(super) coverage: TargetCoverage,
     pub(super) statements: Vec<ExactFunctionStatementBinding>,
     pub(super) effects: Vec<ExactFunctionEffectBinding>,
+    pub(super) resumes: Vec<ExactResumeEntry>,
 }
 
 pub(super) fn prove_functions(
@@ -29,6 +31,7 @@ pub(super) fn prove_functions(
     let mut coverage = TargetCoverage::default();
     let mut statement_functions = Vec::with_capacity(candidate.functions().len());
     let mut effect_functions = Vec::with_capacity(candidate.functions().len());
+    let mut resumes = Vec::with_capacity(candidate.resume_sites().len());
     for function in candidate.functions() {
         let location = VerificationLocation::Function {
             function: function.index(),
@@ -57,7 +60,9 @@ pub(super) fn prove_functions(
         statement_functions.push(tables::prove_function_tables(
             package, function, source, candidate,
         )?);
-        tables::prove_resume_sites(package, function, source, candidate)?;
+        resumes.extend(tables::prove_resume_sites(
+            package, function, source, candidate,
+        )?);
         instructions::prove_instructions(
             hydrated,
             package,
@@ -71,6 +76,7 @@ pub(super) fn prove_functions(
         coverage,
         statements: statement_functions,
         effects: effect_functions,
+        resumes,
     })
 }
 

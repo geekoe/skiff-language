@@ -122,7 +122,8 @@ fn require_supported(
         | Opcode::BudgetCheckpoint
         | Opcode::CallLocal
         | Opcode::Return
-        | Opcode::Not => Ok(()),
+        | Opcode::Not
+        | Opcode::StreamNext => Ok(()),
         _ => Err(unavailable(location)),
     }
 }
@@ -332,6 +333,24 @@ fn output_values(
                 .copied()
                 .map(AbstractValue::Concrete)
                 .collect())
+        }
+        ValueSource::StreamItem { endpoint_slot } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let slot = values::resolve_slot(context, endpoint_slot)?;
+            let AbstractValue::Concrete(endpoint) =
+                values::live_slot(before, slot, context.location)?;
+            let item = context
+                .facts
+                .stream_item_type(endpoint, context.location)
+                .map_err(|_| {
+                    violation(
+                        context.location,
+                        "stream item type cannot be derived from the endpoint slot",
+                    )
+                })?;
+            Ok(vec![AbstractValue::Concrete(item)])
         }
         _ => Err(unavailable(context.location)),
     }

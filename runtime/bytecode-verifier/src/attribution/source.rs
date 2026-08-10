@@ -21,6 +21,7 @@ struct SourceFunctionFacts {
     function: FunctionIndex,
     instruction_count: usize,
     source_map_entries: usize,
+    current_sites: Box<[Option<InstructionSourceSite>]>,
 }
 
 impl SourceAttributionFacts {
@@ -38,6 +39,18 @@ impl SourceAttributionFacts {
                     && facts.source_map_entries == source_map_entries
             })
     }
+
+    pub(crate) fn current_site(
+        &self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> Option<&InstructionSourceSite> {
+        self.functions
+            .get(function.get() as usize)
+            .filter(|facts| facts.function == function)
+            .and_then(|facts| facts.current_sites.get(instruction.get() as usize))
+            .and_then(Option::as_ref)
+    }
 }
 
 /// Independently proves the canonical source route for every linked PC.
@@ -50,19 +63,14 @@ pub(crate) fn prove_source_attribution(
 ) -> Result<SourceAttributionFacts, VerificationError> {
     let mut functions = Vec::with_capacity(candidate.functions().len());
     for function in candidate.functions() {
-        prove_function(function)?;
-        functions.push(SourceFunctionFacts {
-            function: function.index(),
-            instruction_count: function.instructions().len(),
-            source_map_entries: function.source_map().len(),
-        });
+        functions.push(prove_function(function)?);
     }
     Ok(SourceAttributionFacts {
         functions: functions.into_boxed_slice(),
     })
 }
 
-fn prove_function(function: &LinkedFunction) -> Result<(), VerificationError> {
+fn prove_function(function: &LinkedFunction) -> Result<SourceFunctionFacts, VerificationError> {
     let instruction_count = u32::try_from(function.instructions().len()).map_err(|_| {
         function_violation(
             function,
@@ -73,6 +81,7 @@ fn prove_function(function: &LinkedFunction) -> Result<(), VerificationError> {
 
     let ranges = function.source_map();
     let mut range_ordinal = 0_usize;
+    let mut current_sites = Vec::with_capacity(function.instructions().len());
     for (ordinal, instruction) in function.instructions().iter().enumerate() {
         let index = instruction_index(function, ordinal)?;
         while ranges
@@ -87,8 +96,14 @@ fn prove_function(function: &LinkedFunction) -> Result<(), VerificationError> {
             .get(range_ordinal)
             .filter(|range| range.start().get() <= index.get() && index.get() < range.end().get());
         prove_instruction(function, index, instruction, covering)?;
+        current_sites.push(covering.map(|range| range.site().clone()));
     }
-    Ok(())
+    Ok(SourceFunctionFacts {
+        function: function.index(),
+        instruction_count: function.instructions().len(),
+        source_map_entries: function.source_map().len(),
+        current_sites: current_sites.into_boxed_slice(),
+    })
 }
 
 fn prove_source_ranges(

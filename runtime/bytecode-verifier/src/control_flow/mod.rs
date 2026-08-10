@@ -11,6 +11,11 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
+use crate::{
+    admission::ExactResumeBinding,
+    attribution::SourceAttributionFacts,
+    resume::{VerifiedResumeKind, VerifiedResumeSites},
+};
 use crate::{concrete_values::ConcreteValueFacts, VerificationError, VerificationLimits};
 
 use self::targets::ExactTargetAndCallFacts;
@@ -24,7 +29,8 @@ pub(crate) struct ControlFlowAndCallFacts {
     exact_targets: ExactTargetAndCallFacts,
     tail_calls: tail::VerifiedTailCallFacts,
     instructions: VerifiedInstructionFacts,
-    _empty_resume: resume::EmptyResumeProof,
+    resume_sites: VerifiedResumeSites,
+    stream_read_sites: Box<[(FunctionIndex, InstructionIndex)]>,
 }
 
 impl ControlFlowAndCallFacts {
@@ -59,6 +65,20 @@ impl ControlFlowAndCallFacts {
 
     pub(crate) fn instruction_rows(&self) -> &[VerifiedFunctionInstructions] {
         &self.instructions.functions
+    }
+
+    pub(crate) fn proves_stream_read(
+        &self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> bool {
+        self.stream_read_sites
+            .binary_search(&(function, instruction))
+            .is_ok()
+    }
+
+    pub(crate) fn into_resume_sites(self) -> VerifiedResumeSites {
+        self.resume_sites
     }
 
     #[cfg(test)]
@@ -285,9 +305,12 @@ pub(crate) fn prove_control_flow_and_stack(
     hydrated: &HydratedDeploymentBytecode,
     candidate: &LinkedBytecodeCandidate,
     concrete_values: &ConcreteValueFacts,
+    exact_resumes: &ExactResumeBinding,
+    source: &SourceAttributionFacts,
     limits: &VerificationLimits,
 ) -> Result<ControlFlowAndCallFacts, VerificationError> {
     let mut facts = cfg::prove_control_flow(candidate, limits)?;
+    let resume_preflight = resume::prove_contracts(candidate, exact_resumes)?;
     let targets = targets::prove_exact_targets_and_call_plans(
         hydrated,
         candidate,
@@ -302,15 +325,39 @@ pub(crate) fn prove_control_flow_and_stack(
         &mut facts,
         limits,
     )?;
-    let empty_resume =
-        resume::prove_resume_sites(candidate, concrete_values, &targets, &facts, limits)?;
+    let resume_sites = resume::prove_resume_states(
+        candidate,
+        exact_resumes,
+        &resume_preflight,
+        concrete_values,
+        &facts,
+        source,
+    )?;
+    let mut stream_read_sites = resume_sites
+        .rows()
+        .iter()
+        .filter_map(|row| {
+            matches!(row.kind(), VerifiedResumeKind::StreamRead { .. })
+                .then_some((row.function(), row.site()))
+        })
+        .collect::<Vec<_>>();
+    stream_read_sites.sort_unstable();
+    stream_read_sites.dedup();
+    if stream_read_sites.len() != resume_sites.rows().len() {
+        return Err(VerificationError::SemanticViolation {
+            obligation: crate::VerificationObligation::ResumeSite,
+            location: crate::VerificationLocation::Image,
+            detail: "resume certificates do not have unique stream-read coordinates".to_string(),
+        });
+    }
     let instructions = VerifiedInstructionFacts::try_from_candidate(candidate, &facts)?;
     Ok(ControlFlowAndCallFacts {
         control_flow: facts,
         exact_targets: targets,
         tail_calls,
         instructions,
-        _empty_resume: empty_resume,
+        resume_sites,
+        stream_read_sites: stream_read_sites.into_boxed_slice(),
     })
 }
 

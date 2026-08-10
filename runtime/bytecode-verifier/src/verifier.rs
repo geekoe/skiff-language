@@ -24,6 +24,7 @@ use crate::{
     concrete_values::prove_types_and_plans,
     control_flow,
     effects::{prove_effect_and_no_pending, VerifiedCallableEffects, VerifiedFunctionEffects},
+    resume::VerifiedResumeSites,
     VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
 };
 
@@ -41,6 +42,7 @@ struct SealedDeploymentFacts {
     constant_heap: VerifiedConstantHeap,
     statement_schedule: VerifiedStatementSchedule,
     callable_effects: VerifiedCallableEffects,
+    resume_sites: VerifiedResumeSites,
     seal: VerificationSeal,
 }
 
@@ -49,6 +51,7 @@ struct VerifiedSemanticFacts {
     constant_heap: VerifiedConstantHeap,
     statement_schedule: VerifiedStatementSchedule,
     callable_effects: VerifiedCallableEffects,
+    resume_sites: VerifiedResumeSites,
 }
 
 #[derive(Debug)]
@@ -121,6 +124,7 @@ pub struct VerifiedLinkedBytecodeImage {
     constant_heap: VerifiedConstantHeap,
     statement_schedule: VerifiedStatementSchedule,
     callable_effects: VerifiedCallableEffects,
+    resume_sites: VerifiedResumeSites,
     _seal: VerificationSeal,
 }
 
@@ -153,6 +157,11 @@ impl VerifiedLinkedBytecodeImage {
     /// Returns the verifier-derived immutable semantic charging schedule.
     pub const fn statement_schedule(&self) -> &VerifiedStatementSchedule {
         &self.statement_schedule
+    }
+
+    /// Returns all verifier-certified pending/resume sites in dense order.
+    pub const fn resume_sites(&self) -> &VerifiedResumeSites {
+        &self.resume_sites
     }
 
     /// Returns authoritative analyzed effects for one dense function.
@@ -264,6 +273,7 @@ pub fn verify(
         constant_heap: facts.constant_heap,
         statement_schedule: facts.statement_schedule,
         callable_effects: facts.callable_effects,
+        resume_sites: facts.resume_sites,
         _seal: facts.seal,
     })
 }
@@ -284,6 +294,7 @@ fn establish_verification_seal(
         constant_heap: semantics.constant_heap,
         statement_schedule: semantics.statement_schedule,
         callable_effects: semantics.callable_effects,
+        resume_sites: semantics.resume_sites,
         seal: VerificationSeal,
     })
 }
@@ -295,9 +306,15 @@ fn prove_hydrated_candidate_semantics(
     limits: &VerificationLimits,
 ) -> Result<VerifiedSemanticFacts, VerificationError> {
     let concrete_values = prove_types_and_plans(hydrated, candidate, limits)?;
-    let control_flow =
-        control_flow::prove_control_flow_and_stack(hydrated, candidate, &concrete_values, limits)?;
     let source = prove_source_attribution(candidate)?;
+    let control_flow = control_flow::prove_control_flow_and_stack(
+        hydrated,
+        candidate,
+        &concrete_values,
+        admission.resume_binding(),
+        &source,
+        limits,
+    )?;
     let statement_schedule = prove_statement_attribution(
         candidate,
         admission.statement_binding(),
@@ -311,10 +328,12 @@ fn prove_hydrated_candidate_semantics(
         &statement_schedule,
     )?;
     let constant_heap = prove_and_build_empty_constant_heap(hydrated, candidate)?;
+    let resume_sites = control_flow.into_resume_sites();
     Ok(VerifiedSemanticFacts {
         constant_heap,
         statement_schedule,
         callable_effects,
+        resume_sites,
     })
 }
 
@@ -326,9 +345,15 @@ pub(super) fn prove_statement_schedule_for_test(
 ) -> Result<VerifiedStatementSchedule, VerificationError> {
     let admission = prove_admission(hydrated, candidate, limits)?;
     let concrete_values = prove_types_and_plans(hydrated, candidate, limits)?;
-    let control_flow =
-        control_flow::prove_control_flow_and_stack(hydrated, candidate, &concrete_values, limits)?;
     let source = prove_source_attribution(candidate)?;
+    let control_flow = control_flow::prove_control_flow_and_stack(
+        hydrated,
+        candidate,
+        &concrete_values,
+        admission.resume_binding(),
+        &source,
+        limits,
+    )?;
     prove_statement_attribution(
         candidate,
         admission.statement_binding(),

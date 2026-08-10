@@ -1,11 +1,17 @@
-use skiff_artifact_model::{ActiveRegionKind, CatchMatcher, ValidatedFunction};
+use std::collections::BTreeSet;
+
+use skiff_artifact_model::{
+    contract_for_opcode, ActiveRegionKind, CatchMatcher, PendingContract, ValidatedFunction,
+};
 use skiff_runtime_linked_bytecode::{
     CandidateTable, LinkedActiveRegionKind, LinkedBytecodeCandidate, LinkedCatchMatcher,
-    LinkedFunction,
+    LinkedFunction, LinkedInstructionTarget,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
-use crate::admission::facts::{ExactFunctionStatementBinding, ExactStatementEntry};
+use crate::admission::facts::{
+    ExactFunctionStatementBinding, ExactResumeEntry, ExactStatementEntry,
+};
 use crate::{VerificationError, VerificationLocation};
 
 use super::{boundary_index_for_pc, instruction_index_for_pc, prove_type_origin};
@@ -318,7 +324,7 @@ pub(super) fn prove_resume_sites(
     function: &LinkedFunction,
     source: &ValidatedFunction,
     candidate: &LinkedBytecodeCandidate,
-) -> Result<(), VerificationError> {
+) -> Result<Vec<ExactResumeEntry>, VerificationError> {
     let artifact_rows = package
         .bytecode()
         .view()
@@ -338,6 +344,7 @@ pub(super) fn prove_resume_sites(
             "linked resume-site coverage differs from the admitted function",
         ));
     }
+    let mut exact_rows = Vec::with_capacity(artifact_rows.len());
     for artifact in artifact_rows {
         let site = instruction_index_for_pc(source, artifact.site_pc, location)?;
         let linked = linked_rows
@@ -348,8 +355,10 @@ pub(super) fn prove_resume_sites(
                 semantic_violation(location, "admitted resume site has no linked row")
             })?;
         let row_location = table_location(CandidateTable::ResumeSites, linked.index().get());
-        let exact = linked.resume()
-            == instruction_index_for_pc(source, artifact.resume_pc, row_location)?
+        let exact = linked.function() == function.index()
+            && linked.site() == site
+            && linked.resume()
+                == instruction_index_for_pc(source, artifact.resume_pc, row_location)?
             && linked.expected_stack_height_before_result()
                 == artifact.expected_stack_height_before_result
             && linked.error_mode() == artifact.error_mode
@@ -371,6 +380,105 @@ pub(super) fn prove_resume_sites(
                 row_location,
             )?;
         }
+        exact_rows.push(ExactResumeEntry::from_linked(
+            linked,
+            artifact.descriptor_index,
+        ));
+    }
+    prove_resume_operand_bindings(function, candidate, &exact_rows)?;
+    Ok(exact_rows)
+}
+
+fn prove_resume_operand_bindings(
+    function: &LinkedFunction,
+    candidate: &LinkedBytecodeCandidate,
+    exact_rows: &[ExactResumeEntry],
+) -> Result<(), VerificationError> {
+    let mut used = BTreeSet::new();
+    for (ordinal, instruction) in function.instructions().iter().enumerate() {
+        let contract = contract_for_opcode(instruction.opcode());
+        let PendingContract::ActualWithResume { resume, .. } = contract.pending else {
+            continue;
+        };
+        let instruction = u32::try_from(ordinal)
+            .map(skiff_runtime_linked_bytecode::InstructionIndex::new)
+            .map_err(|_| {
+                semantic_violation(
+                    function_location(function),
+                    "instruction index does not fit u32",
+                )
+            })?;
+        let location = VerificationLocation::Instruction {
+            function: function.index(),
+            instruction,
+        };
+        let operand = contract
+            .operand_position(resume)
+            .and_then(|ordinal| u32::try_from(ordinal).ok())
+            .ok_or_else(|| {
+                semantic_violation(location, "resume role is absent from canonical operands")
+            })?;
+        let target = function.instructions()[instruction.get() as usize]
+            .resolved_operands()
+            .iter()
+            .find(|resolved| resolved.operand_ordinal() == operand)
+            .map(|resolved| resolved.target())
+            .ok_or_else(|| semantic_violation(location, "resume operand has no typed target"))?;
+        let LinkedInstructionTarget::ResumeSite(index) = target else {
+            return Err(semantic_violation(
+                location,
+                "resume operand has a non-resume typed target",
+            ));
+        };
+        let row = exact_rows
+            .iter()
+            .find(|row| row.index() == index)
+            .ok_or_else(|| {
+                semantic_violation(
+                    location,
+                    "resume operand does not select this function's exact descriptor",
+                )
+            })?;
+        if row.function() != function.index() || row.site() != instruction {
+            return Err(semantic_violation(
+                location,
+                "resume operand target is not the exact descriptor bound to this instruction",
+            ));
+        }
+        let raw = function.instructions()[instruction.get() as usize]
+            .operands()
+            .get(operand as usize)
+            .copied()
+            .ok_or_else(|| semantic_violation(location, "resume raw operand is absent"))?;
+        if raw != row.artifact_descriptor_index() {
+            return Err(semantic_violation(
+                location,
+                "resume raw descriptor and typed linked row do not form one exact binding",
+            ));
+        }
+        if !used.insert(index) {
+            return Err(semantic_violation(
+                location,
+                "resume descriptor is selected by more than one instruction",
+            ));
+        }
+        if candidate
+            .resume_sites()
+            .get(index.get() as usize)
+            .map(|row| row.index())
+            != Some(index)
+        {
+            return Err(semantic_violation(
+                location,
+                "resume operand target is not dense in the linked table",
+            ));
+        }
+    }
+    if used.len() != exact_rows.len() {
+        return Err(semantic_violation(
+            function_location(function),
+            "an exact resume descriptor is not selected by its admitted instruction",
+        ));
     }
     Ok(())
 }

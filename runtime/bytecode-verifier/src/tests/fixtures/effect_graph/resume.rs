@@ -1,72 +1,238 @@
 use skiff_artifact_model::{BytecodePoolEntry, BytecodePools, ResumeDescriptor, ResumeErrorMode};
 use skiff_runtime_linked_bytecode::{
     FunctionIndex, InstructionIndex, LinkedInstruction, LinkedInstructionTarget,
-    LinkedResolvedOperand, LinkedResumeSite, ResumeSiteIndex,
+    LinkedProgramPointState, LinkedResolvedOperand, LinkedResumeSite, LinkedStackValue,
+    ResumeSiteIndex, TypeIndex,
 };
 
 use super::{identities::function_key, EffectGraphCallKind, EffectGraphFunction};
 
 pub(super) const fn max_operand_depth(kind: EffectGraphCallKind) -> u32 {
     match kind {
-        EffectGraphCallKind::Resume => 1,
+        EffectGraphCallKind::Resume | EffectGraphCallKind::StreamRead => 1,
+        EffectGraphCallKind::StreamReadTwice => 2,
         EffectGraphCallKind::Ordinary | EffectGraphCallKind::Tail | EffectGraphCallKind::InOut => 0,
     }
 }
 
-pub(super) fn artifact_pools(functions: &[EffectGraphFunction]) -> BytecodePools {
-    let resume = functions
+pub(super) fn descriptor_index(functions: &[EffectGraphFunction], ordinal: usize) -> u32 {
+    functions[..ordinal]
         .iter()
-        .enumerate()
-        .filter(|(_, function)| matches!(function.call_kind, EffectGraphCallKind::Resume))
-        .map(|(ordinal, _)| {
-            BytecodePoolEntry::ResumeDescriptor(ResumeDescriptor {
-                function_key: function_key(ordinal),
-                site_pc: 0,
-                resume_pc: 2,
-                expected_stack_height_before_result: 0,
-                result_type_refs: Vec::new(),
-                result_plans: Vec::new(),
-                error_mode: ResumeErrorMode::RaiseAtSite,
-            })
-        })
-        .collect();
+        .map(|function| function.call_kind.resume_site_count())
+        .try_fold(0_u32, u32::checked_add)
+        .unwrap()
+}
+
+pub(super) fn descriptor_count(functions: &[EffectGraphFunction]) -> u32 {
+    functions
+        .iter()
+        .map(|function| function.call_kind.resume_site_count())
+        .try_fold(0_u32, u32::checked_add)
+        .unwrap()
+}
+
+pub(super) const fn selected_descriptor(descriptor: u32, count: u32, swap: bool) -> u32 {
+    if swap {
+        count - descriptor - 1
+    } else {
+        descriptor
+    }
+}
+
+pub(super) fn artifact_pools(functions: &[EffectGraphFunction]) -> BytecodePools {
+    let mut resume = Vec::new();
+    for (ordinal, function) in functions.iter().enumerate() {
+        match function.call_kind {
+            EffectGraphCallKind::Resume => {
+                resume.push(artifact_descriptor(ordinal, 0, 2, 0, false));
+            }
+            EffectGraphCallKind::StreamRead => {
+                resume.push(artifact_descriptor(ordinal, 0, 3, 0, true));
+            }
+            EffectGraphCallKind::StreamReadTwice => {
+                resume.push(artifact_descriptor(ordinal, 0, 3, 0, true));
+                resume.push(artifact_descriptor(ordinal, 3, 6, 1, true));
+            }
+            EffectGraphCallKind::Ordinary
+            | EffectGraphCallKind::Tail
+            | EffectGraphCallKind::InOut => {}
+        }
+    }
     BytecodePools {
         resume,
         ..BytecodePools::default()
     }
 }
 
-pub(super) fn linked_sites(functions: &[EffectGraphFunction]) -> Vec<LinkedResumeSite> {
-    functions
-        .iter()
-        .enumerate()
-        .filter(|(_, function)| matches!(function.call_kind, EffectGraphCallKind::Resume))
-        .enumerate()
-        .map(|(resume_ordinal, (function_ordinal, _))| {
-            LinkedResumeSite::new(
-                ResumeSiteIndex::new(resume_ordinal as u32),
-                FunctionIndex::new(function_ordinal as u32),
-                InstructionIndex::new(0),
-                InstructionIndex::new(1),
-                0,
-                Box::new([]),
-                Box::new([]),
-                ResumeErrorMode::RaiseAtSite,
-            )
-            .unwrap()
-        })
-        .collect()
+fn artifact_descriptor(
+    function: usize,
+    site_pc: u32,
+    resume_pc: u32,
+    expected_stack_height_before_result: u32,
+    stream_read: bool,
+) -> BytecodePoolEntry {
+    BytecodePoolEntry::ResumeDescriptor(ResumeDescriptor {
+        function_key: function_key(function),
+        site_pc,
+        resume_pc,
+        expected_stack_height_before_result,
+        result_type_refs: if stream_read { vec![0] } else { Vec::new() },
+        result_plans: if stream_read {
+            vec![super::inout::artifact_item_plan()]
+        } else {
+            Vec::new()
+        },
+        error_mode: ResumeErrorMode::RaiseAtSite,
+    })
 }
 
-pub(super) fn linked_emit_stream() -> LinkedInstruction {
+pub(super) fn linked_sites(functions: &[EffectGraphFunction]) -> Vec<LinkedResumeSite> {
+    let mut rows = Vec::new();
+    for (function, spec) in functions.iter().enumerate() {
+        match spec.call_kind {
+            EffectGraphCallKind::Resume => push_linked_site(&mut rows, function, 0, 1, 0, false),
+            EffectGraphCallKind::StreamRead => push_linked_site(&mut rows, function, 0, 1, 0, true),
+            EffectGraphCallKind::StreamReadTwice => {
+                push_linked_site(&mut rows, function, 0, 1, 0, true);
+                push_linked_site(&mut rows, function, 1, 2, 1, true);
+            }
+            EffectGraphCallKind::Ordinary
+            | EffectGraphCallKind::Tail
+            | EffectGraphCallKind::InOut => {}
+        }
+    }
+    rows
+}
+
+fn push_linked_site(
+    rows: &mut Vec<LinkedResumeSite>,
+    function: usize,
+    site: u32,
+    resume: u32,
+    expected_stack_height_before_result: u32,
+    stream_read: bool,
+) {
+    rows.push(
+        LinkedResumeSite::new(
+            ResumeSiteIndex::new(rows.len() as u32),
+            FunctionIndex::new(function as u32),
+            InstructionIndex::new(site),
+            InstructionIndex::new(resume),
+            expected_stack_height_before_result,
+            if stream_read {
+                Box::new([TypeIndex::new(0)])
+            } else {
+                Box::new([])
+            },
+            if stream_read {
+                Box::new([super::inout::linked_item_plan()])
+            } else {
+                Box::new([])
+            },
+            ResumeErrorMode::RaiseAtSite,
+        )
+        .unwrap(),
+    );
+}
+
+pub(super) fn linked_emit_stream(descriptor: u32, target: u32) -> LinkedInstruction {
     LinkedInstruction::new(
         skiff_artifact_model::Opcode::EmitStream,
-        Box::new([0]),
+        Box::new([descriptor]),
         Box::new([LinkedResolvedOperand::new(
             0,
-            LinkedInstructionTarget::ResumeSite(ResumeSiteIndex::new(0)),
+            LinkedInstructionTarget::ResumeSite(ResumeSiteIndex::new(target)),
         )]),
         0,
     )
     .unwrap()
+}
+
+pub(super) fn linked_stream_next(
+    descriptor: u32,
+    target: u32,
+    artifact_pc: u32,
+) -> LinkedInstruction {
+    LinkedInstruction::new(
+        skiff_artifact_model::Opcode::StreamNext,
+        Box::new([0, descriptor]),
+        Box::new([
+            LinkedResolvedOperand::new(
+                0,
+                LinkedInstructionTarget::FrameSlot(
+                    skiff_runtime_linked_bytecode::FrameSlotIndex::new(0),
+                ),
+            ),
+            LinkedResolvedOperand::new(
+                1,
+                LinkedInstructionTarget::ResumeSite(ResumeSiteIndex::new(target)),
+            ),
+        ]),
+        artifact_pc,
+    )
+    .unwrap()
+}
+
+pub(super) fn linked_states(
+    kind: EffectGraphCallKind,
+    instruction_count: usize,
+) -> Vec<LinkedProgramPointState> {
+    if matches!(kind, EffectGraphCallKind::StreamRead) {
+        return vec![
+            program_point(0, Box::new([]), kind),
+            program_point(
+                1,
+                Box::new([LinkedStackValue::new(
+                    TypeIndex::new(0),
+                    super::inout::linked_item_plan(),
+                )]),
+                kind,
+            ),
+            program_point(2, Box::new([]), kind),
+        ];
+    }
+    if matches!(kind, EffectGraphCallKind::StreamReadTwice) {
+        return vec![
+            program_point(0, Box::new([]), kind),
+            item_program_point(1, kind),
+            program_point(
+                2,
+                Box::new([
+                    LinkedStackValue::new(TypeIndex::new(0), super::inout::linked_item_plan()),
+                    LinkedStackValue::new(TypeIndex::new(0), super::inout::linked_item_plan()),
+                ]),
+                kind,
+            ),
+            item_program_point(3, kind),
+            program_point(4, Box::new([]), kind),
+        ];
+    }
+    (0..instruction_count)
+        .map(|instruction| program_point(instruction as u32, Box::new([]), kind))
+        .collect()
+}
+
+fn item_program_point(instruction: u32, kind: EffectGraphCallKind) -> LinkedProgramPointState {
+    program_point(
+        instruction,
+        Box::new([LinkedStackValue::new(
+            TypeIndex::new(0),
+            super::inout::linked_item_plan(),
+        )]),
+        kind,
+    )
+}
+
+fn program_point(
+    instruction: u32,
+    stack: Box<[LinkedStackValue]>,
+    kind: EffectGraphCallKind,
+) -> LinkedProgramPointState {
+    LinkedProgramPointState::new(
+        InstructionIndex::new(instruction),
+        stack,
+        super::inout::linked_slot_states(kind),
+        Box::new([]),
+        Box::new([]),
+    )
 }

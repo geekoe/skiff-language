@@ -1,11 +1,12 @@
 mod checkpoint;
 
 use skiff_artifact_model::{
-    contract_for_opcode, CheckpointContract, ControlContract, OperandRole, PendingContract,
+    contract_for_opcode, CheckpointContract, ControlContract, Opcode, OperandRole, PendingContract,
+    PendingMode,
 };
 use skiff_runtime_linked_bytecode::{
-    CandidateTable, FunctionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedFunction,
-    LinkedInstruction, LinkedInstructionTarget,
+    FunctionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedFunction, LinkedInstruction,
+    LinkedInstructionTarget,
 };
 
 use super::{
@@ -28,16 +29,6 @@ pub(super) fn prove_control_flow(
         .iter()
         .map(|function| prove_function(function, limits))
         .collect::<Result<Vec<_>, _>>()?;
-
-    if let Some(resume) = candidate.resume_sites().first() {
-        return Err(VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ResumeSite,
-            location: VerificationLocation::Table {
-                table: CandidateTable::ResumeSites,
-                row: resume.index().get(),
-            },
-        });
-    }
 
     Ok(ControlFlowFacts {
         functions: functions.into_boxed_slice(),
@@ -202,6 +193,11 @@ fn exact_local_target(
         PendingContract::Never => return Ok(None),
         PendingContract::TransitiveTarget { target }
         | PendingContract::NoPendingTarget { target, .. } => target,
+        PendingContract::ActualWithResume { mode, .. }
+            if instruction.opcode() == Opcode::StreamNext && mode == PendingMode::StreamRead =>
+        {
+            return Ok(None);
+        }
         PendingContract::ActualWithResume { .. } => {
             return Err(VerificationError::ProofUnavailable {
                 obligation: VerificationObligation::ResumeSite,

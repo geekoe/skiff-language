@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use skiff_artifact_model::{CallableEffectSummary, CallableMayEffects, Opcode};
+use skiff_artifact_model::{
+    CallableEffectSummary, CallableMayEffects, Opcode, PendingEffectCategory,
+};
 use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 
 use super::{VerifiedCallableEffects, VerifiedFunctionEffects};
@@ -242,6 +244,29 @@ fn prove_instruction(
                 Some(target),
             )
         }
+        Opcode::StreamNext => {
+            if control_flow_and_calls
+                .exact_call_plan(caller_index, instruction)
+                .is_some()
+                || !control_flow_and_calls.proves_stream_read(caller_index, instruction)
+            {
+                return Err(violation_error(
+                    location,
+                    "StreamNext lacks its exact stream-read resume certificate",
+                ));
+            }
+            if !caller
+                .effects()
+                .pending_effect_categories
+                .contains(&PendingEffectCategory::Stream)
+            {
+                return Err(violation_error(
+                    location,
+                    "reachable StreamNext is absent from the canonical Stream pending effects",
+                ));
+            }
+            Ok(())
+        }
         Opcode::SwitchTag
         | Opcode::Trap
         | Opcode::CallService
@@ -269,7 +294,6 @@ fn prove_instruction(
         | Opcode::ArrayLen
         | Opcode::MapLen
         | Opcode::MapEntryAt
-        | Opcode::StreamNext
         | Opcode::EmitStream
         | Opcode::Throw
         | Opcode::Rethrow

@@ -1,4 +1,4 @@
-use skiff_artifact_model::{SlotAction, SlotContract, ValueSource};
+use skiff_artifact_model::{Opcode, SlotAction, SlotContract, ValueSource};
 use skiff_runtime_linked_bytecode::FrameSlotIndex;
 
 use super::{unavailable, values, violation, Context};
@@ -43,7 +43,27 @@ pub(super) fn apply(
                 let value = resolve_value(effect.value, before, inputs, context)?;
                 write_slot(before, &mut slots, slot, value, context)?;
             }
-            SlotAction::Mutate => return Err(unavailable(context.location)),
+            SlotAction::Mutate => {
+                if context.instruction.opcode() != Opcode::StreamNext
+                    || effect.value
+                        != (ValueSource::Slot {
+                            operand: effect.operand,
+                        })
+                {
+                    return Err(unavailable(context.location));
+                }
+                let AbstractValue::Concrete(endpoint) =
+                    values::live_slot(before, slot, context.location)?;
+                context
+                    .facts
+                    .stream_item_type(endpoint, context.location)
+                    .map_err(|_| {
+                        violation(
+                            context.location,
+                            "mutated endpoint is not an affine Stream<T> slot",
+                        )
+                    })?;
+            }
         }
     }
     Ok(slots)

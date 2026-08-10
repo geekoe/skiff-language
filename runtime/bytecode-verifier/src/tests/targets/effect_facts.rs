@@ -1,6 +1,7 @@
 use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 
 use crate::{
+    admission::prove_admission, attribution::prove_source_attribution,
     concrete_values::prove_types_and_plans, control_flow::prove_control_flow_and_stack, verify,
     VerificationError, VerificationLocation, VerificationObligation,
 };
@@ -30,8 +31,17 @@ fn loader_backed_orchestration_retains_the_exact_call_plan() {
     let limits = generous_limits();
     let concrete = prove_types_and_plans(&hydrated, &candidate, &limits)
         .expect("loader-backed fixture has complete concrete value facts");
-    let facts = prove_control_flow_and_stack(&hydrated, &candidate, &concrete, &limits)
-        .expect("P3 orchestration must retain complete call and empty-resume facts");
+    let admission = prove_admission(&hydrated, &candidate, &limits).unwrap();
+    let source = prove_source_attribution(&candidate).unwrap();
+    let facts = prove_control_flow_and_stack(
+        &hydrated,
+        &candidate,
+        &concrete,
+        admission.resume_binding(),
+        &source,
+        &limits,
+    )
+    .expect("P3 orchestration must retain complete call and resume facts");
 
     assert!(facts.proves_exact_local_call(
         FunctionIndex::new(0),
