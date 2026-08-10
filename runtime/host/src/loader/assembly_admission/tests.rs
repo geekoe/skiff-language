@@ -13,6 +13,7 @@ use super::*;
 
 mod execution;
 mod full_chain;
+mod package_fixture_contract;
 
 #[derive(Default)]
 struct NoContentResolver {

@@ -1114,6 +1114,8 @@ fn implementation_file(
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     if let Some(service_call) = service_call {
@@ -1123,10 +1125,12 @@ fn implementation_file(
                 target: CallTargetIr::ServiceCall {
                     service_call_ref_index: ServiceCallRefIndex::new(0),
                 },
+                concrete_receiver: None,
                 site: InstructionSourceSite::Synthetic {
                     reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },
                 args: Vec::new(),
+                inout_args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },
@@ -1175,6 +1179,12 @@ fn implementation_package(
         package_build_id: PackageBuildId::new("unassigned"),
         files: vec![file_ref.clone()],
         static_resources: Vec::new(),
+        bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            package_id,
+            &[],
+        )
+        .expect("empty bytecode statement manifest is canonical"),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::from([(
@@ -1231,6 +1241,8 @@ fn implementation_package(
                 },
             },
         )]),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
@@ -1261,9 +1273,9 @@ fn implementation_package(
             },
         )]),
         service_call_refs,
-        bytecode: None,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
+    super::package_fixture_contract::assert_bytecode_free_statement_epoch_fixture(&package);
     package
 }
 

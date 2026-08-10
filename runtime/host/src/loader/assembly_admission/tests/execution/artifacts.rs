@@ -756,13 +756,15 @@ fn implementation_file(
         params: signature.params,
         return_type: signature.return_type,
         self_type: None,
-        slots: parameter_slots(operation_contract),
+        slots: parameter_slots(operation_contract, &callback_ref),
         may_suspend,
         body: ExecutableBody {
             blocks: Vec::new(),
             statements: Vec::new(),
             expressions: Vec::new(),
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     };
     match role {
@@ -815,6 +817,7 @@ fn executable_signature_from_operation(
                 name: parameter.name.clone(),
                 slot: u32::try_from(index).expect("fixture parameter count must fit u32"),
                 ty: file_type_from_contract(&parameter.ty, callback_ref),
+                mode: ParamModeIr::Value,
             })
             .collect(),
         return_type: operation_return_file_type(operation, callback_ref),
@@ -823,7 +826,10 @@ fn executable_signature_from_operation(
     }
 }
 
-fn parameter_slots(operation: &BoundaryOperationContract) -> SlotLayout {
+fn parameter_slots(
+    operation: &BoundaryOperationContract,
+    callback_ref: &InterfaceInstantiationRef,
+) -> SlotLayout {
     SlotLayout {
         slots: operation
             .parameters
@@ -833,6 +839,8 @@ fn parameter_slots(operation: &BoundaryOperationContract) -> SlotLayout {
                 index: u32::try_from(index).expect("fixture parameter count must fit u32"),
                 name: parameter.name.clone(),
                 kind: SlotKind::Param,
+                writable_local: false,
+                ty: Some(file_type_from_contract(&parameter.ty, callback_ref)),
             })
             .collect(),
         frame_size: u32::try_from(operation.parameters.len())
@@ -968,8 +976,10 @@ fn configure_consumer_entry(
             target: CallTargetIr::ServiceCall {
                 service_call_ref_index: ServiceCallRefIndex::new(0),
             },
+            concrete_receiver: None,
             site: fixture_instruction_site(),
             args: call_args,
+            inout_args: Vec::new(),
             type_args: if matches!(
                 behavior,
                 ConsumerBehavior::ReturnGenericBooleanStream
@@ -1202,11 +1212,15 @@ fn configure_boolean_stream_consumer_entry(entry: &mut ExecutableIr, stream_expr
                 index: 0,
                 name: "item".to_string(),
                 kind: SlotKind::Pattern,
+                writable_local: false,
+                ty: Some(TypeRefIr::builtin("bool")),
             },
             SlotIr {
                 index: 1,
                 name: "seenFirst".to_string(),
                 kind: SlotKind::Local,
+                writable_local: true,
+                ty: Some(TypeRefIr::builtin("bool")),
             },
         ],
         frame_size: 2,
@@ -1382,10 +1396,12 @@ fn configure_callback_stream_consumer_entry(
                 method_abi_id: callback_method_abi_id,
                 slot: 0,
             },
+            concrete_receiver: None,
             site: fixture_instruction_site(),
             args: vec![ExprRefIr {
                 expression: callback_expression,
             }],
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },
@@ -1395,6 +1411,10 @@ fn configure_callback_stream_consumer_entry(
             index: 0,
             name: "callback".to_string(),
             kind: SlotKind::Pattern,
+            writable_local: false,
+            ty: Some(TypeRefIr::AnyInterface {
+                interface: callback_interface.clone(),
+            }),
         }],
         frame_size: 1,
     };
@@ -1455,6 +1475,7 @@ fn configure_callback_provider_entry(
             ty: TypeRefIr::AnyInterface {
                 interface: callback_interface.clone(),
             },
+            mode: ParamModeIr::Value,
         }],
         "callback provider File IR signature must be derived from its operation"
     );
@@ -1475,8 +1496,10 @@ fn configure_callback_provider_entry(
                         method_abi_id: callback_method_abi_id,
                         slot: 0,
                     },
+                    concrete_receiver: None,
                     site: fixture_instruction_site(),
                     args: vec![ExprRefIr { expression: 0 }],
+                    inout_args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata: BTreeMap::new(),
                 },
@@ -1629,6 +1652,8 @@ fn install_callback_interface_fixture(
             // Intentional callback-owner missing-entry probe; validation/execution must fail
             // closed instead of inventing an owner-method body.
             body: ExecutableBody::default(),
+            expression_types: Vec::new(),
+            statement_spans: Vec::new(),
             source_span: None,
         });
     }
@@ -1660,13 +1685,17 @@ fn checkpoint_call_executable(
             expressions: vec![ExprIr::Call {
                 call: CallIr {
                     target,
+                    concrete_receiver: None,
                     site: fixture_instruction_site(),
                     args,
+                    inout_args: Vec::new(),
                     type_args,
                     metadata: BTreeMap::new(),
                 },
             }],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1687,13 +1716,17 @@ fn package_stream_consumer_executable(symbol: String, target: CallTargetIr) -> E
             expressions: vec![ExprIr::Call {
                 call: CallIr {
                     target,
+                    concrete_receiver: None,
                     site: fixture_instruction_site(),
                     args: Vec::new(),
+                    inout_args: Vec::new(),
                     type_args: BTreeMap::from([("T".to_string(), TypeRefIr::builtin("bool"))]),
                     metadata: BTreeMap::new(),
                 },
             }],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     };
     configure_boolean_stream_consumer_entry(&mut executable, 0);
@@ -1718,13 +1751,18 @@ fn callback_checkpoint_executable(
     executable.params.push(ParamIr {
         name: "callback".to_string(),
         slot: 0,
-        ty: TypeRefIr::AnyInterface { interface },
+        ty: TypeRefIr::AnyInterface {
+            interface: interface.clone(),
+        },
+        mode: ParamModeIr::Value,
     });
     executable.slots = SlotLayout {
         slots: vec![SlotIr {
             index: 0,
             name: "callback".to_string(),
             kind: SlotKind::Param,
+            writable_local: false,
+            ty: Some(TypeRefIr::AnyInterface { interface }),
         }],
         frame_size: 1,
     };
@@ -1969,6 +2007,12 @@ fn implementation_package(
         package_build_id: PackageBuildId::new("unassigned"),
         files: vec![file_ref.clone()],
         static_resources: Vec::new(),
+        bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            package_id,
+            &[],
+        )
+        .expect("empty bytecode statement manifest is canonical"),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::from([(
@@ -2030,6 +2074,8 @@ fn implementation_package(
                 },
             },
         )]),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements,
@@ -2060,10 +2106,10 @@ fn implementation_package(
             },
         )]),
         service_call_refs,
-        bytecode: None,
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut package)
         .expect("fixture package should receive canonical identities");
+    super::super::package_fixture_contract::assert_bytecode_free_statement_epoch_fixture(&package);
     package
 }
 

@@ -92,7 +92,7 @@ function nestedService(value: string) -> string {
 }
 
 function textResponse(status: integer, body: string) -> std.http.HttpResponse {
-  let headers = Array.empty<std.http.HttpHeader>()
+  var headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
   return std.http.HttpResponse {
     status: status,
@@ -116,7 +116,7 @@ function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {
 
 function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
   let status = nestedHttpStream("https://example.test/stream")
-  let headers = Array.empty<std.http.HttpHeader>()
+  var headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
   emit(std.http.streamStart(status, headers))
   emit(std.http.streamChunk(request.body))

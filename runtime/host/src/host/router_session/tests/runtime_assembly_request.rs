@@ -58,7 +58,7 @@ async fn host_direct_task_executes_exact_route_and_cleans_supervision() {
     assert!(submit
         .build_id
         .as_deref()
-        .is_some_and(|build| build.starts_with("skiff-package-build-v11:sha256:")));
+        .is_some_and(|build| build.starts_with("skiff-package-build-v13:sha256:")));
     assert_eq!(submit.target_kind, "function");
     assert!(!payload.is_empty());
 
@@ -134,7 +134,7 @@ async fn host_current_scope_compiled_artifact_admits_exact_source_routes() {
     let unary = &routes["/current-scope/unary"];
     assert_eq!(
         unary.assembly_identity().as_str(),
-        "skiff-runtime-assembly-v3:sha256:80feb45c46d58768cb1657d824aa5569a0c7824963ac16835eda647e49205ef6"
+        "skiff-runtime-assembly-v3:sha256:df78051c9931a07e8e1b63c2ec0b6efd8da1c8d099c1d6b2bd827cfca03d756e"
     );
     assert_eq!(
         unary.gateway_entry_identity().as_str(),
