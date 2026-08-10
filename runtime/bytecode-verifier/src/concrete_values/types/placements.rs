@@ -91,11 +91,11 @@ fn prove_container_layouts(
     Ok(())
 }
 
-fn require_container_layout<'a>(
-    row: &'a LinkedTypeEntry,
+fn require_container_layout(
+    row: &LinkedTypeEntry,
     expected: LinkedContainerLayoutKind,
     location: VerificationLocation,
-) -> Result<&'a LinkedContainerLayout, VerificationError> {
+) -> Result<&LinkedContainerLayout, VerificationError> {
     let layout = row
         .container_layout()
         .ok_or_else(|| violation(location, "container type has no concrete position layout"))?;
