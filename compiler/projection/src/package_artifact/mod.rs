@@ -4,6 +4,7 @@ mod assets;
 mod boundary;
 mod callables;
 mod config_requirements;
+mod execution_attachment;
 mod export_links;
 mod model;
 mod projection;
@@ -12,6 +13,7 @@ mod schema;
 mod visible_types;
 
 pub use boundary::project_boundary_callable;
+pub use execution_attachment::{attach_package_execution, PackageExecutionAttachment};
 pub use model::{
     PackageArtifactProjectionInput, ProjectedPackageArtifact, ProjectedPackageResource,
 };

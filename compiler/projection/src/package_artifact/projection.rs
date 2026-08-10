@@ -2,9 +2,10 @@ use skiff_artifact_identity::assign_package_artifact_identities;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    CallableSemanticFacts, ContractRequirement, FileIrUnit, PackageArtifact, PackageBuildId,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRequirement, PackageRuntimeRequirements,
-    PackageSchemaIndexRef, PackageSchemaTypeRecordRef, ServiceCallRef, ServiceRequirement,
+    derive_bytecode_statement_manifest_identity, CallableSemanticFacts, ContractRequirement,
+    FileIrUnit, PackageArtifact, PackageBuildId, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRequirement, PackageRuntimeRequirements, PackageSchemaIndexRef,
+    PackageSchemaTypeRecordRef, ServiceCallRef, ServiceRequirement,
     PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_projection_input::{
@@ -142,6 +143,15 @@ pub(super) fn project_package_artifact_facts(
         &input.runtime_requirements,
         &callables.boundary_projections,
     )?;
+    let empty_statement_manifest_identity =
+        derive_bytecode_statement_manifest_identity(input.package_id, &[]).map_err(|error| {
+            ProjectionError::InvalidPackageArtifact {
+                message: format!(
+                    "package {}@{} empty statement manifest projection failed: {error}",
+                    input.package_id, input.package_version
+                ),
+            }
+        })?;
     let mut artifact = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: input.package_id.to_string(),
@@ -150,6 +160,7 @@ pub(super) fn project_package_artifact_facts(
         files: file_ir_refs_from_units(&input.file_ir_units),
         static_resources: resource_refs_from_projected(&input.resources),
         bytecode: None,
+        bytecode_statement_manifest_identity: empty_statement_manifest_identity,
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: callables.public_symbols,

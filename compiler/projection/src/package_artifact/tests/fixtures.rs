@@ -26,7 +26,7 @@ use crate::package_artifact::{
         project_package_export_links, PackagePublicInstanceExecutionLink,
         PackagePublicInstanceMethodExecutionLink, ProjectedPackageExportLinks,
     },
-    model::PackageExportLinkProjectionInput,
+    model::{PackageExportLinkProjectionInput, ProjectedPackageArtifact},
     projection::{project_package_artifact_facts, ProjectedPackageFacts},
 };
 
@@ -49,19 +49,29 @@ pub(super) fn project_fixture_with_runtime_requirements(
     signature_set: SignatureSet,
     runtime_requirements: PackageRuntimeRequirements,
 ) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
-    project_fixture_with_conformance_facts(signature_set, runtime_requirements, true)
+    Ok(project_fixture_with_conformance_facts(signature_set, runtime_requirements, true)?.artifact)
 }
 
 pub(super) fn project_fixture_without_local_conformance_facts(
 ) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
-    project_fixture_with_conformance_facts(SignatureSet::Complete, runtime_requirements(), false)
+    Ok(project_fixture_with_conformance_facts(
+        SignatureSet::Complete,
+        runtime_requirements(),
+        false,
+    )?
+    .artifact)
+}
+
+pub(super) fn projected_fixture() -> Result<ProjectedPackageArtifact, crate::error::ProjectionError>
+{
+    project_fixture_with_conformance_facts(SignatureSet::Complete, runtime_requirements(), true)
 }
 
 fn project_fixture_with_conformance_facts(
     signature_set: SignatureSet,
     runtime_requirements: PackageRuntimeRequirements,
     include_local_conformance_facts: bool,
-) -> Result<skiff_artifact_model::PackageArtifact, crate::error::ProjectionError> {
+) -> Result<ProjectedPackageArtifact, crate::error::ProjectionError> {
     let file_ref = file_ref();
     let export_index = PackageExportIndex {
         types: BTreeMap::from([(
@@ -322,7 +332,7 @@ fn project_fixture_with_conformance_facts(
         .unwrap(),
         types: schema_types,
     };
-    Ok(project_package_artifact_facts(ProjectedPackageFacts {
+    project_package_artifact_facts(ProjectedPackageFacts {
         package_id: "example.pkg",
         package_version: "1.0.0",
         api_exports: &api_exports,
@@ -381,8 +391,7 @@ fn project_fixture_with_conformance_facts(
             contract_operation_id: operation_id,
             expected_protocol_identity: protocol_identity,
         }],
-    })?
-    .artifact)
+    })
 }
 
 fn public_instance(file: &FileIrRef) -> PackagePublicInstanceExecutionLink {
