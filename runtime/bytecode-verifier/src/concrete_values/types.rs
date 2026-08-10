@@ -2,12 +2,16 @@ mod placements;
 
 use skiff_artifact_model::{
     classify_value_lifecycle, normalize_value_lifecycle_type, PositionalTypeEnvironment,
-    ValueLifecyclePolicyBudget, ValueLifecyclePolicyError, ValueLifecycleResolverError,
+    ValueLifecyclePolicyError, ValueLifecycleResolverError,
 };
 use skiff_runtime_linked_bytecode::{CandidateTable, LinkedBytecodeCandidate, LinkedTypeEntry};
 
 use super::{
     classes::{build_type_classes, ClassifiedType},
+    normalization::{
+        lifecycle_budget_after_owner_normalization, normalize_owner_type,
+        preflight_candidate_types, OwnerNormalizationBudget,
+    },
     resolver::HydratedValueLifecycleResolver,
     ConcreteValueFacts,
 };
@@ -27,15 +31,10 @@ pub(super) fn prove_concrete_types(
     }
 
     prove_nonzero_budget(limits)?;
-    let max_depth = u32::try_from(limits.max_type_nesting_depth).unwrap_or(u32::MAX);
-    let mut budget = ValueLifecyclePolicyBudget::new(
-        limits.max_value_lifecycle_nodes,
-        limits.max_value_lifecycle_canonical_bytes,
-        max_depth,
-    )
-    .map_err(|error| policy_error(error, VerificationLocation::Image))?;
+    preflight_candidate_types(candidate, limits)?;
     let environment = PositionalTypeEnvironment::empty();
-    let mut types = Vec::with_capacity(candidate.types().len());
+    let mut owner_budget = OwnerNormalizationBudget::new(limits);
+    let mut owner_normalized = Vec::with_capacity(candidate.types().len());
 
     for row in candidate.types() {
         let location = type_location(row);
@@ -69,8 +68,34 @@ pub(super) fn prove_concrete_types(
                 )
             })?
             .clone();
-        let normalized_type = normalize_value_lifecycle_type(&raw_type, &environment, &mut budget)
-            .map_err(|error| policy_error(error, location))?;
+        let normalized = normalize_owner_type(&raw_type, resolver, &mut owner_budget, location)?;
+        owner_normalized.push(normalized);
+    }
+
+    let first_location = candidate
+        .types()
+        .first()
+        .map(type_location)
+        .unwrap_or(VerificationLocation::Image);
+    let mut budget =
+        lifecycle_budget_after_owner_normalization(limits, &owner_budget, first_location)?;
+    let mut types = Vec::with_capacity(candidate.types().len());
+    for (row, owner_normalized_type) in candidate.types().iter().zip(owner_normalized) {
+        let location = type_location(row);
+        resolver
+            .begin_row(row.origin().package_build_id())
+            .map_err(|error| {
+                resolver_error(
+                    error,
+                    VerificationObligation::ConcreteTypeAndShape,
+                    location,
+                    "re-establishing exact type-row origin for lifecycle classification",
+                )
+            })?;
+        let (owner_normalized_type, private_type_authority) = owner_normalized_type.into_parts();
+        let normalized_type =
+            normalize_value_lifecycle_type(&owner_normalized_type, &environment, &mut budget)
+                .map_err(|error| policy_error(error, location, &owner_budget, limits))?;
         if row.type_ref() != &normalized_type {
             return Err(semantic_violation(
                 VerificationObligation::ConcreteTypeAndShape,
@@ -78,17 +103,27 @@ pub(super) fn prove_concrete_types(
                 "candidate type differs from the normalized admitted raw type",
             ));
         }
+        resolver
+            .establish_row_private_type_authority(private_type_authority)
+            .map_err(|error| {
+                resolver_error(
+                    error,
+                    VerificationObligation::ConcreteTypeAndShape,
+                    location,
+                    "establishing row-scoped private type authority",
+                )
+            })?;
         let lifecycle =
             classify_value_lifecycle(&normalized_type, &environment, resolver, &mut budget)
-                .map_err(|error| policy_error(error, location))?;
+                .map_err(|error| policy_error(error, location, &owner_budget, limits))?;
         types.push(ClassifiedType::new(row.index(), normalized_type, lifecycle));
     }
 
-    let facts = build_type_classes(
-        types,
-        budget.used_bytes(),
-        limits.max_value_lifecycle_canonical_bytes,
-    )?;
+    let lifecycle_bytes = owner_budget
+        .used_bytes()
+        .checked_add(budget.used_bytes())
+        .unwrap_or(u64::MAX);
+    let facts = build_type_classes(types, lifecycle_bytes, owner_budget.max_bytes())?;
     placements::prove_type_placements(candidate, &facts)?;
     Ok(facts)
 }
@@ -158,6 +193,8 @@ fn prove_nongeneric_origin(
 fn policy_error(
     error: ValueLifecyclePolicyError,
     location: VerificationLocation,
+    owner_budget: &OwnerNormalizationBudget,
+    limits: &VerificationLimits,
 ) -> VerificationError {
     if let ValueLifecyclePolicyError::BudgetExceeded {
         dimension,
@@ -166,16 +203,30 @@ fn policy_error(
     } = &error
     {
         let mapped = match *dimension {
-            "nodes" => Some(VerificationLimit::ValueLifecycleNodes),
-            "bytes" => Some(VerificationLimit::ValueLifecycleCanonicalBytes),
-            "depth" => Some(VerificationLimit::TypeNestingDepth),
+            "nodes" => Some((
+                VerificationLimit::ValueLifecycleNodes,
+                owner_budget.used_nodes(),
+                owner_budget.max_nodes(),
+            )),
+            "bytes" => Some((
+                VerificationLimit::ValueLifecycleCanonicalBytes,
+                owner_budget.used_bytes(),
+                owner_budget.max_bytes(),
+            )),
+            "depth" => Some((
+                VerificationLimit::TypeNestingDepth,
+                0,
+                limits
+                    .max_type_nesting_depth
+                    .min(skiff_artifact_model::bytecode::limits::MAX_NESTING_DEPTH),
+            )),
             _ => None,
         };
-        if let Some(limit_kind) = mapped {
+        if let Some((limit_kind, offset, configured_max)) = mapped {
             return VerificationError::LimitExceeded {
                 limit: limit_kind,
-                actual: *attempted,
-                max: *limit,
+                actual: offset.checked_add(*attempted).unwrap_or(u64::MAX),
+                max: configured_max.max(*limit),
                 location,
             };
         }

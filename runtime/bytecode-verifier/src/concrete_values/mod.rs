@@ -1,4 +1,5 @@
 mod classes;
+mod normalization;
 mod plans;
 mod resolver;
 mod types;
@@ -214,6 +215,89 @@ fn class_violation(detail: impl Into<String>) -> VerificationError {
         location: crate::VerificationLocation::Image,
         detail: detail.into(),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn normalize_owner_for_test(
+    hydrated: &HydratedDeploymentBytecode,
+    candidate: &LinkedBytecodeCandidate,
+    origin: &skiff_artifact_model::PackageBuildId,
+    raw: &TypeRefIr,
+    limits: &VerificationLimits,
+) -> Result<TypeRefIr, VerificationError> {
+    let mut resolver = resolver::HydratedValueLifecycleResolver::new(hydrated, candidate);
+    resolver
+        .begin_row(origin)
+        .map_err(|error| VerificationError::SemanticViolation {
+            obligation: crate::VerificationObligation::ConcreteTypeAndShape,
+            location: crate::VerificationLocation::Image,
+            detail: format!(
+                "establishing test owner scope failed at authority {}: {}",
+                error.authority, error.message
+            ),
+        })?;
+    let mut budget = normalization::OwnerNormalizationBudget::new(limits);
+    normalization::normalize_owner_type(
+        raw,
+        &resolver,
+        &mut budget,
+        crate::VerificationLocation::Image,
+    )
+    .map(normalization::OwnerNormalizedType::into_type_ref)
+}
+
+#[cfg(test)]
+pub(crate) fn classify_after_owner_authority_reset_for_test(
+    hydrated: &HydratedDeploymentBytecode,
+    candidate: &LinkedBytecodeCandidate,
+    origin: &skiff_artifact_model::PackageBuildId,
+    prior_private_build: &skiff_artifact_model::PackageBuildId,
+    ty: &TypeRefIr,
+    limits: &VerificationLimits,
+) -> Result<(), VerificationError> {
+    let mut resolver = resolver::HydratedValueLifecycleResolver::new(hydrated, candidate);
+    resolver.begin_row(origin).map_err(|error| {
+        class_violation(format!(
+            "establishing prior test row failed at authority {}: {}",
+            error.authority, error.message
+        ))
+    })?;
+    resolver
+        .establish_row_private_type_authority(std::collections::BTreeSet::from([
+            prior_private_build.clone(),
+        ]))
+        .map_err(|error| {
+            class_violation(format!(
+                "establishing prior test authority failed at authority {}: {}",
+                error.authority, error.message
+            ))
+        })?;
+    resolver.begin_row(origin).map_err(|error| {
+        class_violation(format!(
+            "resetting test row failed at authority {}: {}",
+            error.authority, error.message
+        ))
+    })?;
+    let max_depth = u32::try_from(
+        limits
+            .max_type_nesting_depth
+            .min(skiff_artifact_model::bytecode::limits::MAX_NESTING_DEPTH),
+    )
+    .unwrap_or(u32::MAX);
+    let mut budget = skiff_artifact_model::ValueLifecyclePolicyBudget::new(
+        limits.max_value_lifecycle_nodes,
+        limits.max_value_lifecycle_canonical_bytes,
+        max_depth,
+    )
+    .map_err(|error| class_violation(format!("test lifecycle budget failed: {error}")))?;
+    skiff_artifact_model::classify_value_lifecycle(
+        ty,
+        &skiff_artifact_model::PositionalTypeEnvironment::empty(),
+        &mut resolver,
+        &mut budget,
+    )
+    .map(|_| ())
+    .map_err(|error| class_violation(format!("test lifecycle classification failed: {error}")))
 }
 
 /// P2 orchestration seam: resolve exact hydrated facts, independently

@@ -66,11 +66,12 @@ pub(crate) fn loader_backed_local_call(
     };
     skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
     let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
+    let package_reference = skiff_artifact_identity::package_artifact_ref(&package).unwrap();
     let resolver = ExactResolver {
         deployment: Arc::new(deployment),
         contract: Arc::new(contract),
-        package: Arc::new(package),
-        bytecode,
+        packages: BTreeMap::from([(package_reference.clone(), Arc::new(package))]),
+        bytecodes: BTreeMap::from([(package_reference, bytecode)]),
     };
     let hydrated = DeploymentBytecodeLoader::new(&resolver)
         .load(&reference)

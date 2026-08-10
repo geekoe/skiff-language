@@ -24,16 +24,22 @@ use skiff_runtime_loader::{
 use crate::VerificationLimits;
 
 mod local_calls;
+mod owner_authority;
 
 pub(super) use local_calls::TARGET_FUNCTION_INDEX;
 pub(crate) use local_calls::{loader_backed_local_call, LocalCallCandidateCorruption};
+pub(super) use owner_authority::{
+    owner_authority_fixture, OwnerAuthorityFixture, OwnerRequirementMode, OwnerTypeSurface,
+    OWNER_CALLER_PACKAGE_ID, OWNER_DEPENDENCY_ALIAS, OWNER_SCHEMA_KEY, OWNER_SELF_TYPE_PATH,
+    OWNER_TARGET_PACKAGE_ID, OWNER_TYPE_PATH,
+};
 
 #[derive(Debug)]
 struct ExactResolver {
     deployment: Arc<ServiceDeployment>,
     contract: Arc<ServiceContract>,
-    package: Arc<PackageArtifact>,
-    bytecode: Arc<ValidatedBytecodeArtifact>,
+    packages: BTreeMap<PackageArtifactRef, Arc<PackageArtifact>>,
+    bytecodes: BTreeMap<PackageArtifactRef, Arc<ValidatedBytecodeArtifact>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -61,17 +67,28 @@ impl DeploymentBytecodeContentResolver for ExactResolver {
 
     fn resolve_package(
         &self,
-        _reference: &PackageArtifactRef,
+        reference: &PackageArtifactRef,
     ) -> anyhow::Result<Arc<PackageArtifact>> {
-        Ok(Arc::clone(&self.package))
+        self.packages
+            .get(reference)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown exact test package {reference:?}"))
     }
 
     fn resolve_package_bytecode(
         &self,
-        _package: &PackageArtifactRef,
-        _reference: &BytecodeArtifactRef,
+        package: &PackageArtifactRef,
+        reference: &BytecodeArtifactRef,
     ) -> anyhow::Result<Arc<ValidatedBytecodeArtifact>> {
-        Ok(Arc::clone(&self.bytecode))
+        let bytecode = self
+            .bytecodes
+            .get(package)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown exact test bytecode owner {package:?}"))?;
+        if bytecode.reference() != reference {
+            anyhow::bail!("test bytecode reference mismatch")
+        }
+        Ok(bytecode)
     }
 }
 
@@ -108,11 +125,12 @@ pub(super) fn exact_hydration_with_types_and_shapes(
     };
     skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
     let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
+    let package_reference = skiff_artifact_identity::package_artifact_ref(&package).unwrap();
     let resolver = ExactResolver {
         deployment: Arc::new(deployment),
         contract: Arc::new(contract),
-        package: Arc::new(package),
-        bytecode,
+        packages: BTreeMap::from([(package_reference.clone(), Arc::new(package))]),
+        bytecodes: BTreeMap::from([(package_reference, bytecode)]),
     };
     DeploymentBytecodeLoader::new(&resolver)
         .load(&reference)

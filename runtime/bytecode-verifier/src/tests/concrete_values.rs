@@ -1,3 +1,5 @@
+mod owner_normalization;
+
 use skiff_artifact_model::{
     NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete,
     NativeValueLifecycleResolution, PackageBuildId, ShapeDeclaration, TypeRefIr,

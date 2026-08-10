@@ -1,9 +1,14 @@
+mod authority;
+mod descriptor;
+mod package_types;
+
+use std::collections::BTreeSet;
+
 use skiff_artifact_model::{
     BytecodePoolEntry, ContractTypeDescriptor, ContractTypeRef, InterfaceInstantiationRef,
-    PackageBuildId, PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageSymbolRef, ResolvedPackageValueType, TypeDescriptorIr,
-    TypeRefIr, ValidatedFunction, ValueLifecycleFactResolver, ValueLifecycleResolverError,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageBuildId, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSymbolRef,
+    ResolvedPackageValueType, TypeDescriptorIr, TypeRefIr, ValidatedFunction,
+    ValueLifecycleFactResolver, ValueLifecycleResolverError, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
     ArtifactTypeIndex, LinkedBytecodeCandidate, SpecializationKey,
@@ -27,10 +32,11 @@ pub(super) struct HydratedValueLifecycleResolver<'a> {
     hydrated: &'a HydratedDeploymentBytecode,
     candidate: &'a LinkedBytecodeCandidate,
     scope_package_build_id: Option<PackageBuildId>,
+    row_private_type_authority: BTreeSet<PackageBuildId>,
 }
 
 impl<'a> HydratedValueLifecycleResolver<'a> {
-    pub(super) const fn new(
+    pub(super) fn new(
         hydrated: &'a HydratedDeploymentBytecode,
         candidate: &'a LinkedBytecodeCandidate,
     ) -> Self {
@@ -38,6 +44,7 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
             hydrated,
             candidate,
             scope_package_build_id: None,
+            row_private_type_authority: BTreeSet::new(),
         }
     }
 
@@ -48,6 +55,7 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
         origin: &PackageBuildId,
     ) -> Result<(), ValueLifecycleResolverError> {
         self.scope_package_build_id = None;
+        self.row_private_type_authority.clear();
 
         let mut candidate_rows = self
             .candidate
@@ -75,6 +83,10 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
         })?;
         let exact_owner = package.reference().package_build_id == *origin
             && package.artifact().package_build_id == *origin
+            && package.reference().package_id == package.artifact().package_id
+            && package.reference().package_version == package.artifact().package_version
+            && package.reference().package_local_abi_identity
+                == package.artifact().package_local_abi.local_abi_identity
             && candidate_row.artifact_ref() == package.bytecode().reference();
         if !exact_owner {
             return Err(resolver_error(
@@ -85,6 +97,25 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
 
         self.scope_package_build_id = Some(origin.clone());
         Ok(())
+    }
+
+    pub(super) fn establish_row_private_type_authority(
+        &mut self,
+        authority: BTreeSet<PackageBuildId>,
+    ) -> Result<(), ValueLifecycleResolverError> {
+        if self.scope_package_build_id.is_none() {
+            return Err(resolver_error(
+                SCOPE_AUTHORITY,
+                "cannot establish private type authority without an exact row scope",
+            ));
+        }
+        self.row_private_type_authority = authority;
+        Ok(())
+    }
+
+    pub(super) fn has_row_private_type_authority(&self, package: &HydratedBytecodePackage) -> bool {
+        self.row_private_type_authority
+            .contains(&package.reference().package_build_id)
     }
 
     pub(super) fn current_package_build_id(&self) -> Option<&PackageBuildId> {
@@ -200,6 +231,10 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
         })?;
         if package.reference().package_build_id != *build_id
             || package.artifact().package_build_id != *build_id
+            || package.reference().package_id != package.artifact().package_id
+            || package.reference().package_version != package.artifact().package_version
+            || package.reference().package_local_abi_identity
+                != package.artifact().package_local_abi.local_abi_identity
         {
             return Err(resolver_error(
                 authority,
@@ -238,7 +273,10 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
         let exact_owner = package.reference().package_id == package_id
             && package.artifact().package_id == package_id
             && &package.reference().package_build_id == map_build_id
-            && &package.artifact().package_build_id == map_build_id;
+            && &package.artifact().package_build_id == map_build_id
+            && package.reference().package_version == package.artifact().package_version
+            && package.reference().package_local_abi_identity
+                == package.artifact().package_local_abi.local_abi_identity;
         if !exact_owner {
             return Err(resolver_error(
                 authority,
@@ -246,112 +284,6 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
             ));
         }
         Ok(package)
-    }
-
-    fn resolve_package_type<'b>(
-        &'b self,
-        symbol: &PackageSymbolRef,
-    ) -> Result<ResolvedPackageType<'b>, ValueLifecycleResolverError> {
-        let scope_build_id = self
-            .current_package(PACKAGE_SYMBOL_AUTHORITY)?
-            .reference()
-            .package_build_id
-            .clone();
-        let PackageRefIr::PackageId { package_id } = &symbol.package else {
-            return Err(resolver_error(
-                PACKAGE_SYMBOL_AUTHORITY,
-                "dependency package references are not exact package symbol owners",
-            ));
-        };
-        if symbol.symbol_path.is_empty() {
-            return Err(resolver_error(
-                PACKAGE_SYMBOL_AUTHORITY,
-                "package symbol path is empty",
-            ));
-        }
-        let abi_expectation = symbol
-            .abi_expectation
-            .as_deref()
-            .filter(|expectation| !expectation.is_empty())
-            .ok_or_else(|| {
-                resolver_error(
-                    PACKAGE_SYMBOL_AUTHORITY,
-                    format!(
-                        "package symbol {package_id}/{} has no required exact ABI",
-                        symbol.symbol_path
-                    ),
-                )
-            })?;
-        let package = self.package_for_id(package_id, PACKAGE_SYMBOL_AUTHORITY)?;
-        let package_abi = &package.artifact().package_local_abi;
-        let exact_abi = package.reference().package_local_abi_identity
-            == package_abi.local_abi_identity
-            && abi_expectation == package_abi.local_abi_identity.as_str();
-        if !exact_abi {
-            return Err(resolver_error(
-                PACKAGE_SYMBOL_AUTHORITY,
-                format!(
-                    "package symbol {package_id}/{} does not name the required exact ABI",
-                    symbol.symbol_path
-                ),
-            ));
-        }
-
-        let public = package_abi.public_symbols.get(&symbol.symbol_path);
-        let implementation = package_abi.implementation_symbols.get(&symbol.symbol_path);
-        if public.is_some() && implementation.is_some() {
-            return Err(resolver_error(
-                PACKAGE_SYMBOL_AUTHORITY,
-                format!(
-                    "package symbol {package_id}/{} is ambiguous across public and implementation ABI rows",
-                    symbol.symbol_path
-                ),
-            ));
-        }
-
-        let entry = if let Some(public) = public {
-            public
-        } else if let Some(implementation) = implementation {
-            if package.reference().package_build_id != scope_build_id {
-                return Err(resolver_error(
-                    PACKAGE_SYMBOL_AUTHORITY,
-                    format!(
-                        "package symbol {package_id}/{} is a cross-package implementation type",
-                        symbol.symbol_path
-                    ),
-                ));
-            }
-            implementation
-        } else {
-            return Err(resolver_error(
-                PACKAGE_SYMBOL_AUTHORITY,
-                format!(
-                    "unknown package type symbol {package_id}/{}",
-                    symbol.symbol_path
-                ),
-            ));
-        };
-
-        let PackageLocalAbiSymbol::Type {
-            descriptor,
-            is_interface,
-            type_params,
-            ..
-        } = entry
-        else {
-            return Err(resolver_error(
-                PACKAGE_SYMBOL_AUTHORITY,
-                format!(
-                    "package symbol {package_id}/{} is not a type",
-                    symbol.symbol_path
-                ),
-            ));
-        };
-        Ok(ResolvedPackageType {
-            type_parameters: type_params,
-            descriptor,
-            is_interface: *is_interface,
-        })
     }
 }
 
@@ -362,8 +294,8 @@ impl ValueLifecycleFactResolver for HydratedValueLifecycleResolver<'_> {
     ) -> Result<ResolvedPackageValueType, ValueLifecycleResolverError> {
         let resolved = self.resolve_package_type(symbol)?;
         Ok(ResolvedPackageValueType {
-            type_parameters: resolved.type_parameters.to_vec(),
-            descriptor: resolved.descriptor.clone(),
+            type_parameters: resolved.type_parameters,
+            descriptor: resolved.descriptor,
         })
     }
 
@@ -508,13 +440,7 @@ impl ValueLifecycleFactResolver for HydratedValueLifecycleResolver<'_> {
     }
 }
 
-struct ResolvedPackageType<'a> {
-    type_parameters: &'a [String],
-    descriptor: &'a TypeDescriptorIr,
-    is_interface: bool,
-}
-
-fn resolver_error(
+pub(super) fn resolver_error(
     authority: &'static str,
     message: impl Into<String>,
 ) -> ValueLifecycleResolverError {
