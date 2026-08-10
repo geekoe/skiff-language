@@ -617,6 +617,12 @@ fn signature_rehydration_artifact() -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(
+                "example.com/provider",
+                &[],
+            )
+            .unwrap(),
         bytecode: None,
     }
 }
@@ -2702,6 +2708,9 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity("llm-api", &[])
+                .unwrap(),
         bytecode: None,
     };
     let mut package_types = BTreeMap::new();
@@ -3397,6 +3406,12 @@ fn actor_artifact() -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(
+                "example.com/actor-provider",
+                &[],
+            )
+            .unwrap(),
         bytecode: None,
     };
     artifact.files[0].source_ast_hash = Some("source-hash".to_string());

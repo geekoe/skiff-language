@@ -35,6 +35,7 @@ pub(crate) mod runtime_type_projection;
 pub mod semantic;
 mod semantics;
 pub(crate) mod shared;
+mod source_events;
 mod source_file_facts;
 pub mod source_graph;
 pub mod source_identity;
@@ -119,6 +120,7 @@ pub use resolved_call_targets::{
 };
 pub use semantics::PackageCompilePlan;
 pub use shared::publication_error::PublicationError as SourceCompileError;
+pub use source_events::{SourceEventFact, SourceEventFacts, SourceEventKey, SourceStatementKey};
 pub use source_file_facts::{
     publication_db_metadata_index, type_indices, type_text_with_args, LocalDbObjectIndex,
     PackageInterfaceMethodIndex, PublicationDbLease, PublicationDbMetadata,

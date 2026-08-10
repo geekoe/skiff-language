@@ -135,6 +135,12 @@ fn package_dependency_artifact() -> PackageArtifact {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(
+                "example.com/dep",
+                &[],
+            )
+            .unwrap(),
         bytecode: None,
     }
 }

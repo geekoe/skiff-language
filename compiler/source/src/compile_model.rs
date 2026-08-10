@@ -27,8 +27,8 @@ use super::{
     api::{PublicCallableKind, PublicModuleExport, PublicSymbolKind, PublicTypeKind},
     publication_type_symbols, validate_source_name_resolution_from_model, ConfigRequirementSet,
     ExpressionSourceMap, ExpressionTypeModel, NameResolutionModel, PackageCompilePlan,
-    PublicationApiSeed, PublicationTypeSymbolIndex, ResolvedCallTargetFacts, TypeResolutionContext,
-    TypeResolutionModel, TypeResolutionPackageFacts,
+    PublicationApiSeed, PublicationTypeSymbolIndex, ResolvedCallTargetFacts, SourceEventFacts,
+    TypeResolutionContext, TypeResolutionModel, TypeResolutionPackageFacts,
 };
 use crate::shared::publication_error::PublicationError;
 
@@ -119,7 +119,7 @@ pub struct PackageSourceModel {
     /// 不得通过 `dependencies` 字段重新拿原始数据。
     name_resolution: NameResolutionModel,
     type_resolution: TypeResolutionModel,
-    expression_sources: ExpressionSourceMap,
+    source_events: SourceEventFacts,
     expression_types: ExpressionTypeModel,
     publication_api: PublicationApiModel,
     export_bindings: ExportBindingModel,
@@ -210,18 +210,18 @@ impl PackageSourceModel {
             &input.parsed_sources,
             &type_resolution,
         )?;
-        let expression_sources =
-            ExpressionSourceMap::build(&input.parsed_sources).map_err(|message| {
-                PublicationError::ContractValidation {
-                    message: format!("expression source model failed:\n- {message}"),
-                }
-            })?;
+        let source_events = SourceEventFacts::build(&input.parsed_sources).map_err(|message| {
+            PublicationError::ContractValidation {
+                message: format!("source event model failed:\n- {message}"),
+            }
+        })?;
+        let expression_sources = source_events.expression_sources();
         let publication_api = PublicationApiModel::new(input.publication_api_seed);
         let export_bindings = ExportBindingModel::from_publication_api(publication_api.seed());
         let dependencies = ResolvedDependencies::new(input.package_aliases.clone());
         let expression_types = ExpressionTypeModel::build(
             &input.parsed_sources,
-            &expression_sources,
+            expression_sources,
             &type_resolution,
             indexes.publication_db_metadata_index(),
             Some(input.dependency_analysis),
@@ -231,7 +231,7 @@ impl PackageSourceModel {
         })?;
         let resolved_call_targets = ResolvedCallTargetFacts::build(
             &input.parsed_sources,
-            &expression_sources,
+            expression_sources,
             &expression_types,
             &type_resolution,
             input.dependency_analysis,
@@ -247,7 +247,7 @@ impl PackageSourceModel {
         let callable_provenance = callable_analysis.provenance;
         let execution_semantics = super::execution_semantics::analyze_source_execution_semantics(
             &input.parsed_sources,
-            &expression_sources,
+            expression_sources,
             &resolved_call_targets,
             &callable_effects,
         )?;
@@ -296,7 +296,7 @@ impl PackageSourceModel {
             entity_model,
             name_resolution,
             type_resolution,
-            expression_sources,
+            source_events,
             expression_types,
             publication_api,
             export_bindings,
@@ -359,7 +359,11 @@ impl PackageSourceModel {
     }
 
     pub fn expression_sources(&self) -> &ExpressionSourceMap {
-        &self.expression_sources
+        self.source_events.expression_sources()
+    }
+
+    pub fn source_events(&self) -> &SourceEventFacts {
+        &self.source_events
     }
 
     pub fn expression_types(&self) -> &ExpressionTypeModel {

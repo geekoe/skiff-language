@@ -244,6 +244,9 @@ fn provider(package_id: &str) -> (PackageArtifact, FileIrUnit) {
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &[])
+                .unwrap(),
         bytecode: None,
     };
     artifact.package_schema_index.package_schema_index_identity =
