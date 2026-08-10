@@ -388,6 +388,21 @@ fn validate_statement_and_source_tables(
             instruction_len,
         )?;
     }
+    let mut statement_entries = Vec::with_capacity(function.statement_entries().len());
+    for statement in function.statement_entries() {
+        statement_entries.push(skiff_artifact_model::StatementEntry {
+            pc: statement.instruction().get(),
+            sequence_ordinal: statement.sequence_ordinal(),
+            attribution_id: statement.attribution_id(),
+            site: statement.site().clone(),
+        });
+    }
+    skiff_artifact_model::validate_statement_entries_canonical(&statement_entries).map_err(
+        |source| LinkedBytecodeCandidateError::NonCanonicalStatementEntries {
+            function: function.index(),
+            source,
+        },
+    )?;
     for source in function.source_map() {
         check_index(
             function_location,

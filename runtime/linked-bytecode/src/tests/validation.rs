@@ -2,7 +2,7 @@ use skiff_artifact_model::{
     BytecodeArtifactRef, CallableEffectSummary, ContractOperationId, InstructionSourceSite,
     LinkedOperandKind, LiteralIr, NativeValueAdapterRole, NativeValueLifecycleAdapter, Opcode,
     PackageCallableId, PackageRefIr, PackageSymbolRef, ParamModeIr, ResumeErrorMode,
-    StatementChargeKind, SyntheticInstructionSiteReason, TypeRefIr, OPCODE_CONTRACTS,
+    StatementAttributionId, SyntheticInstructionSiteReason, TypeRefIr, OPCODE_CONTRACTS,
 };
 
 use crate::{
@@ -35,11 +35,11 @@ use super::fixtures::{
 };
 
 #[test]
-fn package_provenance_retains_v5_header_identity_and_authority_pins() {
+fn package_provenance_retains_v6_header_identity_and_authority_pins() {
     let package = package(0, build_id());
 
     assert_eq!(package.package_build_id(), &build_id());
-    assert_eq!(package.schema_version(), "skiff-bytecode-v5");
+    assert_eq!(package.schema_version(), "skiff-bytecode-v6");
     assert_eq!(package.isa_version(), "skiff-bytecode-isa-v4");
     assert_eq!(
         package.declared_bytecode_identity(),
@@ -71,7 +71,7 @@ fn package_provenance_rejects_header_reference_identity_mismatch() {
         BytecodeArtifactRef::new("bytecode:referenced"),
         "bytecode:declared",
         "skiff-bytecode",
-        "skiff-bytecode-v5",
+        "skiff-bytecode-v6",
         "skiff-bytecode-isa-v4",
         "opcode-table-fingerprint:fixture",
         authority_pins(),
@@ -102,7 +102,7 @@ fn package_provenance_rejects_artifact_locator_paths() {
         artifact_ref,
         "bytecode:fixture",
         "skiff-bytecode",
-        "skiff-bytecode-v5",
+        "skiff-bytecode-v6",
         "skiff-bytecode-isa-v4",
         "opcode-table-fingerprint:fixture",
         authority_pins(),
@@ -741,7 +741,7 @@ fn instruction_rejects_noncanonical_or_out_of_bounds_target_ordinals() {
 }
 
 #[test]
-fn function_tables_preserve_regions_switch_charge_and_source_sites() {
+fn function_tables_preserve_regions_switch_attribution_and_source_sites() {
     let site = InstructionSourceSite::Synthetic {
         reason: SyntheticInstructionSiteReason::RuntimeControlFlow,
     };
@@ -774,10 +774,10 @@ fn function_tables_preserve_regions_switch_charge_and_source_sites() {
     .expect("fixture switch tags are canonical");
     let statement = LinkedStatementEntry::new(
         InstructionIndex::new(0),
-        "statement:root",
-        StatementChargeKind::FunctionEntry,
-    )
-    .expect("fixture statement identity is non-empty");
+        0,
+        StatementAttributionId::Generated { ordinal: 0 },
+        site.clone(),
+    );
     let tables = LinkedFunctionTables::new(
         Box::new([exception]),
         Box::new([active]),
@@ -787,7 +787,7 @@ fn function_tables_preserve_regions_switch_charge_and_source_sites() {
         Box::new([LinkedSourceMapEntry::new(
             InstructionIndex::new(0),
             InstructionBoundaryIndex::new(1),
-            site,
+            site.clone(),
         )]),
     );
 
@@ -800,9 +800,15 @@ fn function_tables_preserve_regions_switch_charge_and_source_sites() {
         InstructionIndex::new(0)
     );
     assert_eq!(
-        tables.statement_entries()[0].charge_kind(),
-        StatementChargeKind::FunctionEntry
+        tables.statement_entries()[0].instruction(),
+        InstructionIndex::new(0)
     );
+    assert_eq!(tables.statement_entries()[0].sequence_ordinal(), 0);
+    assert_eq!(
+        tables.statement_entries()[0].attribution_id(),
+        StatementAttributionId::Generated { ordinal: 0 }
+    );
+    assert_eq!(tables.statement_entries()[0].site(), &site);
     assert_eq!(
         tables.source_map()[0].end(),
         InstructionBoundaryIndex::new(1)
@@ -914,7 +920,7 @@ fn candidate_getters_retain_nominal_data_resume_and_root_facts() {
 
     assert_eq!(
         candidate.packages()[0].schema_version(),
-        "skiff-bytecode-v5"
+        "skiff-bytecode-v6"
     );
     assert_eq!(candidate.functions().len(), 1);
     assert_eq!(candidate.operation_entries().len(), 1);

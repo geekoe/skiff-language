@@ -1,6 +1,6 @@
 use std::fmt;
 
-use skiff_artifact_model::{InstructionSourceSite, ResumeErrorMode, StatementChargeKind};
+use skiff_artifact_model::{InstructionSourceSite, ResumeErrorMode, StatementAttributionId};
 
 use crate::{
     ActiveRegionIndex, ArtifactWritablePathIndex, FrameSlotIndex, FunctionIndex,
@@ -270,52 +270,42 @@ impl std::error::Error for LinkedResumeSiteError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedStatementEntry {
     instruction: InstructionIndex,
-    statement_id: Box<str>,
-    charge_kind: StatementChargeKind,
+    sequence_ordinal: u32,
+    attribution_id: StatementAttributionId,
+    site: InstructionSourceSite,
 }
 
 impl LinkedStatementEntry {
     pub fn new(
         instruction: InstructionIndex,
-        statement_id: impl Into<String>,
-        charge_kind: StatementChargeKind,
-    ) -> Result<Self, LinkedStatementEntryError> {
-        let statement_id = statement_id.into();
-        if statement_id.is_empty() {
-            return Err(LinkedStatementEntryError::EmptyStatementId);
-        }
-        Ok(Self {
+        sequence_ordinal: u32,
+        attribution_id: StatementAttributionId,
+        site: InstructionSourceSite,
+    ) -> Self {
+        Self {
             instruction,
-            statement_id: statement_id.into_boxed_str(),
-            charge_kind,
-        })
+            sequence_ordinal,
+            attribution_id,
+            site,
+        }
     }
 
     pub const fn instruction(&self) -> InstructionIndex {
         self.instruction
     }
 
-    pub fn statement_id(&self) -> &str {
-        &self.statement_id
+    pub const fn sequence_ordinal(&self) -> u32 {
+        self.sequence_ordinal
     }
 
-    pub const fn charge_kind(&self) -> StatementChargeKind {
-        self.charge_kind
+    pub const fn attribution_id(&self) -> StatementAttributionId {
+        self.attribution_id
+    }
+
+    pub const fn site(&self) -> &InstructionSourceSite {
+        &self.site
     }
 }
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LinkedStatementEntryError {
-    EmptyStatementId,
-}
-
-impl fmt::Display for LinkedStatementEntryError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("linked statement id must not be empty")
-    }
-}
-
-impl std::error::Error for LinkedStatementEntryError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedSourceMapEntry {

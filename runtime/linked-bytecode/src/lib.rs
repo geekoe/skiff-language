@@ -57,8 +57,8 @@ pub use stack_map::{
 pub use tables::{
     LinkedActiveRegion, LinkedActiveRegionKind, LinkedCatchMatcher, LinkedExceptionRegion,
     LinkedResumeSite, LinkedResumeSiteError, LinkedSourceMapEntry, LinkedStatementEntry,
-    LinkedStatementEntryError, LinkedSwitchCase, LinkedSwitchTable, LinkedSwitchTableError,
-    LinkedWritablePathEntry, LinkedWritablePathError, LinkedWritablePathSegment,
+    LinkedSwitchCase, LinkedSwitchTable, LinkedSwitchTableError, LinkedWritablePathEntry,
+    LinkedWritablePathError, LinkedWritablePathSegment,
 };
 pub use targets::{
     LinkedActorCreateTarget, LinkedActorImplementationRef, LinkedActorMethodTarget,

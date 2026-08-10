@@ -226,6 +226,10 @@ pub enum LinkedBytecodeCandidateError {
         start: u32,
         end: u32,
     },
+    NonCanonicalStatementEntries {
+        function: crate::FunctionIndex,
+        source: skiff_artifact_model::StatementEntryValidationError,
+    },
     NonTopologicalFrozenConstantEdge {
         node: u32,
         child: u32,

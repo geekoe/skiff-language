@@ -9,7 +9,7 @@ use skiff_artifact_model::{
 ///
 /// The four identities remain grouped so linked provenance cannot retain the
 /// native lifecycle table while accidentally dropping the classifier, host,
-/// or intrinsic authority pins introduced by bytecode schema v5.
+/// or intrinsic authority pins retained by bytecode schema v6.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedBytecodeAuthorityPins {
     native_value_lifecycle_registry: NativeValueLifecycleRegistryIdentity,

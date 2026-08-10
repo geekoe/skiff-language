@@ -18,7 +18,8 @@ use crate::{
     LinkedFunctionTables, LinkedGatewayCallable, LinkedGatewayCallableRole, LinkedInstruction,
     LinkedNativeCallableSignature, LinkedPackageBytecodeProvenance, LinkedParameterSlot,
     LinkedProgramPointState, LinkedSlotState, LinkedStackMapCandidate, LinkedStackValue,
-    LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan, SpecializationKey, TypeIndex,
+    LinkedStatementEntry, LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan,
+    SpecializationKey, TypeIndex,
 };
 
 pub(super) fn build_id() -> PackageBuildId {
@@ -152,6 +153,60 @@ pub(super) fn function_with_key(index: u32, key: SpecializationKey, name: &str) 
             Box::new([]),
             Box::new([]),
             Box::new([]),
+            Box::new([]),
+        ),
+        stack_map,
+    )
+}
+
+pub(super) fn function_with_statement_entries(
+    instruction_count: usize,
+    statement_entries: Vec<LinkedStatementEntry>,
+) -> LinkedFunction {
+    let base = function(0, "statements");
+    let instructions = (0..instruction_count)
+        .map(|_| {
+            LinkedInstruction::new(Opcode::BudgetCheckpoint, Box::new([]), Box::new([]), 0)
+                .expect("fixture instruction has no operands")
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let stack_map = LinkedStackMapCandidate::try_new(
+        (0..instruction_count)
+            .map(|position| {
+                LinkedProgramPointState::new(
+                    crate::InstructionIndex::new(
+                        u32::try_from(position).expect("fixture instruction position fits u32"),
+                    ),
+                    Box::new([]),
+                    Box::new([LinkedSlotState::Live(LinkedStackValue::new(
+                        TypeIndex::new(0),
+                        snapshot_plan(),
+                    ))]),
+                    Box::new([]),
+                    Box::new([]),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        instruction_count,
+        1,
+        1,
+    )
+    .expect("fixture stack-map has one state per instruction");
+    LinkedFunction::new(
+        base.index(),
+        base.key().clone(),
+        instructions,
+        base.frame().clone(),
+        base.max_operand_depth(),
+        base.effect().clone(),
+        LinkedFunctionTables::new(
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            statement_entries.into_boxed_slice(),
             Box::new([]),
         ),
         stack_map,
