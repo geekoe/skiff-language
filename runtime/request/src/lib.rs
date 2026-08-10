@@ -1,5 +1,12 @@
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::result_large_err)]
+
+// RequestError intentionally carries eval and boundary payloads by value; the
+// large-error lints are advisory in the normal workspace gate.
+
 mod assembly_ingress;
 mod assembly_seam;
+mod bytecode_ingress;
 pub mod cancellation;
 mod context;
 mod effect_context;
@@ -35,6 +42,10 @@ pub use assembly_ingress::{
     AssemblyRequestExecutionInput,
 };
 pub use assembly_seam::{RuntimeAssemblyRequestSeamError, RuntimeAssemblyRequestTarget};
+pub use bytecode_ingress::{
+    execute_runtime_bytecode_request, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, BytecodeRequestTarget, BytecodeRequestTargetError,
+};
 pub use context::{
     invocation_context_from_request, request_payload_context_from_request, RequestPayloadContext,
 };
