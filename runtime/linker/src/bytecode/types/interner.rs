@@ -180,6 +180,13 @@ impl<'a> TypeLinker<'a> {
         )
     }
 
+    pub(in crate::bytecode) fn linked_type_ref(&self, index: TypeIndex) -> Option<&TypeRefIr> {
+        self.entries
+            .get(index.get() as usize)
+            .and_then(Option::as_ref)
+            .map(LinkedTypeEntry::type_ref)
+    }
+
     pub(in crate::bytecode) fn finish(
         self,
         location: BytecodeLinkLocation,

@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use skiff_artifact_model::{
     BytecodeConstantRef, BytecodePoolEntry, FrozenConstantNode, LiteralIr, TypeRefIr,
 };
@@ -76,29 +74,19 @@ impl DeploymentLinker<'_> {
     ) -> Result<(), BytecodeLinkError> {
         let view = package.bytecode().view();
         let pools = view.pools();
-        if view.constant_roots().len() != pools.constants.len() {
-            return Err(unavailable(self.package_location(package)));
-        }
-        let named_rows = view
-            .constant_roots()
-            .values()
-            .copied()
-            .collect::<BTreeSet<_>>();
         for (position, entry) in pools.constants.iter().enumerate() {
-            let artifact_index = artifact_constant_index(
+            let _ = artifact_constant_index(
                 position,
                 pools.constants.len(),
                 self.package_location(package),
             )?;
-            if !named_rows.contains(&artifact_index)
-                || !matches!(
-                    entry,
-                    BytecodePoolEntry::ConstantRef {
-                        reference: BytecodeConstantRef::LocalNode { .. },
-                        ..
-                    }
-                )
-            {
+            if !matches!(
+                entry,
+                BytecodePoolEntry::ConstantRef {
+                    reference: BytecodeConstantRef::LocalNode { .. },
+                    ..
+                }
+            ) {
                 return Err(unavailable(self.package_location(package)));
             }
         }

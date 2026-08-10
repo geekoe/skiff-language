@@ -2,7 +2,7 @@ use skiff_artifact_model::{
     Arity, SlotAction, SlotContract, TypedStackGroup, TypedTransition, ValueSource,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackValue,
+    LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackValue, TypeIndex,
 };
 
 use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation};
@@ -116,17 +116,80 @@ fn validate_input_group(
         }
         _ => {}
     }
-    let expected = values::source_values(context, instruction, source, &[], location.clone())?;
-    if expected != actual {
+    let mut expected = values::source_values(context, instruction, source, &[], location.clone())?;
+    if expected.len() == 1 && actual.len() > 1 {
+        expected = actual.iter().map(|_| expected[0].clone()).collect();
+    }
+    if !linked_values_match(&expected, actual, context) {
         return Err(obligation_error(
             location,
             format!(
-                "typed stack input {} differs from its exact concrete source",
-                source.name()
+                "typed stack input {} differs from its exact concrete source: expected {expected:?}, actual {actual:?}",
+                source.name(),
             ),
         ));
     }
     Ok(())
+}
+
+fn linked_values_match(
+    expected: &[LinkedStackValue],
+    actual: &[LinkedStackValue],
+    context: &StackMapContext<'_, '_>,
+) -> bool {
+    expected.len() == actual.len()
+        && expected.iter().zip(actual).all(|(expected, actual)| {
+            expected.plan() == actual.plan() && type_refs_match(expected.ty(), actual.ty(), context)
+        })
+}
+
+fn type_refs_match(
+    expected: TypeIndex,
+    actual: TypeIndex,
+    context: &StackMapContext<'_, '_>,
+) -> bool {
+    let expected = context.type_linker.linked_type_ref(expected);
+    let actual = context.type_linker.linked_type_ref(actual);
+    match (expected, actual) {
+        (Some(left), Some(right)) => equivalent_type_ref(left, right),
+        _ => false,
+    }
+}
+
+fn equivalent_type_ref(
+    left: &skiff_artifact_model::TypeRefIr,
+    right: &skiff_artifact_model::TypeRefIr,
+) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left, right) {
+        (
+            skiff_artifact_model::TypeRefIr::Builtin { name, args },
+            skiff_artifact_model::TypeRefIr::Builtin {
+                name: other_name,
+                args: other_args,
+            },
+        ) => name == other_name && args == other_args,
+        (
+            skiff_artifact_model::TypeRefIr::Literal { value },
+            skiff_artifact_model::TypeRefIr::Builtin { name, args },
+        ) if args.is_empty() => literal_builtin_name(value) == *name,
+        (
+            skiff_artifact_model::TypeRefIr::Builtin { name, args },
+            skiff_artifact_model::TypeRefIr::Literal { value },
+        ) if args.is_empty() => literal_builtin_name(value) == *name,
+        _ => false,
+    }
+}
+
+fn literal_builtin_name(literal: &skiff_artifact_model::LiteralIr) -> &'static str {
+    match literal {
+        skiff_artifact_model::LiteralIr::Null => "null",
+        skiff_artifact_model::LiteralIr::Bool { .. } => "bool",
+        skiff_artifact_model::LiteralIr::Number { .. } => "number",
+        skiff_artifact_model::LiteralIr::String { .. } => "string",
+    }
 }
 
 fn apply_stack_outputs(

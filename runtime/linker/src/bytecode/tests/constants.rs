@@ -203,20 +203,26 @@ fn every_composite_graph_kind_fails_at_an_exact_constant_node() {
 }
 
 #[test]
-fn anonymous_and_package_symbol_rows_remain_typed_fail_closed() {
-    for fixture in [
-        Fixture::constant(ConstantProgram::Anonymous),
-        Fixture::package_symbol_constant(),
-    ] {
-        let hydrated = fixture.hydrate();
-        assert!(matches!(
-            link_deployment(&hydrated, &generous_limits()),
-            Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ConstantInitializationPlan,
-                location: BytecodeLinkLocation::Package { .. },
-            })
-        ));
-    }
+fn anonymous_literal_rows_link_while_package_symbol_rows_remain_fail_closed() {
+    let anonymous = Fixture::constant(ConstantProgram::Anonymous);
+    let hydrated = anonymous.hydrate();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.constants().len(), 1);
+    assert!(candidate.constant_roots().is_empty());
+    assert!(matches!(
+        candidate.constants()[0].reference(),
+        LinkedConstantReference::LocalNode { .. }
+    ));
+
+    let package_symbol = Fixture::package_symbol_constant();
+    let hydrated = package_symbol.hydrate();
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::ImplementationUnavailable {
+            obligation: BytecodeLinkObligation::ConstantInitializationPlan,
+            location: BytecodeLinkLocation::Package { .. },
+        })
+    ));
 }
 
 #[test]

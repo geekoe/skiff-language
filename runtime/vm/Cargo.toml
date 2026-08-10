@@ -11,5 +11,15 @@ skiff-runtime-deployment-image = { path = "../deployment-image" }
 skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
 skiff-runtime-model = { path = "../model" }
 
+[dev-dependencies]
+anyhow = "1.0"
+skiff-artifact-identity = { path = "../../artifact-identity" }
+skiff-compiler = { path = "../../compiler" }
+skiff-compiler-core = { path = "../../compiler/core" }
+skiff-compiler-input = { path = "../../compiler/input" }
+skiff-compiler-source = { path = "../../compiler/source" }
+skiff-runtime-linker = { path = "../linker" }
+skiff-runtime-loader = { path = "../loader" }
+
 [lints]
 workspace = true

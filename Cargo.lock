@@ -2967,10 +2967,18 @@ dependencies = [
 name = "skiff-runtime-vm"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-compiler",
+ "skiff-compiler-core",
+ "skiff-compiler-input",
+ "skiff-compiler-source",
  "skiff-runtime-bytecode-verifier",
  "skiff-runtime-deployment-image",
  "skiff-runtime-linked-bytecode",
+ "skiff-runtime-linker",
+ "skiff-runtime-loader",
  "skiff-runtime-model",
 ]
 
