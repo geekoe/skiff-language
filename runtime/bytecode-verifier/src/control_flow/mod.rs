@@ -25,7 +25,15 @@ pub(crate) struct ControlFlowFacts {
 struct FunctionFlowFacts {
     states_before: Box<[ProgramPointState]>,
     successors: Box<[Box<[ControlFlowEdge]>]>,
+    exact_local_invocations: Box<[ExactLocalInvocation]>,
     computed_max_operand_depth: u32,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExactLocalInvocation {
+    site: InstructionIndex,
+    target: skiff_runtime_linked_bytecode::FunctionIndex,
 }
 
 #[allow(dead_code)]
@@ -79,19 +87,17 @@ pub(crate) fn prove_control_flow_and_stack(
     limits: &VerificationLimits,
 ) -> Result<ControlFlowFacts, VerificationError> {
     let mut facts = cfg::prove_control_flow(candidate, limits)?;
-    let targets = targets::prove_exact_targets_and_call_plans(
-        candidate,
-        concrete_values,
-        &facts,
-        limits,
-    )?;
-    transfer::prove_stack_and_slot_state(
-        candidate,
-        concrete_values,
-        &targets,
-        &mut facts,
-        limits,
-    )?;
+    let targets =
+        targets::prove_exact_targets_and_call_plans(candidate, concrete_values, &facts, limits)?;
+    transfer::prove_stack_and_slot_state(candidate, concrete_values, &targets, &mut facts, limits)?;
     resume::prove_resume_sites(candidate, concrete_values, &targets, &facts, limits)?;
     Ok(facts)
+}
+
+#[cfg(test)]
+pub(crate) fn prove_control_flow_for_test(
+    candidate: &LinkedBytecodeCandidate,
+    limits: &VerificationLimits,
+) -> Result<(), VerificationError> {
+    cfg::prove_control_flow(candidate, limits).map(drop)
 }
