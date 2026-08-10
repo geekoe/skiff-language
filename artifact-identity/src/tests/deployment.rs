@@ -849,7 +849,7 @@ fn deployment_identity_is_stable_under_reorder_and_rejects_stale_generation() {
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-        "skiff-package-build-v12:sha256"
+        "skiff-package-build-v13:sha256"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,

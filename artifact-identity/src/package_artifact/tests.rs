@@ -46,7 +46,7 @@ fn current_package_artifact_generation_assigns_and_rejects_stale_domains() {
     validate_package_artifact_identities(&artifact).unwrap();
 
     let mut stale_schema = artifact.clone();
-    stale_schema.schema_version = "skiff-package-artifact-v12".to_string();
+    stale_schema.schema_version = "skiff-package-artifact-v13".to_string();
     assert!(matches!(
         validate_package_artifact_identities(&stale_schema),
         Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
@@ -73,7 +73,7 @@ fn current_package_artifact_generation_assigns_and_rejects_stale_domains() {
     stale_build.package_build_id =
         PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
             crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-            "skiff-package-build-v11:sha256",
+            "skiff-package-build-v12:sha256",
             1,
         ));
     assert!(matches!(
@@ -456,7 +456,7 @@ fn implementation_throw_facts_without_matching_boundary_projection_are_rejected(
 }
 
 #[test]
-fn package_artifact_build_v12_preimage_excludes_service_selection() {
+fn package_artifact_build_v13_preimage_excludes_service_selection() {
     let mut artifact = two_callable_fixture();
     artifact.bytecode = Some(skiff_artifact_model::BytecodeArtifactRef {
         bytecode_identity: bytecode_identity_leaf('a'),
@@ -475,7 +475,7 @@ fn package_artifact_build_v12_preimage_excludes_service_selection() {
         build["schema"],
         crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER
     );
-    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v11");
+    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v12");
     assert_eq!(
         build
             .as_object()
@@ -492,6 +492,7 @@ fn package_artifact_build_v12_preimage_excludes_service_selection() {
             "packageSchemaTypeRecords",
             "files",
             "bytecode",
+            "bytecodeStatementManifestIdentity",
             "staticResources",
             "implementationLinks",
             "callableLinks",
@@ -519,7 +520,7 @@ fn package_artifact_build_v12_preimage_excludes_service_selection() {
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v12:sha256:"));
+        .starts_with("skiff-package-build-v13:sha256:"));
 
     assert_eq!(
         local["schema"],
@@ -1653,6 +1654,12 @@ fn fixture() -> PackageArtifact {
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(
+                "example.identity",
+                &[],
+            )
+            .unwrap(),
         package_local_abi: skiff_artifact_model::PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
@@ -2442,6 +2449,17 @@ fn bytecode_identity_leaf(character: char) -> String {
     )
 }
 
+fn statement_manifest_identity_leaf(
+    character: char,
+) -> skiff_artifact_model::BytecodeStatementManifestIdentity {
+    skiff_artifact_model::BytecodeStatementManifestIdentity::parse(format!(
+        "{}:{}",
+        skiff_artifact_model::BYTECODE_STATEMENT_MANIFEST_IDENTITY_PREFIX,
+        std::iter::repeat_n(character, 64).collect::<String>()
+    ))
+    .unwrap()
+}
+
 #[test]
 fn bytecode_identity_enters_build_preimage_but_not_local_abi() {
     let base = fixture();
@@ -2499,6 +2517,83 @@ fn bytecode_identity_enters_build_preimage_but_not_local_abi() {
     );
 
     validate_package_artifact_identities(&with_bytecode).unwrap();
+}
+
+#[test]
+fn statement_manifest_identity_enters_build_preimage_but_not_local_abi() {
+    let mut artifact = fixture();
+    artifact.bytecode = Some(skiff_artifact_model::BytecodeArtifactRef {
+        bytecode_identity: bytecode_identity_leaf('a'),
+        artifact_path: None,
+    });
+    artifact.bytecode_statement_manifest_identity = statement_manifest_identity_leaf('a');
+    assign_package_artifact_identities(&mut artifact).unwrap();
+
+    let baseline_build = package_artifact_build_identity(&artifact).unwrap();
+    let baseline_local = package_artifact_local_abi_identity(&artifact).unwrap();
+    let mut changed = artifact.clone();
+    changed.bytecode_statement_manifest_identity = statement_manifest_identity_leaf('b');
+    assign_package_artifact_identities(&mut changed).unwrap();
+
+    assert_ne!(
+        package_artifact_build_identity(&changed).unwrap(),
+        baseline_build
+    );
+    assert_eq!(
+        package_artifact_local_abi_identity(&changed).unwrap(),
+        baseline_local
+    );
+    let build = serde_json::to_value(package_artifact_build_identity_projection(&changed).unwrap())
+        .unwrap();
+    assert_eq!(
+        build["bytecodeStatementManifestIdentity"],
+        serde_json::json!(changed.bytecode_statement_manifest_identity.as_str())
+    );
+    let local =
+        serde_json::to_value(package_artifact_local_abi_identity_projection(&changed).unwrap())
+            .unwrap();
+    assert!(local.get("bytecodeStatementManifestIdentity").is_none());
+    validate_package_artifact_identities(&changed).unwrap();
+}
+
+#[test]
+fn statement_manifest_wire_is_required_and_validated_by_the_model() {
+    let canonical = serde_json::to_value(fixture()).unwrap();
+
+    let mut missing = canonical.clone();
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("bytecodeStatementManifestIdentity");
+    assert!(serde_json::from_value::<PackageArtifact>(missing).is_err());
+
+    for invalid in [
+        format!(
+            "skiff-bytecode-statement-manifest-v0:sha256:{}",
+            "a".repeat(64)
+        ),
+        format!(
+            "{}:short",
+            skiff_artifact_model::BYTECODE_STATEMENT_MANIFEST_IDENTITY_PREFIX
+        ),
+        format!(
+            "{}:{}",
+            skiff_artifact_model::BYTECODE_STATEMENT_MANIFEST_IDENTITY_PREFIX,
+            "A".repeat(64)
+        ),
+    ] {
+        let mut malformed = canonical.clone();
+        malformed["bytecodeStatementManifestIdentity"] = serde_json::json!(invalid);
+        assert!(serde_json::from_value::<PackageArtifact>(malformed).is_err());
+    }
+
+    let mut wrong_empty_manifest = fixture();
+    wrong_empty_manifest.bytecode_statement_manifest_identity =
+        statement_manifest_identity_leaf('a');
+    assert!(matches!(
+        package_artifact_build_identity(&wrong_empty_manifest),
+        Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
+    ));
 }
 
 #[test]

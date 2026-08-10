@@ -120,6 +120,7 @@ pub(super) fn build_projection_from_validated(
             .bytecode
             .as_ref()
             .map(BytecodeOwnerIdentityProjection::from_ref),
+        bytecode_statement_manifest_identity: artifact.bytecode_statement_manifest_identity.clone(),
         static_resources,
         implementation_links: PackageImplementationLinksIdentityProjection::from_links(
             &artifact.implementation_links,

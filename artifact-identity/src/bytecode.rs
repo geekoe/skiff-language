@@ -5,8 +5,8 @@
 //! a projection of the artifact that **excludes the `bytecode_identity` field
 //! itself** but covers everything else (schema marker, schema/ISA versions,
 //! opcode table fingerprint, all semantic authority identities and the full
-//! image including the debug table, D10/D14). `BTreeMap`-backed maps keep the
-//! canonical JSON order stable.
+//! image including source-event rows and the debug table, D10/D14).
+//! `BTreeMap`-backed maps keep the canonical JSON order stable.
 //!
 //! `structurally_validate` (C1–C8) runs before any identity computation:
 //! identity is only ever derived from structurally valid content, and
@@ -111,7 +111,7 @@ fn validated_bytecode_view(artifact: &BytecodeArtifact) -> Result<StructurallyVa
 }
 
 /// Validates that `identity` is a well-formed framed bytecode identity
-/// (`skiff-bytecode-image-v3:sha256:<64 lowercase hex>`). Used when a
+/// (`skiff-bytecode-image-v4:sha256:<64 lowercase hex>`). Used when a
 /// `PackageArtifact` carries a `BytecodeArtifactRef` (C9 linkage check at the
 /// package surface level, before the build projection is computed).
 pub fn validate_bytecode_identity_format(identity: &str) -> Result<()> {

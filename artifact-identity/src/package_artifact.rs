@@ -4,12 +4,12 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
-    BoundaryCallableProjection, CallableSemanticFacts, FileIrRef, PackageActorImplementation,
-    PackageArtifact, PackageArtifactRef, PackageBuildId, PackageCallableId,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageLocalInterfaceConformance,
-    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, PackageSchemaTypeRecordRef, PackageSyntheticCallbackOwner,
-    ServiceCallRef,
+    BoundaryCallableProjection, BytecodeStatementManifestIdentity, CallableSemanticFacts,
+    FileIrRef, PackageActorImplementation, PackageArtifact, PackageArtifactRef, PackageBuildId,
+    PackageCallableId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageLocalInterfaceConformance, PackageRuntimeRequirements, PackageSchemaIndexRef,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
+    PackageSyntheticCallbackOwner, ServiceCallRef,
 };
 
 use self::implementation_links::{
@@ -106,6 +106,7 @@ pub struct PackageArtifactBuildIdentityProjection {
     /// has no bytecode record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     bytecode: Option<BytecodeOwnerIdentityProjection>,
+    bytecode_statement_manifest_identity: BytecodeStatementManifestIdentity,
     static_resources: Vec<ResourceIdentityProjection>,
     implementation_links: PackageImplementationLinksIdentityProjection,
     callable_links: BTreeMap<PackageCallableId, CallableLinkIdentityProjection>,

@@ -9,7 +9,7 @@ use skiff_artifact_model::{
     BytecodeImage, BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
     DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph, FrozenConstantNode, LiteralIr,
     PackageCallableId, PackageExecutableCoordinate, RelocatableBytecodeFunction, SourceMapEntry,
-    StatementChargeKind, StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    StatementAttributionId, StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan,
     BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
@@ -70,9 +70,15 @@ fn fixture() -> BytecodeArtifact {
             active_regions: Vec::new(),
             switch_tables: Vec::new(),
             statement_entries: vec![StatementEntry {
-                pc: 0,
-                statement_id: "s:main:entry".to_string(),
-                charge_kind: StatementChargeKind::FunctionEntry,
+                pc: 6,
+                sequence_ordinal: 0,
+                attribution_id: StatementAttributionId::Expression {
+                    expression_index: 0,
+                    occurrence_ordinal: 0,
+                },
+                site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                    reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
             }],
             source_map: vec![SourceMapEntry {
                 start_pc: 6,
@@ -166,7 +172,7 @@ fn schema_isa_and_all_semantic_authorities_participate_in_the_preimage() {
 
     let mutations: [BytecodeMutation; 14] = [
         ("schemaVersion", |artifact| {
-            artifact.schema_version = "skiff-bytecode-v4".to_string();
+            artifact.schema_version = "skiff-bytecode-v5".to_string();
         }),
         ("isaVersion", |artifact| {
             artifact.isa_version = "skiff-bytecode-isa-v3".to_string();
@@ -278,7 +284,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&slot_type_changed).unwrap(),
         base_identity,
-        "schema v4 frame slot types must participate in the identity"
+        "schema v6 frame slot types must participate in the identity"
     );
 
     let mut result_type_changed = base.clone();
@@ -292,7 +298,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&result_type_changed).unwrap(),
         base_identity,
-        "schema v4 frame result types must participate in the identity"
+        "schema v6 frame result types must participate in the identity"
     );
 
     let mut writable_locals_changed = base.clone();
@@ -306,7 +312,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&writable_locals_changed).unwrap(),
         base_identity,
-        "schema v4 writable-local frame facts must participate in the identity"
+        "schema v6 writable-local frame facts must participate in the identity"
     );
 
     let mut origin_changed = base.clone();
@@ -323,7 +329,23 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&origin_changed).unwrap(),
         base_identity,
-        "schema v4 executable origins must participate in the identity"
+        "schema v6 executable origins must participate in the identity"
+    );
+
+    let mut source_event_changed = base.clone();
+    let source_event = &mut source_event_changed
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .statement_entries[0];
+    source_event.site = skiff_artifact_model::InstructionSourceSite::Synthetic {
+        reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerDesugaring,
+    };
+    assert_ne!(
+        bytecode_identity(&source_event_changed).unwrap(),
+        base_identity,
+        "schema v6 source-event rows must participate in the image identity"
     );
 
     let mut graph_changed = base.clone();
@@ -409,7 +431,7 @@ fn identity_format_validation_accepts_only_framed_lowercase_sha256() {
         format!("{BYTECODE_IDENTITY_PREFIX}:{}", leaf.to_uppercase()),
         format!("{BYTECODE_IDENTITY_PREFIX}:short"),
         format!("{BYTECODE_IDENTITY_PREFIX}:{}", "z".repeat(64)),
-        format!("skiff-bytecode-image-v2:sha256:{leaf}"),
+        format!("skiff-bytecode-image-v3:sha256:{leaf}"),
         "unframed".to_string(),
     ] {
         assert!(matches!(
@@ -417,4 +439,10 @@ fn identity_format_validation_accepts_only_framed_lowercase_sha256() {
             Err(ArtifactIdentityError::InvalidBytecodeIdentity { .. })
         ));
     }
+
+    let error = validate_bytecode_identity_format("stale").unwrap_err();
+    assert!(
+        error.to_string().contains(BYTECODE_IDENTITY_PREFIX),
+        "format diagnostics must use the current identity prefix"
+    );
 }

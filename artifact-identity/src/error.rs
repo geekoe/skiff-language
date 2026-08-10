@@ -80,7 +80,8 @@ pub enum ArtifactIdentityError {
     #[error("bytecode artifact declared identity {declared} but content identity is {computed}")]
     BytecodeIdentityMismatch { declared: String, computed: String },
     #[error(
-        "bytecode identity {identity} must use skiff-bytecode-image-v3:sha256:<64 lowercase hex>"
+        "bytecode identity {identity} must use {prefix}:<64 lowercase hex>",
+        prefix = crate::BYTECODE_IDENTITY_PREFIX
     )]
     InvalidBytecodeIdentity { identity: String },
     #[error("File IR {field} must be {expected}, got {actual}")]
