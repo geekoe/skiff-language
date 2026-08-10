@@ -2634,8 +2634,10 @@ name = "skiff-runtime-bytecode-verifier"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "skiff-runtime-deployment-image",
  "skiff-runtime-linked-bytecode",
  "skiff-runtime-loader",
