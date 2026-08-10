@@ -14,6 +14,8 @@ mod spans;
 #[cfg(test)]
 mod tests;
 
+type SourceOwnerInventory = BTreeMap<(String, ExpressionOwnerKey), u32>;
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SourceStatementKey {
     module_path: String,
@@ -108,6 +110,7 @@ impl SourceEventFact {
 
 #[derive(Clone, Debug)]
 pub struct SourceEventFacts {
+    owners: SourceOwnerInventory,
     facts: BTreeMap<SourceEventKey, SourceEventFact>,
     expression_sources: ExpressionSourceMap,
 }
@@ -123,6 +126,13 @@ impl SourceEventFacts {
         self.facts.get(key)
     }
 
+    /// Reports whether source collection observed this exact module-local
+    /// owner exactly once, including unique owners whose bodies contain no
+    /// source events. Missing and ambiguous owners both fail closed.
+    pub fn contains_owner(&self, module_path: &str, owner: &ExpressionOwnerKey) -> bool {
+        self.owners.get(&(module_path.to_string(), owner.clone())) == Some(&1)
+    }
+
     /// Iterates in typed key order for deterministic validation. This order is
     /// not an execution order and must not be used as a File IR index.
     pub fn iter(&self) -> impl Iterator<Item = &SourceEventFact> {
@@ -130,7 +140,7 @@ impl SourceEventFacts {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.facts.is_empty()
+        self.owners.is_empty() && self.facts.is_empty()
     }
 
     pub(crate) fn expression_sources(&self) -> &ExpressionSourceMap {

@@ -34,8 +34,57 @@ fn facts(module_path: &str, source: &str) -> SourceEventFacts {
         .expect("source-event facts should build")
 }
 
+fn provider_facts(module_path: &str, native_source: &str) -> SourceEventFacts {
+    let relative_path = format!("{}.skiff", module_path.replace('.', "/"));
+    let native_file = CompilerSourceFile::parse(
+        PathBuf::from(&relative_path),
+        module_path.to_string(),
+        false,
+        false,
+        native_source.to_string(),
+        &relative_path,
+    )
+    .expect("provider source-event fixture should parse as native declarations");
+    let mut ast = native_file.ast.clone();
+    for function in &mut ast.functions {
+        assert!(function.is_native);
+        function.is_native = false;
+        function.is_provider = true;
+    }
+    for implementation in &mut ast.impls {
+        for method in &mut implementation.methods {
+            assert!(method.is_native);
+            method.is_native = false;
+            method.is_provider = true;
+        }
+        for method in &mut implementation.method_bodies {
+            assert!(method.is_native);
+            method.is_native = false;
+            method.is_provider = true;
+        }
+    }
+    let provider_file = CompilerSourceFile::from_parsed_ast(
+        PathBuf::from(&relative_path),
+        module_path.to_string(),
+        false,
+        false,
+        native_source.to_string(),
+        ast,
+    );
+    let parsed = parse_publication_sources(Path::new("/source-events"), &[provider_file])
+        .expect("provider source-event fixture should build parsed sources");
+    SourceEventFacts::build(&parsed).expect("provider source-event facts should build")
+}
+
 fn function_owner(name: &str) -> ExpressionOwnerKey {
     ExpressionOwnerKey::Function(name.to_string())
+}
+
+fn impl_owner(type_name: &str, method: &str) -> ExpressionOwnerKey {
+    ExpressionOwnerKey::ImplMethod {
+        type_name: type_name.to_string(),
+        method: method.to_string(),
+    }
 }
 
 fn statement_key(module_path: &str, owner: &ExpressionOwnerKey, index: u32) -> SourceEventKey {
@@ -180,4 +229,61 @@ fn source_authority_never_produces_generated_or_synthetic_events() {
         ));
         assert!(matches!(fact.site(), InstructionSourceSite::Source { .. }));
     }
+}
+
+#[test]
+fn empty_owner_is_present_even_without_event_rows() {
+    let events = facts("pkg.empty", "function empty() -> void {}");
+    let owner = function_owner("empty");
+
+    assert!(events.contains_owner("pkg.empty", &owner));
+    assert!(!events.is_empty());
+    assert_eq!(events.iter().count(), 0);
+}
+
+#[test]
+fn absent_module_or_owner_is_not_in_the_inventory() {
+    let events = facts("pkg.present", "function present() -> void {}");
+
+    assert!(!events.contains_owner("pkg.absent", &function_owner("present")));
+    assert!(!events.contains_owner("pkg.present", &function_owner("absent")));
+}
+
+#[test]
+fn duplicate_empty_source_owner_is_ambiguous() {
+    let source = r#"function duplicate() -> void {}
+function duplicate() -> void {}"#;
+    let events = SourceEventFacts::build(&parsed_sources(&[("pkg.duplicate", source)]))
+        .expect("empty duplicate owners should remain available to later ambiguity validation");
+
+    assert!(!events.contains_owner("pkg.duplicate", &function_owner("duplicate")));
+    assert_eq!(events.iter().count(), 0);
+}
+
+#[test]
+fn native_owners_are_present_without_body_events() {
+    let source = r#"type Host {}
+native function nativeTop() -> void
+impl Host {
+  native function nativeMethod() -> void
+}"#;
+    let events = facts("pkg.native", source);
+
+    assert!(events.contains_owner("pkg.native", &function_owner("nativeTop")));
+    assert!(events.contains_owner("pkg.native", &impl_owner("Host", "nativeMethod")));
+    assert_eq!(events.iter().count(), 0);
+}
+
+#[test]
+fn provider_owners_are_present_without_body_events() {
+    let source = r#"type Host {}
+native function providerTop() -> void
+impl Host {
+  native function providerMethod() -> void
+}"#;
+    let events = provider_facts("pkg.provider", source);
+
+    assert!(events.contains_owner("pkg.provider", &function_owner("providerTop")));
+    assert!(events.contains_owner("pkg.provider", &impl_owner("Host", "providerMethod")));
+    assert_eq!(events.iter().count(), 0);
 }

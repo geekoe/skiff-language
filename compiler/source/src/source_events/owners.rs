@@ -8,16 +8,17 @@ use crate::{
     ExpressionKey, ExpressionOwnerKey, ExpressionSourceFact,
 };
 
-use super::{collector::OwnerCollector, SourceEventFact, SourceEventKey};
+use super::{collector::OwnerCollector, SourceEventFact, SourceEventKey, SourceOwnerInventory};
 
 pub(super) fn collect_source(
     module_path: &str,
     ast: &SourceFile,
+    owners: &mut SourceOwnerInventory,
     events: &mut BTreeMap<SourceEventKey, SourceEventFact>,
     expressions: &mut BTreeMap<ExpressionKey, ExpressionSourceFact>,
 ) -> Result<(), String> {
-    collect_functions(module_path, ast, events, expressions)?;
-    collect_impl_methods(module_path, ast, events, expressions)?;
+    collect_functions(module_path, ast, owners, events, expressions)?;
+    collect_impl_methods(module_path, ast, owners, events, expressions)?;
 
     for (constant, spans) in ast.consts.iter().zip(&ast.source_spans.consts) {
         collect_owner_expression(
@@ -25,6 +26,7 @@ pub(super) fn collect_source(
             ExpressionOwnerKey::Const(constant.name.clone()),
             &constant.value,
             spans,
+            owners,
             events,
             expressions,
         )?;
@@ -42,6 +44,7 @@ pub(super) fn collect_source(
             ExpressionOwnerKey::Test(test.name.clone()),
             &test.body,
             &spans.body,
+            owners,
             events,
             expressions,
         )?;
@@ -62,6 +65,7 @@ pub(super) fn collect_source(
             },
             db_index_where_expression(ast, where_spans, module_path)?,
             &where_spans.expression,
+            owners,
             events,
             expressions,
         )?;
@@ -72,11 +76,14 @@ pub(super) fn collect_source(
 fn collect_functions(
     module_path: &str,
     ast: &SourceFile,
+    owners: &mut SourceOwnerInventory,
     events: &mut BTreeMap<SourceEventKey, SourceEventFact>,
     expressions: &mut BTreeMap<ExpressionKey, ExpressionSourceFact>,
 ) -> Result<(), String> {
     let mut span_index = 0;
     for function in &ast.functions {
+        let owner = ExpressionOwnerKey::Function(function.name.clone());
+        register_owner(module_path, &owner, owners)?;
         if function.is_native || function.is_provider {
             continue;
         }
@@ -86,9 +93,9 @@ fn collect_functions(
                 function.name
             )
         })?;
-        collect_owner_block(
+        collect_registered_owner_block(
             module_path,
-            ExpressionOwnerKey::Function(function.name.clone()),
+            owner,
             &function.body,
             &spans.body,
             events,
@@ -107,12 +114,18 @@ fn collect_functions(
 fn collect_impl_methods(
     module_path: &str,
     ast: &SourceFile,
+    owners: &mut SourceOwnerInventory,
     events: &mut BTreeMap<SourceEventKey, SourceEventFact>,
     expressions: &mut BTreeMap<ExpressionKey, ExpressionSourceFact>,
 ) -> Result<(), String> {
     let mut span_index = 0;
     for implementation in &ast.impls {
         for method in &implementation.method_bodies {
+            let owner = ExpressionOwnerKey::ImplMethod {
+                type_name: implementation.target.clone(),
+                method: method.name.clone(),
+            };
+            register_owner(module_path, &owner, owners)?;
             if method.is_native || method.is_provider {
                 continue;
             }
@@ -122,12 +135,9 @@ fn collect_impl_methods(
                     impl_method_declaration_name(&implementation.target, &method.name)
                 )
             })?;
-            collect_owner_block(
+            collect_registered_owner_block(
                 module_path,
-                ExpressionOwnerKey::ImplMethod {
-                    type_name: implementation.target.clone(),
-                    method: method.name.clone(),
-                },
+                owner,
                 &method.body,
                 &spans.body,
                 events,
@@ -149,6 +159,19 @@ fn collect_owner_block(
     owner: ExpressionOwnerKey,
     block: &Block,
     spans: &BlockSourceSpans,
+    owners: &mut SourceOwnerInventory,
+    events: &mut BTreeMap<SourceEventKey, SourceEventFact>,
+    expressions: &mut BTreeMap<ExpressionKey, ExpressionSourceFact>,
+) -> Result<(), String> {
+    register_owner(module_path, &owner, owners)?;
+    collect_registered_owner_block(module_path, owner, block, spans, events, expressions)
+}
+
+fn collect_registered_owner_block(
+    module_path: &str,
+    owner: ExpressionOwnerKey,
+    block: &Block,
+    spans: &BlockSourceSpans,
     events: &mut BTreeMap<SourceEventKey, SourceEventFact>,
     expressions: &mut BTreeMap<ExpressionKey, ExpressionSourceFact>,
 ) -> Result<(), String> {
@@ -160,10 +183,28 @@ fn collect_owner_expression(
     owner: ExpressionOwnerKey,
     expression: &Expr,
     spans: &ExprSourceSpans,
+    owners: &mut SourceOwnerInventory,
     events: &mut BTreeMap<SourceEventKey, SourceEventFact>,
     expressions: &mut BTreeMap<ExpressionKey, ExpressionSourceFact>,
 ) -> Result<(), String> {
+    register_owner(module_path, &owner, owners)?;
     OwnerCollector::new(module_path, owner, events, expressions).visit_expr(expression, spans)
+}
+
+fn register_owner(
+    module_path: &str,
+    owner: &ExpressionOwnerKey,
+    owners: &mut SourceOwnerInventory,
+) -> Result<(), String> {
+    let count = owners
+        .entry((module_path.to_string(), owner.clone()))
+        .or_insert(0);
+    *count = count.checked_add(1).ok_or_else(|| {
+        format!(
+            "source event model mismatch in module {module_path}: source owner multiplicity overflow for {owner:?}"
+        )
+    })?;
+    Ok(())
 }
 
 fn db_index_where_expression<'a>(

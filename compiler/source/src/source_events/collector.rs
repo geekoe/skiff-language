@@ -7,7 +7,7 @@ use crate::{
 
 use super::{
     spans::source_instruction_site, SourceEventFact, SourceEventFacts, SourceEventKey,
-    SourceStatementKey,
+    SourceOwnerInventory, SourceStatementKey,
 };
 
 pub(super) struct OwnerCollector<'a> {
@@ -22,6 +22,7 @@ pub(super) struct OwnerCollector<'a> {
 pub(super) fn collect_source_events(
     parsed_sources: &[crate::parsed_sources::ParsedCompilerSource],
 ) -> Result<SourceEventFacts, String> {
+    let mut owners = SourceOwnerInventory::new();
     let mut events = BTreeMap::new();
     let mut expressions = BTreeMap::new();
     for parsed in parsed_sources {
@@ -31,11 +32,13 @@ pub(super) fn collect_source_events(
         super::owners::collect_source(
             parsed.source().module_path.as_str(),
             parsed.ast(),
+            &mut owners,
             &mut events,
             &mut expressions,
         )?;
     }
     Ok(SourceEventFacts {
+        owners,
         facts: events,
         expression_sources: ExpressionSourceMap::from_facts(expressions),
     })
