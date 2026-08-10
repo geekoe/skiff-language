@@ -7,8 +7,11 @@ use skiff_runtime_linked_bytecode::{
     ActiveRegionIndex, FrameSlotIndex, InstructionIndex, LinkedBytecodeCandidate, TypeIndex,
     WritablePathIndex,
 };
+use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use crate::{concrete_values::ConcreteValueFacts, VerificationError, VerificationLimits};
+
+use self::targets::ExactTargetAndCallFacts;
 
 /// Independently derived control-flow and abstract program-point facts.
 ///
@@ -74,21 +77,22 @@ enum ControlFlowEdgeKind {
     Exceptional,
 }
 
-/// Private type-state token proving exact targets and call plans.
-#[allow(dead_code)]
-#[derive(Debug)]
-struct ExactTargetAndCallFacts;
-
 /// P3 orchestration seam. Opcode semantics will be read only from the
 /// canonical `OpcodeContract` when these proof bodies are implemented.
 pub(crate) fn prove_control_flow_and_stack(
+    hydrated: &HydratedDeploymentBytecode,
     candidate: &LinkedBytecodeCandidate,
     concrete_values: &ConcreteValueFacts,
     limits: &VerificationLimits,
 ) -> Result<ControlFlowFacts, VerificationError> {
     let mut facts = cfg::prove_control_flow(candidate, limits)?;
-    let targets =
-        targets::prove_exact_targets_and_call_plans(candidate, concrete_values, &facts, limits)?;
+    let targets = targets::prove_exact_targets_and_call_plans(
+        hydrated,
+        candidate,
+        concrete_values,
+        &facts,
+        limits,
+    )?;
     transfer::prove_stack_and_slot_state(candidate, concrete_values, &targets, &mut facts, limits)?;
     resume::prove_resume_sites(candidate, concrete_values, &targets, &facts, limits)?;
     Ok(facts)

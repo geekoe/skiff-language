@@ -1,27 +1,25 @@
-mod authority;
-mod call_plan;
-mod facts;
-mod local;
+use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex, LinkedBytecodeCandidate};
 
-use skiff_runtime_linked_bytecode::LinkedBytecodeCandidate;
-use skiff_runtime_loader::HydratedDeploymentBytecode;
-
-use super::ControlFlowFacts;
+use super::{
+    facts::{ExactCallPlan, ExactTargetCoordinate},
+    ControlFlowFacts,
+};
 use crate::{
     concrete_values::ConcreteValueFacts, VerificationError, VerificationLimits,
     VerificationLocation, VerificationObligation,
 };
 
-pub(super) use facts::ExactTargetAndCallFacts;
-
-/// Proves exact instruction targets, callable signatures and call plans.
-pub(super) fn prove_exact_targets_and_call_plans(
-    _hydrated: &HydratedDeploymentBytecode,
+/// P3 call-shape, P2-position and pending-plan seam.
+#[allow(dead_code)]
+pub(super) fn prove_call_plan(
     _candidate: &LinkedBytecodeCandidate,
     _concrete_values: &ConcreteValueFacts,
     _control_flow: &ControlFlowFacts,
+    _caller: FunctionIndex,
+    _site: InstructionIndex,
+    _target: ExactTargetCoordinate,
     _limits: &VerificationLimits,
-) -> Result<ExactTargetAndCallFacts, VerificationError> {
+) -> Result<ExactCallPlan, VerificationError> {
     Err(VerificationError::ProofUnavailable {
         obligation: VerificationObligation::ExactTargetAndCallPlan,
         location: VerificationLocation::Image,

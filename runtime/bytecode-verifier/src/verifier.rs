@@ -15,9 +15,7 @@ use skiff_runtime_loader::HydratedDeploymentBytecode;
 use skiff_runtime_model::vm_value::ValueSlot;
 
 use crate::{
-    admission::prove_admission,
-    concrete_values::prove_types_and_plans,
-    control_flow,
+    admission::prove_admission, concrete_values::prove_types_and_plans, control_flow,
     VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
 };
 
@@ -424,7 +422,7 @@ fn prove_hydrated_candidate_semantics(
 ) -> Result<(), VerificationError> {
     let concrete_values = prove_types_and_plans(hydrated, candidate, limits)?;
     let _control_flow =
-        control_flow::prove_control_flow_and_stack(candidate, &concrete_values, limits)?;
+        control_flow::prove_control_flow_and_stack(hydrated, candidate, &concrete_values, limits)?;
     prove_frozen_constant_safety(candidate, limits)
 }
 
