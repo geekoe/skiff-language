@@ -1381,3 +1381,4 @@ fn deployment_schema_closure_rejects_missing_and_extra_descriptor_rows() {
 }
 
 mod load;
+mod package_types;

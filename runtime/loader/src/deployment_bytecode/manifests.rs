@@ -11,9 +11,9 @@ use skiff_artifact_model::{
     HostEffectSignature, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
     NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact, PackageArtifactRef,
     PackageBuildId, PackageCallableId, PackageCallableSignature, PackageExecutableCoordinate,
-    PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, PackageTypeRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceRequirementKey, TypeRefIr, ValueTransferPlan,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageSymbolRef, PackageTypeRef,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceRequirementKey, TypeRefIr,
+    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::{
@@ -21,9 +21,11 @@ use super::{
     HydratedServiceDependency,
 };
 
+mod package_types;
 mod schema_closure;
 mod synthetic;
 
+use package_types::validate_package_type;
 use schema_closure::validate_bytecode_schema_closure;
 use synthetic::SyntheticCallbackIndex;
 
@@ -2193,42 +2195,6 @@ fn validate_package_schema_type(
     Ok(())
 }
 
-fn validate_package_type(
-    caller: &HydratedBytecodePackage,
-    symbol: &PackageSymbolRef,
-    deployment: &ServiceDeployment,
-    packages: &BTreeMap<PackageBuildId, HydratedBytecodePackage>,
-) -> Result<(), DeploymentBytecodeHydrationError> {
-    let target = resolve_package_ref(caller, &symbol.package, deployment, packages)?;
-    validate_abi_expectation(caller, symbol, target)?;
-    if !matches!(
-        target
-            .artifact()
-            .package_local_abi
-            .public_symbols
-            .get(&symbol.symbol_path)
-            .or_else(|| {
-                target
-                    .artifact()
-                    .package_local_abi
-                    .implementation_symbols
-                    .get(&symbol.symbol_path)
-            }),
-        Some(PackageLocalAbiSymbol::Type { .. })
-    ) {
-        return manifest_error(
-            caller.reference(),
-            DeploymentBytecodeManifestKind::PackageReference,
-            format!(
-                "package type {:?} is absent from exact target package {}",
-                symbol.symbol_path,
-                target.reference().package_build_id
-            ),
-        );
-    }
-    Ok(())
-}
-
 fn resolve_package_ref<'a>(
     caller: &HydratedBytecodePackage,
     package_ref: &PackageRefIr,
@@ -2279,20 +2245,7 @@ fn resolve_package_ref<'a>(
                     format!("dependency alias {dependency_ref:?} has duplicate bindings"),
                 );
             }
-            let requirement = caller
-                .artifact()
-                .package_requirements
-                .iter()
-                .find(|requirement| requirement.alias == *dependency_ref)
-                .ok_or_else(|| {
-                    manifest_mismatch(
-                        caller.reference(),
-                        DeploymentBytecodeManifestKind::PackageReference,
-                        format!(
-                            "dependency alias {dependency_ref:?} is absent from the caller package manifest"
-                        ),
-                    )
-                })?;
+            let requirement = exact_package_requirement(caller, dependency_ref)?;
             if binding.package.package_id != requirement.package_id
                 || binding.package.package_version != requirement.exact_version
                 || binding.package.package_local_abi_identity != requirement.expected_local_abi
@@ -2321,6 +2274,36 @@ fn resolve_package_ref<'a>(
                 })
         }
     }
+}
+
+fn exact_package_requirement<'a>(
+    caller: &'a HydratedBytecodePackage,
+    dependency_ref: &str,
+) -> Result<&'a PackageRequirement, DeploymentBytecodeHydrationError> {
+    let mut requirements = caller
+        .artifact()
+        .package_requirements
+        .iter()
+        .filter(|requirement| requirement.alias == dependency_ref);
+    let requirement = requirements.next().ok_or_else(|| {
+        manifest_mismatch(
+            caller.reference(),
+            DeploymentBytecodeManifestKind::PackageReference,
+            format!(
+                "dependency alias {dependency_ref:?} is absent from the caller package manifest"
+            ),
+        )
+    })?;
+    if requirements.next().is_some() {
+        return manifest_error(
+            caller.reference(),
+            DeploymentBytecodeManifestKind::PackageReference,
+            format!(
+                "dependency alias {dependency_ref:?} has duplicate caller package requirements"
+            ),
+        );
+    }
+    Ok(requirement)
 }
 
 fn validate_abi_expectation(
