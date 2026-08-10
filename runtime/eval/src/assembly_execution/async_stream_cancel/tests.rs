@@ -176,6 +176,7 @@ fn provider_stream_env_carries_no_shared_arena_handle() {
                 index: 0,
                 name: "shared".to_string(),
                 kind: "temp".to_string(),
+                writable_local: false,
             }],
             frame_size: 1,
         },

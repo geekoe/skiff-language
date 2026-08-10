@@ -786,8 +786,10 @@ fn linked_service_effect_executable(
             target: CallTargetIr::ServiceCall {
                 service_call_ref_index,
             },
+            concrete_receiver: None,
             site,
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },
@@ -805,16 +807,22 @@ fn linked_service_effect_executable(
                     index: 0,
                     name: "$exception".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(catch_type.clone()),
                 },
                 SlotIr {
                     index: 1,
                     name: "caught".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(catch_type.clone()),
                 },
                 SlotIr {
                     index: 2,
                     name: "response".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(TypeRefIr::builtin("string")),
                 },
             ],
             frame_size: 3,
@@ -916,6 +924,8 @@ fn linked_service_effect_executable(
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -946,6 +956,8 @@ fn linked_service_effect_consumer_executable(
                 index: 0,
                 name: "$exception".to_string(),
                 kind: SlotKind::Temp,
+                writable_local: false,
+                ty: Some(catch_type.clone()),
             }],
             frame_size: 1,
         },
@@ -964,8 +976,10 @@ fn linked_service_effect_consumer_executable(
                         target: CallTargetIr::ServiceCall {
                             service_call_ref_index,
                         },
+                        concrete_receiver: None,
                         site: linked_service_effect_call_site(),
                         args: Vec::new(),
+                        inout_args: Vec::new(),
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
                     },
@@ -979,6 +993,8 @@ fn linked_service_effect_consumer_executable(
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }

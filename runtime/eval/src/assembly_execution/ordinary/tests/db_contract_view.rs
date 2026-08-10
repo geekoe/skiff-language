@@ -119,6 +119,8 @@ fn engine_file() -> FileIrUnit {
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     file

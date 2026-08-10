@@ -582,6 +582,7 @@ mod server_stream_fixture {
                 name: "self".to_string(),
                 slot: 0,
                 ty: artifact::TypeRefIr::builtin("string"),
+                mode: artifact::ParamModeIr::Value,
             }],
             return_type: artifact::TypeRefIr::Builtin {
                 name: "Stream".to_string(),
@@ -593,6 +594,8 @@ mod server_stream_fixture {
                     index: 0,
                     name: "self".to_string(),
                     kind: artifact::SlotKind::SelfValue,
+                    writable_local: false,
+                    ty: Some(artifact::TypeRefIr::builtin("string")),
                 }],
                 frame_size: 1,
             },
@@ -614,6 +617,8 @@ mod server_stream_fixture {
                 ],
                 expressions: vec![artifact::ExprIr::LoadSlot { slot: 0 }],
             },
+            expression_types: Vec::new(),
+            statement_spans: Vec::new(),
             source_span: None,
         });
         skiff_artifact_identity::assign_file_ir_identity(&mut file)
@@ -654,13 +659,17 @@ mod server_stream_fixture {
                         target: artifact::CallTargetIr::ServiceCall {
                             service_call_ref_index: artifact::ServiceCallRefIndex::new(0),
                         },
+                        concrete_receiver: None,
                         site: instruction_site(),
                         args: Vec::new(),
+                        inout_args: Vec::new(),
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
                     },
                 }],
             },
+            expression_types: Vec::new(),
+            statement_spans: Vec::new(),
             source_span: None,
         });
         skiff_artifact_identity::assign_file_ir_identity(&mut file)
@@ -710,6 +719,7 @@ mod server_stream_fixture {
                     },
                 },
             )]),
+            public_instances: BTreeMap::new(),
             package_type_requirements: Vec::new(),
             diagnostic_text: artifact::ContractDiagnosticText {
                 service: "activation server stream fixture".to_string(),
@@ -793,6 +803,10 @@ mod server_stream_fixture {
             package_schema_type_records: BTreeMap::new(),
             implementation_links: artifact::PackageImplementationLinks::default(),
             callable_links: BTreeMap::new(),
+            synthetic_callback_owners: Vec::new(),
+            bytecode_schema_records: BTreeMap::new(),
+            actor_implementations: Vec::new(),
+            local_interface_conformances: Vec::new(),
             package_requirements: Vec::new(),
             contract_requirements: Vec::new(),
             service_requirements: Vec::new(),
@@ -801,6 +815,9 @@ mod server_stream_fixture {
             boundary_projections: BTreeMap::new(),
             service_call_refs: Vec::new(),
             bytecode: None,
+            bytecode_statement_manifest_identity:
+                artifact::derive_bytecode_statement_manifest_identity(package_id, &[])
+                    .expect("empty bytecode statement manifest is canonical"),
         }
     }
 

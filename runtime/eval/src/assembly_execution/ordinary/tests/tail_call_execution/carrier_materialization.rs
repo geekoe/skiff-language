@@ -278,6 +278,8 @@ fn carrier_caller(symbol: &str, return_type: TypeRefIr, wrapped: bool) -> Execut
         slots: slots(&[("value", SlotKind::Param)]),
         may_suspend: false,
         body,
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -293,6 +295,8 @@ fn carrier_terminal(return_type: TypeRefIr) -> ExecutableIr {
         slots: slots(&[("value", SlotKind::Param)]),
         may_suspend: false,
         body: direct_return_body(vec![ExprIr::LoadSlot { slot: 0 }], 0),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }

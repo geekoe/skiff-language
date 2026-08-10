@@ -577,10 +577,12 @@ async fn canonical_task_statement_at_timing_evaluates_expression_once() {
                                     metadata: BTreeMap::new(),
                                 },
                             },
+                            concrete_receiver: None,
                             site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                                 reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                             },
                             args: vec![ExprRefIr { expression: 2 }],
+                            inout_args: Vec::new(),
                             type_args: BTreeMap::new(),
                             metadata: BTreeMap::new(),
                         },
@@ -859,11 +861,13 @@ fn canonical_task_function_target_rejects_mismatched_metadata_defensively() {
         target: skiff_runtime_linked_program::LinkedCallTarget::Executable {
             addr: skiff_runtime_linked_program::ExecutableAddr::package(0, 0, 1),
         },
+        concrete_receiver: None,
         site: skiff_artifact_model::InstructionSourceSite::Synthetic {
             reason:
                 skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
         },
         args: Vec::new(),
+        inout_args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
         actor_metadata: None,
@@ -1189,10 +1193,12 @@ fn task_control_caller_executable(
                                 metadata: BTreeMap::new(),
                             },
                         },
+                        concrete_receiver: None,
                         site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                             reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                         },
                         args: vec![ExprRefIr { expression: 1 }],
+                        inout_args: Vec::new(),
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
                     },
@@ -1204,6 +1210,8 @@ fn task_control_caller_executable(
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1344,10 +1352,12 @@ fn caller_executable_with_timing(
             target: skiff_artifact_model::CallTargetIr::LocalExecutable {
                 executable_index: 1,
             },
+            concrete_receiver: None,
             site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                 reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata,
         },
@@ -1375,6 +1385,8 @@ fn caller_executable_with_timing(
             ],
             expressions,
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1390,6 +1402,8 @@ fn target_executable() -> ExecutableIr {
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1405,6 +1419,8 @@ fn target_executable_named(symbol: &str) -> ExecutableIr {
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1418,12 +1434,15 @@ fn target_executable_with_param(symbol: &str, param_type: TypeRefIr) -> Executab
             name: "ref".to_string(),
             slot: 0,
             ty: param_type,
+            mode: skiff_artifact_model::ParamModeIr::Value,
         }],
         return_type: skiff_artifact_model::TypeRefIr::builtin("null"),
         self_type: None,
         slots: SlotLayout::default(),
         may_suspend: false,
         body: ExecutableBody::default(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1466,15 +1485,19 @@ fn caller_expression_return_executable(metadata_symbol: &str) -> ExecutableIr {
                     target: skiff_artifact_model::CallTargetIr::LocalExecutable {
                         executable_index: 1,
                     },
+                    concrete_receiver: None,
                     site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                         reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                     },
                     args: Vec::new(),
+                    inout_args: Vec::new(),
                     type_args: BTreeMap::new(),
                     metadata,
                 },
             }],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1500,10 +1523,12 @@ fn caller_nested_arg_executable(inner_symbol: &str, outer_symbol: &str) -> Execu
             target: skiff_artifact_model::CallTargetIr::LocalExecutable {
                 executable_index: 1,
             },
+            concrete_receiver: None,
             site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                 reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::from([(
                 "dispatchSubmit".to_string(),
@@ -1516,10 +1541,12 @@ fn caller_nested_arg_executable(inner_symbol: &str, outer_symbol: &str) -> Execu
             target: skiff_artifact_model::CallTargetIr::LocalExecutable {
                 executable_index: 2,
             },
+            concrete_receiver: None,
             site: skiff_artifact_model::InstructionSourceSite::Synthetic {
                 reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
             },
             args: vec![ExprRefIr { expression: 1 }],
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::from([(
                 "dispatchSubmit".to_string(),
@@ -1549,6 +1576,8 @@ fn caller_nested_arg_executable(inner_symbol: &str, outer_symbol: &str) -> Execu
             ],
             expressions: vec![outer_call, inner_call],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1582,6 +1611,10 @@ fn private_package(file: &FileIrUnit) -> PackageArtifact {
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -1590,6 +1623,9 @@ fn private_package(file: &FileIrUnit) -> PackageArtifact {
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(PACKAGE_ID, &[])
+                .expect("empty bytecode statement manifest is canonical"),
     }
 }
 

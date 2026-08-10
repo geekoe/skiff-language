@@ -103,6 +103,10 @@ pub fn runtime_execution_package_artifact_fixture(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -111,6 +115,9 @@ pub fn runtime_execution_package_artifact_fixture(
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &[])
+                .expect("empty bytecode statement manifest is canonical"),
     }
 }
 

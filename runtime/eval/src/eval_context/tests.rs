@@ -266,8 +266,10 @@ fn frame_diet_size_probe_reports_key_futures_and_contexts() {
         target: LinkedCallTarget::Executable {
             addr: fixture.addr.clone(),
         },
+        concrete_receiver: None,
         type_args: Default::default(),
         args: vec![ExprRefIr { expression: 0 }],
+        inout_args: Vec::new(),
         metadata: Default::default(),
         actor_metadata: None,
     };

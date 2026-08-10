@@ -31,6 +31,7 @@ mod tests {
                         index: 0,
                         name: "item".to_string(),
                         kind: "local".to_string(),
+                        writable_local: false,
                     }],
                     frame_size: 1,
                 },

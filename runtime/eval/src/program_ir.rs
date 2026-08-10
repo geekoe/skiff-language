@@ -251,11 +251,13 @@ mod tests {
                         index: 7,
                         name: "detail".to_string(),
                         kind: "pattern".to_string(),
+                        writable_local: false,
                     },
                     SlotIr {
                         index: 9,
                         name: "state".to_string(),
                         kind: "pattern".to_string(),
+                        writable_local: false,
                     },
                 ],
                 frame_size: 10,

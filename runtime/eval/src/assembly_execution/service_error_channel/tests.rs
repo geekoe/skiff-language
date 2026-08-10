@@ -1949,6 +1949,10 @@ fn package(package_id: &str, types: Vec<PublicType>) -> PackageFixture {
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -1957,6 +1961,9 @@ fn package(package_id: &str, types: Vec<PublicType>) -> PackageFixture {
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &[])
+                .expect("empty bytecode statement manifest is canonical"),
     });
     PackageFixture {
         package_id: package_id.to_string(),

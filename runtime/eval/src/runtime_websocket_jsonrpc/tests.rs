@@ -1051,7 +1051,7 @@ function stringResult(params: EchoParams) -> string {
 }
 
 function arrayFromRecord(params: EchoParams) -> Array<string> {
-  let items = Array.empty<string>()
+  var items = Array.empty<string>()
   items.push(params.value)
   return items
 }

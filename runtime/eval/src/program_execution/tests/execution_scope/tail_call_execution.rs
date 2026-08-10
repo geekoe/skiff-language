@@ -9,8 +9,8 @@ use skiff_runtime_linked_program::{
     BinaryOpIr, BlockIr, CallIr, ExecutableAddr, ExecutableKind, ExprRefIr, ExternalRefTable,
     FileAddr, FileDeclarations, FileLinkTargets, LinkOverlay, LinkedCallTarget, LinkedExecutable,
     LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedStmtIr, LinkedTypeRef, ParamIr,
-    PublicationResourceTable, RuntimeTypeContext, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr,
-    UnitAddr,
+    ParamModeIr, PublicationResourceTable, RuntimeTypeContext, SlotIr, SlotLayoutIr, SourceMapDto,
+    StmtRefIr, UnitAddr,
 };
 use skiff_runtime_model::{request_heap::RequestHeap, runtime_value::RuntimeValue};
 
@@ -344,8 +344,10 @@ impl TailCallFixture {
                     target: LinkedCallTarget::Executable {
                         addr: callee.clone(),
                     },
+                    concrete_receiver: None,
                     site,
                     args: Vec::new(),
+                    inout_args: Vec::new(),
                     type_args: Default::default(),
                     metadata: Default::default(),
                     actor_metadata: None,
@@ -477,8 +479,10 @@ fn tail_forwarder(
         vec![LinkedExprIr::Call {
             call: CallIr {
                 target: LinkedCallTarget::Executable { addr: target },
+                concrete_receiver: None,
                 site: call_site,
                 args: Vec::new(),
+                inout_args: Vec::new(),
                 type_args: Default::default(),
                 metadata: Default::default(),
                 actor_metadata: None,
@@ -517,6 +521,7 @@ fn tail_countdown_executable(target: ExecutableAddr) -> LinkedExecutable {
                     name: "Json".to_string(),
                     args: Vec::new(),
                 },
+                mode: ParamModeIr::Value,
             },
             ParamIr {
                 name: "accumulator".to_string(),
@@ -525,6 +530,7 @@ fn tail_countdown_executable(target: ExecutableAddr) -> LinkedExecutable {
                     name: "Json".to_string(),
                     args: Vec::new(),
                 },
+                mode: ParamModeIr::Value,
             },
         ],
         return_type: None,
@@ -535,11 +541,13 @@ fn tail_countdown_executable(target: ExecutableAddr) -> LinkedExecutable {
                     index: 0,
                     name: "remaining".to_string(),
                     kind: "param".to_string(),
+                    writable_local: false,
                 },
                 SlotIr {
                     index: 1,
                     name: "accumulator".to_string(),
                     kind: "param".to_string(),
+                    writable_local: false,
                 },
             ],
             frame_size: 2,
@@ -596,8 +604,10 @@ fn tail_countdown_executable(target: ExecutableAddr) -> LinkedExecutable {
                 LinkedExprIr::Call {
                     call: CallIr {
                         target: LinkedCallTarget::Executable { addr: target },
+                        concrete_receiver: None,
                         site: site(),
                         args: vec![next_remaining, next_accumulator],
+                        inout_args: Vec::new(),
                         type_args: Default::default(),
                         metadata: Default::default(),
                         actor_metadata: None,

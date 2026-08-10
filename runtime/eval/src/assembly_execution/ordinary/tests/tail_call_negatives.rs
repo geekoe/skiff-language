@@ -452,6 +452,8 @@ fn nested_argument_caller() -> ExecutableIr {
                 vec![ExprRefIr { expression: 0 }],
             ),
         ]),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -465,6 +467,7 @@ fn identity_executable() -> ExecutableIr {
             name: "value".to_string(),
             slot: 0,
             ty: TypeRefIr::builtin("number"),
+            mode: ParamModeIr::Value,
         }],
         return_type: TypeRefIr::builtin("number"),
         self_type: None,
@@ -473,11 +476,15 @@ fn identity_executable() -> ExecutableIr {
                 index: 0,
                 name: "value".to_string(),
                 kind: SlotKind::Param,
+                writable_local: false,
+                ty: Some(TypeRefIr::builtin("number")),
             }],
             frame_size: 1,
         },
         may_suspend: false,
         body: direct_return_body(vec![ExprIr::LoadSlot { slot: 0 }]),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -495,6 +502,8 @@ fn catch_caller() -> ExecutableIr {
                 index: 0,
                 name: "$caught".to_string(),
                 kind: SlotKind::Temp,
+                writable_local: false,
+                ty: Some(TypeRefIr::LocalType { type_index: 0 }),
             }],
             frame_size: 1,
         },
@@ -514,6 +523,8 @@ fn catch_caller() -> ExecutableIr {
                 body: ExprRefIr { expression: 1 },
             },
         ]),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -533,6 +544,8 @@ fn number_terminal(symbol: &str, value: i64) -> ExecutableIr {
                 value: serde_json::Number::from(value),
             },
         }]),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -559,6 +572,8 @@ fn direct_target_caller(
         slots: SlotLayout::default(),
         may_suspend: false,
         body: direct_return_body(arguments),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -582,8 +597,10 @@ fn call_expression(target: CallTargetIr, args: Vec<ExprRefIr>) -> ExprIr {
     ExprIr::Call {
         call: CallIr {
             target,
+            concrete_receiver: None,
             site: test_instruction_site(),
             args,
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },

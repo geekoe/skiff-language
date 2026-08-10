@@ -457,6 +457,8 @@ fn materialization_fixture(expression: ExprIr) -> PackageDirectFixture {
                 expression,
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     skiff_artifact_identity::assign_file_ir_identity(&mut file)
@@ -607,6 +609,8 @@ fn package_constant_fixture() -> PackageDirectFixture {
                 symbol: package_symbol,
             }],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     });
     skiff_artifact_identity::assign_file_ir_identity(&mut caller_file)
@@ -879,16 +883,22 @@ fn inline_effect_producer_heap_caller_executable(
                     index: 0,
                     name: "value".to_string(),
                     kind: SlotKind::Param,
+                    writable_local: false,
+                    ty: Some(array_type.clone()),
                 },
                 SlotIr {
                     index: 1,
                     name: "item".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(array_type.clone()),
                 },
                 SlotIr {
                     index: 2,
                     name: "last".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(array_type.clone()),
                 },
             ],
             frame_size: 3,
@@ -957,6 +967,7 @@ fn inline_effect_producer_heap_caller_executable(
                         target: CallTargetIr::LocalExecutable {
                             executable_index: 1,
                         },
+                        concrete_receiver: None,
                         site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         inout_args: Vec::new(),
@@ -968,6 +979,8 @@ fn inline_effect_producer_heap_caller_executable(
                 ExprIr::LoadSlot { slot: 2 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -989,7 +1002,7 @@ fn inline_effect_dispatching_stream_producer(
         }],
         return_type: TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![array_type],
+            args: vec![array_type.clone()],
         },
         self_type: None,
         slots: SlotLayout {
@@ -998,11 +1011,15 @@ fn inline_effect_dispatching_stream_producer(
                     index: 0,
                     name: "value".to_string(),
                     kind: SlotKind::Param,
+                    writable_local: false,
+                    ty: Some(array_type.clone()),
                 },
                 SlotIr {
                     index: 1,
                     name: "response".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(array_type.clone()),
                 },
             ],
             frame_size: 2,
@@ -1031,6 +1048,7 @@ fn inline_effect_dispatching_stream_producer(
                             package_ref,
                             package_callable_id,
                         },
+                        concrete_receiver: None,
                         site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         inout_args: Vec::new(),
@@ -1041,6 +1059,8 @@ fn inline_effect_dispatching_stream_producer(
                 ExprIr::LoadSlot { slot: 1 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1057,7 +1077,7 @@ fn inline_effect_stream_executable(
         params: vec![ParamIr {
             name: "value".to_string(),
             slot: 0,
-            ty: array_type,
+            ty: array_type.clone(),
             mode: ParamModeIr::Value,
         }],
         return_type: TypeRefIr::builtin("string"),
@@ -1068,16 +1088,22 @@ fn inline_effect_stream_executable(
                     index: 0,
                     name: "value".to_string(),
                     kind: SlotKind::Param,
+                    writable_local: false,
+                    ty: Some(array_type),
                 },
                 SlotIr {
                     index: 1,
                     name: "item".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(TypeRefIr::builtin("string")),
                 },
                 SlotIr {
                     index: 2,
                     name: "last".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(TypeRefIr::builtin("string")),
                 },
             ],
             frame_size: 3,
@@ -1149,6 +1175,7 @@ fn inline_effect_stream_executable(
                             package_ref,
                             package_callable_id,
                         },
+                        concrete_receiver: None,
                         site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         inout_args: Vec::new(),
@@ -1160,6 +1187,8 @@ fn inline_effect_stream_executable(
                 ExprIr::LoadSlot { slot: 2 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1180,7 +1209,7 @@ fn inline_effect_throw_catch_executable(
         params: vec![ParamIr {
             name: "value".to_string(),
             slot: 0,
-            ty: array_type,
+            ty: array_type.clone(),
             mode: ParamModeIr::Value,
         }],
         return_type: TypeRefIr::builtin("Json"),
@@ -1191,11 +1220,15 @@ fn inline_effect_throw_catch_executable(
                     index: 0,
                     name: "value".to_string(),
                     kind: SlotKind::Param,
+                    writable_local: false,
+                    ty: Some(array_type),
                 },
                 SlotIr {
                     index: 1,
                     name: "$catch".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(error_type.clone()),
                 },
             ],
             frame_size: 2,
@@ -1245,6 +1278,7 @@ fn inline_effect_throw_catch_executable(
                             package_ref,
                             package_callable_id,
                         },
+                        concrete_receiver: None,
                         site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         inout_args: Vec::new(),
@@ -1261,6 +1295,8 @@ fn inline_effect_throw_catch_executable(
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1302,9 +1338,9 @@ fn inline_effect_caller_executable(
             ty: array_type.clone(),
             mode: ParamModeIr::Value,
         }],
-        return_type: array_type,
+        return_type: array_type.clone(),
         self_type: None,
-        slots: parameter_slots(),
+        slots: parameter_slots(array_type),
         may_suspend: false,
         body: ExecutableBody {
             blocks: vec![BlockIr {
@@ -1325,6 +1361,7 @@ fn inline_effect_caller_executable(
                             package_ref,
                             package_callable_id,
                         },
+                        concrete_receiver: None,
                         site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         inout_args: Vec::new(),
@@ -1334,6 +1371,8 @@ fn inline_effect_caller_executable(
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1353,9 +1392,9 @@ fn caller_executable(
             ty: array_type.clone(),
             mode: ParamModeIr::Value,
         }],
-        return_type: array_type,
+        return_type: array_type.clone(),
         self_type: None,
-        slots: parameter_slots(),
+        slots: parameter_slots(array_type),
         may_suspend: false,
         body: ExecutableBody {
             blocks: vec![BlockIr {
@@ -1373,6 +1412,7 @@ fn caller_executable(
                             package_ref,
                             package_callable_id,
                         },
+                        concrete_receiver: None,
                         site: test_instruction_site(),
                         args: vec![ExprRefIr { expression: 0 }],
                         inout_args: Vec::new(),
@@ -1382,6 +1422,8 @@ fn caller_executable(
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1397,9 +1439,9 @@ fn callee_executable(array_type: TypeRefIr) -> ExecutableIr {
             ty: array_type.clone(),
             mode: ParamModeIr::Value,
         }],
-        return_type: array_type,
+        return_type: array_type.clone(),
         self_type: None,
-        slots: parameter_slots(),
+        slots: parameter_slots(array_type),
         may_suspend: false,
         body: ExecutableBody {
             blocks: vec![BlockIr {
@@ -1433,6 +1475,8 @@ fn callee_executable(array_type: TypeRefIr) -> ExecutableIr {
                 ExprIr::LoadSlot { slot: 0 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1445,12 +1489,12 @@ fn stream_callee_executable(array_type: TypeRefIr) -> ExecutableIr {
         params: vec![ParamIr {
             name: "value".to_string(),
             slot: 0,
-            ty: array_type,
+            ty: array_type.clone(),
             mode: ParamModeIr::Value,
         }],
         return_type: stream_string_type(),
         self_type: None,
-        slots: parameter_slots(),
+        slots: parameter_slots(array_type),
         may_suspend: true,
         body: ExecutableBody {
             blocks: vec![BlockIr {
@@ -1467,16 +1511,20 @@ fn stream_callee_executable(array_type: TypeRefIr) -> ExecutableIr {
                 },
             }],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
 
-fn parameter_slots() -> SlotLayout {
+fn parameter_slots(ty: TypeRefIr) -> SlotLayout {
     SlotLayout {
         slots: vec![SlotIr {
             index: 0,
             name: "value".to_string(),
             kind: SlotKind::Param,
+            writable_local: false,
+            ty: Some(ty),
         }],
         frame_size: 1,
     }
@@ -1714,6 +1762,10 @@ fn private_package(package_id: &str, file: &FileIrUnit) -> PackageArtifact {
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -1722,6 +1774,11 @@ fn private_package(package_id: &str, file: &FileIrUnit) -> PackageArtifact {
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            package_id,
+            &[],
+        )
+        .expect("empty bytecode statement manifest is canonical"),
     }
 }
 

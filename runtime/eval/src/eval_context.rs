@@ -86,6 +86,9 @@ mod checkpoint;
 mod timeout;
 
 #[cfg(test)]
+mod index_tests;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
@@ -905,6 +908,9 @@ impl<'a> EvalContext<'a> {
                 .env
                 .get_slot(program_u32_to_usize(*slot, "loadSlot.slot")?),
             LinkedExprIr::Field { object, field } => self.eval_expr_field(object, field).await,
+            LinkedExprIr::Index { object, index } => {
+                unsupported_linked_index_expression(object, index)
+            }
             LinkedExprIr::ActorSelfField { field, .. } => self
                 .context
                 .actor_execution_frame()
@@ -2282,6 +2288,15 @@ impl<'a> EvalContext<'a> {
             }
         }
     }
+}
+
+fn unsupported_linked_index_expression(
+    _object: &ExprRefIr,
+    _index: &ExprRefIr,
+) -> Result<RuntimeValueCarrier> {
+    Err(RuntimeError::Unsupported(
+        "linked index expressions require bytecode execution".to_string(),
+    ))
 }
 
 fn is_std_http_self_ingress_call(

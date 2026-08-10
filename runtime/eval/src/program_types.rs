@@ -397,6 +397,7 @@ mod executable_type_param_name_tests {
                         symbol: "Thread".to_string(),
                     },
                 },
+                mode: skiff_runtime_linked_program::ParamModeIr::Value,
             }],
             return_type: Some(LinkedTypeRef::Record {
                 fields: BTreeMap::from([("value".to_string(), type_param("U"))]),

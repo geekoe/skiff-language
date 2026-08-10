@@ -1063,6 +1063,7 @@ fn service_contract(operation_id: ContractOperationId) -> ServiceContract {
                 },
             },
         )]),
+        public_instances: BTreeMap::new(),
         package_type_requirements: Vec::new(),
         diagnostic_text: ContractDiagnosticText {
             service: "ordinary error fixture".to_string(),
@@ -1216,6 +1217,10 @@ fn provider_package(
                 )
             })
             .collect(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: vec![package_requirement(STD_ALIAS, std_ref)],
         contract_requirements: vec![contract_requirement.clone()],
         service_requirements: vec![ServiceRequirement {
@@ -1228,6 +1233,11 @@ fn provider_package(
         boundary_projections: BTreeMap::new(),
         service_call_refs: vec![service_call.clone()],
         bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            PROVIDER_PACKAGE,
+            &[],
+        )
+        .expect("empty bytecode statement manifest is canonical"),
     });
     PackageFixture {
         reference: PackageArtifactRef {
@@ -1339,6 +1349,10 @@ fn caller_package(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements,
         contract_requirements: vec![contract_requirement.clone()],
         service_requirements: vec![ServiceRequirement {
@@ -1351,6 +1365,11 @@ fn caller_package(
         boundary_projections: BTreeMap::new(),
         service_call_refs: vec![service_call.clone()],
         bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            CALLER_PACKAGE,
+            &[],
+        )
+        .expect("empty bytecode statement manifest is canonical"),
     });
     PackageFixture {
         reference: PackageArtifactRef {
@@ -1508,6 +1527,10 @@ fn std_package() -> PackageFixture {
             ..PackageImplementationLinks::default()
         },
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -1516,6 +1539,11 @@ fn std_package() -> PackageFixture {
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            STD_PACKAGE,
+            &[],
+        )
+        .expect("empty bytecode statement manifest is canonical"),
     });
     PackageFixture {
         reference: PackageArtifactRef {
@@ -1664,8 +1692,10 @@ fn service_call_executable(
             target: CallTargetIr::ServiceCall {
                 service_call_ref_index: ServiceCallRefIndex::new(0),
             },
+            concrete_receiver: None,
             site,
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
         },
@@ -1675,7 +1705,7 @@ fn service_call_executable(
         expressions.push(ExprIr::Catch {
             try_expression: ExprRefIr { expression: 0 },
             catch_slot: 0,
-            catch_type,
+            catch_type: catch_type.clone(),
             body: ExprRefIr { expression: 1 },
         });
         (
@@ -1685,6 +1715,8 @@ fn service_call_executable(
                     index: 0,
                     name: "$caught".to_string(),
                     kind: SlotKind::Temp,
+                    writable_local: false,
+                    ty: Some(catch_type.clone()),
                 }],
                 frame_size: 1,
             },
@@ -1714,6 +1746,8 @@ fn service_call_executable(
             }],
             expressions,
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1758,6 +1792,8 @@ fn record_throw_executable(
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1796,14 +1832,18 @@ fn native_resource_error_executable() -> ExecutableIr {
                                 metadata: BTreeMap::new(),
                             },
                         },
+                        concrete_receiver: None,
                         site: provider_throw_site(),
                         args: vec![ExprRefIr { expression: 0 }],
+                        inout_args: Vec::new(),
                         type_args: BTreeMap::new(),
                         metadata: BTreeMap::new(),
                     },
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -1844,6 +1884,8 @@ fn representation_throw_executable() -> ExecutableIr {
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }

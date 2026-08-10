@@ -453,6 +453,10 @@ fn std_error_projection_image(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -461,6 +465,9 @@ fn std_error_projection_image(
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &[])
+                .expect("empty bytecode statement manifest is canonical"),
     };
     let package_ref = PackageArtifactRef {
         package_id: package.package_id.clone(),
@@ -567,6 +574,8 @@ fn projection_image_with_db_shape(
             slots: SlotLayout::default(),
             may_suspend: false,
             body: ExecutableBody::default(),
+            expression_types: Vec::new(),
+            statement_spans: Vec::new(),
             source_span: None,
         });
     }
@@ -599,6 +608,10 @@ fn projection_image_with_db_shape(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -607,6 +620,12 @@ fn projection_image_with_db_shape(
         boundary_projections: BTreeMap::new(),
         service_call_refs: Vec::new(),
         bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(
+                "projection.package",
+                &[],
+            )
+            .expect("empty bytecode statement manifest is canonical"),
     };
     let package_ref = PackageArtifactRef {
         package_id: package.package_id.clone(),

@@ -90,11 +90,13 @@ fn executable_with_self_and_local() -> LinkedExecutable {
                     index: 0,
                     name: "self".to_string(),
                     kind: "selfValue".to_string(),
+                    writable_local: false,
                 },
                 SlotIr {
                     index: 1,
                     name: "local".to_string(),
                     kind: "local".to_string(),
+                    writable_local: false,
                 },
             ],
             frame_size: 2,

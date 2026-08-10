@@ -542,7 +542,8 @@ const right: Named<boolean> = Named<boolean> { payload: true, valueLabel: "right
 "#,
     )
     .expect("model package source");
-}fn write_consumer_package(root: &Path) {
+}
+fn write_consumer_package(root: &Path) {
     fs::create_dir_all(root).expect("consumer package root");
     fs::write(
         root.join("package.yml"),
@@ -598,7 +599,7 @@ function encodePackage() -> Json {
 }
 
 function encodeNested() -> Json {
-  let items = Array.empty<LocalPayload>()
+  var items = Array.empty<LocalPayload>()
   items.push(LocalPayload { label: "nested", count: 3 })
   return encodeJson<Array<LocalPayload>>(items)
 }

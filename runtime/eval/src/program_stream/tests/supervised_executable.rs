@@ -14,8 +14,9 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_linked_program::{
     ExecutableAddr, ExecutableKind, ExprRefIr, FileAddr, FileDeclarations, FileLinkTargets,
     LinkOverlay, LinkedCallTarget, LinkedExecutable, LinkedExecutableBody, LinkedFileUnit,
-    LinkedTypeDescriptor, LinkedTypeRef, ParamIr, PublicationResourceTable, RuntimeTypeContext,
-    ServiceMeta, SlotIr, SlotLayoutIr, SourceMapDto, TypeAddr, TypeDeclIr, UnitAddr,
+    LinkedTypeDescriptor, LinkedTypeRef, ParamIr, ParamModeIr, PublicationResourceTable,
+    RuntimeTypeContext, ServiceMeta, SlotIr, SlotLayoutIr, SourceMapDto, TypeAddr, TypeDeclIr,
+    UnitAddr,
 };
 use skiff_runtime_model::service_error::{
     CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity,
@@ -470,8 +471,10 @@ async fn legacy_ordinary_inherited_self_and_arg_share_one_cloned_graph() {
             target: LinkedCallTarget::Executable {
                 addr: producer_addr,
             },
+            concrete_receiver: None,
             site: site(),
             args: vec![ExprRefIr { expression: 0 }],
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
             actor_metadata: None,
@@ -583,8 +586,10 @@ async fn execute_legacy_inherited_self_collision(deferred: bool) -> String {
             target: LinkedCallTarget::Executable {
                 addr: producer_addr,
             },
+            concrete_receiver: None,
             site: site(),
             args: vec![ExprRefIr { expression: 0 }],
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
             actor_metadata: None,
@@ -697,6 +702,7 @@ fn inherited_self_collision_producer() -> LinkedExecutable {
             name: "other".to_string(),
             slot: 1,
             ty: array_of_string_type(),
+            mode: ParamModeIr::Value,
         }],
         SlotLayoutIr {
             slots: vec![slot(0, "self", "selfValue"), slot(1, "other", "param")],
@@ -880,8 +886,10 @@ async fn prepared_fixture_with(producer: LinkedExecutable) -> PreparedFixture {
             target: LinkedCallTarget::Executable {
                 addr: producer_addr,
             },
+            concrete_receiver: None,
             site: site(),
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
             actor_metadata: None,
@@ -947,8 +955,10 @@ async fn deferred_fixture(producer_executable: LinkedExecutable) -> DeferredFixt
             target: LinkedCallTarget::Executable {
                 addr: producer_addr,
             },
+            concrete_receiver: None,
             site: site(),
             args: Vec::new(),
+            inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::new(),
             actor_metadata: None,
@@ -1070,13 +1080,15 @@ fn stream_producer_route(producer_index: usize) -> LinkedExecutable {
                     "kind": "call",
                     "call": {
                         "site": site(),
+                        "concreteReceiver": null,
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(
                                 ExecutableAddr::service(0, producer_index)
                             ).unwrap()
                         },
-                        "args": []
+                        "args": [],
+                        "inoutArgs": []
                     }
                 }
             ]
@@ -1099,26 +1111,30 @@ fn stream_consumer_route_with(consumer_index: usize, producer_index: usize) -> L
                     "kind": "call",
                     "call": {
                         "site": site(),
+                        "concreteReceiver": null,
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(
                                 ExecutableAddr::service(0, producer_index)
                             ).unwrap()
                         },
-                        "args": []
+                        "args": [],
+                        "inoutArgs": []
                     }
                 },
                 {
                     "kind": "call",
                     "call": {
                         "site": site(),
+                        "concreteReceiver": null,
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(
                                 ExecutableAddr::service(0, consumer_index)
                             ).unwrap()
                         },
-                        "args": [{ "expression": 0 }]
+                        "args": [{ "expression": 0 }],
+                        "inoutArgs": []
                     }
                 }
             ]
@@ -1133,6 +1149,7 @@ fn nested_stream_consumer(nested_index: usize) -> LinkedExecutable {
             name: "source".to_string(),
             slot: 0,
             ty: stream_type(string_type()),
+            mode: ParamModeIr::Value,
         }],
         SlotLayoutIr {
             slots: vec![slot(0, "source", "param")],
@@ -1147,13 +1164,15 @@ fn nested_stream_consumer(nested_index: usize) -> LinkedExecutable {
                     "kind": "call",
                     "call": {
                         "site": site(),
+                        "concreteReceiver": null,
                         "target": {
                             "kind": "executable",
                             "addr": serde_json::to_value(
                                 ExecutableAddr::service(0, nested_index)
                             ).unwrap()
                         },
-                        "args": [{ "expression": 0 }]
+                        "args": [{ "expression": 0 }],
+                        "inoutArgs": []
                     }
                 }
             ]
@@ -1168,6 +1187,7 @@ fn failing_stream_consumer() -> LinkedExecutable {
             name: "source".to_string(),
             slot: 0,
             ty: stream_type(string_type()),
+            mode: ParamModeIr::Value,
         }],
         SlotLayoutIr {
             slots: vec![slot(0, "source", "param"), slot(1, "item", "local")],
@@ -1211,6 +1231,7 @@ fn draining_stream_consumer() -> LinkedExecutable {
             name: "source".to_string(),
             slot: 0,
             ty: stream_type(string_type()),
+            mode: ParamModeIr::Value,
         }],
         SlotLayoutIr {
             slots: vec![slot(0, "source", "param"), slot(1, "item", "local")],
@@ -1352,6 +1373,7 @@ fn slot(index: usize, name: &str, kind: &str) -> SlotIr {
         index,
         name: name.to_string(),
         kind: kind.to_string(),
+        writable_local: false,
     }
 }
 

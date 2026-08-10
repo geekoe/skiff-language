@@ -429,6 +429,7 @@ fn body_executable(
                 index: 0,
                 name: "item".to_string(),
                 kind: "local".to_string(),
+                writable_local: false,
             }],
             frame_size: 1,
         },
@@ -735,8 +736,10 @@ async fn tail_call_negative_stream_real_consumer_barrier_uses_ordinary_call_and_
                 target: LinkedCallTarget::Executable {
                     addr: ExecutableAddr::service(0, 1),
                 },
+                concrete_receiver: None,
                 site: site(),
                 args: Vec::new(),
+                inout_args: Vec::new(),
                 type_args: Default::default(),
                 metadata: Default::default(),
                 actor_metadata: None,

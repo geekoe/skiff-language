@@ -369,6 +369,8 @@ fn integer_countdown(symbol: &str, target: CallTargetIr) -> ExecutableIr {
                 value: number_literal(0),
             },
         ),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -455,6 +457,8 @@ fn generic_entry() -> ExecutableIr {
             ],
             2,
         ),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -487,6 +491,8 @@ fn generic_countdown() -> ExecutableIr {
         slots: slots(&[("remaining", SlotKind::Param), ("value", SlotKind::Param)]),
         may_suspend: false,
         body,
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -521,6 +527,8 @@ fn impl_entry() -> ExecutableIr {
             ],
             2,
         ),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -542,6 +550,8 @@ fn impl_countdown() -> ExecutableIr {
         ]),
         may_suspend: false,
         body: countdown_body_for_slot_one(),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -646,6 +656,8 @@ fn argument_entry(record_type: TypeRefIr) -> ExecutableIr {
         slots: slots(&[("state", SlotKind::Param)]),
         may_suspend: false,
         body: direct_return_body(expressions, 8),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -664,6 +676,8 @@ fn argument_terminal(record_type: TypeRefIr) -> ExecutableIr {
         slots: slots(&[("first", SlotKind::Param), ("second", SlotKind::Param)]),
         may_suspend: false,
         body: direct_return_body(vec![ExprIr::LoadSlot { slot: 1 }], 0),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -722,6 +736,8 @@ fn argument_step(record_type: TypeRefIr) -> ExecutableIr {
             ],
             expressions,
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -746,6 +762,8 @@ fn unequal_plan_caller() -> ExecutableIr {
             )],
             0,
         ),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -794,6 +812,8 @@ fn value_wrapper_caller() -> ExecutableIr {
                 },
             ],
         },
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -819,6 +839,8 @@ fn terminal(symbol: &str, return_type: TypeRefIr, value: ExprIr) -> ExecutableIr
         slots: SlotLayout::default(),
         may_suspend: false,
         body: direct_return_body(vec![value], 0),
+        expression_types: Vec::new(),
+        statement_spans: Vec::new(),
         source_span: None,
     }
 }
@@ -838,6 +860,7 @@ fn param(name: &str, slot: u32, ty: TypeRefIr) -> ParamIr {
         name: name.to_string(),
         slot,
         ty,
+        mode: ParamModeIr::Value,
     }
 }
 
@@ -850,6 +873,8 @@ fn slots(entries: &[(&str, SlotKind)]) -> SlotLayout {
                 index: index as u32,
                 name: (*name).to_string(),
                 kind: *kind,
+                writable_local: false,
+                ty: None,
             })
             .collect(),
         frame_size: entries.len() as u32,
@@ -881,8 +906,10 @@ fn call(
     ExprIr::Call {
         call: skiff_artifact_model::CallIr {
             target,
+            concrete_receiver: None,
             site: test_instruction_site(),
             args,
+            inout_args: Vec::new(),
             type_args,
             metadata: BTreeMap::new(),
         },

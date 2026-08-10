@@ -10,9 +10,9 @@ use skiff_runtime_linked_program::{
     LinkedActorCreateMethod, LinkedActorDeclaration, LinkedActorDeclarationOwner, LinkedActorField,
     LinkedActorMethodImplementation, LinkedActorPublicMethod, LinkedExecutable,
     LinkedExecutableBody, LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedStmtIr,
-    LinkedTypeDescriptor, LinkedTypeRef, ParamIr, PublicationResourceTable, RuntimeTypeContext,
-    ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr, TypeDeclIr,
-    UnitAddr,
+    LinkedTypeDescriptor, LinkedTypeRef, ParamIr, ParamModeIr, PublicationResourceTable,
+    RuntimeTypeContext, ServiceSymbolRef, SlotIr, SlotLayoutIr, SourceMapDto, StmtRefIr, TypeAddr,
+    TypeDeclIr, UnitAddr,
 };
 use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
@@ -204,6 +204,7 @@ fn actor_file(return_type: LinkedTypeRef, may_suspend: bool) -> Arc<LinkedFileUn
                 name: "value".to_string(),
                 slot: 0,
                 ty: integer(),
+                mode: ParamModeIr::Value,
             }],
             return_type: Some(integer()),
             self_type: None,
@@ -212,6 +213,7 @@ fn actor_file(return_type: LinkedTypeRef, may_suspend: bool) -> Arc<LinkedFileUn
                     index: 0,
                     name: "value".to_string(),
                     kind: "parameter".to_string(),
+                    writable_local: false,
                 }],
                 frame_size: 1,
             },

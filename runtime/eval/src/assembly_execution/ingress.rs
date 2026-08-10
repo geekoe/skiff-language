@@ -55,7 +55,9 @@ pub async fn dispatch_ingress_via_in_process_boundary(
         target: LinkedCallTarget::Executable {
             addr: canonical_addr.clone(),
         },
+        concrete_receiver: None,
         args: Vec::new(),
+        inout_args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
         actor_metadata: None,

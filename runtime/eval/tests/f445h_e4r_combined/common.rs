@@ -35,12 +35,14 @@ pub(super) fn number(value: u64) -> LinkedExprIr {
 pub(super) fn call(target: LinkedCallTarget, args: &[u32]) -> CallIr {
     CallIr {
         target,
+        concrete_receiver: None,
         site: site(),
         args: args
             .iter()
             .copied()
             .map(|expression| ExprRefIr { expression })
             .collect(),
+        inout_args: Vec::new(),
         type_args: BTreeMap::new(),
         metadata: BTreeMap::new(),
         actor_metadata: None,
