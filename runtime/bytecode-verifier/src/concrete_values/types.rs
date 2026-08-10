@@ -6,7 +6,11 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_linked_bytecode::{CandidateTable, LinkedBytecodeCandidate, LinkedTypeEntry};
 
-use super::{resolver::HydratedValueLifecycleResolver, ConcreteTypeFact, ConcreteValueFacts};
+use super::{
+    classes::{build_type_classes, ClassifiedType},
+    resolver::HydratedValueLifecycleResolver,
+    ConcreteValueFacts,
+};
 use crate::{
     VerificationError, VerificationLimit, VerificationLimits, VerificationLocation,
     VerificationObligation,
@@ -19,9 +23,7 @@ pub(super) fn prove_concrete_types(
     limits: &VerificationLimits,
 ) -> Result<ConcreteValueFacts, VerificationError> {
     if candidate.types().is_empty() {
-        return Ok(ConcreteValueFacts {
-            types: Box::new([]),
-        });
+        return build_type_classes(Vec::new(), 0, limits.max_value_lifecycle_canonical_bytes);
     }
 
     prove_nonzero_budget(limits)?;
@@ -79,15 +81,14 @@ pub(super) fn prove_concrete_types(
         let lifecycle =
             classify_value_lifecycle(&normalized_type, &environment, resolver, &mut budget)
                 .map_err(|error| policy_error(error, location))?;
-        types.push(ConcreteTypeFact {
-            normalized_type,
-            lifecycle,
-        });
+        types.push(ClassifiedType::new(row.index(), normalized_type, lifecycle));
     }
 
-    let facts = ConcreteValueFacts {
-        types: types.into_boxed_slice(),
-    };
+    let facts = build_type_classes(
+        types,
+        budget.used_bytes(),
+        limits.max_value_lifecycle_canonical_bytes,
+    )?;
     placements::prove_type_placements(candidate, &facts)?;
     Ok(facts)
 }

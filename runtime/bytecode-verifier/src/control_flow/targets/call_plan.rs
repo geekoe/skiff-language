@@ -14,8 +14,8 @@ use super::{
     ControlFlowFacts,
 };
 use crate::{
-    concrete_values::{ConcreteTypeFact, ConcreteValueFacts},
-    VerificationError, VerificationLocation, VerificationObligation,
+    concrete_values::ConcreteValueFacts, VerificationError, VerificationLocation,
+    VerificationObligation,
 };
 
 /// Reconstructs one call plan from the canonical opcode contract and target
@@ -247,9 +247,12 @@ fn prove_tail_results(
         ));
     }
     for (ordinal, (caller, target)) in caller.iter().zip(target).enumerate() {
-        let caller = require_fact(facts, *caller, location, format!("caller result {ordinal}"))?;
-        let target = require_fact(facts, *target, location, format!("target result {ordinal}"))?;
-        if !same_concrete_value(caller, target) {
+        require_fact(facts, *caller, location, format!("caller result {ordinal}"))?;
+        require_fact(facts, *target, location, format!("target result {ordinal}"))?;
+        let same = facts
+            .semantically_equal(*caller, *target)
+            .ok_or_else(|| violation(location, "tail-call result has no concrete type class"))?;
+        if !same {
             return Err(violation(
                 location,
                 format!("tail-call result {ordinal} differs from the caller result type"),
@@ -264,8 +267,8 @@ fn require_fact(
     ty: TypeIndex,
     location: VerificationLocation,
     position: impl AsRef<str>,
-) -> Result<&ConcreteTypeFact, VerificationError> {
-    facts.type_fact(ty).ok_or_else(|| {
+) -> Result<(), VerificationError> {
+    facts.type_fact(ty).map(drop).ok_or_else(|| {
         violation(
             location,
             format!(
@@ -275,10 +278,6 @@ fn require_fact(
             ),
         )
     })
-}
-
-fn same_concrete_value(left: &ConcreteTypeFact, right: &ConcreteTypeFact) -> bool {
-    left.normalized_type() == right.normalized_type() && left.lifecycle() == right.lifecycle()
 }
 
 fn function(

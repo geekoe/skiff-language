@@ -1,4 +1,7 @@
-use skiff_artifact_model::{PackageBuildId, ShapeDeclaration, TypeRefIr};
+use skiff_artifact_model::{
+    NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete,
+    NativeValueLifecycleResolution, PackageBuildId, ShapeDeclaration, TypeRefIr,
+};
 use skiff_runtime_linked_bytecode::{
     ArtifactShapeIndex, ArtifactTypeIndex, CandidateTable, LinkedArtifactPoolOrigin,
     LinkedBytecodeCandidate, LinkedBytecodeCandidateError, LinkedContainerLayout,
@@ -8,6 +11,7 @@ use skiff_runtime_linked_bytecode::{
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use crate::{
+    concrete_values::{prove_types_and_plans, ImplicitBuiltin},
     verify, VerificationError, VerificationLimit, VerificationLocation, VerificationObligation,
 };
 
@@ -123,6 +127,173 @@ fn locally_valid_recursive_shape_drop_is_rejected_by_p2() {
         1,
         &["recursive-shape"],
     );
+}
+
+#[test]
+fn duplicate_origins_share_one_class_and_merge_to_the_minimum_coordinate() {
+    let facts = concrete_facts(vec![TypeRefIr::builtin("bool"), TypeRefIr::builtin("bool")]);
+
+    assert_eq!(
+        facts.type_fact(TypeIndex::new(1)).unwrap().coordinate(),
+        TypeIndex::new(1)
+    );
+    assert_eq!(
+        facts.type_class(TypeIndex::new(0)),
+        facts.type_class(TypeIndex::new(1))
+    );
+    assert_eq!(
+        facts.semantically_equal(TypeIndex::new(0), TypeIndex::new(1)),
+        Some(true)
+    );
+    assert_eq!(
+        facts
+            .merge_coordinate(TypeIndex::new(1), TypeIndex::new(0))
+            .unwrap(),
+        TypeIndex::new(0)
+    );
+}
+
+#[test]
+fn equal_lifecycle_plans_do_not_merge_different_normalized_types() {
+    let facts = concrete_facts(vec![
+        TypeRefIr::builtin("string"),
+        TypeRefIr::builtin("bytes"),
+    ]);
+    let string = facts.type_fact(TypeIndex::new(0)).unwrap();
+    let json = facts.type_fact(TypeIndex::new(1)).unwrap();
+
+    assert_eq!(string.lifecycle(), json.lifecycle());
+    assert_ne!(
+        facts.type_class(TypeIndex::new(0)),
+        facts.type_class(TypeIndex::new(1))
+    );
+    assert_eq!(
+        facts.semantically_equal(TypeIndex::new(0), TypeIndex::new(1)),
+        Some(false)
+    );
+    assert!(facts
+        .merge_coordinate(TypeIndex::new(0), TypeIndex::new(1))
+        .is_err());
+}
+
+#[test]
+fn duplicate_implicit_builtins_choose_their_class_minimum_deterministically() {
+    let facts = concrete_facts(vec![
+        TypeRefIr::builtin("number"),
+        TypeRefIr::builtin("bool"),
+        TypeRefIr::builtin("bool"),
+        TypeRefIr::builtin("integer"),
+        TypeRefIr::builtin("number"),
+    ]);
+
+    assert_eq!(
+        facts.implicit_representative(ImplicitBuiltin::Bool),
+        Some(TypeIndex::new(1))
+    );
+    assert_eq!(
+        facts.implicit_representative(ImplicitBuiltin::Number),
+        Some(TypeIndex::new(0))
+    );
+    assert_eq!(
+        facts.implicit_representative(ImplicitBuiltin::Integer),
+        Some(TypeIndex::new(3))
+    );
+}
+
+#[test]
+fn complete_lifecycle_resolution_including_embedding_partitions_classes() {
+    let facts = crate::concrete_values::ConcreteValueFacts::from_classified_types_for_test(vec![
+        (
+            TypeRefIr::builtin("string"),
+            snapshot_resolution(NativeValueEmbedding::Ordinary),
+        ),
+        (
+            TypeRefIr::builtin("string"),
+            snapshot_resolution(NativeValueEmbedding::Privileged),
+        ),
+    ])
+    .unwrap();
+
+    assert_eq!(
+        facts.semantically_equal(TypeIndex::new(0), TypeIndex::new(1)),
+        Some(false)
+    );
+}
+
+#[test]
+fn ambiguous_implicit_builtin_lifecycle_classes_fail_closed() {
+    let error = crate::concrete_values::ConcreteValueFacts::from_classified_types_for_test(vec![
+        (
+            TypeRefIr::builtin("bool"),
+            snapshot_resolution(NativeValueEmbedding::Ordinary),
+        ),
+        (
+            TypeRefIr::builtin("bool"),
+            snapshot_resolution(NativeValueEmbedding::Privileged),
+        ),
+    ])
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ConcreteTypeAndShape,
+            location: VerificationLocation::Table {
+                table: CandidateTable::Types,
+                row: 1,
+            },
+            detail,
+        } if detail.contains("ambiguous lifecycle classes")
+    ));
+}
+
+#[test]
+fn class_key_canonical_bytes_share_the_lifecycle_budget_ceiling() {
+    let error =
+        crate::concrete_values::ConcreteValueFacts::from_classified_types_with_budget_for_test(
+            vec![(
+                TypeRefIr::builtin("string"),
+                snapshot_resolution(NativeValueEmbedding::Ordinary),
+            )],
+            5,
+            5,
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        VerificationError::LimitExceeded {
+            limit: VerificationLimit::ValueLifecycleCanonicalBytes,
+            actual,
+            max: 5,
+            location: VerificationLocation::Table {
+                table: CandidateTable::Types,
+                row: 0,
+            },
+        } if actual > 5
+    ));
+}
+
+fn snapshot_resolution(embedding: NativeValueEmbedding) -> NativeValueLifecycleResolution {
+    NativeValueLifecycleResolution {
+        lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+            drop: NativeValueDropPlan::SnapshotRelease,
+        },
+        embedding,
+    }
+}
+
+fn concrete_facts(types: Vec<TypeRefIr>) -> crate::concrete_values::ConcreteValueFacts {
+    let hydrated = exact_hydration_with_types(types.clone());
+    let entries = types
+        .into_iter()
+        .enumerate()
+        .map(|(index, ty)| type_entry(&hydrated, u32::try_from(index).unwrap(), ty, None))
+        .collect();
+    let candidate = candidate_for_concrete_types(&hydrated, entries, Vec::new())
+        .expect("duplicate concrete types pass candidate-local validation");
+    prove_types_and_plans(&hydrated, &candidate, &generous_limits())
+        .expect("concrete type facts and classes are independently proved")
 }
 
 fn scalar_candidate(ty: TypeRefIr) -> (HydratedDeploymentBytecode, LinkedBytecodeCandidate) {

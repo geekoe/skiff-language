@@ -1,9 +1,10 @@
 use skiff_artifact_model::{
     host_effect_registry_identity, intrinsic_registry_identity,
     native_value_lifecycle_registry_identity, opcode_table_fingerprint,
-    value_lifecycle_policy_identity, BytecodeArtifactRef, CallableEffectSummary, Opcode,
-    PackageBuildId, PackageCallableId, ParamModeIr, TypeRefIr, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    value_lifecycle_policy_identity, BytecodeArtifactRef, CallableEffectSummary,
+    NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete,
+    NativeValueLifecycleResolution, Opcode, PackageBuildId, PackageCallableId, ParamModeIr,
+    TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, ArtifactTypeIndex, BytecodePackageIndex, FrameSlotIndex, FunctionIndex,
@@ -117,6 +118,26 @@ fn exact_tail_call_zero_arity_plan_is_proved() {
 }
 
 #[test]
+fn tail_call_accepts_different_raw_indices_in_one_concrete_class() {
+    let types = [TypeRefIr::builtin("string"), TypeRefIr::builtin("string")];
+    let facts = facts_for_results(types.clone());
+    let candidate = candidate_with_results(types);
+
+    prove_with_facts(&candidate, &facts)
+        .expect("tail-call results in one semantic class must compare equal");
+}
+
+#[test]
+fn tail_call_rejects_equal_plans_from_different_concrete_classes() {
+    let types = [TypeRefIr::builtin("string"), TypeRefIr::builtin("bytes")];
+    let facts = facts_for_results(types.clone());
+    let error = prove_with_facts(&candidate_with_results(types), &facts)
+        .expect_err("different semantic result classes must fail closed");
+
+    assert_target_violation(error, "differs from the caller result type");
+}
+
+#[test]
 fn wrong_local_argument_count_is_rejected_at_the_call_site() {
     let error = prove(&candidate(
         Opcode::CallLocal,
@@ -162,14 +183,26 @@ fn ordinary_call_to_inout_target_remains_unavailable() {
 }
 
 fn prove(candidate: &LinkedBytecodeCandidate) -> Result<(), VerificationError> {
+    let facts = ConcreteValueFacts::empty_for_test();
+    prove_with_facts(candidate, &facts)
+}
+
+fn prove_with_facts(
+    candidate: &LinkedBytecodeCandidate,
+    facts: &ConcreteValueFacts,
+) -> Result<(), VerificationError> {
     prove_exact_local_call_plan_for_test(
         candidate,
-        &ConcreteValueFacts::empty_for_test(),
+        facts,
         FunctionIndex::new(0),
         InstructionIndex::new(0),
         FunctionIndex::new(1),
         &generous_limits(),
     )
+}
+
+fn candidate_with_results(types: [TypeRefIr; 2]) -> LinkedBytecodeCandidate {
+    candidate_with_result_types(Some(types))
 }
 
 fn candidate(
@@ -178,6 +211,20 @@ fn candidate(
     result_count: Option<u32>,
     target_mode: ParamModeIr,
 ) -> LinkedBytecodeCandidate {
+    candidate_with_result_types_and_call(opcode, argument_count, result_count, target_mode, None)
+}
+
+fn candidate_with_result_types(types: Option<[TypeRefIr; 2]>) -> LinkedBytecodeCandidate {
+    candidate_with_result_types_and_call(Opcode::TailCallLocal, 0, None, ParamModeIr::Value, types)
+}
+
+fn candidate_with_result_types_and_call(
+    opcode: Opcode,
+    argument_count: u32,
+    result_count: Option<u32>,
+    target_mode: ParamModeIr,
+    result_types: Option<[TypeRefIr; 2]>,
+) -> LinkedBytecodeCandidate {
     let build = PackageBuildId::new("package-build:p3-call-plan-test");
     let caller_key = key(&build, "module::caller", "callable:caller");
     let target_key = key(&build, "module::target", "callable:target");
@@ -185,36 +232,41 @@ fn candidate(
     if opcode != Opcode::TailCallLocal {
         caller_instructions.push(plain(Opcode::Return));
     }
+    let (caller_frame, target_frame, types) = if let Some([caller_type, target_type]) = result_types
+    {
+        assert_eq!(target_mode, ParamModeIr::Value);
+        (
+            result_frame(TypeIndex::new(0)),
+            result_frame(TypeIndex::new(1)),
+            vec![
+                linked_type(&build, 0, caller_type),
+                linked_type(&build, 1, target_type),
+            ],
+        )
+    } else {
+        let target_frame = if target_mode == ParamModeIr::Value {
+            empty_frame()
+        } else {
+            parameter_frame(target_mode)
+        };
+        let types = (target_mode != ParamModeIr::Value)
+            .then(|| linked_type(&build, 0, TypeRefIr::builtin("string")))
+            .into_iter()
+            .collect();
+        (empty_frame(), target_frame, types)
+    };
     let caller = function(
         FunctionIndex::new(0),
         caller_key.clone(),
         caller_instructions,
-        empty_frame(),
+        caller_frame,
     );
-    let target_frame = if target_mode == ParamModeIr::Value {
-        empty_frame()
-    } else {
-        parameter_frame(target_mode)
-    };
     let target = function(
         FunctionIndex::new(1),
         target_key.clone(),
         vec![plain(Opcode::Return)],
         target_frame,
     );
-    let types = (target_mode != ParamModeIr::Value)
-        .then(|| {
-            LinkedTypeEntry::new(
-                TypeIndex::new(0),
-                LinkedArtifactPoolOrigin::new(build.clone(), ArtifactTypeIndex::new(0), None)
-                    .unwrap(),
-                TypeRefIr::builtin("string"),
-                None,
-            )
-        })
-        .into_iter()
-        .collect();
-
     LinkedBytecodeCandidate::try_from_parts(LinkedBytecodeCandidateParts {
         packages: vec![linked_package(build)],
         functions: vec![caller, target],
@@ -241,6 +293,15 @@ fn candidate(
         writable_paths: Vec::new(),
     })
     .unwrap()
+}
+
+fn linked_type(build: &PackageBuildId, index: u32, ty: TypeRefIr) -> LinkedTypeEntry {
+    LinkedTypeEntry::new(
+        TypeIndex::new(index),
+        LinkedArtifactPoolOrigin::new(build.clone(), ArtifactTypeIndex::new(index), None).unwrap(),
+        ty,
+        None,
+    )
 }
 
 fn function(
@@ -317,6 +378,37 @@ fn parameter_frame(mode: ParamModeIr) -> LinkedFrameLayout {
         Box::new([]),
     )
     .unwrap()
+}
+
+fn result_frame(ty: TypeIndex) -> LinkedFrameLayout {
+    LinkedFrameLayout::new(
+        Box::new([]),
+        Box::new([]),
+        Box::new([]),
+        Box::new([ty]),
+        Box::new([]),
+        Box::new([snapshot_plan()]),
+    )
+    .unwrap()
+}
+
+fn facts_for_results(types: [TypeRefIr; 2]) -> ConcreteValueFacts {
+    ConcreteValueFacts::from_classified_types_for_test(
+        types
+            .into_iter()
+            .map(|ty| (ty, snapshot_resolution()))
+            .collect(),
+    )
+    .unwrap()
+}
+
+fn snapshot_resolution() -> NativeValueLifecycleResolution {
+    NativeValueLifecycleResolution {
+        lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+            drop: NativeValueDropPlan::SnapshotRelease,
+        },
+        embedding: NativeValueEmbedding::Ordinary,
+    }
 }
 
 fn snapshot_plan() -> LinkedValueTransferPlan {
