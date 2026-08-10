@@ -4,8 +4,8 @@ mod targets;
 mod transfer;
 
 use skiff_runtime_linked_bytecode::{
-    ActiveRegionIndex, FrameSlotIndex, InstructionIndex, LinkedBytecodeCandidate, TypeIndex,
-    WritablePathIndex,
+    ActiveRegionIndex, FrameSlotIndex, FunctionIndex, InstructionIndex, LinkedBytecodeCandidate,
+    TypeIndex, WritablePathIndex,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
@@ -36,7 +36,26 @@ struct FunctionFlowFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExactLocalInvocation {
     site: InstructionIndex,
-    target: skiff_runtime_linked_bytecode::FunctionIndex,
+    target: FunctionIndex,
+}
+
+impl ControlFlowFacts {
+    /// Iterates only the exact-local invocation coordinates independently
+    /// derived by the CFG proof. The dense caller ordinal is kept as `usize`
+    /// so conversion into the candidate's typed index remains fallible at the
+    /// P3 boundary.
+    fn exact_local_invocations(&self) -> impl Iterator<Item = (usize, ExactLocalInvocation)> + '_ {
+        self.functions
+            .iter()
+            .enumerate()
+            .flat_map(|(caller, facts)| {
+                facts
+                    .exact_local_invocations
+                    .iter()
+                    .copied()
+                    .map(move |invocation| (caller, invocation))
+            })
+    }
 }
 
 #[allow(dead_code)]
@@ -104,4 +123,24 @@ pub(crate) fn prove_control_flow_for_test(
     limits: &VerificationLimits,
 ) -> Result<(), VerificationError> {
     cfg::prove_control_flow(candidate, limits).map(drop)
+}
+
+#[cfg(test)]
+pub(crate) fn prove_exact_local_call_plan_for_test(
+    candidate: &LinkedBytecodeCandidate,
+    concrete_values: &ConcreteValueFacts,
+    caller: FunctionIndex,
+    site: InstructionIndex,
+    target: FunctionIndex,
+    limits: &VerificationLimits,
+) -> Result<(), VerificationError> {
+    let control_flow = cfg::prove_control_flow(candidate, limits)?;
+    targets::prove_exact_local_call_plan_for_test(
+        candidate,
+        concrete_values,
+        &control_flow,
+        caller,
+        site,
+        target,
+    )
 }

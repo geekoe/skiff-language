@@ -14,6 +14,7 @@ mod admission;
 mod concrete_values;
 mod control_flow;
 mod fixtures;
+mod targets;
 
 fn limits() -> VerificationLimits {
     VerificationLimits {

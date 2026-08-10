@@ -20,7 +20,7 @@ fn exact_empty_admission_reaches_the_next_fail_closed_proof() {
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ExactTargetAndCallPlan,
+            obligation: VerificationObligation::StackAndSlotState,
             location: VerificationLocation::Image,
         }
     );

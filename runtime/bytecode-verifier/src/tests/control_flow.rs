@@ -25,7 +25,7 @@ use crate::{
 use super::fixtures::{candidate_for, exact_hydration, generous_limits};
 
 #[test]
-fn empty_hydration_advances_to_exact_target_and_call_plan() {
+fn empty_hydration_advances_to_stack_and_slot_state() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
     let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
@@ -33,7 +33,7 @@ fn empty_hydration_advances_to_exact_target_and_call_plan() {
     assert_eq!(
         error,
         VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ExactTargetAndCallPlan,
+            obligation: VerificationObligation::StackAndSlotState,
             location: VerificationLocation::Image,
         }
     );

@@ -26,6 +26,13 @@ pub(crate) struct ConcreteTypeFact {
 }
 
 impl ConcreteValueFacts {
+    #[cfg(test)]
+    pub(crate) fn empty_for_test() -> Self {
+        Self {
+            types: Box::new([]),
+        }
+    }
+
     /// Returns the independently derived fact for one dense linked type.
     #[allow(dead_code)]
     pub(crate) fn type_fact(&self, index: TypeIndex) -> Option<&ConcreteTypeFact> {
