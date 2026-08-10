@@ -16,6 +16,10 @@ pub(crate) struct ExactTargetAndCallFacts {
 }
 
 impl ExactTargetAndCallFacts {
+    pub(in crate::control_flow) fn function_count(&self) -> usize {
+        self.calls_by_function.len()
+    }
+
     /// Seals a fully populated dense table after checking that its coordinates
     /// exactly match the candidate's function and instruction layout.
     #[allow(dead_code)]

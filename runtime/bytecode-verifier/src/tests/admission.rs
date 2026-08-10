@@ -1,11 +1,12 @@
-use skiff_artifact_model::TypeRefIr;
+use skiff_artifact_model::{CallableEffectSummary, TypeRefIr};
 use skiff_runtime_linked_bytecode::{
     ArtifactTypeIndex, CandidateTable, LinkedArtifactPoolOrigin, LinkedBytecodeCandidate,
     LinkedBytecodeCandidateParts, LinkedTypeEntry, TypeIndex,
 };
 
 use crate::{
-    verify, VerificationError, VerificationLimit, VerificationLocation, VerificationObligation,
+    admission::prove_admission, verify, VerificationError, VerificationLimit, VerificationLocation,
+    VerificationObligation,
 };
 
 use super::fixtures::{
@@ -27,6 +28,124 @@ fn exact_empty_admission_reaches_effect_and_no_pending_gate() {
             location: VerificationLocation::Image,
         }
     );
+}
+
+#[test]
+fn exact_effect_binding_is_dense_and_keeps_unknown_separate_from_abi_false() {
+    let (hydrated, candidate) = loader_backed_local_call(LocalCallCandidateCorruption::None);
+    let admission = prove_admission(&hydrated, &candidate, &generous_limits())
+        .expect("exact hydration must produce P1 effect authority");
+    let effects = admission.effect_binding();
+    assert_eq!(effects.functions().len(), candidate.functions().len());
+
+    let target = effects
+        .function(super::fixtures::TARGET_FUNCTION_INDEX)
+        .expect("dense target effect binding");
+    assert_eq!(
+        target.canonical_callable().as_str(),
+        "pkg-callable:example.local-authority:top-level:fixture.target"
+    );
+    assert!(matches!(
+        target.summary(),
+        CallableEffectSummary::Unknown { .. }
+    ));
+    let declarations = target.local_abi_declarations();
+    assert_eq!(declarations.len(), 2);
+    assert!(declarations
+        .iter()
+        .all(|declaration| !declaration.may_suspend()));
+    assert_eq!(
+        declarations
+            .iter()
+            .map(|declaration| declaration.callable().as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "pkg-callable:example.local-authority:fixture.target",
+            "pkg-callable:example.local-authority:top-level:fixture.target",
+        ]
+    );
+}
+
+#[test]
+fn analyzed_no_pending_binding_remains_exact_but_gate_stays_closed() {
+    let (hydrated, candidate) =
+        loader_backed_local_call(LocalCallCandidateCorruption::TargetAnalyzedNoPending);
+    let admission = prove_admission(&hydrated, &candidate, &generous_limits())
+        .expect("consistent analyzed authority must bind exactly");
+    let target = admission
+        .effect_binding()
+        .function(super::fixtures::TARGET_FUNCTION_INDEX)
+        .expect("dense target effect binding");
+    assert!(matches!(
+        target.summary(),
+        CallableEffectSummary::Analyzed { effects }
+            if !effects.may_pending && effects.pending_effect_categories.is_empty()
+    ));
+
+    let error = verify(hydrated, candidate, &generous_limits())
+        .expect_err("plumbed analyzed facts must not implement the semantic gate");
+    assert_eq!(
+        error,
+        VerificationError::ProofUnavailable {
+            obligation: VerificationObligation::EffectAndNoPending,
+            location: VerificationLocation::Image,
+        }
+    );
+}
+
+#[test]
+fn effect_binding_rejects_alias_and_analyzed_summary_drift() {
+    let cases = [
+        (
+            LocalCallCandidateCorruption::TargetAbiAliasMaySuspendDrift,
+            "aliases disagree",
+        ),
+        (
+            LocalCallCandidateCorruption::TargetAnalyzedMayPendingMismatch,
+            "mayPending disagrees",
+        ),
+        (
+            LocalCallCandidateCorruption::TargetAnalyzedDuplicateCategory,
+            "contain a duplicate",
+        ),
+    ];
+    for (corruption, expected) in cases {
+        assert_effect_binding_corruption_is_rejected(corruption, expected);
+    }
+}
+
+#[test]
+fn analyzed_pending_rejects_consistent_false_alias_declarations() {
+    assert_effect_binding_corruption_is_rejected(
+        LocalCallCandidateCorruption::TargetAnalyzedAbiMaySuspendMismatch,
+        "maySuspend disagrees with canonical analyzed",
+    );
+}
+
+#[test]
+fn alias_semantic_summary_drift_is_rejected() {
+    assert_effect_binding_corruption_is_rejected(
+        LocalCallCandidateCorruption::TargetAliasSemanticSummaryDrift,
+        "alias effect summary drifts",
+    );
+}
+
+fn assert_effect_binding_corruption_is_rejected(
+    corruption: LocalCallCandidateCorruption,
+    expected: &str,
+) {
+    let (hydrated, candidate) = loader_backed_local_call(corruption);
+    let error = prove_admission(&hydrated, &candidate, &generous_limits())
+        .expect_err("non-canonical effect authority must fail in P1");
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ExactHydrationBinding,
+            location: VerificationLocation::Function { function },
+            detail,
+        } if function == super::fixtures::TARGET_FUNCTION_INDEX
+            && detail.contains(expected)
+    ));
 }
 
 #[test]

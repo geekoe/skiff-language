@@ -1,3 +1,4 @@
+mod effects;
 mod statements;
 
 use std::{collections::BTreeMap, sync::Arc};
@@ -6,15 +7,14 @@ use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeFunctionOrigin,
     BytecodeImage, BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
-    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
-    CallableProvenanceUnknownReason, CallableSemanticFacts, DeploymentArtifactIdentity,
-    DeploymentDiagnosticText, DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph,
-    OperationCallableKind, OperationTargetRef, PackageArtifact, PackageCallableId,
-    PackageCallableLinkFact, PackageCallableSignature, PackageExecutableCoordinate,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, PackageSchemaIndexRef, PackageTypeRef, RelocatableBytecodeFunction,
-    ServiceDeployment, TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    CallableEffectSummary, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentRevision, FileIrRef, FrameLayout, FrozenConstantGraph, OperationCallableKind,
+    OperationTargetRef, PackageArtifact, PackageCallableId, PackageCallableLinkFact,
+    PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef,
+    RelocatableBytecodeFunction, ServiceDeployment, TypeRefIr, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, FunctionIndex, InstructionIndex, LinkedBytecodeCandidate,
@@ -40,6 +40,12 @@ pub(crate) enum LocalCallCandidateCorruption {
     TargetDeclarativeSummary,
     TargetEffectOwner,
     TargetCanonicalFunction,
+    TargetAnalyzedNoPending,
+    TargetAnalyzedMayPendingMismatch,
+    TargetAnalyzedDuplicateCategory,
+    TargetAnalyzedAbiMaySuspendMismatch,
+    TargetAbiAliasMaySuspendDrift,
+    TargetAliasSemanticSummaryDrift,
     StatementInstruction,
     StatementSequence,
     StatementAttributionId,
@@ -50,7 +56,7 @@ pub(crate) fn loader_backed_local_call(
     corruption: LocalCallCandidateCorruption,
 ) -> (HydratedDeploymentBytecode, LinkedBytecodeCandidate) {
     let bytecode = admitted_bytecode();
-    let package = package(bytecode.as_ref());
+    let package = package(bytecode.as_ref(), corruption);
     let contract = contract();
     let mut deployment = ServiceDeployment {
         schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
@@ -174,11 +180,23 @@ fn target_artifact_function() -> RelocatableBytecodeFunction {
     }
 }
 
-fn package(bytecode: &ValidatedBytecodeArtifact) -> PackageArtifact {
+fn package(
+    bytecode: &ValidatedBytecodeArtifact,
+    corruption: LocalCallCandidateCorruption,
+) -> PackageArtifact {
     let package_id = "example.local-authority";
     let caller = callable(CALLER_CALLABLE);
     let target = callable(TARGET_CALLABLE);
+    let target_summary = effects::target_summary(corruption);
     let file = FileIrRef::new("file-ir:local-authority", "fixture");
+    let effects::PublicCallableAuthority {
+        callable_id: target_alias,
+        symbol: target_alias_symbol,
+        callable_link: target_alias_link,
+        implementation_export: target_implementation_export,
+        semantic_facts: target_alias_facts,
+        boundary_projection: target_alias_projection,
+    } = effects::target_alias_authority(corruption, &target_summary, &file, 1);
     let mut artifact = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: package_id.to_string(),
@@ -193,15 +211,15 @@ fn package(bytecode: &ValidatedBytecodeArtifact) -> PackageArtifact {
         ),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
-            public_symbols: BTreeMap::new(),
+            public_symbols: BTreeMap::from([("fixture.target".to_string(), target_alias_symbol)]),
             implementation_symbols: BTreeMap::from([
                 (
                     "fixture.caller".to_string(),
-                    callable_symbol(caller.clone()),
+                    effects::callable_symbol(caller.clone()),
                 ),
                 (
                     "fixture.target".to_string(),
-                    callable_symbol(target.clone()),
+                    effects::callable_symbol(target.clone()),
                 ),
             ]),
         },
@@ -214,13 +232,23 @@ fn package(bytecode: &ValidatedBytecodeArtifact) -> PackageArtifact {
             .unwrap(),
         },
         package_schema_type_records: BTreeMap::new(),
-        implementation_links: PackageImplementationLinks::default(),
+        implementation_links: PackageImplementationLinks {
+            types: BTreeMap::new(),
+            constants: BTreeMap::new(),
+            functions: BTreeMap::from([(
+                "fixture.target".to_string(),
+                target_implementation_export,
+            )]),
+            impl_methods: BTreeMap::new(),
+            operation_targets: BTreeMap::new(),
+        },
         callable_links: BTreeMap::from([
             (
                 caller.clone(),
                 callable_link(caller.clone(), file.clone(), 0),
             ),
             (target.clone(), callable_link(target.clone(), file, 1)),
+            (target_alias.clone(), target_alias_link),
         ]),
         synthetic_callback_owners: Vec::new(),
         bytecode_schema_records: BTreeMap::new(),
@@ -231,10 +259,14 @@ fn package(bytecode: &ValidatedBytecodeArtifact) -> PackageArtifact {
         service_requirements: Vec::new(),
         runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
         callable_semantic_facts: BTreeMap::from([
-            (caller, semantic_facts()),
-            (target, semantic_facts()),
+            (
+                caller,
+                effects::semantic_facts(effects::canonical_summary()),
+            ),
+            (target, effects::semantic_facts(target_summary.clone())),
+            (target_alias.clone(), target_alias_facts),
         ]),
-        boundary_projections: BTreeMap::new(),
+        boundary_projections: BTreeMap::from([(target_alias, target_alias_projection)]),
         service_call_refs: Vec::new(),
     };
     skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
@@ -260,9 +292,15 @@ fn candidate(
         callable(TARGET_CALLABLE)
     };
     let target_summary = if corruption == LocalCallCandidateCorruption::TargetDeclarativeSummary {
-        analyzed_no_effects()
+        effects::analyzed_no_effects()
     } else {
-        canonical_summary()
+        package
+            .artifact()
+            .callable_semantic_facts
+            .get(&callable(TARGET_CALLABLE))
+            .unwrap()
+            .effects
+            .clone()
     };
     let functions = vec![
         linked_function(
@@ -270,7 +308,7 @@ fn candidate(
             caller_key.clone(),
             vec![linked_call(), linked_budget(), linked_return(5)],
             callable(CALLER_CALLABLE),
-            canonical_summary(),
+            effects::canonical_summary(),
             statements::linked_entries(corruption),
             statements::linked_source_map(),
         ),
@@ -394,47 +432,6 @@ fn callable_link(
             executable_index,
             callable_abi_id: callable_id.as_str().to_string(),
             callable_kind: OperationCallableKind::InternalFunction,
-        },
-    }
-}
-
-fn callable_symbol(callable_id: PackageCallableId) -> PackageLocalAbiSymbol {
-    PackageLocalAbiSymbol::Callable {
-        callable_id,
-        signature: PackageCallableSignature {
-            type_params: Vec::new(),
-            parameters: Vec::new(),
-            return_type: PackageTypeRef::Local {
-                local_type: TypeRefIr::builtin("void"),
-            },
-            may_suspend: false,
-        },
-    }
-}
-
-fn semantic_facts() -> CallableSemanticFacts {
-    CallableSemanticFacts {
-        effects: canonical_summary(),
-        provenance: CallableProvenanceSummary::Unknown {
-            reason: CallableProvenanceUnknownReason::AnalysisPending,
-        },
-        resolved_call_targets: BTreeMap::new(),
-    }
-}
-
-fn canonical_summary() -> CallableEffectSummary {
-    CallableEffectSummary::analysis_pending()
-}
-
-fn analyzed_no_effects() -> CallableEffectSummary {
-    CallableEffectSummary::Analyzed {
-        effects: CallableMayEffects {
-            escapes_caller_value: false,
-            requires_same_heap_identity: false,
-            invokes_unknown_target: false,
-            may_pending: false,
-            pending_effect_categories: Vec::new(),
-            inout_path_effects: Vec::new(),
         },
     }
 }

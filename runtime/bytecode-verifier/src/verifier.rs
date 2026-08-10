@@ -12,8 +12,8 @@ use skiff_runtime_deployment_image::{
     DeploymentOwnerIdentity, DeploymentProgramFacts, ServiceDependencySlot,
 };
 use skiff_runtime_linked_bytecode::{
-    CandidateTable, FunctionIndex, LinkedBytecodeCandidate, LinkedCallableSignature,
-    LinkedFunction, LinkedGatewayCallableRole,
+    FunctionIndex, LinkedBytecodeCandidate, LinkedCallableSignature, LinkedFunction,
+    LinkedGatewayCallableRole,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
@@ -27,8 +27,8 @@ use crate::{
     VerificationObligation,
 };
 
+pub(super) use constants::prove_and_build_empty_constant_heap;
 pub use constants::VerifiedConstantHeap;
-use constants::VerifiedConstantHeapSeal;
 pub use entries::{CodeEntryLookupError, VerifiedCodeEntry, VerifiedCodeEntryKind};
 use gates::prove_effect_and_no_pending;
 
@@ -294,10 +294,14 @@ fn prove_hydrated_candidate_semantics(
         candidate,
         admission.statement_binding(),
         &source,
-        &control_flow,
+        control_flow.control_flow(),
         limits,
     )?;
-    prove_effect_and_no_pending(candidate, &control_flow, &statement_schedule)?;
+    prove_effect_and_no_pending(
+        admission.effect_binding(),
+        &control_flow,
+        &statement_schedule,
+    )?;
     let constant_heap = prove_and_build_empty_constant_heap(hydrated, candidate)?;
     Ok(VerifiedSemanticFacts {
         constant_heap,
@@ -320,7 +324,7 @@ pub(super) fn prove_statement_schedule_for_test(
         candidate,
         admission.statement_binding(),
         &source,
-        &control_flow,
+        control_flow.control_flow(),
         limits,
     )
 }
@@ -337,79 +341,6 @@ pub(super) fn prove_candidate_semantics(
         obligation: VerificationObligation::ConcreteTypeAndShape,
         location: VerificationLocation::Image,
     })
-}
-
-pub(super) fn prove_and_build_empty_constant_heap(
-    hydrated: &HydratedDeploymentBytecode,
-    candidate: &LinkedBytecodeCandidate,
-) -> Result<VerifiedConstantHeap, VerificationError> {
-    let source_has_constant_authority = hydrated.packages().values().any(|package| {
-        let view = package.bytecode().view();
-        !view.pools().constants.is_empty()
-            || !view.constant_roots().is_empty()
-            || !view.frozen_constant_graph().nodes.is_empty()
-    });
-    let candidate_location = first_candidate_constant_location(candidate);
-
-    match (source_has_constant_authority, candidate_location) {
-        (false, None) => Ok(VerifiedConstantHeap {
-            values: Box::new([]),
-            _seal: VerifiedConstantHeapSeal,
-        }),
-        (true, Some(location)) => Err(VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::FrozenConstantSafety,
-            location,
-        }),
-        (true, None) => Err(frozen_constant_violation(
-            VerificationLocation::Image,
-            "candidate erased non-empty frozen constant authority from the exact hydration",
-        )),
-        (false, Some(location)) => Err(frozen_constant_violation(
-            location,
-            "candidate introduced frozen constant authority absent from the exact hydration",
-        )),
-    }
-}
-
-fn first_candidate_constant_location(
-    candidate: &LinkedBytecodeCandidate,
-) -> Option<VerificationLocation> {
-    candidate
-        .constants()
-        .first()
-        .map(|constant| VerificationLocation::Table {
-            table: CandidateTable::Constants,
-            row: constant.index().get(),
-        })
-        .or_else(|| {
-            candidate
-                .constant_roots()
-                .first()
-                .map(|_| VerificationLocation::Table {
-                    table: CandidateTable::ConstantRoots,
-                    row: 0,
-                })
-        })
-        .or_else(|| {
-            candidate
-                .frozen_constant_nodes()
-                .first()
-                .map(|node| VerificationLocation::Table {
-                    table: CandidateTable::FrozenConstantNodes,
-                    row: node.index().get(),
-                })
-        })
-}
-
-fn frozen_constant_violation(
-    location: VerificationLocation,
-    detail: impl Into<String>,
-) -> VerificationError {
-    VerificationError::SemanticViolation {
-        obligation: VerificationObligation::FrozenConstantSafety,
-        location,
-        detail: detail.into(),
-    }
 }
 
 fn distill_verified_entry_maps(

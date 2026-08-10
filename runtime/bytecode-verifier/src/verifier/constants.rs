@@ -1,7 +1,10 @@
 use std::fmt;
 
-use skiff_runtime_linked_bytecode::ConstantIndex;
+use skiff_runtime_linked_bytecode::{CandidateTable, ConstantIndex, LinkedBytecodeCandidate};
+use skiff_runtime_loader::HydratedDeploymentBytecode;
 use skiff_runtime_model::vm_value::ValueSlot;
+
+use crate::{VerificationError, VerificationLocation, VerificationObligation};
 
 /// Immutable values materialized from the verified frozen constant graph.
 ///
@@ -50,5 +53,78 @@ impl VerifiedConstantHeap {
 
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
+    }
+}
+
+pub(crate) fn prove_and_build_empty_constant_heap(
+    hydrated: &HydratedDeploymentBytecode,
+    candidate: &LinkedBytecodeCandidate,
+) -> Result<VerifiedConstantHeap, VerificationError> {
+    let source_has_constant_authority = hydrated.packages().values().any(|package| {
+        let view = package.bytecode().view();
+        !view.pools().constants.is_empty()
+            || !view.constant_roots().is_empty()
+            || !view.frozen_constant_graph().nodes.is_empty()
+    });
+    let candidate_location = first_candidate_constant_location(candidate);
+
+    match (source_has_constant_authority, candidate_location) {
+        (false, None) => Ok(VerifiedConstantHeap {
+            values: Box::new([]),
+            _seal: VerifiedConstantHeapSeal,
+        }),
+        (true, Some(location)) => Err(VerificationError::ProofUnavailable {
+            obligation: VerificationObligation::FrozenConstantSafety,
+            location,
+        }),
+        (true, None) => Err(frozen_constant_violation(
+            VerificationLocation::Image,
+            "candidate erased non-empty frozen constant authority from the exact hydration",
+        )),
+        (false, Some(location)) => Err(frozen_constant_violation(
+            location,
+            "candidate introduced frozen constant authority absent from the exact hydration",
+        )),
+    }
+}
+
+fn first_candidate_constant_location(
+    candidate: &LinkedBytecodeCandidate,
+) -> Option<VerificationLocation> {
+    candidate
+        .constants()
+        .first()
+        .map(|constant| VerificationLocation::Table {
+            table: CandidateTable::Constants,
+            row: constant.index().get(),
+        })
+        .or_else(|| {
+            candidate
+                .constant_roots()
+                .first()
+                .map(|_| VerificationLocation::Table {
+                    table: CandidateTable::ConstantRoots,
+                    row: 0,
+                })
+        })
+        .or_else(|| {
+            candidate
+                .frozen_constant_nodes()
+                .first()
+                .map(|node| VerificationLocation::Table {
+                    table: CandidateTable::FrozenConstantNodes,
+                    row: node.index().get(),
+                })
+        })
+}
+
+fn frozen_constant_violation(
+    location: VerificationLocation,
+    detail: impl Into<String>,
+) -> VerificationError {
+    VerificationError::SemanticViolation {
+        obligation: VerificationObligation::FrozenConstantSafety,
+        location,
+        detail: detail.into(),
     }
 }

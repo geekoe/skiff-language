@@ -13,6 +13,42 @@ use crate::{concrete_values::ConcreteValueFacts, VerificationError, Verification
 
 use self::targets::ExactTargetAndCallFacts;
 
+/// Complete P3 orchestration result. Later gates consume these proof products
+/// without rescanning linked target declarations or inferring resume absence.
+#[derive(Debug)]
+pub(crate) struct ControlFlowAndCallFacts {
+    control_flow: ControlFlowFacts,
+    exact_targets: ExactTargetAndCallFacts,
+    _empty_resume: resume::EmptyResumeProof,
+}
+
+impl ControlFlowAndCallFacts {
+    pub(crate) const fn control_flow(&self) -> &ControlFlowFacts {
+        &self.control_flow
+    }
+
+    pub(crate) fn function_counts(&self) -> (usize, usize) {
+        (
+            self.control_flow.functions.len(),
+            self.exact_targets.function_count(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn proves_exact_local_call(
+        &self,
+        caller: FunctionIndex,
+        site: InstructionIndex,
+        target: FunctionIndex,
+    ) -> bool {
+        self.exact_targets
+            .call_plan(caller, site)
+            .is_some_and(|plan| {
+                plan.target() == targets::ExactTargetCoordinate::LocalFunction(target)
+            })
+    }
+}
+
 /// Independently derived control-flow and abstract program-point facts.
 ///
 /// Function and instruction slices use dense candidate index order. These
@@ -129,7 +165,7 @@ pub(crate) fn prove_control_flow_and_stack(
     candidate: &LinkedBytecodeCandidate,
     concrete_values: &ConcreteValueFacts,
     limits: &VerificationLimits,
-) -> Result<ControlFlowFacts, VerificationError> {
+) -> Result<ControlFlowAndCallFacts, VerificationError> {
     let mut facts = cfg::prove_control_flow(candidate, limits)?;
     let targets = targets::prove_exact_targets_and_call_plans(
         hydrated,
@@ -139,8 +175,13 @@ pub(crate) fn prove_control_flow_and_stack(
         limits,
     )?;
     transfer::prove_stack_and_slot_state(candidate, concrete_values, &targets, &mut facts, limits)?;
-    resume::prove_resume_sites(candidate, concrete_values, &targets, &facts, limits)?;
-    Ok(facts)
+    let empty_resume =
+        resume::prove_resume_sites(candidate, concrete_values, &targets, &facts, limits)?;
+    Ok(ControlFlowAndCallFacts {
+        control_flow: facts,
+        exact_targets: targets,
+        _empty_resume: empty_resume,
+    })
 }
 
 #[cfg(test)]

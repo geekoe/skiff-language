@@ -9,7 +9,9 @@ use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use crate::{VerificationError, VerificationLimits};
 
-pub(crate) use facts::{AdmissionFacts, ExactStatementBinding, ExactStatementEntry};
+pub(crate) use facts::{
+    AdmissionFacts, ExactCanonicalEffectBinding, ExactStatementBinding, ExactStatementEntry,
+};
 
 pub(super) fn prove_admission(
     hydrated: &HydratedDeploymentBytecode,

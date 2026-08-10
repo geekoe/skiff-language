@@ -1,3 +1,5 @@
+mod effect_facts;
+
 use skiff_artifact_model::{
     host_effect_registry_identity, intrinsic_registry_identity,
     native_value_lifecycle_registry_identity, opcode_table_fingerprint,
@@ -25,21 +27,6 @@ use crate::{
 use super::fixtures::{
     generous_limits, loader_backed_local_call, LocalCallCandidateCorruption, TARGET_FUNCTION_INDEX,
 };
-
-#[test]
-fn loader_backed_local_target_authority_advances_to_effect_gate() {
-    let (hydrated, candidate) = loader_backed_local_call(LocalCallCandidateCorruption::None);
-    let error = verify(hydrated, candidate, &generous_limits())
-        .expect_err("exact hydrated local authority must cross P3 target proof");
-
-    assert_eq!(
-        error,
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::EffectAndNoPending,
-            location: VerificationLocation::Image,
-        }
-    );
-}
 
 #[test]
 fn loader_backed_target_summary_drift_is_stopped_by_exact_binding() {

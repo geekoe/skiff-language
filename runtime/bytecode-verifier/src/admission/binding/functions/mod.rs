@@ -1,3 +1,4 @@
+mod effects;
 mod instructions;
 mod tables;
 
@@ -8,18 +9,26 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
+use crate::admission::facts::ExactFunctionEffectBinding;
 use crate::admission::facts::ExactFunctionStatementBinding;
 use crate::{VerificationError, VerificationLocation};
 
 use super::{row_u32, semantic_violation, table_location, TargetCoverage};
 
+pub(super) struct ProvedFunctionBindings {
+    pub(super) coverage: TargetCoverage,
+    pub(super) statements: Vec<ExactFunctionStatementBinding>,
+    pub(super) effects: Vec<ExactFunctionEffectBinding>,
+}
+
 pub(super) fn prove_functions(
     hydrated: &HydratedDeploymentBytecode,
     candidate: &LinkedBytecodeCandidate,
-) -> Result<(TargetCoverage, Vec<ExactFunctionStatementBinding>), VerificationError> {
+) -> Result<ProvedFunctionBindings, VerificationError> {
     prove_exact_local_target_coverage(hydrated, candidate)?;
     let mut coverage = TargetCoverage::default();
     let mut statement_functions = Vec::with_capacity(candidate.functions().len());
+    let mut effect_functions = Vec::with_capacity(candidate.functions().len());
     for function in candidate.functions() {
         let location = VerificationLocation::Function {
             function: function.index(),
@@ -41,6 +50,9 @@ pub(super) fn prove_functions(
             )
         })?;
         prove_function_identity(package, function, source, candidate)?;
+        effect_functions.push(effects::prove_exact_effect_binding(
+            package, function, source,
+        )?);
         prove_frame(function, source, candidate)?;
         statement_functions.push(tables::prove_function_tables(
             package, function, source, candidate,
@@ -55,7 +67,11 @@ pub(super) fn prove_functions(
             &mut coverage,
         )?;
     }
-    Ok((coverage, statement_functions))
+    Ok(ProvedFunctionBindings {
+        coverage,
+        statements: statement_functions,
+        effects: effect_functions,
+    })
 }
 
 fn prove_exact_local_target_coverage(
@@ -158,26 +174,16 @@ fn prove_function_identity(
                 "ordinary function has no canonical implementation callable authority",
             )
         })?;
-    let facts = package
-        .artifact()
-        .callable_semantic_facts
-        .get(canonical_callable)
-        .ok_or_else(|| {
-            semantic_violation(location, "function effect summary has no package authority")
-        })?;
     let selected_function =
         package.function_key_for_callable(function.key().template_function_key());
     let exact = function.key().artifact_function_key().as_str() == source.function_key
         && selected_function == Some(source.function_key.as_str())
-        && function.effect_summary_ref() == canonical_callable
-        && &source.effect_summary_ref == canonical_callable
-        && function.declarative_effect_summary() == &facts.effects
         && function.key().concrete_type_arguments().len() == source.type_parameters.len()
         && function.key().concrete_receiver().is_some() == source.self_type_ref.is_some();
     if !exact {
         return Err(semantic_violation(
             location,
-            "function key, specialization shape, or declarative effect facts differ from the admitted artifact",
+            "function key or specialization shape differs from the admitted artifact",
         ));
     }
     if package.function_key_for_canonical_implementation_callable(canonical_callable)

@@ -20,12 +20,13 @@ pub(super) fn prove_exact_binding(
 ) -> Result<AdmissionFacts, VerificationError> {
     packages::prove_owner_and_packages(hydrated, candidate)?;
     data::prove_artifact_origins(hydrated, candidate)?;
-    let (coverage, statement_functions) = functions::prove_functions(hydrated, candidate)?;
-    entries::prove_entry_and_target_tables(hydrated, candidate, &coverage)?;
+    let functions = functions::prove_functions(hydrated, candidate)?;
+    entries::prove_entry_and_target_tables(hydrated, candidate, &functions.coverage)?;
     data::prove_constant_roots(hydrated, candidate)?;
-    Ok(AdmissionFacts::new(ExactStatementBinding::new(
-        statement_functions.into_boxed_slice(),
-    )))
+    Ok(AdmissionFacts::new(
+        ExactStatementBinding::new(functions.statements.into_boxed_slice()),
+        crate::admission::ExactCanonicalEffectBinding::new(functions.effects.into_boxed_slice()),
+    ))
 }
 
 #[derive(Debug, Default)]
