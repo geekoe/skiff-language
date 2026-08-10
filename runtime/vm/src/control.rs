@@ -19,11 +19,8 @@ pub type VmResult = Result<VmOwnedValues, VmError>;
 /// Values whose image-local handles remain pinned to the exact verified image
 /// that created them.
 ///
-/// There is intentionally no constructor yet: downstream code cannot attach a
-/// raw `ValueSlot` to an unrelated image pin, and the VM does not produce a
-/// successful value batch until the complete linked lifecycle-plan contract
-/// is available. Consumers of a future VM-produced batch may inspect it while
-/// this type keeps its exact image allocation alive.
+/// Construction is crate-private so downstream code cannot attach a raw
+/// `ValueSlot` to an unrelated image pin.
 #[must_use = "owned VM values retain roots and an exact verified-image pin"]
 pub struct VmOwnedValues {
     image: Arc<VerifiedLinkedBytecodeImage>,
@@ -31,6 +28,10 @@ pub struct VmOwnedValues {
 }
 
 impl VmOwnedValues {
+    pub(crate) fn new(image: Arc<VerifiedLinkedBytecodeImage>, values: Box<[ValueSlot]>) -> Self {
+        Self { image, values }
+    }
+
     pub const fn image(&self) -> &Arc<VerifiedLinkedBytecodeImage> {
         &self.image
     }

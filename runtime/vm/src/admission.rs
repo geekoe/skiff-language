@@ -18,6 +18,10 @@ pub(crate) fn is_self_describing_immediate(value: &ValueSlot) -> bool {
     )
 }
 
+pub(crate) fn is_discardable_root(value: &ValueSlot) -> bool {
+    is_self_describing_immediate(value) || matches!(value.kind(), Some(ValueKind::ConstRef))
+}
+
 pub(crate) fn validate_entry_arguments(
     program: &VerifiedLinkedBytecodeImage,
     expected_types: &[TypeIndex],

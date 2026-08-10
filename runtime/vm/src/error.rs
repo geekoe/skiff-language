@@ -41,6 +41,7 @@ pub enum VmVerifiedInvariant {
     StatementScheduleFrameEntryKind,
     StatementScheduleEventKind,
     StatementScheduleEventCursor,
+    ChildFrameResumeMissing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,6 +147,43 @@ pub enum VmError {
         function: FunctionIndex,
         instruction: InstructionIndex,
         actual: Option<ValueKind>,
+    },
+    ExpectedNumber {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        actual: Option<ValueKind>,
+    },
+    ExpectedComparablePair {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        left: Option<ValueKind>,
+        right: Option<ValueKind>,
+    },
+    ScalarNonFinite {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    },
+    DivideByZero {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    },
+    LocalCallTargetMismatch {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        target: FunctionIndex,
+        expected_arguments: usize,
+        actual_arguments: usize,
+        expected_results: usize,
+        actual_results: usize,
+    },
+    TailCallTargetMismatch {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        target: FunctionIndex,
+        expected_arguments: usize,
+        actual_arguments: usize,
+        expected_results: usize,
+        actual_results: usize,
     },
     BranchTargetOutOfBounds {
         function: FunctionIndex,
@@ -307,6 +345,75 @@ impl fmt::Display for VmError {
                 "VM function {} instruction {} expected bool but found {actual:?}",
                 function.get(),
                 instruction.get()
+            ),
+            Self::ExpectedNumber {
+                function,
+                instruction,
+                actual,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} expected number but found {actual:?}",
+                function.get(),
+                instruction.get()
+            ),
+            Self::ExpectedComparablePair {
+                function,
+                instruction,
+                left,
+                right,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} expected one exact comparable pair but found {left:?} and {right:?}",
+                function.get(),
+                instruction.get()
+            ),
+            Self::ScalarNonFinite {
+                function,
+                instruction,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} produced a non-finite scalar",
+                function.get(),
+                instruction.get()
+            ),
+            Self::DivideByZero {
+                function,
+                instruction,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} divided by zero",
+                function.get(),
+                instruction.get()
+            ),
+            Self::LocalCallTargetMismatch {
+                function,
+                instruction,
+                target,
+                expected_arguments,
+                actual_arguments,
+                expected_results,
+                actual_results,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} local call target {} expects {expected_arguments} arguments and {expected_results} results but found {actual_arguments} arguments and {actual_results} results",
+                function.get(),
+                instruction.get(),
+                target.get()
+            ),
+            Self::TailCallTargetMismatch {
+                function,
+                instruction,
+                target,
+                expected_arguments,
+                actual_arguments,
+                expected_results,
+                actual_results,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} tail call target {} expects {expected_arguments} arguments and {expected_results} results but found {actual_arguments} arguments and {actual_results} results",
+                function.get(),
+                instruction.get(),
+                target.get()
             ),
             Self::BranchTargetOutOfBounds { function, target } => write!(
                 formatter,
