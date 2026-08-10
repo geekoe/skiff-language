@@ -459,6 +459,8 @@ fn implementation_package(
                     reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },
                 args: Vec::new(),
+                concrete_receiver: None,
+                inout_args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },
@@ -487,6 +489,8 @@ fn implementation_package(
                     reason: SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
                 },
                 args: Vec::new(),
+                concrete_receiver: None,
+                inout_args: Vec::new(),
                 type_args: BTreeMap::new(),
                 metadata: BTreeMap::new(),
             },
@@ -765,6 +769,10 @@ fn base_package(
         package_build_id: PackageBuildId::new("unassigned"),
         files: Vec::new(),
         static_resources: Vec::new(),
+        bytecode: None,
+        bytecode_statement_manifest_identity:
+            skiff_artifact_model::derive_bytecode_statement_manifest_identity(package_id, &[])
+                .expect("empty bytecode statement manifest identity is canonical"),
         package_local_abi: PackageLocalAbi {
             local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
             public_symbols: BTreeMap::new(),
@@ -781,6 +789,8 @@ fn base_package(
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks::default(),
         callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::new(),
         actor_implementations: Vec::new(),
         local_interface_conformances: Vec::new(),
         package_requirements,
@@ -790,7 +800,6 @@ fn base_package(
         callable_semantic_facts: BTreeMap::new(),
         boundary_projections: BTreeMap::new(),
         service_call_refs,
-        bytecode: None,
     }
 }
 
