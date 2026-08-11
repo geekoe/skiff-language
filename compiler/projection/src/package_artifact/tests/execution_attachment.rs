@@ -3,7 +3,8 @@ use skiff_artifact_identity::{
     BYTECODE_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity, BytecodeArtifactRef,
+    current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
+    validate_current_platform_error_projection_registry_ref, BytecodeArtifactRef,
     BytecodeStatementManifestIdentity, BYTECODE_STATEMENT_MANIFEST_IDENTITY_PREFIX,
 };
 
@@ -61,6 +62,18 @@ fn enabled_attachment_preserves_exact_facts_and_local_abi() {
         attached.artifact.package_local_abi.local_abi_identity,
         projected.artifact.package_local_abi.local_abi_identity
     );
+    assert_eq!(
+        attached.artifact.platform_error_projection_registry,
+        projected.artifact.platform_error_projection_registry
+    );
+    assert_eq!(
+        &attached.artifact.platform_error_projection_registry,
+        current_platform_error_projection_registry_ref()
+    );
+    validate_current_platform_error_projection_registry_ref(
+        &attached.artifact.platform_error_projection_registry,
+    )
+    .unwrap();
     assert_eq!(
         package_artifact_local_abi_identity_projection(&attached.artifact).unwrap(),
         source_local_projection
