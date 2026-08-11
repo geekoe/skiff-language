@@ -19,7 +19,7 @@ pub(super) fn is_safe_integer(value: f64) -> bool {
 
 pub(super) fn safe_integer_number(value: i64, target: &str) -> Result<Value> {
     const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
-    if value < -MAX_SAFE_INTEGER || value > MAX_SAFE_INTEGER {
+    if !(-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value) {
         return Err(time_decode(
             target,
             format!("{target} requires a safe integer"),

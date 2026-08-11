@@ -25,7 +25,6 @@ use skiff_runtime_boundary::json::decode_untyped_wire_json;
 use skiff_runtime_model::{
     request_heap::RequestHeap as ModelRequestHeap,
     type_plan::{RuntimeTypeNode, RuntimeTypePlan},
-    value::RuntimeValue as ModelRuntimeValue,
 };
 use skiff_runtime_native_contract::{NativeBindingKey, NativeCallPlan, NativeRequiredContext};
 

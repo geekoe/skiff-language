@@ -29,7 +29,6 @@ impl ActorNativeDispatch {
     where
         ActorContext: NativeActorCapability + Send + 'a,
     {
-        let binding_key = invocation.binding_key().to_string();
         let arg_count = invocation.arg_count()?;
         if args.len() != arg_count {
             return Err(RuntimeError::InvalidArtifact(format!(
@@ -105,9 +104,7 @@ impl ActorNativeDispatch {
                     .await
                     .map(ActorRegistryOutput::ActorRef)
             },
-            move |output, heap| {
-                finalize_actor_registry_output(&invocation, &diagnostic_target, output, heap)
-            },
+            move |output, _heap| finalize_actor_registry_output(&diagnostic_target, output),
         );
         Ok(PreparedNativeCall::ExternalWait(operation))
     }
@@ -133,10 +130,8 @@ enum ActorRegistryOutput {
 }
 
 fn finalize_actor_registry_output(
-    invocation: &RuntimeNativeInvocation,
     diagnostic_target: &str,
     output: ActorRegistryOutput,
-    heap: &mut RequestHeap,
 ) -> Result<RuntimeValue> {
     let output = match output {
         ActorRegistryOutput::ActorRef(actor_ref) => RuntimeValue::ActorRef(actor_ref),

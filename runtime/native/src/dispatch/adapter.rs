@@ -21,7 +21,15 @@ impl NativeDispatch {
     pub fn new() -> Self {
         Self
     }
+}
 
+impl Default for NativeDispatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NativeDispatch {
     #[allow(clippy::too_many_arguments)]
     pub fn dispatch_builtin(
         &self,
