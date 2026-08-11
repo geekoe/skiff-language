@@ -53,17 +53,17 @@ mod tests {
         assert_eq!(artifact.package_id, "example.com/artifact-model");
         assert_eq!(
             PACKAGE_ARTIFACT_SCHEMA_VERSION,
-            "skiff-package-artifact-v14"
+            "skiff-package-artifact-v15"
         );
         assert_eq!(
             PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-            "skiff-package-build-v13:sha256"
+            "skiff-package-build-v14:sha256"
         );
         assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
         assert!(artifact
             .package_build_id
             .as_str()
-            .starts_with("skiff-package-build-v13:sha256:"));
+            .starts_with("skiff-package-build-v14:sha256:"));
         assert_eq!(
             artifact.bytecode_statement_manifest_identity,
             derive_bytecode_statement_manifest_identity(&artifact.package_id, &[]).unwrap()
@@ -95,6 +95,7 @@ mod tests {
                 "packageSchemaIndex",
                 "packageSchemaTypeRecords",
                 "packageVersion",
+                "platformErrorProjectionRegistry",
                 "runtimeRequirements",
                 "schemaVersion",
                 "serviceCallRefs",

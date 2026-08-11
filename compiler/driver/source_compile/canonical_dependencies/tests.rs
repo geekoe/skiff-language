@@ -5,10 +5,10 @@ use crate::input::{
 };
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity, PackageBuildId, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements,
-    PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageSymbolRef, ParamModeIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
+    PackageBuildId, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+    PackageSymbolRef, ParamModeIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::source_graph::{CompilerSourceFile, PublicationSourceGraph};
@@ -314,6 +314,8 @@ fn package_artifact(package_id: &str, local_abi: &str) -> PackageArtifact {
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("build"),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,

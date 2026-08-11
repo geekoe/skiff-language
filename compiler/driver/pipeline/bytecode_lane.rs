@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity, BytecodeArtifactRef,
+    derive_bytecode_statement_manifest_identity,
+    validate_current_platform_error_projection_registry_ref, BytecodeArtifactRef,
     BytecodeFunctionStatementManifest, PackageArtifact,
 };
 use skiff_compiler_compiled::{
@@ -218,8 +219,22 @@ fn validate_package_execution_state(
     bytecode: &PackageBytecodeLane,
 ) -> Result<(), PackageCompileError> {
     match bytecode {
-        PackageBytecodeLane::Disabled => validate_disabled_execution_state(artifact),
+        PackageBytecodeLane::Disabled => {
+            validate_current_package_registry(artifact)?;
+            validate_disabled_execution_state(artifact)
+        }
         PackageBytecodeLane::Enabled(handoff) => {
+            if &artifact.platform_error_projection_registry
+                != handoff
+                    .receipt()
+                    .authorities()
+                    .platform_error_projection_registry()
+            {
+                return Err(bytecode_projection_error(
+                    "PackageArtifact platform error projection registry mismatch with admitted bytecode handoff",
+                ));
+            }
+            validate_current_package_registry(artifact)?;
             let manifest_receipt = handoff.statement_manifest_receipt();
             if artifact.package_id != manifest_receipt.package_id() {
                 return Err(bytecode_projection_error(format!(
@@ -244,6 +259,19 @@ fn validate_package_execution_state(
             Ok(())
         }
     }
+}
+
+fn validate_current_package_registry(
+    artifact: &PackageArtifact,
+) -> Result<(), PackageCompileError> {
+    validate_current_platform_error_projection_registry_ref(
+        &artifact.platform_error_projection_registry,
+    )
+    .map_err(|_| {
+        bytecode_projection_error(
+            "PackageArtifact platform error projection registry mismatch with current compiler authority",
+        )
+    })
 }
 
 fn validate_disabled_execution_state(

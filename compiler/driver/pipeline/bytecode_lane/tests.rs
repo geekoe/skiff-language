@@ -2,17 +2,20 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{
     assign_bytecode_identity, assign_package_artifact_identities, package_schema_index_identity,
-    BYTECODE_IDENTITY_PREFIX, FILE_IR_IDENTITY_PREFIX,
+    BYTECODE_IDENTITY_PREFIX, BYTECODE_IDENTITY_SCHEMA_MARKER, FILE_IR_IDENTITY_PREFIX,
+    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
 };
 use skiff_artifact_model::{
-    descriptor_for_opcode, BytecodeArtifact, BytecodeArtifactRef, BytecodeFunctionOrigin,
-    BytecodeFunctionStatementManifest, BytecodeImage, BytecodePools, FrameLayout,
-    FrozenConstantGraph, InstructionSourceSite, Opcode, PackageBuildId, PackageCallableId,
-    PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
+    current_platform_error_projection_registry_ref, descriptor_for_opcode,
+    validate_current_platform_error_projection_registry_ref,
+    validate_platform_error_projection_registry_ref_shape, BytecodeArtifact, BytecodeArtifactRef,
+    BytecodeFunctionOrigin, BytecodeFunctionStatementManifest, BytecodeImage, BytecodePools,
+    FrameLayout, FrozenConstantGraph, InstructionSourceSite, Opcode, PackageBuildId,
+    PackageCallableId, PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    RelocatableBytecodeFunction, SourcePosition, SourceSpanRef, StatementAttributionId,
-    StatementEntry, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PlatformErrorProjectionRegistryRef, RelocatableBytecodeFunction, SourcePosition, SourceSpanRef,
+    StatementAttributionId, StatementEntry, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_emission::package_artifact::publish_projected_package_artifact;
 
@@ -78,6 +81,21 @@ fn enabled_lane_attaches_exact_handoff_ref_and_manifest_to_a_new_projection() {
         &attached.artifact.bytecode_statement_manifest_identity,
         handoff.statement_manifest_receipt().identity()
     );
+    assert_eq!(
+        attached.artifact.platform_error_projection_registry,
+        source.platform_error_projection_registry
+    );
+    assert_eq!(
+        &attached.artifact.platform_error_projection_registry,
+        handoff
+            .receipt()
+            .authorities()
+            .platform_error_projection_registry()
+    );
+    validate_current_platform_error_projection_registry_ref(
+        &attached.artifact.platform_error_projection_registry,
+    )
+    .unwrap();
     assert_eq!(handoff.statement_manifest_receipt().function_count(), 2);
     assert_eq!(handoff.statement_manifest_receipt().event_count(), 2);
     assert_eq!(
@@ -88,8 +106,74 @@ fn enabled_lane_attaches_exact_handoff_ref_and_manifest_to_a_new_projection() {
     assert!(handoff
         .reference()
         .bytecode_identity
-        .starts_with("skiff-bytecode-image-v4:sha256:"));
-    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v4:sha256");
+        .starts_with("skiff-bytecode-image-v5:sha256:"));
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v7");
+    assert_eq!(
+        BYTECODE_IDENTITY_SCHEMA_MARKER,
+        "skiff-bytecode-artifact-v5"
+    );
+    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v5:sha256");
+    assert_eq!(
+        PACKAGE_ARTIFACT_SCHEMA_VERSION,
+        "skiff-package-artifact-v15"
+    );
+    assert_eq!(
+        PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
+        "skiff-package-artifact-build-identity-v13"
+    );
+    assert_eq!(
+        PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+        "skiff-package-build-v14:sha256"
+    );
+}
+
+#[test]
+fn disabled_lane_rejects_a_valid_historical_package_registry() {
+    let mut projected = projected_fixture(PACKAGE_ID);
+    projected.artifact.platform_error_projection_registry = historical_registry_fixture();
+    assign_package_artifact_identities(&mut projected.artifact).unwrap();
+    validate_platform_error_projection_registry_ref_shape(
+        &projected.artifact.platform_error_projection_registry,
+    )
+    .unwrap();
+    assert!(validate_current_platform_error_projection_registry_ref(
+        &projected.artifact.platform_error_projection_registry,
+    )
+    .is_err());
+    let source = projected.artifact.clone();
+
+    let error = attach_bytecode_execution(&projected, &PackageBytecodeLane::Disabled)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("platform error projection registry mismatch"));
+    assert_eq!(projected.artifact, source);
+}
+
+#[test]
+fn enabled_lane_rejects_package_registry_different_from_admitted_bytecode() {
+    let mut projected = projected_fixture(PACKAGE_ID);
+    let lane = enabled_lane(PACKAGE_ID);
+    let admitted_registry = lane
+        .receipt()
+        .unwrap()
+        .authorities()
+        .platform_error_projection_registry();
+    projected.artifact.platform_error_projection_registry = historical_registry_fixture();
+    assign_package_artifact_identities(&mut projected.artifact).unwrap();
+    assert_ne!(
+        &projected.artifact.platform_error_projection_registry,
+        admitted_registry
+    );
+    let source = projected.artifact.clone();
+
+    let error = attach_bytecode_execution(&projected, &lane)
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("platform error projection registry mismatch"));
+    assert!(error.contains("admitted bytecode handoff"));
+    assert_eq!(projected.artifact, source);
 }
 
 #[test]
@@ -184,6 +268,8 @@ fn bytecode_artifact_fixture() -> BytecodeArtifact {
         value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
         host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
         intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         bytecode_identity: "unassigned".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::from([
@@ -301,6 +387,8 @@ fn projected_fixture(package_id: &str) -> ProjectedPackageArtifact {
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,
@@ -342,4 +430,22 @@ fn projected_fixture(package_id: &str) -> ProjectedPackageArtifact {
         file_ir_units: Vec::new(),
         resources: Vec::new(),
     }
+}
+
+fn historical_registry_fixture() -> PlatformErrorProjectionRegistryRef {
+    let current = current_platform_error_projection_registry_ref();
+    let historical_fingerprint = format!(
+        "sha256:{}",
+        if current.fingerprint().ends_with('0') {
+            "1".repeat(64)
+        } else {
+            "0".repeat(64)
+        }
+    );
+    serde_json::from_value(serde_json::json!({
+        "registryId": current.registry_id(),
+        "registryVersion": current.registry_version(),
+        "fingerprint": historical_fingerprint,
+    }))
+    .unwrap()
 }

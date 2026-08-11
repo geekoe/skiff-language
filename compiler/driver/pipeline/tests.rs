@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use super::*;
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity, PackageBuildId, PackageCallableId,
-    PackageCallableRef, PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageSymbolRef,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
+    PackageBuildId, PackageCallableId, PackageCallableRef, PackageImplementationLinks,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
+    PackageSchemaIndexRef, PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 #[test]
@@ -680,6 +680,8 @@ fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
         package_id: package_id.to_string(),
         package_version: version.to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,
