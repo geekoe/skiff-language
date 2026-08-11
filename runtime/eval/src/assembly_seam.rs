@@ -220,6 +220,7 @@ impl RuntimeAssemblyEvalTarget {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn resolve_service_call(
         &self,
         instruction: &ActivationRelativeServiceCall,
@@ -320,6 +321,7 @@ impl RuntimeAssemblyEvalTarget {
     /// Host admission has already selected the activation, canonical contract and exact provider
     /// operation target in one generation. This adapter validates those typed facts without
     /// consulting the resolver again and never accepts build/display/ABI fallback identities.
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn resolve_ingress_target(
         &self,
         contract_ref: &ServiceContractRef,

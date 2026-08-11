@@ -354,6 +354,7 @@ impl Interpreter {
         interpreter
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn with_program(
         program: Arc<impl EvalRuntimeProgramSource>,
         runtime_factory: EvalRuntimeFactory,
@@ -367,7 +368,7 @@ impl Interpreter {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn with_program_http_options(
         program: Arc<impl EvalRuntimeProgramSource>,
         http_options: InterpreterHttpOptions,
@@ -382,7 +383,7 @@ impl Interpreter {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn with_program_test_effect_doubles_and_http_options(
         program: Arc<impl EvalRuntimeProgramSource>,
         test_effect_doubles: HashMap<String, TestEffectDouble>,
@@ -398,7 +399,7 @@ impl Interpreter {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn with_program_test_effect_double_sequences_and_http_options(
         program: Arc<impl EvalRuntimeProgramSource>,
         test_effect_doubles: HashMap<String, Vec<TestEffectDouble>>,
@@ -414,6 +415,7 @@ impl Interpreter {
         )
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn with_program_test_effect_double_sequences_http_options(
         program: Arc<EvalRuntimeProgram>,
         test_effect_doubles: HashMap<String, Vec<TestEffectDouble>>,
@@ -429,7 +431,7 @@ impl Interpreter {
         )
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn with_program_test_effect_doubles(
         program: Arc<impl EvalRuntimeProgramSource>,
         test_effect_doubles: HashMap<String, TestEffectDouble>,
@@ -444,6 +446,7 @@ impl Interpreter {
         )
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     fn from_program_components(
         program: Arc<EvalRuntimeProgram>,
         http_options: HttpRuntimeOptions,
@@ -471,6 +474,7 @@ impl Interpreter {
         }
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     fn from_program_components_with_test_effect_doubles(
         program: Arc<EvalRuntimeProgram>,
         http_options: HttpRuntimeOptions,

@@ -89,6 +89,7 @@ impl EvalContext<'_> {
         }
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub(crate) fn prepare_activation_relative_service_call(
         &mut self,
         call: &CallIr,

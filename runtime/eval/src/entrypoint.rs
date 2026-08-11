@@ -120,6 +120,7 @@ impl<'a> From<EvalRequestExecutionInput<'a>> for EvalProgramInvocationInput<'a> 
 }
 
 impl EvalRequestExecutor {
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn new(input: EvalRequestExecutorInput) -> Self {
         Self {
             entrypoint: EvalEntrypoint::new(EvalEntrypointInput {
@@ -132,6 +133,7 @@ impl EvalRequestExecutor {
         }
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub async fn execute_runtime_value<'a>(
         &'a self,
         input: EvalRequestExecutionInput<'a>,
@@ -142,6 +144,7 @@ impl EvalRequestExecutor {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub async fn execute_runtime_response_stream_payloads<'a, F, E>(
         &'a self,
         input: EvalRequestExecutionInput<'a>,
@@ -156,6 +159,7 @@ impl EvalRequestExecutor {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub async fn execute_binary_http<'a>(
         &'a self,
         input: EvalRequestExecutionInput<'a>,
@@ -166,6 +170,7 @@ impl EvalRequestExecutor {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub async fn execute_binary_http_response_stream<'a, F, E>(
         &'a self,
         input: EvalRequestExecutionInput<'a>,
@@ -180,6 +185,7 @@ impl EvalRequestExecutor {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub async fn execute_http_adapter<'a>(
         &'a self,
         input: EvalRequestExecutionInput<'a>,
@@ -190,6 +196,7 @@ impl EvalRequestExecutor {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub async fn execute_http_raw_adapter_response_stream<'a, F, E>(
         &'a self,
         input: EvalRequestExecutionInput<'a>,
@@ -206,6 +213,7 @@ impl EvalRequestExecutor {
 }
 
 impl EvalEntrypoint {
+    #[cfg(any(test, feature = "legacy-eval"))]
     fn new(input: EvalEntrypointInput) -> Self {
         let interpreter = if input.test_effects_enabled || !input.test_effect_doubles.is_empty() {
             Interpreter::with_program_test_effect_double_sequences_http_options(
@@ -220,6 +228,7 @@ impl EvalEntrypoint {
         Self { interpreter }
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     async fn execute_runtime_value<'a>(
         &'a self,
         input: EvalProgramInvocationInput<'a>,
@@ -231,6 +240,7 @@ impl EvalEntrypoint {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     async fn execute_runtime_response_stream_payloads<'a, F, E>(
         &'a self,
         input: EvalProgramInvocationInput<'a>,
@@ -265,6 +275,7 @@ impl EvalEntrypoint {
             .map_err(EvalStreamExecutionError::flatten)
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     async fn execute_binary_http<'a>(
         &'a self,
         input: EvalProgramInvocationInput<'a>,
@@ -276,6 +287,7 @@ impl EvalEntrypoint {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     async fn execute_binary_http_response_stream<'a, F, E>(
         &'a self,
         input: EvalProgramInvocationInput<'a>,
@@ -295,6 +307,7 @@ impl EvalEntrypoint {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     async fn execute_http_adapter<'a>(
         &'a self,
         input: EvalProgramInvocationInput<'a>,
@@ -306,6 +319,7 @@ impl EvalEntrypoint {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     async fn execute_http_raw_adapter_response_stream<'a, F, E>(
         &'a self,
         input: EvalProgramInvocationInput<'a>,
@@ -325,6 +339,7 @@ impl EvalEntrypoint {
             .await
     }
 
+    #[cfg(any(test, feature = "legacy-eval"))]
     fn program_invocation_context<'a>(
         &'a self,
         input: EvalProgramInvocationInput<'a>,
@@ -349,6 +364,7 @@ impl EvalEntrypoint {
     }
 }
 
+#[cfg(any(test, feature = "legacy-eval"))]
 fn test_effect_doubles_for_entrypoint(
     doubles: HashMap<String, Vec<EvalRequestEffectDouble>>,
 ) -> HashMap<String, Vec<EvalTestEffectDouble>> {
@@ -369,6 +385,7 @@ fn test_effect_doubles_for_entrypoint(
         .collect()
 }
 
+#[cfg(any(test, feature = "legacy-eval"))]
 fn test_effect_doubles_for_interpreter(
     doubles: HashMap<String, Vec<EvalTestEffectDouble>>,
 ) -> HashMap<String, Vec<TestEffectDouble>> {

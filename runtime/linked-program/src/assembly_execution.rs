@@ -256,6 +256,7 @@ impl AssemblyExecutionImage {
     /// embedded in the already-admitted target. The full target is compared
     /// before returning the runtime-only receiver/executable pair, so this
     /// lookup never falls back to an operation name or method symbol.
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub fn entry_callable_target(
         &self,
         package_build_id: &PackageBuildId,

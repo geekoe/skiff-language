@@ -1720,10 +1720,17 @@ impl<'a> EvalContext<'a> {
             LinkedCallTarget::PackageDirect { call: target } => {
                 self.eval_call_package_direct(call, target, values).await
             }
+            #[cfg(any(test, feature = "legacy-eval"))]
             LinkedCallTarget::ActivationRelativeService { instruction } => {
                 self.eval_activation_relative_service_call(call, instruction, values)
                     .await
             }
+            #[cfg(not(any(test, feature = "legacy-eval")))]
+            LinkedCallTarget::ActivationRelativeService { .. } => Err(
+                RuntimeError::Unsupported(
+                    "activation-relative service execution requires legacy-eval".to_string(),
+                ),
+            ),
             LinkedCallTarget::LocalExecutable { .. }
             | LinkedCallTarget::PublicationExecutable { .. }
             | LinkedCallTarget::PackageSymbol { .. }

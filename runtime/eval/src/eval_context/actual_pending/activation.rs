@@ -5,6 +5,7 @@ use super::*;
 
 impl EvalContext<'_> {
     #[async_recursion]
+    #[cfg(any(test, feature = "legacy-eval"))]
     pub(in crate::eval_context) async fn eval_activation_relative_service_call(
         &mut self,
         call: &CallIr,

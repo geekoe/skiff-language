@@ -6,7 +6,8 @@ publish = false
 
 [features]
 default = []
-test-support = ["skiff-runtime-capability-context/test-support"]
+test-support = ["legacy-eval", "skiff-runtime-capability-context/test-support"]
+legacy-eval = ["skiff-runtime-linked-program/legacy-eval"]
 
 [dependencies]
 async-recursion = "1.1"

@@ -16,6 +16,10 @@ workspace = true
 
 [features]
 default = []
+legacy-eval = [
+  "skiff-runtime-eval/legacy-eval",
+  "skiff-runtime-linked-program/legacy-eval",
+]
 test-support = [
   "skiff-runtime-capability-context/test-support",
   "skiff-runtime-eval/test-support",

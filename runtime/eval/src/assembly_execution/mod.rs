@@ -45,6 +45,7 @@ pub(crate) async fn dispatch_package_direct(
     ordinary::execute_package_direct(context, call, target, args).await
 }
 
+#[cfg(any(test, feature = "legacy-eval"))]
 pub(crate) async fn dispatch_service_call(
     context: &mut EvalContext<'_>,
     call: &CallIr,
