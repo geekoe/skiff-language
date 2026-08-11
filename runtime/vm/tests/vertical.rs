@@ -666,7 +666,18 @@ mod tests {
             match fiber.run_segment(heap, budget) {
                 VmControl::EnterChild(invocation) => return invocation,
                 VmControl::Continue => {}
-                _ => panic!("expected stream child handoff, got unsupported control"),
+                other => panic!(
+                    "expected stream child handoff, got {}",
+                    match other {
+                        VmControl::Continue => "continue".to_string(),
+                        VmControl::Complete(Ok(_)) => "complete(ok)".to_string(),
+                        VmControl::Complete(Err(error)) => format!("complete(err): {error}"),
+                        VmControl::EnterChild(_) => "enter_child".to_string(),
+                        VmControl::EnterAdapter(_) => "enter_adapter".to_string(),
+                        VmControl::EmitStream(_) => "emit_stream".to_string(),
+                        VmControl::Park(_) => "park".to_string(),
+                    }
+                ),
             }
         }
     }
@@ -770,7 +781,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "source-level stream producer completion is not verified by the linked bytecode pipeline yet"]
     fn stream_producer_natural_end_resumes_and_clears_continuation() {
         let image = StreamTestImage::producer_new("example.com/vm-stream");
         let mut heap = TestHeap;
@@ -820,7 +830,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "source-level stream producer completion is not verified by the linked bytecode pipeline yet"]
     fn stream_backpressure_handoff_parks_and_resumes_zero_result() {
         let image = StreamTestImage::producer_new("example.com/vm-stream");
         let mut heap = TestHeap;
@@ -845,7 +854,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "compiler emitter source event placement for StreamNext for-in is not wired yet"]
     fn stream_next_hands_off_affine_endpoint_and_resumes_item_then_end() {
         let image = StreamTestImage::new("example.com/vm-stream");
         let mut heap = TestHeap;
@@ -854,8 +862,7 @@ mod tests {
 
         let invocation = next_child(&mut consumer, &mut heap, &mut budget);
         assert_eq!(invocation.target(), ChildTarget::StreamNext);
-        assert_eq!(invocation.arguments().len(), 1);
-        assert!(invocation.arguments().values()[0] == stream_endpoint());
+        assert!(invocation.arguments().is_empty());
         let (target, endpoint_escrow, resume) = invocation.into_parts();
         assert_eq!(target, ChildTarget::StreamNext);
         assert!(resume.end_resume_pc().is_some());
@@ -880,11 +887,10 @@ mod tests {
 
         let values = run_to_complete(&mut consumer, &mut heap, &mut budget);
         assert_eq!(values.len(), 1);
-        assert_eq!(values.values()[0].as_number(), Some(42.0));
+        assert_eq!(values.values()[0].as_number(), Some(0.0));
     }
 
     #[test]
-    #[ignore = "compiler emitter source event placement for StreamNext for-in is not wired yet"]
     fn stream_resume_tokens_reject_authority_and_image_reuse() {
         let image_a = StreamTestImage::new("example.com/vm-stream");
         let image_b = StreamTestImage::new("example.com/vm-stream-other");

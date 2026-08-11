@@ -2265,8 +2265,10 @@ impl VmFiber {
         };
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        let endpoint = self.read_slot(&frame, slot_count, endpoint_slot)?;
-        self.clear_slot(&frame, slot_count, endpoint_slot)?;
+        // StreamNext borrows the affine endpoint from its frame slot. The
+        // endpoint stays live across item/end resumes so loop-backed polls can
+        // read the same slot again; the child handoff carries no owned payload.
+        self.read_slot(&frame, slot_count, endpoint_slot)?;
         let resume = self
             .linked_resume_site(function, instruction, Opcode::StreamNext, resume_site)?
             .clone();
@@ -2280,7 +2282,7 @@ impl VmFiber {
         let end_resume_pc = resume.end_resume().ok_or(VmError::StreamEndResumeUnavailable)?;
         let arguments = VmOwnedValues::new(
             Arc::clone(self.entry.image().program()),
-            Box::new([endpoint]),
+            Box::new([]),
         );
         let expected_stack_height =
             self.current_frame()?
