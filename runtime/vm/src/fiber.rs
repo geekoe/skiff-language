@@ -1,5 +1,7 @@
 mod entry_admission;
 #[cfg(test)]
+mod projection_tests;
+#[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
@@ -27,6 +29,7 @@ use crate::{
     },
     fiber::entry_admission::validate_entry_contract,
     frame::VmFrame,
+    projection::VmProjectionHandoff,
     statement::{charge_frame_entry, charge_instruction_events},
     ResumeOutcome, VmBudget, VmControl, VmError, VmLimits, VmResumeToken, VmValueLocation,
     VmVerifiedInvariant,
@@ -80,6 +83,7 @@ pub struct VmFiber {
     unwind: Option<UnwindState>,
     pending_resume: Option<PendingResume>,
     resume_sequence: u64,
+    projection_sequence: u64,
 }
 
 #[derive(Clone)]
@@ -176,6 +180,7 @@ impl VmFiber {
             unwind: None,
             pending_resume: None,
             resume_sequence: 0,
+            projection_sequence: 0,
         })
     }
 
@@ -193,6 +198,131 @@ impl VmFiber {
 
     pub fn allocated_value_slot_count(&self) -> usize {
         self.values.len()
+    }
+
+    /// Dormant VM-only mint seam for one exact inline projection point.
+    ///
+    /// All authority-bearing coordinates and dynamic shape facts come from
+    /// this fiber. A caller cannot supply an image, function, PC, stack shape,
+    /// or source site. Production dispatch intentionally has no consumer yet.
+    #[allow(dead_code)]
+    pub(crate) fn mint_projection_handoff(&mut self) -> Result<VmProjectionHandoff, VmError> {
+        let result = self.mint_projection_handoff_inner();
+        if result.is_err() {
+            self.state = VmFiberState::Terminal;
+        }
+        result
+    }
+
+    fn mint_projection_handoff_inner(&mut self) -> Result<VmProjectionHandoff, VmError> {
+        if self.state != VmFiberState::Runnable {
+            return Err(VmError::FiberNotRunnable { state: self.state });
+        }
+
+        let frame_depth = self.frames.len();
+        if self.region_depths.len() != frame_depth {
+            return Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            });
+        }
+        let frame = self.current_frame()?.clone();
+        let function_index = frame.function();
+        let instruction_index = frame.instruction();
+        let function = self.function(function_index)?;
+        let instruction = function
+            .instructions()
+            .get(instruction_index.get() as usize)
+            .ok_or(VmError::InstructionPointerOutOfBounds {
+                function: function_index,
+                instruction: instruction_index,
+            })?;
+        let descriptor = descriptor_for_opcode(instruction.opcode());
+        if instruction.operands().len() != descriptor.operand_layout.len() {
+            return Err(VmError::MalformedInstruction {
+                function: function_index,
+                instruction: instruction_index,
+                opcode: instruction.opcode(),
+                expected_operands: descriptor.operand_layout.len(),
+                actual_operands: instruction.operands().len(),
+            });
+        }
+
+        let program_point = function
+            .stack_map()
+            .entries()
+            .get(instruction_index.get() as usize)
+            .filter(|entry| entry.instruction() == instruction_index)
+            .ok_or(VmError::InstructionPointerOutOfBounds {
+                function: function_index,
+                instruction: instruction_index,
+            })?;
+        let operand_height = frame.operand_height();
+        let expected_operand_height = program_point.stack_before().len();
+        if operand_height != expected_operand_height {
+            return Err(VmError::OperandStackShapeMismatch {
+                function: function_index,
+                expected: expected_operand_height,
+                actual: operand_height,
+            });
+        }
+
+        let frame_region_base =
+            *self
+                .region_depths
+                .last()
+                .ok_or(VmError::VerifiedEntryInvariant {
+                    invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+                })?;
+        let active_frame_regions = self.active_regions.get(frame_region_base..).ok_or(
+            VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            },
+        )?;
+        if active_frame_regions != program_point.active_regions() {
+            let mismatch = active_frame_regions
+                .iter()
+                .copied()
+                .zip(program_point.active_regions().iter().copied())
+                .find(|(actual, expected)| actual != expected);
+            let (actual, expected) = mismatch.unwrap_or_else(|| {
+                let common = active_frame_regions
+                    .len()
+                    .min(program_point.active_regions().len());
+                (
+                    active_frame_regions
+                        .get(common)
+                        .copied()
+                        .unwrap_or(ActiveRegionIndex::new(u32::MAX)),
+                    program_point
+                        .active_regions()
+                        .get(common)
+                        .copied()
+                        .unwrap_or(ActiveRegionIndex::new(u32::MAX)),
+                )
+            });
+            return Err(VmError::RegionLeaveMismatch {
+                function: function_index,
+                instruction: instruction_index,
+                expected,
+                actual,
+            });
+        }
+
+        let projection_sequence = self.projection_sequence;
+        let next_projection_sequence = projection_sequence
+            .checked_add(1)
+            .ok_or(VmError::ResumeTokenMismatch)?;
+        let handoff = VmProjectionHandoff::new(
+            Arc::clone(self.entry.image().program()),
+            function_index,
+            instruction_index,
+            frame_depth,
+            operand_height,
+            self.active_regions.len(),
+            projection_sequence,
+        );
+        self.projection_sequence = next_projection_sequence;
+        Ok(handoff)
     }
 
     pub fn run_segment(&mut self, heap: &mut dyn VmHeap, budget: &mut dyn VmBudget) -> VmControl {
