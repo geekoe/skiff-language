@@ -4,7 +4,7 @@ use skiff_artifact_model::{
     validate_gateway_adapter_args, DeploymentGatewayEntry, DeploymentIngressBinding,
     DeploymentRevision, GatewayAdapterSource, GatewayEntryKey, GatewayProtocolSurface,
     PackageArtifactRef, PackageBinding, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentInput, ServiceDeploymentRef, ServiceSelectorBinding,
+    ServiceDeploymentInput, ServiceSelectorBinding,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
@@ -407,25 +407,6 @@ pub(crate) fn validate_package_ref(reference: &PackageArtifactRef, label: &str) 
     require_non_empty(
         &format!("{label}.packageLocalAbiIdentity"),
         reference.package_local_abi_identity.as_str(),
-    )
-}
-
-pub(crate) fn validate_deployment_ref_shape(
-    reference: &ServiceDeploymentRef,
-    label: &str,
-) -> Result<()> {
-    require_non_empty(&format!("{label}.serviceId"), &reference.service_id)?;
-    require_non_empty(
-        &format!("{label}.contractVersion"),
-        &reference.contract_version,
-    )?;
-    require_non_empty(
-        &format!("{label}.deploymentRevision"),
-        reference.deployment_revision.as_str(),
-    )?;
-    require_non_empty(
-        &format!("{label}.deploymentArtifactIdentity"),
-        reference.deployment_artifact_identity.as_str(),
     )
 }
 

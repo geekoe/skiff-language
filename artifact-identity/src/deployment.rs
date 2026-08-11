@@ -11,9 +11,6 @@ use skiff_artifact_model::{
 mod normalization;
 mod validation;
 
-pub(crate) use validation::{
-    validate_contract_ref, validate_deployment_ref_shape, validate_package_ref,
-};
 pub use validation::{validate_service_deployment_input, validate_service_deployment_surface};
 
 use crate::{
