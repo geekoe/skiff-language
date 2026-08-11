@@ -12,7 +12,6 @@ mod framing;
 mod gateway;
 mod identity_labels;
 mod package_artifact;
-mod runtime_assembly;
 mod semantic;
 
 pub use actor::{actor_abi_identity, actor_implementation_identity, actor_method_identity};
@@ -55,8 +54,8 @@ pub use deployment::{
 pub use ecosystem_paths::{
     PackageArtifactPointerPath, PackageArtifactRecordPath, PackageBytecodeRecordPath,
     PackageFileIrRecordPath, PackageResourceRecordPath, PackageSchemaIndexRecordPath,
-    PackageSchemaTypeRecordPath, ReleasePointerPath, RuntimeAssemblyPointerPath,
-    RuntimeAssemblyRecordPath, ServiceContractPointerPath, ServiceContractRecordPath,
+    PackageSchemaTypeRecordPath, ReleasePointerPath, ServiceContractPointerPath,
+    ServiceContractRecordPath,
     ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
 };
 pub use error::{ArtifactIdentityError, Result};
@@ -78,11 +77,6 @@ pub use package_artifact::{
     package_artifact_local_abi_identity_projection, package_artifact_ref,
     validate_package_artifact_identities, PackageArtifactBuildIdentityProjection,
     PackageArtifactLocalAbiIdentityProjection, ValidatedPackageArtifact,
-};
-pub use runtime_assembly::{
-    assign_runtime_assembly_identity, runtime_assembly_identity,
-    runtime_assembly_identity_projection, runtime_assembly_ref, validate_runtime_assembly_identity,
-    validate_runtime_assembly_surface, AssemblyIdentityProjection,
 };
 pub use semantic::{
     abi_alias_id_from_source_anchor, abi_callable_id_from_source_anchor,

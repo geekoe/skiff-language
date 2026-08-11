@@ -42,7 +42,6 @@ pub mod publication_abi;
 pub mod recoverable;
 pub mod refs;
 pub mod resources;
-pub mod runtime_assembly;
 pub mod runtime_config_snapshot;
 pub mod schema;
 pub mod service_contract;
@@ -230,11 +229,6 @@ pub use refs::{
     BytecodeArtifactRef, FileIrRef, PackageExecutableCoordinate, SourcePosition, SourceSpanRef,
 };
 pub use resources::PublicationResourceRef;
-pub use runtime_assembly::{
-    ActivationTemplate, CanonicalPackageLinkPlan, GatewayIngressBinding, PackageCodeSlot,
-    ResolvedServiceBinding, RuntimeAssembly, RuntimeAssemblyRef, ServiceBindingTemplate,
-    ServiceIngressKey,
-};
 pub use runtime_config_snapshot::{
     validate_runtime_config_snapshot_id, validate_runtime_config_snapshot_ref,
     RuntimeConfigSnapshotId, RuntimeConfigSnapshotIdParseError, RuntimeConfigSnapshotRef,
@@ -242,7 +236,7 @@ pub use runtime_config_snapshot::{
 };
 pub use schema::{
     FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
     SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
