@@ -106,7 +106,7 @@ fn timeout_builtin_lookup_is_source_backed_and_exact() {
 }
 
 #[test]
-fn platform_error_declarations_and_public_timeout_exports_are_visible() {
+fn platform_error_declarations_resolve_and_only_std_owned_timeout_is_exported() {
     let registry = prelude_registry();
 
     for symbol in [
@@ -126,16 +126,22 @@ fn platform_error_declarations_and_public_timeout_exports_are_visible() {
         );
     }
 
-    for public_path in [
-        "std.http.RequestTimeoutError",
+    assert!(
+        registry.package_public_paths.contains(&(
+            "skiff.run/std".to_string(),
+            "std.http.RequestTimeoutError".to_string()
+        )),
+        "std/api.yml must expose std-owned std.http.RequestTimeoutError"
+    );
+    for prelude_owned_path in [
         "std.actor.ActivationTimeoutError",
         "std.actor.MethodInvocationTimeoutError",
     ] {
         assert!(
-            registry
+            !registry
                 .package_public_paths
-                .contains(&("skiff.run/std".to_string(), public_path.to_string())),
-            "std/api.yml must expose {public_path}"
+                .contains(&("skiff.run/std".to_string(), prelude_owned_path.to_string())),
+            "std/api.yml must not re-export prelude-owned {prelude_owned_path}"
         );
     }
 }

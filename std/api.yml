@@ -112,6 +112,4 @@ websocket:
 telemetry:
   emit: telemetry.emit
 actor:
-  ActivationTimeoutError: actor.ActivationTimeoutError
-  MethodInvocationTimeoutError: actor.MethodInvocationTimeoutError
   get: actor.get
