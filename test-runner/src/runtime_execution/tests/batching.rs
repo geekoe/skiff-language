@@ -176,12 +176,6 @@ fn real_batch_fixtures_keep_base_partitions_and_storage_identities_disjoint() {
     .unwrap();
 
     let original_base = empty_base("skiff-test");
-    let original_base_identity = original_base
-        .assembly
-        .as_ref()
-        .unwrap()
-        .assembly_identity
-        .clone();
     let mut publication = CanonicalPublishSession::default();
     let mut package_admissions = PackageAdmissionCache::default();
     let batches = prepare_execution_batches_with(
@@ -229,16 +223,6 @@ fn real_batch_fixtures_keep_base_partitions_and_storage_identities_disjoint() {
             assert_eq!(
                 batch
                     .context
-                    .assembly
-                    .resolved_deployments
-                    .iter()
-                    .cloned()
-                    .collect::<BTreeSet<_>>(),
-                deployments
-            );
-            assert_eq!(
-                batch
-                    .context
                     .config_snapshot
                     .deployments()
                     .iter()
@@ -249,10 +233,11 @@ fn real_batch_fixtures_keep_base_partitions_and_storage_identities_disjoint() {
             assert_eq!(
                 batch
                     .context
-                    .base_assembly
+                    .base
+                    .config_snapshot
                     .as_ref()
-                    .map(|assembly| &assembly.assembly_identity),
-                Some(&original_base_identity)
+                    .map(|snapshot| snapshot.profile()),
+                Some(original_base.config_snapshot.as_ref().unwrap().profile())
             );
             deployments
         })
@@ -276,10 +261,6 @@ fn real_batch_fixtures_keep_base_partitions_and_storage_identities_disjoint() {
         .map(|service_id| service_id.replace('.', "~").replace('/', "~~"))
         .collect::<BTreeSet<_>>();
     assert_eq!(database_names.len(), 17);
-    assert_ne!(
-        batches[0].context.assembly.assembly_identity,
-        batches[1].context.assembly.assembly_identity
-    );
     assert_ne!(
         batches[0].context.config_snapshot.snapshot_ref(),
         batches[1].context.config_snapshot.snapshot_ref()
@@ -589,13 +570,8 @@ fn test_entrypoint(module: &str, index: usize) -> CanonicalTestServiceEntrypoint
     entrypoint
 }
 
-fn active(context: &str) -> ActivatedAssembly<String> {
-    ActivatedAssembly {
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                test_support::ASSEMBLY_B,
-            ),
-        },
+fn active(context: &str) -> ActivatedExecution<String> {
+    ActivatedExecution {
         readiness: context.to_string(),
     }
 }
@@ -626,31 +602,14 @@ impl Drop for BatchTestRoot {
     }
 }
 
-fn empty_base(profile: &str) -> CanonicalBaseAssembly {
-    let mut assembly = skiff_artifact_model::RuntimeAssembly {
-        schema_version: skiff_artifact_model::RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
-        assembly_identity: skiff_artifact_model::AssemblyIdentity::new("unassigned"),
-        roots: Vec::new(),
-        resolved_deployments: Vec::new(),
-        resolved_contracts: Vec::new(),
-        resolved_packages: Vec::new(),
-        package_link_plan: skiff_artifact_model::CanonicalPackageLinkPlan {
-            code_slots: Vec::new(),
-            package_links: Vec::new(),
-        },
-        service_binding_templates: Vec::new(),
-        activation_templates: Vec::new(),
-        gateway_ingress: Vec::new(),
-    };
-    skiff_artifact_identity::assign_runtime_assembly_identity(&mut assembly).unwrap();
+fn empty_base(profile: &str) -> CanonicalBaseClosure {
     let config_snapshot = skiff_runtime_config_snapshot::RuntimeConfigSnapshot::new(
         profile,
         skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref(),
         Vec::new(),
     )
     .unwrap();
-    CanonicalBaseAssembly {
-        assembly: Some(assembly),
+    CanonicalBaseClosure {
         config_snapshot: Some(config_snapshot),
         packages: Vec::new(),
         contracts: Vec::new(),

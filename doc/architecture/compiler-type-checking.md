@@ -207,7 +207,7 @@ Assignability is a shared type-checking service, not per-feature ad hoc logic.
 It must support the source-level rules needed by:
 
 - constructor field values；
-- `let` initializer annotations；
+- `final` initializer annotations；
 - return expressions；
 - call arguments and receiver methods；
 - representation constructor arguments；

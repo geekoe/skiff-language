@@ -204,7 +204,7 @@ Actor method（含`create`）中的transaction是DB-only：commit/abort只作用
 snapshot overlay。Transaction body禁止直接或经callee写Actor field；直接赋值和以Actor field为
 receiver的原地修改都属于field write。Compiler effect summary必须闭合同包helper与可静态解析的
 package-direct call；unknown/dynamic target不能证明无Actor field write时保守拒绝。普通local仍使用
-`let`或`var`，不存在local `const`。
+`final`或`var`，不存在local `const`。
 
 ### Exact Service DB Index Plan
 

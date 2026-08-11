@@ -209,7 +209,7 @@ fn collect_call_targets_in_stmt(
     targets: &mut BTreeSet<CallKey>,
 ) {
     match stmt {
-        Stmt::Let { value, .. }
+        Stmt::LocalBinding { value, .. }
         | Stmt::Emit(value)
         | Stmt::Expr(value)
         | Stmt::Throw { value }

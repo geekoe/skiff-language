@@ -386,14 +386,14 @@ fn inout_to_package_direct_no_pending_callee_compiles() {
 fn inout_argument_must_be_var_derived_exact_place() {
     for (label, source) in [
         (
-            "let root",
+            "final root",
             r#"
                 function inc(inout value: number) -> void {
                   value = value + 1
                 }
 
                 function run() -> number {
-                  let x = 1
+                  final x = 1
                   inc(inout x)
                   return x
                 }
@@ -455,7 +455,7 @@ fn inout_callee_must_be_exact_local_or_package_direct() {
 
             function run() -> void {
               var x = 1
-              let counter = CounterImpl{} as Counter
+              final counter = CounterImpl{} as Counter
               counter.step(inout x)
             }
         "#,
@@ -520,7 +520,7 @@ fn inout_callee_must_be_no_pending() {
             }
 
             function dynamic(inout value: number) -> void {
-              let adder = AdderImpl{} as Adder
+              final adder = AdderImpl{} as Adder
               adder.add(value)
               value = value + 1
             }
@@ -617,7 +617,7 @@ fn indexed_assignment_requires_a_writable_root() {
     let error = build_error(
         r#"
             function run(source: Array<integer>) -> integer {
-              let values = source
+              final values = source
               values[0] = 1
               return values[0]
             }
@@ -625,7 +625,7 @@ fn indexed_assignment_requires_a_writable_root() {
     );
     assert!(
         error.contains("assignment target derives from immutable binding `values`"),
-        "indexed let-root assignment produced an unexpected diagnostic:\n{error}"
+        "indexed final-root assignment produced an unexpected diagnostic:\n{error}"
     );
 }
 

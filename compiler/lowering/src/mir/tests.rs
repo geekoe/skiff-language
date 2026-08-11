@@ -812,7 +812,7 @@ fn liveness_hand_computed_small_fixture() {
                 statements: vec![crate::mir::MirStmt {
                     statement_index: 0,
                     span: None,
-                    kind: MirStmtKind::Let {
+                    kind: MirStmtKind::InitSlot {
                         slot: 1,
                         value: ExprRefIr { expression: 0 },
                     },

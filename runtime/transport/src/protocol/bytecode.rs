@@ -19,10 +19,10 @@ use lexical::{
     deserialize_optional_test_case_parent_request_id,
     deserialize_optional_websocket_connection_closed_business_identity,
     deserialize_optional_websocket_jsonrpc_business_identity, deserialize_request_start_type,
-    deserialize_response_end_type, deserialize_runtime_assembly_routing_kind,
-    deserialize_runtime_assembly_websocket_jsonrpc_connection_id,
-    deserialize_runtime_assembly_websocket_jsonrpc_method,
-    deserialize_runtime_assembly_websocket_jsonrpc_request_id,
+    deserialize_response_end_type, deserialize_bytecode_routing_kind,
+    deserialize_bytecode_websocket_jsonrpc_connection_id,
+    deserialize_bytecode_websocket_jsonrpc_method,
+    deserialize_bytecode_websocket_jsonrpc_request_id,
     deserialize_runtime_frame_schema_version, deserialize_service_caller_kind,
     deserialize_service_deployment_ref, deserialize_task_invocation_kind, deserialize_task_target,
     deserialize_task_target_kind, deserialize_task_unary_dispatch_mode,
@@ -33,7 +33,7 @@ pub use metadata::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyRequestStartFrameHeader {
+pub struct BytecodeRequestStartFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     pub schema_version: String,
     #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
@@ -41,22 +41,22 @@ pub struct RuntimeAssemblyRequestStartFrameHeader {
     pub request_id: String,
     #[serde(deserialize_with = "deserialize_dispatch_mode")]
     pub mode: String,
-    pub caller: RuntimeAssemblyRequestCallerFrameHeader,
-    pub routing: RuntimeAssemblyRequestRoutingFrameHeader,
+    pub caller: BytecodeRequestCallerFrameHeader,
+    pub routing: BytecodeRequestRoutingFrameHeader,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
+    pub client_session: Option<BytecodeRequestClientSessionFrameHeader>,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
-    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
-    pub http_request: RuntimeAssemblyHttpRequestFrameHeader,
+    pub deadline: Option<BytecodeRequestDeadlineFrameHeader>,
+    pub trace: BytecodeRequestTraceFrameHeader,
+    pub http_request: BytecodeHttpRequestFrameHeader,
     #[serde(default)]
     pub test_effects_enabled: bool,
     #[serde(
@@ -75,15 +75,15 @@ pub struct RuntimeAssemblyRequestStartFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
-pub enum RuntimeAssemblyRequestStartFrameWireHeader {
-    Http(RuntimeAssemblyRequestStartFrameHeader),
-    WebSocketConnect(RuntimeAssemblyWebSocketConnectRequestStartFrameHeader),
-    WebSocketConnectionClosed(RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader),
-    WebSocketJsonRpc(RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader),
-    Task(RuntimeAssemblyTaskRequestStartFrameHeader),
+pub enum BytecodeRequestStartFrameWireHeader {
+    Http(BytecodeRequestStartFrameHeader),
+    WebSocketConnect(BytecodeWebSocketConnectRequestStartFrameHeader),
+    WebSocketConnectionClosed(BytecodeWebSocketConnectionClosedRequestStartFrameHeader),
+    WebSocketJsonRpc(BytecodeWebSocketJsonRpcRequestStartFrameHeader),
+    Task(BytecodeTaskRequestStartFrameHeader),
 }
 
-impl<'de> Deserialize<'de> for RuntimeAssemblyRequestStartFrameWireHeader {
+impl<'de> Deserialize<'de> for BytecodeRequestStartFrameWireHeader {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
@@ -145,7 +145,7 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestStartFrameWireHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyTaskRequestStartFrameHeader {
+pub struct BytecodeTaskRequestStartFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     pub schema_version: String,
     #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
@@ -153,16 +153,16 @@ pub struct RuntimeAssemblyTaskRequestStartFrameHeader {
     pub request_id: String,
     #[serde(deserialize_with = "deserialize_task_unary_dispatch_mode")]
     pub mode: String,
-    pub caller: RuntimeAssemblyTaskRequestCallerFrameHeader,
-    pub routing: RuntimeAssemblyTaskRequestRoutingFrameHeader,
-    pub invocation: RuntimeAssemblyTaskInvocationFrameHeader,
+    pub caller: BytecodeTaskRequestCallerFrameHeader,
+    pub routing: BytecodeTaskRequestRoutingFrameHeader,
+    pub invocation: BytecodeTaskInvocationFrameHeader,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
-    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
+    pub deadline: Option<BytecodeRequestDeadlineFrameHeader>,
+    pub trace: BytecodeRequestTraceFrameHeader,
     pub test_effects_enabled: bool,
     #[serde(
         default,
@@ -175,7 +175,7 @@ pub struct RuntimeAssemblyTaskRequestStartFrameHeader {
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub task_attempt: Option<RuntimeAssemblyTaskAttemptFrameHeader>,
+    pub task_attempt: Option<BytecodeTaskAttemptFrameHeader>,
 }
 
 /// Optional task-attempt association on a task `request.start` (D1 wire
@@ -184,7 +184,7 @@ pub struct RuntimeAssemblyTaskRequestStartFrameHeader {
 /// terminal outcome back to task settlement. Settlement itself is D2.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyTaskAttemptFrameHeader {
+pub struct BytecodeTaskAttemptFrameHeader {
     pub task_id: String,
     pub attempt_id: String,
     pub lease_id: String,
@@ -192,15 +192,15 @@ pub struct RuntimeAssemblyTaskAttemptFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyTaskRequestCallerFrameHeader {
+pub struct BytecodeTaskRequestCallerFrameHeader {
     #[serde(deserialize_with = "deserialize_service_caller_kind")]
     pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyTaskRequestRoutingFrameHeader {
-    #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
+pub struct BytecodeTaskRequestRoutingFrameHeader {
+    #[serde(deserialize_with = "deserialize_bytecode_routing_kind")]
     pub kind: String,
     /// Frozen optional field (M4): routers no longer fill the assembly
     /// identity; runtimes tolerate an absent value and never pin on it.
@@ -228,7 +228,7 @@ pub struct RuntimeAssemblyTaskRequestRoutingFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyTaskInvocationFrameHeader {
+pub struct BytecodeTaskInvocationFrameHeader {
     #[serde(deserialize_with = "deserialize_task_invocation_kind")]
     pub kind: String,
     #[serde(deserialize_with = "deserialize_task_target_kind")]
@@ -239,7 +239,7 @@ pub struct RuntimeAssemblyTaskInvocationFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+pub struct BytecodeWebSocketConnectRequestStartFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     pub schema_version: String,
     #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
@@ -247,60 +247,60 @@ pub struct RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
     pub request_id: String,
     #[serde(deserialize_with = "deserialize_unary_dispatch_mode")]
     pub mode: String,
-    pub caller: RuntimeAssemblyRequestCallerFrameHeader,
-    pub routing: RuntimeAssemblyWebSocketConnectRoutingFrameHeader,
+    pub caller: BytecodeRequestCallerFrameHeader,
+    pub routing: BytecodeWebSocketConnectRoutingFrameHeader,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
+    pub client_session: Option<BytecodeRequestClientSessionFrameHeader>,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
-    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
-    pub websocket_connect: RuntimeAssemblyWebSocketConnectRequestFrameHeader,
+    pub deadline: Option<BytecodeRequestDeadlineFrameHeader>,
+    pub trace: BytecodeRequestTraceFrameHeader,
+    pub websocket_connect: BytecodeWebSocketConnectRequestFrameHeader,
     #[serde(default)]
     pub test_effects_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader {
+pub struct BytecodeWebSocketJsonRpcRequestStartFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     pub schema_version: String,
     #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
     pub frame_type: String,
-    #[serde(deserialize_with = "deserialize_runtime_assembly_websocket_jsonrpc_request_id")]
+    #[serde(deserialize_with = "deserialize_bytecode_websocket_jsonrpc_request_id")]
     pub request_id: String,
     #[serde(deserialize_with = "deserialize_websocket_jsonrpc_unary_dispatch_mode")]
     pub mode: String,
-    pub caller: RuntimeAssemblyRequestCallerFrameHeader,
-    pub routing: RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader,
+    pub caller: BytecodeRequestCallerFrameHeader,
+    pub routing: BytecodeWebSocketJsonRpcRoutingFrameHeader,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
+    pub client_session: Option<BytecodeRequestClientSessionFrameHeader>,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
-    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
-    pub websocket_json_rpc: RuntimeAssemblyWebSocketJsonRpcRequestFrameHeader,
+    pub deadline: Option<BytecodeRequestDeadlineFrameHeader>,
+    pub trace: BytecodeRequestTraceFrameHeader,
+    pub websocket_json_rpc: BytecodeWebSocketJsonRpcRequestFrameHeader,
     #[serde(default)]
     pub test_effects_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader {
+pub struct BytecodeWebSocketConnectionClosedRequestStartFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     pub schema_version: String,
     #[serde(rename = "type", deserialize_with = "deserialize_request_start_type")]
@@ -308,30 +308,30 @@ pub struct RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader {
     pub request_id: String,
     #[serde(deserialize_with = "deserialize_unary_dispatch_mode")]
     pub mode: String,
-    pub caller: RuntimeAssemblyRequestCallerFrameHeader,
-    pub routing: RuntimeAssemblyWebSocketConnectionClosedRoutingFrameHeader,
+    pub caller: BytecodeRequestCallerFrameHeader,
+    pub routing: BytecodeWebSocketConnectionClosedRoutingFrameHeader,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub client_session: Option<RuntimeAssemblyRequestClientSessionFrameHeader>,
+    pub client_session: Option<BytecodeRequestClientSessionFrameHeader>,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
         skip_serializing_if = "Option::is_none"
     )]
-    pub deadline: Option<RuntimeAssemblyRequestDeadlineFrameHeader>,
-    pub trace: RuntimeAssemblyRequestTraceFrameHeader,
-    pub websocket_connection_closed: RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader,
+    pub deadline: Option<BytecodeRequestDeadlineFrameHeader>,
+    pub trace: BytecodeRequestTraceFrameHeader,
+    pub websocket_connection_closed: BytecodeWebSocketConnectionClosedRequestFrameHeader,
     #[serde(default)]
     pub test_effects_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketConnectionClosedRoutingFrameHeader {
-    #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
+pub struct BytecodeWebSocketConnectionClosedRoutingFrameHeader {
+    #[serde(deserialize_with = "deserialize_bytecode_routing_kind")]
     pub kind: String,
     #[serde(
         default,
@@ -355,31 +355,31 @@ pub struct RuntimeAssemblyWebSocketConnectionClosedRoutingFrameHeader {
     pub build_id: Option<String>,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
-    pub ingress: RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader,
+    pub ingress: BytecodeWebSocketConnectionClosedIngressFrameHeader,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader {
-    pub protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
+pub struct BytecodeWebSocketConnectionClosedIngressFrameHeader {
+    pub protocol: BytecodeWebSocketConnectIngressProtocol,
     pub path: String,
     pub entry_kind: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawRuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader {
-    protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
+struct RawBytecodeWebSocketConnectionClosedIngressFrameHeader {
+    protocol: BytecodeWebSocketConnectIngressProtocol,
     path: String,
     entry_kind: String,
 }
 
-impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader {
+impl<'de> Deserialize<'de> for BytecodeWebSocketConnectionClosedIngressFrameHeader {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let raw = RawRuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader::deserialize(
+        let raw = RawBytecodeWebSocketConnectionClosedIngressFrameHeader::deserialize(
             deserializer,
         )?;
         if !raw.path.starts_with('/') {
@@ -402,7 +402,7 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectionClosedIngressFr
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
+pub struct BytecodeWebSocketConnectionClosedRequestFrameHeader {
     pub connection_id: String,
     pub websocket_entry_id: WebSocketEntryId,
     pub gateway_entry_identity: GatewayEntryIdentity,
@@ -428,7 +428,7 @@ pub struct RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawRuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
+struct RawBytecodeWebSocketConnectionClosedRequestFrameHeader {
     connection_id: String,
     websocket_entry_id: WebSocketEntryId,
     gateway_entry_identity: GatewayEntryIdentity,
@@ -443,12 +443,12 @@ struct RawRuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
     close_reason: Option<String>,
 }
 
-impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
+impl<'de> Deserialize<'de> for BytecodeWebSocketConnectionClosedRequestFrameHeader {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let raw = RawRuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader::deserialize(
+        let raw = RawBytecodeWebSocketConnectionClosedRequestFrameHeader::deserialize(
             deserializer,
         )?;
         if raw.connection_id.is_empty()
@@ -474,15 +474,15 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectionClosedRequestFr
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyRequestCallerFrameHeader {
+pub struct BytecodeRequestCallerFrameHeader {
     #[serde(deserialize_with = "deserialize_gateway_caller_kind")]
     pub kind: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyRequestRoutingFrameHeader {
-    #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
+pub struct BytecodeRequestRoutingFrameHeader {
+    #[serde(deserialize_with = "deserialize_bytecode_routing_kind")]
     pub kind: String,
     #[serde(
         default,
@@ -506,13 +506,13 @@ pub struct RuntimeAssemblyRequestRoutingFrameHeader {
     pub build_id: Option<String>,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
-    pub ingress: RuntimeAssemblyRequestIngressFrameHeader,
+    pub ingress: BytecodeRequestIngressFrameHeader,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
-    #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
+pub struct BytecodeWebSocketConnectRoutingFrameHeader {
+    #[serde(deserialize_with = "deserialize_bytecode_routing_kind")]
     pub kind: String,
     #[serde(
         default,
@@ -536,13 +536,13 @@ pub struct RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
     pub build_id: Option<String>,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
-    pub ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader,
+    pub ingress: BytecodeWebSocketConnectIngressFrameHeader,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
-    #[serde(deserialize_with = "deserialize_runtime_assembly_routing_kind")]
+pub struct BytecodeWebSocketJsonRpcRoutingFrameHeader {
+    #[serde(deserialize_with = "deserialize_bytecode_routing_kind")]
     pub kind: String,
     #[serde(
         default,
@@ -566,59 +566,59 @@ pub struct RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
     pub build_id: Option<String>,
     #[serde(deserialize_with = "deserialize_gateway_entry_identity")]
     pub gateway_entry_identity: GatewayEntryIdentity,
-    pub ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader,
+    pub ingress: BytecodeWebSocketJsonRpcIngressFrameHeader,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyRequestIngressFrameHeader {
-    pub protocol: RuntimeAssemblyRequestIngressProtocol,
+pub struct BytecodeRequestIngressFrameHeader {
+    pub protocol: BytecodeRequestIngressProtocol,
     pub method: String,
     pub path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RuntimeAssemblyRequestIngressProtocol {
+pub enum BytecodeRequestIngressProtocol {
     #[serde(rename = "http")]
     Http,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RuntimeAssemblyWebSocketConnectIngressProtocol {
+pub enum BytecodeWebSocketConnectIngressProtocol {
     #[serde(rename = "webSocket")]
     WebSocket,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketConnectIngressFrameHeader {
-    pub protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
+pub struct BytecodeWebSocketConnectIngressFrameHeader {
+    pub protocol: BytecodeWebSocketConnectIngressProtocol,
     pub method: (),
     pub path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
-    pub protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
+pub struct BytecodeWebSocketJsonRpcIngressFrameHeader {
+    pub protocol: BytecodeWebSocketConnectIngressProtocol,
     pub method: String,
     pub path: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawRuntimeAssemblyWebSocketConnectIngressFrameHeader {
-    protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
+struct RawBytecodeWebSocketConnectIngressFrameHeader {
+    protocol: BytecodeWebSocketConnectIngressProtocol,
     method: (),
     path: String,
 }
 
-impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectIngressFrameHeader {
+impl<'de> Deserialize<'de> for BytecodeWebSocketConnectIngressFrameHeader {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let raw = RawRuntimeAssemblyWebSocketConnectIngressFrameHeader::deserialize(deserializer)?;
+        let raw = RawBytecodeWebSocketConnectIngressFrameHeader::deserialize(deserializer)?;
         if !raw.path.starts_with('/') {
             return Err(de::Error::custom(
                 "routing.ingress.path must be an absolute path",
@@ -634,19 +634,19 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectIngressFrameHeader
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawRuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
-    protocol: RuntimeAssemblyWebSocketConnectIngressProtocol,
-    #[serde(deserialize_with = "deserialize_runtime_assembly_websocket_jsonrpc_method")]
+struct RawBytecodeWebSocketJsonRpcIngressFrameHeader {
+    protocol: BytecodeWebSocketConnectIngressProtocol,
+    #[serde(deserialize_with = "deserialize_bytecode_websocket_jsonrpc_method")]
     method: String,
     path: String,
 }
 
-impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
+impl<'de> Deserialize<'de> for BytecodeWebSocketJsonRpcIngressFrameHeader {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let raw = RawRuntimeAssemblyWebSocketJsonRpcIngressFrameHeader::deserialize(deserializer)?;
+        let raw = RawBytecodeWebSocketJsonRpcIngressFrameHeader::deserialize(deserializer)?;
         if !raw.path.starts_with('/') {
             return Err(de::Error::custom(
                 "routing.ingress.path must be an absolute path",
@@ -662,18 +662,18 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawRuntimeAssemblyRequestIngressFrameHeader {
-    protocol: RuntimeAssemblyRequestIngressProtocol,
+struct RawBytecodeRequestIngressFrameHeader {
+    protocol: BytecodeRequestIngressProtocol,
     method: String,
     path: String,
 }
 
-impl<'de> Deserialize<'de> for RuntimeAssemblyRequestIngressFrameHeader {
+impl<'de> Deserialize<'de> for BytecodeRequestIngressFrameHeader {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let raw = RawRuntimeAssemblyRequestIngressFrameHeader::deserialize(deserializer)?;
+        let raw = RawBytecodeRequestIngressFrameHeader::deserialize(deserializer)?;
         if raw.method.is_empty() {
             return Err(de::Error::custom(
                 "routing.ingress.method must be a non-empty string",
@@ -694,12 +694,12 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyRequestIngressFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketConnectRequestFrameHeader {
+pub struct BytecodeWebSocketConnectRequestFrameHeader {
     pub connection_id: String,
     pub url: String,
-    pub query: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
-    pub headers: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
-    pub cookies: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
+    pub query: Vec<BytecodeRequestNameValueFrameHeader>,
+    pub headers: Vec<BytecodeRequestNameValueFrameHeader>,
+    pub cookies: Vec<BytecodeRequestNameValueFrameHeader>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     pub websocket_entry_id: WebSocketEntryId,
@@ -708,24 +708,24 @@ pub struct RuntimeAssemblyWebSocketConnectRequestFrameHeader {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawRuntimeAssemblyWebSocketConnectRequestFrameHeader {
+struct RawBytecodeWebSocketConnectRequestFrameHeader {
     connection_id: String,
     url: String,
-    query: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
-    headers: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
-    cookies: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
+    query: Vec<BytecodeRequestNameValueFrameHeader>,
+    headers: Vec<BytecodeRequestNameValueFrameHeader>,
+    cookies: Vec<BytecodeRequestNameValueFrameHeader>,
     #[serde(default, deserialize_with = "deserialize_present_option")]
     version: Option<String>,
     websocket_entry_id: WebSocketEntryId,
     gateway_entry_identity: GatewayEntryIdentity,
 }
 
-impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectRequestFrameHeader {
+impl<'de> Deserialize<'de> for BytecodeWebSocketConnectRequestFrameHeader {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let raw = RawRuntimeAssemblyWebSocketConnectRequestFrameHeader::deserialize(deserializer)?;
+        let raw = RawBytecodeWebSocketConnectRequestFrameHeader::deserialize(deserializer)?;
         if raw.connection_id.is_empty()
             || raw.connection_id.len() > 255
             || !raw.connection_id.bytes().all(|byte| {
@@ -750,16 +750,16 @@ impl<'de> Deserialize<'de> for RuntimeAssemblyWebSocketConnectRequestFrameHeader
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RuntimeAssemblyWebSocketJsonRpcProfile {
+pub enum BytecodeWebSocketJsonRpcProfile {
     #[serde(rename = "jsonrpc-2.0-text")]
     JsonRpc2_0Text,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketJsonRpcRequestFrameHeader {
-    pub profile: RuntimeAssemblyWebSocketJsonRpcProfile,
-    #[serde(deserialize_with = "deserialize_runtime_assembly_websocket_jsonrpc_connection_id")]
+pub struct BytecodeWebSocketJsonRpcRequestFrameHeader {
+    pub profile: BytecodeWebSocketJsonRpcProfile,
+    #[serde(deserialize_with = "deserialize_bytecode_websocket_jsonrpc_connection_id")]
     pub connection_id: String,
     pub websocket_entry_id: WebSocketEntryId,
     pub gateway_entry_identity: GatewayEntryIdentity,
@@ -771,18 +771,18 @@ pub struct RuntimeAssemblyWebSocketJsonRpcRequestFrameHeader {
     pub business_identity: Option<String>,
 }
 
-pub fn decode_runtime_assembly_request_start_frame(
+pub fn decode_bytecode_request_start_frame(
     frame: &[u8],
-) -> Result<(RuntimeAssemblyRequestStartFrameWireHeader, Vec<u8>), BinaryFrameError> {
-    let (header, payload) = strict_json::decode_runtime_assembly_request_json_frame(frame)?;
-    let header: RuntimeAssemblyRequestStartFrameWireHeader = serde_json::from_value(header)
+) -> Result<(BytecodeRequestStartFrameWireHeader, Vec<u8>), BinaryFrameError> {
+    let (header, payload) = strict_json::decode_bytecode_request_json_frame(frame)?;
+    let header: BytecodeRequestStartFrameWireHeader = serde_json::from_value(header)
         .map_err(|error| {
             TransportError::decode(format!(
                 "invalid skiff binary frame: header failed typed decode: {error}"
             ))
         })?;
     match &header {
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(websocket) => {
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(websocket) => {
             if websocket.websocket_connect.gateway_entry_identity
                 != websocket.routing.gateway_entry_identity
             {
@@ -796,7 +796,7 @@ pub fn decode_runtime_assembly_request_start_frame(
                 ));
             }
         }
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(websocket) => {
+        BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(websocket) => {
             if websocket.websocket_json_rpc.gateway_entry_identity
                 != websocket.routing.gateway_entry_identity
             {
@@ -810,7 +810,7 @@ pub fn decode_runtime_assembly_request_start_frame(
                 ));
             }
         }
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(websocket) => {
+        BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(websocket) => {
             if websocket.websocket_connection_closed.gateway_entry_identity
                 != websocket.routing.gateway_entry_identity
             {
@@ -824,7 +824,7 @@ pub fn decode_runtime_assembly_request_start_frame(
                 ));
             }
         }
-        RuntimeAssemblyRequestStartFrameWireHeader::Task(task) => {
+        BytecodeRequestStartFrameWireHeader::Task(task) => {
             if payload.is_empty() {
                 return Err(TransportError::decode(
                     "invalid runtimeAssembly task request.start frame: recoverable args payload must be present",
@@ -851,7 +851,7 @@ pub fn decode_runtime_assembly_request_start_frame(
                 ));
             }
         }
-        RuntimeAssemblyRequestStartFrameWireHeader::Http(http) => {
+        BytecodeRequestStartFrameWireHeader::Http(http) => {
             if http.test_effects_enabled != http.test_case_capability.is_some() {
                 return Err(TransportError::decode(
                     "invalid runtimeAssembly HTTP request.start frame: testEffectsEnabled must match testCaseCapability presence",
@@ -869,7 +869,7 @@ pub fn decode_runtime_assembly_request_start_frame(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "result", rename_all_fields = "camelCase", deny_unknown_fields)]
-pub enum RuntimeAssemblyWebSocketConnectResponseFrameHeader {
+pub enum BytecodeWebSocketConnectResponseFrameHeader {
     #[serde(rename = "accept")]
     Accept {
         #[serde(
@@ -889,7 +889,7 @@ pub enum RuntimeAssemblyWebSocketConnectResponseFrameHeader {
             deserialize_with = "deserialize_present_option",
             skip_serializing_if = "Option::is_none"
         )]
-        connection_policy: Option<RuntimeAssemblyWebSocketConnectionPolicyFrameHeader>,
+        connection_policy: Option<BytecodeWebSocketConnectionPolicyFrameHeader>,
     },
     #[serde(rename = "reject")]
     Reject { code: u16, reason: String },
@@ -897,9 +897,9 @@ pub enum RuntimeAssemblyWebSocketConnectResponseFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketConnectionPolicyFrameHeader {
+pub struct BytecodeWebSocketConnectionPolicyFrameHeader {
     pub max_connections: NonZeroU32,
-    pub overflow: RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader,
+    pub overflow: BytecodeWebSocketConnectionPolicyOverflowFrameHeader,
     #[serde(
         default,
         deserialize_with = "deserialize_present_option",
@@ -916,7 +916,7 @@ pub struct RuntimeAssemblyWebSocketConnectionPolicyFrameHeader {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader {
+pub enum BytecodeWebSocketConnectionPolicyOverflowFrameHeader {
     CloseOldest,
     RejectNew,
 }
@@ -940,35 +940,35 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
-    try_from = "RawRuntimeAssemblyWebSocketConnectResponseEndFrameHeader",
-    into = "RawRuntimeAssemblyWebSocketConnectResponseEndFrameHeader"
+    try_from = "RawBytecodeWebSocketConnectResponseEndFrameHeader",
+    into = "RawBytecodeWebSocketConnectResponseEndFrameHeader"
 )]
-pub struct RuntimeAssemblyWebSocketConnectResponseEndFrameHeader {
+pub struct BytecodeWebSocketConnectResponseEndFrameHeader {
     pub schema_version: String,
     pub frame_type: String,
     pub request_id: String,
-    pub websocket_connect: RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+    pub websocket_connect: BytecodeWebSocketConnectResponseFrameHeader,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawRuntimeAssemblyWebSocketConnectResponseEndFrameHeader {
+struct RawBytecodeWebSocketConnectResponseEndFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     schema_version: String,
     #[serde(rename = "type", deserialize_with = "deserialize_response_end_type")]
     frame_type: String,
     request_id: String,
     payload_present: bool,
-    websocket_connect: RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+    websocket_connect: BytecodeWebSocketConnectResponseFrameHeader,
 }
 
-impl TryFrom<RawRuntimeAssemblyWebSocketConnectResponseEndFrameHeader>
-    for RuntimeAssemblyWebSocketConnectResponseEndFrameHeader
+impl TryFrom<RawBytecodeWebSocketConnectResponseEndFrameHeader>
+    for BytecodeWebSocketConnectResponseEndFrameHeader
 {
     type Error = String;
 
     fn try_from(
-        raw: RawRuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
+        raw: RawBytecodeWebSocketConnectResponseEndFrameHeader,
     ) -> Result<Self, Self::Error> {
         if raw.payload_present {
             return Err(
@@ -985,10 +985,10 @@ impl TryFrom<RawRuntimeAssemblyWebSocketConnectResponseEndFrameHeader>
     }
 }
 
-impl From<RuntimeAssemblyWebSocketConnectResponseEndFrameHeader>
-    for RawRuntimeAssemblyWebSocketConnectResponseEndFrameHeader
+impl From<BytecodeWebSocketConnectResponseEndFrameHeader>
+    for RawBytecodeWebSocketConnectResponseEndFrameHeader
 {
-    fn from(header: RuntimeAssemblyWebSocketConnectResponseEndFrameHeader) -> Self {
+    fn from(header: BytecodeWebSocketConnectResponseEndFrameHeader) -> Self {
         Self {
             schema_version: header.schema_version,
             frame_type: header.frame_type,
@@ -999,10 +999,10 @@ impl From<RuntimeAssemblyWebSocketConnectResponseEndFrameHeader>
     }
 }
 
-pub fn decode_runtime_assembly_websocket_connect_response_end_frame(
+pub fn decode_bytecode_websocket_connect_response_end_frame(
     frame: &[u8],
-) -> Result<RuntimeAssemblyWebSocketConnectResponseEndFrameHeader, BinaryFrameError> {
-    let (header, payload) = strict_json::decode_runtime_assembly_json_frame(
+) -> Result<BytecodeWebSocketConnectResponseEndFrameHeader, BinaryFrameError> {
+    let (header, payload) = strict_json::decode_bytecode_json_frame(
         frame,
         "runtimeAssembly websocketConnect response.end",
     )?;
@@ -1020,7 +1020,7 @@ pub fn decode_runtime_assembly_websocket_connect_response_end_frame(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum RuntimeAssemblyWebSocketJsonRpcResponseOutcome {
+pub enum BytecodeWebSocketJsonRpcResponseOutcome {
     Success,
     InvalidParams,
     InternalError,
@@ -1029,46 +1029,46 @@ pub enum RuntimeAssemblyWebSocketJsonRpcResponseOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
-    pub outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
+pub struct BytecodeWebSocketJsonRpcResponseFrameHeader {
+    pub outcome: BytecodeWebSocketJsonRpcResponseOutcome,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
-    try_from = "RawRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader",
-    into = "RawRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader"
+    try_from = "RawBytecodeWebSocketJsonRpcResponseEndFrameHeader",
+    into = "RawBytecodeWebSocketJsonRpcResponseEndFrameHeader"
 )]
-pub struct RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader {
+pub struct BytecodeWebSocketJsonRpcResponseEndFrameHeader {
     pub schema_version: String,
     pub frame_type: String,
     pub request_id: String,
-    pub websocket_json_rpc: RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
+    pub websocket_json_rpc: BytecodeWebSocketJsonRpcResponseFrameHeader,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RawRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader {
+struct RawBytecodeWebSocketJsonRpcResponseEndFrameHeader {
     #[serde(deserialize_with = "deserialize_runtime_frame_schema_version")]
     schema_version: String,
     #[serde(rename = "type", deserialize_with = "deserialize_response_end_type")]
     frame_type: String,
-    #[serde(deserialize_with = "deserialize_runtime_assembly_websocket_jsonrpc_request_id")]
+    #[serde(deserialize_with = "deserialize_bytecode_websocket_jsonrpc_request_id")]
     request_id: String,
     payload_present: bool,
-    websocket_json_rpc: RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
+    websocket_json_rpc: BytecodeWebSocketJsonRpcResponseFrameHeader,
 }
 
-impl TryFrom<RawRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader>
-    for RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader
+impl TryFrom<RawBytecodeWebSocketJsonRpcResponseEndFrameHeader>
+    for BytecodeWebSocketJsonRpcResponseEndFrameHeader
 {
     type Error = String;
 
     fn try_from(
-        raw: RawRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
+        raw: RawBytecodeWebSocketJsonRpcResponseEndFrameHeader,
     ) -> Result<Self, Self::Error> {
         let expected_payload_present = matches!(
             raw.websocket_json_rpc.outcome,
-            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+            BytecodeWebSocketJsonRpcResponseOutcome::Success
         );
         if raw.payload_present != expected_payload_present {
             return Err(
@@ -1085,13 +1085,13 @@ impl TryFrom<RawRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader>
     }
 }
 
-impl From<RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader>
-    for RawRuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader
+impl From<BytecodeWebSocketJsonRpcResponseEndFrameHeader>
+    for RawBytecodeWebSocketJsonRpcResponseEndFrameHeader
 {
-    fn from(header: RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader) -> Self {
+    fn from(header: BytecodeWebSocketJsonRpcResponseEndFrameHeader) -> Self {
         let payload_present = matches!(
             header.websocket_json_rpc.outcome,
-            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+            BytecodeWebSocketJsonRpcResponseOutcome::Success
         );
         Self {
             schema_version: header.schema_version,
@@ -1103,8 +1103,8 @@ impl From<RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader>
     }
 }
 
-pub fn encode_runtime_assembly_websocket_jsonrpc_response_end_frame(
-    header: &RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
+pub fn encode_bytecode_websocket_jsonrpc_response_end_frame(
+    header: &BytecodeWebSocketJsonRpcResponseEndFrameHeader,
     payload: &[u8],
 ) -> Result<Vec<u8>, BinaryFrameError> {
     let value = serde_json::to_value(header).map_err(|error| {
@@ -1112,41 +1112,41 @@ pub fn encode_runtime_assembly_websocket_jsonrpc_response_end_frame(
             "invalid runtimeAssembly websocketJsonRpc response.end frame: header failed typed encode: {error}"
         ))
     })?;
-    let validated: RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader =
+    let validated: BytecodeWebSocketJsonRpcResponseEndFrameHeader =
         serde_json::from_value(value).map_err(|error| {
             TransportError::decode(format!(
                 "invalid runtimeAssembly websocketJsonRpc response.end frame: header failed typed validation: {error}"
             ))
         })?;
-    validate_runtime_assembly_websocket_jsonrpc_response_payload(&validated, payload)?;
+    validate_bytecode_websocket_jsonrpc_response_payload(&validated, payload)?;
     crate::protocol::encode_binary_frame(&validated, payload)
 }
 
-pub fn decode_runtime_assembly_websocket_jsonrpc_response_end_frame(
+pub fn decode_bytecode_websocket_jsonrpc_response_end_frame(
     frame: &[u8],
 ) -> Result<
     (
-        RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
+        BytecodeWebSocketJsonRpcResponseEndFrameHeader,
         Vec<u8>,
     ),
     BinaryFrameError,
 > {
-    let (header, payload) = strict_json::decode_runtime_assembly_json_frame(
+    let (header, payload) = strict_json::decode_bytecode_json_frame(
         frame,
         "runtimeAssembly websocketJsonRpc response.end",
     )?;
-    let header: RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader =
+    let header: BytecodeWebSocketJsonRpcResponseEndFrameHeader =
         serde_json::from_value(header).map_err(|error| {
             TransportError::decode(format!(
                 "invalid runtimeAssembly websocketJsonRpc response.end frame: header failed typed decode: {error}"
             ))
         })?;
-    validate_runtime_assembly_websocket_jsonrpc_response_payload(&header, &payload)?;
+    validate_bytecode_websocket_jsonrpc_response_payload(&header, &payload)?;
     Ok((header, payload))
 }
 
-fn validate_runtime_assembly_websocket_jsonrpc_response_payload(
-    header: &RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
+fn validate_bytecode_websocket_jsonrpc_response_payload(
+    header: &BytecodeWebSocketJsonRpcResponseEndFrameHeader,
     payload: &[u8],
 ) -> Result<(), BinaryFrameError> {
     if payload.len() > CONNECTION_REQUEST_MAX_PAYLOAD_BYTES {
@@ -1157,7 +1157,7 @@ fn validate_runtime_assembly_websocket_jsonrpc_response_payload(
     let payload_present = !payload.is_empty();
     let expected_payload_present = matches!(
         header.websocket_json_rpc.outcome,
-        RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+        BytecodeWebSocketJsonRpcResponseOutcome::Success
     );
     if payload_present != expected_payload_present {
         return Err(TransportError::decode(
@@ -1168,5 +1168,5 @@ fn validate_runtime_assembly_websocket_jsonrpc_response_payload(
 }
 
 #[cfg(test)]
-#[path = "runtime_assembly_request/tests.rs"]
+#[path = "bytecode/tests.rs"]
 mod tests;

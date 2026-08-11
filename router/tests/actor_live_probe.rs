@@ -39,12 +39,12 @@ use skiff_runtime_transport::protocol::{
     encode_task_submit_request_frame, RuntimeCapabilitiesFrameHeader, RuntimeHealthFrameHeader,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
-    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressFrameHeader,
-    RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestNameValueFrameHeader,
-    RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-    RuntimeAssemblyRequestTraceFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
+    BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressFrameHeader,
+    BytecodeRequestIngressProtocol, BytecodeRequestNameValueFrameHeader,
+    BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
+    BytecodeRequestTraceFrameHeader,
 };
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -853,15 +853,15 @@ async fn dispatch_unary(
     let request_id = format!("req-{}-{seq}", now_nanos());
     let body = body_value.unwrap_or("null");
     let now_ms = now_nanos() / 1_000_000;
-    let header = RuntimeAssemblyRequestStartFrameHeader {
+    let header = BytecodeRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
         request_id: request_id.clone(),
         mode: "unary".to_string(),
-        caller: RuntimeAssemblyRequestCallerFrameHeader {
+        caller: BytecodeRequestCallerFrameHeader {
             kind: "gateway".to_string(),
         },
-        routing: RuntimeAssemblyRequestRoutingFrameHeader {
+        routing: BytecodeRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
             assembly_identity: None,
             assembly_generation: None,
@@ -875,29 +875,29 @@ async fn dispatch_unary(
                 entrypoint.gateway_entry_identity.clone(),
             )
             .expect("gateway entry identity"),
-            ingress: RuntimeAssemblyRequestIngressFrameHeader {
-                protocol: RuntimeAssemblyRequestIngressProtocol::Http,
+            ingress: BytecodeRequestIngressFrameHeader {
+                protocol: BytecodeRequestIngressProtocol::Http,
                 method: entrypoint.method.clone(),
                 path: entrypoint.path.clone(),
             },
         },
         client_session: None,
-        deadline: Some(RuntimeAssemblyRequestDeadlineFrameHeader {
+        deadline: Some(BytecodeRequestDeadlineFrameHeader {
             timeout_ms: 30_000,
             expires_at: iso_timestamp(now_ms.saturating_add(30_000)),
         }),
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
+        trace: BytecodeRequestTraceFrameHeader {
             trace_id: format!("trace-{seq}"),
             span_id: format!("span-{seq}"),
             parent_span_id: None,
             sampled: None,
         },
-        http_request: RuntimeAssemblyHttpRequestFrameHeader {
+        http_request: BytecodeHttpRequestFrameHeader {
             method: entrypoint.method.clone(),
             url: format!("http://127.0.0.1:{}{}", live.http_port, entrypoint.path),
             path: entrypoint.path.clone(),
             query: Vec::new(),
-            headers: vec![RuntimeAssemblyRequestNameValueFrameHeader {
+            headers: vec![BytecodeRequestNameValueFrameHeader {
                 name: "content-type".to_string(),
                 value: "application/json".to_string(),
             }],

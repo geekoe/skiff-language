@@ -1,7 +1,7 @@
 //! `POST /__skiff/test-dispatch` control handler (plan §7 E-http).
 //!
 //! TS parity with `router/src/router/assemblyControlPlane.ts`
-//! (`decodeRuntimeAssemblyTestDispatch` / `exactTestDispatchBinding` /
+//! (`decodeBytecodeTestDispatch` / `exactTestDispatchBinding` /
 //! `assemblyTestHttpRequestHeader`): exact field decode, canonical payload
 //! Base64, positive safe timeout, exact active-assembly generation and
 //! gateway-binding match, and the canonical test `request.start` frame
@@ -26,11 +26,11 @@ use skiff_runtime_transport::protocol::{
     ResponseEndFrameHeader, ResponseEndFrameMetadata, RuntimeHttpResponseFrameHeader,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    decode_runtime_assembly_request_start_frame, RuntimeAssemblyHttpRequestFrameHeader,
-    RuntimeAssemblyRequestCallerFrameHeader, RuntimeAssemblyRequestDeadlineFrameHeader,
-    RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-    RuntimeAssemblyRequestTraceFrameHeader,
+use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeHttpRequestFrameHeader,
+    BytecodeRequestCallerFrameHeader, BytecodeRequestDeadlineFrameHeader,
+    BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
+    BytecodeRequestTraceFrameHeader,
 };
 
 use crate::http::dispatch::{
@@ -199,14 +199,14 @@ impl TestDispatchHttpHandler {
 /// One strictly decoded runtimeAssembly test-dispatch request.
 #[derive(Debug, Clone, PartialEq)]
 struct DecodedTestDispatch {
-    routing: RuntimeAssemblyRequestRoutingFrameHeader,
+    routing: BytecodeRequestRoutingFrameHeader,
     mode: String,
-    http_request: RuntimeAssemblyHttpRequestFrameHeader,
+    http_request: BytecodeHttpRequestFrameHeader,
     payload_bytes: Bytes,
     timeout_ms: u64,
 }
 
-/// TS `decodeRuntimeAssemblyTestDispatch` parity: exact object/fields,
+/// TS `decodeBytecodeTestDispatch` parity: exact object/fields,
 /// `kind: "test"`, strict canonical routing/mode/httpRequest decode,
 /// canonical standard Base64 payload, positive safe timeout.
 fn decode_test_dispatch(bytes: &[u8]) -> Result<DecodedTestDispatch, String> {
@@ -231,7 +231,7 @@ fn decode_test_dispatch(bytes: &[u8]) -> Result<DecodedTestDispatch, String> {
     if root.get("kind").and_then(Value::as_str) != Some("test") {
         return Err("runtime assembly test dispatch kind must be test".to_string());
     }
-    let routing = serde_json::from_value::<RuntimeAssemblyRequestRoutingFrameHeader>(
+    let routing = serde_json::from_value::<BytecodeRequestRoutingFrameHeader>(
         root.get("routing").expect("field presence checked").clone(),
     )
     .map_err(|error| {
@@ -245,7 +245,7 @@ fn decode_test_dispatch(bytes: &[u8]) -> Result<DecodedTestDispatch, String> {
             "runtime assembly test dispatch mode must be unary or serverStream".to_string(),
         );
     }
-    let http_request = serde_json::from_value::<RuntimeAssemblyHttpRequestFrameHeader>(
+    let http_request = serde_json::from_value::<BytecodeHttpRequestFrameHeader>(
         root.get("httpRequest")
             .expect("field presence checked")
             .clone(),
@@ -288,7 +288,7 @@ fn decode_test_dispatch(bytes: &[u8]) -> Result<DecodedTestDispatch, String> {
 /// TS canonical-field parity for the HTTP request metadata projected into
 /// the test `request.start` frame.
 fn validate_http_request_metadata(
-    metadata: &RuntimeAssemblyHttpRequestFrameHeader,
+    metadata: &BytecodeHttpRequestFrameHeader,
 ) -> Result<(), String> {
     let canonical = |value: &str| {
         !value.is_empty() && !value.chars().any(|c| c.is_control() || c.is_whitespace())
@@ -395,11 +395,11 @@ fn exact_test_dispatch_binding(
 /// the exact body routing/mode/httpRequest, test effects enabled and a fresh
 /// test-case capability. The encoded frame is re-decoded through the
 /// canonical transport validator (TS
-/// `validateRuntimeAssemblyRequestStartFrameHeader` equivalent) before
+/// `validateBytecodeRequestStartFrameHeader` equivalent) before
 /// dispatch.
 fn build_test_dispatch_header(
     decoded: &DecodedTestDispatch,
-) -> Result<RuntimeAssemblyRequestStartFrameHeader, String> {
+) -> Result<BytecodeRequestStartFrameHeader, String> {
     let (timeout_ms, expires_at) = deadline_parts(Duration::from_millis(decoded.timeout_ms));
     // M4: the dispatched routing header always carries the exact deployment
     // build id (the candidate admission fails closed without it). The
@@ -418,21 +418,21 @@ fn build_test_dispatch_header(
                 .to_string(),
         );
     }
-    let header = RuntimeAssemblyRequestStartFrameHeader {
+    let header = BytecodeRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
         request_id: new_request_id(),
         mode: decoded.mode.clone(),
-        caller: RuntimeAssemblyRequestCallerFrameHeader {
+        caller: BytecodeRequestCallerFrameHeader {
             kind: "gateway".to_string(),
         },
         routing,
         client_session: None,
-        deadline: Some(RuntimeAssemblyRequestDeadlineFrameHeader {
+        deadline: Some(BytecodeRequestDeadlineFrameHeader {
             timeout_ms,
             expires_at,
         }),
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
+        trace: BytecodeRequestTraceFrameHeader {
             trace_id: new_trace_id(),
             span_id: new_span_id(),
             parent_span_id: None,
@@ -446,7 +446,7 @@ fn build_test_dispatch_header(
     let frame = encode_request_start_frame(&header, &decoded.payload_bytes).map_err(|error| {
         format!("runtime assembly test dispatch has invalid canonical fields: {error}")
     })?;
-    decode_runtime_assembly_request_start_frame(&frame).map_err(|error| {
+    decode_bytecode_request_start_frame(&frame).map_err(|error| {
         format!("runtime assembly test dispatch has invalid canonical fields: {error}")
     })?;
     Ok(header)

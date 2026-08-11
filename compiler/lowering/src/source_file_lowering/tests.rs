@@ -61,11 +61,11 @@ fn any_interface_source() -> &'static str {
           }
 
           function make_box() -> void {
-            let provider = HostProvider { label: "host" } as Provider
+            final provider = HostProvider { label: "host" } as Provider
           }
 
           function call_box() -> string {
-            let provider = HostProvider { label: "host" } as Provider
+            final provider = HostProvider { label: "host" } as Provider
             return provider.name()
           }
 	        "#
@@ -96,7 +96,7 @@ fn package_interface_box_source() -> &'static str {
 	          }
 
 	          function make_package_box() -> void {
-	            let reader = Host { value: "host" } as pkg.Reader<string>
+	            final reader = Host { value: "host" } as pkg.Reader<string>
 	          }
 	        "#
 }
@@ -298,8 +298,8 @@ fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls(
                 token: Token<string>,
                 choice: Choice<string>
               ) -> Box<string> {
-                let constructed = Box<string> { value: stringBox.value }
-                let empty = Array.empty<Box<string>>()
+                final constructed = Box<string> { value: stringBox.value }
+                final empty = Array.empty<Box<string>>()
                 return constructed
               }
 
@@ -308,7 +308,7 @@ fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls(
               }
 
               function caught(value: Box<string>) -> void {
-                let attempted = catch<Box<string>>(throw value)
+                final attempted = catch<Box<string>>(throw value)
               }
 
               function inspected(boxed: Box<string>) -> void {
@@ -321,8 +321,8 @@ fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls(
               }
             "#,
     );
-    assert_eq!(unit.schema_version, "skiff-file-ir-v13");
-    assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v7");
+    assert_eq!(unit.schema_version, "skiff-file-ir-v14");
+    assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v8");
     assert_eq!(unit.opcode_table_version, "skiff-opcode-table-v2");
 
     let declaration = |name: &str| {
@@ -749,7 +749,7 @@ fn source_calls_and_throws_keep_real_sites_and_catch_type_is_required() {
               }
 
               function caught(value: string) -> void {
-                let attempted = catch<Failure>(callee(value))
+                final attempted = catch<Failure>(callee(value))
               }
             "#,
     );
@@ -1200,7 +1200,7 @@ fn map_literal_lowers_to_exact_map_literal_inputs() {
           }
 
           function localValues() -> void {
-            let values = { alpha: 3 }
+            final values = { alpha: 3 }
           }
 
           function emptyValues() -> Map<string, string> {
@@ -1320,12 +1320,12 @@ fn ternary_lowers_to_lazy_value_block_with_if_and_temp_slot() {
         .find(|block| &block.label == body_label)
         .expect("ternary body block should be emitted");
     assert_eq!(body_block.statements.len(), 2);
-    let skiff_artifact_model::StmtIr::Let {
+    let skiff_artifact_model::StmtIr::InitSlot {
         slot: init_slot,
         value: init_value,
     } = &executable.body.statements[body_block.statements[0].statement as usize]
     else {
-        panic!("expected Let statement initializing the ternary temp slot");
+        panic!("expected InitSlot statement initializing the ternary temp slot");
     };
     assert_eq!(init_slot, result_slot);
     assert!(matches!(
@@ -1722,7 +1722,7 @@ fn actor_create_self_method_dispatch_stays_rejected() {
               impl Counter {
                 function create(self: Counter) -> void {
                   self.count = 0
-                  let current = self
+                  final current = self
                   current.increment()
                 }
 
@@ -1752,8 +1752,8 @@ fn dispatch_expression_lowers_task_submit_plan_with_timing() {
             }
 
             function start(input: string, instant: Instant) -> void {
-              let afterRef = dispatch run(input) after(200ms)
-              let atRef = dispatch run(input) at(instant)
+              final afterRef = dispatch run(input) after(200ms)
+              final atRef = dispatch run(input) at(instant)
               dispatch run(input)
             }
         "#,
@@ -1764,12 +1764,12 @@ fn dispatch_expression_lowers_task_submit_plan_with_timing() {
         .find(|executable| executable.symbol == format!("{MODULE}.start"))
         .expect("start executable");
 
-    let StmtIr::Let {
+    let StmtIr::InitSlot {
         value: after_call_ref,
         ..
     } = &start.body.statements[0]
     else {
-        panic!("first dispatch must lower into a let statement");
+        panic!("first dispatch must lower into an init slot statement");
     };
     let after_call = task_submit_call(start, *after_call_ref);
     assert_eq!(
@@ -1814,11 +1814,11 @@ fn dispatch_expression_lowers_task_submit_plan_with_timing() {
         "timing expression must not be duplicated into the payload args"
     );
 
-    let StmtIr::Let {
+    let StmtIr::InitSlot {
         value: at_call_ref, ..
     } = &start.body.statements[1]
     else {
-        panic!("second dispatch must lower into a let statement");
+        panic!("second dispatch must lower into an init slot statement");
     };
     let at_call = task_submit_call(start, *at_call_ref);
     assert_eq!(at_call.args.len(), 1);
@@ -1892,7 +1892,7 @@ fn actor_create_dispatch_self_method_stays_rejected() {
               impl Counter {
                 function create(self: Counter) -> void {
                   self.count = 0
-                  let current = self
+                  final current = self
                   dispatch current.increment()
                 }
 
@@ -2016,7 +2016,7 @@ fn actor_self_field_access_keeps_while_body_call_targets_aligned() {
                     }
 
                     function run(self: UserActor, other: UserActor) -> void {
-                      let name = self.displayName
+                      final name = self.displayName
                       self.displayName = name
                       while root.internal.runner.isStopped() {
                         self.displayName = other.rename(name)
@@ -2371,12 +2371,12 @@ fn rethrow_statement_keeps_following_local_recursive_call_target_aligned() {
               }
 
               function retry(remainingAttempts: integer) -> void {
-                let result = catch<std.db.ConflictError>(attempt())
+                final result = catch<std.db.ConflictError>(attempt())
                 if result.tag == "ok" {
                   return null
                 }
                 if remainingAttempts == 0 {
-                  let exception = result.exception
+                  final exception = result.exception
                   rethrow exception
                 }
                 return retry(remainingAttempts)
@@ -2655,7 +2655,7 @@ fn marker_conformance_lowers_but_dynamic_interface_boxing_is_rejected() {
           }
 
           function box_marker() -> void {
-            let marker = Tagged { label: "tagged" } as Marker
+            final marker = Tagged { label: "tagged" } as Marker
           }
         "#,
     )

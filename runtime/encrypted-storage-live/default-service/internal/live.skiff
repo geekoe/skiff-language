@@ -126,11 +126,11 @@ function testRunnerSecret() -> string {
 }
 
 function writerBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse? {
-  let barrier = db find RotationBarrier("encrypted-storage-live")
+  final barrier = db find RotationBarrier("encrypted-storage-live")
   if barrier == null || !barrier.active {
     return null
   }
-  let provided = std.http.header(request, "x-skiff-rotation-token")
+  final provided = std.http.header(request, "x-skiff-rotation-token")
   if provided != null && provided == barrier.token {
     return null
   }
@@ -138,8 +138,8 @@ function writerBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse? 
 }
 
 function activateBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<BarrierInput>(request)
-  let result = db upsert RotationBarrier("encrypted-storage-live") {
+  final input = std.http.decodeJson<BarrierInput>(request)
+  final result = db upsert RotationBarrier("encrypted-storage-live") {
     token = input.token
     active = true
   } {
@@ -150,15 +150,15 @@ function activateBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse
 }
 
 function barrierStatus(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let barrier = db find RotationBarrier("encrypted-storage-live")
+  final barrier = db find RotationBarrier("encrypted-storage-live")
   return std.http.json(200, BarrierStatus { active: barrier != null && barrier.active })
 }
 
 function insertArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<ArchiveInput>(request)
-  let row = db insert CredentialArchive {
+  final input = std.http.decodeJson<ArchiveInput>(request)
+  final row = db insert CredentialArchive {
     id = input.id
     apiKey = input.apiKey
     label = input.label
@@ -168,28 +168,28 @@ function insertArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function readArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<IdInput>(request)
+  final input = std.http.decodeJson<IdInput>(request)
   return std.http.json(200, db require CredentialArchive(input.id))
 }
 
 function scanArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<ScanInput>(request)
-  let rows = db find many CredentialArchive { where id > input.lastId order id asc limit 100 }
+  final input = std.http.decodeJson<ScanInput>(request)
+  final rows = db find many CredentialArchive { where id > input.lastId order id asc limit 100 }
   return std.http.json(200, rows)
 }
 
 function rewriteArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<ArchiveInput>(request)
-  let row = db update CredentialArchive(input.id) { apiKey = input.apiKey }
+  final input = std.http.decodeJson<ArchiveInput>(request)
+  final row = db update CredentialArchive(input.id) { apiKey = input.apiKey }
   return std.http.json(200, row)
 }
 
 function rewriteArchiveBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<ArchiveBatchInput>(request)
+  final input = std.http.decodeJson<ArchiveBatchInput>(request)
   db transaction {
     for row in input.rows {
       db update CredentialArchive(row.id) { apiKey = row.apiKey }
@@ -199,10 +199,10 @@ function rewriteArchiveBatch(request: std.http.HttpRequest) -> std.http.HttpResp
 }
 
 function restoreArchive(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<ArchiveInput>(request)
-  let row = db update CredentialArchive(input.id) {
+  final input = std.http.decodeJson<ArchiveInput>(request)
+  final row = db update CredentialArchive(input.id) {
     apiKey = input.apiKey
     label = input.label
     sequence = input.sequence
@@ -211,10 +211,10 @@ function restoreArchive(request: std.http.HttpRequest) -> std.http.HttpResponse 
 }
 
 function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialInput>(request)
-  let row = db insert Credential {
+  final input = std.http.decodeJson<CredentialInput>(request)
+  final row = db insert Credential {
     id = input.id
     apiKey = input.apiKey
     refreshToken = input.refreshToken
@@ -225,9 +225,9 @@ function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function insertMany(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<InsertManyInput>(request)
+  final input = std.http.decodeJson<InsertManyInput>(request)
   var rows = Array.empty<Credential>()
   rows.push(Credential {
     id: input.prefix.concat("-a"),
@@ -243,34 +243,34 @@ function insertMany(request: std.http.HttpRequest) -> std.http.HttpResponse {
     label: "many-b",
     sequence: input.startSequence + 1,
   })
-  let result = db insert many Credential values rows
+  final result = db insert many Credential values rows
   return std.http.json(200, result)
 }
 
 function insertBulk(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<BulkCredentialInput>(request)
-  let result = db insert many Credential values input.rows
+  final input = std.http.decodeJson<BulkCredentialInput>(request)
+  final result = db insert many Credential values input.rows
   return std.http.json(200, result)
 }
 
 function readOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<IdInput>(request)
+  final input = std.http.decodeJson<IdInput>(request)
   return std.http.json(200, db require Credential(input.id))
 }
 
 function projectOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<IdInput>(request)
-  let row = db require Credential(input.id) { fields { apiKey, refreshToken } }
+  final input = std.http.decodeJson<IdInput>(request)
+  final row = db require Credential(input.id) { fields { apiKey, refreshToken } }
   return std.http.json(200, row)
 }
 
 function replaceByKey(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialInput>(request)
-  let row = db replace Credential(input.id) {
+  final input = std.http.decodeJson<CredentialInput>(request)
+  final row = db replace Credential(input.id) {
     apiKey = input.apiKey
     refreshToken = input.refreshToken
     label = input.label
@@ -280,10 +280,10 @@ function replaceByKey(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function replaceByQuery(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<ReplaceQueryInput>(request)
-  let row = db replace Credential { where label == input.matchLabel } {
+  final input = std.http.decodeJson<ReplaceQueryInput>(request)
+  final row = db replace Credential { where label == input.matchLabel } {
     id = input.id
     apiKey = input.apiKey
     refreshToken = input.refreshToken
@@ -294,10 +294,10 @@ function replaceByQuery(request: std.http.HttpRequest) -> std.http.HttpResponse 
 }
 
 function upsertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialInput>(request)
-  let result = db upsert Credential(input.id) {
+  final input = std.http.decodeJson<CredentialInput>(request)
+  final result = db upsert Credential(input.id) {
     apiKey = input.apiKey
     refreshToken = input.refreshToken
     label = input.label
@@ -312,10 +312,10 @@ function upsertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function updateOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialInput>(request)
-  let row = db update Credential(input.id) {
+  final input = std.http.decodeJson<CredentialInput>(request)
+  final row = db update Credential(input.id) {
     apiKey = input.apiKey
     refreshToken = input.refreshToken
     label = input.label
@@ -325,16 +325,16 @@ function updateOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<ScanInput>(request)
-  let rows = db find many Credential { where id > input.lastId order id asc limit 100 }
+  final input = std.http.decodeJson<ScanInput>(request)
+  final rows = db find many Credential { where id > input.lastId order id asc limit 100 }
   return std.http.json(200, rows)
 }
 
 function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialInput>(request)
-  let row = db update Credential(input.id) {
+  final input = std.http.decodeJson<CredentialInput>(request)
+  final row = db update Credential(input.id) {
     apiKey = input.apiKey
     refreshToken = input.refreshToken
   }
@@ -342,9 +342,9 @@ function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function rewriteBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialBatchInput>(request)
+  final input = std.http.decodeJson<CredentialBatchInput>(request)
   db transaction {
     for row in input.rows {
       db update Credential(row.id) {
@@ -357,15 +357,15 @@ function rewriteBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function identityDate(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<IdentityDateInput>(request)
-  let inserted = db insert IdentityDateRecord {
+  final input = std.http.decodeJson<IdentityDateInput>(request)
+  final inserted = db insert IdentityDateRecord {
     id = input.id
     note = input.note
     recordedAt = Date.requireParse(input.recordedAt)
   }
-  let row = db require IdentityDateRecord(inserted.id)
+  final row = db require IdentityDateRecord(inserted.id)
   return std.http.json(200, IdentityDateOutput {
     id: row.id,
     note: row.note,

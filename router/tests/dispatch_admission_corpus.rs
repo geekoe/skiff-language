@@ -17,11 +17,11 @@ use skiff_router::dispatch::{
     RuntimeDispatcherOptions, RuntimeResponseFrame, SubmitResult,
 };
 use skiff_router::session::identity::RuntimeSessionEpoch;
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
-    RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
-    RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-    RuntimeAssemblyRequestTraceFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
+    BytecodeRequestIngressFrameHeader, BytecodeRequestIngressProtocol,
+    BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
+    BytecodeRequestTraceFrameHeader,
 };
 
 use dispatch_harness::{
@@ -495,15 +495,15 @@ impl Harness {
         let deployment = scenario_deployment_ref(epoch);
         let deployment_build_id = deployment.deployment_artifact_identity.to_string();
         DispatchSubmit {
-            header: RuntimeAssemblyRequestStartFrameHeader {
+            header: BytecodeRequestStartFrameHeader {
                 schema_version: "skiff-runtime-frame-v4".to_string(),
                 frame_type: "request.start".to_string(),
                 request_id: request_id.to_string(),
                 mode: mode.to_string(),
-                caller: RuntimeAssemblyRequestCallerFrameHeader {
+                caller: BytecodeRequestCallerFrameHeader {
                     kind: "gateway".to_string(),
                 },
-                routing: RuntimeAssemblyRequestRoutingFrameHeader {
+                routing: BytecodeRequestRoutingFrameHeader {
                     kind: "runtimeAssembly".to_string(),
                     assembly_identity: None,
                     assembly_generation: None,
@@ -513,21 +513,21 @@ impl Harness {
                         "skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
                     )
                     .expect("gateway entry identity"),
-                    ingress: RuntimeAssemblyRequestIngressFrameHeader {
-                        protocol: RuntimeAssemblyRequestIngressProtocol::Http,
+                    ingress: BytecodeRequestIngressFrameHeader {
+                        protocol: BytecodeRequestIngressProtocol::Http,
                         method: "POST".to_string(),
                         path: "/".to_string(),
                     },
                 },
                 client_session: None,
                 deadline: None,
-                trace: RuntimeAssemblyRequestTraceFrameHeader {
+                trace: BytecodeRequestTraceFrameHeader {
                     trace_id: "trace".to_string(),
                     span_id: "span".to_string(),
                     parent_span_id: None,
                     sampled: None,
                 },
-                http_request: RuntimeAssemblyHttpRequestFrameHeader {
+                http_request: BytecodeHttpRequestFrameHeader {
                     method: "POST".to_string(),
                     url: "http://example.test/".to_string(),
                     path: "/".to_string(),

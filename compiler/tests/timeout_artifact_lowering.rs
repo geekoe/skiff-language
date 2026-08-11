@@ -52,14 +52,14 @@ mod tests {
             r#"
 function statementTimeout() -> number {
   timeout(20ms) {
-    let ignored = 1
+    final ignored = 1
   }
   return 2
 }
 
 function sequentialValue() -> string {
   return timeout(30ms) value {
-    let value = "ok"
+    final value = "ok"
     value
   }
 }
@@ -74,8 +74,8 @@ function sequentialValue() -> string {
         assert_eq!(file.schema_version, FILE_IR_SCHEMA_VERSION);
         assert_eq!(file.ir_format_version, FILE_IR_FORMAT_VERSION);
         assert_eq!(file.opcode_table_version, FILE_IR_OPCODE_TABLE_VERSION);
-        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v13");
-        assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
+        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v14");
+        assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v8");
         assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
         // The exact hash churns whenever File IR identity inputs change; the
         // meaningful assertion is that the recorded identity equals a fresh
@@ -83,7 +83,7 @@ function sequentialValue() -> string {
         // current schema prefix.
         assert!(file
             .file_ir_identity
-            .starts_with("skiff-file-ir-v13:sha256:"));
+            .starts_with("skiff-file-ir-v14:sha256:"));
         assert_eq!(
             skiff_artifact_identity::file_ir_identity(file).unwrap(),
             file.file_ir_identity
@@ -132,7 +132,7 @@ function sequentialValue() -> string {
         let [body_statement] = value_block.statements.as_slice() else {
             panic!("sequential value body must retain its single binding")
         };
-        let StmtIr::Let {
+        let StmtIr::InitSlot {
             slot: value_slot,
             value: initializer,
         } = &sequential.body.statements[body_statement.statement as usize]
@@ -167,7 +167,7 @@ function sequentialValue() -> string {
         for (fixture_name, body) in [
             (
                 "concurrent-statement",
-                "function run() -> void {\n  concurrent { let value = 1 }\n}\n",
+                "function run() -> void {\n  concurrent { final value = 1 }\n}\n",
             ),
             (
                 "concurrent-value",
@@ -175,7 +175,7 @@ function sequentialValue() -> string {
             ),
             (
                 "serial",
-                "function run() -> void {\n  serial { let value = 1 }\n}\n",
+                "function run() -> void {\n  serial { final value = 1 }\n}\n",
             ),
         ] {
             let fixture = TestDir::new("skiff-compiler", fixture_name);
@@ -228,7 +228,7 @@ function sequentialValue() -> string {
         );
         timed.write(
         "main.skiff",
-        "function run(value: number) -> number {\n  timeout(20ms) {\n    let ignored = value\n  }\n  return value\n}\n",
+        "function run(value: number) -> number {\n  timeout(20ms) {\n    final ignored = value\n  }\n  return value\n}\n",
     );
 
         let plain =

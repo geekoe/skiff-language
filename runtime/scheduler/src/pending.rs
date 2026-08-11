@@ -695,6 +695,7 @@ mod tests {
         vm_root::{VmRootSource, VmRootVisitor},
         vm_value::ValueSlot,
     };
+    use skiff_runtime_vm::{ResumeOutcome, VmError};
 
     use super::{
         PendingCellState, PendingOwnerDraft, PendingPublication, PendingRegistry, PendingWake,
@@ -794,6 +795,15 @@ mod tests {
 
     impl PendingWakeQueue<u64, &'static str, &'static str> for RecordingQueue {
         fn enqueue(&self, wake: PendingWake<u64, &'static str, &'static str>) {
+            self.0.lock().unwrap().push(wake);
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingResumeQueue(Mutex<Vec<PendingWake<u64, &'static str, ResumeOutcome>>>);
+
+    impl PendingWakeQueue<u64, &'static str, ResumeOutcome> for RecordingResumeQueue {
+        fn enqueue(&self, wake: PendingWake<u64, &'static str, ResumeOutcome>) {
             self.0.lock().unwrap().push(wake);
         }
     }
@@ -961,6 +971,82 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn zero_result_resume_outcome_is_delivered_once_through_the_wake_queue() {
+        let registry = PendingRegistry::<u64, &'static str, ResumeOutcome>::default();
+        let queue = Arc::new(RecordingResumeQueue::default());
+        let wake_queue: Arc<dyn PendingWakeQueue<u64, &'static str, ResumeOutcome>> = queue.clone();
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(RecordingRoots(Arc::new(Mutex::new(
+                Vec::new(),
+            ))))))
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .publish(
+                    completion.ticket(),
+                    PendingOwnerDraft::new(7, "fiber"),
+                    wake_queue
+                )
+                .unwrap(),
+            PendingPublication::Waiting
+        );
+        assert!(matches!(
+            completion.complete(ResumeOutcome::Empty),
+            SettleDisposition::Enqueued
+        ));
+        assert!(matches!(
+            completion.complete(ResumeOutcome::Empty),
+            SettleDisposition::Duplicate(_)
+        ));
+
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+        let (owner, settlement) = wake.into_parts();
+        assert_eq!(owner.ticket(), completion.ticket());
+        assert!(matches!(
+            settlement.into_outcome(),
+            ResumeOutcome::Empty
+        ));
+        assert_eq!(registry.live_count(), 0);
+    }
+
+    #[test]
+    fn failure_resume_outcome_is_delivered_once_through_the_wake_queue() {
+        let registry = PendingRegistry::<u64, &'static str, ResumeOutcome>::default();
+        let queue = Arc::new(RecordingResumeQueue::default());
+        let wake_queue: Arc<dyn PendingWakeQueue<u64, &'static str, ResumeOutcome>> = queue.clone();
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(RecordingRoots(Arc::new(Mutex::new(
+                Vec::new(),
+            ))))))
+            .unwrap();
+        let failure = ResumeOutcome::Failure(VmError::ResumeNotExpected);
+
+        assert_eq!(
+            registry
+                .publish(
+                    completion.ticket(),
+                    PendingOwnerDraft::new(8, "fiber"),
+                    wake_queue
+                )
+                .unwrap(),
+            PendingPublication::Waiting
+        );
+        assert!(matches!(
+            completion.complete(failure),
+            SettleDisposition::Enqueued
+        ));
+
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+        let (_, settlement) = wake.into_parts();
+        assert!(matches!(
+            settlement.into_outcome(),
+            ResumeOutcome::Failure(VmError::ResumeNotExpected)
+        ));
+        assert_eq!(registry.live_count(), 0);
     }
 
     #[test]

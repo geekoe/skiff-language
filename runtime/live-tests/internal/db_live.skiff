@@ -37,7 +37,7 @@ function requireLiveDbProbe(condition: bool, message: string) -> void {
 
 function claimAndUpdateProbe(id: string) -> bool {
   return db claim RuntimeLiveDoc(id).drain as doc {
-    let slot = db lease RuntimeLiveDoc(id).drain
+    final slot = db lease RuntimeLiveDoc(id).drain
     if slot == null {
       throw std.db.DecodeError {
         target: "runtime.live.db",
@@ -48,7 +48,7 @@ function claimAndUpdateProbe(id: string) -> bool {
     requireLiveDbProbe(slot.requestId != "", "lease request id should be present")
     requireLiveDbProbe(slot.expiresAt != "", "lease expiresAt should be present")
 
-    let updated = db update RuntimeLiveDoc(id) { visits += 1 }
+    final updated = db update RuntimeLiveDoc(id) { visits += 1 }
     if updated == null {
       throw std.db.DecodeError {
         target: "runtime.live.db",
@@ -62,7 +62,7 @@ function claimAndUpdateProbe(id: string) -> bool {
 
 function dynamicTransactionClaimProbe(id: string) -> bool {
   return db claim RuntimeLiveDoc(id).drain {
-    let updated = db update RuntimeLiveDoc(id) { visits += 1 }
+    final updated = db update RuntimeLiveDoc(id) { visits += 1 }
     requireLiveDbProbe(updated != null, "leased update should return updated row")
   }
 }

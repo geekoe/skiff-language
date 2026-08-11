@@ -486,7 +486,7 @@ impl AstVisitorMut for RootRefResolver<'_> {
 
     fn visit_stmt(&mut self, stmt: &mut Stmt) {
         match stmt {
-            Stmt::Let {
+            Stmt::LocalBinding {
                 name, ty, value, ..
             } => {
                 if let Some(ty) = ty {
@@ -698,7 +698,7 @@ impl AstVisitor for RootRefCollector<'_> {
 
     fn visit_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let {
+            Stmt::LocalBinding {
                 name, ty, value, ..
             } => {
                 if let Some(ty) = ty {

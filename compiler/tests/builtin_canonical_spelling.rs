@@ -466,7 +466,7 @@ function check(flag: boolean) -> bool {
         assert_cancel_error_spellings_are_rejected("catch", |spelling| {
             format!(
                 r#"function bad(value: TimeoutError) -> void {{
-  let attempted = catch<{spelling}>(value)
+  final attempted = catch<{spelling}>(value)
 }}
 "#
             )
@@ -490,7 +490,7 @@ function check(flag: boolean) -> bool {
         assert_cancel_error_spellings_are_rejected("union-leaf", |spelling| {
             format!(
                 r#"function bad(value: TimeoutError) -> void {{
-  let attempted = catch<TimeoutError | {spelling}>(value)
+  final attempted = catch<TimeoutError | {spelling}>(value)
 }}
 "#
             )

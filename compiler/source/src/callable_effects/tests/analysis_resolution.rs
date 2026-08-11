@@ -90,21 +90,21 @@ fn nested_local_calls_preserve_exact_effects_and_provenance() {
             }
 
             function nested(input: Input) -> Output {
-              let rows = db find many Input {
+              final rows = db find many Input {
                 where value == input.value
               }
               return outer(inner(input))
             }
 
             function nestedRecordField(input: Input) -> Output {
-              let rows = db find many Input {
+              final rows = db find many Input {
                 where value == input.value
               }
               return Output { value: inner(input).value }
             }
 
             function nestedCollectionElement(input: Input) -> JsonObject {
-              let rows = db find many Input {
+              final rows = db find many Input {
                 where value == input.value
               }
               return { item: inner(input).value }
@@ -292,7 +292,7 @@ fn root_qualified_and_catch_wrapped_helpers_keep_exact_local_targets() {
             }
 
             function catchWrapper(input: Input) -> Output? {
-              let attempted = catch<Failure>(detach(input))
+              final attempted = catch<Failure>(detach(input))
               if attempted.tag == "ok" { return attempted.value }
               return null
             }
@@ -329,37 +329,37 @@ fn typed_catch_tag_narrowing_keeps_success_and_error_provenance_separate() {
             }
 
             function okEq(input: Boxed) -> Boxed? {
-              let attempted = catch<Failure>(fresh(input))
+              final attempted = catch<Failure>(fresh(input))
               if attempted.tag == "ok" { return attempted.value }
               return null
             }
 
             function okNeEarly(input: Boxed) -> Boxed? {
-              let attempted = catch<Failure>(fresh(input))
+              final attempted = catch<Failure>(fresh(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
 
             function nested(input: Boxed) -> Boxed? {
-              let attempted = catch<Failure>(okEq(input))
+              final attempted = catch<Failure>(okEq(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
 
             function exactAlias(input: Boxed) -> Boxed? {
-              let attempted = catch<Failure>(alias(input))
+              final attempted = catch<Failure>(alias(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
 
             function errorBranch(input: Boxed) -> Exception<Failure>? {
-              let attempted = catch<Failure>(alias(input))
+              final attempted = catch<Failure>(alias(input))
               if attempted.tag == "err" { return attempted.exception }
               return null
             }
 
             function nullableCheck(input: Boxed) -> bool {
-              let attempted = catch<Failure>(nullableAlias(input))
+              final attempted = catch<Failure>(nullableAlias(input))
               if attempted.tag != "ok" { return false }
               return attempted.value == null
             }
@@ -409,7 +409,7 @@ fn typed_catch_does_not_sanitize_unknown_success_provenance() {
             }
 
             function unknown(input: Boxed, provider: any Provider) -> Boxed? {
-              let attempted = catch<Failure>(provider.run(input))
+              final attempted = catch<Failure>(provider.run(input))
               if attempted.tag != "ok" { return null }
               return attempted.value
             }
@@ -877,7 +877,7 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
             }
 
             function dynamicNativeWrapper(input: string) -> string {
-              let callable = std.string.encodePath
+              final callable = std.string.encodePath
               return callable(input)
             }
 

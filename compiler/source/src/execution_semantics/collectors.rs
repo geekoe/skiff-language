@@ -198,7 +198,7 @@ impl AstVisitor for ExecutionScopeDetector {
                 Stmt::Serial { .. } => Some("serial"),
                 Stmt::CompilerTestEffectRegister { .. }
                 | Stmt::Assert { .. }
-                | Stmt::Let { .. }
+                | Stmt::LocalBinding { .. }
                 | Stmt::Assign { .. }
                 | Stmt::If { .. }
                 | Stmt::For { .. }
@@ -262,7 +262,7 @@ pub(super) struct LocalNameCollector {
 impl AstVisitor for LocalNameCollector {
     fn visit_stmt(&mut self, statement: &Stmt) {
         match statement {
-            Stmt::Let { name, .. } => {
+            Stmt::LocalBinding { name, .. } => {
                 self.names.insert(name.clone());
             }
             Stmt::For { binding, .. } => match binding {

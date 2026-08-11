@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::shared::ast::{
-    Block, BlockSourceSpans, DispatchTiming, Expr, ExprSourceSpans, LetKind, SourceFile, Stmt,
+    Block, BlockSourceSpans, DispatchTiming, Expr, ExprSourceSpans, LocalBindingKind, SourceFile, Stmt,
 };
 
 use super::validation::{
@@ -178,7 +178,7 @@ fn collect_config_uses_in_block(
                     );
                 }
             }
-            Stmt::Let {
+            Stmt::LocalBinding {
                 kind, name, value, ..
             } => {
                 collect_config_uses_in_expr(
@@ -190,7 +190,7 @@ fn collect_config_uses_in_block(
                     presence_uses,
                     violations,
                 );
-                if *kind == LetKind::Let {
+                if *kind == LocalBindingKind::Final {
                     if let Some(const_value) = const_string_expr(value, &const_strings) {
                         const_strings.insert(name.clone(), const_value);
                     } else {
@@ -672,8 +672,8 @@ fn collect_config_uses_in_expr(
             );
             let mut tail_const_strings = const_strings.clone();
             for statement in &value.body.statements {
-                if let Stmt::Let {
-                    kind: LetKind::Let,
+                if let Stmt::LocalBinding {
+                    kind: LocalBindingKind::Final,
                     name,
                     value,
                     ..

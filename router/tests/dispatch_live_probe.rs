@@ -57,11 +57,11 @@ use skiff_runtime_transport::protocol::{
     RuntimeCapabilitiesFrameHeader, RuntimeDispatchModeCapability, RuntimeHealthFrameHeader,
     RuntimeRegisteredFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
-    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressFrameHeader,
-    RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestRoutingFrameHeader,
-    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
+    BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressFrameHeader,
+    BytecodeRequestIngressProtocol, BytecodeRequestRoutingFrameHeader,
+    BytecodeRequestStartFrameHeader, BytecodeRequestTraceFrameHeader,
 };
 use tokio::net::TcpListener;
 use tokio::time::timeout;
@@ -704,39 +704,39 @@ fn dispatch_request(
         .method
         .clone()
         .expect("HTTP ingress method");
-    let header = RuntimeAssemblyRequestStartFrameHeader {
+    let header = BytecodeRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
         request_id: request_id.to_string(),
         mode: mode.to_string(),
-        caller: RuntimeAssemblyRequestCallerFrameHeader {
+        caller: BytecodeRequestCallerFrameHeader {
             kind: "gateway".to_string(),
         },
-        routing: RuntimeAssemblyRequestRoutingFrameHeader {
+        routing: BytecodeRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
             assembly_identity: None,
             assembly_generation: None,
             deployment: deployment.clone(),
             build_id: Some(deployment.deployment_artifact_identity.to_string()),
             gateway_entry_identity: entry.gateway_entry_identity.clone(),
-            ingress: RuntimeAssemblyRequestIngressFrameHeader {
-                protocol: RuntimeAssemblyRequestIngressProtocol::Http,
+            ingress: BytecodeRequestIngressFrameHeader {
+                protocol: BytecodeRequestIngressProtocol::Http,
                 method: method.clone(),
                 path: ingress.selector.path.clone(),
             },
         },
         client_session: None,
-        deadline: Some(RuntimeAssemblyRequestDeadlineFrameHeader {
+        deadline: Some(BytecodeRequestDeadlineFrameHeader {
             timeout_ms,
             expires_at: "2030-01-01T00:00:05Z".to_string(),
         }),
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
+        trace: BytecodeRequestTraceFrameHeader {
             trace_id: format!("trace-{request_id}"),
             span_id: "span-dispatch-live".to_string(),
             parent_span_id: None,
             sampled: None,
         },
-        http_request: RuntimeAssemblyHttpRequestFrameHeader {
+        http_request: BytecodeHttpRequestFrameHeader {
             method,
             url: format!("http://127.0.0.1{path}"),
             path: path.to_string(),

@@ -20,7 +20,7 @@ use skiff_runtime_transport::{
         TaskSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::request_cancel_from_frame_header,
-    runtime_assembly_request::decode_runtime_assembly_request_start_frame,
+    protocol::decode_bytecode_request_start_frame,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -651,10 +651,10 @@ async fn dispatch_router_binary_frame_inner(
                     "request.start requires router.bootstrap first".to_string(),
                 ));
             }
-            let (header, payload) = decode_runtime_assembly_request_start_frame(bytes)
+            let (header, payload) = decode_bytecode_request_start_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
             let bootstrap = bootstrap.as_ref().expect("bootstrap checked above");
-            host.spawn_runtime_assembly_request(
+            host.spawn_bytecode_request(
                 router_session_id,
                 header,
                 payload,

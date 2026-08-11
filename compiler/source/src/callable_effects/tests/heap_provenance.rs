@@ -57,7 +57,7 @@ fn aliased_fresh_holder_store_taints_original_return() {
             type Holder { child: Child }
 
             function aliasStore(input: Child) -> Holder {
-              let holder = Holder { child: Child { value: "fresh" } }
+              final holder = Holder { child: Child { value: "fresh" } }
               var alias = holder
               alias.child = input
               return holder
@@ -267,14 +267,14 @@ fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fai
             function intoMap() -> void {
               var state = State { value: "" }
               state.value = "changed"
-              let container = Map.empty<string, State>()
+              final container = Map.empty<string, State>()
               container.set("state", state)
             }
 
             function intoArray() -> void {
               var state = State { value: "" }
               state.value = "changed"
-              let container = Array.empty<State>()
+              final container = Array.empty<State>()
               container.push(state)
             }
 
@@ -285,8 +285,8 @@ fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fai
             }
 
             function ambiguousAlias(useSecond: bool) -> void {
-              let first = State { value: "" }
-              let second = State { value: "" }
+              final first = State { value: "" }
+              final second = State { value: "" }
               var alias = first
               if useSecond {
                 alias = second
@@ -345,7 +345,7 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
             }
 
             function local(key: string) -> State {
-              let states = Map.empty<string, State>()
+              final states = Map.empty<string, State>()
               var state: State? = states.get(key)
               if state == null {
                 state = State { value: "" }
@@ -356,7 +356,7 @@ fn conditional_map_lookup_tracks_distinct_fresh_and_formal_candidates() {
             }
 
             function throughFresh(key: string) -> State {
-              let states = Map.empty<string, State>()
+              final states = Map.empty<string, State>()
               return formal(states, key)
             }
 
@@ -415,7 +415,7 @@ fn helper_map_projection_can_be_mutated_and_reinserted_without_becoming_the_map_
             }
 
             function local(key: string) -> State {
-              let states = Map.empty<string, State>()
+              final states = Map.empty<string, State>()
               var state = stateFor(states, key)
               state.value = "completed"
               states.set(key, state)
@@ -454,8 +454,8 @@ fn helper_field_projection_keeps_parent_edge_and_rejects_real_cycle() {
             }
 
             function cycle() -> Parent {
-              let child = Child { parent: null }
-              let parent = Parent { child: child }
+              final child = Child { parent: null }
+              final parent = Parent { child: child }
               var selected = childOf(parent)
               selected.parent = parent
               return parent
@@ -499,7 +499,7 @@ fn scalar_field_projection_does_not_invent_a_heap_cycle_in_relay_state_updates()
 
             function local() -> RelayState {
               var state = RelayState { bytes: 0 }
-              let next = currentBytes(state) + 1
+              final next = currentBytes(state) + 1
               state.bytes = next
               return state
             }
@@ -526,15 +526,15 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
             }
 
             function mutateWrappedPayload(input: JsonObject) -> void {
-              let wrapper = wrap(input)
-              let payload = wrapper.payload
+              final wrapper = wrap(input)
+              final payload = wrapper.payload
               payload.set("kind", "changed")
             }
 
             function project(tools: Array<JsonObject>) -> void {
-              let output = Array.empty<JsonObject>()
+              final output = Array.empty<JsonObject>()
               for tool in tools {
-                let projected: JsonObject = {
+                final projected: JsonObject = {
                   payload: tool.get("payload")
                 }
                 projected.set("kind", "function")
@@ -548,7 +548,7 @@ fn fresh_json_root_stays_distinct_from_caller_reachable_payload() {
             ) -> void {
               var target: JsonObject = input
               if useFresh {
-                let candidate: JsonObject = {
+                final candidate: JsonObject = {
                   payload: input.get("payload")
                 }
                 target = candidate
@@ -602,7 +602,7 @@ fn dependency_container_projection_can_be_mutated_and_reinserted_into_fresh_map(
             type State { key: string, value: string }
 
             function local(key: string) -> State {
-              let states = Map.empty<string, State>()
+              final states = Map.empty<string, State>()
               var state: State? = dep/tools/find(states, key)
               if state == null {
                 state = State { key: key, value: "" }
@@ -635,7 +635,7 @@ fn dependency_fresh_wrapper_keeps_payload_reachable_without_becoming_caller_owne
             function mutate(
               input: JsonObject
             ) -> JsonObject {
-              let wrapped: JsonObject = dep/tools/wrap(input)
+              final wrapped: JsonObject = dep/tools/wrap(input)
               wrapped.set("kind", "function")
               return wrapped
             }
@@ -700,7 +700,7 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
             }
 
             function local(status: string) -> StreamState {
-              let state = StreamState {
+              final state = StreamState {
                 key: "response",
                 status: "",
                 snapshot: ""
@@ -717,7 +717,7 @@ fn helper_parameter_store_distinguishes_field_projection_from_root_cycle() {
             }
 
             function helperCycle() -> Node {
-              let node = Node { child: null }
+              final node = Node { child: null }
               selfStore(node)
               return node
             }
@@ -798,7 +798,7 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
               settings: JsonObject,
               response: JsonObject
             ) -> JsonObject {
-              let same = response == response
+              final same = response == response
               return response
             }
 
@@ -819,7 +819,7 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
               second: JsonObject,
               third: JsonObject
             ) -> JsonObject {
-              let same = value == value
+              final same = value == value
               return value
             }
 
@@ -833,10 +833,10 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
               thirdValue: JsonObject
             ) -> JsonObject {
               if chooseFirst {
-                let same = firstValue == firstValue
+                final same = firstValue == firstValue
                 return firstValue
               }
-              let same = thirdValue == thirdValue
+              final same = thirdValue == thirdValue
               return thirdValue
             }
 
@@ -870,13 +870,13 @@ fn local_call_transfer_maps_alias_and_identity_to_exact_formal_actuals() {
             }
 
             function freshEquality() -> bool {
-              let left: JsonObject = {}
-              let right: JsonObject = {}
+              final left: JsonObject = {}
+              final right: JsonObject = {}
               return left == right
             }
 
             function identityThenFresh(input: JsonObject) -> JsonObject {
-              let same = input == input
+              final same = input == input
               return {}
             }
         "#,

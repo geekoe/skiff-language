@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(fixture.records.packages.len(), 1);
         assert_eq!(fixture.records.contracts.len(), 1);
         assert_eq!(fixture.records.deployments.len(), 1);
-        assert_eq!(fixture.records.assembly.roots.len(), 1);
+        assert_eq!(fixture.records.deployments.len(), 1);
         assert_eq!(
             case.entrypoint.gateway_entry_key,
             GatewayEntryKey::parse("run").unwrap()
@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_cases_receive_separate_deployments_in_one_shared_assembly() {
+    fn multiple_cases_receive_separate_deployments_in_one_shared_closure() {
         let root = TestRoot::new("case-isolation");
         let artifacts = root.path().join("artifacts");
         let runtime_artifacts = root.path().join("runtime-artifacts");
@@ -214,13 +214,12 @@ mod tests {
         assert_eq!(fixture.records.packages.len(), 1);
         assert_eq!(fixture.records.contracts.len(), 3);
         assert_eq!(fixture.records.deployments.len(), 3);
-        assert_eq!(fixture.records.assembly.roots.len(), 3);
+        assert_eq!(fixture.records.deployments.len(), 3);
         let roots = fixture
             .records
-            .assembly
-            .roots
+            .deployments
             .iter()
-            .cloned()
+            .map(skiff_artifact_identity::service_deployment_ref)
             .collect::<BTreeSet<_>>();
         let revisions = fixture
             .records
@@ -276,11 +275,21 @@ mod tests {
             .expect("multi-case publish writes the shared canonical records");
         let runtime_store =
             CanonicalArtifactStore::open(&runtime_artifacts).expect("runtime artifact store");
+        for case in &fixture.cases {
+            runtime_store
+                .read_service_deployment(&case.entrypoint.deployment)
+                .expect("each shared case deployment is published once");
+        }
+        let test_package = runtime_store
+            .read_package_artifact(&fixture.test_service)
+            .expect("test-owned package is published once");
+        let bytecode = test_package
+            .bytecode
+            .as_ref()
+            .expect("test-owned package must publish its bytecode record");
         runtime_store
-            .read_runtime_assembly(&skiff_artifact_model::RuntimeAssemblyRef {
-                assembly_identity: fixture.records.assembly.assembly_identity.clone(),
-            })
-            .expect("the shared multi-case assembly is published once");
+            .read_package_bytecode(&fixture.test_service, bytecode)
+            .expect("test-owned bytecode record is readable from the runtime store");
     }
 
     #[test]

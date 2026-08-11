@@ -55,8 +55,8 @@ function appendOnce(state: Array<string>, fail: bool) -> string {
 }
 
 function aliasThenCatch(state: Array<string>, fail: bool) -> string {
-  let decoded = alias(bytes.fromUtf8("value")).toUtf8String()
-  let result = catch<std.service.ProtocolError>(appendOnce(state, fail))
+  final decoded = alias(bytes.fromUtf8("value")).toUtf8String()
+  final result = catch<std.service.ProtocolError>(appendOnce(state, fail))
   if result.tag == "ok" {
     return decoded.concat(":").concat(result.value)
   }
@@ -64,8 +64,8 @@ function aliasThenCatch(state: Array<string>, fail: bool) -> string {
 }
 
 function copiedThenCatch(state: Array<string>) -> string {
-  let decoded = copied(bytes.fromUtf8("value")).toUtf8String()
-  let result = catch<std.service.ProtocolError>(appendOnce(state, false))
+  final decoded = copied(bytes.fromUtf8("value")).toUtf8String()
+  final result = catch<std.service.ProtocolError>(appendOnce(state, false))
   if result.tag == "ok" {
     return decoded.concat(":").concat(result.value)
   }
@@ -73,7 +73,7 @@ function copiedThenCatch(state: Array<string>) -> string {
 }
 
 function caughtEffect(state: Array<string>, fail: bool) -> Array<bytes> {
-  let result = catch<std.service.ProtocolError>(appendOnce(state, fail))
+  final result = catch<std.service.ProtocolError>(appendOnce(state, fail))
   var output = Array.empty<bytes>()
   if result.tag == "ok" {
     output.push(bytes.fromUtf8(result.value))
@@ -86,7 +86,7 @@ function optionalAliasThenCatch(value: bytes?, state: Array<string>) -> string {
   if value != null {
     decoded = alias(value).toUtf8String()
   }
-  let result = catch<std.service.ProtocolError>(appendOnce(state, false))
+  final result = catch<std.service.ProtocolError>(appendOnce(state, false))
   if result.tag == "ok" {
     return decoded.concat(":").concat(result.value)
   }

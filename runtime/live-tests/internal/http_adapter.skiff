@@ -26,13 +26,13 @@ function marker() -> string {
 }
 
 function rawEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let marker = marker()
-  let header = std.http.header(request, "x-runtime-live-marker")
+  final marker = marker()
+  final header = std.http.header(request, "x-runtime-live-marker")
   if header == null {
     return textResponse(400, "missing x-runtime-live-marker")
   }
 
-  let bodyText = request.body.toUtf8String()
+  final bodyText = request.body.toUtf8String()
   return textResponse(
     200,
     "runtime-live-http:".concat(marker).concat(":").concat(header).concat(":").concat(request.path).concat(":").concat(bodyText)
@@ -40,7 +40,7 @@ function rawEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function typedJsonEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<RuntimeLiveJsonInput>(request)
+  final input = std.http.decodeJson<RuntimeLiveJsonInput>(request)
   return std.http.json(200, RuntimeLiveJsonOutput {
     marker: input.marker,
     count: input.count + 1,
@@ -62,7 +62,7 @@ function binaryEcho(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function guardedPost(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let guard = std.http.requireMethod(request, "POST")
+  final guard = std.http.requireMethod(request, "POST")
   if guard != null {
     return guard
   }

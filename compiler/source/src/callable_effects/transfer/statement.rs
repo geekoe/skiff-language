@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use skiff_artifact_model::{CallableProvenanceUnknownReason, ValueProjectionPath};
 
-use crate::shared::ast::{ForBinding, LetKind, Stmt};
+use crate::shared::ast::{ForBinding, LocalBindingKind, Stmt};
 
 use skiff_artifact_model::PendingEffectCategory;
 
@@ -34,7 +34,7 @@ impl Evaluator<'_, '_> {
             Stmt::Assert { condition, .. } => {
                 self.eval_expr(condition, env);
             }
-            Stmt::Let { name, value, .. } => {
+            Stmt::LocalBinding { name, value, .. } => {
                 let value = self.eval_expr(value, env);
                 env.insert(name.clone(), value);
             }
@@ -204,8 +204,8 @@ impl Evaluator<'_, '_> {
         let mut sibling_env = env.clone();
         for statement in &body.statements {
             match statement {
-                Stmt::Let {
-                    kind: LetKind::Let,
+                Stmt::LocalBinding {
+                    kind: LocalBindingKind::Final,
                     name,
                     value,
                     ..

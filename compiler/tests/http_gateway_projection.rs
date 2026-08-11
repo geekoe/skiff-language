@@ -642,7 +642,7 @@ function dual(body: string) -> string { return "ok" }
             "identity-body-change",
             "health: main.health\n",
             typed_identity_source(
-                "let ignored = body.value\nreturn Output { value: \"changed\" }",
+                "final ignored = body.value\nreturn Output { value: \"changed\" }",
                 "string",
             ),
             typed_http("main.typed", "body"),

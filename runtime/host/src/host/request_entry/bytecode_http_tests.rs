@@ -31,18 +31,17 @@ use skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver;
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::{
     protocol::{decode_binary_frame, decode_response_end_frame, RUNTIME_FRAME_SCHEMA_VERSION},
-    runtime_assembly_request::{
-        RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
-        RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
-        RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-        RuntimeAssemblyRequestStartFrameWireHeader, RuntimeAssemblyRequestTraceFrameHeader,
-        RuntimeAssemblyTaskInvocationFrameHeader, RuntimeAssemblyTaskRequestCallerFrameHeader,
-        RuntimeAssemblyTaskRequestRoutingFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
-        RuntimeAssemblyWebSocketConnectIngressFrameHeader,
-        RuntimeAssemblyWebSocketConnectIngressProtocol,
-        RuntimeAssemblyWebSocketConnectRequestFrameHeader,
-        RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
-        RuntimeAssemblyWebSocketConnectRoutingFrameHeader,
+    protocol::{
+        BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
+        BytecodeRequestIngressFrameHeader, BytecodeRequestIngressProtocol,
+        BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
+        BytecodeRequestStartFrameWireHeader, BytecodeRequestTraceFrameHeader,
+        BytecodeTaskInvocationFrameHeader, BytecodeTaskRequestCallerFrameHeader,
+        BytecodeTaskRequestRoutingFrameHeader, BytecodeTaskRequestStartFrameHeader,
+        BytecodeWebSocketConnectIngressFrameHeader, BytecodeWebSocketConnectIngressProtocol,
+        BytecodeWebSocketConnectRequestFrameHeader,
+        BytecodeWebSocketConnectRequestStartFrameHeader,
+        BytecodeWebSocketConnectRoutingFrameHeader,
     },
 };
 use tokio::{sync::mpsc, time::timeout};
@@ -289,23 +288,23 @@ fn compile_fixture() -> CompiledFixture {
 fn canonical_header(
     fixture: &CompiledFixture,
     request_id: &str,
-) -> RuntimeAssemblyRequestStartFrameHeader {
+) -> BytecodeRequestStartFrameHeader {
     canonical_header_for_deployment(&fixture.deployment, request_id)
 }
 
 fn canonical_header_for_deployment(
     deployment: &skiff_artifact_model::ServiceDeploymentRef,
     request_id: &str,
-) -> RuntimeAssemblyRequestStartFrameHeader {
-    RuntimeAssemblyRequestStartFrameHeader {
+) -> BytecodeRequestStartFrameHeader {
+    BytecodeRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
         request_id: request_id.to_string(),
         mode: "unary".to_string(),
-        caller: RuntimeAssemblyRequestCallerFrameHeader {
+        caller: BytecodeRequestCallerFrameHeader {
             kind: "gateway".to_string(),
         },
-        routing: RuntimeAssemblyRequestRoutingFrameHeader {
+        routing: BytecodeRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
             assembly_identity: None,
             assembly_generation: None,
@@ -316,21 +315,21 @@ fn canonical_header_for_deployment(
                 "a".repeat(64)
             ))
             .expect("gateway identity"),
-            ingress: RuntimeAssemblyRequestIngressFrameHeader {
-                protocol: RuntimeAssemblyRequestIngressProtocol::Http,
+            ingress: BytecodeRequestIngressFrameHeader {
+                protocol: BytecodeRequestIngressProtocol::Http,
                 method: "POST".to_string(),
                 path: "/run".to_string(),
             },
         },
         client_session: None,
         deadline: None,
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
+        trace: BytecodeRequestTraceFrameHeader {
             trace_id: format!("trace-{request_id}"),
             span_id: "span-bytecode-http".to_string(),
             parent_span_id: None,
             sampled: None,
         },
-        http_request: RuntimeAssemblyHttpRequestFrameHeader {
+        http_request: BytecodeHttpRequestFrameHeader {
             method: "POST".to_string(),
             url: "http://api.example.test/run".to_string(),
             path: "/run".to_string(),
@@ -343,19 +342,16 @@ fn canonical_header_for_deployment(
     }
 }
 
-fn task_header(
-    fixture: &CompiledFixture,
-    request_id: &str,
-) -> RuntimeAssemblyTaskRequestStartFrameHeader {
-    RuntimeAssemblyTaskRequestStartFrameHeader {
+fn task_header(fixture: &CompiledFixture, request_id: &str) -> BytecodeTaskRequestStartFrameHeader {
+    BytecodeTaskRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
         request_id: request_id.to_string(),
         mode: "unary".to_string(),
-        caller: RuntimeAssemblyTaskRequestCallerFrameHeader {
+        caller: BytecodeTaskRequestCallerFrameHeader {
             kind: "service".to_string(),
         },
-        routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
+        routing: BytecodeTaskRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
             assembly_identity: None,
             assembly_generation: None,
@@ -368,13 +364,13 @@ fn task_header(
                     .to_string(),
             ),
         },
-        invocation: RuntimeAssemblyTaskInvocationFrameHeader {
+        invocation: BytecodeTaskInvocationFrameHeader {
             kind: "task".to_string(),
             target_kind: "function".to_string(),
             target: "function:run".to_string(),
         },
         deadline: None,
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
+        trace: BytecodeRequestTraceFrameHeader {
             trace_id: format!("trace-{request_id}"),
             span_id: "span-bytecode-task".to_string(),
             parent_span_id: None,
@@ -389,19 +385,19 @@ fn task_header(
 fn websocket_connect_header(
     fixture: &CompiledFixture,
     request_id: &str,
-) -> RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+) -> BytecodeWebSocketConnectRequestStartFrameHeader {
     let gateway_entry_identity =
         GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "b".repeat(64)))
             .expect("gateway identity");
-    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+    BytecodeWebSocketConnectRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
         request_id: request_id.to_string(),
         mode: "unary".to_string(),
-        caller: RuntimeAssemblyRequestCallerFrameHeader {
+        caller: BytecodeRequestCallerFrameHeader {
             kind: "gateway".to_string(),
         },
-        routing: RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
+        routing: BytecodeWebSocketConnectRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
             assembly_identity: None,
             assembly_generation: None,
@@ -414,21 +410,21 @@ fn websocket_connect_header(
                     .to_string(),
             ),
             gateway_entry_identity: gateway_entry_identity.clone(),
-            ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader {
-                protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
+            ingress: BytecodeWebSocketConnectIngressFrameHeader {
+                protocol: BytecodeWebSocketConnectIngressProtocol::WebSocket,
                 method: (),
                 path: "/run".to_string(),
             },
         },
         client_session: None,
         deadline: None,
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
+        trace: BytecodeRequestTraceFrameHeader {
             trace_id: format!("trace-{request_id}"),
             span_id: "span-bytecode-websocket-connect".to_string(),
             parent_span_id: None,
             sampled: None,
         },
-        websocket_connect: RuntimeAssemblyWebSocketConnectRequestFrameHeader {
+        websocket_connect: BytecodeWebSocketConnectRequestFrameHeader {
             connection_id: "bytecode-websocket-connection".to_string(),
             url: "ws://api.example.test/run".to_string(),
             query: Vec::new(),
@@ -556,9 +552,9 @@ async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
     let bootstrap = connection_bootstrap(fixture);
     let header = canonical_header(fixture, "bytecode-http-42");
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_runtime_assembly_request(
+    host.spawn_bytecode_request(
         "bytecode-http-session",
-        RuntimeAssemblyRequestStartFrameWireHeader::Http(header),
+        BytecodeRequestStartFrameWireHeader::Http(header),
         Vec::new(),
         &bootstrap,
         sender,
@@ -593,9 +589,9 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
     let header =
         canonical_header_for_deployment(&fixture.legacy_deployment, "bytecode-only-legacy-http");
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_runtime_assembly_request(
+    host.spawn_bytecode_request(
         "bytecode-only-legacy-session",
-        RuntimeAssemblyRequestStartFrameWireHeader::Http(header.clone()),
+        BytecodeRequestStartFrameWireHeader::Http(header.clone()),
         Vec::new(),
         &bootstrap,
         sender,
@@ -617,9 +613,9 @@ async fn canonical_http_server_stream_bytecode_request_fails_closed_without_lega
     let mut header = canonical_header(fixture, "bytecode-http-server-stream");
     header.mode = "serverStream".to_string();
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_runtime_assembly_request(
+    host.spawn_bytecode_request(
         "bytecode-http-server-stream-session",
-        RuntimeAssemblyRequestStartFrameWireHeader::Http(header.clone()),
+        BytecodeRequestStartFrameWireHeader::Http(header.clone()),
         Vec::new(),
         &bootstrap,
         sender,
@@ -636,9 +632,9 @@ async fn canonical_task_bytecode_request_reaches_bytecode_admission_and_fails_cl
     let bootstrap = connection_bootstrap(fixture);
     let header = task_header(fixture, "bytecode-task-42");
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_runtime_assembly_request(
+    host.spawn_bytecode_request(
         "bytecode-task-session",
-        RuntimeAssemblyRequestStartFrameWireHeader::Task(header.clone()),
+        BytecodeRequestStartFrameWireHeader::Task(header.clone()),
         b"{}".to_vec(),
         &bootstrap,
         sender,
@@ -655,9 +651,9 @@ async fn canonical_websocket_connect_bytecode_request_executes_scalar_vm_then_fa
     let bootstrap = connection_bootstrap(fixture);
     let header = websocket_connect_header(fixture, "bytecode-websocket-connect-42");
     let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_runtime_assembly_request(
+    host.spawn_bytecode_request(
         "bytecode-websocket-connect-session",
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header.clone()),
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(header.clone()),
         Vec::new(),
         &bootstrap,
         sender,

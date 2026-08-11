@@ -38,7 +38,7 @@ function configured() -> string {
 function nestedHttpUnary(url: string) -> integer {
   return timeout(400ms) value {
     timeout(200ms) value {
-      let response = std.http.request(clientRequest(url))
+      final response = std.http.request(clientRequest(url))
       response.status
     }
   }
@@ -47,7 +47,7 @@ function nestedHttpUnary(url: string) -> integer {
 function nestedHttpStream(url: string) -> integer {
   return timeout(410ms) value {
     timeout(210ms) value {
-      let response = std.http.stream(clientRequest(url))
+      final response = std.http.stream(clientRequest(url))
       response.status
     }
   }
@@ -68,7 +68,7 @@ function nestedWebSocketRequest(connectionId: string) -> string {
 function nestedFile(value: string) -> string {
   return timeout(430ms) value {
     timeout(230ms) value {
-      let file = std.file.createText(value, null)
+      final file = std.file.createText(value, null)
       std.file.readText(file)
     }
   }
@@ -77,7 +77,7 @@ function nestedFile(value: string) -> string {
 function nestedActor() -> string {
   return timeout(440ms) value {
     timeout(240ms) value {
-      let counter = std.actor.get<Counter>("current-scope")
+      final counter = std.actor.get<Counter>("current-scope")
       counter.increment()
     }
   }
@@ -102,12 +102,12 @@ function textResponse(status: integer, body: string) -> std.http.HttpResponse {
 }
 
 function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let unaryStatus = nestedHttpUnary("https://example.test/unary")
-  let streamStatus = nestedHttpStream("https://example.test/stream")
-  let peer = nestedWebSocketRequest(request.path)
-  let file = nestedFile(peer)
-  let actor = nestedActor()
-  let service = nestedService(file.concat(actor))
+  final unaryStatus = nestedHttpUnary("https://example.test/unary")
+  final streamStatus = nestedHttpStream("https://example.test/stream")
+  final peer = nestedWebSocketRequest(request.path)
+  final file = nestedFile(peer)
+  final actor = nestedActor()
+  final service = nestedService(file.concat(actor))
   if unaryStatus == streamStatus {
     return textResponse(200, service)
   }
@@ -115,7 +115,7 @@ function unary(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-  let status = nestedHttpStream("https://example.test/stream")
+  final status = nestedHttpStream("https://example.test/stream")
   var headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "text/plain" })
   emit(std.http.streamStart(status, headers))

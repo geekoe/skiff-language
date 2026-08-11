@@ -807,6 +807,7 @@ fn decode_node(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_node_with_behavior(
     node: &RecoverableNode,
     expected_for_node: &RuntimeRecoverableExpectedTypePlan,
@@ -937,6 +938,7 @@ fn decode_node_with_behavior(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_interface_node_with_behavior(
     state: &InterfaceValueState,
     expected_for_node: &RuntimeRecoverableExpectedTypePlan,
@@ -959,6 +961,7 @@ fn decode_interface_node_with_behavior(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn decode_local_interface_node_with_behavior(
     self_node: &RecoverableNode,
     expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
@@ -1588,6 +1591,7 @@ fn select_expected_plan_for_node_with_policy<'a>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn select_expected_plan_for_node_with_behavior_policy<'a>(
     node: &RecoverableNode,
     expected: &'a RuntimeRecoverableExpectedTypePlan,

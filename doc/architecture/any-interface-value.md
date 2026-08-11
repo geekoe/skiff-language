@@ -159,7 +159,7 @@ wrapper 赋值/传参/入容器不会创建 caller-writable payload alias。
 
 绑定可写性是静态 place fact：
 
-- 局部 `let`、普通 parameter、loop/pattern/`with` binding 及从它们派生的 path 不可写；
+- 局部 `final`、普通 parameter、loop/pattern/`with` binding 及从它们派生的 path 不可写；
 - 局部 `var` 可重绑，从它派生且未经 immutable/identity boundary 的精确 member/index path
   可写；
 - 顶层 `const` 是 compiler-evaluated、request-independent 且 deeply frozen 的 value，不是局部
@@ -217,7 +217,7 @@ public API graph 的 `public_instance_key`。`.` 是成员访问符，用它拼�
 裸 `remoteLlm/managedLlm` **不是值，没有 first-class 类型**。它是一个装箱源 / public instance 寻址 root，
 只能出现在两种位置：`remoteLlm/managedLlm.method(...)`（直接 operation 调用）或 `remoteLlm/managedLlm as I`
 （装箱）。这两种**语法**都是 `/` 一同引入的新写法；底层 outbound dispatch **机制**复用现状 service
-dependency 调用路径（语法新、机制旧）。`let x = remoteLlm/managedLlm` 非法（装箱源不是值）。不给它 first-class
+dependency 调用路径（语法新、机制旧）。`final x = remoteLlm/managedLlm` 非法（装箱源不是值）。不给它 first-class
 类型，是因为候选只有"裸 interface 名"（当类型违法）或"codegen 的 stub type"（不做 codegen）——寻址
 靠 interface 类型 + `contract_operation_id` 已足够，类型出现在装箱**之后**，是 `any I`。
 
@@ -474,7 +474,7 @@ struct RemoteOperationSlot {
 对 `any I` 值调用 method：
 
 ```skiff
-let out = provider.execute(ctx, call)
+final out = provider.execute(ctx, call)
 ```
 
 compiler 必须把它识别为 interface method call，而不是普通 field access 加动态 object lookup。

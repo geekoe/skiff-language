@@ -21,8 +21,8 @@ use skiff_runtime_transport::protocol::{
     encode_response_start_frame, validate_response_error_frame, ResponseErrorFrameHeader,
     ValidatedResponseErrorFrame,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
+use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
 };
 
 const REQUIRED_FRAMES: [&str; 12] = [
@@ -126,10 +126,10 @@ mod tests {
                 "RequestStartHttpUnary" | "RequestStartHttpStream" => {
                     assert_eq!(entry.direction, "RouterToRuntime", "{name}");
                     assert_frame_type(name, entry, "request.start");
-                    let (header, payload) = decode_runtime_assembly_request_start_frame(&bytes)
+                    let (header, payload) = decode_bytecode_request_start_frame(&bytes)
                         .unwrap_or_else(|error| panic!("{name} start decode: {error}"));
                     let request_id = match &header {
-                        RuntimeAssemblyRequestStartFrameWireHeader::Http(http) => {
+                        BytecodeRequestStartFrameWireHeader::Http(http) => {
                             http.request_id.as_str()
                         }
                         other => panic!("{name} must decode as HTTP start, got {other:?}"),

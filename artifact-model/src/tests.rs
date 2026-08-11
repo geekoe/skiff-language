@@ -727,8 +727,8 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
     let unit = FileIrUnit::empty("svc.empty", "source:empty");
 
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v13");
-    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v7");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v14");
+    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v8");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);
     assert_eq!(unit.ir_format_version, FILE_IR_FORMAT_VERSION);
@@ -819,6 +819,32 @@ fn while_round_trips_canonical_artifact_shape() {
         other => panic!("expected while statement, got {other:?}"),
     }
     assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+}
+
+#[test]
+fn init_slot_round_trips_canonical_wire_shape() {
+    let value = json!({
+        "kind": "initSlot",
+        "slot": 2,
+        "value": { "expression": 0 }
+    });
+
+    let decoded: StmtIr = serde_json::from_value(value.clone()).unwrap();
+    match &decoded {
+        StmtIr::InitSlot { slot, value } => {
+            assert_eq!(*slot, 2);
+            assert_eq!(value.expression, 0);
+        }
+        other => panic!("expected initSlot statement, got {other:?}"),
+    }
+    assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+
+    let legacy = json!({
+        "kind": "let",
+        "slot": 2,
+        "value": { "expression": 0 }
+    });
+    assert!(serde_json::from_value::<StmtIr>(legacy).is_err());
 }
 
 #[test]

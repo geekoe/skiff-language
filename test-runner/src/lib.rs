@@ -2,14 +2,14 @@
 //!
 //! A `kind: test` service compiles into an ordinary immutable `PackageArtifact`.
 //! All selected cases for that service share the compile, resolved config and dependency graph.
-//! Non-live execution then places them, in discovery order, into bounded multi-root assembly
-//! batches. Each case belongs to exactly one batch-scoped assembly; it does not own a separate
-//! assembly. Every batch publishes its immutable records and release pointers, then waits until
-//! the router health projection contains the batch build ids before dispatching.
+//! Non-live execution then places them, in discovery order, into bounded deployment
+//! batches. Each case belongs to exactly one batch-scoped deployment closure; it does not own a
+//! separate deployment. Every batch publishes its immutable records and release pointers, then
+//! waits until the router health projection contains the batch build ids before dispatching.
 //!
 //! Each case still receives its own synthetic `ServiceDeployment`, `ServiceContract`, gateway
 //! entry, ingress binding, generated service identity, config snapshot partition, heap, effect
-//! registry and execution nonce. Sharing an assembly does not share a deployment or mutable state.
+//! registry and execution nonce. Sharing a deployment closure does not share mutable state.
 //! Every root dispatch receives a new opaque `testCaseCapability`; direct and recursive task
 //! requests inherit that exact capability instead of creating or borrowing one from another root.
 
@@ -54,6 +54,8 @@ pub struct SkiffTestOptions {
     pub platform_sources: CompilerPlatformSources,
     /// Harness-owned writable canonical root. It has no public CLI spelling.
     pub runtime_artifact_root: Option<PathBuf>,
+    /// Retained for CLI compatibility; the exact base closure is hydrated from
+    /// the base config snapshot.
     pub base_assembly: Option<String>,
     pub base_config_snapshot: Option<String>,
     /// Router control origin serving `/__router/health` and `/__skiff/test-dispatch`.

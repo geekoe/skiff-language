@@ -950,7 +950,7 @@ impl<'a> FunctionCfg<'a> {
                     }
                 }
             }
-            StmtIr::Let { .. }
+            StmtIr::InitSlot { .. }
             | StmtIr::Assign { .. }
             | StmtIr::Assert { .. }
             | StmtIr::Dispatch { .. }
@@ -1044,7 +1044,7 @@ impl<'a> FunctionCfg<'a> {
         branch_continuation: Option<u32>,
     ) -> Result<MirStmtKind, String> {
         let kind = match stmt {
-            StmtIr::Let { slot, value } => MirStmtKind::Let { slot, value },
+            StmtIr::InitSlot { slot, value } => MirStmtKind::InitSlot { slot, value },
             StmtIr::Assign { target, value } => {
                 let place =
                     assignment_place(&target, self.expressions, self.slots, self.index_accesses)
@@ -1354,7 +1354,7 @@ impl<'a> FunctionCfg<'a> {
                         .collect(),
                     // Plain statements and empty fragments fall through.
                     Some(
-                        MirStmtKind::Let { .. }
+                        MirStmtKind::InitSlot { .. }
                         | MirStmtKind::Assign { .. }
                         | MirStmtKind::Assert { .. }
                         | MirStmtKind::Dispatch { .. }
@@ -1529,7 +1529,7 @@ impl<'a> FunctionCfg<'a> {
             )
         };
         match stmt {
-            StmtIr::Let { value, .. } => visit(self, value.expression)?,
+            StmtIr::InitSlot { value, .. } => visit(self, value.expression)?,
             StmtIr::Assign { target, value } => {
                 visit(self, value.expression)?;
                 match target {

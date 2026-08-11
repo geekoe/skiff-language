@@ -27,7 +27,7 @@ pub(super) fn validate_emit_usage_in_stmt(
                 collect_emit_expression_call_violations(path, expression, violations);
             }
         }
-        Stmt::Let {
+        Stmt::LocalBinding {
             name, ty, value, ..
         } => {
             collect_emit_expression_call_violations(path, value, violations);

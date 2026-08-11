@@ -3,13 +3,12 @@ use skiff_runtime_request_contract::{
     ResponseEnd, ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 
-#[cfg(any(test, feature = "legacy-wire"))]
-use crate::runtime_assembly_request::{
-    encode_runtime_assembly_websocket_jsonrpc_response_end_frame,
-    RuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
-    RuntimeAssemblyWebSocketConnectResponseFrameHeader,
-    RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
-    RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
+use crate::protocol::{
+    encode_bytecode_websocket_jsonrpc_response_end_frame,
+    BytecodeWebSocketConnectResponseEndFrameHeader,
+    BytecodeWebSocketConnectResponseFrameHeader,
+    BytecodeWebSocketJsonRpcResponseEndFrameHeader,
+    BytecodeWebSocketJsonRpcResponseFrameHeader,
 };
 use crate::{
     error::TransportResult,
@@ -21,13 +20,12 @@ use crate::{
     },
 };
 
-#[cfg(any(test, feature = "legacy-wire"))]
-pub fn runtime_assembly_websocket_connect_response_into_frame(
+pub fn bytecode_websocket_connect_response_into_frame(
     request_id: String,
-    response: RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+    response: BytecodeWebSocketConnectResponseFrameHeader,
 ) -> TransportResult<Vec<u8>> {
     encode_binary_frame(
-        &RuntimeAssemblyWebSocketConnectResponseEndFrameHeader {
+        &BytecodeWebSocketConnectResponseEndFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "response.end".to_string(),
             request_id,
@@ -37,14 +35,13 @@ pub fn runtime_assembly_websocket_connect_response_into_frame(
     )
 }
 
-#[cfg(any(test, feature = "legacy-wire"))]
-pub fn runtime_assembly_websocket_jsonrpc_response_into_frame(
+pub fn bytecode_websocket_jsonrpc_response_into_frame(
     request_id: String,
-    response: RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
+    response: BytecodeWebSocketJsonRpcResponseFrameHeader,
     payload: Vec<u8>,
 ) -> TransportResult<Vec<u8>> {
-    encode_runtime_assembly_websocket_jsonrpc_response_end_frame(
-        &RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader {
+    encode_bytecode_websocket_jsonrpc_response_end_frame(
+        &BytecodeWebSocketJsonRpcResponseEndFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "response.end".to_string(),
             request_id,

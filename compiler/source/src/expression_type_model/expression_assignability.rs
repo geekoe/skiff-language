@@ -325,6 +325,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         self.object_record_fields_assignable_to_resolved_expected(fields, expected)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn object_literal_assignability_diagnostics(
         &self,
         input: ObjectLiteralAssignabilityContext<'_>,
@@ -353,6 +354,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             .min_by_key(|diagnostics| diagnostics.len())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn object_literal_materialization_plan(
         &self,
         input: ObjectLiteralAssignabilityContext<'_>,

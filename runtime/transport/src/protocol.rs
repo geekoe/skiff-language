@@ -1,4 +1,5 @@
 mod actor;
+mod bytecode;
 mod control;
 mod frame;
 mod request;
@@ -11,6 +12,7 @@ pub use actor::{
     ActorRefFrameMetadata, ActorRemoveRequestFrameHeader, ActorRemoveResponseFrameHeader,
     ActorReplaceRequestFrameHeader, ActorReplaceResponseFrameHeader,
 };
+pub use bytecode::*;
 pub use control::{
     ConnectionSendEnvelope, FileBackendControlConfig, FileBackendLocalConfig, FileBackendOssConfig,
     PlatformEvent, RouterControlEnvelope, RouterControlFrameHeader, RouterControlPackageConfig,

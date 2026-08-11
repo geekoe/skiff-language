@@ -108,11 +108,11 @@ fn slot_name_by_index(executable: &Value, index: u64) -> Option<&str> {
         .and_then(|slot| slot["name"].as_str())
 }
 
-fn let_stmt_by_slot(executable: &Value, slot: u64) -> &Value {
+fn init_slot_stmt_by_slot(executable: &Value, slot: u64) -> &Value {
     find_stmt(executable, |stmt| {
-        stmt["kind"] == "let" && stmt["slot"].as_u64() == Some(slot)
+        stmt["kind"] == "initSlot" && stmt["slot"].as_u64() == Some(slot)
     })
-    .unwrap_or_else(|| panic!("let statement for slot {slot} should be present"))
+    .unwrap_or_else(|| panic!("init slot statement for slot {slot} should be present"))
 }
 
 fn find_stmt(executable: &Value, predicate: impl Fn(&Value) -> bool) -> Option<&Value> {
@@ -323,10 +323,10 @@ mod tests {
         let artifact = compile_package_file_ir(
             r#"
             function run(input: number) -> number {
-                let total = input
+                final total = input
                 if true {
-                    let total = 2
-                    let copied = total
+                    final total = 2
+                    final copied = total
                 }
                 return total
             }
@@ -348,13 +348,13 @@ mod tests {
         assert_ne!(total_slots[0], total_slots[1]);
         let copied_slot = slot_index(run, "copied", "local");
 
-        let outer_total = let_stmt_by_slot(run, total_slots[0]);
+        let outer_total = init_slot_stmt_by_slot(run, total_slots[0]);
         assert_eq!(
             load_slot(expr_for_ref(run, &outer_total["value"])),
             input_slot
         );
 
-        let copied = let_stmt_by_slot(run, copied_slot);
+        let copied = init_slot_stmt_by_slot(run, copied_slot);
         assert_eq!(
             load_slot(expr_for_ref(run, &copied["value"])),
             total_slots[1]
@@ -414,19 +414,19 @@ mod tests {
     }
 
     #[test]
-    fn same_scope_duplicate_let_is_rejected_before_ir_emission() {
+    fn same_scope_duplicate_final_is_rejected_before_ir_emission() {
         let error = compile_package_file_ir(
             r#"
             function run() -> number {
-                let value = 1
-                let value = 2
+                final value = 1
+                final value = 2
                 return value
             }
         "#,
             "internal/duplicate.skiff",
             "internal.duplicate",
         )
-        .expect_err("same-scope duplicate let should be a compiler error")
+        .expect_err("same-scope duplicate final should be a compiler error")
         .to_string();
         let lower = error.to_ascii_lowercase();
 
@@ -456,7 +456,7 @@ mod tests {
             }
 
             function run() -> string {
-              let provider = Host{} as Provider
+              final provider = Host{} as Provider
               return provider.name()
             }
         "#,
@@ -493,8 +493,8 @@ mod tests {
             }
 
             function run() -> number {
-                let result = addOne(1)
-                let second = internal.callees.addOne(result)
+                final result = addOne(1)
+                final second = internal.callees.addOne(result)
                 var list: Array<number> = Array.empty<number>()
                 list.push(second)
                 return list.length()
@@ -537,9 +537,9 @@ mod tests {
             function run() -> number {
                 var items: Array<string> = Array.empty<string>()
                 items.push("ok")
-                let joined = string.join(items, ",")
-                let parsed = number.parse("1")
-                let body: bytes = bytes.fromUtf8(joined)
+                final joined = string.join(items, ",")
+                final parsed = number.parse("1")
+                final body: bytes = bytes.fromUtf8(joined)
                 return body.length()
             }
         "#,
@@ -800,7 +800,7 @@ mod tests {
             }
 
             function withHeaders() -> std.http.HttpResponse {
-                let headers = Array.empty<std.http.HttpHeader>()
+                final headers = Array.empty<std.http.HttpHeader>()
                 return std.http.jsonWithHeaders(200, JsonOutput {
                   marker: "ok",
                   count: 2
@@ -1339,7 +1339,7 @@ mod tests {
             }
 
             function run(settings: SessionConfig, token: string) -> string {
-                let value = settings.cookieName.concat("=")
+                final value = settings.cookieName.concat("=")
                 return value.concat(token)
             }
         "#,
@@ -1387,9 +1387,9 @@ version: 1.0.0
             }
 
             function run() -> bool {
-                let marker = config.require<string>("runtimeLive.db")
-                let prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
-                let firstId = prefix.concat("-a")
+                final marker = config.require<string>("runtimeLive.db")
+                final prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
+                final firstId = prefix.concat("-a")
                 db insert RuntimeLiveDoc { id = firstId value = marker.concat("-first") visits = 1 rank = 10 }
                 return firstId.contains(marker)
             }
@@ -1561,7 +1561,7 @@ version: 1.0.0
         let wrong_receiver = compile_root_alias_array_push(
             r#"
             function run() -> number {
-                let value: number = 1
+                final value: number = 1
                 value.push("text")
                 return value
             }
@@ -1631,7 +1631,7 @@ version: 1.0.0
 
             function run(chunks: Stream<Chunk>) -> bool {
                 for chunk in chunks {
-                    let text = chunk.value.toUtf8String()
+                    final text = chunk.value.toUtf8String()
                     if text.contains("data:") {
                         return true
                     }
@@ -1827,13 +1827,13 @@ version: 1.0.0
             }
 
             function run(rows: Array<User>) -> bool {
-                let inserted = db insert User { id = "u1" name = "Ada" visits = 0 }
-                let updated = db update User("u1") { visits += 1 }
-                let replaced = db replace User("u1") { name = "Grace" visits = 2 }
-                let upserted = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
-                let insertedMany = db insert many User values rows
-                let updatedMany = db update many User { where name != null } { visits += 1 }
-                let deletedMany = db delete many User { where name == "Ada" }
+                final inserted = db insert User { id = "u1" name = "Ada" visits = 0 }
+                final updated = db update User("u1") { visits += 1 }
+                final replaced = db replace User("u1") { name = "Grace" visits = 2 }
+                final upserted = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
+                final insertedMany = db insert many User values rows
+                final updatedMany = db update many User { where name != null } { visits += 1 }
+                final deletedMany = db delete many User { where name == "Ada" }
                 return true
             }
         "#,
@@ -1898,12 +1898,12 @@ version: 1.0.0
             }
 
             function projected(id: string) -> { id: string, apiKey: string } {
-              let row = db require Credential(id) { fields { apiKey } }
+              final row = db require Credential(id) { fields { apiKey } }
               return { id: row.id, apiKey: row.apiKey }
             }
 
             function encoded(id: string) -> string {
-              let row = db require Credential(id) { fields { apiKey } }
+              final row = db require Credential(id) { fields { apiKey } }
               return std.json.encode(row)
             }
 
@@ -1959,10 +1959,10 @@ version: 1.0.0
             }
 
             function run() -> bool {
-                let result = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
-                let inserted = result.inserted
-                let name = result.value.name
-                let visits = result.value.visits
+                final result = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
+                final inserted = result.inserted
+                final name = result.value.name
+                final visits = result.value.visits
                 if inserted {
                     return name == "Ada"
                 }
@@ -2018,7 +2018,7 @@ version: 1.0.0
                 }
 
                 function run() -> bool {
-                    let user = db insert User { id = "u1" name = "Ada" visits = 0 }
+                    final user = db insert User { id = "u1" name = "Ada" visits = 0 }
                     user.name = "Grace"
                     return true
                 }
@@ -2040,7 +2040,7 @@ version: 1.0.0
                 }
 
                 function run() -> bool {
-                    let user = db update User("u1") { visits += 1 }
+                    final user = db update User("u1") { visits += 1 }
                     user.name = "Grace"
                     return true
                 }
@@ -2062,7 +2062,7 @@ version: 1.0.0
                 }
 
                 function run() -> bool {
-                    let user = db replace User("u1") { name = "Grace" visits = 2 }
+                    final user = db replace User("u1") { name = "Grace" visits = 2 }
                     user.name = "Ada"
                     return true
                 }
@@ -2084,7 +2084,7 @@ version: 1.0.0
                 }
 
                 function run() -> bool {
-                    let result = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
+                    final result = db upsert User("u1") { name = "Ada" visits = 0 } { visits += 1 }
                     result.value.name = "Grace"
                     return true
                 }
@@ -2123,13 +2123,13 @@ version: 1.0.0
             }
 
             function run(users: Map<UserId, User>) -> Array<UserId> {
-                let ids: Array<UserId> = users.keys()
+                final ids: Array<UserId> = users.keys()
                 for id in users {
-                    let copy: UserId = keepUserId(id)
+                    final copy: UserId = keepUserId(id)
                 }
                 for id, user in users {
-                    let copy: UserId = keepUserId(id)
-                    let name: string = keepUser(user)
+                    final copy: UserId = keepUserId(id)
+                    final name: string = keepUser(user)
                 }
                 return ids
             }

@@ -26,9 +26,9 @@ use skiff_router::ws::{
 };
 use skiff_runtime_transport::connection_protocol::{OpaquePeerId, WebSocketRpcProfile};
 use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
-use skiff_runtime_transport::runtime_assembly_request::{
-    decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestNameValueFrameHeader,
-    RuntimeAssemblyWebSocketConnectIngressProtocol, RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
+use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeRequestNameValueFrameHeader,
+    BytecodeWebSocketConnectIngressProtocol, BytecodeWebSocketJsonRpcResponseOutcome,
 };
 use tokio::sync::watch;
 
@@ -274,7 +274,7 @@ mod tests {
                 &build_id(),
                 &skiff_router::supervisor::ws::WsConnectMetadata {
                     url: "ws://127.0.0.1/ws".to_string(),
-                    query: vec![RuntimeAssemblyRequestNameValueFrameHeader {
+                    query: vec![BytecodeRequestNameValueFrameHeader {
                         name: "user".to_string(),
                         value: "alice".to_string(),
                     }],
@@ -286,9 +286,9 @@ mod tests {
             .expect("connect begin");
         let frames = writer.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 1);
-        let (header, payload) = decode_runtime_assembly_request_start_frame(&frames[0].1)
+        let (header, payload) = decode_bytecode_request_start_frame(&frames[0].1)
             .expect("connect frame decodes");
-        let skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(connect) = header else {
+        let skiff_runtime_transport::protocol::BytecodeRequestStartFrameWireHeader::WebSocketConnect(connect) = header else {
             panic!("expected websocketConnect request.start");
         };
         assert_eq!(connect.request_id, request_id);
@@ -413,9 +413,9 @@ mod tests {
         assert!(ws_lane.handle_peer_text("wsconn-1", second_frame).is_none());
         let frames = writer.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 1);
-        let (header, payload) = decode_runtime_assembly_request_start_frame(&frames[0].1)
+        let (header, payload) = decode_bytecode_request_start_frame(&frames[0].1)
             .expect("jsonrpc frame decodes");
-        let skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(jsonrpc) = header else {
+        let skiff_runtime_transport::protocol::BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(jsonrpc) = header else {
             panic!("expected websocketJsonRpc request.start");
         };
         assert_eq!(jsonrpc.websocket_json_rpc.connection_id, "wsconn-1");
@@ -428,7 +428,7 @@ mod tests {
 
         store.on_inbound_response(
             &jsonrpc.request_id,
-            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success,
+            BytecodeWebSocketJsonRpcResponseOutcome::Success,
             br#""ok""#.to_vec(),
         );
         assert_eq!(store.pending_inbound_count(), 0);
@@ -446,14 +446,14 @@ mod tests {
             .is_none());
         assert_eq!(store.pending_inbound_count(), 1);
         let frames = writer.frames.lock().unwrap().clone();
-        let (header, _) = decode_runtime_assembly_request_start_frame(&frames[1].1)
+        let (header, _) = decode_bytecode_request_start_frame(&frames[1].1)
             .expect("jsonrpc frame decodes");
-        let skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(jsonrpc) = header else {
+        let skiff_runtime_transport::protocol::BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(jsonrpc) = header else {
             panic!("expected websocketJsonRpc request.start");
         };
         store.on_inbound_response(
             &jsonrpc.request_id,
-            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::DeadlineExceeded,
+            BytecodeWebSocketJsonRpcResponseOutcome::DeadlineExceeded,
             Vec::new(),
         );
         assert_eq!(store.pending_inbound_count(), 0);
@@ -588,8 +588,8 @@ mod tests {
             "close frame targets the pinned runtime"
         );
         let (header, payload) =
-            decode_runtime_assembly_request_start_frame(&frames[0].1).expect("close frame decodes");
-        let skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(close) = header else {
+            decode_bytecode_request_start_frame(&frames[0].1).expect("close frame decodes");
+        let skiff_runtime_transport::protocol::BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(close) = header else {
             panic!("expected connectionClosed request.start");
         };
         assert_eq!(close.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
@@ -607,7 +607,7 @@ mod tests {
         );
         assert_eq!(
             close.routing.ingress.protocol,
-            RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket
+            BytecodeWebSocketConnectIngressProtocol::WebSocket
         );
         assert_eq!(close.routing.ingress.path, "/ws");
         assert_eq!(close.routing.ingress.entry_kind, "connectionClosed");

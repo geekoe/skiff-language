@@ -151,7 +151,7 @@ fn map_literal_has_one_required_serde_shape() {
 #[test]
 fn map_literal_source_spans_cover_entries_and_children() {
     let source = r#"function run() -> void {
-  let values = { alpha: 1, beta: [2] }
+  final values = { alpha: 1, beta: [2] }
 }
 "#;
     let ast = parse_source(source).unwrap();

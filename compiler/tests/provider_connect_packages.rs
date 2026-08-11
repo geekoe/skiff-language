@@ -112,7 +112,7 @@ mod tests {
                 r#"
 import connect
 function run() -> {} {
-  let db = connect.mongo.Target("cluster-a", "app")
+  final db = connect.mongo.Target("cluster-a", "app")
   return {}
 }
 "#,

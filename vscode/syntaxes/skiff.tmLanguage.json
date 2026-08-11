@@ -226,7 +226,7 @@
         },
         {
           "name": "meta.binding.declaration.skiff",
-          "match": "\\b(const|let)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "match": "\\b(const|final|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
             "1": {
               "name": "storage.type.variable.skiff"

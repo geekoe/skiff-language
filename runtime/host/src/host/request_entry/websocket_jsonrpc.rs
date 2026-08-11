@@ -7,12 +7,11 @@ use skiff_runtime_request::{
     RouterWriterMessage,
 };
 use skiff_runtime_transport::{
-    response_mapper::runtime_assembly_websocket_jsonrpc_response_into_frame,
-    runtime_assembly_request::{
-        RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
-        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
-        RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
+    protocol::{
+        BytecodeWebSocketJsonRpcRequestStartFrameHeader,
+        BytecodeWebSocketJsonRpcResponseFrameHeader, BytecodeWebSocketJsonRpcResponseOutcome,
     },
+    response_mapper::bytecode_websocket_jsonrpc_response_into_frame,
 };
 use tokio::sync::mpsc;
 use tracing::error;
@@ -122,9 +121,9 @@ impl RuntimeHost {
             return;
         }
         let (outcome, payload) = websocket_jsonrpc_response_parts(outcome);
-        match runtime_assembly_websocket_jsonrpc_response_into_frame(
+        match bytecode_websocket_jsonrpc_response_into_frame(
             request_id,
-            RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader { outcome },
+            BytecodeWebSocketJsonRpcResponseFrameHeader { outcome },
             payload,
         ) {
             Ok(frame) => {
@@ -139,7 +138,7 @@ impl RuntimeHost {
 
 fn bytecode_websocket_jsonrpc_request_envelope(
     route: &BytecodeRoute,
-    header: &RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    header: &BytecodeWebSocketJsonRpcRequestStartFrameHeader,
     params: Vec<u8>,
 ) -> RequestEnvelope {
     RequestEnvelope {
@@ -168,7 +167,7 @@ fn bytecode_websocket_jsonrpc_request_envelope(
 }
 
 fn bytecode_websocket_jsonrpc_extra(
-    header: &RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    header: &BytecodeWebSocketJsonRpcRequestStartFrameHeader,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut extra = serde_json::Map::new();
     if let Some(deadline) = &header.deadline {
@@ -183,7 +182,7 @@ fn bytecode_websocket_jsonrpc_extra(
 
 fn bytecode_websocket_jsonrpc_telemetry_context(
     host: &RuntimeHost,
-    header: &RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    header: &BytecodeWebSocketJsonRpcRequestStartFrameHeader,
     route: &BytecodeRoute,
 ) -> RequestTelemetryContext {
     let mut context = RequestTelemetryContext::new(host.telemetry.clone());
@@ -200,22 +199,21 @@ fn bytecode_websocket_jsonrpc_telemetry_context(
 
 fn websocket_jsonrpc_response_parts(
     outcome: WebSocketJsonRpcOutcome,
-) -> (RuntimeAssemblyWebSocketJsonRpcResponseOutcome, Vec<u8>) {
+) -> (BytecodeWebSocketJsonRpcResponseOutcome, Vec<u8>) {
     match outcome {
-        WebSocketJsonRpcOutcome::Success { payload } => (
-            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success,
-            payload,
-        ),
+        WebSocketJsonRpcOutcome::Success { payload } => {
+            (BytecodeWebSocketJsonRpcResponseOutcome::Success, payload)
+        }
         WebSocketJsonRpcOutcome::InvalidParams => (
-            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InvalidParams,
+            BytecodeWebSocketJsonRpcResponseOutcome::InvalidParams,
             Vec::new(),
         ),
         WebSocketJsonRpcOutcome::InternalError => (
-            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InternalError,
+            BytecodeWebSocketJsonRpcResponseOutcome::InternalError,
             Vec::new(),
         ),
         WebSocketJsonRpcOutcome::DeadlineExceeded => (
-            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::DeadlineExceeded,
+            BytecodeWebSocketJsonRpcResponseOutcome::DeadlineExceeded,
             Vec::new(),
         ),
     }
@@ -231,10 +229,7 @@ mod tests {
             websocket_jsonrpc_response_parts(WebSocketJsonRpcOutcome::Success {
                 payload: b"null".to_vec(),
             });
-        assert_eq!(
-            outcome,
-            RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
-        );
+        assert_eq!(outcome, BytecodeWebSocketJsonRpcResponseOutcome::Success);
         assert_eq!(payload, b"null");
 
         for terminal in [

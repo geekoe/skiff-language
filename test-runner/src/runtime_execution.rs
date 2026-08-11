@@ -9,10 +9,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use skiff_artifact_identity::{runtime_assembly_ref, service_deployment_ref};
+use skiff_artifact_identity::service_deployment_ref;
 use skiff_artifact_model::{
-    IngressProtocol, PackageArtifact, PackageArtifactRef, PackageBuildId, RuntimeAssemblyRef,
-    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceDeployment,
+    IngressProtocol, PackageArtifact, PackageArtifactRef, PackageBuildId, RuntimeConfigSnapshotId,
+    RuntimeConfigSnapshotRef, ServiceDeployment,
 };
 use skiff_compiler::authoring::{
     package_actor_routing_input, project_assembly_actor_routing_from_inputs,
@@ -22,11 +22,13 @@ use skiff_deployment::{
     storage::{CanonicalArtifactStore, ReleasePointer},
 };
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore;
+use skiff_runtime_linker::{link_deployment, LinkLimits};
+use skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver;
 
 use crate::{
     canonical_fixture::CanonicalFixtureError,
     canonical_package::{read_root_package_manifest, CanonicalPackageProject},
-    canonical_store::{CanonicalBaseAssembly, CanonicalPublishSession, CanonicalTestRecords},
+    canonical_store::{CanonicalBaseClosure, CanonicalPublishSession, CanonicalTestRecords},
     inline_effects,
     test_discovery::TestServiceCase,
     test_service_fixture::{
@@ -72,7 +74,7 @@ pub fn run_package_cases(
         }
     }
     let options = &effective_options;
-    let base = CanonicalBaseAssembly::load(
+    let base = CanonicalBaseClosure::load(
         source_artifact_root,
         options.base_assembly.as_deref(),
         options.base_config_snapshot.as_deref(),
@@ -144,7 +146,7 @@ pub fn run_package_cases(
         )));
     }
 
-    execute_assembly_batches(
+    execute_deployment_batches(
         execution_batches,
         runtime_artifact_root,
         control_url,
@@ -195,7 +197,58 @@ fn write_batch_release_pointers(
     Ok(())
 }
 
-fn execute_assembly_batches(
+fn verify_deployment_bytecode(
+    artifact_root: &Path,
+    deployments: &[ServiceDeployment],
+) -> Result<(), CanonicalFixtureError> {
+    let resolver =
+        FilesystemDeploymentBytecodeContentResolver::open(artifact_root).map_err(|error| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "open runtime artifact store for deployment bytecode: {error}"
+            ))
+        })?;
+    let limits = test_runner_link_limits();
+    for deployment in deployments {
+        let reference = service_deployment_ref(deployment);
+        let hydrated = resolver
+            .load_deployment_bytecode(&reference)
+            .map_err(|error| {
+                CanonicalFixtureError::InvalidInput(format!(
+                    "hydrate deployment bytecode for {}@{}: {error}",
+                    reference.service_id, reference.contract_version
+                ))
+            })?;
+        link_deployment(&hydrated, &limits).map_err(|error| {
+            CanonicalFixtureError::InvalidInput(format!(
+                "link deployment bytecode for {}@{}: {error}",
+                reference.service_id, reference.contract_version
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn test_runner_link_limits() -> LinkLimits {
+    LinkLimits {
+        max_packages: 256,
+        max_root_specializations: 100_000,
+        max_specializations: 1_000_000,
+        max_code_words_per_function: 1_000_000,
+        max_total_code_words: 100_000_000,
+        max_relocations_per_function: 100_000,
+        max_total_relocations: 10_000_000,
+        max_image_table_entries: 1_000_000,
+        max_total_image_table_entries: 10_000_000,
+        max_total_function_table_entries: 10_000_000,
+        max_type_nesting_depth: 64,
+        max_expanded_type_nodes: 1_000_000,
+        max_expanded_type_bytes: 64 * 1024 * 1024,
+        max_constant_graph_nodes: 1_000_000,
+        max_constant_graph_edges: 1_000_000,
+    }
+}
+
+fn execute_deployment_batches(
     batches: Vec<ExecutionBatch<Arc<CanonicalTestRecords>>>,
     runtime_artifact_root: &Path,
     control_url: &str,
@@ -271,14 +324,12 @@ fn execute_assembly_batches(
             }
             for artifact in &packages {
                 if !actor_routing_inputs.contains_key(&artifact.package_build_id) {
-                    let input =
-                        package_actor_routing_input(runtime_artifact_root, artifact).map_err(
-                            |error| {
-                                CanonicalFixtureError::InvalidInput(format!(
-                                    "actor routing package input failed for the batch: {error}"
-                                ))
-                            },
-                        )?;
+                    let input = package_actor_routing_input(runtime_artifact_root, artifact)
+                        .map_err(|error| {
+                            CanonicalFixtureError::InvalidInput(format!(
+                                "actor routing package input failed for the batch: {error}"
+                            ))
+                        })?;
                     actor_routing_inputs.insert(artifact.package_build_id.clone(), input);
                 }
             }
@@ -291,8 +342,8 @@ fn execute_assembly_batches(
                     "actor routing projection failed for the batch: {error}"
                 ))
             })?;
-            let projection = serde_json::from_value::<ActorRoutingProjection>(projection)
-                .map_err(|error| {
+            let projection =
+                serde_json::from_value::<ActorRoutingProjection>(projection).map_err(|error| {
                     CanonicalFixtureError::InvalidInput(format!(
                         "decode actor routing projection for the batch: {error}"
                     ))
@@ -304,16 +355,16 @@ fn execute_assembly_batches(
                         "write actor routing projection for the batch: {error}"
                     ))
                 })?;
-            let assembly_ref = runtime_assembly_ref(&records.assembly)
-                .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+            let mut deployment_bytecode_records = records.deployments.clone();
+            deployment_bytecode_records.extend(records.base.deployments.iter().cloned());
+            verify_deployment_bytecode(runtime_artifact_root, &deployment_bytecode_records)?;
             let build_ids = records
                 .deployments
                 .iter()
                 .map(|deployment| deployment.deployment_artifact_identity.to_string())
                 .collect();
             let target = readiness::target_for_builds(&options.target_profile, build_ids)?;
-            Ok(ActivatedAssembly {
-                assembly: assembly_ref,
+            Ok(ActivatedExecution {
                 readiness: HttpReadiness {
                     target,
                     control_url: control_url.to_string(),
@@ -355,12 +406,7 @@ fn execute_assembly_batches(
         },
         |active, entrypoint| {
             execute_business_request_once(|| {
-                execute_control_test_dispatch(
-                    control_url,
-                    ingress_url,
-                    &active.assembly,
-                    entrypoint,
-                )
+                execute_control_test_dispatch(control_url, ingress_url, entrypoint)
             })
         },
     )
@@ -389,8 +435,7 @@ fn prepare_execution_batches_with<Input, Context>(
 }
 
 #[derive(Debug)]
-struct ActivatedAssembly<Readiness> {
-    assembly: RuntimeAssemblyRef,
+struct ActivatedExecution<Readiness> {
     readiness: Readiness,
 }
 
@@ -401,12 +446,12 @@ struct HttpReadiness {
 }
 
 #[cfg(test)]
-fn execute_shared_assembly_with<Readiness>(
+fn execute_shared_execution_with<Readiness>(
     entrypoints: Vec<CanonicalTestServiceEntrypoint>,
-    activate: impl FnOnce() -> Result<ActivatedAssembly<Readiness>, CanonicalFixtureError>,
-    await_readiness: impl FnOnce(&ActivatedAssembly<Readiness>) -> Result<(), CanonicalFixtureError>,
+    activate: impl FnOnce() -> Result<ActivatedExecution<Readiness>, CanonicalFixtureError>,
+    await_readiness: impl FnOnce(&ActivatedExecution<Readiness>) -> Result<(), CanonicalFixtureError>,
     mut dispatch: impl FnMut(
-        &ActivatedAssembly<Readiness>,
+        &ActivatedExecution<Readiness>,
         &CanonicalTestServiceEntrypoint,
     ) -> Result<DispatchOutcome, CanonicalFixtureError>,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
@@ -433,10 +478,10 @@ fn execute_shared_assembly_with<Readiness>(
 
 fn execute_batches_with<Context, Readiness>(
     batches: Vec<ExecutionBatch<Context>>,
-    mut activate: impl FnMut(&Context) -> Result<ActivatedAssembly<Readiness>, CanonicalFixtureError>,
-    mut await_readiness: impl FnMut(&ActivatedAssembly<Readiness>) -> Result<(), CanonicalFixtureError>,
+    mut activate: impl FnMut(&Context) -> Result<ActivatedExecution<Readiness>, CanonicalFixtureError>,
+    mut await_readiness: impl FnMut(&ActivatedExecution<Readiness>) -> Result<(), CanonicalFixtureError>,
     mut dispatch: impl FnMut(
-        &ActivatedAssembly<Readiness>,
+        &ActivatedExecution<Readiness>,
         &CanonicalTestServiceEntrypoint,
     ) -> Result<DispatchOutcome, CanonicalFixtureError>,
 ) -> Result<SkiffTestSummary, CanonicalFixtureError> {
@@ -567,10 +612,9 @@ fn suite_execution_error(
 fn execute_control_test_dispatch(
     control_url: &str,
     ingress_url: &str,
-    assembly: &RuntimeAssemblyRef,
     entrypoint: &CanonicalTestServiceEntrypoint,
 ) -> Result<http::HttpResponse, CanonicalFixtureError> {
-    let body = test_dispatch_body(ingress_url, assembly, entrypoint)?;
+    let body = test_dispatch_body(ingress_url, entrypoint)?;
     let connected = http::request_url(
         &format!("{control_url}/__skiff/test-dispatch"),
         "POST",
@@ -584,7 +628,6 @@ fn execute_control_test_dispatch(
 
 fn test_dispatch_body(
     ingress_url: &str,
-    assembly: &RuntimeAssemblyRef,
     entrypoint: &CanonicalTestServiceEntrypoint,
 ) -> Result<Vec<u8>, CanonicalFixtureError> {
     if entrypoint.selector.protocol != IngressProtocol::Http {
@@ -602,7 +645,7 @@ fn test_dispatch_body(
         "kind": "test",
         "routing": {
             "kind": "runtimeAssembly",
-            "assemblyIdentity": assembly.assembly_identity,
+            "buildId": entrypoint.deployment.deployment_artifact_identity,
             "deployment": entrypoint.deployment,
             "gatewayEntryIdentity": entrypoint.gateway_entry_identity,
             "ingress": entrypoint.selector,

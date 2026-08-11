@@ -16,8 +16,8 @@ use skiff_runtime_request::{
     execution_budget_trace_attrs, response_error_to_telemetry_map, RequestCancel, RequestEnvelope,
     ResponseError,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeRequestStartFrameHeader, BytecodeTaskRequestStartFrameHeader,
 };
 use tokio::sync::Mutex;
 
@@ -83,7 +83,7 @@ impl RequestSupervisor {
 
     pub(crate) async fn begin_http_gateway(
         &self,
-        header: &RuntimeAssemblyRequestStartFrameHeader,
+        header: &BytecodeRequestStartFrameHeader,
         telemetry: RequestTelemetryContext,
     ) -> SupervisedRequest {
         let mut extra = Map::new();
@@ -104,7 +104,7 @@ impl RequestSupervisor {
 
     pub(crate) async fn begin_task(
         &self,
-        header: &RuntimeAssemblyTaskRequestStartFrameHeader,
+        header: &BytecodeTaskRequestStartFrameHeader,
         telemetry: RequestTelemetryContext,
     ) -> Option<SupervisedRequest> {
         let mut extra = Map::new();

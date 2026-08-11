@@ -118,9 +118,9 @@ impl OwnerCollector<'_> {
                 condition,
                 next_statement_expression(&mut expressions, "assert condition")?,
             )?,
-            Stmt::Let { value, .. } => self.visit_expr(
+            Stmt::LocalBinding { value, .. } => self.visit_expr(
                 value,
-                next_statement_expression(&mut expressions, "let value")?,
+                next_statement_expression(&mut expressions, "local binding value")?,
             )?,
             Stmt::Assign { target, value } => {
                 self.visit_expr(

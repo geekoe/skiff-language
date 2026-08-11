@@ -38,6 +38,7 @@ const TEST_SERVICE_CONFIG_PROFILE: &str = "skiff-test";
 pub struct CanonicalPackageProject {
     pub source_root: PathBuf,
     pub package: PublishedPackageArtifact,
+    pub bytecode: PackageBytecodeLane,
     pub dependency_packages: Vec<PackageArtifact>,
     pub contract_dependencies: Vec<PackageContractCompileDependency>,
     pub test_service_profile: Option<CanonicalTestServiceProfile>,
@@ -168,14 +169,14 @@ pub(crate) fn compile_package_artifact_with_context(
     platform_sources: &CompilerPlatformSources,
     package: &PackageSourceInput,
     context: CanonicalPackageCompileContext<'_>,
-) -> Result<PublishedPackageArtifact, PackageCompileError> {
+) -> Result<(PublishedPackageArtifact, PackageBytecodeLane), PackageCompileError> {
     let package_id = package.manifest().id.to_string();
     let mut input = PackageCompileInput::new(
         platform_sources,
         package,
         context.package_aliases,
         &package_id,
-        false,
+        true,
     )
     .with_canonical_dependencies(context.dependency_packages, context.contract_dependencies)
     .with_available_canonical_packages(context.available_packages);
@@ -185,11 +186,8 @@ pub(crate) fn compile_package_artifact_with_context(
     if context.test_service {
         input = input.for_test_service();
     }
-    compile_package(input)?
-        .into_disabled_package()
-        .map_err(|_| PackageCompileError::BytecodeProjection {
-            message: "test runner package compilation unexpectedly enabled bytecode".to_string(),
-        })
+    let compilation = compile_package(input)?;
+    Ok(compilation.into_parts())
 }
 
 fn compile_test_service_artifact_with_context(
@@ -204,7 +202,7 @@ fn compile_test_service_artifact_with_context(
         package,
         context.package_aliases,
         &package_id,
-        false,
+        true,
     )
     .with_canonical_dependencies(context.dependency_packages, context.contract_dependencies)
     .with_available_canonical_packages(context.available_packages)
@@ -321,7 +319,7 @@ fn compile_package_project_after_platform_context_guard(
     )
     .with_store(&store)
     .with_test_service(is_test_service);
-    let (package, service_api) = match &test_service_profile {
+    let (package, bytecode, service_api) = match &test_service_profile {
         Some(test_service) => {
             let compiled = compile_test_service_artifact_with_context(
                 platform_sources,
@@ -329,24 +327,23 @@ fn compile_package_project_after_platform_context_guard(
                 &test_service.service_root,
                 context,
             )?;
-            if !matches!(&compiled.bytecode, PackageBytecodeLane::Disabled) {
-                return Err(PackageCompileError::BytecodeProjection {
-                    message: "test runner test-service compilation unexpectedly enabled bytecode"
-                        .to_string(),
-                }
-                .into());
-            }
-            (compiled.package, Some(compiled.service_api))
+            (
+                compiled.package,
+                compiled.bytecode,
+                Some(compiled.service_api),
+            )
         }
-        None => (
-            compile_package_artifact_with_context(platform_sources, &source, context)?,
-            None,
-        ),
+        None => {
+            let (package, bytecode) =
+                compile_package_artifact_with_context(platform_sources, &source, context)?;
+            (package, bytecode, None)
+        }
     };
     let dependency_packages = read_compiled_dependency_closure(&store, &package.artifact)?;
     Ok(CanonicalPackageProject {
         source_root: root.to_path_buf(),
         package,
+        bytecode,
         dependency_packages,
         contract_dependencies,
         test_service_profile,

@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    native_value_lifecycle_registry, NativeValueDropPlan, NativeValueLifecycleConcrete,
-    ValueDropPlan, ValueTransferPlan,
+    native_value_lifecycle_registry, NativeResourceDropPlan, NativeValueDropPlan,
+    NativeValueEmbedding, NativeValueLifecycleConcrete, NativeValueLifecycleResolution,
+    ResourceDropPlan, TypeRefIr, ValueDropPlan, ValueTransferPlan,
 };
 use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
@@ -15,7 +16,9 @@ use super::{
 /// registry.
 ///
 /// Constants retain their owner-qualified `FromType` plan. Function slots and
-/// results are resolved to concrete `SnapshotShare` plans; missing or
+/// results are resolved to concrete lifecycle plans from the pinned native
+/// registry. Ordinary snapshot values use `SnapshotShare`; exact authoritative
+/// `Stream<T>` endpoints use their affine resource plan. Missing or
 /// non-snapshot lifecycle facts fail closed instead of being inferred.
 pub fn derive_bytecode_value_transfer_plans(
     units: &[MirUnit],
@@ -30,7 +33,7 @@ pub fn derive_bytecode_value_transfer_plans(
                     .ty
                     .as_ref()
                     .ok_or_else(|| unsupported_slot_type(&function_key, slot))?;
-                slot_plans.push(concrete_snapshot_plan(
+                slot_plans.push(concrete_value_plan(
                     units,
                     &unit.module_path,
                     &function_key,
@@ -41,7 +44,7 @@ pub fn derive_bytecode_value_transfer_plans(
             let result_plans = if is_void(&function.return_type) {
                 Vec::new()
             } else {
-                vec![concrete_snapshot_plan(
+                vec![concrete_value_plan(
                     units,
                     &unit.module_path,
                     &function_key,
@@ -73,7 +76,7 @@ pub fn derive_bytecode_value_transfer_plans(
     Ok(BytecodeValueTransferPlans::new(functions, constants))
 }
 
-fn concrete_snapshot_plan(
+fn concrete_value_plan(
     units: &[MirUnit],
     module_path: &str,
     function_key: &str,
@@ -92,25 +95,72 @@ fn concrete_snapshot_plan(
             construct: "value lifecycle lookup",
             location: format!(" {location}: {error}"),
         })?;
-    let NativeValueLifecycleConcrete::SnapshotShare { drop } = resolution.lifecycle else {
-        return Err(BytecodeEmissionError::UnsupportedConstruct {
-            function_key: function_key.to_string(),
-            construct: "non-snapshot value lifecycle",
-            location: format!(" {location}"),
-        });
-    };
-    let drop = match drop {
-        NativeValueDropPlan::Trivial => ValueDropPlan::Trivial,
-        NativeValueDropPlan::SnapshotRelease => ValueDropPlan::SnapshotRelease,
-        NativeValueDropPlan::NativeAdapter { .. } => {
-            return Err(BytecodeEmissionError::UnsupportedConstruct {
+    concrete_lifecycle_plan(function_key, location, ty, resolution)
+}
+
+fn concrete_lifecycle_plan(
+    function_key: &str,
+    location: &str,
+    ty: &TypeRefIr,
+    resolution: NativeValueLifecycleResolution,
+) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+    match &resolution.lifecycle {
+        NativeValueLifecycleConcrete::SnapshotShare { drop } => {
+            let drop = match drop {
+                NativeValueDropPlan::Trivial => ValueDropPlan::Trivial,
+                NativeValueDropPlan::SnapshotRelease => ValueDropPlan::SnapshotRelease,
+                NativeValueDropPlan::NativeAdapter { .. } => {
+                    return Err(BytecodeEmissionError::UnsupportedConstruct {
+                        function_key: function_key.to_string(),
+                        construct: "native adapter value drop",
+                        location: format!(" {location}"),
+                    });
+                }
+            };
+            Ok(ValueTransferPlan::SnapshotShare { drop })
+        }
+        NativeValueLifecycleConcrete::AffineResource { drop } => {
+            if !is_authoritative_stream(ty, &resolution) {
+                return Err(BytecodeEmissionError::UnsupportedConstruct {
+                    function_key: function_key.to_string(),
+                    construct: "non-Stream affine value lifecycle",
+                    location: format!(" {location}"),
+                });
+            }
+            let drop = match drop {
+                NativeResourceDropPlan::ResourceTableRelease => {
+                    ResourceDropPlan::ResourceTableRelease
+                }
+                NativeResourceDropPlan::NativeAdapter { .. } => {
+                    return Err(BytecodeEmissionError::UnsupportedConstruct {
+                        function_key: function_key.to_string(),
+                        construct: "native stream resource drop",
+                        location: format!(" {location}"),
+                    });
+                }
+            };
+            Ok(ValueTransferPlan::AffineResource { drop })
+        }
+        NativeValueLifecycleConcrete::MoveOnly { .. }
+        | NativeValueLifecycleConcrete::ExplicitCloneLease { .. } => {
+            Err(BytecodeEmissionError::UnsupportedConstruct {
                 function_key: function_key.to_string(),
-                construct: "native adapter value drop",
+                construct: "non-snapshot value lifecycle",
                 location: format!(" {location}"),
             })
         }
-    };
-    Ok(ValueTransferPlan::SnapshotShare { drop })
+    }
+}
+
+fn is_authoritative_stream(
+    ty: &TypeRefIr,
+    resolution: &NativeValueLifecycleResolution,
+) -> bool {
+    matches!(
+        ty,
+        skiff_artifact_model::TypeRefIr::Builtin { name, args }
+            if name == "Stream" && args.len() == 1
+    ) && resolution.embedding == NativeValueEmbedding::Forbidden
 }
 
 fn is_record_aggregate(
@@ -268,4 +318,75 @@ impl BytecodeValueTransferPlans {
 pub struct FunctionValueTransferPlans {
     pub slot_plans: Vec<ValueTransferPlan>,
     pub result_plans: Vec<ValueTransferPlan>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_authoritative_stream_uses_affine_resource_plan() {
+        let ty = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        };
+        let resolution = NativeValueLifecycleResolution {
+            lifecycle: NativeValueLifecycleConcrete::AffineResource {
+                drop: NativeResourceDropPlan::ResourceTableRelease,
+            },
+            embedding: NativeValueEmbedding::Forbidden,
+        };
+
+        assert_eq!(
+            concrete_lifecycle_plan("streams::run", " return value", &ty, resolution).unwrap(),
+            ValueTransferPlan::AffineResource {
+                drop: ResourceDropPlan::ResourceTableRelease,
+            }
+        );
+    }
+
+    #[test]
+    fn non_stream_affine_lifecycle_fails_closed() {
+        let ty = TypeRefIr::builtin("file");
+        let resolution = NativeValueLifecycleResolution {
+            lifecycle: NativeValueLifecycleConcrete::AffineResource {
+                drop: NativeResourceDropPlan::ResourceTableRelease,
+            },
+            embedding: NativeValueEmbedding::Forbidden,
+        };
+
+        let error =
+            concrete_lifecycle_plan("io::read", " slot `handle`", &ty, resolution).unwrap_err();
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedConstruct {
+                construct: "non-Stream affine value lifecycle",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stream_spelling_without_forbidden_embedding_fails_closed() {
+        let ty = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        };
+        let resolution = NativeValueLifecycleResolution {
+            lifecycle: NativeValueLifecycleConcrete::AffineResource {
+                drop: NativeResourceDropPlan::ResourceTableRelease,
+            },
+            embedding: NativeValueEmbedding::Ordinary,
+        };
+
+        let error =
+            concrete_lifecycle_plan("streams::run", " return value", &ty, resolution).unwrap_err();
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedConstruct {
+                construct: "non-Stream affine value lifecycle",
+                ..
+            }
+        ));
+    }
 }

@@ -1,22 +1,22 @@
 import std
 
 test "sleep returns immediately for non positive durations" {
-  let before = Date.now()
+  final before = Date.now()
   std.time.sleep(Duration.milliseconds(0))
   std.time.sleep(Duration.milliseconds(std.number.assertSafeInteger(0 - 1)))
   assert !Date.now().isBefore(before)
 }
 
 test "sleep delays the current request" {
-  let before = Date.now()
+  final before = Date.now()
   std.time.sleep(Duration.milliseconds(20))
-  let after = Date.now()
+  final after = Date.now()
   assert after.toEpochMilliseconds() >= before.toEpochMilliseconds() + 1
 }
 
 test "duration constructors use integer millisecond payloads" {
-  let millis = Duration.milliseconds(2000)
-  let seconds = Duration.seconds(2)
+  final millis = Duration.milliseconds(2000)
+  final seconds = Duration.seconds(2)
 
   assert millis.toMilliseconds() == 2000
   assert seconds.toMilliseconds() == millis.toMilliseconds()

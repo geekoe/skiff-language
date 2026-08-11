@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use super::{
     response_event_into_frame, response_stream_event_into_frame,
-    runtime_assembly_websocket_jsonrpc_response_into_frame, validate_response_end_frame,
+    bytecode_websocket_jsonrpc_response_into_frame, validate_response_end_frame,
     OrdinaryResponseEvent, ResponseEndPhase,
 };
 use crate::protocol::{
@@ -11,10 +11,10 @@ use crate::protocol::{
     ResponseEndFrameHeader, ResponseErrorFrameHeader, ValidatedResponseErrorFrame,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use crate::runtime_assembly_request::{
-    decode_runtime_assembly_websocket_jsonrpc_response_end_frame,
-    RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
-    RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
+use crate::protocol::{
+    decode_bytecode_websocket_jsonrpc_response_end_frame,
+    BytecodeWebSocketJsonRpcResponseFrameHeader,
+    BytecodeWebSocketJsonRpcResponseOutcome,
 };
 use skiff_runtime_request_contract::OpaqueServiceError;
 use skiff_runtime_request_contract::{
@@ -225,50 +225,50 @@ fn websocket_response_wire_raw_optional_bag_shapes_are_rejected() {
 }
 
 #[test]
-fn runtime_assembly_websocket_jsonrpc_mapper_round_trips_opaque_success_payload() {
+fn bytecode_websocket_jsonrpc_mapper_round_trips_opaque_success_payload() {
     let payload = b"null".to_vec();
-    let encoded = runtime_assembly_websocket_jsonrpc_response_into_frame(
+    let encoded = bytecode_websocket_jsonrpc_response_into_frame(
         "request-websocket-jsonrpc-mapper".to_string(),
-        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
-            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success,
+        BytecodeWebSocketJsonRpcResponseFrameHeader {
+            outcome: BytecodeWebSocketJsonRpcResponseOutcome::Success,
         },
         payload.clone(),
     )
     .expect("success must encode");
     let (decoded, decoded_payload) =
-        decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&encoded)
+        decode_bytecode_websocket_jsonrpc_response_end_frame(&encoded)
             .expect("mapped response must decode");
 
     assert_eq!(decoded.request_id, "request-websocket-jsonrpc-mapper");
     assert_eq!(
         decoded.websocket_json_rpc.outcome,
-        RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success
+        BytecodeWebSocketJsonRpcResponseOutcome::Success
     );
     assert_eq!(decoded_payload, payload);
 }
 
 #[test]
-fn runtime_assembly_websocket_jsonrpc_mapper_rejects_outcome_payload_mismatch() {
-    assert!(runtime_assembly_websocket_jsonrpc_response_into_frame(
+fn bytecode_websocket_jsonrpc_mapper_rejects_outcome_payload_mismatch() {
+    assert!(bytecode_websocket_jsonrpc_response_into_frame(
         "request-success-without-payload".to_string(),
-        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
-            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success,
+        BytecodeWebSocketJsonRpcResponseFrameHeader {
+            outcome: BytecodeWebSocketJsonRpcResponseOutcome::Success,
         },
         Vec::new(),
     )
     .is_err());
-    assert!(runtime_assembly_websocket_jsonrpc_response_into_frame(
+    assert!(bytecode_websocket_jsonrpc_response_into_frame(
         "request-error-with-payload".to_string(),
-        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
-            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InternalError,
+        BytecodeWebSocketJsonRpcResponseFrameHeader {
+            outcome: BytecodeWebSocketJsonRpcResponseOutcome::InternalError,
         },
         b"null".to_vec(),
     )
     .is_err());
-    assert!(runtime_assembly_websocket_jsonrpc_response_into_frame(
+    assert!(bytecode_websocket_jsonrpc_response_into_frame(
         " invalid-request-id ".to_string(),
-        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader {
-            outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InternalError,
+        BytecodeWebSocketJsonRpcResponseFrameHeader {
+            outcome: BytecodeWebSocketJsonRpcResponseOutcome::InternalError,
         },
         Vec::new(),
     )

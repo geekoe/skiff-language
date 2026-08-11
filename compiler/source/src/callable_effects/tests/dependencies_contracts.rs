@@ -273,7 +273,7 @@ fn dependency_field_first_class_value_remains_fail_closed() {
     let error = AnalysisFixture::new(
         r#"
             function wrapper() -> void {
-              let callable = dep/tools.run
+              final callable = dep/tools.run
             }
         "#,
     )

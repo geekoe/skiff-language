@@ -6,7 +6,7 @@ function configured() -> string {
 }
 
 function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-  let events = helper/events.response(request.body)
+  final events = helper/events.response(request.body)
   for event in events {
     emit(event)
   }

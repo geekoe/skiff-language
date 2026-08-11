@@ -30,8 +30,8 @@ path、service id和display name都不能代替Package ID。未知Package ID必�
 Package源码只读取自己分区中的local dotted path：
 
 ```skiff
-let cookieName = config.require<string>("cookieName")
-let maxAge = config.optional<number>("maxAgeSeconds")
+final cookieName = config.require<string>("cookieName")
+final maxAge = config.optional<number>("maxAgeSeconds")
 ```
 
 源码看不到Package ID包装层，也不能读取另一个Package的配置。`PackageArtifact`只保存当前Package源码

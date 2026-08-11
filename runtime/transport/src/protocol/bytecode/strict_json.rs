@@ -13,13 +13,13 @@ use crate::{
 const FIXED_HEADER_BYTES: usize = 14;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
-pub(super) fn decode_runtime_assembly_request_json_frame(
+pub(super) fn decode_bytecode_request_json_frame(
     frame: &[u8],
 ) -> Result<(Value, Vec<u8>), BinaryFrameError> {
-    decode_runtime_assembly_json_frame(frame, "runtimeAssembly request.start")
+    decode_bytecode_json_frame(frame, "runtimeAssembly request.start")
 }
 
-pub(super) fn decode_runtime_assembly_json_frame(
+pub(super) fn decode_bytecode_json_frame(
     frame: &[u8],
     label: &str,
 ) -> Result<(Value, Vec<u8>), BinaryFrameError> {

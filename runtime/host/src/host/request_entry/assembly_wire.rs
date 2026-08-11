@@ -1,15 +1,14 @@
 use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_runtime_capability_context::ExecutionBudgetReason;
 use skiff_runtime_request::{BytecodeRequestTarget, RequestError, RouterWriterMessage};
-use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressProtocol,
-    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
-    RuntimeAssemblyTaskRequestStartFrameHeader,
-    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
-    RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
-    RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressProtocol,
+    BytecodeRequestStartFrameHeader, BytecodeRequestStartFrameWireHeader,
+    BytecodeTaskRequestStartFrameHeader, BytecodeWebSocketConnectRequestStartFrameHeader,
+    BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
+    BytecodeWebSocketJsonRpcRequestStartFrameHeader,
 };
+use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
 use tracing::error;
@@ -24,38 +23,38 @@ use crate::{
 
 pub(super) struct AdmittedBytecodeHttpRequest {
     pub(super) route: BytecodeRoute,
-    pub(super) header: RuntimeAssemblyRequestStartFrameHeader,
+    pub(super) header: BytecodeRequestStartFrameHeader,
     pub(super) body: Vec<u8>,
     pub(super) target: BytecodeRequestTarget,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketConnectRequest {
     pub(super) route: BytecodeRoute,
-    pub(super) header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    pub(super) header: BytecodeWebSocketConnectRequestStartFrameHeader,
     pub(super) target: BytecodeRequestTarget,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketConnectionClosedRequest {
     pub(super) route: BytecodeRoute,
-    pub(super) header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    pub(super) header: BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
     pub(super) target: BytecodeRequestTarget,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketJsonRpcRequest {
     pub(super) route: BytecodeRoute,
-    pub(super) header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    pub(super) header: BytecodeWebSocketJsonRpcRequestStartFrameHeader,
     pub(super) target: BytecodeRequestTarget,
     pub(super) params: Vec<u8>,
 }
 
 pub(super) struct AdmittedBytecodeTaskRequest {
     pub(super) route: BytecodeRoute,
-    pub(super) header: RuntimeAssemblyTaskRequestStartFrameHeader,
+    pub(super) header: BytecodeTaskRequestStartFrameHeader,
     pub(super) target: BytecodeRequestTarget,
     pub(super) payload: Vec<u8>,
 }
 
-enum AdmittedRuntimeAssemblyRequest {
+enum AdmittedBytecodeRequest {
     BytecodeHttp(AdmittedBytecodeHttpRequest),
     BytecodeWebSocketConnect(AdmittedBytecodeWebSocketConnectRequest),
     BytecodeWebSocketConnectionClosed(AdmittedBytecodeWebSocketConnectionClosedRequest),
@@ -64,26 +63,26 @@ enum AdmittedRuntimeAssemblyRequest {
 }
 
 impl RuntimeHost {
-    pub(crate) async fn spawn_runtime_assembly_request(
+    pub(crate) async fn spawn_bytecode_request(
         &self,
         router_session_id: &str,
-        header: RuntimeAssemblyRequestStartFrameWireHeader,
+        header: BytecodeRequestStartFrameWireHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let request_id = match &header {
-            RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => header.request_id.clone(),
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => {
+            BytecodeRequestStartFrameWireHeader::Http(header) => header.request_id.clone(),
+            BytecodeRequestStartFrameWireHeader::WebSocketConnect(header) => {
                 header.request_id.clone()
             }
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
+            BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
                 header.request_id.clone()
             }
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
+            BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
                 header.request_id.clone()
             }
-            RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => header.request_id.clone(),
+            BytecodeRequestStartFrameWireHeader::Task(header) => header.request_id.clone(),
         };
         let build_id = wire_routing_build_id(&header);
         let was_loaded = if let Some(build_id) = build_id.as_deref() {
@@ -92,23 +91,23 @@ impl RuntimeHost {
             false
         };
         let result = match header {
-            RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => {
+            BytecodeRequestStartFrameWireHeader::Http(header) => {
                 self.http_gateway_request_from_wire(header, body, bootstrap)
                     .await
             }
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => {
+            BytecodeRequestStartFrameWireHeader::WebSocketConnect(header) => {
                 self.websocket_connect_request_from_wire(header, body, bootstrap)
                     .await
             }
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
+            BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
                 self.websocket_connection_closed_request_from_wire(header, body, bootstrap)
                     .await
             }
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
+            BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
                 self.websocket_jsonrpc_request_from_wire(header, body, bootstrap)
                     .await
             }
-            RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => {
+            BytecodeRequestStartFrameWireHeader::Task(header) => {
                 self.task_request_from_wire(header, body, bootstrap).await
             }
         };
@@ -116,7 +115,7 @@ impl RuntimeHost {
             let _ = self.queue_runtime_capabilities(sender.clone());
         }
         match result {
-            Ok(AdmittedRuntimeAssemblyRequest::BytecodeHttp(request)) => {
+            Ok(AdmittedBytecodeRequest::BytecodeHttp(request)) => {
                 self.task_bytecode_http_request(
                     router_session_id.to_string(),
                     request,
@@ -125,7 +124,7 @@ impl RuntimeHost {
                 )
                 .await
             }
-            Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketConnect(request)) => {
+            Ok(AdmittedBytecodeRequest::BytecodeWebSocketConnect(request)) => {
                 self.task_bytecode_websocket_connect_request(
                     router_session_id.to_string(),
                     request,
@@ -134,7 +133,7 @@ impl RuntimeHost {
                 )
                 .await
             }
-            Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketConnectionClosed(request)) => {
+            Ok(AdmittedBytecodeRequest::BytecodeWebSocketConnectionClosed(request)) => {
                 self.task_bytecode_websocket_connection_closed_request(
                     router_session_id.to_string(),
                     request,
@@ -143,7 +142,7 @@ impl RuntimeHost {
                 )
                 .await
             }
-            Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketJsonRpc(request)) => {
+            Ok(AdmittedBytecodeRequest::BytecodeWebSocketJsonRpc(request)) => {
                 self.task_bytecode_websocket_jsonrpc_request(
                     router_session_id.to_string(),
                     request,
@@ -152,7 +151,7 @@ impl RuntimeHost {
                 )
                 .await
             }
-            Ok(AdmittedRuntimeAssemblyRequest::BytecodeTask(request)) => {
+            Ok(AdmittedBytecodeRequest::BytecodeTask(request)) => {
                 self.task_bytecode_task_request(
                     router_session_id.to_string(),
                     request,
@@ -199,10 +198,10 @@ impl RuntimeHost {
 
     async fn websocket_connect_request_from_wire(
         &self,
-        mut header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        mut header: BytecodeWebSocketConnectRequestStartFrameHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedRuntimeAssemblyRequest> {
+    ) -> Result<AdmittedBytecodeRequest> {
         validate_websocket_connect_header(&header, &body)?;
         let route = self
             .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
@@ -223,7 +222,7 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
-        Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketConnect(
+        Ok(AdmittedBytecodeRequest::BytecodeWebSocketConnect(
             AdmittedBytecodeWebSocketConnectRequest {
                 route,
                 header,
@@ -234,10 +233,10 @@ impl RuntimeHost {
 
     async fn websocket_connection_closed_request_from_wire(
         &self,
-        mut header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+        mut header: BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedRuntimeAssemblyRequest> {
+    ) -> Result<AdmittedBytecodeRequest> {
         validate_websocket_connection_closed_header(&header, &body)?;
         let route = self
             .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
@@ -258,23 +257,21 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
-        Ok(
-            AdmittedRuntimeAssemblyRequest::BytecodeWebSocketConnectionClosed(
-                AdmittedBytecodeWebSocketConnectionClosedRequest {
-                    route,
-                    header,
-                    target,
-                },
-            ),
-        )
+        Ok(AdmittedBytecodeRequest::BytecodeWebSocketConnectionClosed(
+            AdmittedBytecodeWebSocketConnectionClosedRequest {
+                route,
+                header,
+                target,
+            },
+        ))
     }
 
     async fn http_gateway_request_from_wire(
         &self,
-        mut header: RuntimeAssemblyRequestStartFrameHeader,
+        mut header: BytecodeRequestStartFrameHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedRuntimeAssemblyRequest> {
+    ) -> Result<AdmittedBytecodeRequest> {
         validate_http_header(&header)?;
         let route = self
             .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
@@ -294,7 +291,7 @@ impl RuntimeHost {
         {
             return Err(deadline_exceeded());
         }
-        Ok(AdmittedRuntimeAssemblyRequest::BytecodeHttp(
+        Ok(AdmittedBytecodeRequest::BytecodeHttp(
             AdmittedBytecodeHttpRequest {
                 route,
                 header,
@@ -306,10 +303,10 @@ impl RuntimeHost {
 
     async fn task_request_from_wire(
         &self,
-        mut header: RuntimeAssemblyTaskRequestStartFrameHeader,
+        mut header: BytecodeTaskRequestStartFrameHeader,
         payload: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedRuntimeAssemblyRequest> {
+    ) -> Result<AdmittedBytecodeRequest> {
         validate_task_header(&header, &payload)?;
         let deployment = &header.routing.deployment;
         if let Some(build_id) = &header.routing.build_id {
@@ -333,7 +330,7 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
-        Ok(AdmittedRuntimeAssemblyRequest::BytecodeTask(
+        Ok(AdmittedBytecodeRequest::BytecodeTask(
             AdmittedBytecodeTaskRequest {
                 route,
                 header,
@@ -345,10 +342,10 @@ impl RuntimeHost {
 
     async fn websocket_jsonrpc_request_from_wire(
         &self,
-        mut header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+        mut header: BytecodeWebSocketJsonRpcRequestStartFrameHeader,
         params: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedRuntimeAssemblyRequest> {
+    ) -> Result<AdmittedBytecodeRequest> {
         validate_websocket_jsonrpc_header(&header, &params)?;
         let route = self
             .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
@@ -369,7 +366,7 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
-        Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketJsonRpc(
+        Ok(AdmittedBytecodeRequest::BytecodeWebSocketJsonRpc(
             AdmittedBytecodeWebSocketJsonRpcRequest {
                 route,
                 header,
@@ -409,24 +406,20 @@ fn validate_bytecode_build_id(
     Ok(())
 }
 
-fn wire_routing_build_id(header: &RuntimeAssemblyRequestStartFrameWireHeader) -> Option<String> {
+fn wire_routing_build_id(header: &BytecodeRequestStartFrameWireHeader) -> Option<String> {
     let deployment = match header {
-        RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => &header.routing.deployment,
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => {
+        BytecodeRequestStartFrameWireHeader::Http(header) => &header.routing.deployment,
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(header) => &header.routing.deployment,
+        BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
             &header.routing.deployment
         }
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
-            &header.routing.deployment
-        }
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
-            &header.routing.deployment
-        }
-        RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => &header.routing.deployment,
+        BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => &header.routing.deployment,
+        BytecodeRequestStartFrameWireHeader::Task(header) => &header.routing.deployment,
     };
     Some(deployment.deployment_artifact_identity.as_str().to_string())
 }
 
-fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Result<()> {
+fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> {
     if header.request_id.is_empty() {
         return Err(RuntimeError::Decode(
             "canonical request.start requestId must be non-empty".to_string(),
@@ -437,10 +430,9 @@ fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Resu
             "canonical HTTP gateway request requires caller.kind gateway".to_string(),
         ));
     }
-    if header.routing.ingress.protocol != RuntimeAssemblyRequestIngressProtocol::Http {
+    if header.routing.ingress.protocol != BytecodeRequestIngressProtocol::Http {
         return Err(RuntimeError::Unsupported(
-            "RuntimeAssembly request bridge accepts only canonical HTTP gateway requests"
-                .to_string(),
+            "Bytecode request bridge accepts only canonical HTTP gateway requests".to_string(),
         ));
     }
     if header.test_effects_enabled != header.test_case_capability.is_some() {
@@ -479,7 +471,7 @@ fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Resu
 }
 
 fn validate_websocket_connect_header(
-    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    header: &BytecodeWebSocketConnectRequestStartFrameHeader,
     body: &[u8],
 ) -> Result<()> {
     if header.request_id.is_empty() || header.caller.kind != "gateway" || header.mode != "unary" {
@@ -520,7 +512,7 @@ fn validate_websocket_connect_header(
 }
 
 fn validate_websocket_connection_closed_header(
-    header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    header: &BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
     body: &[u8],
 ) -> Result<()> {
     if header.request_id.is_empty() || header.caller.kind != "gateway" || header.mode != "unary" {
@@ -544,7 +536,7 @@ fn validate_websocket_connection_closed_header(
 }
 
 fn validate_websocket_jsonrpc_header(
-    header: &RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    header: &BytecodeWebSocketJsonRpcRequestStartFrameHeader,
     params: &[u8],
 ) -> Result<()> {
     if header.request_id.is_empty() || header.caller.kind != "gateway" || header.mode != "unary" {
@@ -567,7 +559,7 @@ fn validate_websocket_jsonrpc_header(
 }
 
 fn validate_task_header(
-    header: &RuntimeAssemblyTaskRequestStartFrameHeader,
+    header: &BytecodeTaskRequestStartFrameHeader,
     payload: &[u8],
 ) -> Result<()> {
     if header.request_id.is_empty()
@@ -597,15 +589,15 @@ fn validate_task_header(
 }
 
 fn effective_deadline(
-    header: &RuntimeAssemblyRequestStartFrameHeader,
-) -> Result<Option<RuntimeAssemblyRequestDeadlineFrameHeader>> {
+    header: &BytecodeRequestStartFrameHeader,
+) -> Result<Option<BytecodeRequestDeadlineFrameHeader>> {
     effective_request_deadline(header.deadline.as_ref(), "HTTP gateway")
 }
 
 fn effective_request_deadline(
-    deadline: Option<&RuntimeAssemblyRequestDeadlineFrameHeader>,
+    deadline: Option<&BytecodeRequestDeadlineFrameHeader>,
     request_kind: &str,
-) -> Result<Option<RuntimeAssemblyRequestDeadlineFrameHeader>> {
+) -> Result<Option<BytecodeRequestDeadlineFrameHeader>> {
     let wall_now = OffsetDateTime::now_utc();
     let mut candidates = Vec::new();
     if let Some(deadline) = deadline {
@@ -639,7 +631,7 @@ fn effective_request_deadline(
         })?
         .format(&Rfc3339)
         .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-    Ok(Some(RuntimeAssemblyRequestDeadlineFrameHeader {
+    Ok(Some(BytecodeRequestDeadlineFrameHeader {
         timeout_ms,
         expires_at,
     }))

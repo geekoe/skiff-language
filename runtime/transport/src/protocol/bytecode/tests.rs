@@ -4,10 +4,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{
-    decode_runtime_assembly_request_start_frame,
-    decode_runtime_assembly_websocket_connect_response_end_frame,
-    decode_runtime_assembly_websocket_jsonrpc_response_end_frame,
-    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
+    decode_bytecode_request_start_frame,
+    decode_bytecode_websocket_connect_response_end_frame,
+    decode_bytecode_websocket_jsonrpc_response_end_frame,
+    BytecodeRequestStartFrameHeader, BytecodeRequestStartFrameWireHeader,
 };
 use crate::protocol::{
     encode_binary_frame, RequestStartFrameHeader, BINARY_FRAME_HEADER_ENCODING_JSON,
@@ -140,12 +140,12 @@ fn canonical_task_header(test_effects_enabled: bool) -> Value {
 }
 
 #[test]
-fn runtime_assembly_task_request_decodes_production_and_test_authority() {
+fn bytecode_task_request_decodes_production_and_test_authority() {
     for test_effects_enabled in [false, true] {
         let frame =
             encode_binary_frame(&canonical_task_header(test_effects_enabled), &[0x81]).unwrap();
-        let (header, payload) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
-        let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+        let (header, payload) = decode_bytecode_request_start_frame(&frame).unwrap();
+        let BytecodeRequestStartFrameWireHeader::Task(header) = header else {
             panic!("task invocation must select the closed task union branch")
         };
         assert_eq!(header.invocation.target, "function:worker.run");
@@ -156,26 +156,26 @@ fn runtime_assembly_task_request_decodes_production_and_test_authority() {
 }
 
 #[test]
-fn runtime_assembly_task_request_rejects_authority_mismatch_and_empty_payload() {
+fn bytecode_task_request_rejects_authority_mismatch_and_empty_payload() {
     let mut missing_capability = canonical_task_header(true);
     missing_capability
         .as_object_mut()
         .unwrap()
         .remove("testCaseCapability");
     let frame = encode_binary_frame(&missing_capability, &[0x81]).unwrap();
-    assert!(decode_runtime_assembly_request_start_frame(&frame).is_err());
+    assert!(decode_bytecode_request_start_frame(&frame).is_err());
 
     let mut production_with_capability = canonical_task_header(false);
     production_with_capability["testCaseCapability"] = json!("test-case-capability-1");
     let frame = encode_binary_frame(&production_with_capability, &[0x81]).unwrap();
-    assert!(decode_runtime_assembly_request_start_frame(&frame).is_err());
+    assert!(decode_bytecode_request_start_frame(&frame).is_err());
 
     let frame = encode_binary_frame(&canonical_task_header(false), &[]).unwrap();
-    assert!(decode_runtime_assembly_request_start_frame(&frame).is_err());
+    assert!(decode_bytecode_request_start_frame(&frame).is_err());
 }
 
 #[test]
-fn runtime_assembly_task_request_optional_task_attempt_is_validated() {
+fn bytecode_task_request_optional_task_attempt_is_validated() {
     let mut with_attempt = canonical_task_header(false);
     with_attempt["taskAttempt"] = json!({
         "taskId": "task-1",
@@ -184,8 +184,8 @@ fn runtime_assembly_task_request_optional_task_attempt_is_validated() {
     });
     let frame = encode_binary_frame(&with_attempt, &[0x81]).unwrap();
     let (header, payload) =
-        decode_runtime_assembly_request_start_frame(&frame).expect("valid taskAttempt must decode");
-    let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+        decode_bytecode_request_start_frame(&frame).expect("valid taskAttempt must decode");
+    let BytecodeRequestStartFrameWireHeader::Task(header) = header else {
         panic!("task invocation must select the closed task union branch")
     };
     let attempt = header.task_attempt.expect("taskAttempt must be present");
@@ -203,7 +203,7 @@ fn runtime_assembly_task_request_optional_task_attempt_is_validated() {
         });
         invalid["taskAttempt"][field] = json!("");
         let frame = encode_binary_frame(&invalid, &[0x81]).unwrap();
-        let error = decode_runtime_assembly_request_start_frame(&frame)
+        let error = decode_bytecode_request_start_frame(&frame)
             .expect_err("empty taskAttempt field must be a wire error");
         assert!(
             error.to_string().contains("taskAttempt"),
@@ -213,7 +213,7 @@ fn runtime_assembly_task_request_optional_task_attempt_is_validated() {
 }
 
 #[test]
-fn runtime_assembly_request_start_corpus_is_nonempty_and_uniquely_named() {
+fn bytecode_request_start_corpus_is_nonempty_and_uniquely_named() {
     let corpus = corpus();
     assert!(!corpus.request_start_headers.is_empty());
     assert!(!corpus.request_start_mutations.is_empty());
@@ -251,7 +251,7 @@ fn runtime_assembly_request_start_corpus_is_nonempty_and_uniquely_named() {
 }
 
 #[test]
-fn runtime_assembly_request_start_normalizes_equivalent_optional_defaults() {
+fn bytecode_request_start_normalizes_equivalent_optional_defaults() {
     let corpus = corpus();
     for pair in corpus.request_start_equivalent_option_pairs {
         let mut absent = corpus.request_start_headers[pair.base_index].clone();
@@ -260,10 +260,10 @@ fn runtime_assembly_request_start_normalizes_equivalent_optional_defaults() {
         apply_path(&mut explicit, &pair.path, &pair.value, false);
         let absent_frame = encode_binary_frame(&absent, &[]).unwrap();
         let explicit_frame = encode_binary_frame(&explicit, &[]).unwrap();
-        let absent = decode_runtime_assembly_request_start_frame(&absent_frame)
+        let absent = decode_bytecode_request_start_frame(&absent_frame)
             .unwrap_or_else(|error| panic!("{} absent: {error}", pair.name))
             .0;
-        let explicit = decode_runtime_assembly_request_start_frame(&explicit_frame)
+        let explicit = decode_bytecode_request_start_frame(&explicit_frame)
             .unwrap_or_else(|error| panic!("{} explicit: {error}", pair.name))
             .0;
         assert_eq!(absent, explicit, "{}", pair.name);
@@ -271,17 +271,17 @@ fn runtime_assembly_request_start_normalizes_equivalent_optional_defaults() {
 }
 
 #[test]
-fn runtime_assembly_request_start_decodes_shared_http_headers() {
+fn bytecode_request_start_decodes_shared_http_headers() {
     let corpus = corpus();
     let mut modes = HashSet::new();
     for value in corpus.request_start_headers {
-        let expected: RuntimeAssemblyRequestStartFrameHeader =
+        let expected: BytecodeRequestStartFrameHeader =
             serde_json::from_value(value.clone()).expect("canonical request header");
         modes.insert(expected.mode.clone());
         assert_eq!(expected.caller.kind, "gateway");
         assert_eq!(
             expected.routing.ingress.protocol,
-            super::RuntimeAssemblyRequestIngressProtocol::Http
+            super::BytecodeRequestIngressProtocol::Http
         );
         let serialized = serde_json::to_value(&expected).unwrap();
         let mut normalized = value;
@@ -291,15 +291,15 @@ fn runtime_assembly_request_start_decodes_shared_http_headers() {
             .entry("testEffectsEnabled")
             .or_insert(Value::Bool(false));
         assert_eq!(serialized, normalized);
-        let reparsed: RuntimeAssemblyRequestStartFrameHeader =
+        let reparsed: BytecodeRequestStartFrameHeader =
             serde_json::from_value(serialized).unwrap();
         assert_eq!(reparsed, expected);
         let frame = encode_binary_frame(&expected, &[]).unwrap();
         let (decoded, decoded_payload) =
-            decode_runtime_assembly_request_start_frame(&frame).unwrap();
+            decode_bytecode_request_start_frame(&frame).unwrap();
         assert_eq!(
             decoded,
-            RuntimeAssemblyRequestStartFrameWireHeader::Http(expected)
+            BytecodeRequestStartFrameWireHeader::Http(expected)
         );
         assert!(decoded_payload.is_empty());
     }
@@ -310,12 +310,12 @@ fn runtime_assembly_request_start_decodes_shared_http_headers() {
 }
 
 #[test]
-fn runtime_assembly_routing_build_id_round_trips_and_defaults_to_absent() {
+fn bytecode_routing_build_id_round_trips_and_defaults_to_absent() {
     // Legacy frame without buildId decodes and re-encodes byte-identically.
     let legacy = corpus().request_start_headers[0].clone();
     let frame = encode_binary_frame(&legacy, &[]).unwrap();
-    let (decoded, _) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
-    let RuntimeAssemblyRequestStartFrameWireHeader::Http(decoded) = decoded else {
+    let (decoded, _) = decode_bytecode_request_start_frame(&frame).unwrap();
+    let BytecodeRequestStartFrameWireHeader::Http(decoded) = decoded else {
         panic!("Router HTTP request must decode through the HTTP wire branch")
     };
     assert!(decoded.routing.build_id.is_none());
@@ -329,8 +329,8 @@ fn runtime_assembly_routing_build_id_round_trips_and_defaults_to_absent() {
     let mut with_build = legacy.clone();
     with_build["routing"]["buildId"] = json!(build_id);
     let frame = encode_binary_frame(&with_build, &[]).unwrap();
-    let (decoded, _) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
-    let RuntimeAssemblyRequestStartFrameWireHeader::Http(decoded) = decoded else {
+    let (decoded, _) = decode_bytecode_request_start_frame(&frame).unwrap();
+    let BytecodeRequestStartFrameWireHeader::Http(decoded) = decoded else {
         panic!("Router HTTP request must decode through the HTTP wire branch")
     };
     assert_eq!(decoded.routing.build_id.as_deref(), Some(build_id));
@@ -341,19 +341,19 @@ fn runtime_assembly_routing_build_id_round_trips_and_defaults_to_absent() {
     let mut empty = with_build;
     empty["routing"]["buildId"] = json!("");
     let frame = encode_binary_frame(&empty, &[]).unwrap();
-    let error = decode_runtime_assembly_request_start_frame(&frame).unwrap_err();
+    let error = decode_bytecode_request_start_frame(&frame).unwrap_err();
     assert!(error.to_string().contains("buildId"), "{error}");
 }
 
 #[test]
-fn runtime_assembly_task_routing_build_id_round_trips() {
+fn bytecode_task_routing_build_id_round_trips() {
     let mut value = canonical_task_header(false);
     assert!(value.get("routing").and_then(|r| r.get("buildId")).is_none());
     let build_id = "skiff-deployment-artifact-v4:sha256:task";
     value["routing"]["buildId"] = json!(build_id);
     let frame = encode_binary_frame(&value, br#"{"args":[]}"#).unwrap();
-    let (decoded, payload) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
-    let RuntimeAssemblyRequestStartFrameWireHeader::Task(decoded) = decoded else {
+    let (decoded, payload) = decode_bytecode_request_start_frame(&frame).unwrap();
+    let BytecodeRequestStartFrameWireHeader::Task(decoded) = decoded else {
         panic!("task request must decode through the task wire branch")
     };
     assert_eq!(decoded.routing.build_id.as_deref(), Some(build_id));
@@ -361,15 +361,15 @@ fn runtime_assembly_task_routing_build_id_round_trips() {
 }
 
 #[test]
-fn runtime_assembly_http_request_round_trips_router_test_parent_authority() {
+fn bytecode_http_request_round_trips_router_test_parent_authority() {
     let mut value = corpus().request_start_headers[0].clone();
     value["testEffectsEnabled"] = json!(true);
     value["testCaseCapability"] = json!("test-case:capability_1");
     value["testCaseParentRequestId"] = json!("request:parent_1");
 
     let frame = encode_binary_frame(&value, br#"{"nested":true}"#).unwrap();
-    let (decoded, payload) = decode_runtime_assembly_request_start_frame(&frame).unwrap();
-    let RuntimeAssemblyRequestStartFrameWireHeader::Http(decoded) = decoded else {
+    let (decoded, payload) = decode_bytecode_request_start_frame(&frame).unwrap();
+    let BytecodeRequestStartFrameWireHeader::Http(decoded) = decoded else {
         panic!("Router HTTP request must decode through the HTTP wire branch")
     };
     assert!(decoded.test_effects_enabled);
@@ -392,7 +392,7 @@ fn runtime_assembly_http_request_round_trips_router_test_parent_authority() {
 }
 
 #[test]
-fn runtime_assembly_http_request_enforces_test_authority_shape_and_tokens() {
+fn bytecode_http_request_enforces_test_authority_shape_and_tokens() {
     let baseline = corpus().request_start_headers[0].clone();
     let mut cases = Vec::new();
 
@@ -435,27 +435,27 @@ fn runtime_assembly_http_request_enforces_test_authority_shape_and_tokens() {
     for (name, value) in cases {
         let frame = encode_binary_frame(&value, &[]).unwrap();
         assert!(
-            decode_runtime_assembly_request_start_frame(&frame).is_err(),
+            decode_bytecode_request_start_frame(&frame).is_err(),
             "{name}"
         );
     }
 }
 
 #[test]
-fn runtime_assembly_request_start_preserves_opaque_http_payload_boundaries() {
+fn bytecode_request_start_preserves_opaque_http_payload_boundaries() {
     let corpus = corpus();
     for payload_case in corpus.request_start_payload_cases {
         let header = &corpus.request_start_headers[payload_case.base_index];
         let payload = decode_hex(&payload_case.payload_hex);
         let frame = encode_binary_frame(header, &payload).unwrap();
-        let (_, decoded_payload) = decode_runtime_assembly_request_start_frame(&frame)
+        let (_, decoded_payload) = decode_bytecode_request_start_frame(&frame)
             .unwrap_or_else(|error| panic!("{}: {error}", payload_case.name));
         assert_eq!(decoded_payload, payload, "{}", payload_case.name);
     }
 }
 
 #[test]
-fn runtime_assembly_request_start_mutations_fail_closed() {
+fn bytecode_request_start_mutations_fail_closed() {
     let corpus = corpus();
     for mutation in corpus.request_start_mutations {
         assert!(
@@ -466,7 +466,7 @@ fn runtime_assembly_request_start_mutations_fail_closed() {
         let mut value = corpus.request_start_headers[mutation.base_index].clone();
         apply_mutation(&mut value, &mutation);
         assert!(
-            serde_json::from_value::<RuntimeAssemblyRequestStartFrameWireHeader>(value.clone())
+            serde_json::from_value::<BytecodeRequestStartFrameWireHeader>(value.clone())
                 .is_err(),
             "{}",
             mutation.name
@@ -474,7 +474,7 @@ fn runtime_assembly_request_start_mutations_fail_closed() {
         if !mutation.name.contains("negative zero") {
             let frame = encode_binary_frame(&value, &[]).unwrap();
             assert!(
-                decode_runtime_assembly_request_start_frame(&frame).is_err(),
+                decode_bytecode_request_start_frame(&frame).is_err(),
                 "{} production decoder",
                 mutation.name
             );
@@ -483,16 +483,16 @@ fn runtime_assembly_request_start_mutations_fail_closed() {
 }
 
 #[test]
-fn runtime_assembly_request_start_raw_json_and_frame_cases_fail_closed() {
+fn bytecode_request_start_raw_json_and_frame_cases_fail_closed() {
     for raw_case in corpus().request_start_raw_cases {
         let frame = raw_case_frame(&raw_case);
         match raw_case.outcome.as_str() {
             "accept" => {
-                decode_runtime_assembly_request_start_frame(&frame)
+                decode_bytecode_request_start_frame(&frame)
                     .unwrap_or_else(|error| panic!("{}: {error}", raw_case.name));
             }
             "reject" => assert!(
-                decode_runtime_assembly_request_start_frame(&frame).is_err(),
+                decode_bytecode_request_start_frame(&frame).is_err(),
                 "{}",
                 raw_case.name
             ),
@@ -502,19 +502,19 @@ fn runtime_assembly_request_start_raw_json_and_frame_cases_fail_closed() {
 }
 
 #[test]
-fn runtime_assembly_request_start_preserves_legacy_decoder_baseline() {
+fn bytecode_request_start_preserves_legacy_decoder_baseline() {
     for value in corpus().legacy_request_start_headers {
         let decoded: RequestStartFrameHeader =
             serde_json::from_value(value.clone()).expect("legacy request baseline");
         assert_eq!(serde_json::to_value(decoded).unwrap(), value);
         assert!(
-            serde_json::from_value::<RuntimeAssemblyRequestStartFrameWireHeader>(value).is_err()
+            serde_json::from_value::<BytecodeRequestStartFrameWireHeader>(value).is_err()
         );
     }
 }
 
 #[test]
-fn runtime_assembly_request_current_wire_corpus_is_exact_and_uniquely_named() {
+fn bytecode_request_current_wire_corpus_is_exact_and_uniquely_named() {
     let corpus = connect_wire_corpus();
     assert_eq!(corpus.request_cases.len(), 3);
     assert!(corpus.request_mutations.len() >= 20);
@@ -548,19 +548,19 @@ fn runtime_assembly_request_current_wire_corpus_is_exact_and_uniquely_named() {
 }
 
 #[test]
-fn runtime_assembly_request_current_http_and_websocket_json_match_shared_goldens() {
+fn bytecode_request_current_http_and_websocket_json_match_shared_goldens() {
     for case in connect_wire_corpus().request_cases {
         let payload = decode_hex(&case.payload_hex);
         let frame = encode_binary_frame(&case.header, &payload)
             .unwrap_or_else(|error| panic!("{} must encode: {error}", case.name));
-        let (decoded, decoded_payload) = decode_runtime_assembly_request_start_frame(&frame)
+        let (decoded, decoded_payload) = decode_bytecode_request_start_frame(&frame)
             .unwrap_or_else(|error| panic!("{} must decode: {error}", case.name));
         assert_eq!(decoded_payload, payload, "{} payload", case.name);
         match (&*case.kind, &decoded) {
-            ("http", RuntimeAssemblyRequestStartFrameWireHeader::Http(_))
+            ("http", BytecodeRequestStartFrameWireHeader::Http(_))
             | (
                 "websocketConnect",
-                RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(_),
+                BytecodeRequestStartFrameWireHeader::WebSocketConnect(_),
             ) => {}
             other => panic!("{} has wrong request branch {other:?}", case.name),
         }
@@ -574,28 +574,28 @@ fn runtime_assembly_request_current_http_and_websocket_json_match_shared_goldens
 }
 
 #[test]
-fn runtime_assembly_websocket_connection_closed_round_trips() {
+fn bytecode_websocket_connection_closed_round_trips() {
     let header = websocket_connection_closed_header();
     let frame = encode_binary_frame(&header, &[]).unwrap();
-    let (decoded, payload) = decode_runtime_assembly_request_start_frame(&frame)
+    let (decoded, payload) = decode_bytecode_request_start_frame(&frame)
         .expect("canonical connectionClosed frame must decode");
     assert!(matches!(
         decoded,
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(_)
+        BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(_)
     ));
     assert!(payload.is_empty());
     assert_eq!(serde_json::to_value(decoded).unwrap(), header);
 }
 
 #[test]
-fn runtime_assembly_websocket_connection_closed_entry_kind_selects_disjoint_siblings() {
+fn bytecode_websocket_connection_closed_entry_kind_selects_disjoint_siblings() {
     let closed = websocket_connection_closed_header();
     let closed_frame = encode_binary_frame(&closed, &[]).unwrap();
     assert!(matches!(
-        decode_runtime_assembly_request_start_frame(&closed_frame)
+        decode_bytecode_request_start_frame(&closed_frame)
             .expect("entryKind connectionClosed must select websocketConnectionClosed")
             .0,
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(_)
+        BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(_)
     ));
 
     // A method-bearing frame stays websocketJsonRpc regardless of entryKind
@@ -604,28 +604,28 @@ fn runtime_assembly_websocket_connection_closed_entry_kind_selects_disjoint_sibl
     let mut jsonrpc = websocket_connection_closed_header();
     jsonrpc["routing"]["ingress"]["method"] = Value::String("status.get".to_string());
     let jsonrpc_frame = encode_binary_frame(&jsonrpc, br#"{}"#).unwrap();
-    assert!(decode_runtime_assembly_request_start_frame(&jsonrpc_frame).is_err());
+    assert!(decode_bytecode_request_start_frame(&jsonrpc_frame).is_err());
 
     // entryKind is not part of the connect vocabulary: method null without
     // entryKind stays websocketConnect.
     let connect = websocket_connect_v2_header();
     let connect_frame = encode_binary_frame(&connect, &[]).unwrap();
     assert!(matches!(
-        decode_runtime_assembly_request_start_frame(&connect_frame)
+        decode_bytecode_request_start_frame(&connect_frame)
             .expect("method null without entryKind must stay websocketConnect")
             .0,
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(_)
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(_)
     ));
 
     // An unknown entryKind fails closed through the connect typed decode.
     let mut wrong_kind = websocket_connection_closed_header();
     wrong_kind["routing"]["ingress"]["entryKind"] = Value::String("connectionOpen".to_string());
     let wrong_kind_frame = encode_binary_frame(&wrong_kind, &[]).unwrap();
-    assert!(decode_runtime_assembly_request_start_frame(&wrong_kind_frame).is_err());
+    assert!(decode_bytecode_request_start_frame(&wrong_kind_frame).is_err());
 }
 
 #[test]
-fn runtime_assembly_websocket_connection_closed_mutations_fail_closed() {
+fn bytecode_websocket_connection_closed_mutations_fail_closed() {
     let canonical = websocket_connection_closed_header();
     let mut mutations = Vec::new();
 
@@ -685,30 +685,30 @@ fn runtime_assembly_websocket_connection_closed_mutations_fail_closed() {
     for (name, header, payload) in mutations {
         let frame = encode_binary_frame(&header, &payload).unwrap();
         assert!(
-            decode_runtime_assembly_request_start_frame(&frame).is_err(),
+            decode_bytecode_request_start_frame(&frame).is_err(),
             "{name}"
         );
     }
 }
 
 #[test]
-fn runtime_assembly_websocket_jsonrpc_decoder_accepts_method_bearing_request() {
+fn bytecode_websocket_jsonrpc_decoder_accepts_method_bearing_request() {
     let header = websocket_jsonrpc_request_header();
     let payload = br#"{"query":"ready"}"#;
     let frame = encode_binary_frame(&header, payload).expect("canonical JSON-RPC request frame");
-    let (decoded, decoded_payload) = decode_runtime_assembly_request_start_frame(&frame)
+    let (decoded, decoded_payload) = decode_bytecode_request_start_frame(&frame)
         .expect("method-bearing WebSocket request must select the JSON-RPC sibling");
 
     assert!(matches!(
         decoded,
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(_)
+        BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(_)
     ));
     assert_eq!(decoded_payload, payload);
     assert_eq!(serde_json::to_value(decoded).unwrap(), header);
 
     let scalar_frame = encode_binary_frame(&header, b"42").unwrap();
     assert_eq!(
-        decode_runtime_assembly_request_start_frame(&scalar_frame)
+        decode_bytecode_request_start_frame(&scalar_frame)
             .expect("transport must not parse params business shape")
             .1,
         b"42"
@@ -716,28 +716,28 @@ fn runtime_assembly_websocket_jsonrpc_decoder_accepts_method_bearing_request() {
 }
 
 #[test]
-fn runtime_assembly_websocket_jsonrpc_method_null_and_string_select_disjoint_siblings() {
+fn bytecode_websocket_jsonrpc_method_null_and_string_select_disjoint_siblings() {
     let connect = websocket_connect_v2_header();
     let connect_frame = encode_binary_frame(&connect, &[]).unwrap();
     assert!(matches!(
-        decode_runtime_assembly_request_start_frame(&connect_frame)
+        decode_bytecode_request_start_frame(&connect_frame)
             .expect("method null must remain websocketConnect")
             .0,
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(_)
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(_)
     ));
 
     let jsonrpc = websocket_jsonrpc_request_header();
     let jsonrpc_frame = encode_binary_frame(&jsonrpc, br#"{}"#).unwrap();
     assert!(matches!(
-        decode_runtime_assembly_request_start_frame(&jsonrpc_frame)
+        decode_bytecode_request_start_frame(&jsonrpc_frame)
             .expect("method string must select websocketJsonRpc")
             .0,
-        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(_)
+        BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(_)
     ));
 }
 
 #[test]
-fn runtime_assembly_websocket_jsonrpc_request_mutations_fail_closed() {
+fn bytecode_websocket_jsonrpc_request_mutations_fail_closed() {
     let canonical = websocket_jsonrpc_request_header();
     let canonical_payload = br#"{"query":"ready"}"#.to_vec();
     let mut mutations = Vec::new();
@@ -859,18 +859,18 @@ fn runtime_assembly_websocket_jsonrpc_request_mutations_fail_closed() {
     for (name, header, payload) in mutations {
         let frame = encode_binary_frame(&header, &payload).unwrap();
         assert!(
-            decode_runtime_assembly_request_start_frame(&frame).is_err(),
+            decode_bytecode_request_start_frame(&frame).is_err(),
             "{name}"
         );
     }
 }
 
 #[test]
-fn runtime_assembly_websocket_jsonrpc_response_outcomes_enforce_payload_presence() {
+fn bytecode_websocket_jsonrpc_response_outcomes_enforce_payload_presence() {
     let success = websocket_jsonrpc_response_header("success", true);
     let success_frame = encode_binary_frame(&success, b"null").unwrap();
     let (decoded, payload) =
-        decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&success_frame)
+        decode_bytecode_websocket_jsonrpc_response_end_frame(&success_frame)
             .expect("success with JSON null payload must decode");
     assert_eq!(payload, b"null");
     assert_eq!(serde_json::to_value(decoded).unwrap(), success);
@@ -878,14 +878,14 @@ fn runtime_assembly_websocket_jsonrpc_response_outcomes_enforce_payload_presence
     for outcome in ["invalidParams", "internalError", "deadlineExceeded"] {
         let header = websocket_jsonrpc_response_header(outcome, false);
         let frame = encode_binary_frame(&header, &[]).unwrap();
-        let (_, payload) = decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame)
+        let (_, payload) = decode_bytecode_websocket_jsonrpc_response_end_frame(&frame)
             .unwrap_or_else(|error| panic!("{outcome}: {error}"));
         assert!(payload.is_empty(), "{outcome}");
     }
 }
 
 #[test]
-fn runtime_assembly_websocket_jsonrpc_response_mutations_fail_closed() {
+fn bytecode_websocket_jsonrpc_response_mutations_fail_closed() {
     let success = websocket_jsonrpc_response_header("success", true);
     let error = websocket_jsonrpc_response_header("invalidParams", false);
     let mut cases = Vec::new();
@@ -949,23 +949,23 @@ fn runtime_assembly_websocket_jsonrpc_response_mutations_fail_closed() {
     for (name, header, payload) in cases {
         let frame = encode_binary_frame(&header, &payload).unwrap();
         assert!(
-            decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame).is_err(),
+            decode_bytecode_websocket_jsonrpc_response_end_frame(&frame).is_err(),
             "{name}"
         );
     }
 }
 
 #[test]
-fn runtime_assembly_websocket_jsonrpc_response_rejects_duplicate_json_keys() {
+fn bytecode_websocket_jsonrpc_response_rejects_duplicate_json_keys() {
     let frame = raw_json_frame_with_payload(
         br#"{"schemaVersion":"skiff-runtime-frame-v4","type":"response.end","requestId":"one","requestId":"two","payloadPresent":true,"websocketJsonRpc":{"outcome":"success"}}"#,
         b"null",
     );
-    assert!(decode_runtime_assembly_websocket_jsonrpc_response_end_frame(&frame).is_err());
+    assert!(decode_bytecode_websocket_jsonrpc_response_end_frame(&frame).is_err());
 }
 
 #[test]
-fn runtime_assembly_request_current_mutations_fail_closed() {
+fn bytecode_request_current_mutations_fail_closed() {
     let corpus = connect_wire_corpus();
     for mutation in corpus.request_mutations {
         let base = corpus
@@ -982,7 +982,7 @@ fn runtime_assembly_request_current_mutations_fail_closed() {
         let frame = encode_binary_frame(&header, &payload)
             .unwrap_or_else(|error| panic!("{} mutation frame: {error}", mutation.name));
         assert!(
-            decode_runtime_assembly_request_start_frame(&frame).is_err(),
+            decode_bytecode_request_start_frame(&frame).is_err(),
             "{}",
             mutation.name
         );
@@ -990,12 +990,12 @@ fn runtime_assembly_request_current_mutations_fail_closed() {
 }
 
 #[test]
-fn runtime_assembly_websocket_connect_response_json_matches_shared_goldens() {
+fn bytecode_websocket_connect_response_json_matches_shared_goldens() {
     for case in connect_wire_corpus().response_cases {
         let payload = decode_hex(&case.payload_hex);
         let frame = encode_binary_frame(&case.header, &payload)
             .unwrap_or_else(|error| panic!("{} must encode: {error}", case.name));
-        let decoded = decode_runtime_assembly_websocket_connect_response_end_frame(&frame)
+        let decoded = decode_bytecode_websocket_connect_response_end_frame(&frame)
             .unwrap_or_else(|error| panic!("{} must decode: {error}", case.name));
         assert_eq!(
             serde_json::to_string(&decoded).unwrap(),
@@ -1007,7 +1007,7 @@ fn runtime_assembly_websocket_connect_response_json_matches_shared_goldens() {
 }
 
 #[test]
-fn runtime_assembly_websocket_connect_response_mutations_fail_closed() {
+fn bytecode_websocket_connect_response_mutations_fail_closed() {
     let corpus = connect_wire_corpus();
     for mutation in corpus.response_mutations {
         let base = corpus
@@ -1024,7 +1024,7 @@ fn runtime_assembly_websocket_connect_response_mutations_fail_closed() {
         let frame = encode_binary_frame(&header, &payload)
             .unwrap_or_else(|error| panic!("{} mutation frame: {error}", mutation.name));
         assert!(
-            decode_runtime_assembly_websocket_connect_response_end_frame(&frame).is_err(),
+            decode_bytecode_websocket_connect_response_end_frame(&frame).is_err(),
             "{}",
             mutation.name
         );
@@ -1032,23 +1032,23 @@ fn runtime_assembly_websocket_connect_response_mutations_fail_closed() {
 }
 
 #[test]
-fn runtime_assembly_websocket_connect_response_rejects_duplicate_json_keys() {
+fn bytecode_websocket_connect_response_rejects_duplicate_json_keys() {
     let frame = raw_json_frame(
         br#"{"schemaVersion":"skiff-runtime-frame-v4","type":"response.end","requestId":"one","requestId":"two","payloadPresent":false,"websocketConnect":{"result":"accept"}}"#,
     );
-    assert!(decode_runtime_assembly_websocket_connect_response_end_frame(&frame).is_err());
+    assert!(decode_bytecode_websocket_connect_response_end_frame(&frame).is_err());
 }
 
 fn corpus() -> Corpus {
     serde_json::from_str(include_str!(
-        "../../../../cross-system-fixtures/package-service-ecosystem/runtime-request-wire.json"
+        "../../../../../cross-system-fixtures/package-service-ecosystem/runtime-request-wire.json"
     ))
     .expect("shared runtime request corpus")
 }
 
 fn connect_wire_corpus() -> ConnectWireCorpus {
     serde_json::from_str(include_str!(
-        "../../../../cross-system-fixtures/package-service-ecosystem/runtime-websocket-connect-wire.json"
+        "../../../../../cross-system-fixtures/package-service-ecosystem/runtime-websocket-connect-wire.json"
     ))
     .expect("shared runtime websocketConnect wire corpus")
 }

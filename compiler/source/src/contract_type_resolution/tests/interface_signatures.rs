@@ -371,7 +371,7 @@ fn package_interface_conformance_stays_owned_by_canonical_package_facts() {
               function read(fallback: string) -> string { return fallback }
             }
             function make_box(host: Host) -> void {
-              let reader = host as pkg.Reader<string>
+              final reader = host as pkg.Reader<string>
             }
         "#,
         &package_model,
@@ -438,7 +438,7 @@ fn package_interface_entries_still_fail_closed_before_source_owner_handoff() {
               function read(fallback: number) -> string { return "bad" }
             }
             function make_box(host: Host) -> void {
-              let reader = host as pkg.Reader<string>
+              final reader = host as pkg.Reader<string>
             }
         "#,
         &package_model,

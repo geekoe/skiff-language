@@ -225,8 +225,8 @@ production `http.yml`。
 测试源码使用现有HTTP client：
 
 ```skiff
-let baseUrl = config.require<string>("skiff.test.ingressUrl")
-let response = std.http.request(std.http.HttpClientRequest {
+final baseUrl = config.require<string>("skiff.test.ingressUrl")
+final response = std.http.request(std.http.HttpClientRequest {
   method: "POST",
   url: baseUrl.concat("/chat/events"),
   headers: headers,

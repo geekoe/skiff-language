@@ -5,7 +5,7 @@ use crate::{shared::ast::Expr, shared::ast_utils::expr_path};
 
 #[cfg(test)]
 use crate::{
-    shared::ast::LetKind,
+    shared::ast::LocalBindingKind,
     shared::prelude_registry::prelude_registry,
     shared::type_syntax::{generic_inner, generic_parts, split_top_level},
 };
@@ -156,7 +156,7 @@ fn collect_emit_stmt_violations(
                 collect_emit_expression_call_violations(path, expression, violations);
             }
         }
-        crate::shared::ast::Stmt::Let { value, .. }
+        crate::shared::ast::Stmt::LocalBinding { value, .. }
         | crate::shared::ast::Stmt::Expr(value)
         | crate::shared::ast::Stmt::Emit(value) => {
             collect_emit_expression_call_violations(path, value, violations)
@@ -384,7 +384,7 @@ fn infer_value_block_type(
 ) -> Option<String> {
     let mut scoped = env.clone();
     for statement in &value.body.statements {
-        if let crate::shared::ast::Stmt::Let {
+        if let crate::shared::ast::Stmt::LocalBinding {
             name,
             value: initializer,
             ..
@@ -406,8 +406,8 @@ fn infer_concurrent_value_type(
 ) -> Option<String> {
     let mut sibling_scope = env.clone();
     for statement in &value.body.statements {
-        if let crate::shared::ast::Stmt::Let {
-            kind: LetKind::Let,
+        if let crate::shared::ast::Stmt::LocalBinding {
+            kind: LocalBindingKind::Final,
             name,
             value: initializer,
             ..

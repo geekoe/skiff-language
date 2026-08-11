@@ -48,7 +48,7 @@ db object User {
 DB target沿用测试顶层名字语法：
 
 ```skiff
-let session = db require subjectImpl/model.AdminSession(sessionId)
+final session = db require subjectImpl/model.AdminSession(sessionId)
 ```
 
 这里的`subjectImpl/model.AdminSession`同时选择provider package中的`model.AdminSession` type及同文件、
@@ -266,7 +266,7 @@ type User {
   profile: UserProfile?
 }
 
-let users = db find many User {
+final users = db find many User {
   fields { profile.displayName, profile.avatar.url }
 }
 ```
@@ -296,7 +296,7 @@ let users = db find many User {
 Key read 可以追加只含 projection 的 block：
 
 ```skiff
-let user = db require User(id) {
+final user = db require User(id) {
   fields { profile.displayName }
 }
 ```
@@ -310,7 +310,7 @@ let user = db require User(id) {
 示例：
 
 ```skiff
-let users = db find many User {
+final users = db find many User {
   fields { name, visits }
   where createdAt > 1
   order id asc
@@ -403,7 +403,7 @@ alias UserListItem = { id: string, name: string, visits: number }
 
 ```skiff
 db transaction {
-  let user = db require User(id)
+  final user = db require User(id)
   db update User(id) { visits += 1 }
 }
 ```
@@ -411,7 +411,7 @@ db transaction {
 `db transaction value` 是产值形态：
 
 ```skiff
-let result = db transaction value {
+final result = db transaction value {
   db require User(id)
 }
 ```
@@ -427,7 +427,7 @@ let result = db transaction value {
   撤销已经开始的commit。
 - 读取结果仍是 readonly snapshot。
 - 所有持久写入必须显式使用 DB operation。
-- transaction body中的普通局部绑定使用`let`或`var`；局部`const`不是语法。
+- transaction body中的普通局部绑定使用`final`或`var`；局部`const`不是语法。
 - 嵌套 transaction不支持。Compiler拒绝词法可见的嵌套；经helper动态重入时，Runtime必须在进入
   内层`db transaction`前拒绝，不能把它静默折叠进外层边界。
 - Actor method（含`create`）中的transaction是DB-only boundary。Transaction body可读Actor
@@ -479,7 +479,7 @@ db object Thread {
 `db claim` 是 try-claim：获取成功则执行块体并最终返回 `true`；槽被持有且未过期则不执行块体、立即返回 `false`。没有等待或排队语义。
 
 ```skiff
-let claimed = db claim Thread(threadId).drain as thread {
+final claimed = db claim Thread(threadId).drain as thread {
   runDrainLoop(thread)
 }
 ```
@@ -515,7 +515,7 @@ let claimed = db claim Thread(threadId).drain as thread {
 ### 8.4 槽状态读取
 
 ```skiff
-let slot = db lease Thread(threadId).drain
+final slot = db lease Thread(threadId).drain
 ```
 
 返回 `{ owner: string, expiresAt: number, requestId: string? }?`；`null` 表示无人持有或已过期。

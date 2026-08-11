@@ -14,7 +14,7 @@ use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
     ResponseErrorFrameHeader, RuntimeHttpNameValueFrameHeader,
 };
-use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameHeader;
+use skiff_runtime_transport::protocol::BytecodeRequestStartFrameHeader;
 use tokio::sync::watch;
 
 use super::stream::HttpStreamSink;
@@ -22,7 +22,7 @@ use super::stream::HttpStreamSink;
 /// Ordinary request dispatch input (C-dispatch §7.2).
 #[derive(Debug, Clone)]
 pub struct DispatchRequest {
-    pub header: RuntimeAssemblyRequestStartFrameHeader,
+    pub header: BytecodeRequestStartFrameHeader,
     pub payload_bytes: Bytes,
     pub timeout: Duration,
     pub client_disconnect: CancelWatch,

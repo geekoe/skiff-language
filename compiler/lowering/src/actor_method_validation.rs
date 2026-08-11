@@ -200,7 +200,7 @@ impl CreateValidator<'_> {
                     self.check_reads(condition, &current)?;
                     self.check_self_calls(condition)?;
                 }
-                Stmt::Let { value, .. } => {
+                Stmt::LocalBinding { value, .. } => {
                     self.check_reads(value, &current)?;
                     self.check_self_calls(value)?;
                 }
@@ -562,7 +562,7 @@ impl CreateValidator<'_> {
             match statement {
                 Stmt::CompilerTestEffectRegister { .. } => {}
                 Stmt::Assert { condition, .. } => self.check_self_calls(condition)?,
-                Stmt::Let { value, .. } => self.check_self_calls(value)?,
+                Stmt::LocalBinding { value, .. } => self.check_self_calls(value)?,
                 Stmt::Assign { target, value } => {
                     self.check_self_calls(target)?;
                     self.check_self_calls(value)?;

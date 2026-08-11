@@ -15,7 +15,7 @@ const WRITABLE_FIXTURE: &str = r#"
     outer.inner.count = 2
     outer.inner.values.push(3)
     outer.inner.values[0] = 4
-    let first = outer.inner.values[0]
+    final first = outer.inner.values[0]
     inc("before", inout outer.inner.count, "after")
     inc("before", inout outer.inner.values[0], "after")
     return outer.inner.count + first

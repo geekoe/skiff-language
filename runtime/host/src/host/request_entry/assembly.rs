@@ -7,12 +7,12 @@ use skiff_runtime_request::{
     ResponseStreamEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
-    response_mapper::OrdinaryResponseEvent,
-    runtime_assembly_request::{
-        RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
-        RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
-        RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    protocol::{
+        BytecodeRequestStartFrameHeader, BytecodeTaskRequestStartFrameHeader,
+        BytecodeWebSocketConnectRequestStartFrameHeader,
+        BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
     },
+    response_mapper::OrdinaryResponseEvent,
 };
 use tokio::sync::mpsc;
 use tracing::error;
@@ -550,7 +550,7 @@ impl RuntimeHost {
 
 fn bytecode_http_request_envelope(
     route: &BytecodeRoute,
-    header: &RuntimeAssemblyRequestStartFrameHeader,
+    header: &BytecodeRequestStartFrameHeader,
     body: Vec<u8>,
 ) -> RequestEnvelope {
     RequestEnvelope {
@@ -580,7 +580,7 @@ fn bytecode_http_request_envelope(
 
 fn bytecode_task_request_envelope(
     route: &BytecodeRoute,
-    header: &RuntimeAssemblyTaskRequestStartFrameHeader,
+    header: &BytecodeTaskRequestStartFrameHeader,
     payload: Vec<u8>,
 ) -> RequestEnvelope {
     RequestEnvelope {
@@ -606,7 +606,7 @@ fn bytecode_task_request_envelope(
 
 fn bytecode_websocket_connect_request_envelope(
     route: &BytecodeRoute,
-    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    header: &BytecodeWebSocketConnectRequestStartFrameHeader,
 ) -> RequestEnvelope {
     RequestEnvelope {
         request_id: header.request_id.clone(),
@@ -635,7 +635,7 @@ fn bytecode_websocket_connect_request_envelope(
 
 fn bytecode_websocket_connection_closed_request_envelope(
     route: &BytecodeRoute,
-    header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    header: &BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
 ) -> RequestEnvelope {
     RequestEnvelope {
         request_id: header.request_id.clone(),
@@ -664,7 +664,7 @@ fn bytecode_websocket_connection_closed_request_envelope(
 
 fn bytecode_http_telemetry_context(
     host: &RuntimeHost,
-    header: &RuntimeAssemblyRequestStartFrameHeader,
+    header: &BytecodeRequestStartFrameHeader,
     route: &BytecodeRoute,
 ) -> RequestTelemetryContext {
     let mut context = RequestTelemetryContext::new(host.telemetry.clone());
@@ -681,7 +681,7 @@ fn bytecode_http_telemetry_context(
 
 fn bytecode_task_telemetry_context(
     host: &RuntimeHost,
-    header: &RuntimeAssemblyTaskRequestStartFrameHeader,
+    header: &BytecodeTaskRequestStartFrameHeader,
     route: &BytecodeRoute,
 ) -> RequestTelemetryContext {
     let mut context = RequestTelemetryContext::new(host.telemetry.clone());
@@ -698,7 +698,7 @@ fn bytecode_task_telemetry_context(
 
 fn bytecode_websocket_connect_telemetry_context(
     host: &RuntimeHost,
-    header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    header: &BytecodeWebSocketConnectRequestStartFrameHeader,
     route: &BytecodeRoute,
 ) -> RequestTelemetryContext {
     let mut context = RequestTelemetryContext::new(host.telemetry.clone());
@@ -715,7 +715,7 @@ fn bytecode_websocket_connect_telemetry_context(
 
 fn bytecode_websocket_connection_closed_telemetry_context(
     host: &RuntimeHost,
-    header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    header: &BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
     route: &BytecodeRoute,
 ) -> RequestTelemetryContext {
     let mut context = RequestTelemetryContext::new(host.telemetry.clone());
@@ -731,7 +731,7 @@ fn bytecode_websocket_connection_closed_telemetry_context(
 }
 
 fn bytecode_deadline_extra(
-    deadline: Option<&skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestDeadlineFrameHeader>,
+    deadline: Option<&skiff_runtime_transport::protocol::BytecodeRequestDeadlineFrameHeader>,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut extra = serde_json::Map::new();
     if let Some(deadline) = deadline {

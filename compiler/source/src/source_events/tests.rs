@@ -106,19 +106,19 @@ fn source_text<'a>(source: &'a str, site: &InstructionSourceSite) -> &'a str {
 #[test]
 fn statement_and_expression_facts_use_their_exact_syntax_spans() {
     let source = r#"function run() -> void {
-  let value = 123
+  final value = 123
 }"#;
     let events = facts("pkg.main", source);
     let owner = function_owner("run");
     let legacy_expression_key = ExpressionKey::new("pkg.main", owner.clone(), 0);
     let statement = events
         .fact(&statement_key("pkg.main", &owner, 0))
-        .expect("let statement fact");
+        .expect("local binding statement fact");
     let expression = events
         .fact(&SourceEventKey::Expression(legacy_expression_key.clone()))
         .expect("literal expression fact");
 
-    assert_eq!(source_text(source, statement.site()), "let value = 123");
+    assert_eq!(source_text(source, statement.site()), "final value = 123");
     assert_eq!(source_text(source, expression.site()), "123");
     assert_ne!(statement.site(), expression.site());
     assert_eq!(
@@ -227,7 +227,7 @@ fn zero_expression_statements_and_nested_blocks_have_statement_facts() {
 #[test]
 fn module_owner_and_independent_preorders_are_deterministic() {
     let source = r#"function run() -> void {
-  let value = 1
+  final value = 1
   return
 }"#;
     let parsed = parsed_sources(&[("pkg.alpha", source), ("pkg.beta", source)]);

@@ -28,9 +28,9 @@ mod tests {
             "config-runtime-requirements",
             r#"
 function configured() -> string {
-  let token = config.require<string>("app.token")
-  let region = config.optional<string>("app.region")
-  let enabled = config.has("app.enabled")
+  final token = config.require<string>("app.token")
+  final region = config.optional<string>("app.region")
+  final enabled = config.has("app.enabled")
   return token
 }
 "#,
@@ -139,8 +139,8 @@ test "config helper" { assert testToken == testToken, "same token" }
                 "config-conflicting-types",
                 r#"
 function configured() -> string {
-  let text = config.require<string>("app.value")
-  let number = config.optional<number>("app.value")
+  final text = config.require<string>("app.value")
+  final number = config.optional<number>("app.value")
   return text
 }
 "#,
@@ -185,7 +185,7 @@ function configured() -> string {
             "reserved-config-binding",
             r#"
 function configured() -> string {
-  let config = "shadow"
+  final config = "shadow"
   return config
 }
 "#,
@@ -204,7 +204,7 @@ function configured() -> string {
                 "config-alias",
                 r#"
 function configured() -> string? {
-  let read = config.optional<string>
+  final read = config.optional<string>
   return read("app.token")
 }
 "#,

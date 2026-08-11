@@ -47,7 +47,7 @@ fn parses_dispatch_in_assignment_and_argument_positions() {
         }
 
         function start(threadId: ThreadId) -> void {
-          let first = dispatch runDrain(threadId)
+          final first = dispatch runDrain(threadId)
           consume(dispatch runDrain(threadId))
         }
     "#;
@@ -56,8 +56,8 @@ fn parses_dispatch_in_assignment_and_argument_positions() {
     let [first, second] = body.as_slice() else {
         panic!("expected two statements");
     };
-    let Stmt::Let { value, .. } = first else {
-        panic!("expected let statement, got {first:?}");
+    let Stmt::LocalBinding { value, .. } = first else {
+        panic!("expected final binding, got {first:?}");
     };
     assert!(
         matches!(value, Expr::Dispatch { timing: None, .. }),
@@ -85,7 +85,7 @@ fn parses_dispatch_after_duration_literal_and_at_expression() {
         function start(threadId: ThreadId, instant: Instant) -> void {
           dispatch runDrain(threadId) after(200ms)
           dispatch runDrain(threadId) at(instant)
-          let zero = dispatch runDrain(threadId) after(0ms)
+          final zero = dispatch runDrain(threadId) after(0ms)
         }
     "#;
 
@@ -123,7 +123,7 @@ fn parses_dispatch_after_duration_literal_and_at_expression() {
     };
     assert_eq!(value.as_ref(), &Expr::Identifier("instant".to_string()));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value:
             Expr::Dispatch {
                 timing: Some(DispatchTiming::After(value)),

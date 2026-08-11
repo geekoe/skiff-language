@@ -522,19 +522,19 @@ function run() -> void {
       serialBody()
     }
   }
-  let plain = value {
+  final plain = value {
     plainBody()
     plainTail
   }
-  let joined = concurrent value {
+  final joined = concurrent value {
     concurrentValueBody()
     concurrentValueTail
   }
-  let timed = timeout(2s) value {
+  final timed = timeout(2s) value {
     timedBody()
     timedTail
   }
-  let timedJoined = timeout(3m) concurrent value {
+  final timedJoined = timeout(3m) concurrent value {
     timedConcurrentBody()
     timedConcurrentTail
   }
@@ -636,11 +636,11 @@ function run() -> void {
       root.serial_body.run()
     }
   }
-  let plain = value {
+  final plain = value {
     root.value_body.run()
     root.value_tail.finish()
   }
-  let joined = timeout(2s) concurrent value {
+  final joined = timeout(2s) concurrent value {
     root.concurrent_value_body.run()
     root.concurrent_value_tail.finish()
   }

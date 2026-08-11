@@ -9,7 +9,7 @@
 
 record / `Array` / `Map` / `JsonObject` 及本地 `any I` payload 都是 value semantics。装箱、赋值、
 普通参数传递、返回与 container store 产生逻辑 snapshot；Runtime 可以用 move/share/COW
-共享 physical backing，但不得暴露 mutable alias。局部 `let` 与普通 parameter 不可写；局部
+共享 physical backing，但不得暴露 mutable alias。局部 `final` 与普通 parameter 不可写；局部
 `var` 及从它派生的精确 writable path 可写；顶层 `const` 是 compiler-evaluated 且 deeply
 frozen 的常量。显式 `inout` 只能作为 exact Package Local ABI、`NoPending` concrete call 的
 exclusive loan；它不得出现在 interface requirement、callback、service/gateway/Actor external
@@ -83,10 +83,10 @@ lane 都必须在边界提交前 fail closed。
 ## Examples
 
 ```skiff
-let local: any ToolProvider = HostProvider { ... } as ToolProvider
+final local: any ToolProvider = HostProvider { ... } as ToolProvider
 dispatch drainWithProvider(local)      // allowed only if HostProvider self payload is recoverable
 
-let remote: any ToolProvider = remoteLlm/remoteTools as ToolProvider
+final remote: any ToolProvider = remoteLlm/remoteTools as ToolProvider
 remote.listTools(ctx)              // request-scope forward remote call
 dispatch drainWithProvider(remote)    // fail closed: Remote carrier is not persistable
 ```

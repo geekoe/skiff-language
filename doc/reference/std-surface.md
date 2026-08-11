@@ -144,7 +144,7 @@ name/member/index writable path，其root只允许局部`var`、有效`inout` lo
 或传给普通parameter只得到snapshot。Actor method的DB transaction body禁止直接或经callee写Actor field，
 包括以该field path为receiver的mutation。
 
-`let`、普通parameter与顶层`const`派生的path不可写；顶层`const` aggregate是deeply frozen，把其snapshot
+`final`、普通parameter与顶层`const`派生的path不可写；顶层`const` aggregate是deeply frozen，把其snapshot
 存入上述verified writable root后才能修改，shared/frozen backing在所属heap首次写入时按COW分离。
 
 `Array<T>`提供长度读取、`push`、`set`、`pop`、`map`和`filter`等基础surface。
@@ -155,7 +155,7 @@ writable path，并要求 `0 <= index < length`。负 index 或 `index >= length
 `Array.concat(left, right)`是type-namespace static transform，返回两个输入的拼接值。例如：
 
 ```skiff
-let ys = Array.concat(xs, [4])
+final ys = Array.concat(xs, [4])
 ```
 
 `Array.map` 和 `Array.filter` 的 callback 是 lane-local non-escaping callback；callback effect 并入承载该 API 调用的 lane。

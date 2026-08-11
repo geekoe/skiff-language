@@ -22,7 +22,7 @@ function firstSubmittedReceipt(input: Stream<string>) -> string {
 }
 
 function acceptSubmittedReceipt(receipt: string) -> void {
-  let observed = firstSubmittedReceipt(
+  final observed = firstSubmittedReceipt(
     nestedSubmittedReceipt(submittedReceiptSource(receipt))
   )
   if observed != receipt.concat(":nested") {

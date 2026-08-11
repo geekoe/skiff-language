@@ -178,7 +178,7 @@ fn array_literal_publishes_exact_array_and_item_types() {
               }
 
               function localValues() -> void {
-                let values = [1, 2]
+                final values = [1, 2]
               }
 
               function emptyValues() -> Array<string> {
@@ -248,7 +248,7 @@ fn map_literal_publishes_exact_map_and_item_types() {
               }
 
               function localValues() -> void {
-                let values = { alpha: 1 }
+                final values = { alpha: 1 }
               }
 
               function emptyValues() -> Map<string, string> {
@@ -651,8 +651,8 @@ fn explicit_actor_registry_intrinsics_return_nominal_handles() {
               }
 
               function load(id: string) -> UserActor {
-                let actor: UserActor = std.actor.get<UserActor>(id, "Ada", 1)
-                let label: string = actor.label()
+                final actor: UserActor = std.actor.get<UserActor>(id, "Ada", 1)
+                final label: string = actor.label()
                 return actor
               }
             "#,
@@ -672,9 +672,9 @@ fn actor_registry_intrinsics_reject_non_actor_wrong_id_and_bootstrap_shape() {
                 std.actor.get<User>("u1")
                 std.actor.get<UserActor>(42, "Ada")
                 std.actor.get<UserActor>("u1", 42)
-                let actor = std.actor.get<UserActor>("u1", "Ada")
-                let leaked = actor.displayName
-                let stored = db require UserActor("u1")
+                final actor = std.actor.get<UserActor>("u1", "Ada")
+                final leaked = actor.displayName
+                final stored = db require UserActor("u1")
               }
             "#,
     )
@@ -740,12 +740,12 @@ fn catch_leaves_accept_nominal_representations_aliases_unions_and_rethrow_envelo
               }
 
               function catchEveryShape(value: RecordFailure) -> void {
-                let record = catch<RecordFailure>(value)
-                let primitive = catch<PrimitiveFailure>(value)
-                let generic = catch<GenericFailure<string>>(value)
-                let transparent = catch<TransparentFailure>(value)
-                let named = catch<FailureUnion>(value)
-                let anonymous = catch<RecordFailure | PrimitiveFailure>(value)
+                final record = catch<RecordFailure>(value)
+                final primitive = catch<PrimitiveFailure>(value)
+                final generic = catch<GenericFailure<string>>(value)
+                final transparent = catch<TransparentFailure>(value)
+                final named = catch<FailureUnion>(value)
+                final anonymous = catch<RecordFailure | PrimitiveFailure>(value)
               }
 
               function rethrowStatement(
@@ -798,7 +798,7 @@ fn catch_leaves_reject_every_non_nominal_shape_at_throw_and_catch() {
                     valid: RecordFailure
                   ) -> void {{
                     throw value
-                    let attempted = catch<{invalid_type}>(valid)
+                    final attempted = catch<{invalid_type}>(valid)
                   }}
                 "#,
         );
@@ -968,25 +968,25 @@ fn typed_catch_value_requires_and_respects_tag_narrowing() {
               }
 
               function equalBranch() -> Payload? {
-                let attempted = catch<Failure>(make())
+                final attempted = catch<Failure>(make())
                 if attempted.tag == "ok" { return attempted.value }
                 return null
               }
 
               function reverseComparison() -> Payload? {
-                let attempted = catch<Failure>(make())
+                final attempted = catch<Failure>(make())
                 if "ok" != attempted.tag { return null }
                 return attempted.value
               }
 
               function earlyReturn() -> Payload? {
-                let attempted = catch<Failure>(make())
+                final attempted = catch<Failure>(make())
                 if attempted.tag != "ok" { return null }
                 return attempted.value
               }
 
               function nestedCatch() -> Payload? {
-                let outer = catch<Failure>(equalBranch())
+                final outer = catch<Failure>(equalBranch())
                 if outer.tag != "ok" { return null }
                 return outer.value
               }
@@ -1000,7 +1000,7 @@ fn typed_catch_value_requires_and_respects_tag_narrowing() {
               type Failure = string
               function make() -> Payload { return Payload { value: "ok" } }
               function invalid() -> Payload {
-                let attempted = catch<Failure>(make())
+                final attempted = catch<Failure>(make())
                 return attempted.value
               }
             "#,
@@ -1018,7 +1018,7 @@ fn typed_catch_value_requires_and_respects_tag_narrowing() {
               type Failure = string
               function make() -> Payload { return Payload { value: "ok" } }
               function invalid() -> Payload? {
-                let attempted = catch<Failure>(make())
+                final attempted = catch<Failure>(make())
                 if attempted.tag == "err" { return attempted.value }
                 return null
               }
@@ -1048,26 +1048,26 @@ fn test_assertion_true_flow_narrows_stable_bindings() {
               }
 
               test "nullable local" {
-                let value: Payload? = maybe()
+                final value: Payload? = maybe()
                 assert value != null
                 assert value.value == "ok"
               }
 
               test "tagged catch result" {
-                let attempted = catch<Failure>(make())
+                final attempted = catch<Failure>(make())
                 assert attempted.tag == "ok"
                 assert attempted.value.value == "ok"
               }
 
               test "conjunction" {
-                let value: Payload? = maybe()
-                let attempted = catch<Failure>(make())
+                final value: Payload? = maybe()
+                final attempted = catch<Failure>(make())
                 assert value != null && attempted.tag == "ok"
                 assert value.value == attempted.value.value
               }
 
               test "nested test block" {
-                let value: Payload? = maybe()
+                final value: Payload? = maybe()
                 if true {
                   assert value != null
                   assert value.value == "ok"
@@ -1086,7 +1086,7 @@ fn test_assertion_narrowing_fails_closed_for_invalidated_or_unstable_values() {
                   type Payload { value: string }
                   function maybe() -> Payload? { return Payload { value: "ok" } }
                   test "opposite null assertion" {
-                    let value: Payload? = maybe()
+                    final value: Payload? = maybe()
                     assert value == null
                     assert value.value == "ok"
                   }
@@ -1109,7 +1109,7 @@ fn test_assertion_narrowing_fails_closed_for_invalidated_or_unstable_values() {
                   type Payload { value: string }
                   function maybe() -> Payload? { return Payload { value: "ok" } }
                   test "reassignment" {
-                    let value: Payload? = maybe()
+                    final value: Payload? = maybe()
                     assert value != null
                     value = null
                     assert value.value == "ok"
@@ -1122,7 +1122,7 @@ fn test_assertion_narrowing_fails_closed_for_invalidated_or_unstable_values() {
                   type Payload { value: string }
                   function maybe() -> Payload? { return Payload { value: "ok" } }
                   test "branch merge" {
-                    let value: Payload? = maybe()
+                    final value: Payload? = maybe()
                     if true {
                       assert value != null
                     }
@@ -1256,7 +1256,7 @@ fn db_read_projection_publishes_selected_fields_and_automatic_key() {
               }
 
               function projected(id: string) -> { id: string, apiKey: string } {
-                let credential = db require Credential(id) {
+                final credential = db require Credential(id) {
                   fields { apiKey }
                 }
                 return { id: credential.id, apiKey: credential.apiKey }
@@ -1357,7 +1357,7 @@ fn relational_comparison_accepts_numbers_and_db_string_cursor() {
               }
 
               function lexicalBindingSurvivesDbPredicate(id: number) -> number {
-                let count = db count Credential { where id > "credential-0" }
+                final count = db count Credential { where id > "credential-0" }
                 return id + count
               }
             "#,
@@ -1418,7 +1418,7 @@ fn relational_comparison_rejects_runtime_strings_mixed_nullable_and_other_types(
 
                   function invalid(id: number?) -> bool {
                     if id != null {
-                      let count = db count Credential { where id > id }
+                      final count = db count Credential { where id > id }
                     }
                     return true
                   }
@@ -1435,7 +1435,7 @@ fn relational_comparison_rejects_runtime_strings_mixed_nullable_and_other_types(
 
                   function invalid(profile: LexicalProfile, lastString: string) -> bool {
                     if profile.name != null {
-                      let count = db count Credential { where profile.name > lastString }
+                      final count = db count Credential { where profile.name > lastString }
                     }
                     return true
                   }
@@ -1458,7 +1458,7 @@ fn explicit_interface_boxing_and_any_interface_method_call_type_check() {
     expression_type_result(&boxing_source(
         r#"
               function run() -> string {
-                let provider: any Provider = Host { label: "host" } as Provider
+                final provider: any Provider = Host { label: "host" } as Provider
                 return provider.name()
               }
             "#,
@@ -1477,7 +1477,7 @@ fn any_interface_internal_named_record_and_function_type_hosts_type_check() {
               function consume(handler: fn(input: any Provider) -> any Provider) -> void {}
 
               function make() -> Holder {
-                let holder: Holder = Holder {
+                final holder: Holder = Holder {
                   provider: Host { label: "host" } as Provider,
                 }
                 return holder
@@ -1575,7 +1575,7 @@ fn interface_boxing_rejects_invalid_selector_source_and_conformance() {
     let selector_error = expression_type_result(&boxing_source(
         r#"
               function run() -> void {
-                let provider = Host { label: "host" } as string
+                final provider = Host { label: "host" } as string
               }
             "#,
     ))
@@ -1590,7 +1590,7 @@ fn interface_boxing_rejects_invalid_selector_source_and_conformance() {
     let source_error = expression_type_result(&boxing_source(
         r#"
               function run() -> void {
-                let provider = { label: "host" } as Provider
+                final provider = { label: "host" } as Provider
               }
             "#,
     ))
@@ -1604,7 +1604,7 @@ fn interface_boxing_rejects_invalid_selector_source_and_conformance() {
     let conformance_error = expression_type_result(&boxing_source(
         r#"
               function run() -> void {
-                let provider = Other { label: "host" } as Provider
+                final provider = Other { label: "host" } as Provider
               }
             "#,
     ))
@@ -1627,7 +1627,7 @@ fn interface_boxing_rejects_marker_interface() {
               }
 
               function run() -> void {
-                let provider = Host { label: "host" } as Marker
+                final provider = Host { label: "host" } as Marker
               }
             "#,
     )
@@ -1733,7 +1733,7 @@ fn db_upsert_result_fields_are_static_expression_type_facts() {
               }
 
               test "upsert result fields" {
-                let r = db upsert User("u1") { name = "Ada" } { name = "Ada" }
+                final r = db upsert User("u1") { name = "Ada" } { name = "Ada" }
                 assert r.inserted
                 assert r.value.name == "Ada"
               }
@@ -1814,14 +1814,14 @@ fn runtime_receiver_builtin_calls_publish_static_return_type_facts() {
               }
 
               function run() -> bool {
-                let marker = config.require<string>("runtimeLive.db")
-                let prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
-                let firstId = prefix.concat("-a")
-                let epoch = Date.fromEpochMilliseconds(0)
-                let later = epoch.addMilliseconds(5)
-                let epochMillis = epoch.toEpochMilliseconds()
-                let diffMillis = later.diffMilliseconds(epoch)
-                let ordering = epoch.compare(later)
+                final marker = config.require<string>("runtimeLive.db")
+                final prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
+                final firstId = prefix.concat("-a")
+                final epoch = Date.fromEpochMilliseconds(0)
+                final later = epoch.addMilliseconds(5)
+                final epochMillis = epoch.toEpochMilliseconds()
+                final diffMillis = later.diffMilliseconds(epoch)
+                final ordering = epoch.compare(later)
                 db insert RuntimeLiveDoc { id = firstId value = marker.concat("-first") visits = 1 rank = 10 }
                 return firstId.contains(marker)
               }
@@ -1933,7 +1933,7 @@ fn native_signature_local_types_are_externalized_from_the_declaring_module() {
               import std
 
               test "duration native signature" {
-                let duration = Duration.milliseconds(1)
+                final duration = Duration.milliseconds(1)
                 std.time.sleep(duration)
               }
             "#
@@ -2297,11 +2297,11 @@ fn ternary_accepts_matching_and_widening_branch_types() {
                 ratio: number,
                 user: User?
               ) -> string {
-                let same = flag ? a : b
-                let widened = flag ? count : ratio
-                let literalWidened = flag ? "a" : "b"
-                let nullable = user != null ? user.name : null
-                let neverBranch = flag ? throw User { name: "boom" } : b
+                final same = flag ? a : b
+                final widened = flag ? count : ratio
+                final literalWidened = flag ? "a" : "b"
+                final nullable = user != null ? user.name : null
+                final neverBranch = flag ? throw User { name: "boom" } : b
                 return same
               }
             "#,
@@ -2314,7 +2314,7 @@ fn ternary_rejects_incompatible_branch_types() {
     let error = expression_type_result(
         r#"
               function pick(flag: bool, a: string, b: number) -> string {
-                let value = flag ? a : b
+                final value = flag ? a : b
                 return value
               }
             "#,
@@ -2336,7 +2336,7 @@ fn ternary_requires_bool_condition() {
     let error = expression_type_result(
         r#"
               function pick(a: string, b: string) -> string {
-                let value = a ? b : a
+                final value = a ? b : a
                 return value
               }
             "#,
@@ -2354,7 +2354,7 @@ fn ternary_accepts_non_nullable_annotated_result() {
     expression_type_result(
         r#"
               function pick(flag: bool, a: string, b: string) -> string {
-                let value: string = flag ? a : b
+                final value: string = flag ? a : b
                 return value
               }
             "#,
@@ -2367,7 +2367,7 @@ fn ternary_null_branch_result_is_assignable_to_nullable_annotation() {
     expression_type_result(
         r#"
               function pick(flag: bool, value: string) -> string? {
-                let result: string? = flag ? value : null
+                final result: string? = flag ? value : null
                 return result
               }
             "#,
@@ -2379,15 +2379,15 @@ fn ternary_null_branch_result_is_assignable_to_nullable_annotation() {
 fn db_write_operations_on_contract_target_are_rejected_by_expression_typing() {
     for (body, kind) in [
         (
-            "let value = db insert AgentThread { id = \"a\" status = \"open\" }\n              return value",
+            "final value = db insert AgentThread { id = \"a\" status = \"open\" }\n              return value",
             "insert",
         ),
         (
-            "let value = db replace AgentThread(\"a\") { id = \"a\" status = \"open\" }\n              return value",
+            "final value = db replace AgentThread(\"a\") { id = \"a\" status = \"open\" }\n              return value",
             "replace",
         ),
         (
-            "let value = db upsert AgentThread(\"a\") { id = \"a\" status = \"open\" } { status = \"open\" }\n              return value",
+            "final value = db upsert AgentThread(\"a\") { id = \"a\" status = \"open\" } { status = \"open\" }\n              return value",
             "upsert",
         ),
     ] {

@@ -102,7 +102,7 @@ mod tests {
         );
         assert!(matches!(
         header.routing.ingress.protocol,
-        skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestIngressProtocol::Http
+        skiff_runtime_transport::protocol::BytecodeRequestIngressProtocol::Http
     ));
         assert_eq!(header.routing.ingress.method, "POST");
         assert_eq!(header.routing.ingress.path, "/items");

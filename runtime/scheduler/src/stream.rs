@@ -152,6 +152,13 @@ impl<P, T, E> StreamSupervisor<P, T, E> {
     pub fn is_backpressured(&self) -> bool {
         lock_unpoisoned(&self.shared.state).blocked_emit.is_some()
     }
+
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            &lock_unpoisoned(&self.shared.state).terminal,
+            Terminal::Cancelled
+        )
+    }
 }
 
 impl<P, T, E> VmRootSource for StreamSupervisor<P, T, E>
@@ -646,6 +653,49 @@ mod tests {
         assert_eq!(
             consumer.poll_next(Arc::new(Counter::default())),
             StreamPoll::Ready(StreamEvent::Cancelled)
+        );
+    }
+
+    #[test]
+    fn natural_end_after_backpressure_leaves_no_pending_state() {
+        let (supervisor, mut producer, mut consumer) =
+            StreamSupervisor::<_, u64, &'static str>::open("build");
+        let producer_wake = Arc::new(Counter::default());
+
+        assert_eq!(
+            producer.emit(1, Arc::new(Counter::default())),
+            StreamEmit::Ready
+        );
+        assert_eq!(
+            producer.emit(2, producer_wake.clone()),
+            StreamEmit::Pending
+        );
+        assert!(supervisor.is_backpressured());
+
+        assert_eq!(
+            consumer.poll_next(Arc::new(Counter::default())),
+            StreamPoll::Ready(StreamEvent::Item(1))
+        );
+        assert_eq!(producer_wake.0.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            consumer.poll_next(Arc::new(Counter::default())),
+            StreamPoll::Ready(StreamEvent::Item(2))
+        );
+
+        producer.finish_end().unwrap();
+        assert!(!supervisor.is_backpressured());
+        assert_eq!(supervisor.buffered_len(), 0);
+        assert_eq!(
+            consumer.poll_next(Arc::new(Counter::default())),
+            StreamPoll::Ready(StreamEvent::End)
+        );
+        assert_eq!(
+            consumer.poll_next(Arc::new(Counter::default())),
+            StreamPoll::Ready(StreamEvent::End)
+        );
+        assert_eq!(
+            producer.finish_end(),
+            Err(StreamError::AlreadyTerminal)
         );
     }
 

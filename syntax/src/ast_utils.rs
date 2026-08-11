@@ -91,7 +91,7 @@ pub fn walk_stmt(visitor: &mut (impl AstVisitor + ?Sized), stmt: &Stmt) {
             }
             walk_test_effect_step_outcome(visitor, outcome);
         }
-        Stmt::Let { ty, value, .. } => {
+        Stmt::LocalBinding { ty, value, .. } => {
             if let Some(ty) = ty {
                 visitor.visit_type_ref(ty);
             }
@@ -469,7 +469,7 @@ pub fn collect_reserved_binding_violations(
     impl<F: FnMut(&str) -> bool> AstVisitor for ReservedBindingVisitor<'_, '_, F> {
         fn visit_stmt(&mut self, stmt: &Stmt) {
             match stmt {
-                Stmt::Let { name, .. } => self.check_local_binding(name),
+                Stmt::LocalBinding { name, .. } => self.check_local_binding(name),
                 Stmt::For { binding, .. } => match binding {
                     ForBinding::Item { item } => self.check_local_binding(item),
                     ForBinding::Entry { key, value } => {
@@ -614,7 +614,7 @@ pub fn walk_stmt_mut(visitor: &mut (impl AstVisitorMut + ?Sized), stmt: &mut Stm
             }
             walk_test_effect_step_outcome_mut(visitor, outcome);
         }
-        Stmt::Let { ty, value, .. } => {
+        Stmt::LocalBinding { ty, value, .. } => {
             if let Some(ty) = ty {
                 visitor.visit_type_ref(ty);
             }
@@ -1072,7 +1072,7 @@ pub fn stmt_contains_expr(stmt: &Stmt, predicate: &mut impl FnMut(&Expr) -> bool
                     .is_some_and(|value| expr_contains_with(value, predicate))
                 || test_effect_step_outcome_contains_expr(outcome, predicate)
         }
-        Stmt::Let { value, .. } => expr_contains_with(value, predicate),
+        Stmt::LocalBinding { value, .. } => expr_contains_with(value, predicate),
         Stmt::Assign { target, value } => {
             expr_contains_with(target, predicate) || expr_contains_with(value, predicate)
         }
@@ -1350,7 +1350,7 @@ fn collect_stmt_type_ref_dotted_root_imports(
             }
             collect_test_effect_step_outcome_type_ref_dotted_root_imports(outcome, root, imports);
         }
-        Stmt::Let { ty, value, .. } => {
+        Stmt::LocalBinding { ty, value, .. } => {
             if let Some(ty) = ty {
                 collect_type_ref_dotted_root_imports(ty, root, imports);
             }
@@ -1657,7 +1657,9 @@ fn collect_stmt_dotted_root_imports(stmt: &Stmt, root: &str, imports: &mut BTree
             }
             collect_test_effect_step_outcome_dotted_root_imports(outcome, root, imports);
         }
-        Stmt::Let { value, .. } => collect_expr_dotted_root_imports(value, root, imports),
+        Stmt::LocalBinding { value, .. } => {
+            collect_expr_dotted_root_imports(value, root, imports)
+        }
         Stmt::Assign { target, value } => {
             collect_expr_dotted_root_imports(target, root, imports);
             collect_expr_dotted_root_imports(value, root, imports);
