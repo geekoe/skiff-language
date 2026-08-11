@@ -588,6 +588,11 @@ impl MinimalPlatformFixture {
         )
         .unwrap();
         fs::write(
+            root.join("std/error-projections.yml"),
+            "schemaVersion: skiff-platform-error-projection-catalog-v1\nentries: []\n",
+        )
+        .unwrap();
+        fs::write(
             root.join("prelude/error.skiff"),
             "type TimeoutError { timeoutMs: integer }\n",
         )

@@ -52,6 +52,8 @@ pub struct PreludeRegistry {
     type_aliases_by_symbol: BTreeMap<String, AliasDecl>,
     type_symbols: BTreeMap<String, String>,
     package_public_paths: BTreeSet<(String, String)>,
+    package_exact_public_symbols: BTreeSet<(String, String)>,
+    public_type_declaration_symbols: BTreeSet<String>,
     source_modules: Vec<String>,
     builtin_type_names: BTreeSet<String>,
     prelude_identity_parts: Vec<String>,
@@ -88,13 +90,15 @@ impl PreludeRegistry {
             type_aliases_by_symbol: BTreeMap::new(),
             type_symbols: BTreeMap::new(),
             package_public_paths: BTreeSet::new(),
+            package_exact_public_symbols: BTreeSet::new(),
+            public_type_declaration_symbols: BTreeSet::new(),
             source_modules: Vec::new(),
             builtin_type_names: BTreeSet::new(),
             prelude_identity_parts: Vec::new(),
         }
     }
 
-    fn try_from_platform_sources(
+    pub(crate) fn try_from_platform_sources(
         platform_sources: &skiff_compiler_input::CompilerPlatformSources,
         source_snapshot: &skiff_compiler_input::platform_sources::CompilerPlatformSourceSnapshot,
     ) -> Result<Self, String> {
@@ -119,6 +123,25 @@ impl PreludeRegistry {
         }
         let name = self.prelude_type_decl_name(name).unwrap_or(name);
         self.type_decls.get(name)
+    }
+
+    pub(crate) fn exact_type_decl(&self, symbol: &str) -> Option<&TypeDecl> {
+        self.type_decls_by_symbol.get(symbol.trim())
+    }
+
+    pub(crate) fn exact_type_alias(&self, symbol: &str) -> Option<&AliasDecl> {
+        self.type_aliases_by_symbol.get(symbol.trim())
+    }
+
+    pub fn is_public_type_declaration(&self, symbol: &str) -> bool {
+        self.public_type_declaration_symbols.contains(symbol.trim())
+    }
+
+    pub fn public_type_decl(&self, symbol: &str) -> Option<&TypeDecl> {
+        if !self.is_public_type_declaration(symbol) {
+            return None;
+        }
+        self.exact_type_decl(symbol)
     }
 
     pub fn type_alias(&self, name: &str) -> Option<&AliasDecl> {

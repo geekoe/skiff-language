@@ -24,6 +24,7 @@ mod package_dependency_facts;
 mod package_export_resolver;
 pub mod package_rules;
 pub mod parsed_sources;
+mod platform_error_projection_catalog;
 pub mod prelude_registry;
 pub mod provider_rules;
 mod public_instance_operations;
@@ -111,6 +112,10 @@ pub use local_interface_conformances::{
 };
 pub use name_resolution_model::{validate_source_name_resolution_from_model, NameResolutionModel};
 pub use package_dependency_facts::{SourceCompilePackageDependencyFact, SourceCompilePackageFacts};
+pub use platform_error_projection_catalog::{
+    resolve_platform_error_projection_catalog, PlatformErrorProjectionCatalogError,
+    ResolvedPlatformErrorProjectionCatalog, ResolvedPlatformErrorProjectionEntry,
+};
 pub use public_instance_operations::{
     SourcePublicInstanceInterfaceOperations, SourcePublicInstanceOperationFacts,
     SourcePublicInstanceOperationFactsError, SourcePublicInstanceOperationSlot,

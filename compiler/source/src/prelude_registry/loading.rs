@@ -37,6 +37,7 @@ struct SplitPackageManifest {
 struct PreludeExportMapping {
     package_id: String,
     source_module: String,
+    source_path: String,
     public_module: String,
     public_path: String,
 }
@@ -76,6 +77,12 @@ impl PreludeRegistry {
         self.package_public_paths = std_package_exports
             .values()
             .flatten()
+            .map(|export| (export.package_id.clone(), export.public_path.clone()))
+            .collect();
+        self.package_exact_public_symbols = std_package_exports
+            .values()
+            .flatten()
+            .filter(|export| export.public_path == export.source_path)
             .map(|export| (export.package_id.clone(), export.public_path.clone()))
             .collect();
         self.export_modules = vec![
@@ -129,6 +136,7 @@ impl PreludeRegistry {
         self.type_decls_by_symbol.clear();
         self.type_aliases.clear();
         self.type_aliases_by_symbol.clear();
+        self.public_type_declaration_symbols.clear();
         self.declared_native_bindings.clear();
         self.raw_declared_native_bindings.clear();
         self.source_modules = sources
@@ -150,7 +158,7 @@ impl PreludeRegistry {
             })
             .collect();
         for (module_path, logical_path, text) in &sources {
-            self.add_source(module_path, text)
+            self.add_source_from_logical_path(module_path, logical_path, text)
                 .map_err(|error| format!("failed to parse {}: {error}", logical_path.display()))?;
         }
         self.validate_source_backed_builtin_declarations()?;
@@ -183,9 +191,20 @@ impl PreludeRegistry {
         Ok(())
     }
 
+    #[cfg(test)]
     fn add_source(&mut self, module_path: &str, text: &str) -> Result<(), String> {
+        self.add_source_from_logical_path(module_path, Path::new("test-fixture"), text)
+    }
+
+    fn add_source_from_logical_path(
+        &mut self,
+        module_path: &str,
+        logical_path: &Path,
+        text: &str,
+    ) -> Result<(), String> {
         let source = parse_source(text).map_err(|error| error.to_string())?;
         let symbol_root = module_symbol_root(&self.package_id, module_path);
+        let is_prelude_source = logical_path.starts_with("prelude");
         for ty in source.types {
             self.validate_compiler_builtin_source_declaration(
                 &symbol_root,
@@ -194,6 +213,18 @@ impl PreludeRegistry {
                 Some(ty.type_params.len()),
             )?;
             let symbol = format!("{}.{}", symbol_root, ty.name);
+            if self.type_decls_by_symbol.contains_key(&symbol) {
+                return Err(format!(
+                    "platform sources contain more than one type declaration for exact symbol {symbol}"
+                ));
+            }
+            if is_prelude_source
+                || self
+                    .package_exact_public_symbols
+                    .contains(&(SKIFF_STD_PUBLICATION_ID.to_string(), symbol.clone()))
+            {
+                self.public_type_declaration_symbols.insert(symbol.clone());
+            }
             self.type_symbols.insert(ty.name.clone(), symbol.clone());
             self.type_symbols.insert(symbol.clone(), symbol.clone());
             self.type_decls_by_symbol.insert(symbol, ty.clone());
@@ -532,6 +563,10 @@ fn validate_package_api_export_entries(
         entries.push(PreludeExportMapping {
             package_id: package_id.to_string(),
             source_module: entry.source_module_hint().to_string(),
+            source_path: package_public_path(
+                public_root,
+                &format!("{}.{}", entry.source_module_hint(), entry.source_symbol()),
+            ),
             public_module: package_public_path(public_root, &public_path),
             public_path: package_public_path(public_root, &entry.public_path_string()),
         });
