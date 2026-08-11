@@ -100,6 +100,7 @@ pub enum VmError {
         expected: usize,
         actual: usize,
     },
+    StreamEndResumeUnavailable,
     LinkedTableRowMissing {
         table: CandidateTable,
         row: u32,
@@ -280,6 +281,9 @@ impl fmt::Display for VmError {
             Self::ResumeShapeMismatch { expected, actual } => write!(
                 formatter,
                 "VM resume expects {expected} values but received {actual}"
+            ),
+            Self::StreamEndResumeUnavailable => formatter.write_str(
+                "VM stream end resume is unavailable until the artifact end resume PC is wired",
             ),
             Self::LinkedTableRowMissing { table, row } => write!(
                 formatter,

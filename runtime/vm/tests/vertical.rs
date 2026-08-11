@@ -32,8 +32,9 @@ use skiff_runtime_model::{
     vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle},
 };
 use skiff_runtime_vm::{
-    ChildInvocation, ChildTarget, PendingTicket, ResumeOutcome, StreamItem, Vm, VmBudget,
-    VmControl, VmError, VmFiber, VmFiberState, VmLimits, VmOwnedValues, VmSemanticCharge,
+    AdapterInvocation, ChildInvocation, ChildTarget, PendingTicket, ResumeOutcome, StreamItem, Vm,
+    VmBudget, VmControl, VmError, VmFiber, VmFiberState, VmLimits, VmOwnedValues,
+    VmSemanticCharge,
 };
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
@@ -148,6 +149,14 @@ fn compile_stream_package(
 ) -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
     let text = "function produce() -> Stream<number> {\n  emit(1)\n  emit(2)\n  return\n}\nfunction consume(values: Stream<number>) -> number {\n  return 0\n}\nfunction value() -> number { return 42 }\n";
     compile_package_text(package_id, text, "skiff-vm-stream")
+}
+
+fn compile_host_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
+    compile_package_text(
+        "example.com/vm-host",
+        "function run() -> number { std.time.sleep(1); return 1 }\n",
+        "skiff-vm-host",
+    )
 }
 
 fn service_contract(
@@ -654,6 +663,46 @@ mod tests {
         }
     }
 
+    fn next_adapter(
+        fiber: &mut VmFiber,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> AdapterInvocation {
+        loop {
+            match fiber.run_segment(heap, budget) {
+                VmControl::EnterAdapter(invocation) => return invocation,
+                VmControl::Continue => {}
+                _ => panic!("expected host adapter handoff, got unsupported control"),
+            }
+        }
+    }
+
+    fn host_test_fiber() -> (VmFiber, Arc<VerifiedLinkedBytecodeImage>) {
+        let (package, bytecode) = compile_host_package();
+        let (contract, operation_id) = service_contract(package.package_id.as_str());
+        let (deployment, deployment_reference) =
+            service_deployment(&package, &contract, operation_id.clone());
+        let resolver = TestResolver {
+            deployment,
+            contract,
+            package,
+            bytecode,
+        };
+        let hydrated = DeploymentBytecodeLoader::new(&resolver)
+            .load(&deployment_reference)
+            .unwrap();
+        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
+        let verified =
+            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
+        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
+        let entry = verified.operation_entry(&operation_id).unwrap();
+        let pinned = PinnedDeploymentEntry::try_new(Arc::clone(&image), entry).unwrap();
+        (
+            Vm::start(pinned, Box::new([]), vm_limits()).unwrap(),
+            verified,
+        )
+    }
+
     fn run_to_complete(
         fiber: &mut VmFiber,
         heap: &mut dyn VmHeap,
@@ -666,6 +715,46 @@ mod tests {
                 _ => panic!("expected completion, got unsupported control"),
             }
         }
+    }
+
+    fn resume_outcome_tag(outcome: &ResumeOutcome) -> &'static str {
+        match outcome {
+            ResumeOutcome::Values(_) => "values",
+            ResumeOutcome::Empty => "empty",
+            ResumeOutcome::StreamEnd => "stream_end",
+            ResumeOutcome::Throw(_) => "throw",
+            ResumeOutcome::Failure(_) => "failure",
+            ResumeOutcome::InternalTerminal(_) => "internal_terminal",
+        }
+    }
+
+    #[test]
+    fn stream_end_is_distinct_from_values_empty_and_failure() {
+        let (_fiber, verified) = host_test_fiber();
+        let values = ResumeOutcome::Values(VmOwnedValues::empty(Arc::clone(&verified)));
+        let empty = ResumeOutcome::Empty;
+        let stream_end = ResumeOutcome::StreamEnd;
+        let failure = ResumeOutcome::Failure(VmError::ResumeNotExpected);
+
+        assert_eq!(resume_outcome_tag(&values), "values");
+        assert_eq!(resume_outcome_tag(&empty), "empty");
+        assert_eq!(resume_outcome_tag(&stream_end), "stream_end");
+        assert_eq!(resume_outcome_tag(&failure), "failure");
+    }
+
+    #[test]
+    fn stream_end_resume_fails_closed_until_end_resume_pc_is_wired() {
+        let (mut fiber, _verified) = host_test_fiber();
+        let mut heap = TestHeap;
+        let mut budget = TestBudget::new();
+        let invocation = next_adapter(&mut fiber, &mut heap, &mut budget);
+        let (_adapter, _arguments, resume) = invocation.into_parts();
+
+        assert_eq!(
+            fiber.resume(resume, ResumeOutcome::StreamEnd),
+            Err(VmError::StreamEndResumeUnavailable)
+        );
+        assert_eq!(fiber.state(), VmFiberState::Terminal);
     }
 
     #[test]
