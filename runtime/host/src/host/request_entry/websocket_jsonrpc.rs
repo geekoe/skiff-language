@@ -2,22 +2,23 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
-    self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, RequestEnvelope, ResponseEnd, ResponseEvent,
-    RouterWriterMessage,
+    BoundaryResponse, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
+    RequestEnvelope, ResponseEnd, ResponseEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
-    response_mapper::bytecode_websocket_jsonrpc_response_into_frame,
     protocol::{
         BytecodeWebSocketJsonRpcRequestStartFrameHeader,
-        BytecodeWebSocketJsonRpcResponseFrameHeader,
-        BytecodeWebSocketJsonRpcResponseOutcome,
+        BytecodeWebSocketJsonRpcResponseFrameHeader, BytecodeWebSocketJsonRpcResponseOutcome,
     },
+    response_mapper::bytecode_websocket_jsonrpc_response_into_frame,
 };
 use tokio::sync::mpsc;
 use tracing::error;
 
-use super::assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest;
+use super::{
+    assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest,
+    resumable::{drive_bytecode_request, RejectingResponseEventSink},
+};
 use crate::{
     host::{
         request_supervisor::{CompletionTrace, SupervisedRequest},
@@ -69,15 +70,18 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let result =
-                request_runner::execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            let result = drive_bytecode_request(
+                BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
                     cancelled: supervised_request.cancelled(),
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
-                });
+                },
+                Arc::new(RejectingResponseEventSink),
+            )
+            .await;
             let terminal = match result {
                 Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))) => {
                     WebSocketJsonRpcTerminal::Response(WebSocketJsonRpcOutcome::Success { payload })
@@ -202,10 +206,9 @@ fn websocket_jsonrpc_response_parts(
     outcome: WebSocketJsonRpcOutcome,
 ) -> (BytecodeWebSocketJsonRpcResponseOutcome, Vec<u8>) {
     match outcome {
-        WebSocketJsonRpcOutcome::Success { payload } => (
-            BytecodeWebSocketJsonRpcResponseOutcome::Success,
-            payload,
-        ),
+        WebSocketJsonRpcOutcome::Success { payload } => {
+            (BytecodeWebSocketJsonRpcResponseOutcome::Success, payload)
+        }
         WebSocketJsonRpcOutcome::InvalidParams => (
             BytecodeWebSocketJsonRpcResponseOutcome::InvalidParams,
             Vec::new(),
@@ -231,10 +234,7 @@ mod tests {
             websocket_jsonrpc_response_parts(WebSocketJsonRpcOutcome::Success {
                 payload: b"null".to_vec(),
             });
-        assert_eq!(
-            outcome,
-            BytecodeWebSocketJsonRpcResponseOutcome::Success
-        );
+        assert_eq!(outcome, BytecodeWebSocketJsonRpcResponseOutcome::Success);
         assert_eq!(payload, b"null");
 
         for terminal in [

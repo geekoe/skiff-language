@@ -38,8 +38,7 @@ use skiff_runtime_transport::{
         BytecodeRequestStartFrameWireHeader, BytecodeRequestTraceFrameHeader,
         BytecodeTaskInvocationFrameHeader, BytecodeTaskRequestCallerFrameHeader,
         BytecodeTaskRequestRoutingFrameHeader, BytecodeTaskRequestStartFrameHeader,
-        BytecodeWebSocketConnectIngressFrameHeader,
-        BytecodeWebSocketConnectIngressProtocol,
+        BytecodeWebSocketConnectIngressFrameHeader, BytecodeWebSocketConnectIngressProtocol,
         BytecodeWebSocketConnectRequestFrameHeader,
         BytecodeWebSocketConnectRequestStartFrameHeader,
         BytecodeWebSocketConnectRoutingFrameHeader,
@@ -343,10 +342,7 @@ fn canonical_header_for_deployment(
     }
 }
 
-fn task_header(
-    fixture: &CompiledFixture,
-    request_id: &str,
-) -> BytecodeTaskRequestStartFrameHeader {
+fn task_header(fixture: &CompiledFixture, request_id: &str) -> BytecodeTaskRequestStartFrameHeader {
     BytecodeTaskRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
@@ -610,7 +606,7 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn canonical_http_server_stream_bytecode_request_fails_closed_without_legacy() {
+async fn canonical_http_server_stream_with_scalar_operation_fails_closed() {
     let fixture = fixture();
     let host = test_host();
     let bootstrap = connection_bootstrap(fixture);
@@ -625,7 +621,12 @@ async fn canonical_http_server_stream_bytecode_request_fails_closed_without_lega
         sender,
     )
     .await;
-    assert_bytecode_response_error(&mut receiver, &header.request_id, "only supports unary").await;
+    assert_bytecode_response_error(
+        &mut receiver,
+        &header.request_id,
+        "serverStream request completed without a response stream",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
