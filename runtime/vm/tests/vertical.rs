@@ -32,9 +32,8 @@ use skiff_runtime_model::{
     vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle},
 };
 use skiff_runtime_vm::{
-    AdapterInvocation, ChildInvocation, ChildTarget, PendingTicket, ResumeOutcome, StreamItem, Vm,
-    VmBudget, VmControl, VmError, VmFiber, VmFiberState, VmLimits, VmOwnedValues,
-    VmSemanticCharge,
+    ChildInvocation, ChildTarget, PendingTicket, ResumeOutcome, StreamItem, Vm, VmBudget,
+    VmControl, VmError, VmFiber, VmFiberState, VmLimits, VmOwnedValues, VmSemanticCharge,
 };
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
@@ -147,16 +146,15 @@ fn compile_package_with_dependencies(
 fn compile_stream_package(
     package_id: &str,
 ) -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
-    let text = "function produce() -> Stream<number> {\n  emit(1)\n  emit(2)\n  return\n}\nfunction consume(values: Stream<number>) -> number {\n  var total = 0\n  for item in values { total = total + item }\n  return total\n}\nfunction value() -> number { return 42 }\n";
+    let text = "function helper(value: number) -> number { return value }\nfunction produce() -> Stream<number> {\n  emit(1)\n  emit(2)\n  return\n}\nfunction consume(values: Stream<number>) -> number {\n  final stream = values\n  for item in stream {\n    helper(item)\n  }\n  return 0\n}\nfunction value() -> number { return 42 }\n";
     compile_package_text(package_id, text, "skiff-vm-stream")
 }
 
-fn compile_host_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
-    compile_package_text(
-        "example.com/vm-host",
-        "function run() -> number { std.time.sleep(Duration.milliseconds(1)); return 1 }\n",
-        "skiff-vm-host",
-    )
+fn compile_producer_package(
+    package_id: &str,
+) -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
+    let text = "function produce() -> Stream<number> {\n  emit(1)\n  emit(2)\n  return\n}\nfunction consume(values: Stream<number>) -> number {\n  return 0\n}\nfunction value() -> number { return 42 }\n";
+    compile_package_text(package_id, text, "skiff-vm-producer")
 }
 
 fn service_contract(
@@ -576,7 +574,17 @@ mod tests {
 
     impl StreamTestImage {
         fn new(package_id: &str) -> Self {
-            let (package, bytecode) = compile_stream_package(package_id);
+            Self::from_compiled(package_id, compile_stream_package(package_id))
+        }
+
+        fn producer_new(package_id: &str) -> Self {
+            Self::from_compiled(package_id, compile_producer_package(package_id))
+        }
+
+        fn from_compiled(
+            package_id: &str,
+            (package, bytecode): (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>),
+        ) -> Self {
             let (contract, operations) = stream_service_contract(package_id);
             let callable = |symbol: &str| {
                 skiff_compiler_core::implementation_package_callable_id(
@@ -663,46 +671,6 @@ mod tests {
         }
     }
 
-    fn next_adapter(
-        fiber: &mut VmFiber,
-        heap: &mut dyn VmHeap,
-        budget: &mut dyn VmBudget,
-    ) -> AdapterInvocation {
-        loop {
-            match fiber.run_segment(heap, budget) {
-                VmControl::EnterAdapter(invocation) => return invocation,
-                VmControl::Continue => {}
-                _ => panic!("expected host adapter handoff, got unsupported control"),
-            }
-        }
-    }
-
-    fn host_test_fiber() -> (VmFiber, Arc<VerifiedLinkedBytecodeImage>) {
-        let (package, bytecode) = compile_host_package();
-        let (contract, operation_id) = service_contract(package.package_id.as_str());
-        let (deployment, deployment_reference) =
-            service_deployment(&package, &contract, operation_id.clone());
-        let resolver = TestResolver {
-            deployment,
-            contract,
-            package,
-            bytecode,
-        };
-        let hydrated = DeploymentBytecodeLoader::new(&resolver)
-            .load(&deployment_reference)
-            .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let pinned = PinnedDeploymentEntry::try_new(Arc::clone(&image), entry).unwrap();
-        (
-            Vm::start(pinned, Box::new([]), vm_limits()).unwrap(),
-            verified,
-        )
-    }
-
     fn run_to_complete(
         fiber: &mut VmFiber,
         heap: &mut dyn VmHeap,
@@ -730,8 +698,8 @@ mod tests {
 
     #[test]
     fn stream_end_is_distinct_from_values_empty_and_failure() {
-        let (_fiber, verified) = host_test_fiber();
-        let values = ResumeOutcome::Values(VmOwnedValues::empty(Arc::clone(&verified)));
+        let image = StreamTestImage::producer_new("example.com/vm-stream-end-outcome");
+        let values = ResumeOutcome::Values(VmOwnedValues::empty(Arc::clone(&image.verified)));
         let empty = ResumeOutcome::Empty;
         let stream_end = ResumeOutcome::StreamEnd;
         let failure = ResumeOutcome::Failure(VmError::ResumeNotExpected);
@@ -744,11 +712,12 @@ mod tests {
 
     #[test]
     fn stream_end_resume_fails_closed_when_end_pc_is_missing() {
-        let (mut fiber, _verified) = host_test_fiber();
+        let image = StreamTestImage::producer_new("example.com/vm-stream-end-missing");
         let mut heap = TestHeap;
         let mut budget = TestBudget::new();
-        let invocation = next_adapter(&mut fiber, &mut heap, &mut budget);
-        let (_adapter, _arguments, resume) = invocation.into_parts();
+        let mut fiber = image.start("produce", Box::new([]));
+        let item = next_emit(&mut fiber, &mut heap, &mut budget);
+        let (_item_values, resume) = item.into_parts();
 
         assert_eq!(resume.end_resume_pc(), None);
         assert_eq!(
@@ -803,7 +772,7 @@ mod tests {
     #[test]
     #[ignore = "source-level stream producer completion is not verified by the linked bytecode pipeline yet"]
     fn stream_producer_natural_end_resumes_and_clears_continuation() {
-        let image = StreamTestImage::new("example.com/vm-stream");
+        let image = StreamTestImage::producer_new("example.com/vm-stream");
         let mut heap = TestHeap;
         let mut budget = TestBudget::new();
         let mut fiber = image.start("produce", Box::new([]));
@@ -853,7 +822,7 @@ mod tests {
     #[test]
     #[ignore = "source-level stream producer completion is not verified by the linked bytecode pipeline yet"]
     fn stream_backpressure_handoff_parks_and_resumes_zero_result() {
-        let image = StreamTestImage::new("example.com/vm-stream");
+        let image = StreamTestImage::producer_new("example.com/vm-stream");
         let mut heap = TestHeap;
         let mut budget = TestBudget::new();
         let mut fiber = image.start("produce", Box::new([]));
@@ -876,7 +845,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "runtime/bytecode-verifier FrameAndValueTransferPlan for StreamNext is not wired yet"]
+    #[ignore = "compiler emitter source event placement for StreamNext for-in is not wired yet"]
     fn stream_next_hands_off_affine_endpoint_and_resumes_item_then_end() {
         let image = StreamTestImage::new("example.com/vm-stream");
         let mut heap = TestHeap;
@@ -915,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "runtime/bytecode-verifier StreamNext verification is not wired yet"]
+    #[ignore = "compiler emitter source event placement for StreamNext for-in is not wired yet"]
     fn stream_resume_tokens_reject_authority_and_image_reuse() {
         let image_a = StreamTestImage::new("example.com/vm-stream");
         let image_b = StreamTestImage::new("example.com/vm-stream-other");
