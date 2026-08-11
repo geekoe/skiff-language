@@ -377,6 +377,86 @@ fn canonical_projection_contains_the_decided_runtime_semantics() {
 }
 
 #[test]
+fn catchable_opcode_failures_are_an_exact_current_cover() {
+    let catchable = OPCODE_CONTRACTS
+        .iter()
+        .flat_map(|contract| {
+            contract
+                .exception
+                .failures
+                .iter()
+                .filter_map(move |failure| {
+                    let FailureDisposition::Catchable { identity } = failure.disposition else {
+                        return None;
+                    };
+                    Some((contract.kind, failure.kind, failure.trigger, identity))
+                })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        catchable,
+        vec![
+            (
+                Opcode::SetWritablePath,
+                FailureKind::CollectionIndexOutOfBounds,
+                FailureTrigger::IndexOutOfBounds,
+                COLLECTION_INDEX_OUT_OF_BOUNDS_ERROR,
+            ),
+            (
+                Opcode::SetWritablePath,
+                FailureKind::WritablePathIntermediateMissingKey,
+                FailureTrigger::IntermediateMissingKey,
+                COLLECTION_MISSING_KEY_ERROR,
+            ),
+            (
+                Opcode::ArrayGet,
+                FailureKind::CollectionIndexOutOfBounds,
+                FailureTrigger::IndexOutOfBounds,
+                COLLECTION_INDEX_OUT_OF_BOUNDS_ERROR,
+            ),
+            (
+                Opcode::MapGet,
+                FailureKind::CollectionMissingKey,
+                FailureTrigger::MissingKey,
+                COLLECTION_MISSING_KEY_ERROR,
+            ),
+        ]
+    );
+
+    for (opcode, kind, trigger, disposition) in [
+        (
+            Opcode::SetWritablePath,
+            FailureKind::WritablePathTypeInvariant,
+            FailureTrigger::InternalTypeInvariant,
+            FailureDisposition::InvariantTerminal,
+        ),
+        (
+            Opcode::SetWritablePath,
+            FailureKind::WritablePathCowInvariant,
+            FailureTrigger::InternalCowInvariant,
+            FailureDisposition::InvariantTerminal,
+        ),
+        (
+            Opcode::MapEntryAt,
+            FailureKind::MapEntryIndexOutOfBounds,
+            FailureTrigger::IndexOutOfBounds,
+            FailureDisposition::UncatchableTerminal,
+        ),
+    ] {
+        let failure = contract_for_opcode(opcode)
+            .exception
+            .failures
+            .iter()
+            .find(|failure| failure.kind == kind && failure.trigger == trigger)
+            .unwrap_or_else(|| panic!("{opcode:?} is missing {kind:?}/{trigger:?}"));
+        assert_eq!(
+            failure.disposition, disposition,
+            "{opcode:?} {kind:?}/{trigger:?} must not become a public catchable failure"
+        );
+    }
+}
+
+#[test]
 fn every_top_level_contract_field_changes_the_fingerprint() {
     let baseline = opcode_table_fingerprint();
     let assert_changed = |label: &str, mutate: &dyn Fn(&mut Vec<OpcodeContract>)| {
