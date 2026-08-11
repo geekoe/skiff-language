@@ -1,13 +1,46 @@
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use serde_json::json;
 use skiff_runtime_model::recoverable::{
     RuntimeRecoverableBoundaryContext, RuntimeRecoverableExpectedTypePlan,
 };
 use skiff_runtime_model::{
-    error::{RuntimeErrorPayload, WirePayload},
+    error::{
+        DiagnosticAttributes, DiagnosticCode, DiagnosticFieldKey, DiagnosticFieldValue,
+        RuntimeDiagnostic, RuntimeErrorPayload, WirePayload,
+    },
     service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
 };
+
+const fn closed_diagnostic_code(value: &'static str) -> DiagnosticCode {
+    match DiagnosticCode::new(value) {
+        Some(code) => code,
+        None => panic!("boundary diagnostic codes must be valid"),
+    }
+}
+
+const INVALID_ARTIFACT_CODE: DiagnosticCode = closed_diagnostic_code("InvalidArtifact");
+const INTERNAL_ERROR_CODE: DiagnosticCode = closed_diagnostic_code("InternalError");
+const STD_BYTES_DECODE_CODE: DiagnosticCode = closed_diagnostic_code("std.bytes.DecodeError");
+const STD_DB_DECODE_CODE: DiagnosticCode = closed_diagnostic_code("std.db.DecodeError");
+const STD_FILE_ERROR_CODE: DiagnosticCode = closed_diagnostic_code("std.file.FileError");
+const STD_HTTP_ERROR_CODE: DiagnosticCode = closed_diagnostic_code("std.http.HttpError");
+const UNSUPPORTED_RUNTIME_FEATURE_CODE: DiagnosticCode =
+    closed_diagnostic_code("UnsupportedRuntimeFeature");
+const RESOURCE_LIMIT_EXCEEDED_CODE: DiagnosticCode =
+    closed_diagnostic_code("ResourceLimitExceeded");
+const JSON_ERROR_CODE: DiagnosticCode = closed_diagnostic_code("JsonError");
+
+const fn closed_diagnostic_field(value: &'static str) -> DiagnosticFieldKey {
+    match DiagnosticFieldKey::new(value) {
+        Some(field) => field,
+        None => panic!("boundary diagnostic fields must be valid"),
+    }
+}
+
+const LIMIT_FIELD: DiagnosticFieldKey = closed_diagnostic_field("limit");
+const CURRENT_FIELD: DiagnosticFieldKey = closed_diagnostic_field("current");
+const REQUESTED_DELTA_FIELD: DiagnosticFieldKey = closed_diagnostic_field("requested_delta");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoverableBoundaryErrorCode {
@@ -48,6 +81,10 @@ impl RecoverableBoundaryErrorCode {
             Self::SealedPayloadInvalid => "recoverable_sealed_payload_invalid",
         }
     }
+
+    fn diagnostic_code(self) -> DiagnosticCode {
+        closed_diagnostic_code(self.as_str())
+    }
 }
 
 impl fmt::Display for RecoverableBoundaryErrorCode {
@@ -61,6 +98,11 @@ impl fmt::Display for RecoverableBoundaryErrorCode {
 pub struct RecoverableBoundaryError {
     code: RecoverableBoundaryErrorCode,
     message: String,
+    data: Box<RecoverableBoundaryErrorData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecoverableBoundaryErrorData {
     context: RuntimeRecoverableBoundaryContext,
     expected: RuntimeRecoverableExpectedTypePlan,
     detail: Option<serde_json::Value>,
@@ -76,14 +118,16 @@ impl RecoverableBoundaryError {
         Self {
             code,
             message: message.into(),
-            context: context.clone(),
-            expected: expected.clone(),
-            detail: None,
+            data: Box::new(RecoverableBoundaryErrorData {
+                context: context.clone(),
+                expected: expected.clone(),
+                detail: None,
+            }),
         }
     }
 
     pub fn with_detail(mut self, detail: serde_json::Value) -> Self {
-        self.detail = Some(detail);
+        self.data.detail = Some(detail);
         self
     }
 
@@ -96,23 +140,23 @@ impl RecoverableBoundaryError {
     }
 
     pub fn context(&self) -> &RuntimeRecoverableBoundaryContext {
-        &self.context
+        &self.data.context
     }
 
     pub fn expected(&self) -> &RuntimeRecoverableExpectedTypePlan {
-        &self.expected
+        &self.data.expected
     }
 
     pub fn detail(&self) -> Option<&serde_json::Value> {
-        self.detail.as_ref()
+        self.data.detail.as_ref()
     }
 
     pub fn details_json(&self) -> serde_json::Value {
         let mut details = serde_json::json!({
-            "context": &self.context,
-            "expected": &self.expected,
+            "context": &self.data.context,
+            "expected": &self.data.expected,
         });
-        if let (Some(object), Some(detail)) = (details.as_object_mut(), self.detail.as_ref()) {
+        if let (Some(object), Some(detail)) = (details.as_object_mut(), self.data.detail.as_ref()) {
             object.insert("detail".to_string(), detail.clone());
         }
         details
@@ -192,6 +236,83 @@ impl RuntimeError {
             message: message.into(),
             detail,
         }
+    }
+}
+
+impl RuntimeDiagnostic for RecoverableBoundaryError {
+    fn diagnostic_code(&self) -> DiagnosticCode {
+        self.code.diagnostic_code()
+    }
+
+    fn diagnostic_message(&self) -> Cow<'_, str> {
+        Cow::Borrowed(self.message())
+    }
+}
+
+impl RuntimeDiagnostic for RuntimeError {
+    fn diagnostic_code(&self) -> DiagnosticCode {
+        match self {
+            Self::InvalidArtifact(_) => INVALID_ARTIFACT_CODE,
+            Self::Decode(_) => INTERNAL_ERROR_CODE,
+            Self::DecodeTarget { target, .. } => decode_target_error_code(target)
+                .map(closed_diagnostic_code)
+                .unwrap_or(INTERNAL_ERROR_CODE),
+            Self::BytesDecode { .. } => STD_BYTES_DECODE_CODE,
+            Self::DbDecode { .. } => STD_DB_DECODE_CODE,
+            Self::FileError { .. } => STD_FILE_ERROR_CODE,
+            Self::HttpError { .. } => STD_HTTP_ERROR_CODE,
+            Self::Unsupported(_) => UNSUPPORTED_RUNTIME_FEATURE_CODE,
+            Self::Recoverable(error) => RuntimeDiagnostic::diagnostic_code(error),
+            Self::ResourceLimitExceeded { .. } => RESOURCE_LIMIT_EXCEEDED_CODE,
+            Self::Json(_) => JSON_ERROR_CODE,
+        }
+    }
+
+    fn diagnostic_message(&self) -> Cow<'_, str> {
+        match self {
+            Self::InvalidArtifact(message) | Self::Decode(message) | Self::Unsupported(message) => {
+                Cow::Borrowed(message.as_str())
+            }
+            Self::DecodeTarget { message, .. }
+            | Self::BytesDecode { message, .. }
+            | Self::DbDecode { message, .. }
+            | Self::FileError { message }
+            | Self::HttpError { message, .. } => Cow::Borrowed(message.as_str()),
+            Self::Recoverable(error) => RuntimeDiagnostic::diagnostic_message(error),
+            Self::ResourceLimitExceeded {
+                resource, reason, ..
+            } => Cow::Owned(format!("resource limit exceeded for {resource}: {reason}")),
+            Self::Json(error) => Cow::Owned(error.to_string()),
+        }
+    }
+
+    fn record_diagnostic_attributes(&self, attributes: &mut DiagnosticAttributes) {
+        match self {
+            Self::Recoverable(error) => {
+                RuntimeDiagnostic::record_diagnostic_attributes(error, attributes);
+            }
+            Self::ResourceLimitExceeded {
+                limit,
+                current,
+                requested_delta,
+                ..
+            } => {
+                record_usize_attribute(attributes, LIMIT_FIELD, *limit);
+                record_usize_attribute(attributes, CURRENT_FIELD, *current);
+                record_usize_attribute(attributes, REQUESTED_DELTA_FIELD, *requested_delta);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn record_usize_attribute(
+    attributes: &mut DiagnosticAttributes,
+    field: DiagnosticFieldKey,
+    value: usize,
+) {
+    if let Ok(value) = u64::try_from(value) {
+        let _ = attributes.record(field, DiagnosticFieldValue::U64(value));
     }
 }
 
