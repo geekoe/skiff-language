@@ -307,6 +307,7 @@ fn artifact_frame(
         result_count: u32::try_from(results.len()).unwrap(),
         result_type_refs: results.to_vec(),
         result_plans: results.iter().copied().map(artifact_plan).collect(),
+        stream_result_type_ref: None,
         slot_plans: slots.iter().copied().map(artifact_plan).collect(),
     }
 }

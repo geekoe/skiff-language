@@ -78,6 +78,14 @@ pub(super) fn artifact_resume_source_map() -> Vec<SourceMapEntry> {
     }]
 }
 
+pub(super) fn artifact_producer_source_map() -> Vec<SourceMapEntry> {
+    vec![SourceMapEntry {
+        start_pc: 2,
+        end_pc: 4,
+        site: budget_site(),
+    }]
+}
+
 pub(super) fn artifact_stream_source_map() -> Vec<SourceMapEntry> {
     vec![SourceMapEntry {
         start_pc: 0,
@@ -164,6 +172,14 @@ pub(super) fn linked_resume_source_map() -> Box<[LinkedSourceMapEntry]> {
     Box::new([LinkedSourceMapEntry::new(
         InstructionIndex::new(0),
         InstructionBoundaryIndex::new(1),
+        budget_site(),
+    )])
+}
+
+pub(super) fn linked_producer_source_map() -> Box<[LinkedSourceMapEntry]> {
+    Box::new([LinkedSourceMapEntry::new(
+        InstructionIndex::new(1),
+        InstructionBoundaryIndex::new(2),
         budget_site(),
     )])
 }

@@ -27,7 +27,7 @@ pub(super) fn prove_control_flow(
     let functions = candidate
         .functions()
         .iter()
-        .map(|function| prove_function(function, limits))
+        .map(|function| prove_function(candidate, function, limits))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ControlFlowFacts {
@@ -36,6 +36,7 @@ pub(super) fn prove_control_flow(
 }
 
 fn prove_function(
+    candidate: &LinkedBytecodeCandidate,
     function: &LinkedFunction,
     limits: &VerificationLimits,
 ) -> Result<FunctionFlowFacts, VerificationError> {
@@ -67,8 +68,13 @@ fn prove_function(
         let instruction_index = instruction_index(function, ordinal)?;
         let location = instruction_location(function, instruction_index);
         let contract = contract_for_opcode(instruction.opcode());
-        let normal_targets =
-            normal_targets(function, instruction_index, instruction, contract.control)?;
+        let normal_targets = normal_targets(
+            candidate,
+            function,
+            instruction_index,
+            instruction,
+            contract.control,
+        )?;
         let exception_targets = exception_targets(function, instruction_index, contract.exception)?;
         let mut targets = normal_targets
             .into_iter()
@@ -174,6 +180,7 @@ fn innermost_exception_region(
 }
 
 fn normal_targets(
+    candidate: &LinkedBytecodeCandidate,
     function: &LinkedFunction,
     instruction_index: InstructionIndex,
     instruction: &LinkedInstruction,
@@ -210,6 +217,28 @@ fn normal_targets(
         | ControlContract::Raise
         | ControlContract::Rethrow => Vec::new(),
     };
+    if instruction.opcode() == skiff_artifact_model::Opcode::StreamNext {
+        let resume = resume_target(instruction, location)?;
+        let row = candidate
+            .resume_sites()
+            .get(resume.get() as usize)
+            .filter(|row| row.index() == resume)
+            .ok_or_else(|| {
+                semantic_violation(
+                    VerificationObligation::ControlFlow,
+                    location,
+                    "StreamNext resume target is absent from the linked table",
+                )
+            })?;
+        let end_resume = row.end_resume().ok_or_else(|| {
+            semantic_violation(
+                VerificationObligation::ControlFlow,
+                location,
+                "StreamNext lacks an end-resume CFG successor",
+            )
+        })?;
+        targets.push(end_resume);
+    }
     for target in &targets {
         if target.get() as usize >= function.instructions().len() {
             return Err(semantic_violation(
@@ -256,6 +285,20 @@ fn branch_target(
             VerificationObligation::ControlFlow,
             location,
             "branch role did not resolve to an instruction",
+        )),
+    }
+}
+
+fn resume_target(
+    instruction: &LinkedInstruction,
+    location: VerificationLocation,
+) -> Result<skiff_runtime_linked_bytecode::ResumeSiteIndex, VerificationError> {
+    match resolved_target(instruction, OperandRole::ResumeRef, location)? {
+        LinkedInstructionTarget::ResumeSite(target) => Ok(target),
+        _ => Err(semantic_violation(
+            VerificationObligation::ControlFlow,
+            location,
+            "resume role did not resolve to a resume site",
         )),
     }
 }
@@ -473,6 +516,7 @@ mod tests {
             Box::new([]),
             slot_plans,
             Box::new([]),
+            None,
         )
         .unwrap();
         let region = LinkedExceptionRegion::new(

@@ -381,6 +381,7 @@ fn linked_function(
             result_types.into_boxed_slice(),
             slot_plans.into_boxed_slice(),
             result_plans.into_boxed_slice(),
+            None,
         )
         .expect("test frame layout is valid"),
         spec.declared_max,

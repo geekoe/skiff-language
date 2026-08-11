@@ -346,6 +346,7 @@ fn empty_frame() -> LinkedFrameLayout {
         Box::new([]),
         Box::new([]),
         Box::new([]),
+        None,
     )
     .unwrap()
 }
@@ -363,6 +364,7 @@ fn parameter_frame(mode: ParamModeIr) -> LinkedFrameLayout {
         Box::new([]),
         Box::new([plan]),
         Box::new([]),
+        None,
     )
     .unwrap()
 }
@@ -375,6 +377,7 @@ fn result_frame(ty: TypeIndex) -> LinkedFrameLayout {
         Box::new([ty]),
         Box::new([]),
         Box::new([snapshot_plan()]),
+        None,
     )
     .unwrap()
 }

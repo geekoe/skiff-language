@@ -68,8 +68,13 @@ fn linked_function(
             vec![instructions::linked_tail_call(target)]
         }
         (EffectGraphCallKind::Resume, None) => vec![
-            resume::linked_emit_stream(resume_index, resume_target),
+            resume::linked_emit_stream(resume_index, resume_target, 0),
             instructions::linked_return(2),
+        ],
+        (EffectGraphCallKind::StreamProducer, None) => vec![
+            instructions::linked_load_slot(0, 0),
+            resume::linked_emit_stream(resume_index, resume_target, 2),
+            instructions::linked_return(4),
         ],
         (EffectGraphCallKind::StreamRead, None) => vec![
             resume::linked_stream_next(resume_index, resume_target, 0),
@@ -86,6 +91,8 @@ fn linked_function(
             instructions::linked_pop(6),
             instructions::linked_pop(7),
             instructions::linked_return(8),
+            instructions::linked_pop(9),
+            instructions::linked_return(10),
         ],
         (EffectGraphCallKind::InOut, Some(target)) => {
             vec![inout::linked_call(target), instructions::linked_return(5)]
@@ -94,6 +101,7 @@ fn linked_function(
         | (EffectGraphCallKind::Tail, None)
         | (EffectGraphCallKind::InOut, None) => vec![instructions::linked_return(0)],
         (EffectGraphCallKind::Resume, Some(_))
+        | (EffectGraphCallKind::StreamProducer, Some(_))
         | (EffectGraphCallKind::StreamRead, Some(_))
         | (EffectGraphCallKind::StreamReadTwice, Some(_)) => {
             panic!("resume fixture cannot have a target")
@@ -138,12 +146,14 @@ fn statement_entries(function: &EffectGraphFunction) -> Box<[LinkedStatementEntr
         (EffectGraphCallKind::Tail, Some(_)) => statements::linked_tail_entries(),
         (EffectGraphCallKind::InOut, Some(_)) => statements::linked_call_only_entries(),
         (EffectGraphCallKind::Resume, None)
+        | (EffectGraphCallKind::StreamProducer, None)
         | (EffectGraphCallKind::StreamRead, None)
         | (EffectGraphCallKind::StreamReadTwice, None)
         | (EffectGraphCallKind::Ordinary, None)
         | (EffectGraphCallKind::Tail, None)
         | (EffectGraphCallKind::InOut, None) => Vec::new().into_boxed_slice(),
         (EffectGraphCallKind::Resume, Some(_))
+        | (EffectGraphCallKind::StreamProducer, Some(_))
         | (EffectGraphCallKind::StreamRead, Some(_))
         | (EffectGraphCallKind::StreamReadTwice, Some(_)) => {
             panic!("resume fixture cannot have a target")
@@ -154,6 +164,7 @@ fn statement_entries(function: &EffectGraphFunction) -> Box<[LinkedStatementEntr
 fn source_map(function: &EffectGraphFunction) -> Box<[LinkedSourceMapEntry]> {
     match (function.call_kind, function.target) {
         (EffectGraphCallKind::Resume, None) => statements::linked_resume_source_map(),
+        (EffectGraphCallKind::StreamProducer, None) => statements::linked_producer_source_map(),
         (EffectGraphCallKind::StreamRead, None) => statements::linked_stream_source_map(),
         (EffectGraphCallKind::StreamReadTwice, None) => {
             statements::linked_double_stream_source_map()
@@ -165,6 +176,7 @@ fn source_map(function: &EffectGraphFunction) -> Box<[LinkedSourceMapEntry]> {
         | (EffectGraphCallKind::Tail, None)
         | (EffectGraphCallKind::InOut, None) => Vec::new().into_boxed_slice(),
         (EffectGraphCallKind::Resume, Some(_))
+        | (EffectGraphCallKind::StreamProducer, Some(_))
         | (EffectGraphCallKind::StreamRead, Some(_))
         | (EffectGraphCallKind::StreamReadTwice, Some(_)) => {
             panic!("resume fixture cannot have a target")

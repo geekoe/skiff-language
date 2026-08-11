@@ -195,6 +195,7 @@ fn linked_frame(case: TailMatrixCase, caller: bool) -> LinkedFrameLayout {
             .into_boxed_slice(),
         slot_plans.into_boxed_slice(),
         result_plans.into_boxed_slice(),
+        None,
     )
     .unwrap()
 }

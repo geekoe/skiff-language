@@ -263,6 +263,29 @@ fn canonical_slot_and_stack_operations_share_one_transfer_engine() {
 }
 
 #[test]
+fn ordinary_stream_result_return_is_not_treated_as_producer() {
+    let fixture = fixture(
+        vec![stream_of_string()],
+        spec(
+            vec![0],
+            vec![(0, ParamModeIr::Value)],
+            vec![0],
+            vec![
+                slot_instruction(Opcode::TakeSlot, 0),
+                plain(Opcode::Return),
+            ],
+            1,
+        )
+        .with_hints(vec![
+            hint(&[], &[live(0)]),
+            hint(&[0], &[moved()]),
+        ]),
+    );
+    prove(&fixture)
+        .expect("an ordinary Stream<T> return is a normal result, not a producer authority");
+}
+
+#[test]
 fn isolated_const_lifecycle_gate_accepts_string_and_rejects_stream() {
     prove(&constant_fixture(TypeRefIr::builtin("string")))
         .expect("assumed-bound Ordinary SnapshotShare constant is materializable");

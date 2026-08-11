@@ -21,6 +21,10 @@ pub(super) fn artifact_pools(
     if functions.iter().any(|function| {
         matches!(function.call_kind, EffectGraphCallKind::InOut)
             || function.call_kind.is_stream_read()
+            || matches!(
+                function.call_kind,
+                EffectGraphCallKind::Resume | EffectGraphCallKind::StreamProducer
+            )
     }) {
         pools.types.push(BytecodePoolEntry::TypeRef {
             ty: skiff_artifact_model::TypeRefIr::builtin("string"),
@@ -37,10 +41,13 @@ pub(super) fn artifact_pools(
                     segments: Vec::new(),
                 }));
         }
-        if functions
-            .iter()
-            .any(|function| function.call_kind.is_stream_read())
-        {
+        if functions.iter().any(|function| {
+            function.call_kind.is_stream_read()
+                || matches!(
+                    function.call_kind,
+                    EffectGraphCallKind::Resume | EffectGraphCallKind::StreamProducer
+                )
+        }) {
             pools
                 .types
                 .push(BytecodePoolEntry::TypeRef { ty: stream_type() });
@@ -63,7 +70,38 @@ pub(super) fn artifact_frame(kind: EffectGraphCallKind) -> FrameLayout {
             result_count: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
+            stream_result_type_ref: None,
             slot_plans: vec![artifact_stream_plan()],
+        };
+    }
+    if matches!(kind, EffectGraphCallKind::Resume) {
+        return FrameLayout {
+            slot_count: 0,
+            slot_type_refs: Vec::new(),
+            parameter_slots: Vec::new(),
+            writable_local_slots: Vec::new(),
+            result_count: 0,
+            result_type_refs: Vec::new(),
+            result_plans: Vec::new(),
+            stream_result_type_ref: Some(1),
+            slot_plans: Vec::new(),
+        };
+    }
+    if matches!(kind, EffectGraphCallKind::StreamProducer) {
+        return FrameLayout {
+            slot_count: 1,
+            slot_type_refs: vec![0],
+            parameter_slots: vec![ParameterSlotDecl {
+                slot: 0,
+                mode: ParamModeIr::Value,
+                plan: artifact_plan(),
+            }],
+            writable_local_slots: Vec::new(),
+            result_count: 0,
+            result_type_refs: Vec::new(),
+            result_plans: Vec::new(),
+            stream_result_type_ref: Some(1),
+            slot_plans: vec![artifact_plan()],
         };
     }
     if matches!(kind, EffectGraphCallKind::InOut) {
@@ -75,6 +113,7 @@ pub(super) fn artifact_frame(kind: EffectGraphCallKind) -> FrameLayout {
             result_count: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
+            stream_result_type_ref: None,
             slot_plans: vec![artifact_plan()],
         };
     }
@@ -86,11 +125,21 @@ pub(super) fn artifact_frame(kind: EffectGraphCallKind) -> FrameLayout {
         result_count: 0,
         result_type_refs: Vec::new(),
         result_plans: Vec::new(),
+        stream_result_type_ref: None,
         slot_plans: Vec::new(),
     }
 }
 
 pub(super) fn package_parameters(kind: EffectGraphCallKind) -> Vec<PackageCallableParameter> {
+    if matches!(kind, EffectGraphCallKind::StreamProducer) {
+        return vec![PackageCallableParameter {
+            name: "item".to_string(),
+            ty: PackageTypeRef::Local {
+                local_type: skiff_artifact_model::TypeRefIr::builtin("string"),
+            },
+            mode: ParamModeIr::Value,
+        }];
+    }
     if !kind.is_stream_read() {
         return Vec::new();
     }
@@ -130,6 +179,36 @@ pub(super) fn linked_frame(kind: EffectGraphCallKind) -> LinkedFrameLayout {
             Box::new([]),
             Box::new([plan]),
             Box::new([]),
+            None,
+        )
+        .unwrap();
+    }
+    if matches!(kind, EffectGraphCallKind::Resume) {
+        return LinkedFrameLayout::new(
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Some(TypeIndex::new(1)),
+        )
+        .unwrap();
+    }
+    if matches!(kind, EffectGraphCallKind::StreamProducer) {
+        let plan = linked_plan();
+        return LinkedFrameLayout::new(
+            Box::new([TypeIndex::new(0)]),
+            Box::new([LinkedParameterSlot::new(
+                FrameSlotIndex::new(0),
+                ParamModeIr::Value,
+                plan.clone(),
+            )]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([plan]),
+            Box::new([]),
+            Some(TypeIndex::new(1)),
         )
         .unwrap();
     }
@@ -142,6 +221,7 @@ pub(super) fn linked_frame(kind: EffectGraphCallKind) -> LinkedFrameLayout {
             Box::new([]),
             Box::new([plan]),
             Box::new([]),
+            None,
         )
         .unwrap();
     }
@@ -152,6 +232,7 @@ pub(super) fn linked_frame(kind: EffectGraphCallKind) -> LinkedFrameLayout {
         Box::new([]),
         Box::new([]),
         Box::new([]),
+        None,
     )
     .unwrap()
 }
@@ -159,6 +240,9 @@ pub(super) fn linked_frame(kind: EffectGraphCallKind) -> LinkedFrameLayout {
 pub(super) fn linked_slot_states(kind: EffectGraphCallKind) -> Box<[LinkedSlotState]> {
     match kind {
         EffectGraphCallKind::InOut => Box::new([LinkedSlotState::Uninitialized]),
+        EffectGraphCallKind::StreamProducer => Box::new([LinkedSlotState::Live(
+            LinkedStackValue::new(TypeIndex::new(0), linked_plan()),
+        )]),
         EffectGraphCallKind::StreamRead | EffectGraphCallKind::StreamReadTwice => {
             Box::new([LinkedSlotState::Live(LinkedStackValue::new(
                 TypeIndex::new(1),
@@ -174,6 +258,7 @@ pub(super) fn linked_slot_states(kind: EffectGraphCallKind) -> Box<[LinkedSlotSt
 pub(super) const fn slot_count(kind: EffectGraphCallKind) -> usize {
     match kind {
         EffectGraphCallKind::InOut
+        | EffectGraphCallKind::StreamProducer
         | EffectGraphCallKind::StreamRead
         | EffectGraphCallKind::StreamReadTwice => 1,
         EffectGraphCallKind::Ordinary | EffectGraphCallKind::Tail | EffectGraphCallKind::Resume => {
@@ -224,6 +309,10 @@ pub(super) fn extend_linked_parts(
     let needs_types = functions.iter().any(|function| {
         matches!(function.call_kind, EffectGraphCallKind::InOut)
             || function.call_kind.is_stream_read()
+            || matches!(
+                function.call_kind,
+                EffectGraphCallKind::Resume | EffectGraphCallKind::StreamProducer
+            )
     });
     if !needs_types {
         return;
@@ -234,10 +323,13 @@ pub(super) fn extend_linked_parts(
         skiff_artifact_model::TypeRefIr::builtin("string"),
         None,
     ));
-    if functions
-        .iter()
-        .any(|function| function.call_kind.is_stream_read())
-    {
+    if functions.iter().any(|function| {
+        function.call_kind.is_stream_read()
+            || matches!(
+                function.call_kind,
+                EffectGraphCallKind::Resume | EffectGraphCallKind::StreamProducer
+            )
+    }) {
         parts.types.push(LinkedTypeEntry::new(
             TypeIndex::new(1),
             LinkedArtifactPoolOrigin::new(build.clone(), ArtifactTypeIndex::new(1), None).unwrap(),

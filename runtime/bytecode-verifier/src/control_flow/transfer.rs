@@ -3,8 +3,10 @@ mod state;
 
 use std::collections::VecDeque;
 
+use skiff_artifact_model::{contract_for_opcode, OperandRole};
 use skiff_runtime_linked_bytecode::{
     FunctionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedFunction,
+    LinkedInstructionTarget,
 };
 
 use super::{
@@ -131,23 +133,32 @@ fn prove_function(
                             exception_state(function, &before, region, concrete_values, location)?
                         }
                     };
-                    let target = edge.target.get() as usize;
-                    let target_location = instruction_location(function, edge.target);
-                    let Some(target_state) = states.get_mut(target) else {
-                        return Err(violation(target_location, "CFG successor is out of bounds"));
+                    propagate(edge, propagated, &mut states, &mut worklist, concrete_values, function)?;
+                }
+            }
+            instruction::InstructionTransfer::ContinueDual(item_after, end_after) => {
+                computed_max = record_depth(computed_max, &item_after, limits, location)?;
+                computed_max = record_depth(computed_max, &end_after, limits, location)?;
+                let (item_target, end_target) = stream_next_targets(candidate, function, instruction)?;
+                for edge in &flow.successors[ordinal] {
+                    let propagated = match edge.kind {
+                        ControlFlowEdgeKind::Ordinary if edge.target == item_target => {
+                            item_after.clone()
+                        }
+                        ControlFlowEdgeKind::Ordinary if edge.target == end_target => {
+                            end_after.clone()
+                        }
+                        ControlFlowEdgeKind::Ordinary => {
+                            return Err(violation(
+                                location,
+                                "StreamNext ordinary successor is neither item nor end resume",
+                            ))
+                        }
+                        ControlFlowEdgeKind::Exceptional { region } => {
+                            exception_state(function, &before, region, concrete_values, location)?
+                        }
                     };
-                    match target_state {
-                        None => {
-                            *target_state = Some(propagated);
-                            worklist.push_back(target);
-                        }
-                        Some(current) => {
-                            if state::merge(current, &propagated, concrete_values, target_location)?
-                            {
-                                worklist.push_back(target);
-                            }
-                        }
-                    }
+                    propagate(edge, propagated, &mut states, &mut worklist, concrete_values, function)?;
                 }
             }
         }
@@ -179,6 +190,76 @@ fn prove_function(
     flow.states_before = completed_states.into_boxed_slice();
     flow.computed_max_operand_depth = computed_max;
     Ok(tail_proofs)
+}
+
+fn propagate(
+    edge: &super::ControlFlowEdge,
+    propagated: ProgramPointState,
+    states: &mut [Option<ProgramPointState>],
+    worklist: &mut VecDeque<usize>,
+    concrete_values: &ConcreteValueFacts,
+    function: &LinkedFunction,
+) -> Result<(), VerificationError> {
+    let target = edge.target.get() as usize;
+    let target_location = instruction_location(function, edge.target);
+    let Some(target_state) = states.get_mut(target) else {
+        return Err(violation(target_location, "CFG successor is out of bounds"));
+    };
+    match target_state {
+        None => {
+            *target_state = Some(propagated);
+            worklist.push_back(target);
+        }
+        Some(current) => {
+            if state::merge(current, &propagated, concrete_values, target_location)? {
+                worklist.push_back(target);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn stream_next_targets(
+    candidate: &LinkedBytecodeCandidate,
+    function: &LinkedFunction,
+    instruction: InstructionIndex,
+) -> Result<(InstructionIndex, InstructionIndex), VerificationError> {
+    let location = instruction_location(function, instruction);
+    let linked = function
+        .instructions()
+        .get(instruction.get() as usize)
+        .ok_or_else(|| violation(location, "StreamNext instruction is out of bounds"))?;
+    let contract = contract_for_opcode(linked.opcode());
+    let ordinal = contract.operand_position(OperandRole::ResumeRef).ok_or_else(|| {
+        violation(location, "StreamNext resume role is absent")
+    })?;
+    let ordinal = u32::try_from(ordinal).map_err(|_| {
+        violation(location, "StreamNext resume operand ordinal does not fit u32")
+    })?;
+    let index = linked
+        .resolved_operands()
+        .iter()
+        .find(|operand| operand.operand_ordinal() == ordinal)
+        .and_then(|operand| match operand.target() {
+            LinkedInstructionTarget::ResumeSite(index) => Some(index),
+            _ => None,
+        })
+        .ok_or_else(|| violation(location, "StreamNext resume role has no resume target"))?;
+    let row = candidate
+        .resume_sites()
+        .get(index.get() as usize)
+        .filter(|row| row.index() == index)
+        .ok_or_else(|| violation(location, "StreamNext resume row is absent"))?;
+    if row.function() != function.index() || row.site() != instruction {
+        return Err(violation(
+            location,
+            "StreamNext resume row is not bound to this instruction",
+        ));
+    }
+    let end = row
+        .end_resume()
+        .ok_or_else(|| violation(location, "StreamNext resume row lacks an end resume"))?;
+    Ok((row.resume(), end))
 }
 
 fn exception_state(

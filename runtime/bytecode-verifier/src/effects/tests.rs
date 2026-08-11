@@ -294,6 +294,7 @@ fn stream_next_stream_read_mints_a_nonempty_resume_certificate() {
     assert_eq!(resume.function(), FunctionIndex::new(0));
     assert_eq!(resume.site(), InstructionIndex::new(0));
     assert_eq!(resume.resume(), InstructionIndex::new(1));
+    assert_eq!(resume.end_resume(), Some(InstructionIndex::new(2)));
     assert_eq!(resume.expected_stack_height_before_result(), 0);
     assert_eq!(resume.result_type(), TypeIndex::new(0));
     assert_eq!(
@@ -314,12 +315,33 @@ fn stream_next_stream_read_mints_a_nonempty_resume_certificate() {
         &VerifiedResumeKind::StreamRead {
             endpoint_slot: FrameSlotIndex::new(0),
             item_type: TypeIndex::new(0),
+            end_resume: InstructionIndex::new(2),
         }
     );
     assert!(!image
         .function_effects(FunctionIndex::new(0))
         .expect("stream function effects")
         .no_pending());
+}
+
+#[test]
+fn stream_producer_normal_end_uses_zero_return_arity() {
+    let mut function = function(stream_effects(), None);
+    function.call_kind = EffectGraphCallKind::StreamProducer;
+    let image = verify_graph(vec![function])
+        .expect("verified stream producer must emit one item and return zero ordinary results");
+    let frame = image.functions()[0].frame();
+    assert!(image.functions()[0].stream_result_type_ref().is_some());
+    assert!(frame.result_types().is_empty());
+    assert!(frame.result_plans().is_empty());
+    let [resume] = image.resume_sites().rows() else {
+        panic!("one stream backpressure resume certificate was expected")
+    };
+    assert_eq!(resume.site(), InstructionIndex::new(1));
+    assert_eq!(resume.resume(), InstructionIndex::new(2));
+    assert_eq!(resume.end_resume(), None);
+    assert!(resume.result_types().is_empty());
+    assert!(resume.result_plans().is_empty());
 }
 
 #[test]
@@ -359,26 +381,21 @@ fn swapped_resume_targets_fail_at_exact_hydration_binding() {
 }
 
 #[test]
-fn repeated_stream_read_preserves_the_nonempty_stack_prefix() {
+fn repeated_stream_read_is_rejected_after_the_endpoint_moves() {
     let mut function = stream_function(stream_effects());
     function.call_kind = EffectGraphCallKind::StreamReadTwice;
-    let image = verify_graph(vec![function])
-        .expect("two exact stream reads with a retained prefix must verify");
-    let [first, second] = image.resume_sites().rows() else {
-        panic!("two resume certificates were expected")
-    };
-    assert_eq!(first.expected_stack_height_before_result(), 0);
-    assert_eq!(second.site(), InstructionIndex::new(1));
-    assert_eq!(second.resume(), InstructionIndex::new(2));
-    assert_eq!(second.expected_stack_height_before_result(), 1);
-    assert_eq!(second.result_type(), TypeIndex::new(0));
-    assert_eq!(
-        second.kind(),
-        &VerifiedResumeKind::StreamRead {
-            endpoint_slot: FrameSlotIndex::new(0),
-            item_type: TypeIndex::new(0),
-        }
-    );
+    let error = verify_graph(vec![function])
+        .expect_err("StreamNext must move its affine endpoint on both successors");
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::StackAndSlotState,
+            location: VerificationLocation::Instruction { function, instruction },
+            detail,
+        } if function == FunctionIndex::new(0)
+            && instruction == InstructionIndex::new(1)
+            && detail.contains("already moved")
+    ));
 }
 
 #[test]
