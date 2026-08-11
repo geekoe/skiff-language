@@ -6,6 +6,7 @@ pub mod envelope;
 pub mod error;
 pub mod outbound;
 pub mod outbound_control;
+mod platform_error_projection;
 mod projection;
 pub mod response;
 pub mod response_event;
@@ -45,6 +46,20 @@ pub use outbound_control::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
     WebSocketConnectionPolicyOverflowControl,
 };
+pub use platform_error_projection::{
+    encode_platform_error_projection_payload, ConfigDecodeErrorPayload,
+    EncodedPlatformErrorProjectionPayload, PlatformErrorProjectionCodecError,
+    PlatformErrorProjectionPayload, StdActorActivationTimeoutErrorPayload,
+    StdActorMethodInvocationTimeoutErrorPayload, StdBytesDecodeErrorPayload,
+    StdCollectionArrayIndexOutOfBoundsErrorPayload,
+    StdCollectionJsonObjectPropertyNotFoundErrorPayload, StdCollectionMapKeyNotFoundErrorPayload,
+    StdDbConflictErrorPayload, StdDbConstraintErrorPayload, StdDbDecodeErrorPayload,
+    StdErrorInstructionLimitExceededErrorPayload, StdErrorTimeoutErrorPayload,
+    StdFileFileErrorPayload, StdHttpHttpErrorPayload, StdHttpRequestTimeoutErrorPayload,
+    StdJsonDecodeErrorPayload, StdNumberDecodeErrorPayload, StdServiceProtocolErrorPayload,
+    StdServiceProviderUnavailableErrorPayload, StdTimeDecodeErrorPayload,
+    StdWebsocketWebSocketRequestErrorPayload, ValidatedKnownPlatformErrorProjection,
+};
 pub use projection::ProjectableDiagnostic;
 pub use response::{
     FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource, ResponseError,
@@ -54,6 +69,8 @@ pub use service_error::{
     CatchIdentity, InstantiatedTypeArgumentIdentity, InternalErrorPayload, LiteralIdentity,
     LocalExecutionTypeIdentity, NamedUnionBranchIdentity, NamedUnionOwnerIdentity,
     NominalTypeIdentity, OpaqueServiceError, PackageSchemaTypeIdentity,
-    PlatformBuiltinErrorIdentity, ServiceErrorEnvelope, WebSocketRequestError,
-    WebSocketRequestErrorKind,
+    PlatformBuiltinErrorIdentity, ServiceErrorDecodeError, ServiceErrorEncodeError,
+    ServiceErrorEnvelope, ServiceErrorOuterValidationError, ServiceErrorTextField,
+    ServiceErrorTextViolation, WebSocketRequestError, WebSocketRequestErrorKind,
+    MAX_PLATFORM_ERROR_ENCODED_PAYLOAD_BYTES, MAX_PLATFORM_ERROR_PROJECTION_KEY_BYTES,
 };

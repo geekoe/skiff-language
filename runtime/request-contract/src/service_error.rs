@@ -5,6 +5,12 @@ use skiff_artifact_model::{LiteralIr, PackageSchemaTypeId};
 use crate::{
     addr::TypeAddr,
     error::{RuntimeErrorPayload, WirePayload},
+    platform_error_projection::{
+        decode_platform_error_projection_payload, encode_platform_error_projection_payload,
+        EncodedPlatformErrorProjectionPayload, PlatformErrorProjectionCodecError,
+        PlatformErrorProjectionDecodeOutcome, PlatformErrorProjectionPayload,
+        ValidatedKnownPlatformErrorProjection,
+    },
 };
 
 /// Canonical identity of one fully-instantiated type argument. The value is a
@@ -308,6 +314,175 @@ impl WirePayload for WebSocketRequestError {
     }
 }
 
+pub const MAX_PLATFORM_ERROR_PROJECTION_KEY_BYTES: usize = 128;
+pub const MAX_PLATFORM_ERROR_ENCODED_PAYLOAD_BYTES: usize = 64 * 1024;
+
+const ENTRY_FINGERPRINT_PREFIX: &str = "sha256:";
+const ENTRY_FINGERPRINT_HEX_BYTES: usize = 64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceErrorTextField {
+    PackageId,
+    StableSchemaKey,
+    PackageSchemaTypeId,
+    InternalMessage,
+    TraceId,
+    ErrorId,
+}
+
+impl std::fmt::Display for ServiceErrorTextField {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::PackageId => "packageId",
+            Self::StableSchemaKey => "stableSchemaKey",
+            Self::PackageSchemaTypeId => "packageSchemaTypeId",
+            Self::InternalMessage => "payload.message",
+            Self::TraceId => "traceId",
+            Self::ErrorId => "errorId",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceErrorTextViolation {
+    Empty,
+    SurroundingWhitespace,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServiceErrorOuterValidationError {
+    InvalidWireShape,
+    InvalidText {
+        field: ServiceErrorTextField,
+        violation: ServiceErrorTextViolation,
+    },
+    EmptyPublicTypedPayload,
+    InvalidProjectionKeyLength {
+        length: usize,
+    },
+    InvalidProjectionKeyCharacter {
+        byte_index: usize,
+    },
+    VersionedProjectionKeySuffix,
+    InvalidEntryFingerprint,
+    InvalidPlatformPayloadLength {
+        length: usize,
+    },
+}
+
+impl std::fmt::Display for ServiceErrorOuterValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidWireShape => formatter.write_str("invalid service error envelope shape"),
+            Self::InvalidText { field, violation } => match violation {
+                ServiceErrorTextViolation::Empty => write!(formatter, "{field} must not be empty"),
+                ServiceErrorTextViolation::SurroundingWhitespace => {
+                    write!(formatter, "{field} must not contain surrounding whitespace")
+                }
+            },
+            Self::EmptyPublicTypedPayload => {
+                formatter.write_str("public typed encodedPayload must not be empty")
+            }
+            Self::InvalidProjectionKeyLength { length } => write!(
+                formatter,
+                "projectionKey length {length} is outside the allowed range"
+            ),
+            Self::InvalidProjectionKeyCharacter { byte_index } => write!(
+                formatter,
+                "projectionKey contains an invalid byte at index {byte_index}"
+            ),
+            Self::VersionedProjectionKeySuffix => {
+                formatter.write_str("projectionKey must not have a numeric version suffix")
+            }
+            Self::InvalidEntryFingerprint => {
+                formatter.write_str("entryFingerprint has an invalid format")
+            }
+            Self::InvalidPlatformPayloadLength { length } => write!(
+                formatter,
+                "platform encodedPayload length {length} is outside the allowed range"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ServiceErrorOuterValidationError {}
+
+#[derive(Debug)]
+pub enum ServiceErrorDecodeError {
+    MalformedJson { source: serde_json::Error },
+    InvalidOuter(ServiceErrorOuterValidationError),
+    CanonicalOuterEncoding { source: serde_json::Error },
+    NonCanonicalOuterBytes,
+    ExactKnownPlatformPayload(PlatformErrorProjectionCodecError),
+}
+
+impl std::fmt::Display for ServiceErrorDecodeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MalformedJson { .. } => {
+                formatter.write_str("service error envelope is not valid JSON")
+            }
+            Self::InvalidOuter(error) => {
+                write!(formatter, "invalid service error envelope: {error}")
+            }
+            Self::CanonicalOuterEncoding { .. } => {
+                formatter.write_str("failed to produce canonical service error envelope bytes")
+            }
+            Self::NonCanonicalOuterBytes => {
+                formatter.write_str("service error envelope bytes are not canonical JSON")
+            }
+            Self::ExactKnownPlatformPayload(_) => formatter
+                .write_str("exact-known platform error payload failed generated validation"),
+        }
+    }
+}
+
+impl std::error::Error for ServiceErrorDecodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::MalformedJson { source } | Self::CanonicalOuterEncoding { source } => {
+                Some(source)
+            }
+            Self::InvalidOuter(error) => Some(error),
+            Self::ExactKnownPlatformPayload(error) => Some(error),
+            Self::NonCanonicalOuterBytes => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ServiceErrorEncodeError {
+    PlatformProjectionCodec(PlatformErrorProjectionCodecError),
+    InvalidOuter(ServiceErrorOuterValidationError),
+    CanonicalOuterEncoding { source: serde_json::Error },
+}
+
+impl std::fmt::Display for ServiceErrorEncodeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PlatformProjectionCodec(_) => {
+                formatter.write_str("generated platform error payload encoding failed")
+            }
+            Self::InvalidOuter(error) => {
+                write!(formatter, "invalid service error envelope: {error}")
+            }
+            Self::CanonicalOuterEncoding { .. } => {
+                formatter.write_str("failed to produce canonical service error envelope bytes")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ServiceErrorEncodeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::PlatformProjectionCodec(error) => Some(error),
+            Self::InvalidOuter(error) => Some(error),
+            Self::CanonicalOuterEncoding { source } => Some(source),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(
     tag = "kind",
@@ -327,7 +502,8 @@ pub enum ServiceErrorEnvelope {
         payload: InternalErrorPayload,
     },
     PlatformError {
-        builtin_error_identity: PlatformBuiltinErrorIdentity,
+        projection_key: String,
+        entry_fingerprint: String,
         encoded_payload: Vec<u8>,
         trace_id: String,
         error_id: String,
@@ -366,11 +542,48 @@ enum ServiceErrorEnvelopeWire {
         payload: InternalErrorPayload,
     },
     PlatformError {
-        builtin_error_identity: PlatformBuiltinErrorIdentity,
+        projection_key: String,
+        entry_fingerprint: String,
         encoded_payload: Vec<u8>,
         trace_id: String,
         error_id: String,
     },
+}
+
+impl ServiceErrorEnvelopeWire {
+    fn into_envelope(self) -> ServiceErrorEnvelope {
+        match self {
+            Self::PublicTypedError {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+                encoded_payload,
+                trace_id,
+                error_id,
+            } => ServiceErrorEnvelope::PublicTypedError {
+                package_id,
+                stable_schema_key,
+                package_schema_type_id,
+                encoded_payload,
+                trace_id,
+                error_id,
+            },
+            Self::InternalError { payload } => ServiceErrorEnvelope::InternalError { payload },
+            Self::PlatformError {
+                projection_key,
+                entry_fingerprint,
+                encoded_payload,
+                trace_id,
+                error_id,
+            } => ServiceErrorEnvelope::PlatformError {
+                projection_key,
+                entry_fingerprint,
+                encoded_payload,
+                trace_id,
+                error_id,
+            },
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for ServiceErrorEnvelope {
@@ -378,43 +591,14 @@ impl<'de> Deserialize<'de> for ServiceErrorEnvelope {
     where
         D: Deserializer<'de>,
     {
-        let wire = ServiceErrorEnvelopeWire::deserialize(deserializer)?;
-        let envelope = match wire {
-            ServiceErrorEnvelopeWire::PublicTypedError {
-                package_id,
-                stable_schema_key,
-                package_schema_type_id,
-                encoded_payload,
-                trace_id,
-                error_id,
-            } => Self::PublicTypedError {
-                package_id,
-                stable_schema_key,
-                package_schema_type_id,
-                encoded_payload,
-                trace_id,
-                error_id,
-            },
-            ServiceErrorEnvelopeWire::InternalError { payload } => Self::InternalError { payload },
-            ServiceErrorEnvelopeWire::PlatformError {
-                builtin_error_identity,
-                encoded_payload,
-                trace_id,
-                error_id,
-            } => Self::PlatformError {
-                builtin_error_identity,
-                encoded_payload,
-                trace_id,
-                error_id,
-            },
-        };
+        let envelope = ServiceErrorEnvelopeWire::deserialize(deserializer)?.into_envelope();
         envelope.validate().map_err(serde::de::Error::custom)?;
         Ok(envelope)
     }
 }
 
 impl ServiceErrorEnvelope {
-    pub fn validate(&self) -> Result<(), String> {
+    fn validate(&self) -> Result<(), ServiceErrorOuterValidationError> {
         match self {
             Self::PublicTypedError {
                 package_id,
@@ -424,24 +608,32 @@ impl ServiceErrorEnvelope {
                 trace_id,
                 error_id,
             } => {
-                non_empty_ref("packageId", package_id)?;
-                non_empty_ref("stableSchemaKey", stable_schema_key)?;
-                non_empty_ref("packageSchemaTypeId", package_schema_type_id.as_str())?;
-                non_empty_bytes("encodedPayload", encoded_payload)?;
-                validate_correlation(trace_id, error_id)
+                validate_text(ServiceErrorTextField::PackageId, package_id)?;
+                validate_text(ServiceErrorTextField::StableSchemaKey, stable_schema_key)?;
+                validate_text(
+                    ServiceErrorTextField::PackageSchemaTypeId,
+                    package_schema_type_id.as_str(),
+                )?;
+                if encoded_payload.is_empty() {
+                    return Err(ServiceErrorOuterValidationError::EmptyPublicTypedPayload);
+                }
+                validate_service_error_correlation(trace_id, error_id)
             }
             Self::InternalError { payload } => {
-                non_empty_ref("payload.message", &payload.message)?;
-                validate_correlation(&payload.trace_id, &payload.error_id)
+                validate_text(ServiceErrorTextField::InternalMessage, &payload.message)?;
+                validate_service_error_correlation(&payload.trace_id, &payload.error_id)
             }
             Self::PlatformError {
+                projection_key,
+                entry_fingerprint,
                 encoded_payload,
                 trace_id,
                 error_id,
-                ..
             } => {
-                non_empty_bytes("encodedPayload", encoded_payload)?;
-                validate_correlation(trace_id, error_id)
+                validate_projection_key(projection_key)?;
+                validate_entry_fingerprint(entry_fingerprint)?;
+                validate_platform_payload(encoded_payload)?;
+                validate_service_error_correlation(trace_id, error_id)
             }
         }
     }
@@ -465,26 +657,170 @@ impl ServiceErrorEnvelope {
     }
 }
 
-/// Strictly-decoded service error plus the exact bytes received from the
-/// boundary. Unlinked services forward `encoded_bytes` without serializing the
-/// envelope again.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A canonical fixed service error. The generated typed cache is derived only
+/// after exact-pair validation and does not participate in carrier identity.
+#[derive(Debug, Clone)]
 pub struct OpaqueServiceError {
     envelope: ServiceErrorEnvelope,
     encoded_bytes: Vec<u8>,
+    validated_known_platform_projection: Option<ValidatedKnownPlatformErrorProjection>,
 }
 
+impl PartialEq for OpaqueServiceError {
+    fn eq(&self, other: &Self) -> bool {
+        self.envelope == other.envelope && self.encoded_bytes == other.encoded_bytes
+    }
+}
+
+impl Eq for OpaqueServiceError {}
+
 impl OpaqueServiceError {
-    pub fn decode(encoded_bytes: Vec<u8>) -> serde_json::Result<Self> {
-        let envelope = serde_json::from_slice::<ServiceErrorEnvelope>(&encoded_bytes)?;
+    pub fn decode(encoded_bytes: Vec<u8>) -> Result<Self, ServiceErrorDecodeError> {
+        let wire = serde_json::from_slice::<ServiceErrorEnvelopeWire>(&encoded_bytes).map_err(
+            |source| match source.classify() {
+                serde_json::error::Category::Data => ServiceErrorDecodeError::InvalidOuter(
+                    ServiceErrorOuterValidationError::InvalidWireShape,
+                ),
+                serde_json::error::Category::Io
+                | serde_json::error::Category::Syntax
+                | serde_json::error::Category::Eof => {
+                    ServiceErrorDecodeError::MalformedJson { source }
+                }
+            },
+        )?;
+        let envelope = wire.into_envelope();
+        envelope
+            .validate()
+            .map_err(ServiceErrorDecodeError::InvalidOuter)?;
+
+        let canonical_bytes = skiff_canonical_json::canonical_json_bytes(&envelope)
+            .map_err(|source| ServiceErrorDecodeError::CanonicalOuterEncoding { source })?;
+        if canonical_bytes != encoded_bytes {
+            return Err(ServiceErrorDecodeError::NonCanonicalOuterBytes);
+        }
+
+        let validated_known_platform_projection = match &envelope {
+            ServiceErrorEnvelope::PlatformError {
+                projection_key,
+                entry_fingerprint,
+                encoded_payload,
+                ..
+            } => match decode_platform_error_projection_payload(
+                projection_key,
+                entry_fingerprint,
+                encoded_payload,
+            )
+            .map_err(ServiceErrorDecodeError::ExactKnownPlatformPayload)?
+            {
+                PlatformErrorProjectionDecodeOutcome::Known(payload) => {
+                    Some(ValidatedKnownPlatformErrorProjection::new(payload))
+                }
+                PlatformErrorProjectionDecodeOutcome::UnknownValid => None,
+            },
+            ServiceErrorEnvelope::PublicTypedError { .. }
+            | ServiceErrorEnvelope::InternalError { .. } => None,
+        };
+
         Ok(Self {
             envelope,
             encoded_bytes,
+            validated_known_platform_projection,
+        })
+    }
+
+    pub fn platform_error(
+        payload: &PlatformErrorProjectionPayload,
+        trace_id: &str,
+        error_id: &str,
+    ) -> Result<Self, ServiceErrorEncodeError> {
+        let encoded = encode_platform_error_projection_payload(payload)
+            .map_err(ServiceErrorEncodeError::PlatformProjectionCodec)?;
+        let validated = ValidatedKnownPlatformErrorProjection::new(payload.clone());
+        Self::from_encoded_platform_error_projection(encoded, validated, trace_id, error_id)
+    }
+
+    pub fn internal_error(
+        message: &str,
+        trace_id: &str,
+        error_id: &str,
+    ) -> Result<Self, ServiceErrorEncodeError> {
+        Self::encode_local(
+            ServiceErrorEnvelope::InternalError {
+                payload: InternalErrorPayload {
+                    message: message.to_owned(),
+                    trace_id: trace_id.to_owned(),
+                    error_id: error_id.to_owned(),
+                },
+            },
+            None,
+        )
+    }
+
+    pub fn public_typed_error(
+        package_id: &str,
+        stable_schema_key: &str,
+        package_schema_type_id: PackageSchemaTypeId,
+        encoded_payload: &[u8],
+        trace_id: &str,
+        error_id: &str,
+    ) -> Result<Self, ServiceErrorEncodeError> {
+        Self::encode_local(
+            ServiceErrorEnvelope::PublicTypedError {
+                package_id: package_id.to_owned(),
+                stable_schema_key: stable_schema_key.to_owned(),
+                package_schema_type_id,
+                encoded_payload: encoded_payload.to_vec(),
+                trace_id: trace_id.to_owned(),
+                error_id: error_id.to_owned(),
+            },
+            None,
+        )
+    }
+
+    fn from_encoded_platform_error_projection(
+        encoded: EncodedPlatformErrorProjectionPayload,
+        validated: ValidatedKnownPlatformErrorProjection,
+        trace_id: &str,
+        error_id: &str,
+    ) -> Result<Self, ServiceErrorEncodeError> {
+        debug_assert_eq!(encoded.projection_key(), validated.projection_key());
+        let projection_key = encoded.projection_key().as_str().to_owned();
+        let entry_fingerprint = encoded.entry_fingerprint().to_owned();
+        let encoded_payload = encoded.into_canonical_payload();
+        Self::encode_local(
+            ServiceErrorEnvelope::PlatformError {
+                projection_key,
+                entry_fingerprint,
+                encoded_payload,
+                trace_id: trace_id.to_owned(),
+                error_id: error_id.to_owned(),
+            },
+            Some(validated),
+        )
+    }
+
+    fn encode_local(
+        envelope: ServiceErrorEnvelope,
+        validated_known_platform_projection: Option<ValidatedKnownPlatformErrorProjection>,
+    ) -> Result<Self, ServiceErrorEncodeError> {
+        envelope
+            .validate()
+            .map_err(ServiceErrorEncodeError::InvalidOuter)?;
+        let encoded_bytes = skiff_canonical_json::canonical_json_bytes(&envelope)
+            .map_err(|source| ServiceErrorEncodeError::CanonicalOuterEncoding { source })?;
+        Ok(Self {
+            envelope,
+            encoded_bytes,
+            validated_known_platform_projection,
         })
     }
 
     pub fn envelope(&self) -> &ServiceErrorEnvelope {
         &self.envelope
+    }
+
+    pub fn known_platform_projection(&self) -> Option<&ValidatedKnownPlatformErrorProjection> {
+        self.validated_known_platform_projection.as_ref()
     }
 
     pub fn encoded_bytes(&self) -> &[u8] {
@@ -494,6 +830,75 @@ impl OpaqueServiceError {
     pub fn into_encoded_bytes(self) -> Vec<u8> {
         self.encoded_bytes
     }
+}
+
+fn validate_text(
+    field: ServiceErrorTextField,
+    value: &str,
+) -> Result<(), ServiceErrorOuterValidationError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ServiceErrorOuterValidationError::InvalidText {
+            field,
+            violation: ServiceErrorTextViolation::Empty,
+        });
+    }
+    if trimmed != value {
+        return Err(ServiceErrorOuterValidationError::InvalidText {
+            field,
+            violation: ServiceErrorTextViolation::SurroundingWhitespace,
+        });
+    }
+    Ok(())
+}
+
+fn validate_projection_key(value: &str) -> Result<(), ServiceErrorOuterValidationError> {
+    let length = value.len();
+    if !(1..=MAX_PLATFORM_ERROR_PROJECTION_KEY_BYTES).contains(&length) {
+        return Err(ServiceErrorOuterValidationError::InvalidProjectionKeyLength { length });
+    }
+    if let Some(byte_index) = value.bytes().position(
+        |byte| !matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'),
+    ) {
+        return Err(ServiceErrorOuterValidationError::InvalidProjectionKeyCharacter { byte_index });
+    }
+    if value.rsplit_once(".v").is_some_and(|(_, suffix)| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    }) {
+        return Err(ServiceErrorOuterValidationError::VersionedProjectionKeySuffix);
+    }
+    Ok(())
+}
+
+fn validate_entry_fingerprint(value: &str) -> Result<(), ServiceErrorOuterValidationError> {
+    let valid = value
+        .strip_prefix(ENTRY_FINGERPRINT_PREFIX)
+        .is_some_and(|hex| {
+            hex.len() == ENTRY_FINGERPRINT_HEX_BYTES
+                && hex
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        });
+    if !valid {
+        return Err(ServiceErrorOuterValidationError::InvalidEntryFingerprint);
+    }
+    Ok(())
+}
+
+fn validate_platform_payload(value: &[u8]) -> Result<(), ServiceErrorOuterValidationError> {
+    let length = value.len();
+    if !(1..=MAX_PLATFORM_ERROR_ENCODED_PAYLOAD_BYTES).contains(&length) {
+        return Err(ServiceErrorOuterValidationError::InvalidPlatformPayloadLength { length });
+    }
+    Ok(())
+}
+
+fn validate_service_error_correlation(
+    trace_id: &str,
+    error_id: &str,
+) -> Result<(), ServiceErrorOuterValidationError> {
+    validate_text(ServiceErrorTextField::TraceId, trace_id)?;
+    validate_text(ServiceErrorTextField::ErrorId, error_id)
 }
 
 fn non_empty(label: &str, value: String) -> Result<String, String> {
@@ -508,18 +913,6 @@ fn non_empty_ref(label: &str, value: &str) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-fn non_empty_bytes(label: &str, value: &[u8]) -> Result<(), String> {
-    if value.is_empty() {
-        return Err(format!("{label} must not be empty"));
-    }
-    Ok(())
-}
-
-fn validate_correlation(trace_id: &str, error_id: &str) -> Result<(), String> {
-    non_empty_ref("traceId", trace_id)?;
-    non_empty_ref("errorId", error_id)
 }
 
 #[cfg(test)]
