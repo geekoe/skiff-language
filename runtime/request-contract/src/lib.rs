@@ -8,6 +8,7 @@ pub mod outbound;
 pub mod outbound_control;
 mod platform_error_projection;
 mod projection;
+mod projection_admission;
 pub mod response;
 pub mod response_event;
 pub mod service_error;
@@ -61,6 +62,10 @@ pub use platform_error_projection::{
     StdWebsocketWebSocketRequestErrorPayload, ValidatedKnownPlatformErrorProjection,
 };
 pub use projection::ProjectableDiagnostic;
+pub use projection_admission::{
+    admit_projection, AdmittedProjection, ProjectionCandidate, ProjectionDenied, ProjectionEffect,
+    ProjectionOperation, ProjectionPhase, ProjectionSemanticClass,
+};
 pub use response::{
     FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource, ResponseError,
 };
