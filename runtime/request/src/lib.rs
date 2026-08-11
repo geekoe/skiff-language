@@ -6,6 +6,7 @@ mod envelope;
 mod error;
 pub mod execution_budget;
 mod execution_control;
+mod failure_projection;
 mod outbound;
 mod response_event;
 mod response_stream_writer;
@@ -31,6 +32,11 @@ pub use envelope::{
 pub use error::{OrdinaryRequestError, RequestError, RequestResult};
 pub use execution_budget::ExecutionBudget;
 pub use execution_control::{ExecutionControl, OwnedExecutionControl};
+pub use failure_projection::{
+    ActiveCallSiteKey, ActiveRequestCallSite, AdmittedCallSiteProjection, ContinuationLaneId,
+    ContinuationProjectionGuard, FailureProjectionError, FailureSite, RequestGeneration,
+    ResumeOwnerKey, ResumeOwnerKind,
+};
 pub use outbound::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
     ActorKeyControlMetadata, ActorRemoveControlRequest, ActorReplaceControlRequest,

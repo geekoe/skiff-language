@@ -13,6 +13,7 @@ skiff-runtime-boundary = { path = "../boundary" }
 skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
 skiff-runtime-capability-context = { path = "../capability-context" }
 skiff-runtime-deployment-image = { path = "../deployment-image" }
+skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
 skiff-runtime-model = { path = "../model" }
 skiff-runtime-request-contract = { path = "../request-contract" }
 skiff-runtime-scheduler = { path = "../scheduler" }
