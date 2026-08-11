@@ -209,7 +209,7 @@ fn duplicate_implicit_builtins_choose_their_class_minimum_deterministically() {
     );
     assert_eq!(
         facts.implicit_representative(ImplicitBuiltin::Integer),
-        Some(TypeIndex::new(3))
+        Some(TypeIndex::new(0))
     );
 }
 

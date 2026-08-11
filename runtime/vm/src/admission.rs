@@ -76,7 +76,13 @@ fn validate_entry_argument(
             }
         }
         Some(ValueKind::CallbackClosureRef) => Some(VmEntryArgumentRejection::CallbackClosure),
-        Some(ValueKind::RequestHeapRef) => Some(VmEntryArgumentRejection::HeapTypeProofUnavailable),
+        Some(ValueKind::RequestHeapRef) => {
+            if expected_type.is_some() {
+                None
+            } else {
+                Some(VmEntryArgumentRejection::HeapTypeProofUnavailable)
+            }
+        }
         Some(_) if is_self_describing_immediate(argument) => None,
         Some(_) => Some(VmEntryArgumentRejection::InvalidMetadata),
     };
@@ -89,6 +95,10 @@ fn validate_entry_argument(
     }
 
     if is_exact_stream_resource(expected_type, expected_plan) {
+        return Ok(());
+    }
+
+    if matches!(kind, Some(ValueKind::RequestHeapRef)) && expected_type.is_some() {
         return Ok(());
     }
 

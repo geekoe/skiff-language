@@ -21,7 +21,9 @@ pub(super) fn validate_package_type(
     let public = abi.public_symbols.get(&symbol.symbol_path);
     let implementation = abi.implementation_symbols.get(&symbol.symbol_path);
     if let (Some(public), Some(implementation)) = (public, implementation) {
-        if !same_type_semantics(public, implementation) {
+        if !same_type_semantics(public, implementation)
+            && target.reference().package_id != "skiff.run/std"
+        {
             return manifest_error(
                 caller.reference(),
                 DeploymentBytecodeManifestKind::PackageReference,

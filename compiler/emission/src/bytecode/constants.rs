@@ -45,14 +45,21 @@ impl ConstantImage {
     ) -> Result<u32, BytecodeEmissionError> {
         let qualified = qualify_local_types(module_path, ty);
         let key = type_key(&qualified, context)?;
-        if let Some(index) = self.type_indices.get(&key) {
-            return Ok(*index);
+        let existing = self.type_indices.get(&key).copied();
+        if let Some(index) = existing {
+            for child in nested_types(&qualified) {
+                self.intern_type(module_path, &child, context)?;
+            }
+            return Ok(index);
         }
         let index = checked_index(self.pools.types.len(), "indexing canonical types")?;
         self.pools
             .types
-            .push(BytecodePoolEntry::TypeRef { ty: qualified });
+            .push(BytecodePoolEntry::TypeRef { ty: qualified.clone() });
         self.type_indices.insert(key, index);
+        for child in nested_types(&qualified) {
+            self.intern_type(module_path, &child, context)?;
+        }
         Ok(index)
     }
 
@@ -277,7 +284,18 @@ fn collect_function_types(
     let mut insert = |ty: &TypeRefIr, label: &str| -> Result<(), BytecodeEmissionError> {
         let context = format!("function `{function_key}` {label}");
         validate_local_types(module_path, type_count, &context, ty)?;
-        insert_type(types, qualify_local_types(module_path, ty), context)
+        let mut result = Ok(());
+        walk_type_ref(ty, &mut |nested| {
+            if result.is_ok() {
+                result = insert_type(
+                    types,
+                    qualify_local_types(module_path, nested),
+                    context.clone(),
+                )
+                .map(|_| ());
+            }
+        });
+        result
     };
     insert(&function.return_type, "return type")?;
     for parameter in &function.params {
@@ -624,6 +642,26 @@ fn qualify_transfer_plan(module_path: &str, plan: &ValueTransferPlan) -> ValueTr
             ty: qualify_local_types(module_path, ty),
         },
         other => other.clone(),
+    }
+}
+
+fn nested_types(ty: &TypeRefIr) -> Vec<TypeRefIr> {
+    match ty {
+        TypeRefIr::Builtin { args, .. } | TypeRefIr::AppliedNominal { arguments: args, .. } => {
+            args.clone()
+        }
+        TypeRefIr::Nullable { inner } => vec![(**inner).clone()],
+        TypeRefIr::Union { items } => items.clone(),
+        TypeRefIr::Record { fields } => fields.values().cloned().collect(),
+        TypeRefIr::Function { params, return_type } => {
+            let mut children = params
+                .iter()
+                .map(|param| param.ty.clone())
+                .collect::<Vec<_>>();
+            children.push((**return_type).clone());
+            children
+        }
+        _ => Vec::new(),
     }
 }
 

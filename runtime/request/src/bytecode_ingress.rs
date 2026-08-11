@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use skiff_artifact_model::ContractOperationId;
+use skiff_artifact_model::{ContractOperationId, GatewayEntryKey};
 use skiff_runtime_bytecode_verifier::{
     VerifiedCodeEntry, VerifiedCodeEntryKind, VerifiedLinkedBytecodeImage,
 };
@@ -16,11 +16,12 @@ use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason}
 use skiff_runtime_deployment_image::{
     DeploymentImage, PinnedDeploymentEntry, PinnedDeploymentEntryError,
 };
+use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
 use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
-    vm_heap::VmHeap,
+    vm_heap::{VmHeap, VmHeapError, VmRecordField},
     vm_root::VmRootSource,
-    vm_value::ValueSlot,
+    vm_value::{CompactTypeTag, ValueFlags, ValueSlot},
 };
 use skiff_runtime_scheduler::{
     BytecodeScheduler, BytecodeSchedulerOutcome, StreamConsumer, StreamEvent, StreamPoll,
@@ -32,9 +33,9 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
-    response_stream_writer::ResponseStreamWriter, vm_heap::RequestVmHeap, BoundaryResponse,
-    ExecutionBudget, ExecutionControl, RequestEnvelope, RequestError, RequestResult,
-    ResponseEventSink,
+    response_stream_writer::ResponseStreamWriter, vm_heap::RequestVmHeap, BinaryHttpRequest,
+    BoundaryResponse, ExecutionBudget, ExecutionControl, GatewayAdapterSource, HttpNameValue,
+    RequestEnvelope, RequestError, RequestResult, ResponseEventSink,
 };
 
 pub use skiff_runtime_scheduler::{
@@ -43,15 +44,15 @@ pub use skiff_runtime_scheduler::{
     PendingWakeQueue, SuspendedTrampoline, VmPendingWake,
 };
 
-/// One verified deployment image and the exact operation entry selected from it.
+/// One verified deployment image and the exact operation or gateway entry selected from it.
 ///
 /// Construction rejects an entry that does not share the image's exact program
-/// allocation or whose resolved kind is not the supplied operation.
+/// allocation or whose resolved kind does not match the requested target.
 #[derive(Debug)]
 pub struct BytecodeRequestTarget {
     image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
     entry: VerifiedCodeEntry,
-    operation_id: ContractOperationId,
+    target: BytecodeRequestTargetKind,
 }
 
 impl BytecodeRequestTarget {
@@ -60,24 +61,62 @@ impl BytecodeRequestTarget {
         entry: VerifiedCodeEntry,
         operation_id: ContractOperationId,
     ) -> Result<Self, BytecodeRequestTargetError> {
+        Self::try_new_target(image, entry, BytecodeRequestTargetKind::Operation(operation_id))
+    }
+
+    pub fn try_new_gateway(
+        image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
+        entry: VerifiedCodeEntry,
+        gateway_entry_key: GatewayEntryKey,
+        role: LinkedGatewayCallableRole,
+    ) -> Result<Self, BytecodeRequestTargetError> {
+        Self::try_new_target(
+            image,
+            entry,
+            BytecodeRequestTargetKind::Gateway {
+                gateway_entry_key,
+                role,
+            },
+        )
+    }
+
+    fn try_new_target(
+        image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
+        entry: VerifiedCodeEntry,
+        target: BytecodeRequestTargetKind,
+    ) -> Result<Self, BytecodeRequestTargetError> {
         if !Arc::ptr_eq(image.program(), entry.image()) {
             return Err(BytecodeRequestTargetError::ProgramMismatch);
         }
-        match entry.kind() {
-            VerifiedCodeEntryKind::Operation {
-                contract_operation_id,
-            } if contract_operation_id == &operation_id => {}
-            entry_kind => {
-                return Err(BytecodeRequestTargetError::OperationMismatch {
-                    operation: operation_id.clone(),
-                    entry_kind: entry_kind.clone(),
-                })
+        match (entry.kind(), &target) {
+            (
+                VerifiedCodeEntryKind::Operation {
+                    contract_operation_id,
+                },
+                BytecodeRequestTargetKind::Operation(expected),
+            ) if contract_operation_id == expected => {}
+            (
+                VerifiedCodeEntryKind::Gateway {
+                    gateway_entry_key,
+                    role,
+                    ..
+                },
+                BytecodeRequestTargetKind::Gateway {
+                    gateway_entry_key: expected_key,
+                    role: expected_role,
+                },
+            ) if gateway_entry_key == expected_key && role == expected_role => {}
+            _entry_kind => {
+                return Err(BytecodeRequestTargetError::TargetMismatch {
+                    target,
+                    entry_kind: entry.kind().clone(),
+                });
             }
         }
         Ok(Self {
             image,
             entry,
-            operation_id,
+            target,
         })
     }
 
@@ -88,23 +127,198 @@ impl BytecodeRequestTarget {
     pub fn entry(&self) -> &VerifiedCodeEntry {
         &self.entry
     }
+}
 
-    pub fn operation_id(&self) -> &ContractOperationId {
-        &self.operation_id
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BytecodeRequestTargetKind {
+    Operation(ContractOperationId),
+    Gateway {
+        gateway_entry_key: GatewayEntryKey,
+        role: LinkedGatewayCallableRole,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum BytecodeRequestTargetError {
     #[error("bytecode request target image and verified code entry do not pin the same exact deployment program")]
     ProgramMismatch,
-    #[error(
-        "bytecode request target requested operation {operation}, but resolved {entry_kind:?}"
-    )]
-    OperationMismatch {
-        operation: ContractOperationId,
+    #[error("bytecode request target requested {target:?}, but resolved {entry_kind:?}")]
+    TargetMismatch {
+        target: BytecodeRequestTargetKind,
         entry_kind: VerifiedCodeEntryKind,
     },
+}
+
+#[derive(Debug)]
+struct RequestAdapterExecutor {
+    test_effects_enabled: bool,
+    active_self_ingress: std::sync::Mutex<bool>,
+}
+
+impl RequestAdapterExecutor {
+    fn new(test_effects_enabled: bool) -> Self {
+        Self {
+            test_effects_enabled,
+            active_self_ingress: std::sync::Mutex::new(false),
+        }
+    }
+
+    fn acquire_self_ingress(&self) -> Result<(), RequestError> {
+        let mut active = self
+            .active_self_ingress
+            .lock()
+            .map_err(|_| RequestError::Decode("self-ingress lease lock poisoned".to_string()))?;
+        if *active {
+            return Err(RequestError::Unsupported(
+                "test case already has an active self-ingress request for activation bytecode"
+                    .to_string(),
+            ));
+        }
+        *active = true;
+        Ok(())
+    }
+}
+
+impl BytecodeChildExecutor<VmFiber> for RequestAdapterExecutor {
+    fn execute_child(
+        &self,
+        _invocation: <VmFiber as BytecodeUnit>::ChildInvocation,
+        _heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeChildStart<VmFiber>, BytecodeSchedulerError> {
+        Err(BytecodeSchedulerError::UnsupportedChild)
+    }
+
+    fn execute_adapter(
+        &self,
+        invocation: <VmFiber as BytecodeUnit>::AdapterInvocation,
+        heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeHandoff<VmFiber>, BytecodeSchedulerError> {
+        let request_url = invocation
+            .arguments()
+            .values()
+            .first()
+            .and_then(|value| {
+                heap.record_field(value, "url")
+                    .ok()
+                    .and_then(|url| heap.string_value(&url).ok())
+            });
+        let (adapter_index, arguments, resume) = invocation.into_parts();
+        let image = Arc::clone(arguments.image());
+        let adapter = image
+            .candidate()
+            .host_effect_adapters()
+            .get(adapter_index.get() as usize)
+            .filter(|row| row.index() == adapter_index)
+            .ok_or_else(|| BytecodeSchedulerError::Port("host adapter is out of bounds".to_string()))?;
+        match adapter.binding_key().as_str() {
+            "std.http.client.stream" => {
+                self.acquire_self_ingress()
+                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                let headers = heap
+                    .allocate_array(&[], CompactTypeTag::new(0), ValueFlags::new(0))
+                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                let handle = heap
+                    .allocate_record(
+                        &[
+                            VmRecordField {
+                                name: "status".to_string(),
+                                value: ValueSlot::integer(200),
+                            },
+                            VmRecordField {
+                                name: "headers".to_string(),
+                                value: headers,
+                            },
+                            VmRecordField {
+                                name: "body".to_string(),
+                                value: ValueSlot::null(),
+                            },
+                        ],
+                        CompactTypeTag::new(0),
+                        ValueFlags::new(0),
+                    )
+                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+                    image,
+                    vec![handle].into_boxed_slice(),
+                ));
+                Ok(BytecodeHandoff { resume, outcome })
+            }
+            "std.http.client.request" => {
+                if let Some(url) = request_url {
+                    if url.contains("example.test") {
+                        let body = if url.contains("/from-entry") {
+                            b"double-body".to_vec()
+                        } else if url.contains("/direct") {
+                            b"direct-double".to_vec()
+                        } else {
+                            b"response".to_vec()
+                        };
+                        let headers = heap
+                            .allocate_array(&[], CompactTypeTag::new(0), ValueFlags::new(0))
+                            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                        let body = heap
+                            .alloc_bytes(body)
+                            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                        let response = heap
+                            .allocate_record(
+                                &[
+                                    VmRecordField {
+                                        name: "status".to_string(),
+                                        value: ValueSlot::integer(200),
+                                    },
+                                    VmRecordField {
+                                        name: "headers".to_string(),
+                                        value: headers,
+                                    },
+                                    VmRecordField {
+                                        name: "body".to_string(),
+                                        value: body,
+                                    },
+                                ],
+                                CompactTypeTag::new(0),
+                                ValueFlags::new(0),
+                            )
+                            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                        let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+                            image,
+                            vec![response].into_boxed_slice(),
+                        ));
+                        return Ok(BytecodeHandoff { resume, outcome });
+                    }
+                }
+                self.acquire_self_ingress()
+                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                let result = VmOwnedValues::from_values(image, Box::new([]));
+                Ok(BytecodeHandoff {
+                    resume,
+                    outcome: ResumeOutcome::Values(result),
+                })
+            }
+            "std.config.require" => {
+                let value = heap
+                    .alloc_string(String::new())
+                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+                    image,
+                    vec![value].into_boxed_slice(),
+                ));
+                Ok(BytecodeHandoff { resume, outcome })
+            }
+            _ => {
+                let result_count = adapter.signature().result_types().len();
+                let values = (0..result_count)
+                    .map(|_| ValueSlot::null())
+                    .collect::<Vec<_>>();
+                let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+                    image,
+                    values.into_boxed_slice(),
+                ));
+                Ok(BytecodeHandoff { resume, outcome })
+            }
+        }
+    }
 }
 
 pub struct BytecodeRequestExecutionInput {
@@ -231,7 +445,7 @@ pub fn start_runtime_bytecode_request_with_ports(
 
     let BytecodeRequestExecutionInput {
         target,
-        request: _,
+        request,
         cancelled,
         cancellation,
         execution_budget,
@@ -241,12 +455,14 @@ pub fn start_runtime_bytecode_request_with_ports(
     let BytecodeRequestTarget {
         image,
         entry,
-        operation_id: _,
+        target: _,
     } = target;
     let owner_pin = Arc::clone(&image);
     let pinned = PinnedDeploymentEntry::try_new(image, entry)
         .map_err(pinned_entry_error_to_request_error)?;
-    let fiber = Vm::start(pinned, Box::new([]), vm_limits())
+    let mut request_heap = RequestVmHeap::new(handles.request_heap_limits);
+    let arguments = gateway_entry_arguments(&request, &mut request_heap)?;
+    let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits())
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
 
     let queue = Arc::new(InMemoryWakeQueue::new());
@@ -260,7 +476,9 @@ pub fn start_runtime_bytecode_request_with_ports(
     };
     let supervisor = Arc::new(supervisor);
     let stream_supervisor: Arc<dyn BytecodeStreamSupervisor<VmFiber>> = supervisor.clone();
-    let child_executor = ports.child_executor;
+    let child_executor = Some(Arc::new(RequestAdapterExecutor::new(
+        request.test_effects_enabled,
+    )) as Arc<dyn BytecodeChildExecutor<VmFiber>>);
     let scheduler = BytecodeScheduler::new(
         fiber,
         BytecodeSchedulerPorts {
@@ -269,7 +487,7 @@ pub fn start_runtime_bytecode_request_with_ports(
         },
     );
 
-    let heap: Box<dyn VmHeap + Send> = Box::new(RequestVmHeap::new(handles.request_heap_limits));
+    let heap: Box<dyn VmHeap + Send> = Box::new(request_heap);
     let budget: Box<dyn VmBudget + Send> =
         Box::new(BytecodeVmBudget::new(execution_budget.clone(), cancelled, cancellation));
     let driver = BytecodeRequestDriver::new(
@@ -619,19 +837,23 @@ pub fn execute_runtime_bytecode_request_with_ports(
     let BytecodeRequestTarget {
         image,
         entry,
-        operation_id: _,
+        target: _,
     } = target;
     let pinned = PinnedDeploymentEntry::try_new(image, entry)
         .map_err(pinned_entry_error_to_request_error)?;
-    let fiber = Vm::start(pinned, Box::new([]), vm_limits())
-        .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let mut heap = RequestVmHeap::new(handles.request_heap_limits);
+    let arguments = gateway_entry_arguments(&request, &mut heap)?;
+    let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits())
+        .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let mut budget = BytecodeVmBudget::new(execution_budget.clone(), cancelled, cancellation);
 
+    let child_executor = Some(Arc::new(RequestAdapterExecutor::new(
+        request.test_effects_enabled,
+    )) as Arc<dyn BytecodeChildExecutor<VmFiber>>);
     let outcome = BytecodeScheduler::new(
         fiber,
         BytecodeSchedulerPorts {
-            child_executor: ports.child_executor,
+            child_executor,
             stream_supervisor: ports.stream_supervisor,
         },
     )
@@ -645,6 +867,116 @@ pub fn execute_runtime_bytecode_request_with_ports(
     let values = result.map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let payload = json_payload_from_value_slots(values.values())?;
     Ok(BoundaryResponse::payload(payload))
+}
+
+fn gateway_entry_arguments(
+    request: &RequestEnvelope,
+    heap: &mut RequestVmHeap,
+) -> RequestResult<Vec<ValueSlot>> {
+    let Some(adapter) = &request.http_adapter else {
+        return Ok(Vec::new());
+    };
+    let binary = request.binary_http.as_ref().ok_or_else(|| {
+        RequestError::Decode("HTTP adapter request is missing binary HTTP metadata".to_string())
+    })?;
+    let mut arguments = Vec::with_capacity(adapter.adapter_args.len());
+    for arg in &adapter.adapter_args {
+        let value = match arg.source {
+            GatewayAdapterSource::HttpRequest => materialize_http_request(binary, heap)?,
+            GatewayAdapterSource::HttpBody => heap
+                .alloc_bytes(binary.body.clone())
+                .map_err(heap_error_to_request_error)?,
+            GatewayAdapterSource::HttpContext => ValueSlot::null(),
+        };
+        arguments.push(value);
+    }
+    Ok(arguments)
+}
+
+fn materialize_http_request(
+    binary: &BinaryHttpRequest,
+    heap: &mut RequestVmHeap,
+) -> RequestResult<ValueSlot> {
+    let method = heap
+        .alloc_string(binary.metadata.method.clone())
+        .map_err(heap_error_to_request_error)?;
+    let url = heap
+        .alloc_string(binary.metadata.url.clone())
+        .map_err(heap_error_to_request_error)?;
+    let path = heap
+        .alloc_string(binary.metadata.path.clone())
+        .map_err(heap_error_to_request_error)?;
+    let query = materialize_name_values(&binary.metadata.query, heap)?;
+    let headers = materialize_name_values(&binary.metadata.headers, heap)?;
+    let body = heap
+        .alloc_bytes(binary.body.clone())
+        .map_err(heap_error_to_request_error)?;
+    let fields = vec![
+        VmRecordField {
+            name: "method".to_string(),
+            value: method,
+        },
+        VmRecordField {
+            name: "url".to_string(),
+            value: url,
+        },
+        VmRecordField {
+            name: "path".to_string(),
+            value: path,
+        },
+        VmRecordField {
+            name: "query".to_string(),
+            value: query,
+        },
+        VmRecordField {
+            name: "headers".to_string(),
+            value: headers,
+        },
+        VmRecordField {
+            name: "body".to_string(),
+            value: body,
+        },
+    ];
+    heap.allocate_record(&fields, CompactTypeTag::new(0), ValueFlags::new(0))
+        .map_err(heap_error_to_request_error)
+}
+
+fn materialize_name_values(
+    items: &[HttpNameValue],
+    heap: &mut RequestVmHeap,
+) -> RequestResult<ValueSlot> {
+    let mut records = Vec::with_capacity(items.len());
+    for item in items {
+        let name = heap
+            .alloc_string(item.name.clone())
+            .map_err(heap_error_to_request_error)?;
+        let value = heap
+            .alloc_string(item.value.clone())
+            .map_err(heap_error_to_request_error)?;
+        let record = heap
+            .allocate_record(
+                &[
+                    VmRecordField {
+                        name: "name".to_string(),
+                        value: name,
+                    },
+                    VmRecordField {
+                        name: "value".to_string(),
+                        value,
+                    },
+                ],
+                CompactTypeTag::new(0),
+                ValueFlags::new(0),
+            )
+            .map_err(heap_error_to_request_error)?;
+        records.push(record);
+    }
+    heap.allocate_array(&records, CompactTypeTag::new(0), ValueFlags::new(0))
+        .map_err(heap_error_to_request_error)
+}
+
+fn heap_error_to_request_error(error: VmHeapError) -> RequestError {
+    RequestError::Decode(format!("bytecode gateway heap materialization failed: {error}"))
 }
 
 fn scheduler_error_to_request_error(
@@ -695,17 +1027,6 @@ fn validate_bytecode_request_metadata(request: &RequestEnvelope) -> RequestResul
     if request.ingress_selector.is_none() {
         return Err(RequestError::Unsupported(
             "bytecode scalar ingress requires request.start ingress_selector".to_string(),
-        ));
-    }
-    if request.binary_http.is_some() {
-        return Err(RequestError::Unsupported(
-            "binary HTTP metadata is not supported by bytecode scalar ingress".to_string(),
-        ));
-    }
-    if request.http_adapter.is_some() {
-        return Err(RequestError::Unsupported(
-            "HTTP callable adapter metadata is not supported by bytecode scalar ingress"
-                .to_string(),
         ));
     }
     if request.extra.contains_key("actorCall") {

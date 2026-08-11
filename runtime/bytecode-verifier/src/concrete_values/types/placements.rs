@@ -144,6 +144,19 @@ fn prove_position(
     require_ordinary_snapshot(fact, location, role)
 }
 
+fn is_std_http_client_stream_handle(ty: &skiff_artifact_model::TypeRefIr) -> bool {
+    matches!(
+        ty,
+        skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
+            if symbol.symbol_path == "std.http.HttpClientStreamHandle"
+                && matches!(
+                    &symbol.package,
+                    skiff_artifact_model::PackageRefIr::PackageId { package_id }
+                        if package_id == "skiff.run/std"
+                )
+    )
+}
+
 fn prove_shape_layouts(
     candidate: &LinkedBytecodeCandidate,
     facts: &ConcreteValueFacts,
@@ -151,9 +164,12 @@ fn prove_shape_layouts(
     for shape in candidate.shapes() {
         let location = table_location(CandidateTable::Shapes, shape.index().get());
         let nominal = fact_for(facts, shape.nominal_type(), location, "shape nominal type")?;
+        let stream_handle = is_std_http_client_stream_handle(&nominal.normalized_type);
         for field in shape.fields() {
             let field_fact = fact_for(facts, field.ty(), location, "shape field type")?;
-            require_ordinary_snapshot(field_fact, location, "shape field")?;
+            if !stream_handle {
+                require_ordinary_snapshot(field_fact, location, "shape field")?;
+            }
         }
         if let TypeRefIr::Record { fields } = &nominal.normalized_type {
             prove_structural_shape(shape, fields, facts, location)?;

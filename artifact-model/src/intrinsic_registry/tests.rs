@@ -150,14 +150,14 @@ fn static_receiver_and_explicit_unsupported_authority_are_frozen() {
     assert_eq!(registry.identity().version, INTRINSIC_REGISTRY_VERSION);
     assert_eq!(
         INTRINSIC_REGISTRY_FINGERPRINT,
-        "0737ed2b2cb8a514a6cf73b6f401cc0a47304c35bb9dd294c8022c57ee8c462a"
+        "37e64340e3bece762de90d2c9f51ea5dcdf32cec5a8964ea2b831a52abc70b7f"
     );
     assert_eq!(
         registry.identity().fingerprint,
         INTRINSIC_REGISTRY_FINGERPRINT
     );
-    assert_eq!(registry.entries().len(), 9);
-    assert_eq!(UNSUPPORTED_INTRINSIC_RECEIVER_KEYS.len(), 33);
+    assert_eq!(registry.entries().len(), 11);
+    assert_eq!(UNSUPPORTED_INTRINSIC_RECEIVER_KEYS.len(), 31);
     assert!(registry
         .entries()
         .iter()

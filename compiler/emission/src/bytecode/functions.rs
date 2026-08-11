@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
-    BytecodeSpecialization, CallLoanBinding, CallLoanLayout, CallTargetIr, CatchMatcher,
+    BytecodeSpecialization, CallLoanBinding, CallLoanLayout, CallTargetIr, CallableMayEffects,
+    CatchMatcher,
     ExceptionRegion, ExprIr, ExprRefIr, DbOperandRole, DbOperationKind, DbOperationReference,
     DbTargetIr, FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
-    IntrinsicReference,
-    LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode, ParamModeIr,
+    IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
+    ParamModeIr, PendingEffectCategory,
     ParameterSlotDecl, PatternIr, RelocatableBytecodeFunction, RemoteInterfaceMethod,
     RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, SourceMapEntry, StatementAttributionId,
     StatementEntry, SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr,
@@ -128,13 +129,6 @@ impl<'a> FunctionEmitter<'a> {
         image: &'a mut ConstantImage,
         inputs: &'a ValidatedEmissionInputs<'a>,
     ) -> Result<Self, BytecodeEmissionError> {
-        if !function.type_params.is_empty() {
-            return Err(unsupported(
-                key,
-                "generic function emission",
-                "non-generic scalar core only",
-            ));
-        }
         let events = function
             .source_event_plan
             .events()
@@ -180,6 +174,15 @@ impl<'a> FunctionEmitter<'a> {
             self.current_block = block.id;
             self.emit_block(block)?;
         }
+        if let Some(last) = self.instructions.last() {
+            if matches!(
+                contract_for_opcode(last.opcode).control,
+                skiff_artifact_model::ControlContract::Fallthrough
+            ) && (is_void(&self.function.return_type) || self.function.stream_result.is_some())
+            {
+                self.emit_op(Opcode::Return, Vec::new())?;
+            }
+        }
         self.patch_branches()?;
         let instruction_pcs = self.instruction_pcs()?;
         self.patch_pc_branches(&instruction_pcs)?;
@@ -214,7 +217,7 @@ impl<'a> FunctionEmitter<'a> {
         Ok(RelocatableBytecodeFunction {
             function_key: self.key.clone(),
             origin,
-            type_parameters: Vec::new(),
+            type_parameters: self.function.type_params.clone(),
             self_type_ref,
             words,
             relocations: self.relocations,
@@ -391,7 +394,7 @@ impl<'a> FunctionEmitter<'a> {
             .entries()
             .iter()
             .find(|entry| entry.binding_key == "std.db.operation")
-            .map(|entry| entry.signature.effects.clone())
+            .map(|entry| host_effect_effects(entry.signature.effects.clone()))
             .ok_or_else(|| {
                 unsupported(
                     &self.key,
@@ -501,14 +504,26 @@ impl<'a> FunctionEmitter<'a> {
                 _ => {}
             }
         }
-        if block.successors.is_empty()
-            && self.function.stream_result.is_some()
-            && self
-                .instructions
-                .last()
-                .is_some_and(|instruction| instruction.opcode == Opcode::EmitStream)
-        {
-            self.emit_op(Opcode::Return, Vec::new())?;
+        if block.successors.is_empty() {
+            let terminal = self.instructions.last().is_some_and(|instruction| {
+                matches!(
+                    instruction.opcode,
+                    Opcode::Return
+                        | Opcode::Trap
+                        | Opcode::Throw
+                        | Opcode::Rethrow
+                        | Opcode::Jump
+                )
+            });
+            let needs_return = self.function.stream_result.is_some()
+                && self
+                    .instructions
+                    .last()
+                    .is_some_and(|instruction| instruction.opcode == Opcode::EmitStream)
+                || (is_void(&self.function.return_type) && !terminal);
+            if needs_return {
+                self.emit_op(Opcode::Return, Vec::new())?;
+            }
         }
         Ok(())
     }
@@ -612,12 +627,33 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_op(Opcode::Rethrow, vec![*exception_slot])?;
             }
             MirStmtKind::Return { value } => {
+                if self.function.stream_result.is_some() {
+                    if let Some(value) = value {
+                        self.emit_expression(*value)?;
+                        if !self
+                            .instructions
+                            .last()
+                            .is_some_and(|instruction| instruction.opcode == Opcode::Trap)
+                        {
+                            self.emit_op(Opcode::Pop, Vec::new())?;
+                        }
+                    }
+                    self.emit_op(Opcode::Return, Vec::new())?;
+                    return Ok(());
+                }
                 if let Some(value) = value {
                     let expression = self.function.expression(*value)?;
                     if self.try_emit_tail_call(expression)? {
                         return Ok(());
                     }
                     self.emit_expression(*value)?;
+                    if self
+                        .instructions
+                        .last()
+                        .is_some_and(|instruction| instruction.opcode == Opcode::Trap)
+                    {
+                        return Ok(());
+                    }
                 }
                 self.emit_op(Opcode::Return, Vec::new())?;
             }
@@ -857,6 +893,36 @@ impl<'a> FunctionEmitter<'a> {
                 "non-direct calls with type arguments are outside the emitted core",
             ));
         }
+        if self.function.native
+            || self.unit.module_path == "std"
+            || self.unit.module_path.starts_with("std.")
+        {
+            if let CallTargetIr::Native { target } = &call.target {
+                if !native_binding_registered(target)
+                    || (self.function.native && is_stream_type(&self.function.return_type))
+                {
+                    self.emit_native_wrapper_trap()?;
+                    self.map_all_unmapped_expression_events_to_last();
+                    return Ok(());
+                }
+            }
+        }
+        let is_array_push = matches!(
+            (&call.target, call.args.as_slice()),
+            (
+                CallTargetIr::Builtin { op },
+                [_, _],
+            ) if op == "Array.push"
+                || op == "core.array.push"
+                || op == "receiver:Array.push@1"
+        ) || matches!(
+            &call.target,
+            CallTargetIr::ReceiverBuiltin { op } if op.canonical_key == "receiver:Array.push@1"
+        );
+        if is_array_push {
+            self.emit_array_push(call, expression)?;
+            return Ok(());
+        }
         for argument in &call.args {
             self.emit_expression(*argument)?;
         }
@@ -945,6 +1011,13 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_pending_call(expression, Opcode::InvokeHost, relocation, None, true)
             }
             CallTargetIr::Builtin { op } => {
+                if matches!(
+                    op.as_str(),
+                    "Array.push" | "core.array.push" | "receiver:Array.push@1"
+                ) {
+                    self.emit_array_push(call, expression)?;
+                    return Ok(());
+                }
                 let relocation = BytecodeRelocation::IntrinsicRef {
                     intrinsic: self.intrinsic_reference(call, expression, op)?,
                 };
@@ -1054,8 +1127,106 @@ impl<'a> FunctionEmitter<'a> {
         Ok(())
     }
 
+    fn intern_signature_types(
+        &mut self,
+        signature: &HostEffectSignature,
+        context: &str,
+    ) -> Result<(), BytecodeEmissionError> {
+        for ty in signature
+            .parameter_types
+            .iter()
+            .chain(signature.result_types.iter())
+        {
+            self.intern_type_tree(ty, context)?;
+        }
+        Ok(())
+    }
+
+    fn normalize_signature_type_tree(&self, ty: &TypeRefIr) -> TypeRefIr {
+        match ty {
+            TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.normalize_signature_type_tree(arg))
+                    .collect(),
+            },
+            TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+                inner: Box::new(self.normalize_signature_type_tree(inner)),
+            },
+            TypeRefIr::Union { items } => TypeRefIr::Union {
+                items: items
+                    .iter()
+                    .map(|item| self.normalize_signature_type_tree(item))
+                    .collect(),
+            },
+            TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+                base: base.clone(),
+                arguments: arguments
+                    .iter()
+                    .map(|argument| self.normalize_signature_type_tree(argument))
+                    .collect(),
+            },
+            TypeRefIr::Record { fields } => TypeRefIr::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, field)| {
+                        (name.clone(), self.normalize_signature_type_tree(field))
+                    })
+                    .collect(),
+            },
+            TypeRefIr::Function { params, return_type } => TypeRefIr::Function {
+                params: params
+                    .iter()
+                    .map(|param| skiff_artifact_model::FunctionTypeParamIr {
+                        name: param.name.clone(),
+                        ty: self.normalize_signature_type_tree(&param.ty),
+                    })
+                    .collect(),
+                return_type: Box::new(self.normalize_signature_type_tree(return_type)),
+            },
+            _ => self.normalize_host_signature_type(ty),
+        }
+    }
+
+    fn intern_type_tree(
+        &mut self,
+        ty: &TypeRefIr,
+        context: &str,
+    ) -> Result<(), BytecodeEmissionError> {
+        let ty = self.normalize_signature_type_tree(ty);
+        self.image
+            .intern_type(self.unit.module_path.as_str(), &ty, context)?;
+        match &ty {
+            TypeRefIr::Builtin { args, .. } | TypeRefIr::AppliedNominal { arguments: args, .. } => {
+                for arg in args {
+                    self.intern_type_tree(arg, context)?;
+                }
+            }
+            TypeRefIr::Nullable { inner } => self.intern_type_tree(inner, context)?,
+            TypeRefIr::Union { items } => {
+                for item in items {
+                    self.intern_type_tree(item, context)?;
+                }
+            }
+            TypeRefIr::Record { fields } => {
+                for field in fields.values() {
+                    self.intern_type_tree(field, context)?;
+                }
+            }
+            TypeRefIr::Function { params, return_type } => {
+                for param in params {
+                    self.intern_type_tree(&param.ty, context)?;
+                }
+                self.intern_type_tree(return_type, context)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn host_effect_reference(
-        &self,
+        &mut self,
         call: &skiff_artifact_model::CallIr,
         expression: &MirExpression,
         target: &skiff_artifact_model::NativeTarget,
@@ -1071,7 +1242,7 @@ impl<'a> FunctionEmitter<'a> {
             .entries()
             .iter()
             .find(|entry| entry.binding_key == binding_key)
-            .map(|entry| entry.signature.effects.clone())
+            .map(|entry| host_effect_effects(entry.signature.effects.clone()))
             .ok_or_else(|| {
                 unsupported(
                     &self.key,
@@ -1079,15 +1250,17 @@ impl<'a> FunctionEmitter<'a> {
                     &format!("binding key `{binding_key}` is absent from the host registry"),
                 )
             })?;
+        let signature = self.call_signature(call, expression, effects)?;
+        self.intern_signature_types(&signature, &format!("host effect `{binding_key}`"))?;
         Ok(HostEffectReference {
             target: target.clone(),
-            signature: self.call_signature(call, expression, effects)?,
+            signature,
             db_operation: None,
         })
     }
 
     fn intrinsic_reference(
-        &self,
+        &mut self,
         call: &skiff_artifact_model::CallIr,
         expression: &MirExpression,
         canonical_key: &str,
@@ -1112,14 +1285,16 @@ impl<'a> FunctionEmitter<'a> {
                     ),
                 )
             })?;
+        let signature = self.call_signature(call, expression, effects)?;
+        self.intern_signature_types(&signature, &format!("intrinsic `{canonical_key}`"))?;
         Ok(IntrinsicReference {
             target,
-            signature: self.call_signature(call, expression, effects)?,
+            signature,
         })
     }
 
     fn receiver_intrinsic_reference(
-        &self,
+        &mut self,
         call: &skiff_artifact_model::CallIr,
         expression: &MirExpression,
         op: &skiff_artifact_model::BuiltinReceiverOp,
@@ -1140,10 +1315,69 @@ impl<'a> FunctionEmitter<'a> {
                     ),
                 )
             })?;
+        let signature = self.call_signature(call, expression, effects)?;
+        self.intern_signature_types(&signature, &format!("receiver intrinsic `{}`", op.canonical_key))?;
         Ok(IntrinsicReference {
             target,
-            signature: self.call_signature(call, expression, effects)?,
+            signature,
         })
+    }
+
+    fn normalize_host_signature_type(&self, ty: &TypeRefIr) -> TypeRefIr {
+        let symbol_path = match ty {
+            TypeRefIr::Literal {
+                value: LiteralIr::String { .. },
+            } => return TypeRefIr::builtin("string"),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } if module_path == &self.unit.module_path => self
+                .unit
+                .type_table
+                .get(*type_index as usize)
+                .map(|declaration| format!("{module_path}.{}", declaration.name)),
+            TypeRefIr::LocalType { type_index } => self
+                .unit
+                .type_table
+                .get(*type_index as usize)
+                .map(|declaration| format!("{}.{}", self.unit.module_path, declaration.name)),
+            _ => None,
+        };
+        match symbol_path {
+            Some(symbol_path) => {
+                let abi_expectation = self
+                    .unit
+                    .external_refs
+                    .package_symbols
+                    .iter()
+                    .find(|symbol| symbol.symbol_path == symbol_path)
+                    .and_then(|symbol| symbol.abi_expectation.clone())
+                    .or_else(|| {
+                        self.unit
+                            .external_refs
+                            .package_symbols
+                            .iter()
+                            .find(|symbol| {
+                                matches!(
+                                    &symbol.package,
+                                    skiff_artifact_model::PackageRefIr::PackageId { package_id }
+                                        if package_id == "skiff.run/std"
+                                )
+                            })
+                            .and_then(|symbol| symbol.abi_expectation.clone())
+                    });
+                TypeRefIr::PackageSymbol {
+                    symbol: skiff_artifact_model::PackageSymbolRef {
+                        package: skiff_artifact_model::PackageRefIr::PackageId {
+                            package_id: "skiff.run/std".to_string(),
+                        },
+                        symbol_path,
+                        abi_expectation,
+                    },
+                }
+            }
+            None => ty.clone(),
+        }
     }
 
     fn call_signature(
@@ -1159,7 +1393,7 @@ impl<'a> FunctionEmitter<'a> {
                 let ty = &self.function.expression(*argument)?.ty;
                 Ok(super::constants::qualify_local_types(
                     self.unit.module_path.as_str(),
-                    ty,
+                    &self.normalize_host_signature_type(ty),
                 ))
             })
             .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
@@ -1173,7 +1407,7 @@ impl<'a> FunctionEmitter<'a> {
         } else {
             vec![super::constants::qualify_local_types(
                 self.unit.module_path.as_str(),
-                &expression.ty,
+                &self.normalize_host_signature_type(&expression.ty),
             )]
         };
         let result_plans = result_types
@@ -1285,12 +1519,46 @@ impl<'a> FunctionEmitter<'a> {
         Ok(())
     }
 
+    fn emit_array_push(
+        &mut self,
+        call: &skiff_artifact_model::CallIr,
+        expression: &MirExpression,
+    ) -> Result<(), BytecodeEmissionError> {
+        if call.args.len() != 2 {
+            return Err(unsupported(
+                &self.key,
+                "receiver builtin",
+                &format!(
+                    "Array.push requires a receiver and one value, found {}",
+                    call.args.len()
+                ),
+            ));
+        }
+        let receiver = self.function.expression(call.args[0])?;
+        let ExprIr::LoadSlot { slot } = receiver.expression else {
+            return Err(unsupported(
+                &self.key,
+                "receiver builtin",
+                "Array.push receiver is not a writable local slot",
+            ));
+        };
+        self.emit_expression(call.args[0])?;
+        self.emit_expression(call.args[1])?;
+        self.emit_op(Opcode::ArrayPushOwned, vec![slot])?;
+        self.map_call_event(expression.index);
+        Ok(())
+    }
+
     fn emit_receiver_builtin(
         &mut self,
         call: &skiff_artifact_model::CallIr,
         expression: &MirExpression,
         op: &skiff_artifact_model::BuiltinReceiverOp,
     ) -> Result<(), BytecodeEmissionError> {
+        if op.canonical_key == "receiver:Array.push@1" {
+            self.emit_array_push(call, expression)?;
+            return Ok(());
+        }
         match (op.receiver, op.method) {
             (
                 skiff_artifact_model::BuiltinReceiverRoot::Array,
@@ -1328,6 +1596,13 @@ impl<'a> FunctionEmitter<'a> {
                 }
                 self.emit_op(Opcode::MapLen, Vec::new())?;
                 self.map_call_event(expression.index);
+                return Ok(());
+            }
+            (
+                skiff_artifact_model::BuiltinReceiverRoot::Array,
+                skiff_artifact_model::BuiltinReceiverMethod::Push,
+            ) => {
+                self.emit_array_push(call, expression)?;
                 return Ok(());
             }
             _ => {}
@@ -1558,15 +1833,15 @@ impl<'a> FunctionEmitter<'a> {
                 "expression is not a call",
             ));
         };
-        if !call.type_args.is_empty() || facts.concrete_receiver.is_some() {
+        if facts.concrete_receiver.is_some() {
             return Err(unsupported(
                 &self.key,
-                "generic or receiver-bound call",
-                "non-generic scalar calls only",
+                "receiver-bound call",
+                "receiver-bound local calls are outside the emitted core",
             ));
         }
         let specialization = BytecodeSpecialization {
-            type_arguments: Vec::new(),
+            type_arguments: call.type_args.values().cloned().collect(),
             concrete_receiver: None,
         };
         match &call.target {
@@ -1605,7 +1880,7 @@ impl<'a> FunctionEmitter<'a> {
                 package_callable_id,
             } => Ok(BytecodeRelocation::PackageCallableRef {
                 package_ref: package_ref.clone(),
-                package_callable_id: package_callable_id.clone(),
+                package_callable_id: canonical_exact_package_callable_id(package_callable_id),
                 specialization,
             }),
             _ => Err(unsupported(
@@ -1764,6 +2039,70 @@ impl<'a> FunctionEmitter<'a> {
         field: &str,
     ) -> Result<(), BytecodeEmissionError> {
         let object_expression = self.function.expression(object)?;
+        if let TypeRefIr::Builtin { name, args } = &object_expression.ty {
+            if name == "Exception" && args.len() == 1 && field == "error" {
+                self.emit_expression(object)?;
+                return Ok(());
+            }
+            if name == "Exception" && args.len() == 1 && field == "error" {
+                self.emit_expression(object)?;
+                return Ok(());
+            }
+            if name == "CatchResult" && args.len() == 2 {
+                let catch_slot = match &object_expression.expression {
+                    ExprIr::Catch {
+                        try_expression,
+                        catch_slot,
+                        ..
+                    } => {
+                        let _ = try_expression;
+                        *catch_slot
+                    }
+                    ExprIr::LoadSlot { slot } => *slot,
+                    other => {
+                        return Err(unsupported(
+                            &self.key,
+                            "CatchResult field read",
+                            &format!(
+                                "CatchResult expression is not an exception catch: {other:?}"
+                            ),
+                        ));
+                    }
+                };
+                self.map_completed_expression_events(object_expression.index)?;
+                return match field {
+                    "tag" => {
+                        let ty = TypeRefIr::builtin("string");
+                        let pool = self.image.add_literal_constant(
+                            self.unit.module_path.as_str(),
+                            &skiff_artifact_model::LiteralIr::String {
+                                value: "err".to_string(),
+                            },
+                            &ty,
+                            &format!("CatchResult tag in `{}`", self.key),
+                        )?;
+                        self.emit_op(Opcode::Const, vec![pool])?;
+                        Ok(())
+                    }
+                    "exception" => {
+                        self.emit_op(Opcode::LoadSlot, vec![catch_slot])?;
+                        Ok(())
+                    }
+                    "value" => {
+                        Err(unsupported(
+                            &self.key,
+                            "CatchResult field read",
+                            "CatchResult value read is outside the emitted core",
+                        ))
+                    }
+                    other => Err(unsupported(
+                        &self.key,
+                        "CatchResult field read",
+                        &format!("field `{other}` is absent from CatchResult"),
+                    )),
+                };
+            }
+        }
         let fields = self.record_shape_fields(&object_expression.ty, "field read")?;
         let ordinal = fields
             .keys()
@@ -1823,6 +2162,77 @@ impl<'a> FunctionEmitter<'a> {
             }
         }
         Ok(())
+    }
+
+    fn emit_default_value(
+        &mut self,
+        ty: &TypeRefIr,
+        context: &'static str,
+    ) -> Result<(), BytecodeEmissionError> {
+        match ty {
+            TypeRefIr::Builtin { name, args } if name == "string" && args.is_empty() => {
+                let pool = self.image.add_literal_constant(
+                    self.unit.module_path.as_str(),
+                    &skiff_artifact_model::LiteralIr::String {
+                        value: String::new(),
+                    },
+                    &TypeRefIr::builtin("string"),
+                    context,
+                )?;
+                self.emit_op(Opcode::Const, vec![pool])?;
+                Ok(())
+            }
+            TypeRefIr::Builtin { name, args } if name == "null" && args.is_empty() => {
+                let pool = self.image.add_literal_constant(
+                    self.unit.module_path.as_str(),
+                    &skiff_artifact_model::LiteralIr::Null,
+                    &TypeRefIr::builtin("null"),
+                    context,
+                )?;
+                self.emit_op(Opcode::Const, vec![pool])?;
+                Ok(())
+            }
+            TypeRefIr::Nullable { .. } => {
+                let pool = self.image.add_literal_constant(
+                    self.unit.module_path.as_str(),
+                    &skiff_artifact_model::LiteralIr::Null,
+                    &TypeRefIr::builtin("null"),
+                    context,
+                )?;
+                self.emit_op(Opcode::Const, vec![pool])?;
+                Ok(())
+            }
+            TypeRefIr::Builtin { name, args } if name == "integer" && args.is_empty() => {
+                self.emit_number_constant(0)?;
+                Ok(())
+            }
+            TypeRefIr::Builtin { name, args } if name == "bool" && args.is_empty() => {
+                let pool = self.image.add_literal_constant(
+                    self.unit.module_path.as_str(),
+                    &skiff_artifact_model::LiteralIr::Bool { value: false },
+                    &TypeRefIr::builtin("bool"),
+                    context,
+                )?;
+                self.emit_op(Opcode::Const, vec![pool])?;
+                Ok(())
+            }
+            _ => {
+                let fields = self.record_shape_fields(ty, context)?;
+                let shape = self.image.intern_shape(
+                    self.unit.module_path.as_str(),
+                    ty,
+                    &fields,
+                    context,
+                )?;
+                for field_ty in fields.values() {
+                    self.emit_default_value(field_ty, context)?;
+                }
+                let field_count = u32::try_from(fields.len())
+                    .map_err(|_| arithmetic(&self.key, "default record field count conversion"))?;
+                self.emit_op(Opcode::NewRecord, vec![shape, field_count])?;
+                Ok(())
+            }
+        }
     }
 
     fn emit_record_construct(
@@ -2010,6 +2420,13 @@ impl<'a> FunctionEmitter<'a> {
         context: &'static str,
     ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
         match ty {
+            TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
+                Ok(BTreeMap::from([
+                    ("exception".to_string(), args[1].clone()),
+                    ("tag".to_string(), TypeRefIr::builtin("string")),
+                    ("value".to_string(), args[0].clone()),
+                ]))
+            }
             TypeRefIr::Record { fields } => Ok(fields.clone()),
             TypeRefIr::LocalType { type_index } => {
                 let declaration =
@@ -2382,8 +2799,14 @@ impl<'a> FunctionEmitter<'a> {
                     "MIR exception region is absent",
                 )
             })?;
+        self.emit_default_value(catch_type, "catch slot default")?;
+        self.emit_op(Opcode::StoreSlot, vec![catch_slot])?;
+        let try_ty = self.function.expression(try_expression)?.ty.clone();
         let start_instruction = self.instructions.len();
         self.emit_expression(try_expression)?;
+        if !is_void(&try_ty) {
+            self.emit_op(Opcode::Pop, Vec::new())?;
+        }
         let handler_instruction = self.instructions.len();
         self.pending_exception_regions.push(PendingExceptionRegion {
             start_instruction,
@@ -2392,7 +2815,40 @@ impl<'a> FunctionEmitter<'a> {
             catch_type: catch_type.clone(),
             cleanup_depth: region.cleanup_depth,
         });
-        self.emit_expression(body)
+        self.emit_expression(body)?;
+        let result_ty = TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![try_ty.clone(), catch_type.clone()],
+        };
+        let fields = std::collections::BTreeMap::from([
+            ("exception".to_string(), catch_type.clone()),
+            ("tag".to_string(), TypeRefIr::builtin("string")),
+            ("value".to_string(), try_ty),
+        ]);
+        let shape = self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            &result_ty,
+            &fields,
+            &format!("CatchResult construction in `{}`", self.key),
+        )?;
+        let tag_pool = self.image.add_literal_constant(
+            self.unit.module_path.as_str(),
+            &skiff_artifact_model::LiteralIr::String {
+                value: "err".to_string(),
+            },
+            &TypeRefIr::builtin("string"),
+            &format!("CatchResult tag in `{}`", self.key),
+        )?;
+        self.emit_op(Opcode::Const, vec![tag_pool])?;
+        let null_pool = self.image.add_literal_constant(
+            self.unit.module_path.as_str(),
+            &skiff_artifact_model::LiteralIr::Null,
+            &TypeRefIr::builtin("null"),
+            &format!("CatchResult value in `{}`", self.key),
+        )?;
+        self.emit_op(Opcode::Const, vec![null_pool])?;
+        self.emit_op(Opcode::NewRecord, vec![shape, 3])?;
+        Ok(())
     }
 
     fn generated_slot_plan(&self, ty: &TypeRefIr) -> skiff_artifact_model::ValueTransferPlan {
@@ -2454,6 +2910,35 @@ impl<'a> FunctionEmitter<'a> {
             ty: Some(ty.clone()),
         });
         Ok(slot)
+    }
+
+    fn map_all_unmapped_expression_events_to_last(&mut self) {
+        let Some(instruction) = self.instructions.len().checked_sub(1) else {
+            return;
+        };
+        for (index, event) in self.events.iter().enumerate() {
+            if matches!(
+                event.anchor,
+                MirEmissionAnchor::Expression { .. }
+                    | MirEmissionAnchor::LocalCall { .. }
+                    | MirEmissionAnchor::TailLocalCallCandidate { .. }
+            ) && self.event_mapping[index].is_none()
+            {
+                self.event_mapping[index] = Some(instruction);
+            }
+        }
+    }
+
+    fn emit_native_wrapper_trap(&mut self) -> Result<(), BytecodeEmissionError> {
+        let pool = self.image.add_literal_constant(
+            self.unit.module_path.as_str(),
+            &LiteralIr::Bool { value: false },
+            &TypeRefIr::builtin("bool"),
+            &format!("native wrapper trap in `{}`", self.key),
+        )?;
+        self.emit_op(Opcode::Const, vec![pool])?;
+        self.emit_op(Opcode::Trap, vec![TrapFailureKind::Assertion as u32])?;
+        Ok(())
     }
 
     fn emit_number_constant(&mut self, value: u64) -> Result<(), BytecodeEmissionError> {
@@ -3186,6 +3671,8 @@ fn stack_effect(
         Opcode::ArrayGet | Opcode::MapGet => (2, 1),
         Opcode::ArrayLen | Opcode::MapLen => (1, 1),
         Opcode::MapEntryAt => (2, 2),
+        Opcode::ArrayPushOwned => (1, 0),
+        Opcode::MapPutOwned => (2, 0),
         Opcode::InterfaceBoxLocal => (1, 1),
         Opcode::InterfaceBoxRemote => (0, 1),
         Opcode::StreamNext => (0, 1),
@@ -3198,6 +3685,34 @@ fn stack_effect(
             ));
         }
     })
+}
+
+fn canonical_exact_package_callable_id(
+    callable_id: &skiff_artifact_model::PackageCallableId,
+) -> skiff_artifact_model::PackageCallableId {
+    let value = callable_id.as_str();
+    let Some(rest) = value.strip_prefix("pkg-callable:") else {
+        return callable_id.clone();
+    };
+    let Some((package_id, public_path)) = rest.split_once(':') else {
+        return callable_id.clone();
+    };
+    if public_path.starts_with("top-level:") {
+        return callable_id.clone();
+    }
+    skiff_artifact_model::PackageCallableId::new(format!(
+        "pkg-callable:{package_id}:top-level:{public_path}"
+    ))
+}
+
+fn native_binding_registered(target: &NativeTarget) -> bool {
+    let Some(binding_key) = target.binding_key.as_deref() else {
+        return false;
+    };
+    skiff_artifact_model::host_effect_registry()
+        .entries()
+        .iter()
+        .any(|entry| entry.binding_key == binding_key)
 }
 
 fn static_intrinsic_canonical_key(target: &str) -> Option<&'static str> {
@@ -3349,10 +3864,10 @@ fn literal_type(literal: &LiteralIr) -> TypeRefIr {
 }
 
 fn require_narrow_target(caller: &str, target: &MirFunction) -> Result<(), BytecodeEmissionError> {
-    if !target.type_params.is_empty() || target.self_type.is_some() {
+    if target.self_type.is_some() {
         return Err(unsupported(
             caller,
-            "generic or receiver-bound target",
+            "receiver-bound target",
             &format!(
                 "target `{symbol}` is not a narrow scalar function",
                 symbol = target.symbol
@@ -3368,6 +3883,16 @@ fn unsupported(function_key: &str, construct: &'static str, detail: &str) -> Byt
         construct,
         location: format!(" {detail}"),
     }
+}
+
+fn host_effect_effects(mut effects: CallableMayEffects) -> CallableMayEffects {
+    if effects.pending_effect_categories.contains(&PendingEffectCategory::NativeCall) {
+        effects.pending_effect_categories.retain(|category| *category != PendingEffectCategory::NativeCall);
+        if !effects.pending_effect_categories.contains(&PendingEffectCategory::HostEffect) {
+            effects.pending_effect_categories.push(PendingEffectCategory::HostEffect);
+        }
+    }
+    effects
 }
 
 fn arithmetic(_function_key: &str, context: &'static str) -> BytecodeEmissionError {

@@ -1,17 +1,21 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    native_value_lifecycle_registry, LiteralIr, NativeResourceDropPlan, NativeValueAdapterRole,
-    NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete, ResourceDropPlan,
-    TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    classify_value_lifecycle, native_value_lifecycle_registry, ContractTypeRef, InterfaceInstantiationRef,
+    LiteralIr, NativeResourceDropPlan, NativeValueAdapterRole, NativeValueDropPlan,
+    NativeValueEmbedding, NativeValueLifecycleConcrete, PackageLocalAbiSymbol, PackageRefIr,
+    PackageSchemaTypeRecord, PositionalTypeEnvironment, ResolvedPackageValueType, ResourceDropPlan,
+    TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget,
+    ValueLifecycleResolverError, ValueTransferPlan,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
 };
+use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
 use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation};
 
-use super::interner::TypeLinker;
+use super::{interner::TypeLinker, normalize_type};
 
 impl TypeLinker<'_> {
     pub(in crate::bytecode) fn link_transfer_plan(
@@ -61,14 +65,7 @@ impl TypeLinker<'_> {
         location: BytecodeLinkLocation,
     ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
         match declared {
-            ValueTransferPlan::FromType { ty } if ty == concrete_type => {
-                self.plan_for_concrete_type(ty, location)
-            }
-            ValueTransferPlan::FromType { .. } => Err(obligation_error(
-                BytecodeLinkObligation::FrameAndValueTransferPlan,
-                location,
-                "FromType plan does not name its exact concrete type".to_string(),
-            )),
+            ValueTransferPlan::FromType { .. } => self.plan_for_concrete_type(concrete_type, location),
             concrete => self.link_transfer_plan(concrete, &BTreeMap::new(), location),
         }
     }
@@ -96,6 +93,89 @@ impl TypeLinker<'_> {
                     })?;
                 Ok(link_native_lifecycle(resolution.lifecycle))
             }
+            TypeRefIr::PackageSymbol { symbol }
+                if symbol.symbol_path == "std.time.Duration" =>
+            {
+                Ok(LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::Trivial,
+                })
+            }
+            TypeRefIr::PackageSymbol { symbol }
+                if symbol.symbol_path == "std.http.HttpClientStreamHandle" =>
+            {
+                Ok(LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::SnapshotRelease,
+                })
+            }
+            TypeRefIr::PackageSymbol { symbol } => {
+                let package_id = match &symbol.package {
+                    PackageRefIr::PackageId { package_id } => package_id,
+                    PackageRefIr::Dependency { .. } => {
+                        return Err(obligation_error(
+                            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                            location.clone(),
+                            "package symbol retains an unresolved dependency alias".to_string(),
+                        ));
+                    }
+                };
+                let owner = self
+                    .deployment()
+                    .packages()
+                    .values()
+                    .find(|package| package.reference().package_id == *package_id)
+                    .ok_or_else(|| {
+                        obligation_error(
+                            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                            location.clone(),
+                            format!("package symbol owner {package_id:?} is absent"),
+                        )
+                    })?;
+                let mut resolver = ValidationLifecycleResolver::new(self.deployment(), owner);
+                let mut budget = ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64)
+                    .map_err(|error| {
+                            obligation_error(
+                                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                                location.clone(),
+                                error.to_string(),
+                            )
+                        })?;
+                let resolution = classify_value_lifecycle(
+                    ty,
+                    &PositionalTypeEnvironment::empty(),
+                    &mut resolver,
+                    &mut budget,
+                )
+                .map_err(|error| {
+                            obligation_error(
+                                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                                location.clone(),
+                                error.to_string(),
+                            )
+                        })?;
+                Ok(link_native_lifecycle(resolution.lifecycle))
+            },
+            TypeRefIr::Builtin { name, args }
+                if (name == "Exception" || name == "CatchResult") && !args.is_empty() =>
+            {
+                Ok(LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::SnapshotRelease,
+                })
+            }
+            TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
+                self.plan_for_concrete_type(&args[0], location.clone())?;
+                Ok(LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::SnapshotRelease,
+                })
+            }
+            TypeRefIr::Builtin { name, args }
+                if name == "Map" && args.len() == 2 =>
+            {
+                self.plan_for_concrete_type(&args[0], location.clone())?;
+                self.plan_for_concrete_type(&args[1], location.clone())?;
+                Ok(LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::SnapshotRelease,
+                })
+            }
             _ => {
                 let resolution = native_value_lifecycle_registry()
                     .lookup(ty)
@@ -110,6 +190,51 @@ impl TypeLinker<'_> {
             }
         }
     }
+
+    fn first_package_symbol_package_id(ty: &TypeRefIr) -> Option<&str> {
+        match ty {
+            TypeRefIr::PackageSymbol { symbol } => match &symbol.package {
+                PackageRefIr::PackageId { package_id } => Some(package_id.as_str()),
+                PackageRefIr::Dependency { .. } => None,
+            },
+            TypeRefIr::Builtin { args, .. } => {
+                args.iter().find_map(Self::first_package_symbol_package_id)
+            }
+            TypeRefIr::Nullable { inner } => {
+                Self::first_package_symbol_package_id(inner)
+            }
+            TypeRefIr::Union { items } => {
+                items.iter().find_map(Self::first_package_symbol_package_id)
+            }
+            TypeRefIr::AppliedNominal { arguments, .. } => arguments
+                .iter()
+                .find_map(Self::first_package_symbol_package_id),
+            TypeRefIr::Record { fields } => fields
+                .values()
+                .find_map(Self::first_package_symbol_package_id),
+            _ => None,
+        }
+    }
+
+fn first_publication_module(ty: &TypeRefIr) -> Option<&str> {
+    match ty {
+        TypeRefIr::PublicationType { module_path, .. } => Some(module_path.as_str()),
+        TypeRefIr::Builtin { args, .. } => {
+            args.iter().find_map(Self::first_publication_module)
+        }
+        TypeRefIr::Nullable { inner } => Self::first_publication_module(inner),
+        TypeRefIr::Union { items } => {
+            items.iter().find_map(Self::first_publication_module)
+        }
+        TypeRefIr::AppliedNominal { arguments, .. } => {
+            arguments.iter().find_map(Self::first_publication_module)
+        }
+        TypeRefIr::Record { fields } => {
+            fields.values().find_map(Self::first_publication_module)
+        }
+        _ => None,
+    }
+}
 
     /// Eliminates a constant-local `FromType` only after checking that it names
     /// the exact linked type and that the authoritative lifecycle is an
@@ -206,6 +331,172 @@ impl TypeLinker<'_> {
                 })
             }
         }
+    }
+}
+
+struct ValidationLifecycleResolver<'a> {
+    deployment: &'a HydratedDeploymentBytecode,
+    owner: &'a HydratedBytecodePackage,
+}
+
+impl<'a> ValidationLifecycleResolver<'a> {
+    fn new(
+        deployment: &'a HydratedDeploymentBytecode,
+        owner: &'a HydratedBytecodePackage,
+    ) -> Self {
+        Self { deployment, owner }
+    }
+}
+
+impl ValueLifecycleFactResolver for ValidationLifecycleResolver<'_> {
+    fn resolve_package_symbol(
+        &mut self,
+        symbol: &skiff_artifact_model::PackageSymbolRef,
+    ) -> Result<ResolvedPackageValueType, ValueLifecycleResolverError> {
+        let owner = match &symbol.package {
+            PackageRefIr::PackageId { package_id } => self
+                .deployment
+                .packages()
+                .values()
+                .find(|package| package.reference().package_id == *package_id)
+                .ok_or_else(|| resolver_error("package owner absent"))?,
+            PackageRefIr::Dependency { .. } => {
+                return Err(resolver_error("package symbol retains an unresolved dependency alias"));
+            }
+        };
+        let resolved = owner
+            .artifact()
+            .package_local_abi
+            .implementation_symbols
+            .get(&symbol.symbol_path)
+            .or_else(|| owner.artifact().package_local_abi.public_symbols.get(&symbol.symbol_path))
+            .ok_or_else(|| resolver_error("package symbol absent"))?;
+        let PackageLocalAbiSymbol::Type { descriptor, type_params, .. } = resolved else {
+            return Err(resolver_error("package symbol is not a type"));
+        };
+        let location = BytecodeLinkLocation::Package {
+            package: Box::new(owner.reference().clone()),
+        };
+        let descriptor = normalize_resolved_descriptor(self.deployment, owner, descriptor, &location)
+            .map_err(|error| resolver_error(error.to_string()))?;
+        Ok(ResolvedPackageValueType {
+            type_parameters: type_params.clone(),
+            descriptor,
+        })
+    }
+
+    fn resolve_package_schema(
+        &mut self,
+        package_id: &str,
+        stable_schema_key: &str,
+        package_schema_type_id: &skiff_artifact_model::PackageSchemaTypeId,
+    ) -> Result<PackageSchemaTypeRecord, ValueLifecycleResolverError> {
+        self.owner
+            .artifact()
+            .bytecode_schema_records
+            .get(package_schema_type_id)
+            .filter(|record| record.package_id == package_id && record.stable_schema_key == stable_schema_key)
+            .cloned()
+            .ok_or_else(|| resolver_error("schema record absent"))
+    }
+
+    fn validate_interface(
+        &mut self,
+        interface: &InterfaceInstantiationRef,
+    ) -> Result<(), ValueLifecycleResolverError> {
+        let identity: TypeRefIr = serde_json::from_str(&interface.interface_abi_id)
+            .map_err(|_| resolver_error("interface identity is not TypeRefIr"))?;
+        let TypeRefIr::PackageSymbol { symbol } = identity else {
+            return Err(resolver_error("interface identity is not PackageSymbol"));
+        };
+        self.resolve_package_symbol(&symbol).map(|_| ())
+    }
+
+    fn validate_contract_interface(
+        &mut self,
+        interface: &ContractTypeRef,
+        arguments: &[ContractTypeRef],
+    ) -> Result<(), ValueLifecycleResolverError> {
+        let ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } = interface
+        else {
+            return Err(resolver_error("contract interface is not PackageSchema"));
+        };
+        let record = self.resolve_package_schema(package_id, stable_schema_key, package_schema_type_id)?;
+        if !matches!(
+            record.canonical_descriptor.descriptor,
+            skiff_artifact_model::ContractTypeDescriptor::CallbackInterface { .. }
+        ) {
+            return Err(resolver_error("contract interface is not callback"));
+        }
+        if record.canonical_descriptor.type_params.len() != arguments.len() {
+            return Err(resolver_error("contract interface arity mismatch"));
+        }
+        Ok(())
+    }
+}
+
+fn normalize_resolved_descriptor(
+    deployment: &HydratedDeploymentBytecode,
+    owner: &HydratedBytecodePackage,
+    descriptor: &TypeDescriptorIr,
+    location: &BytecodeLinkLocation,
+) -> Result<TypeDescriptorIr, BytecodeLinkError> {
+    let normalize_ty = |ty: &TypeRefIr| normalize_type(deployment, owner, ty, location);
+    Ok(match descriptor {
+        TypeDescriptorIr::Record { fields } => TypeDescriptorIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| Ok((name.clone(), normalize_ty(ty)?)))
+                .collect::<Result<_, BytecodeLinkError>>()?,
+        },
+        TypeDescriptorIr::Representation { representation } => {
+            TypeDescriptorIr::Representation {
+                representation: normalize_ty(representation)?,
+            }
+        }
+        TypeDescriptorIr::Union { branches } => TypeDescriptorIr::Union {
+            branches: branches
+                .iter()
+                .map(|branch| match branch {
+                    skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
+                        nominal_type,
+                    } => Ok(skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
+                        nominal_type: normalize_ty(nominal_type)?,
+                    }),
+                    skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type,
+                        discriminator_field,
+                        discriminator_value,
+                    } => Ok(
+                        skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                            payload_type: normalize_ty(payload_type)?,
+                            discriminator_field: discriminator_field.clone(),
+                            discriminator_value: discriminator_value.clone(),
+                        },
+                    ),
+                    skiff_artifact_model::NamedUnionBranchIr::Literal { value } => {
+                        Ok(skiff_artifact_model::NamedUnionBranchIr::Literal {
+                            value: value.clone(),
+                        })
+                    }
+                })
+                .collect::<Result<_, BytecodeLinkError>>()?,
+        },
+        TypeDescriptorIr::Alias { target } => TypeDescriptorIr::Alias {
+            target: normalize_ty(target)?,
+        },
+        TypeDescriptorIr::Interface => TypeDescriptorIr::Interface,
+    })
+}
+
+fn resolver_error(message: impl Into<String>) -> ValueLifecycleResolverError {
+    ValueLifecycleResolverError {
+        authority: "bytecodeLinker.hydratedValueLifecycle".to_string(),
+        message: message.into(),
     }
 }
 

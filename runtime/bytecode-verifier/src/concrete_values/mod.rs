@@ -5,7 +5,9 @@ mod resolver;
 mod streams;
 mod types;
 
-use skiff_artifact_model::{NativeValueLifecycleResolution, TypeRefIr};
+use skiff_artifact_model::{
+    NativeValueDropPlan, NativeValueLifecycleConcrete, NativeValueLifecycleResolution, TypeRefIr,
+};
 use skiff_runtime_linked_bytecode::{LinkedBytecodeCandidate, LinkedValueTransferPlan, TypeIndex};
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
@@ -109,9 +111,18 @@ impl ConcreteValueFacts {
         self.type_fact(index).map(|fact| fact.class)
     }
 
-    /// Compares only independently constructed semantic class identities.
+    /// Compares independently constructed semantic identities, including the
+    /// same type/plan equivalences the linker admits across trusted stack maps.
     pub(crate) fn semantically_equal(&self, left: TypeIndex, right: TypeIndex) -> Option<bool> {
-        Some(self.type_class(left)? == self.type_class(right)?)
+        let left_fact = self.type_fact(left)?;
+        let right_fact = self.type_fact(right)?;
+        if left_fact.class == right_fact.class {
+            return Some(true);
+        }
+        Some(
+            classes::equivalent_type_ref(&left_fact.normalized_type, &right_fact.normalized_type)
+                && equivalent_lifecycle(&left_fact.lifecycle, &right_fact.lifecycle),
+        )
     }
 
     /// Merges equivalent coordinates to the class's minimum dense member.
@@ -134,11 +145,14 @@ impl ConcreteValueFacts {
             ))
         })?;
         if left_class != right_class {
-            return Err(class_violation(format!(
-                "type coordinates {} and {} belong to different concrete classes",
-                left.get(),
-                right.get()
-            )));
+            if self.semantically_equal(left, right) != Some(true) {
+                return Err(class_violation(format!(
+                    "type coordinates {} and {} belong to different concrete classes",
+                    left.get(),
+                    right.get()
+                )));
+            }
+            return Ok(left.min(right));
         }
         self.class(left_class)
             .map(|class| class.representative)
@@ -229,6 +243,34 @@ impl ImplicitBuiltin {
             _ => None,
         }
     }
+}
+
+fn equivalent_lifecycle(
+    left: &NativeValueLifecycleResolution,
+    right: &NativeValueLifecycleResolution,
+) -> bool {
+    if left == right {
+        return true;
+    }
+    left.embedding == right.embedding
+        && matches!(
+            (&left.lifecycle, &right.lifecycle),
+            (
+                NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::SnapshotRelease,
+                },
+                NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::Trivial,
+                },
+            ) | (
+                NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::Trivial,
+                },
+                NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::SnapshotRelease,
+                },
+            )
+        )
 }
 
 fn class_violation(detail: impl Into<String>) -> VerificationError {

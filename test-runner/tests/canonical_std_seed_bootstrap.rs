@@ -6,7 +6,7 @@ use std::{
 
 use skiff_artifact_identity::{package_artifact_ref, PackageArtifactPointerPath};
 use skiff_artifact_model::PackageArtifactRef;
-use skiff_compiler::{authoring::author_official_std_package, CompilerPlatformSources};
+use skiff_compiler::{authoring::author_official_std_package_with_bytecode, CompilerPlatformSources};
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 fn platform_source_root() -> PathBuf {
@@ -108,8 +108,9 @@ mod tests {
 
         let platform_sources = CompilerPlatformSources::new(&platform_root).unwrap();
         let expected = package_artifact_ref(
-            &author_official_std_package(&platform_sources)
+            &author_official_std_package_with_bytecode(&platform_sources)
                 .unwrap()
+                .0
                 .artifact,
         )
         .unwrap();

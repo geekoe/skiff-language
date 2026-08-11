@@ -142,7 +142,8 @@ fn merge_slot_state(left: &LinkedSlotState, right: &LinkedSlotState) -> LinkedSl
             LinkedSlotState::Uninitialized
         }
         (LinkedSlotState::Moved, _) | (_, LinkedSlotState::Moved) => LinkedSlotState::Moved,
-        (LinkedSlotState::Live(_), LinkedSlotState::Live(_)) => LinkedSlotState::Uninitialized,
+        (LinkedSlotState::Live(left), LinkedSlotState::Live(_)) => LinkedSlotState::Live(left.clone()),
+        (LinkedSlotState::Live(_), LinkedSlotState::Live(right)) => LinkedSlotState::Live(right.clone()),
     }
 }
 

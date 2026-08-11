@@ -1,6 +1,8 @@
+
+
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{NativeValueLifecycleResolution, TypeRefIr};
+use skiff_artifact_model::{LiteralIr, NativeValueLifecycleResolution, TypeRefIr};
 use skiff_runtime_linked_bytecode::{CandidateTable, TypeIndex};
 
 use super::{
@@ -59,23 +61,30 @@ pub(super) fn build_type_classes(
             location,
         )?;
 
-        let class = match find_exact_class(
+        let class = if let Some(class) = find_exact_class(
             buckets.get(&key).map(Vec::as_slice),
             &classes,
             &types,
             &classified.normalized_type,
             &classified.lifecycle,
         ) {
-            Some(class) => class,
-            None => {
-                let id = new_class_id(classes.len(), location)?;
-                classes.push(ConcreteTypeClass {
-                    id,
-                    representative: classified.coordinate,
-                });
-                buckets.entry(key).or_default().push(id);
-                id
-            }
+            class
+        } else if let Some(class) = find_equivalent_class(
+            &classes,
+            &types,
+            &classified.normalized_type,
+            &classified.lifecycle,
+        ) {
+            buckets.entry(key).or_default().push(class);
+            class
+        } else {
+            let id = new_class_id(classes.len(), location)?;
+            classes.push(ConcreteTypeClass {
+                id,
+                representative: classified.coordinate,
+            });
+            buckets.entry(key).or_default().push(id);
+            id
         };
 
         types.push(ConcreteTypeFact {
@@ -86,7 +95,7 @@ pub(super) fn build_type_classes(
         });
     }
 
-    let implicit_builtins = index_implicit_builtins(&classes, &types)?;
+    let implicit_builtins = index_implicit_builtins(&types)?;
     Ok(ConcreteValueFacts {
         types: types.into_boxed_slice(),
         classes: classes.into_boxed_slice(),
@@ -107,6 +116,70 @@ fn find_exact_class(
                 && representative.lifecycle == *lifecycle
         })
     })
+}
+
+fn find_equivalent_class(
+    classes: &[ConcreteTypeClass],
+    types: &[ConcreteTypeFact],
+    normalized_type: &TypeRefIr,
+    lifecycle: &NativeValueLifecycleResolution,
+) -> Option<ConcreteTypeClassId> {
+    classes.iter().map(|class| class.id).find(|id| {
+        class_fact(*id, classes, types).is_some_and(|representative| {
+            representative.lifecycle == *lifecycle
+                && equivalent_type_ref(&representative.normalized_type, normalized_type)
+        })
+    })
+}
+
+pub(super) fn equivalent_type_ref(left: &TypeRefIr, right: &TypeRefIr) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left, right) {
+        (
+            TypeRefIr::Builtin { name, args },
+            TypeRefIr::Builtin { name: other_name, args: other_args },
+        ) => {
+            (name == other_name && args == other_args)
+                || (name == "integer" && other_name == "number" && args.is_empty() && other_args.is_empty())
+                || (name == "number" && other_name == "integer" && args.is_empty() && other_args.is_empty())
+        }
+        (
+            TypeRefIr::Literal { value },
+            TypeRefIr::Builtin { name, args },
+        ) if args.is_empty() => literal_builtin_name(value) == name,
+        (
+            TypeRefIr::Builtin { name, args },
+            TypeRefIr::Literal { value },
+        ) if args.is_empty() => literal_builtin_name(value) == name,
+        (
+            TypeRefIr::Literal { value: LiteralIr::Null },
+            TypeRefIr::Nullable { .. },
+        ) => true,
+        (
+            TypeRefIr::Nullable { .. },
+            TypeRefIr::Literal { value: LiteralIr::Null },
+        ) => true,
+        (
+            TypeRefIr::Builtin { name, args },
+            TypeRefIr::Nullable { .. },
+        ) if name == "null" && args.is_empty() => true,
+        (
+            TypeRefIr::Nullable { .. },
+            TypeRefIr::Builtin { name, args },
+        ) if name == "null" && args.is_empty() => true,
+        _ => false,
+    }
+}
+
+fn literal_builtin_name(value: &LiteralIr) -> &'static str {
+    match value {
+        LiteralIr::Null => "null",
+        LiteralIr::Bool { .. } => "bool",
+        LiteralIr::Number { .. } => "number",
+        LiteralIr::String { .. } => "string",
+    }
 }
 
 fn new_class_id(
@@ -131,25 +204,19 @@ fn class_fact<'a>(
         .filter(|fact| fact.coordinate == class.representative)
 }
 
+
 fn index_implicit_builtins(
-    classes: &[ConcreteTypeClass],
     types: &[ConcreteTypeFact],
 ) -> Result<ImplicitBuiltinClasses, VerificationError> {
     let mut implicit = ImplicitBuiltinClasses::default();
-    for class in classes {
-        let fact = class_fact(class.id, classes, types).ok_or_else(|| {
-            violation(
-                VerificationLocation::Image,
-                "concrete class representative is not densely indexed",
-            )
-        })?;
+    for fact in types {
         let Some(builtin) = ImplicitBuiltin::from_type(&fact.normalized_type) else {
             continue;
         };
         let slot = &mut implicit.classes[builtin.ordinal()];
         match *slot {
-            None => *slot = Some(class.id),
-            Some(existing) if existing == class.id => {}
+            None => *slot = Some(fact.class),
+            Some(existing) if existing == fact.class => {}
             Some(_) => {
                 return Err(violation(
                     type_location(fact.coordinate),

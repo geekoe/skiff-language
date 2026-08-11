@@ -398,6 +398,7 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
                 message: error.to_string(),
             },
         )?;
+    let native = is_native_wrapper(executable);
     let mut function = MirFunction {
         executable_index,
         origin: PackageExecutableCoordinate {
@@ -407,6 +408,7 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
         },
         symbol: executable.symbol.clone(),
         kind,
+        native,
         type_params: executable.type_params.clone(),
         params,
         return_type: executable.return_type.clone(),
@@ -420,7 +422,16 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
         regions,
         statements,
         source_event_plan,
-        stream_result: stream_result_facts(&executable.return_type),
+        stream_result: if native
+            && !matches!(
+                executable.return_type,
+                TypeRefIr::Builtin { ref name, ref args }
+                    if name == "Stream" && args.len() == 1
+            ) {
+            None
+        } else {
+            stream_result_facts(&executable.return_type)
+        },
         liveness: MirLiveness::default(),
         effect_summary_ref,
         effect_summary,
@@ -460,6 +471,22 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
         source: Box::new(source),
     })?;
     Ok(function)
+}
+
+fn is_native_wrapper(executable: &ExecutableIr) -> bool {
+    executable.body.statements.iter().any(|statement| {
+        let skiff_artifact_model::StmtIr::Return { value: Some(value) } = statement else {
+            return false;
+        };
+        matches!(
+            executable.body.expressions.get(value.expression as usize),
+            Some(ExprIr::Call { call })
+                if matches!(
+                    call.target,
+                    skiff_artifact_model::CallTargetIr::Native { .. }
+                )
+        )
+    })
 }
 
 fn mir_param_mode(mode: ParamModeIr) -> MirParamMode {

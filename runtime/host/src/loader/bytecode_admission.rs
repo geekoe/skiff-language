@@ -1,16 +1,27 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
-use skiff_artifact_model::{ContractOperationId, ServiceDeploymentRef};
+use skiff_artifact_model::{
+    ContractOperationId, GatewayAdapterKind, GatewayAdapterSource, GatewayEntryIdentity,
+    GatewayEntryKey, ServiceDeploymentRef,
+};
 use skiff_runtime_bytecode_verifier::{verify, VerificationLimits, VerifiedLinkedBytecodeImage};
 use skiff_runtime_deployment_image::{
     DeploymentImage, DeploymentImageCache, DeploymentImageError, DeploymentOwnerIdentity,
 };
+use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
 use skiff_runtime_linker::{link_deployment, BytecodeLinkError, LinkLimits};
 use skiff_runtime_loader::{
     load_deployment_bytecode_from_store, DeploymentBytecodeContentResolver,
     FilesystemDeploymentBytecodeContentResolver,
 };
-use skiff_runtime_request::{BytecodeRequestTarget, BytecodeRequestTargetError};
+use skiff_runtime_request::{
+    BytecodeRequestTarget, BytecodeRequestTargetError, GatewayAdapterArg as RequestGatewayAdapterArg,
+    GatewayAdapterSource as RequestGatewayAdapterSource, HttpAdapter, HttpAdapterCallable,
+    HttpAdapterKind,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum BytecodeDeploymentLoadError {
@@ -24,6 +35,16 @@ pub(crate) enum BytecodeDeploymentLoadError {
     Verification(#[from] skiff_runtime_bytecode_verifier::VerificationError),
     #[error("deployment image construction failed: {0}")]
     Image(#[from] DeploymentImageError),
+}
+
+/// Selects the exact verified code entry used for one admitted request.
+#[derive(Debug, Clone)]
+pub(crate) enum BytecodeRouteSelector {
+    Operation,
+    Gateway {
+        gateway_entry_identity: GatewayEntryIdentity,
+        role: LinkedGatewayCallableRole,
+    },
 }
 
 /// Host-owned verified bytecode deployment admission.
@@ -55,11 +76,17 @@ impl BytecodeDeploymentRegistry {
         &self,
         deployment: &ServiceDeploymentRef,
         artifact_root: &Path,
+        selector: BytecodeRouteSelector,
     ) -> anyhow::Result<Option<BytecodeRoute>> {
         let Some(image) = self.get_or_load(deployment, artifact_root).await? else {
             return Ok(None);
         };
-        Ok(Some(BytecodeRoute::new(image, deployment, artifact_root)?))
+        Ok(Some(BytecodeRoute::new(
+            image,
+            deployment,
+            artifact_root,
+            selector,
+        )?))
     }
 
     pub(crate) async fn get_or_load(
@@ -115,14 +142,25 @@ impl Default for BytecodeDeploymentRegistry {
     }
 }
 
-/// Exact deployment image pinned to the first canonical operation binding.
+/// Exact deployment image pinned to an operation or gateway entry.
 #[derive(Debug, Clone)]
 pub(crate) struct BytecodeRoute {
     image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
     deployment: ServiceDeploymentRef,
-    operation_id: ContractOperationId,
+    target: BytecodeRouteTarget,
+    artifact_root: PathBuf,
     build_id: String,
     service_protocol_identity: String,
+}
+
+#[derive(Debug, Clone)]
+enum BytecodeRouteTarget {
+    Operation(ContractOperationId),
+    Gateway {
+        gateway_entry_key: GatewayEntryKey,
+        gateway_entry_identity: GatewayEntryIdentity,
+        role: LinkedGatewayCallableRole,
+    },
 }
 
 impl BytecodeRoute {
@@ -130,6 +168,7 @@ impl BytecodeRoute {
         image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
         deployment: &ServiceDeploymentRef,
         artifact_root: &Path,
+        selector: BytecodeRouteSelector,
     ) -> anyhow::Result<Self> {
         if image.owner().deployment() != deployment {
             anyhow::bail!(
@@ -140,21 +179,48 @@ impl BytecodeRoute {
         }
         let resolver = FilesystemDeploymentBytecodeContentResolver::open(artifact_root)?;
         let deployment_record = resolver.resolve_deployment(deployment)?;
-        let operation_id = deployment_record
-            .operation_bindings
-            .first()
-            .map(|binding| binding.contract_operation_id.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "bytecode deployment {} has no operation binding",
-                    deployment.deployment_artifact_identity
-                )
-            })?;
+        let target = match selector {
+            BytecodeRouteSelector::Operation => BytecodeRouteTarget::Operation(
+                deployment_record
+                    .operation_bindings
+                    .first()
+                    .map(|binding| binding.contract_operation_id.clone())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "bytecode deployment {} has no operation binding",
+                            deployment.deployment_artifact_identity
+                        )
+                    })?,
+            ),
+            BytecodeRouteSelector::Gateway {
+                gateway_entry_identity,
+                role,
+            } => {
+                let gateway_entry_key = deployment_record
+                    .gateway_entries
+                    .iter()
+                    .find(|(_, entry)| entry.gateway_entry_identity == gateway_entry_identity)
+                    .map(|(key, _)| key.clone())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "bytecode deployment {} has no gateway entry {}",
+                            deployment.deployment_artifact_identity,
+                            gateway_entry_identity
+                        )
+                    })?;
+                BytecodeRouteTarget::Gateway {
+                    gateway_entry_key,
+                    gateway_entry_identity,
+                    role,
+                }
+            }
+        };
         let contract = resolver.resolve_contract(&deployment_record.contract)?;
         Ok(Self {
             image,
             deployment: deployment.clone(),
-            operation_id,
+            target,
+            artifact_root: artifact_root.to_path_buf(),
             build_id: deployment_record
                 .implementation
                 .package_build_id
@@ -168,8 +234,14 @@ impl BytecodeRoute {
         &self.deployment
     }
 
-    pub(crate) fn operation_id(&self) -> &ContractOperationId {
-        &self.operation_id
+    pub(crate) fn target_label(&self) -> String {
+        match &self.target {
+            BytecodeRouteTarget::Operation(operation_id) => operation_id.as_str().to_string(),
+            BytecodeRouteTarget::Gateway {
+                gateway_entry_identity,
+                ..
+            } => gateway_entry_identity.as_str().to_string(),
+        }
     }
 
     pub(crate) fn build_id(&self) -> &str {
@@ -180,13 +252,99 @@ impl BytecodeRoute {
         &self.service_protocol_identity
     }
 
+    pub(crate) fn http_adapter(&self) -> anyhow::Result<HttpAdapter> {
+        let resolver = FilesystemDeploymentBytecodeContentResolver::open(&self.artifact_root)?;
+        let deployment_record = resolver.resolve_deployment(&self.deployment)?;
+        let (key, entry) = match &self.target {
+            BytecodeRouteTarget::Gateway {
+                gateway_entry_key,
+                ..
+            } => deployment_record
+                .gateway_entries
+                .get(gateway_entry_key)
+                .map(|entry| (gateway_entry_key.clone(), entry))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "bytecode deployment {} has no gateway entry {}",
+                        self.deployment.deployment_artifact_identity,
+                        gateway_entry_key
+                    )
+                })?,
+            BytecodeRouteTarget::Operation(_) => {
+                anyhow::bail!("HTTP adapter requires a gateway route")
+            }
+        };
+        let kind = match entry.adapter_plan.kind {
+            GatewayAdapterKind::RawHttp => HttpAdapterKind::RawHttp,
+            GatewayAdapterKind::TypedJson => HttpAdapterKind::TypedJson,
+            _ => {
+                anyhow::bail!(
+                    "gateway entry {key} has no HTTP adapter plan"
+                )
+            }
+        };
+        let adapter_args = entry
+            .adapter_plan
+            .args
+            .iter()
+            .map(|arg| {
+                let source = match arg.source {
+                    GatewayAdapterSource::HttpRequest => RequestGatewayAdapterSource::HttpRequest,
+                    GatewayAdapterSource::HttpBody => RequestGatewayAdapterSource::HttpBody,
+                    GatewayAdapterSource::HttpContext => RequestGatewayAdapterSource::HttpContext,
+                    _ => {
+                        anyhow::bail!(
+                            "gateway entry {key} adapter arg {} is not an HTTP source",
+                            arg.param
+                        )
+                    }
+                };
+                Ok(RequestGatewayAdapterArg {
+                    param: arg.param.clone(),
+                    source,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(HttpAdapter {
+            kind,
+            handler: HttpAdapterCallable::PackageFunction {
+                package_id: self.deployment.service_id.clone(),
+                symbol_path: key.as_str().to_string(),
+            },
+            guard: None,
+            pre: None,
+            adapter_args,
+        })
+    }
+
     pub(crate) fn request_target(&self) -> anyhow::Result<BytecodeRequestTarget> {
         let program = Arc::clone(self.image.program());
-        let entry = program
-            .operation_entry(&self.operation_id)
-            .map_err(|error| anyhow::anyhow!("bytecode operation lookup failed: {error}"))?;
-        BytecodeRequestTarget::try_new(Arc::clone(&self.image), entry, self.operation_id.clone())
-            .map_err(bytecode_target_error)
+        let image = Arc::clone(&self.image);
+        match &self.target {
+            BytecodeRouteTarget::Operation(operation_id) => {
+                let entry = program
+                    .operation_entry(operation_id)
+                    .map_err(|error| anyhow::anyhow!("bytecode operation lookup failed: {error}"))?;
+                BytecodeRequestTarget::try_new(image, entry, operation_id.clone())
+                    .map_err(bytecode_target_error)
+            }
+            BytecodeRouteTarget::Gateway {
+                gateway_entry_key,
+                role,
+                ..
+            } => {
+                let entry = program
+                    .gateway_entry(gateway_entry_key, *role)
+                    .map_err(|error| anyhow::anyhow!("bytecode gateway lookup failed: {error}"))?;
+                BytecodeRequestTarget::try_new_gateway(
+                    image,
+                    entry,
+                    gateway_entry_key.clone(),
+                    *role,
+                )
+                .map_err(bytecode_target_error)
+            }
+        }
     }
 }
 

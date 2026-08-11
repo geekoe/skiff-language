@@ -150,7 +150,7 @@ fn bytecode_websocket_jsonrpc_request_envelope(
     RequestEnvelope {
         request_id: header.request_id.clone(),
         mode: header.mode.clone(),
-        target: route.operation_id().as_str().to_string(),
+        target: route.target_label(),
         operation_abi_id: None,
         selector: None,
         service_id: Some(route.deployment().service_id.clone()),
@@ -196,7 +196,7 @@ fn bytecode_websocket_jsonrpc_telemetry_context(
     context.build_id = Some(route.build_id().to_string());
     context.runtime_id = Some(host.base_runtime_id.clone());
     context.request_id = Some(header.request_id.clone());
-    context.target = Some(route.operation_id().as_str().to_string());
+    context.target = Some(route.target_label());
     context.trace_id = Some(header.trace.trace_id.clone());
     context.span_id = Some(header.trace.span_id.clone());
     context.parent_span_id = header.trace.parent_span_id.clone();

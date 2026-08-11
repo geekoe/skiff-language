@@ -44,6 +44,18 @@ impl VmOwnedValues {
         }
     }
 
+    /// Creates an owned result envelope for a verified adapter execution.
+    ///
+    /// The caller must have produced every slot from the same request heap
+    /// that will resume this outcome; the VM cannot validate heap provenance
+    /// at construction time.
+    pub fn from_values(
+        image: Arc<VerifiedLinkedBytecodeImage>,
+        values: Box<[ValueSlot]>,
+    ) -> Self {
+        Self { image, values }
+    }
+
     pub const fn image(&self) -> &Arc<VerifiedLinkedBytecodeImage> {
         &self.image
     }

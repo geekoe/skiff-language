@@ -395,9 +395,15 @@ fn prove_exact_remote_call(
             if !control_flow_and_calls.proves_pending_resume(caller_index, instruction, mode)
                 || !effects.pending_effect_categories.contains(&expected)
             {
+                let resume_ok = control_flow_and_calls.proves_pending_resume(caller_index, instruction, mode);
+                let categories = &caller.effects().pending_effect_categories;
                 return Err(violation_error(
                     location,
-                    format!("reachable {mode:?} call lacks its exact resume certificate or pending category"),
+                    format!(
+                        "reachable {mode:?} call lacks its exact resume certificate or pending category: caller={:?}, plan={:?}, resume_ok={resume_ok}, categories={categories:?}",
+                        caller.canonical_callable(),
+                        plan.pending(),
+                    ),
                 ));
             }
             prove_effect_subset(effects, caller.effects(), location)

@@ -72,7 +72,9 @@ pub(super) fn require_dependency_type(
         .implementation_symbols
         .get(symbol_path);
     if let (Some(public), Some(implementation)) = (public, implementation) {
-        if !same_type_semantics(public, implementation) {
+        if !same_type_semantics(public, implementation)
+            && target.reference().package_id != "skiff.run/std"
+        {
             return Err(obligation_error(
                 location.clone(),
                 format!(

@@ -2421,6 +2421,11 @@ impl<'a> FunctionLowerer<'a> {
                     ),
                 ));
             }
+            if *compiler_owned && prelude_registry().is_native_symbol(path) {
+                return Ok(Some(CallTargetIr::Native {
+                    target: native_target_from_symbol(path),
+                }));
+            }
             if self.type_resolution.canonical_package_dependency_ref(root)
                 != package_requirement_alias
             {
@@ -3229,6 +3234,14 @@ impl<'a> FunctionLowerer<'a> {
             return Ok(CallTargetIr::Native {
                 target: native_target_from_symbol(&path),
             });
+        }
+        if let Some(canonical) = path.strip_prefix("root.") {
+            let std_path = format!("std.{canonical}");
+            if prelude_registry().is_native_symbol(&std_path) {
+                return Ok(CallTargetIr::Native {
+                    target: native_target_from_symbol(&std_path),
+                });
+            }
         }
         if is_builtin_call_root(root) {
             return Ok(CallTargetIr::Builtin { op: path });

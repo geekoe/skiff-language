@@ -9,7 +9,9 @@ use std::{
 use skiff_artifact_identity::{
     assign_package_artifact_identities, package_artifact_ref, PackageArtifactPointerPath,
 };
-use skiff_compiler::authoring::{author_official_std_package, publish_package_artifact_records};
+use skiff_compiler::authoring::{
+    author_official_std_package_with_bytecode, publish_package_artifact_records_with_bytecode,
+};
 use skiff_deployment::storage::{CanonicalArtifactStore, PackageArtifactPointer};
 
 use super::*;
@@ -21,12 +23,12 @@ fn exact_candidate_is_idempotent_and_receipt_comes_from_the_f27a_writer() {
 
     let first = seed_canonical_std(&platform_sources, root.path()).unwrap();
     let repeated = seed_canonical_std(&platform_sources, root.path()).unwrap();
-    let authored = author_official_std_package(&platform_sources).unwrap();
+    let authored = author_official_std_package_with_bytecode(&platform_sources).unwrap();
 
     assert_eq!(first, repeated);
     assert_eq!(
         first.package.artifact,
-        package_artifact_ref(&authored.artifact).unwrap()
+        package_artifact_ref(&authored.0.artifact).unwrap()
     );
     assert_eq!(first.pointer.artifact, first.package.artifact);
     assert_eq!(first.pointer.record_path, first.package.record_path);
@@ -92,11 +94,17 @@ fn concurrent_same_candidate_seeds_converge() {
 #[test]
 fn orphan_records_recover_but_same_identity_different_bytes_never_install_pointer() {
     let platform_sources = repository_platform_sources();
-    let authored = author_official_std_package(&platform_sources).unwrap();
+    let (authored, authored_bytecode) =
+        author_official_std_package_with_bytecode(&platform_sources).unwrap();
 
     let orphan = TestRoot::new("orphan");
     let orphan_store = CanonicalArtifactStore::create(orphan.path()).unwrap();
-    let orphan_receipt = publish_package_artifact_records(orphan_store.root(), &authored).unwrap();
+    let orphan_receipt = publish_package_artifact_records_with_bytecode(
+        orphan_store.root(),
+        &authored,
+        &authored_bytecode,
+    )
+    .unwrap();
     assert!(orphan_store
         .read_package_artifact_pointer(
             &orphan_receipt.artifact.package_id,
@@ -146,7 +154,8 @@ fn orphan_records_recover_but_same_identity_different_bytes_never_install_pointe
 #[test]
 fn malformed_dangling_and_different_existing_pointers_fail_before_store_writes() {
     let platform_sources = repository_platform_sources();
-    let expected = author_official_std_package(&platform_sources).unwrap();
+    let (expected, expected_bytecode) =
+        author_official_std_package_with_bytecode(&platform_sources).unwrap();
     let expected_ref = package_artifact_ref(&expected.artifact).unwrap();
 
     let malformed = TestRoot::new("malformed-pointer");
@@ -217,8 +226,12 @@ fn malformed_dangling_and_different_existing_pointers_fail_before_store_writes()
             .remove(&first_public_symbol);
     }
     assign_package_artifact_identities(&mut alternative.artifact).unwrap();
-    let alternative_receipt =
-        publish_package_artifact_records(different_store.root(), &alternative).unwrap();
+    let alternative_receipt = publish_package_artifact_records_with_bytecode(
+        different_store.root(),
+        &alternative,
+        &expected_bytecode,
+    )
+    .unwrap();
     let alternative_pointer =
         PackageArtifactPointer::new(alternative_receipt.artifact.clone()).unwrap();
     different_store

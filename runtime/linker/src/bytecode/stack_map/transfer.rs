@@ -1,11 +1,15 @@
 use skiff_artifact_model::{
-    Arity, SlotAction, SlotContract, TypedStackGroup, TypedTransition, ValueSource,
+    Arity, LiteralIr, SlotAction, SlotContract, TypeRefIr, TypedStackGroup, TypedTransition,
+    ValueSource,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackValue, TypeIndex,
+    LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackValue, LinkedValueDropPlan,
+    LinkedValueTransferPlan, TypeIndex,
 };
 
-use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation};
+use crate::bytecode::{
+    types::normalize_type, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
+};
 
 use super::{obligation_error, values, MachineState, StackMapContext};
 
@@ -49,7 +53,7 @@ pub(super) fn apply_instruction_without_results(
         location.clone(),
     )?;
     let mut next = apply_slot_effects(
-        context.frame,
+        context,
         instruction,
         transition.slots,
         &inputs,
@@ -167,7 +171,7 @@ fn validate_input_group(
         | ValueSource::MapValue
         | ValueSource::InterfaceCarrier { .. } => return Ok(()),
         ValueSource::ComparablePair => {
-            if matches!(actual, [left, right] if left == right) {
+            if matches!(actual, [left, right] if linked_values_match(&[left.clone()], &[right.clone()], context)) {
                 return Ok(());
             }
             return Err(obligation_error(
@@ -198,10 +202,31 @@ fn linked_values_match(
     actual: &[LinkedStackValue],
     context: &StackMapContext<'_, '_>,
 ) -> bool {
-    expected.len() == actual.len()
+    let ok = expected.len() == actual.len()
         && expected.iter().zip(actual).all(|(expected, actual)| {
-            expected.plan() == actual.plan() && type_refs_match(expected.ty(), actual.ty(), context)
-        })
+            plans_match(expected, actual, context)
+                || (type_refs_match(expected.ty(), actual.ty(), context)
+                    && expected.plan() == actual.plan())
+        });
+    ok
+}
+
+fn plans_match(
+    expected: &LinkedStackValue,
+    actual: &LinkedStackValue,
+    context: &StackMapContext<'_, '_>,
+) -> bool {
+    matches!(
+        expected.plan(),
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        }
+    ) && matches!(
+        actual.plan(),
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        }
+    )
 }
 
 fn type_refs_match(
@@ -211,10 +236,19 @@ fn type_refs_match(
 ) -> bool {
     let expected = context.type_linker.linked_type_ref(expected);
     let actual = context.type_linker.linked_type_ref(actual);
-    match (expected, actual) {
-        (Some(left), Some(right)) => equivalent_type_ref(left, right),
-        _ => false,
+    let (Some(left), Some(right)) = (expected, actual) else {
+        return false;
+    };
+    let location = BytecodeLinkLocation::Package {
+        package: Box::new(context.source.package.reference().clone()),
+    };
+    if let (Ok(left_n), Ok(right_n)) = (
+        normalize_type(context.type_linker.deployment(), context.source.package, left, &location),
+        normalize_type(context.type_linker.deployment(), context.source.package, right, &location),
+    ) {
+        return left_n == right_n || equivalent_type_ref(&left_n, &right_n);
     }
+    equivalent_type_ref(left, right)
 }
 
 fn equivalent_type_ref(
@@ -226,20 +260,106 @@ fn equivalent_type_ref(
     }
     match (left, right) {
         (
+            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol: left },
+            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol: right },
+        ) => left.package == right.package && left.symbol_path == right.symbol_path,
+        (
             skiff_artifact_model::TypeRefIr::Builtin { name, args },
             skiff_artifact_model::TypeRefIr::Builtin {
                 name: other_name,
                 args: other_args,
             },
-        ) => name == other_name && args == other_args,
+        ) => {
+            (name == other_name
+                && args.len() == other_args.len()
+                && args
+                    .iter()
+                    .zip(other_args)
+                    .all(|(left, right)| equivalent_type_ref(left, right)))
+                || (name == "integer"
+                    && other_name == "number"
+                    && args.is_empty()
+                    && other_args.is_empty())
+                || (name == "number"
+                    && other_name == "integer"
+                    && args.is_empty()
+                    && other_args.is_empty())
+        }
         (
             skiff_artifact_model::TypeRefIr::Literal { value },
             skiff_artifact_model::TypeRefIr::Builtin { name, args },
-        ) if args.is_empty() => literal_builtin_name(value) == *name,
+        ) if args.is_empty() => literal_builtin_name(value) == name,
         (
             skiff_artifact_model::TypeRefIr::Builtin { name, args },
             skiff_artifact_model::TypeRefIr::Literal { value },
-        ) if args.is_empty() => literal_builtin_name(value) == *name,
+        ) if args.is_empty() => literal_builtin_name(value) == name,
+        (
+            skiff_artifact_model::TypeRefIr::Literal {
+                value: LiteralIr::Null,
+            },
+            skiff_artifact_model::TypeRefIr::Nullable { .. },
+        ) => true,
+        (
+            skiff_artifact_model::TypeRefIr::Nullable { .. },
+            skiff_artifact_model::TypeRefIr::Literal {
+                value: LiteralIr::Null,
+            },
+        ) => true,
+        (
+            skiff_artifact_model::TypeRefIr::Builtin { name, args },
+            skiff_artifact_model::TypeRefIr::Nullable { .. },
+        ) if name == "null" && args.is_empty() => true,
+        (
+            skiff_artifact_model::TypeRefIr::Nullable { .. },
+            skiff_artifact_model::TypeRefIr::Builtin { name, args },
+        ) if name == "null" && args.is_empty() => true,
+        (
+            skiff_artifact_model::TypeRefIr::Builtin { .. },
+            skiff_artifact_model::TypeRefIr::Nullable { inner },
+        ) => equivalent_type_ref(
+            left,
+            inner,
+        ),
+        (
+            skiff_artifact_model::TypeRefIr::Nullable { inner },
+            skiff_artifact_model::TypeRefIr::Builtin { .. },
+        ) => equivalent_type_ref(inner, right),
+        (
+            skiff_artifact_model::TypeRefIr::Nullable { inner: left },
+            skiff_artifact_model::TypeRefIr::Nullable { inner: right },
+        ) => equivalent_type_ref(left, right),
+        (
+            skiff_artifact_model::TypeRefIr::Union { items: left },
+            skiff_artifact_model::TypeRefIr::Union { items: right },
+        ) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| equivalent_type_ref(left, right))
+        }
+        (
+            skiff_artifact_model::TypeRefIr::AppliedNominal { base: left_base, arguments: left_args },
+            skiff_artifact_model::TypeRefIr::AppliedNominal { base: right_base, arguments: right_args },
+        ) => {
+            left_base == right_base
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args)
+                    .all(|(left, right)| equivalent_type_ref(left, right))
+        }
+        (
+            skiff_artifact_model::TypeRefIr::Record { fields: left },
+            skiff_artifact_model::TypeRefIr::Record { fields: right },
+        ) => {
+            left.len() == right.len()
+                && left.iter().all(|(name, left_ty)| {
+                    right
+                        .get(name)
+                        .is_some_and(|right_ty| equivalent_type_ref(left_ty, right_ty))
+                })
+        }
         _ => false,
     }
 }
@@ -284,7 +404,7 @@ fn apply_stack_outputs(
 }
 
 fn apply_slot_effects(
-    frame: &LinkedFrameLayout,
+    context: &StackMapContext<'_, '_>,
     instruction: &LinkedInstruction,
     contract: SlotContract,
     inputs: &[Vec<LinkedStackValue>],
@@ -327,7 +447,7 @@ fn apply_slot_effects(
             SlotAction::Write => {
                 let value =
                     slot_write_value(instruction, effect.value, inputs, &before, location.clone())?;
-                validate_slot_write(frame, slot, &value, location.clone())?;
+                validate_slot_write(context, slot, &value, location.clone())?;
                 let next_slot = state.slots.get_mut(slot).ok_or_else(|| {
                     obligation_error(
                         location.clone(),
@@ -402,24 +522,24 @@ fn slot_write_value(
 }
 
 fn validate_slot_write(
-    frame: &LinkedFrameLayout,
+    context: &StackMapContext<'_, '_>,
     slot: usize,
     value: &LinkedStackValue,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
-    let expected_type = frame.slot_types().get(slot).copied().ok_or_else(|| {
+    let expected_type = context.frame.slot_types().get(slot).copied().ok_or_else(|| {
         obligation_error(
             location.clone(),
             format!("frame slot type {slot} is out of bounds"),
         )
     })?;
-    let expected_plan = frame.slot_plans().get(slot).cloned().ok_or_else(|| {
+    let expected_plan = context.frame.slot_plans().get(slot).cloned().ok_or_else(|| {
         obligation_error(
             location.clone(),
             format!("frame slot plan {slot} is out of bounds"),
         )
     })?;
-    if value != &LinkedStackValue::new(expected_type, expected_plan) {
+    if value.plan() != &expected_plan || !type_refs_match(expected_type, value.ty(), context) {
         return Err(obligation_error(
             location,
             format!("slot write type or lifecycle plan differs at slot {slot}"),

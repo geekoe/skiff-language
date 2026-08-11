@@ -104,6 +104,7 @@ mod tests {
             },
             symbol: format!("{module_path}.{declaration}"),
             kind: MirExecutableKind::Function,
+            native: false,
             type_params: Vec::new(),
             params: Vec::new(),
             return_type,

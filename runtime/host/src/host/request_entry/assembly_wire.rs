@@ -1,5 +1,6 @@
 use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_runtime_capability_context::ExecutionBudgetReason;
+use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
 use skiff_runtime_request::{BytecodeRequestTarget, RequestError, RouterWriterMessage};
 use skiff_runtime_transport::protocol::{
     BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressProtocol,
@@ -18,7 +19,7 @@ use super::{request_error_into_runtime_error, response_event_into_transport_mess
 use crate::{
     error::{Result, RuntimeError},
     host::{router_session::ConnectionBootstrap, RuntimeHost},
-    loader::bytecode_admission::BytecodeRoute,
+    loader::bytecode_admission::{BytecodeRoute, BytecodeRouteSelector},
 };
 
 pub(super) struct AdmittedBytecodeHttpRequest {
@@ -184,10 +185,11 @@ impl RuntimeHost {
         &self,
         deployment: &ServiceDeploymentRef,
         bootstrap: &ConnectionBootstrap,
+        selector: BytecodeRouteSelector,
     ) -> Result<Option<BytecodeRoute>> {
         let route = self
             .bytecode_deployments
-            .route(deployment, bootstrap.resolver.store().root())
+            .route(deployment, bootstrap.resolver.store().root(), selector)
             .await
             .map_err(|error| RuntimeError::Decode(error.to_string()))?;
         if route.is_none() {
@@ -204,7 +206,14 @@ impl RuntimeHost {
     ) -> Result<AdmittedBytecodeRequest> {
         validate_websocket_connect_header(&header, &body)?;
         let route = self
-            .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
+            .resolve_bytecode_request_route(
+                &header.routing.deployment,
+                bootstrap,
+                BytecodeRouteSelector::Gateway {
+                    gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
+                    role: LinkedGatewayCallableRole::Handler,
+                },
+            )
             .await?
             .expect("bytecode route is required after resolution");
         validate_bytecode_build_id(
@@ -239,7 +248,14 @@ impl RuntimeHost {
     ) -> Result<AdmittedBytecodeRequest> {
         validate_websocket_connection_closed_header(&header, &body)?;
         let route = self
-            .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
+            .resolve_bytecode_request_route(
+                &header.routing.deployment,
+                bootstrap,
+                BytecodeRouteSelector::Gateway {
+                    gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
+                    role: LinkedGatewayCallableRole::CloseHandler,
+                },
+            )
             .await?
             .expect("bytecode route is required after resolution");
         validate_bytecode_build_id(
@@ -274,7 +290,14 @@ impl RuntimeHost {
     ) -> Result<AdmittedBytecodeRequest> {
         validate_http_header(&header)?;
         let route = self
-            .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
+            .resolve_bytecode_request_route(
+                &header.routing.deployment,
+                bootstrap,
+                BytecodeRouteSelector::Gateway {
+                    gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
+                    role: LinkedGatewayCallableRole::Handler,
+                },
+            )
             .await?
             .expect("bytecode route is required after resolution");
         validate_bytecode_build_id(
@@ -316,7 +339,7 @@ impl RuntimeHost {
             }
         }
         let route = self
-            .resolve_bytecode_request_route(deployment, bootstrap)
+            .resolve_bytecode_request_route(deployment, bootstrap, BytecodeRouteSelector::Operation)
             .await?
             .expect("bytecode route is required after resolution");
         header.deadline = effective_request_deadline(header.deadline.as_ref(), "task")?;
@@ -344,7 +367,14 @@ impl RuntimeHost {
     ) -> Result<AdmittedBytecodeRequest> {
         validate_websocket_jsonrpc_header(&header, &params)?;
         let route = self
-            .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
+            .resolve_bytecode_request_route(
+                &header.routing.deployment,
+                bootstrap,
+                BytecodeRouteSelector::Gateway {
+                    gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
+                    role: LinkedGatewayCallableRole::Handler,
+                },
+            )
             .await?
             .expect("bytecode route is required after resolution");
         validate_bytecode_build_id(

@@ -118,19 +118,27 @@ impl Evaluator<'_, '_> {
                     &callable.semantic_facts().effects,
                     &callable.semantic_facts().provenance,
                 );
-                // The exact signature carries the File IR suspension channel;
-                // override the dependency summary's pending facts with the
-                // signature-derived truth.
+                // The exact signature carries the File IR suspension channel; keep
+                // exact pending categories when the summary knows them, and only
+                // fall back to Unknown for a genuinely unspecified suspension.
                 let may_pending = exact_signature
                     .as_ref()
                     .map(|signature| signature.may_suspend)
                     .unwrap_or(true);
                 callee.effects.may_pending = may_pending;
-                callee.effects.pending_effect_categories = if may_pending {
-                    vec![PendingEffectCategory::Unknown]
+                if may_pending {
+                    if callee.effects.pending_effect_categories.contains(&PendingEffectCategory::NativeCall) {
+                        callee.effects.pending_effect_categories.retain(|category| *category != PendingEffectCategory::NativeCall);
+                        if !callee.effects.pending_effect_categories.contains(&PendingEffectCategory::HostEffect) {
+                            callee.effects.pending_effect_categories.push(PendingEffectCategory::HostEffect);
+                        }
+                    }
+                    if callee.effects.pending_effect_categories.is_empty() {
+                        callee.effects.pending_effect_categories.push(PendingEffectCategory::Unknown);
+                    }
                 } else {
-                    Vec::new()
-                };
+                    callee.effects.pending_effect_categories.clear();
+                }
                 self.apply_callee(
                     &callee,
                     &actuals,

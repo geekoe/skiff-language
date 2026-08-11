@@ -1,8 +1,10 @@
 mod placements;
 
 use skiff_artifact_model::{
-    classify_value_lifecycle, normalize_value_lifecycle_type, PositionalTypeEnvironment,
-    ValueLifecyclePolicyError, ValueLifecycleResolverError,
+    classify_value_lifecycle, normalize_value_lifecycle_type, NativeValueDropPlan,
+    NativeValueEmbedding, NativeValueLifecycleConcrete, NativeValueLifecycleResolution,
+    PackageRefIr, PositionalTypeEnvironment, ValueLifecyclePolicyError,
+    ValueLifecycleResolverError,
 };
 use skiff_runtime_linked_bytecode::{CandidateTable, LinkedBytecodeCandidate, LinkedTypeEntry};
 
@@ -113,9 +115,17 @@ pub(super) fn prove_concrete_types(
                     "establishing row-scoped private type authority",
                 )
             })?;
-        let lifecycle =
+        let lifecycle = if is_std_http_client_stream_handle(&normalized_type) {
+            NativeValueLifecycleResolution {
+                lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::SnapshotRelease,
+                },
+                embedding: NativeValueEmbedding::Ordinary,
+            }
+        } else {
             classify_value_lifecycle(&normalized_type, &environment, resolver, &mut budget)
-                .map_err(|error| policy_error(error, location, &owner_budget, limits))?;
+                .map_err(|error| policy_error(error, location, &owner_budget, limits))?
+        };
         types.push(ClassifiedType::new(row.index(), normalized_type, lifecycle));
     }
 
@@ -126,6 +136,19 @@ pub(super) fn prove_concrete_types(
     let facts = build_type_classes(types, lifecycle_bytes, owner_budget.max_bytes())?;
     placements::prove_type_placements(candidate, &facts)?;
     Ok(facts)
+}
+
+fn is_std_http_client_stream_handle(ty: &skiff_artifact_model::TypeRefIr) -> bool {
+    matches!(
+        ty,
+        skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
+            if symbol.symbol_path == "std.http.HttpClientStreamHandle"
+                && matches!(
+                    &symbol.package,
+                    PackageRefIr::PackageId { package_id }
+                        if package_id == "skiff.run/std"
+                )
+    )
 }
 
 fn prove_nonzero_budget(limits: &VerificationLimits) -> Result<(), VerificationError> {

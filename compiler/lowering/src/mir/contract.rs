@@ -678,6 +678,9 @@ impl MirFunction {
     /// Validates the exact `Stream<T>` facts retained by a function and its
     /// stream-typed expressions.
     pub fn validate_stream_facts(&self) -> Result<(), MirContractError> {
+        if self.native {
+            return Ok(());
+        }
         if let Some(item_type) = stream_item_type(&self.return_type) {
             if self
                 .stream_result

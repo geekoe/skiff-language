@@ -33,17 +33,41 @@ pub fn derive_bytecode_value_transfer_plans(
                     .ty
                     .as_ref()
                     .ok_or_else(|| unsupported_slot_type(&function_key, slot))?;
-                slot_plans.push(concrete_value_plan(
-                    units,
-                    &unit.module_path,
-                    &function_key,
-                    &format!("slot `{}`", slot.name),
-                    ty,
-                )?);
+                if function.native {
+                    slot_plans.push(
+                        concrete_value_plan(
+                            units,
+                            &unit.module_path,
+                            &function_key,
+                            &format!("slot `{}`", slot.name),
+                            ty,
+                        )
+                        .unwrap_or_else(|_| snapshot_release_plan()),
+                    );
+                } else {
+                    slot_plans.push(concrete_value_plan(
+                        units,
+                        &unit.module_path,
+                        &function_key,
+                        &format!("slot `{}`", slot.name),
+                        ty,
+                    )?);
+                }
             }
             let result_plans =
                 if is_void(&function.return_type) || function.stream_result.is_some() {
                 Vec::new()
+            } else if function.native {
+                vec![
+                    concrete_value_plan(
+                        units,
+                        &unit.module_path,
+                        &function_key,
+                        "return value",
+                        &function.return_type,
+                    )
+                    .unwrap_or_else(|_| snapshot_release_plan()),
+                ]
             } else {
                 vec![concrete_value_plan(
                     units,
@@ -92,6 +116,14 @@ fn concrete_value_plan(
             drop: ValueDropPlan::Trivial,
         });
     }
+    if is_type_param_type(ty) {
+        return Ok(snapshot_release_plan());
+    }
+    if is_std_duration_type(units, module_path, ty)? {
+        return Ok(ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::Trivial,
+        });
+    }
     if is_ordinary_structural_type(ty) {
         return Ok(snapshot_release_plan());
     }
@@ -99,6 +131,9 @@ fn concrete_value_plan(
         return Ok(ValueTransferPlan::AffineResource {
             drop: ResourceDropPlan::ResourceTableRelease,
         });
+    }
+    if contains_package_symbol(ty) {
+        return Ok(snapshot_release_plan());
     }
     let resolution = match native_value_lifecycle_registry().lookup(ty) {
         Ok(resolution) => resolution,
@@ -123,6 +158,36 @@ fn snapshot_release_plan() -> ValueTransferPlan {
     }
 }
 
+fn is_std_duration_type(
+    units: &[MirUnit],
+    module_path: &str,
+    ty: &TypeRefIr,
+) -> Result<bool, BytecodeEmissionError> {
+    let (module_path, type_index) = match ty {
+        TypeRefIr::LocalType { type_index } => (module_path.to_string(), *type_index),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => (module_path.clone(), *type_index),
+        _ => return Ok(false),
+    };
+    let unit = units
+        .iter()
+        .find(|unit| unit.module_path == module_path)
+        .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+            context: format!("value lifecycle plan for module `{module_path}`"),
+            message: "owning MIR unit disappeared".to_string(),
+        })?;
+    Ok(unit
+        .type_table
+        .get(type_index as usize)
+        .is_some_and(|declaration| declaration.name == "Duration"))
+}
+
+fn is_type_param_type(ty: &TypeRefIr) -> bool {
+    matches!(ty, TypeRefIr::TypeParam { .. })
+}
+
 fn is_never_type(ty: &TypeRefIr) -> bool {
     matches!(
         ty,
@@ -138,6 +203,26 @@ fn is_ordinary_structural_type(ty: &TypeRefIr) -> bool {
             | TypeRefIr::Literal { .. }
             | TypeRefIr::AnyInterface { .. }
     )
+}
+
+fn contains_package_symbol(ty: &TypeRefIr) -> bool {
+    match ty {
+        TypeRefIr::PackageSymbol { .. } => true,
+        TypeRefIr::Builtin { args, .. } => args.iter().any(contains_package_symbol),
+        TypeRefIr::Nullable { inner } => contains_package_symbol(inner),
+        TypeRefIr::Union { items } => items.iter().any(contains_package_symbol),
+        TypeRefIr::AppliedNominal { arguments, .. } => arguments.iter().any(contains_package_symbol),
+        TypeRefIr::Record { fields } => fields.values().any(contains_package_symbol),
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. }
+        | TypeRefIr::AnyInterface { .. }
+        | TypeRefIr::Function { .. } => false,
+    }
 }
 
 fn is_package_symbol_type(ty: &TypeRefIr) -> bool {

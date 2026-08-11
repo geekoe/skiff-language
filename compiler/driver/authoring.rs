@@ -45,7 +45,7 @@ pub use actor_routing::{
 };
 use package_publication::publish_package_artifact_records_to_store;
 pub use package_publication::{
-    author_official_std_package, publish_package_artifact_records,
+    author_official_std_package, author_official_std_package_with_bytecode,
     publish_package_artifact_records_with_bytecode, PublishedPackageArtifactReceipt,
 };
 
@@ -365,7 +365,7 @@ pub fn seed_official_std_package(
     platform_sources: &CompilerPlatformSources,
     artifact_root: &Path,
 ) -> AuthoringResult<Value> {
-    let published = author_official_std_package(platform_sources)?;
+    let (published, bytecode) = author_official_std_package_with_bytecode(platform_sources)?;
     let artifact = package_artifact_ref(&published.artifact)?;
     let candidate = PackageArtifactPointer::new(artifact)?;
     let store = CanonicalArtifactStore::create(artifact_root)?;
@@ -381,7 +381,7 @@ pub fn seed_official_std_package(
         }
     }
 
-    let package = publish_package_artifact_records(store.root(), &published)?;
+    let package = publish_package_artifact_records_with_bytecode(store.root(), &published, &bytecode)?;
     if current.is_none() {
         match store.compare_and_swap_package_artifact_pointer(None, &candidate) {
             Ok(()) => {}

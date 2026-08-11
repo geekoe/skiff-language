@@ -4,8 +4,8 @@ use serde_json::{json, Value};
 use skiff_artifact_identity::{package_artifact_ref, PackageArtifactPointerPath};
 use skiff_compiler::{
     authoring::{
-        author_official_std_package, publish_package_artifact_records,
-        PublishedPackageArtifactReceipt,
+        author_official_std_package_with_bytecode,
+        publish_package_artifact_records_with_bytecode, PublishedPackageArtifactReceipt,
     },
     CompilerPlatformSources,
 };
@@ -55,8 +55,8 @@ pub fn seed_canonical_std(
     platform_sources: &CompilerPlatformSources,
     artifact_root: &Path,
 ) -> Result<CanonicalStdSeedReceipt, CanonicalStdSeedError> {
-    let published =
-        author_official_std_package(platform_sources).map_err(CanonicalStdSeedError::Authoring)?;
+    let (published, bytecode) = author_official_std_package_with_bytecode(platform_sources)
+        .map_err(CanonicalStdSeedError::Authoring)?;
     let artifact = package_artifact_ref(&published.artifact)?;
     let candidate = PackageArtifactPointer::new(artifact)?;
     let store = CanonicalArtifactStore::create(artifact_root)?;
@@ -73,7 +73,7 @@ pub fn seed_canonical_std(
         }
     }
 
-    let package = publish_package_artifact_records(store.root(), &published)
+    let package = publish_package_artifact_records_with_bytecode(store.root(), &published, &bytecode)
         .map_err(CanonicalStdSeedError::Authoring)?;
     if current.is_none() {
         match store.compare_and_swap_package_artifact_pointer(None, &candidate) {

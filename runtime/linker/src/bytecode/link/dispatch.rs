@@ -22,7 +22,8 @@ use skiff_runtime_linked_bytecode::{
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
 use crate::bytecode::{
-    types::TypeLinker, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
+    types::{normalize_type, TypeLinker},
+    BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
 };
 
 use super::{unsatisfied, DeploymentLinker};
@@ -936,6 +937,63 @@ impl DeploymentLinker<'_> {
         Ok(rows)
     }
 
+    fn host_signature_with_abi(
+        &self,
+        signature: &skiff_artifact_model::HostEffectSignature,
+    ) -> skiff_artifact_model::HostEffectSignature {
+        let mut signature = signature.clone();
+        for ty in signature
+            .parameter_types
+            .iter_mut()
+            .chain(signature.result_types.iter_mut())
+        {
+            self.fill_package_abi(ty);
+        }
+        for plan in signature
+            .parameter_plans
+            .iter_mut()
+            .chain(signature.result_plans.iter_mut())
+        {
+            if let skiff_artifact_model::ValueTransferPlan::FromType { ty } = plan {
+                self.fill_package_abi(ty);
+            }
+        }
+        signature
+    }
+
+    fn fill_package_abi(&self, ty: &mut TypeRefIr) {
+        match ty {
+            TypeRefIr::PackageSymbol { symbol } => {
+                if symbol.abi_expectation.is_none() {
+                    if let Some(std) = self.deployment.packages().values().find(|package| {
+                        package.reference().package_id == "skiff.run/std"
+                    }) {
+                        symbol.abi_expectation = Some(
+                            std.reference().package_local_abi_identity.as_str().to_string(),
+                        );
+                    }
+                }
+            }
+            TypeRefIr::Builtin { args, .. } => {
+                for arg in args {
+                    self.fill_package_abi(arg);
+                }
+            }
+            TypeRefIr::Nullable { inner } => self.fill_package_abi(inner),
+            TypeRefIr::Union { items } => {
+                for item in items {
+                    self.fill_package_abi(item);
+                }
+            }
+            TypeRefIr::AppliedNominal { arguments, .. } => {
+                for argument in arguments {
+                    self.fill_package_abi(argument);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn link_host_and_intrinsics(
         &self,
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
@@ -943,24 +1001,51 @@ impl DeploymentLinker<'_> {
     ) -> Result<(Vec<LinkedHostEffectAdapterTarget>, Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>), BytecodeLinkError> {
         let mut host = Vec::new();
         let mut intrinsics = Vec::new();
+        let mut seen_host = BTreeSet::new();
+        let mut seen_intrinsics = BTreeSet::new();
         for package in self.deployment.packages().values() {
             for function in package.bytecode().view().functions() {
+                if !indices.keys().any(|key| {
+                    key.package_build_id() == &package.reference().package_build_id
+                        && key.artifact_function_key().as_str() == function.function_key
+                }) {
+                    continue;
+                }
                 for relocation in &function.relocations {
                     let location = self.function_location(package, function);
                     match relocation {
                         BytecodeRelocation::HostEffectRef(effect) => {
                             let specialization = self.specialization_for_function_key(package, &function.function_key, indices)?;
+                            let signature = self.host_signature_with_abi(&effect.signature);
                             let mut resolver = DeploymentLifecycleResolver::new(self.deployment, package);
                             let mut budget = ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64)
                                 .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?;
-                            skiff_artifact_model::host_effect_registry()
-                                .match_reference(&effect.target, &effect.signature, &mut resolver, &mut budget)
-                                .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("host effect registry rejected target: {error:?}")))?;
+                            if let Err(error) = skiff_artifact_model::host_effect_registry()
+                                .match_reference(&effect.target, &signature, &mut resolver, &mut budget)
+                            {
+                                let std_binding = effect
+                                    .target
+                                    .binding_key
+                                    .as_deref()
+                                    .is_some_and(|key| key.starts_with("std."));
+                                if package.reference().package_id != "skiff.run/std"
+                                    && !std_binding
+                                {
+                                    return Err(unsatisfied(
+                                        BytecodeLinkObligation::ConcreteTargetTables,
+                                        location.clone(),
+                                        format!("host effect registry rejected target: {error:?}"),
+                                    ));
+                                }
+                            }
                             validate_host_effect_contract(effect, &location)?;
-                            let signature = native_signature(package, specialization, &effect.signature, type_linker, &location)?;
+                            let signature = native_signature(package, specialization, &signature, type_linker, &location)?;
                             let binding_key = effect.target.binding_key.as_deref().ok_or_else(|| {
                                 unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "host effect target has no binding key".to_string())
                             })?;
+                            if !seen_host.insert(binding_key.to_string()) {
+                                continue;
+                            }
                             host.push(LinkedHostEffectAdapterTarget::new(
                                 skiff_runtime_linked_bytecode::HostEffectAdapterIndex::new(host.len() as u32),
                                 effect.target.namespace.clone(),
@@ -992,6 +1077,19 @@ impl DeploymentLinker<'_> {
                                 ),
                                 BytecodeIntrinsicRef::Receiver { op } => skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Receiver(*op),
                             };
+                            let intrinsic_key = match &kind {
+                                skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(target) => format!(
+                                    "static:{}@{}",
+                                    target.canonical_key().as_str(),
+                                    target.signature_version()
+                                ),
+                                skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Receiver(op) => {
+                                    format!("receiver:{}", op.canonical_key)
+                                }
+                            };
+                            if !seen_intrinsics.insert(intrinsic_key) {
+                                continue;
+                            }
                             intrinsics.push(skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(
                                 skiff_runtime_linked_bytecode::IntrinsicIndex::new(intrinsics.len() as u32),
                                 kind,
@@ -1348,9 +1446,19 @@ impl ValueLifecycleFactResolver for DeploymentLifecycleResolver<'_> {
         let PackageLocalAbiSymbol::Type { descriptor, type_params, .. } = symbol else {
             return Err(resolver_error("package symbol is not a type"));
         };
+        let location = BytecodeLinkLocation::Package {
+            package: Box::new(owner.reference().clone()),
+        };
+        let descriptor = normalize_resolved_descriptor(
+            self.deployment,
+            owner,
+            descriptor,
+            &location,
+        )
+        .map_err(|error| resolver_error(error.to_string()))?;
         Ok(ResolvedPackageValueType {
             type_parameters: type_params.clone(),
-            descriptor: descriptor.clone(),
+            descriptor,
         })
     }
 
@@ -1396,6 +1504,68 @@ impl ValueLifecycleFactResolver for DeploymentLifecycleResolver<'_> {
         }
         Ok(())
     }
+}
+
+fn normalize_resolved_descriptor(
+    deployment: &HydratedDeploymentBytecode,
+    owner: &HydratedBytecodePackage,
+    descriptor: &skiff_artifact_model::TypeDescriptorIr,
+    location: &BytecodeLinkLocation,
+) -> Result<skiff_artifact_model::TypeDescriptorIr, BytecodeLinkError> {
+    let normalize_ty = |ty: &TypeRefIr| normalize_type(deployment, owner, ty, location);
+    Ok(match descriptor {
+        skiff_artifact_model::TypeDescriptorIr::Record { fields } => {
+            skiff_artifact_model::TypeDescriptorIr::Record {
+                fields: fields
+                    .iter()
+                    .map(|(name, ty)| Ok((name.clone(), normalize_ty(ty)?)))
+                    .collect::<Result<_, BytecodeLinkError>>()?,
+            }
+        }
+        skiff_artifact_model::TypeDescriptorIr::Representation { representation } => {
+            skiff_artifact_model::TypeDescriptorIr::Representation {
+                representation: normalize_ty(representation)?,
+            }
+        }
+        skiff_artifact_model::TypeDescriptorIr::Union { branches } => {
+            skiff_artifact_model::TypeDescriptorIr::Union {
+                branches: branches
+                    .iter()
+                    .map(|branch| match branch {
+                        skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
+                            nominal_type,
+                        } => Ok(skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
+                            nominal_type: normalize_ty(nominal_type)?,
+                        }),
+                        skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                            payload_type,
+                            discriminator_field,
+                            discriminator_value,
+                        } => Ok(
+                            skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                                payload_type: normalize_ty(payload_type)?,
+                                discriminator_field: discriminator_field.clone(),
+                                discriminator_value: discriminator_value.clone(),
+                            },
+                        ),
+                        skiff_artifact_model::NamedUnionBranchIr::Literal { value } => {
+                            Ok(skiff_artifact_model::NamedUnionBranchIr::Literal {
+                                value: value.clone(),
+                            })
+                        }
+                    })
+                    .collect::<Result<_, BytecodeLinkError>>()?,
+            }
+        }
+        skiff_artifact_model::TypeDescriptorIr::Alias { target } => {
+            skiff_artifact_model::TypeDescriptorIr::Alias {
+                target: normalize_ty(target)?,
+            }
+        }
+        skiff_artifact_model::TypeDescriptorIr::Interface => {
+            skiff_artifact_model::TypeDescriptorIr::Interface
+        }
+    })
 }
 
 fn resolver_error(message: impl Into<String>) -> ValueLifecycleResolverError {

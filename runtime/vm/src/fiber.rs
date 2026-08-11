@@ -4,19 +4,21 @@ mod tests;
 
 use std::sync::Arc;
 
-use skiff_artifact_model::{descriptor_for_opcode, Opcode, ParamModeIr};
+use skiff_artifact_model::{descriptor_for_opcode, LiteralIr, Opcode, ParamModeIr};
 use skiff_runtime_bytecode_verifier::{VerifiedCodeEntry, VerifiedLinkedBytecodeImage};
 use skiff_runtime_deployment_image::{DeploymentOwnerIdentity, PinnedDeploymentEntry};
 use skiff_runtime_linked_bytecode::{
-    ActiveRegionIndex, CandidateTable, FrameSlotIndex, FunctionIndex, InstructionIndex,
-    LinkedCallableSignature, LinkedCatchMatcher, LinkedExceptionRegion, LinkedFunction,
-    LinkedInstruction, LinkedInstructionTarget, LinkedInterfaceTableKind,
-    LinkedNativeCallableSignature, LinkedResumeSite, ResumeSiteIndex, TypeIndex,
+    ActiveRegionIndex, CandidateTable, FrameSlotIndex, FrozenConstantNodeIndex, FunctionIndex,
+    InstructionIndex, LinkedCallableSignature, LinkedCatchMatcher, LinkedExceptionRegion,
+    LinkedFunction, LinkedInstruction, LinkedInstructionTarget, LinkedInterfaceTableKind,
+    LinkedFrozenConstantValue, LinkedIntrinsicKind, LinkedNativeCallableSignature,
+    LinkedResumeSite, LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_model::{
-    vm_heap::{VmHeap, VmHeapError},
+    service_error::CatchIdentity,
+    vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmMapEntry, VmRecordField},
     vm_root::{VmRootSource, VmRootVisitor},
-    vm_value::{ValueKind, ValueSlot},
+    vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
 
 use crate::{
@@ -419,7 +421,7 @@ impl VmFiber {
         charge_instruction_events(schedule, frame, budget)
     }
 
-    fn dispatch_one(&mut self, _heap: &mut dyn VmHeap) -> Result<DispatchOutcome, VmError> {
+    fn dispatch_one(&mut self, heap: &mut dyn VmHeap) -> Result<DispatchOutcome, VmError> {
         let (function_index, instruction_index, instruction) = {
             let frame = self.current_frame()?;
             let function = self.function(frame.function())?;
@@ -497,7 +499,7 @@ impl VmFiber {
                 self.execute_invoke_host(function_index, instruction_index, &instruction)
             }
             Opcode::InvokeIntrinsic => {
-                self.execute_invoke_intrinsic(function_index, instruction_index, &instruction)
+                self.execute_invoke_intrinsic(heap, function_index, instruction_index, &instruction)
             }
             Opcode::MakeCallback => {
                 self.execute_make_callback(function_index, instruction_index, &instruction)
@@ -516,42 +518,42 @@ impl VmFiber {
                 self.execute_leave_region(function_index, instruction_index, &instruction)
             }
             Opcode::NewRecord => {
-                self.execute_new_record(function_index, instruction_index, &instruction)
+                self.execute_new_record(heap, function_index, instruction_index, &instruction)
             }
             Opcode::GetDenseField => {
-                self.execute_get_dense_field(function_index, instruction_index, &instruction)
+                self.execute_get_dense_field(heap, function_index, instruction_index, &instruction)
             }
             Opcode::SetWritablePath => {
-                self.execute_set_writable_path(function_index, instruction_index, &instruction)
+                self.execute_set_writable_path(heap, function_index, instruction_index, &instruction)
             }
             Opcode::RepresentationWrap => {
-                self.execute_representation_wrap(function_index, instruction_index, &instruction)
+                self.execute_representation_wrap(heap, function_index, instruction_index, &instruction)
             }
             Opcode::NewArrayBuilder => {
-                self.execute_new_array_builder(function_index, instruction_index, &instruction)
+                self.execute_new_array_builder(heap, function_index, instruction_index, &instruction)
             }
             Opcode::ArrayBuilderPush => {
-                self.execute_array_builder_push(function_index, instruction_index)
+                self.execute_array_builder_push(heap, function_index, instruction_index)
             }
-            Opcode::FreezeArray => self.execute_freeze_array(function_index, instruction_index),
-            Opcode::ArrayGet => self.execute_array_get(function_index, instruction_index),
+            Opcode::FreezeArray => self.execute_freeze_array(heap, function_index, instruction_index),
+            Opcode::ArrayGet => self.execute_array_get(heap, function_index, instruction_index),
             Opcode::ArrayPushOwned => {
-                self.execute_array_push_owned(function_index, instruction_index, &instruction)
+                self.execute_array_push_owned(heap, function_index, instruction_index, &instruction)
             }
-            Opcode::ArrayLen => self.execute_array_len(function_index, instruction_index),
+            Opcode::ArrayLen => self.execute_array_len(heap, function_index, instruction_index),
             Opcode::NewMapBuilder => {
-                self.execute_new_map_builder(function_index, instruction_index, &instruction)
+                self.execute_new_map_builder(heap, function_index, instruction_index, &instruction)
             }
             Opcode::MapBuilderPut => {
-                self.execute_map_builder_put(function_index, instruction_index)
+                self.execute_map_builder_put(heap, function_index, instruction_index)
             }
-            Opcode::FreezeMap => self.execute_freeze_map(function_index, instruction_index),
-            Opcode::MapGet => self.execute_map_get(function_index, instruction_index),
+            Opcode::FreezeMap => self.execute_freeze_map(heap, function_index, instruction_index),
+            Opcode::MapGet => self.execute_map_get(heap, function_index, instruction_index),
             Opcode::MapPutOwned => {
-                self.execute_map_put_owned(function_index, instruction_index, &instruction)
+                self.execute_map_put_owned(heap, function_index, instruction_index, &instruction)
             }
-            Opcode::MapLen => self.execute_map_len(function_index, instruction_index),
-            Opcode::MapEntryAt => self.execute_map_entry_at(function_index, instruction_index),
+            Opcode::MapLen => self.execute_map_len(heap, function_index, instruction_index),
+            Opcode::MapEntryAt => self.execute_map_entry_at(heap, function_index, instruction_index),
             Opcode::InterfaceBoxLocal => {
                 self.execute_interface_box_local(function_index, instruction_index, &instruction)
             }
@@ -1336,6 +1338,7 @@ impl VmFiber {
 
     fn execute_new_record(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1364,16 +1367,39 @@ impl VmFiber {
                 opcode: Opcode::NewRecord,
             });
         }
-        let _ = self.pop_operands(field_count, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::NewRecord,
-        })
+        let values = self.pop_operands(field_count, false)?;
+        let mut fields = Vec::with_capacity(field_count);
+        for (field, value) in shape.fields().iter().zip(values) {
+            let value = if matches!(value.kind(), Some(ValueKind::ConstRef)) {
+                match self.string_slot_value(heap, &value) {
+                    Ok(string) => heap
+                        .alloc_string(string)
+                        .map_err(VmError::Heap)?,
+                    Err(_) => value,
+                }
+            } else {
+                value
+            };
+            fields.push(VmRecordField {
+                name: field.name().to_string(),
+                value,
+            });
+        }
+        let value = heap
+            .allocate_record(
+                &fields,
+                CompactTypeTag::new(shape.nominal_type().get()),
+                ValueFlags::new(0),
+            )
+            .map_err(VmError::Heap)?;
+        self.push_operand(value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_get_dense_field(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1395,7 +1421,7 @@ impl VmFiber {
                 table: CandidateTable::Shapes,
                 row: shape_index.get(),
             })?;
-        let _ = self.pop_operands(1, false)?;
+        let record = self.pop_operands(1, false)?.remove(0);
         if field_ordinal >= shape.fields().len() {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
@@ -1403,15 +1429,17 @@ impl VmFiber {
                 opcode: Opcode::GetDenseField,
             });
         }
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::GetDenseField,
-        })
+        let value = heap
+            .get_dense_field(&record, field_ordinal)
+            .map_err(VmError::Heap)?;
+        self.push_operand(value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_set_writable_path(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1445,31 +1473,62 @@ impl VmFiber {
                 opcode: Opcode::SetWritablePath,
             });
         }
+        let frame = self.current_frame()?.clone();
+        let slot_count = self.function(frame.function())?.frame().slot_types().len();
+        let root = self.read_slot(&frame, slot_count, root_slot)?;
         let values = self.pop_operands(selector_count + 1, false)?;
-        if path.segments().is_empty() {
-            let frame = self.current_frame()?.clone();
-            let slot_count = self.function(frame.function())?.frame().slot_types().len();
-            let value = *values.last().ok_or(VmError::OperandStackUnderflow {
-                function,
-                needed: selector_count + 1,
-                available: selector_count,
-            })?;
-            if self.live_values[Self::slot_index(&frame, slot_count, root_slot, function)?] {
-                self.clear_slot(&frame, slot_count, root_slot)?;
-            }
-            self.write_slot(&frame, slot_count, root_slot, value)?;
-            self.advance_current_instruction()?;
-            return Ok(DispatchOutcome::Continue);
-        }
-        Err(VmError::FullValueLifecyclePlanUnavailable {
+        let value = *values.last().ok_or(VmError::OperandStackUnderflow {
             function,
-            instruction,
-            opcode: Opcode::SetWritablePath,
-        })
+            needed: selector_count + 1,
+            available: selector_count,
+        })?;
+        let selectors = values[..selector_count].to_vec();
+        let mut segments = Vec::with_capacity(path.segments().len());
+        for segment in path.segments() {
+            segments.push(match segment {
+                LinkedWritablePathSegment::DenseField {
+                    shape,
+                    field_ordinal,
+                } => {
+                    let shape_row = self
+                        .program()
+                        .candidate()
+                        .shapes()
+                        .get(shape.get() as usize)
+                        .filter(|row| row.index() == *shape)
+                        .ok_or(VmError::LinkedTableRowMissing {
+                            table: CandidateTable::Shapes,
+                            row: shape.get(),
+                        })?;
+                    let field = shape_row
+                        .fields()
+                        .get(*field_ordinal as usize)
+                        .ok_or(VmError::FullValueLifecyclePlanUnavailable {
+                            function,
+                            instruction,
+                            opcode: Opcode::SetWritablePath,
+                        })?;
+                    VmHeapPathSegment::DenseField {
+                        field: field.name().to_string(),
+                    }
+                }
+                LinkedWritablePathSegment::ArrayIndex { .. } => VmHeapPathSegment::ArrayIndex,
+                LinkedWritablePathSegment::MapKey { .. } => VmHeapPathSegment::MapKey,
+            });
+        }
+        heap.set_writable_path(&root, &segments, &selectors, value)
+            .map_err(VmError::Heap)?;
+        if self.live_values[Self::slot_index(&frame, slot_count, root_slot, function)?] {
+            self.clear_slot(&frame, slot_count, root_slot)?;
+        }
+        self.write_slot(&frame, slot_count, root_slot, value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_representation_wrap(
         &mut self,
+        _heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1488,7 +1547,6 @@ impl VmFiber {
                 table: CandidateTable::Types,
                 row: type_index.get(),
             })?;
-        let _ = self.pop_operands(1, false)?;
         Err(VmError::FullValueLifecyclePlanUnavailable {
             function,
             instruction,
@@ -1498,11 +1556,12 @@ impl VmFiber {
 
     fn execute_new_array_builder(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
     ) -> Result<DispatchOutcome, VmError> {
-        let LinkedInstructionTarget::Type(type_index) =
+        let LinkedInstructionTarget::Type(element_type) =
             self.resolved_target(function, instruction, decoded, 0)?
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
@@ -1510,60 +1569,81 @@ impl VmFiber {
         self.program()
             .candidate()
             .types()
-            .get(type_index.get() as usize)
-            .filter(|row| row.index() == type_index)
+            .get(element_type.get() as usize)
+            .filter(|row| row.index() == element_type)
             .ok_or(VmError::LinkedTableRowMissing {
                 table: CandidateTable::Types,
-                row: type_index.get(),
+                row: element_type.get(),
             })?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::NewArrayBuilder,
-        })
+        let value = heap
+            .allocate_array(
+                &[],
+                CompactTypeTag::new(element_type.get()),
+                ValueFlags::new(0),
+            )
+            .map_err(VmError::Heap)?;
+        self.push_operand(value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_array_builder_push(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(2, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::ArrayBuilderPush,
-        })
+        let values = self.pop_operands(2, false)?;
+        let builder = values[0];
+        let value = values[1];
+        heap.array_push_owned(&builder, value).map_err(VmError::Heap)?;
+        self.push_operand(builder)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_freeze_array(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(1, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::FreezeArray,
-        })
+        let value = self.pop_operands(1, false)?.remove(0);
+        heap.validate_live(&value).map_err(VmError::Heap)?;
+        self.push_operand(value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_array_get(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(2, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
+        let values = self.pop_operands(2, false)?;
+        let array = values[0];
+        let index = values[1]
+            .as_integer()
+            .ok_or(VmError::ExpectedNumber {
+                function,
+                instruction,
+                actual: values[1].kind(),
+            })?;
+        let index = usize::try_from(index).map_err(|_| VmError::ExpectedNumber {
             function,
             instruction,
-            opcode: Opcode::ArrayGet,
-        })
+            actual: values[1].kind(),
+        })?;
+        let value = heap.array_get(&array, index).map_err(VmError::Heap)?;
+        self.push_operand(value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_array_push_owned(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1573,32 +1653,35 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
+        let value = self.pop_operands(1, false)?.remove(0);
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        let _ = self.read_slot(&frame, slot_count, slot)?;
-        let _ = self.pop_operands(1, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::ArrayPushOwned,
-        })
+        let array = self.read_slot(&frame, slot_count, slot)?;
+        heap.array_push_owned(&array, value).map_err(VmError::Heap)?;
+        if self.live_values[Self::slot_index(&frame, slot_count, slot, function)?] {
+            self.clear_slot(&frame, slot_count, slot)?;
+        }
+        self.write_slot(&frame, slot_count, slot, array)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_array_len(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(1, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::ArrayLen,
-        })
+        let array = self.pop_operands(1, false)?.remove(0);
+        let len = heap.array_len(&array).map_err(VmError::Heap)?;
+        self.push_operand(ValueSlot::number(len as f64))?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_new_map_builder(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1628,54 +1711,65 @@ impl VmFiber {
                 table: CandidateTable::Types,
                 row: value_type.get(),
             })?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::NewMapBuilder,
-        })
+        let value = heap
+            .allocate_map(
+                &[],
+                CompactTypeTag::new(value_type.get()),
+                ValueFlags::new(0),
+            )
+            .map_err(VmError::Heap)?;
+        self.push_operand(value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_map_builder_put(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(3, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::MapBuilderPut,
-        })
+        let values = self.pop_operands(3, false)?;
+        let builder = values[0];
+        let key = values[1];
+        let value = values[2];
+        heap.map_put_owned(&builder, key, value).map_err(VmError::Heap)?;
+        self.push_operand(builder)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_freeze_map(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(1, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::FreezeMap,
-        })
+        let value = self.pop_operands(1, false)?.remove(0);
+        heap.validate_live(&value).map_err(VmError::Heap)?;
+        self.push_operand(value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_map_get(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(2, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::MapGet,
-        })
+        let values = self.pop_operands(2, false)?;
+        let map = values[0];
+        let key = values[1];
+        let value = heap.map_get(&map, &key).map_err(VmError::Heap)?;
+        self.push_operand(value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_map_put_owned(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1685,41 +1779,188 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
+        let values = self.pop_operands(2, false)?;
+        let key = values[0];
+        let value = values[1];
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        let _ = self.read_slot(&frame, slot_count, slot)?;
-        let _ = self.pop_operands(2, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::MapPutOwned,
-        })
+        let map = self.read_slot(&frame, slot_count, slot)?;
+        heap.map_put_owned(&map, key, value).map_err(VmError::Heap)?;
+        if self.live_values[Self::slot_index(&frame, slot_count, slot, function)?] {
+            self.clear_slot(&frame, slot_count, slot)?;
+        }
+        self.write_slot(&frame, slot_count, slot, map)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_map_len(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(1, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::MapLen,
-        })
+        let map = self.pop_operands(1, false)?.remove(0);
+        let len = heap.map_len(&map).map_err(VmError::Heap)?;
+        self.push_operand(ValueSlot::number(len as f64))?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_map_entry_at(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(2, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
+        let values = self.pop_operands(2, false)?;
+        let map = values[0];
+        let ordinal = values[1]
+            .as_integer()
+            .ok_or(VmError::ExpectedNumber {
+                function,
+                instruction,
+                actual: values[1].kind(),
+            })?;
+        let ordinal = usize::try_from(ordinal).map_err(|_| VmError::ExpectedNumber {
             function,
             instruction,
-            opcode: Opcode::MapEntryAt,
-        })
+            actual: values[1].kind(),
+        })?;
+        let entry = heap.map_entry_at(&map, ordinal).map_err(VmError::Heap)?;
+        self.push_operand(entry.key)?;
+        self.push_operand(entry.value)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
+    }
+
+    fn execute_invoke_intrinsic(
+        &mut self,
+        heap: &mut dyn VmHeap,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        decoded: &LinkedInstruction,
+    ) -> Result<DispatchOutcome, VmError> {
+        let LinkedInstructionTarget::Intrinsic(intrinsic_index) =
+            self.resolved_target(function, instruction, decoded, 0)?
+        else {
+            return Err(self.malformed_instruction(function, instruction, decoded));
+        };
+        let arg_count = self.operand_usize(decoded, 1, function, instruction)?;
+        let result_count = self.operand_usize(decoded, 2, function, instruction)?;
+        let intrinsic = self
+            .program()
+            .candidate()
+            .intrinsics()
+            .get(intrinsic_index.get() as usize)
+            .filter(|row| row.index() == intrinsic_index)
+            .cloned()
+            .ok_or(VmError::LinkedTableRowMissing {
+                table: CandidateTable::Intrinsics,
+                row: intrinsic_index.get(),
+            })?;
+        validate_native_signature_counts(
+            intrinsic.signature(),
+            arg_count,
+            result_count,
+            function,
+            instruction,
+            Opcode::InvokeIntrinsic,
+        )?;
+        let values = self.pop_operands(arg_count, false)?;
+        if let LinkedIntrinsicKind::Receiver(op) = intrinsic.kind() {
+            if op.canonical_key == "receiver:Array.push@1" {
+                if values.len() != 2 {
+                    return Err(VmError::FullValueLifecyclePlanUnavailable {
+                        function,
+                        instruction,
+                        opcode: Opcode::InvokeIntrinsic,
+                    });
+                }
+                heap.array_push_owned(&values[0], values[1])
+                    .map_err(VmError::Heap)?;
+                self.advance_current_instruction()?;
+                return Ok(DispatchOutcome::Continue);
+            }
+        }
+        let result = match intrinsic.kind() {
+            LinkedIntrinsicKind::Static(target) => match target.canonical_key().as_str() {
+                "core.array.empty" => {
+                    let result_type = intrinsic.signature().result_types().first().copied().ok_or(
+                        VmError::FullValueLifecyclePlanUnavailable {
+                            function,
+                            instruction,
+                            opcode: Opcode::InvokeIntrinsic,
+                        },
+                    )?;
+                    heap.allocate_array(
+                        &[],
+                        CompactTypeTag::new(result_type.get()),
+                        ValueFlags::new(0),
+                    )
+                    .map_err(VmError::Heap)?
+                }
+                "core.map.empty" => {
+                    let result_type = intrinsic.signature().result_types().first().copied().ok_or(
+                        VmError::FullValueLifecyclePlanUnavailable {
+                            function,
+                            instruction,
+                            opcode: Opcode::InvokeIntrinsic,
+                        },
+                    )?;
+                    heap.allocate_map(
+                        &[],
+                        CompactTypeTag::new(result_type.get()),
+                        ValueFlags::new(0),
+                    )
+                    .map_err(VmError::Heap)?
+                }
+                _ => {
+                    return Err(VmError::FullValueLifecyclePlanUnavailable {
+                        function,
+                        instruction,
+                        opcode: Opcode::InvokeIntrinsic,
+                    });
+                }
+            },
+            LinkedIntrinsicKind::Receiver(op) => match op.canonical_key {
+                "receiver:string.concat@1" => {
+                    if values.len() != 2 {
+                        return Err(VmError::FullValueLifecyclePlanUnavailable {
+                            function,
+                            instruction,
+                            opcode: Opcode::InvokeIntrinsic,
+                        });
+                    }
+                    let left = self.string_slot_value(heap, &values[0])?;
+                    let right = self.string_slot_value(heap, &values[1])?;
+                    heap.alloc_string(format!("{left}{right}"))
+                        .map_err(VmError::Heap)?
+                }
+                "receiver:bytes.toUtf8String@1" => {
+                    if values.len() != 1 {
+                        return Err(VmError::FullValueLifecyclePlanUnavailable {
+                            function,
+                            instruction,
+                            opcode: Opcode::InvokeIntrinsic,
+                        });
+                    }
+                    let bytes = heap.bytes_value(&values[0]).map_err(VmError::Heap)?;
+                    heap.alloc_string(String::from_utf8_lossy(&bytes).into_owned())
+                        .map_err(VmError::Heap)?
+                }
+                _ => {
+                    return Err(VmError::FullValueLifecyclePlanUnavailable {
+                        function,
+                        instruction,
+                        opcode: Opcode::InvokeIntrinsic,
+                    });
+                }
+            },
+        };
+        self.push_operand(result)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_interface_box_local(
@@ -2158,42 +2399,36 @@ impl VmFiber {
         )))
     }
 
-    fn execute_invoke_intrinsic(
-        &mut self,
-        function: FunctionIndex,
-        instruction: InstructionIndex,
-        decoded: &LinkedInstruction,
-    ) -> Result<DispatchOutcome, VmError> {
-        let LinkedInstructionTarget::Intrinsic(intrinsic_index) =
-            self.resolved_target(function, instruction, decoded, 0)?
-        else {
-            return Err(self.malformed_instruction(function, instruction, decoded));
-        };
-        let arg_count = self.operand_usize(decoded, 1, function, instruction)?;
-        let result_count = self.operand_usize(decoded, 2, function, instruction)?;
-        let intrinsic = self
-            .program()
-            .candidate()
-            .intrinsics()
-            .get(intrinsic_index.get() as usize)
-            .filter(|row| row.index() == intrinsic_index)
-            .ok_or(VmError::LinkedTableRowMissing {
-                table: CandidateTable::Intrinsics,
-                row: intrinsic_index.get(),
-            })?;
-        validate_native_signature_counts(
-            intrinsic.signature(),
-            arg_count,
-            result_count,
-            function,
-            instruction,
-            Opcode::InvokeIntrinsic,
-        )?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::InvokeIntrinsic,
-        })
+    fn string_slot_value(
+        &self,
+        heap: &mut dyn VmHeap,
+        value: &ValueSlot,
+    ) -> Result<String, VmError> {
+        match value.kind() {
+            Some(ValueKind::ConstRef) => {
+                let handle = value
+                    .as_const_ref()
+                    .ok_or(VmError::Heap(VmHeapError::InvalidValueMetadata))?;
+                let index = FrozenConstantNodeIndex::new(
+                    u32::try_from(handle.get())
+                        .map_err(|_| VmError::Heap(VmHeapError::InvalidValueMetadata))?,
+                );
+                let node = self
+                    .program()
+                    .candidate()
+                    .frozen_constant_nodes()
+                    .get(index.get() as usize)
+                    .filter(|node| node.index() == index)
+                    .ok_or(VmError::Heap(VmHeapError::InvalidValueMetadata))?;
+                match node.value() {
+                    LinkedFrozenConstantValue::Literal(LiteralIr::String { value }) => {
+                        Ok(value.clone())
+                    }
+                    _ => Err(VmError::Heap(VmHeapError::InvalidValueMetadata)),
+                }
+            }
+            _ => heap.string_value(value).map_err(VmError::Heap),
+        }
     }
 
     fn execute_make_callback(
@@ -3034,8 +3269,24 @@ fn validate_native_signature_counts(
 
 fn comparable_equality(left: &ValueSlot, right: &ValueSlot) -> Option<bool> {
     let kind = left.kind()?;
-    if right.kind() != Some(kind) {
-        return None;
+    let right_kind = right.kind()?;
+    if right_kind != kind {
+        match (kind, right_kind) {
+            (ValueKind::Number, ValueKind::Integer) | (ValueKind::Integer, ValueKind::Number) => {
+                let left = if kind == ValueKind::Number {
+                    left.as_number()?
+                } else {
+                    left.as_integer()? as f64
+                };
+                let right = if right_kind == ValueKind::Number {
+                    right.as_number()?
+                } else {
+                    right.as_integer()? as f64
+                };
+                return Some(left == right);
+            }
+            _ => return None,
+        }
     }
     match kind {
         ValueKind::Null => Some(left.is_null() && right.is_null()),

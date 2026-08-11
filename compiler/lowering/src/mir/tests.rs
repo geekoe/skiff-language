@@ -777,6 +777,7 @@ fn liveness_hand_computed_small_fixture() {
         },
         symbol: "m.f".to_string(),
         kind: MirExecutableKind::Function,
+        native: false,
         type_params: Vec::new(),
         params: vec![crate::mir::MirParam {
             name: "x".to_string(),

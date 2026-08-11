@@ -74,6 +74,10 @@ impl<'a> TypeLinker<'a> {
         }
     }
 
+    pub(in crate::bytecode) fn deployment(&self) -> &HydratedDeploymentBytecode {
+        &self.deployment
+    }
+
     pub(in crate::bytecode) fn set_function_indices(
         &mut self,
         function_indices: &'a BTreeMap<SpecializationKey, FunctionIndex>,
@@ -1017,6 +1021,59 @@ fn find_pool_type(package: &HydratedBytecodePackage, expected: &TypeRefIr) -> Op
         .and_then(|index| u32::try_from(index).ok())
 }
 
+fn concrete_type_equivalent(left: &TypeRefIr, right: &TypeRefIr) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left, right) {
+        (
+            TypeRefIr::PackageSymbol { symbol: left },
+            TypeRefIr::PackageSymbol { symbol: right },
+        ) => left.package == right.package && left.symbol_path == right.symbol_path,
+        (
+            TypeRefIr::Builtin { name: left_name, args: left_args },
+            TypeRefIr::Builtin { name: right_name, args: right_args },
+        ) => {
+            left_name == right_name
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args)
+                    .all(|(left, right)| concrete_type_equivalent(left, right))
+        }
+        (TypeRefIr::Nullable { inner: left }, TypeRefIr::Nullable { inner: right }) => {
+            concrete_type_equivalent(left, right)
+        }
+        (TypeRefIr::Union { items: left }, TypeRefIr::Union { items: right }) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| concrete_type_equivalent(left, right))
+        }
+        (
+            TypeRefIr::AppliedNominal { base: left_base, arguments: left_args },
+            TypeRefIr::AppliedNominal { base: right_base, arguments: right_args },
+        ) => {
+            left_base == right_base
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args)
+                    .all(|(left, right)| concrete_type_equivalent(left, right))
+        }
+        (TypeRefIr::Record { fields: left }, TypeRefIr::Record { fields: right }) => {
+            left.len() == right.len()
+                && left.iter().all(|(name, left_ty)| {
+                    right
+                        .get(name)
+                        .is_some_and(|right_ty| concrete_type_equivalent(left_ty, right_ty))
+                })
+        }
+        _ => false,
+    }
+}
+
 fn find_pool_type_after_substitution(
     deployment: &HydratedDeploymentBytecode,
     package: &HydratedBytecodePackage,
@@ -1030,9 +1087,13 @@ fn find_pool_type_after_substitution(
         let location = BytecodeLinkLocation::Package {
             package: Box::new(package.reference().clone()),
         };
-        let concrete = substitute_type(ty, substitutions, &location)?;
+        let expected = normalize_type(deployment, package, expected, &location)?;
+        let concrete = match substitute_type(ty, substitutions, &location) {
+            Ok(concrete) => concrete,
+            Err(_) => continue,
+        };
         let concrete = normalize_type(deployment, package, &concrete, &location)?;
-        if &concrete == expected {
+        if concrete_type_equivalent(&concrete, &expected) {
             return Ok(u32::try_from(index).ok());
         }
     }

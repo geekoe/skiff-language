@@ -126,6 +126,17 @@ impl RequestVmHeap {
         self.register_handle(heap_handle, compact_type_tag, flags)
     }
 
+    /// Wraps RequestHeap bytes in a live VM slot.
+    pub fn alloc_bytes(&mut self, value: Vec<u8>) -> Result<ValueSlot, VmHeapError> {
+        let operation = VmHeapOperation::AllocateArray;
+        self.ensure_serial_available(operation)?;
+        let handle = self
+            .heap
+            .alloc_bytes(value)
+            .map_err(|error| self.map_error(error, operation))?;
+        self.register_handle(handle, CompactTypeTag::new(0), ValueFlags::new(0))
+    }
+
     /// Allocates a RequestHeap local carrier cell containing a string value.
     ///
     /// Strings do not have a fixed-width immediate slot, so the adapter keeps
@@ -738,6 +749,54 @@ impl VmHeap for RequestVmHeap {
         let slot = self.register_handle(heap_handle, compact_type_tag, flags)?;
         self.representation_slots.insert(heap_handle, *payload);
         Ok(slot)
+    }
+
+    fn alloc_string(&mut self, value: String) -> Result<ValueSlot, VmHeapError> {
+        let carrier = RuntimeValueCarrier::unidentified(RuntimeValue::String(value));
+        let operation = VmHeapOperation::AllocateRepresentation;
+        self.ensure_serial_available(operation)?;
+        let heap_handle = self
+            .heap
+            .alloc_local_carrier_cell(carrier)
+            .map_err(|error| self.map_error(error, operation))?;
+        self.register_handle(heap_handle, CompactTypeTag::new(0), ValueFlags::new(0))
+    }
+
+    fn string_value(&self, value: &ValueSlot) -> Result<String, VmHeapError> {
+        let operation = VmHeapOperation::RepresentationPayload;
+        let heap_handle = self.request_handle(value, operation)?;
+        let carrier = self
+            .heap
+            .local_carrier_cell(heap_handle)
+            .map_err(|error| self.map_error(error, operation))?;
+        match carrier.as_ref() {
+            Some(carrier) if matches!(carrier.value(), RuntimeValue::String(_)) => {
+                let RuntimeValue::String(value) = carrier.value() else {
+                    unreachable!("matched string carrier");
+                };
+                Ok(value.clone())
+            }
+            _ => Err(VmHeapError::HeapOperationFailed {
+                operation,
+                message: "value is not a string carrier".to_string(),
+            }),
+        }
+    }
+
+    fn bytes_value(&self, value: &ValueSlot) -> Result<Vec<u8>, VmHeapError> {
+        let operation = VmHeapOperation::RepresentationPayload;
+        let heap_handle = self.request_handle(value, operation)?;
+        match self
+            .heap
+            .get(heap_handle)
+            .map_err(|error| self.map_error(error, operation))?
+        {
+            HeapNode::Bytes(bytes) => Ok(bytes.as_slice().to_vec()),
+            _ => Err(VmHeapError::HeapOperationFailed {
+                operation,
+                message: "value is not a bytes heap node".to_string(),
+            }),
+        }
     }
 
     fn array_get(&self, array: &ValueSlot, index: usize) -> Result<ValueSlot, VmHeapError> {

@@ -386,6 +386,10 @@ pub const BUILTIN_RECEIVER_CALLABLE_SEMANTICS: &[BuiltinReceiverCallableSemantic
     mutating_array_push(),
     detached_scalar_receiver(BuiltinReceiverRoot::Bytes, BuiltinReceiverMethod::Length),
     detached_scalar_receiver(BuiltinReceiverRoot::Bytes, BuiltinReceiverMethod::ToHex),
+    detached_scalar_receiver(
+        BuiltinReceiverRoot::Bytes,
+        BuiltinReceiverMethod::ToUtf8String,
+    ),
     detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Floor),
     detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Ceil),
     detached_scalar_receiver(BuiltinReceiverRoot::Number, BuiltinReceiverMethod::Round),

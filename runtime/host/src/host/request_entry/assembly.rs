@@ -2,9 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
-    self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, RequestEnvelope, RequestError, ResponseEventSink,
-    ResponseStreamEvent, RouterWriterMessage,
+    self as request_runner, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
+    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, HttpNameValue,
+    RequestEnvelope, RequestError, ResponseEventSink, ResponseStreamEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -51,7 +51,18 @@ impl RuntimeHost {
             body,
             target,
         } = request;
-        let request_envelope = bytecode_http_request_envelope(&route, &header, body);
+        let request_envelope = match bytecode_http_request_envelope(&route, &header, body) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                error!(event = "runtime.http_adapter_error", request_id = %header.request_id, error = %error);
+                self.send_http_gateway_admission_error(
+                    &header.request_id,
+                    &error.to_string(),
+                    &sender,
+                );
+                return;
+            }
+        };
         let telemetry = bytecode_http_telemetry_context(self, &header, &route);
         let supervised_request = self
             .request_supervisor
@@ -565,11 +576,29 @@ fn bytecode_http_request_envelope(
     route: &BytecodeRoute,
     header: &BytecodeRequestStartFrameHeader,
     body: Vec<u8>,
-) -> RequestEnvelope {
-    RequestEnvelope {
+) -> anyhow::Result<RequestEnvelope> {
+    let query = header
+        .http_request
+        .query
+        .iter()
+        .map(|item| HttpNameValue {
+            name: item.name.clone(),
+            value: item.value.clone(),
+        })
+        .collect::<Vec<_>>();
+    let headers = header
+        .http_request
+        .headers
+        .iter()
+        .map(|item| HttpNameValue {
+            name: item.name.clone(),
+            value: item.value.clone(),
+        })
+        .collect::<Vec<_>>();
+    Ok(RequestEnvelope {
         request_id: header.request_id.clone(),
         mode: header.mode.clone(),
-        target: route.operation_id().as_str().to_string(),
+        target: route.target_label(),
         operation_abi_id: None,
         selector: None,
         service_id: Some(route.deployment().service_id.clone()),
@@ -582,13 +611,22 @@ fn bytecode_http_request_envelope(
             method: Some(header.routing.ingress.method.clone()),
             path: header.routing.ingress.path.clone(),
         }),
-        binary_http: None,
-        http_adapter: None,
-        test_effects_enabled: header.test_effects_enabled,
+        binary_http: Some(BinaryHttpRequest {
+            metadata: BinaryHttpRequestMetadata {
+                method: header.http_request.method.clone(),
+                url: header.http_request.url.clone(),
+                path: header.http_request.path.clone(),
+                query,
+                headers,
+            },
+            body,
+        }),
+        http_adapter: Some(route.http_adapter()?),
+        test_effects_enabled: header.test_effects_enabled || header.test_case_capability.is_some(),
         test_effect_doubles: Default::default(),
-        payload_bytes: body,
+        payload_bytes: Vec::new(),
         extra: bytecode_deadline_extra(header.deadline.as_ref()),
-    }
+    })
 }
 
 fn bytecode_task_request_envelope(
@@ -599,7 +637,7 @@ fn bytecode_task_request_envelope(
     RequestEnvelope {
         request_id: header.request_id.clone(),
         mode: header.mode.clone(),
-        target: route.operation_id().as_str().to_string(),
+        target: route.target_label(),
         operation_abi_id: None,
         selector: None,
         service_id: Some(route.deployment().service_id.clone()),
@@ -610,7 +648,7 @@ fn bytecode_task_request_envelope(
         ingress_selector: None,
         binary_http: None,
         http_adapter: None,
-        test_effects_enabled: header.test_effects_enabled,
+        test_effects_enabled: header.test_effects_enabled || header.test_case_capability.is_some(),
         test_effect_doubles: Default::default(),
         payload_bytes: payload,
         extra: bytecode_deadline_extra(header.deadline.as_ref()),
@@ -624,7 +662,7 @@ fn bytecode_websocket_connect_request_envelope(
     RequestEnvelope {
         request_id: header.request_id.clone(),
         mode: header.mode.clone(),
-        target: route.operation_id().as_str().to_string(),
+        target: route.target_label(),
         operation_abi_id: None,
         selector: None,
         service_id: Some(route.deployment().service_id.clone()),
@@ -653,7 +691,7 @@ fn bytecode_websocket_connection_closed_request_envelope(
     RequestEnvelope {
         request_id: header.request_id.clone(),
         mode: header.mode.clone(),
-        target: route.operation_id().as_str().to_string(),
+        target: route.target_label(),
         operation_abi_id: None,
         selector: None,
         service_id: Some(route.deployment().service_id.clone()),
@@ -685,7 +723,7 @@ fn bytecode_http_telemetry_context(
     context.build_id = Some(route.build_id().to_string());
     context.runtime_id = Some(host.base_runtime_id.clone());
     context.request_id = Some(header.request_id.clone());
-    context.target = Some(route.operation_id().as_str().to_string());
+    context.target = Some(route.target_label());
     context.trace_id = Some(header.trace.trace_id.clone());
     context.span_id = Some(header.trace.span_id.clone());
     context.parent_span_id = header.trace.parent_span_id.clone();
@@ -702,7 +740,7 @@ fn bytecode_task_telemetry_context(
     context.build_id = Some(route.build_id().to_string());
     context.runtime_id = Some(host.base_runtime_id.clone());
     context.request_id = Some(header.request_id.clone());
-    context.target = Some(route.operation_id().as_str().to_string());
+    context.target = Some(route.target_label());
     context.trace_id = Some(header.trace.trace_id.clone());
     context.span_id = Some(header.trace.span_id.clone());
     context.parent_span_id = header.trace.parent_span_id.clone();
@@ -719,7 +757,7 @@ fn bytecode_websocket_connect_telemetry_context(
     context.build_id = Some(route.build_id().to_string());
     context.runtime_id = Some(host.base_runtime_id.clone());
     context.request_id = Some(header.request_id.clone());
-    context.target = Some(route.operation_id().as_str().to_string());
+    context.target = Some(route.target_label());
     context.trace_id = Some(header.trace.trace_id.clone());
     context.span_id = Some(header.trace.span_id.clone());
     context.parent_span_id = header.trace.parent_span_id.clone();
@@ -736,7 +774,7 @@ fn bytecode_websocket_connection_closed_telemetry_context(
     context.build_id = Some(route.build_id().to_string());
     context.runtime_id = Some(host.base_runtime_id.clone());
     context.request_id = Some(header.request_id.clone());
-    context.target = Some(route.operation_id().as_str().to_string());
+    context.target = Some(route.target_label());
     context.trace_id = Some(header.trace.trace_id.clone());
     context.span_id = Some(header.trace.span_id.clone());
     context.parent_span_id = header.trace.parent_span_id.clone();

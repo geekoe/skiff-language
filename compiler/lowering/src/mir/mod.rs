@@ -161,6 +161,7 @@ pub struct MirFunction {
     pub origin: PackageExecutableCoordinate,
     pub symbol: String,
     pub kind: MirExecutableKind,
+    pub native: bool,
     pub type_params: Vec<String>,
     pub params: Vec<MirParam>,
     pub return_type: TypeRefIr,

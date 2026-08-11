@@ -15,12 +15,11 @@ use super::contract::*;
 pub const INTRINSIC_REGISTRY_ID: &str = "skiff-intrinsic-registry";
 pub const INTRINSIC_REGISTRY_VERSION: &str = "skiff-intrinsic-registry-v2";
 pub const INTRINSIC_REGISTRY_FINGERPRINT: &str =
-    "0737ed2b2cb8a514a6cf73b6f401cc0a47304c35bb9dd294c8022c57ee8c462a";
+    "37e64340e3bece762de90d2c9f51ea5dcdf32cec5a8964ea2b831a52abc70b7f";
 pub const UNSUPPORTED_INTRINSIC_RECEIVER_KEYS: &[&str] = &[
     "receiver:Array.clone@1",
     "receiver:Array.length@1",
     "receiver:Array.pop@1",
-    "receiver:Array.push@1",
     "receiver:Array.set@1",
     "receiver:Date.isAfter@1",
     "receiver:Date.toISOString@1",
@@ -40,7 +39,6 @@ pub const UNSUPPORTED_INTRINSIC_RECEIVER_KEYS: &[&str] = &[
     "receiver:bytes.length@1",
     "receiver:bytes.toBase64@1",
     "receiver:bytes.toHex@1",
-    "receiver:bytes.toUtf8String@1",
     "receiver:number.ceil@1",
     "receiver:number.floor@1",
     "receiver:number.round@1",

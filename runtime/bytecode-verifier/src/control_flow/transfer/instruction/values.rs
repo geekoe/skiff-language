@@ -76,10 +76,12 @@ pub(super) fn require_same_type(
         return Err(violation(
             location,
             format!(
-                "{} type {} differs from expected type {}",
+                "{} type {} differs from expected type {}: actual {:?}, expected {:?}",
                 owner.as_ref(),
                 actual.get(),
-                expected.get()
+                expected.get(),
+                facts.type_fact(actual).map(|fact| (fact.normalized_type(), fact.lifecycle())),
+                facts.type_fact(expected).map(|fact| (fact.normalized_type(), fact.lifecycle())),
             ),
         ));
     }

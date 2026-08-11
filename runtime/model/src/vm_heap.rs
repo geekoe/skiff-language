@@ -193,6 +193,38 @@ pub trait VmHeap {
         })
     }
 
+    /// Allocates a request-local bytes heap node.
+    fn alloc_bytes(&mut self, _value: Vec<u8>) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::AllocateArray,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Allocates a request-local string carrier cell.
+    fn alloc_string(&mut self, _value: String) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::AllocateRepresentation,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Reads the string payload of one request-local string carrier cell.
+    fn string_value(&self, _value: &ValueSlot) -> Result<String, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::RepresentationPayload,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Reads the bytes payload of one request-local bytes heap node.
+    fn bytes_value(&self, _value: &ValueSlot) -> Result<Vec<u8>, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::RepresentationPayload,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
     /// Reads one array element. Out-of-range reads fail closed.
     fn array_get(&self, _array: &ValueSlot, _index: usize) -> Result<ValueSlot, VmHeapError> {
         Err(VmHeapError::OperationKindMismatch {
