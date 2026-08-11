@@ -49,7 +49,7 @@ impl DocHub {
   }
 
   function submitOp(self: DocHub, op: Op) -> SeqReceipt {
-    let seq = self.nextSeq
+    final seq = self.nextSeq
     self.nextSeq = seq + 1
     self.pendingOps.push(op)
     return SeqReceipt { seq: seq }
@@ -92,7 +92,7 @@ incarnation build 不同时，不在旧 heap 上执行新代码，直接按下�
 第一版注册入口只有 `std.actor.get`，它是按 logical identity / live owner fence 串行化的 get-or-create：
 
 ```skiff
-let hub = std.actor.get<DocHub>("room-1", 0)
+final hub = std.actor.get<DocHub>("room-1", 0)
 ```
 
 - entry 不存在：创建实例，由平台写入 key 字段，执行 `create`，激活，并把创建输入（id 与 create 参数）保存到 registry entry。
@@ -177,7 +177,7 @@ registry entry 保存创建输入，不保存实例状态，也不是 deployment
 - continuation 恢复前必须重新 acquire `ActorSegmentLease`，并重新校验 actor identity、exact deployment
   `buildId` / `DeploymentExecutionImage` owner、`ActorImplementationIdentity`、incarnation fence 与 arena epoch；
   任何不匹配都 fail closed。恢复后的方法必须假设 actor 字段已经变化并按需重新读取。
-- 普通 record / Array / Map 仍采用 value semantics：赋值、普通参数传递、返回与 container store 产生 logical snapshot。局部 `let` 和普通参数不可写；局部 `var` 是 writable binding，首次写共享 backing 时按 path COW 分离。把 `self.field` 读入普通 local 或传给普通参数只得到 snapshot，不获得隐藏的 mutable alias；直接 writable `self.field` path 仍然修改 Actor shared state。
+- 普通 record / Array / Map 仍采用 value semantics：赋值、普通参数传递、返回与 container store 产生 logical snapshot。局部 `final` 和普通参数不可写；局部 `var` 是 writable binding，首次写共享 backing 时按 path COW 分离。把 `self.field` 读入普通 local 或传给普通参数只得到 snapshot，不获得隐藏的 mutable alias；直接 writable `self.field` path 仍然修改 Actor shared state。
 - `connection.send` 只把消息同步写入本地发送队列，不等待网络或对端确认，因此不是 suspension point，也不提供送达或 exactly-once 保证。
 - `std.websocket.requestJsonToConnection` 通过内置JSON-RPC 2.0 text配置发送request并等待匹配response；
   平台拥有且隐藏transport `id`。等待尚未完成时会释放执行权，因此是潜在suspension point。它只保证

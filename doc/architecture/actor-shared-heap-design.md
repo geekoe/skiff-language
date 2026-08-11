@@ -113,7 +113,7 @@ v5 版本边界决策（用户确认）：
   arena；本协程在actual `Pending`前完成的写入无需commit就已可见，挂起期间其他方法的已执行写入也对恢复后的
   重新读取可见；
 - 普通赋值、普通参数传递、返回与container store遵守aggregate value semantics并产生logical snapshot。
-  `let x = self.items`与普通parameter都是immutable snapshot，其派生path不可写；`var x = self.items`是
+  `final x = self.items`与普通parameter都是immutable snapshot，其派生path不可写；`var x = self.items`是
   writable snapshot，随后local mutation通过path COW分离，不暗中修改`self.items`。修改Actor state必须使用
   direct writable field path或显式写回；
 - field-to-field赋值复制logical value，不建立语言可观察的mutable alias。Physical backing仍可O(1)共享；
@@ -290,7 +290,7 @@ v5 版本边界决策（用户确认）：
 4. `db transaction`在actor方法内走DB-only语义；nested transaction和transaction body actor field write
    编译期拒绝；普通request事务测试不回归；
 5. 压缩：epoch 失效无泄漏；计数 == 0 才触发；discard优先，cross-build rejection不改变压缩状态；
-6. aggregate value semantics矩阵覆盖immutable `let` / 普通parameter snapshot、writable `var` COW与direct
+6. aggregate value semantics矩阵覆盖immutable `final` / 普通parameter snapshot、writable `var` COW与direct
    Actor field shared write；失败段语义按 §3.4（不保证字段原子性）文档化并测试；
 7. exact `buildId` lazy-load；不同identity异build并存、同identity mismatch只拒绝且不刷新idle、idle/断连后
    任意build重新claim；implementation identity重新冻结；跨包视图1–4不回归。

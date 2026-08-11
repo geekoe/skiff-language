@@ -258,7 +258,7 @@ service-call protocol operation；schema-changing发布后，旧Connection继续
 不影响其它snapshot。实现不必deep copy：可以move unique backing，或通过share transition与
 path copy-on-write保留语义。用户程序不能观察physical handle/backing identity。
 
-局部`let`初始化与普通parameter binding都取得logical snapshot，并且是immutable runtime binding；从它们
+局部`final`初始化与普通parameter binding都取得logical snapshot，并且是immutable runtime binding；从它们
 派生的field/index path不可写。Aggregate writable access-path root只来自三类：局部`var`、当前有效的
 `InOut` loan，以及Actor method中允许直接写入的`self.field` member/index path。局部`var`可重绑；直接
 `self.field` path mutation写Actor shared state，把该field先读入普通local或传给普通parameter则只得到
@@ -356,14 +356,14 @@ string representation map key 在 request heap 中按 erased string payload 保�
 
 `concurrent { ... }` 只把被修饰 block 的第一层直属项划分为 lane：直属 statement 是一个 lane，直属 `serial { ... }` 整体是一个 lane，`concurrent value { ... }` 的 tail expression 是保留 `tail` kind 的普通 synthetic lane。当前 `concurrent` surface 是受限 lane list，不是普通 block；`if`、`match`、loop、`with`、`timeout`、普通 `value` block、`return`、`break`、`continue`、直接 `throw` / `rethrow`、`catch`、`emit`、`dispatch`、嵌套 `serial`、嵌套 `concurrent` 和 callback / anonymous function body 在该 surface 内非法，包括在直属 `serial { ... }` 内非法。被调用函数内部仍可包含普通控制流；lane 只观察其normal return、throw、timeout或内部停止结果。
 
-`concurrent` block自身是词法作用域，但只有直属`let` declaration lane的结果能被后续
-sibling lane读取。后续lane只能读取source position严格在前的sibling-visible `let`；读取
+`concurrent` block自身是词法作用域，但只有直属`final` declaration lane的结果能被后续
+sibling lane读取。后续lane只能读取source position严格在前的sibling-visible `final`；读取
 后方声明是forward reference。`var`在`concurrent` surface直属位置非法；嵌套block与`serial`
 内声明不跨sibling可见。
 
-Compiler为每个`concurrent` block建立lane DAG。Lane B读取lane A的sibling-visible `let`，则A
+Compiler为每个`concurrent` block建立lane DAG。Lane B读取lane A的sibling-visible `final`，则A
 必须先于B完成。传入B的aggregate是A结果的logical snapshot。Tail lane依赖它读取的前序
-`let`，也隐式依赖source position在它之前的所有lane normal exit。
+`final`，也隐式依赖source position在它之前的所有lane normal exit。
 
 Sibling lane禁止写入从`concurrent`外层捕获的`var`或发起`inout`调用，即使静态路径是
 不同字段也一样。Lane-local `var`可在该lane内mutation。普通aggregate snapshot不携带共享的

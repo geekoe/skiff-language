@@ -729,7 +729,7 @@ type equality key。
 因此下面判断必须能成立：
 
 ```skiff
-let user = pkg.getUser()
+final user = pkg.getUser()
 pkg.updateUser(user)
 ```
 

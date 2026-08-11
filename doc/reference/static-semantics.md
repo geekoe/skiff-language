@@ -24,8 +24,8 @@ semantics。赋值、普通参数传递、返回和 container store 都创建当
 避免 deep copy，但不能暴露 physical backing identity 或 mutable alias。
 
 `const` 只能在顶层声明，是 compiler-evaluated、request-independent 且 deeply frozen 的值。
-`let` 与 `var` 只能是局部声明；`const`、`let` 和 `var` 都必须在声明处初始化。局部
-`let` 与普通 parameter 的 binding 都取得 logical snapshot 并且不可重绑；从它们以及顶层
+`final` 与 `var` 只能是局部声明；`const`、`final` 和 `var` 都必须在声明处初始化。局部
+`final` 与普通 parameter 的 binding 都取得 logical snapshot 并且不可重绑；从它们以及顶层
 `const`、loop/pattern/`with` binding 派生的 member/index path 都不可写。
 
 Aggregate writable access-path root 只有三类：局部 `var`、当前有效的 `inout` loan，以及
@@ -184,7 +184,7 @@ loop 中 narrowing 只在本次迭代控制流内有效，不自动归纳到下�
 
 `for key, value in iterable { ... }` 的双绑定形态只允许 `iterable: Map<K,V>`。此时 `key: K`、`value: V`。`for a, b in array`、`for a, b in stream` 和对非 map 类型使用双绑定都必须报错。
 
-loop binding 只在 loop body 内可见，离开 body 后恢复外层同名 binding。loop binding 不是 `let` 声明，不能作为 assignment target 重新绑定。双绑定形态中的两个名字不能重复；重复时按同一词法作用域的局部 binding 冲突报错。
+loop binding 只在 loop body 内可见，离开 body 后恢复外层同名 binding。loop binding 不是 `final` 声明，不能作为 assignment target 重新绑定。双绑定形态中的两个名字不能重复；重复时按同一词法作用域的局部 binding 冲突报错。
 
 对 `m: Map<K,V>`，`m.keys()` 的静态类型是 `Array<K>`。如果 `K` 是 string representation 类型，返回数组元素类型仍是该 representation 类型，不退化为 `string`。
 
@@ -417,7 +417,7 @@ function appendedValues() -> Array<number> {
   local target，或通过 Package Local ABI 精确解析的 package-direct callable；不得通过
   interface/dynamic dispatch 猜 target。
 - Argument 必须是从局部 `var` 派生的精确 name/member/index place，并在 call site 写作
-  `inout place`。Actor `self.field`、局部 `let`、普通 parameter 和顶层 `const` 都不是合法 actual。
+  `inout place`。Actor `self.field`、局部 `final`、普通 parameter 和顶层 `const` 都不是合法 actual。
 - Call argument 按源码 parameter 顺序各求值一次。对一个 `inout` actual，root 与动态 index
   selector 也只求值一次，selector 按路径从外到内保留；求值期间不提前取得部分 loan。
 - 每个 `inout` path 的所有 intermediate 与 terminal segment 都必须已存在；Map/JsonObject

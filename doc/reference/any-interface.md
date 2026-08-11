@@ -58,10 +58,10 @@ fail closed。
 record 值**，或**远程 public instance 寻址源**（见 §2.5）。
 
 ```skiff
-let p: any ToolProvider = HostProvider { ... } as ToolProvider     // 本地装箱源
+final p: any ToolProvider = HostProvider { ... } as ToolProvider     // 本地装箱源
 var providers: Array<any ToolProvider> = []
 providers.push(DbProvider { ... } as ToolProvider)
-let llm: any LlmClient = remoteLlm/managedLlm as LlmClient        // 远程装箱源（见 §2.5）
+final llm: any LlmClient = remoteLlm/managedLlm as LlmClient        // 远程装箱源（见 §2.5）
 ```
 
 - 本地装箱源：`expr` 的静态类型必须是 concrete nominal record instantiation，且 `implements I`（显式
@@ -91,9 +91,9 @@ let llm: any LlmClient = remoteLlm/managedLlm as LlmClient        // 远程装�
 - 远程装箱值：经该值携带的 operation 寻址走跨 service 调用（带 remote 语义，见 §2.5、§6）。
 
 ```skiff
-let p: any ToolProvider = ...
-let tools = p.listTools(ctx)       // 间接调用：本地或远程，由 p 的装箱源决定
-let out = p.execute(ctx, call)
+final p: any ToolProvider = ...
+final tools = p.listTools(ctx)       // 间接调用：本地或远程，由 p 的装箱源决定
+final out = p.execute(ctx, call)
 ```
 
 只能调用 `I` 声明的 method requirement；`any I` 不暴露具体类型的其它成员。
@@ -109,8 +109,8 @@ service call，因service call本身而是潜在挂起点，不读取callee内�
 `any I` 一样赋值、传参、进 `Array<any I>`，调用方法时走跨 service 调用。
 
 ```skiff
-let llm: any LlmClient = remoteLlm/managedLlm as LlmClient
-let providers: Array<any ToolProvider> = [
+final llm: any LlmClient = remoteLlm/managedLlm as LlmClient
+final providers: Array<any ToolProvider> = [
   remoteLlm/remoteTools as ToolProvider,   // 远程
   localTools as ToolProvider,           // 本地
 ]
@@ -123,7 +123,7 @@ let providers: Array<any ToolProvider> = [
   `remoteLlm/managedLlm` 寻址成装箱源，再 `as I` 装箱。`/` 寻址整体优先级与 `.`/call 等 postfix 同级，高于
   §2.3 所述 `as` 的转换运算优先级。
 - 裸 `remoteLlm/managedLlm` **不是值**，没有可赋值的类型。它只能出现在 `.method(...)`（直接调用）或 `as I`
-  （装箱）左边。`let x = remoteLlm/managedLlm` 非法。
+  （装箱）左边。`final x = remoteLlm/managedLlm` 非法。
 - 远程装箱源必须显式 implements `as I` 选定的 interface，并公开该 interface 方法对应的 operation。
 - 远程对象也是本地对象：装箱后的 `any I` 值在本进程内自由流动；"远程"只体现在**调用方法时**——那一刻
   发生跨 service 调用（带 remote 语义）。值传递本身不跨进程。
@@ -139,7 +139,7 @@ semantics。`as I` 先求值装箱源，再把当时的逻辑 snapshot 放入 in
 move/share/COW 共享 physical backing，但不得暴露 mutable alias。`carrier = Remote` 的 snapshot
 复制的是不可写的寻址/operation 坐标，不是远程活对象指针。
 
-局部 `let` 是不可写 runtime binding；局部 `var` 可重绑，其未经 immutable/identity boundary
+局部 `final` 是不可写 runtime binding；局部 `var` 可重绑，其未经 immutable/identity boundary
 的精确 member/index path 可写。`const` 只是顶层 compiler-evaluated、request-independent 且
 deeply frozen 的常量，不是第三种局部 mutable binding。普通参数（包括 `any I`）是
 immutable value binding；callee 需要可写副本时必须先放入局部 `var`。

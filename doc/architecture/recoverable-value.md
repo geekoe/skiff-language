@@ -632,7 +632,7 @@ DB/dispatch/queue/persistent payload，则仍按本文的可恢复边界处理�
 
 ```text
 构造侧                                          对端 service
-let i = localImpl as I    ──sealed 可恢复字节随 wire 传──►   持有 opaque 字节（把对端当存储）
+final i = localImpl as I    ──sealed 可恢复字节随 wire 传──►   持有 opaque 字节（把对端当存储）
                                                        │ 回拨时把字节带回构造侧
   ◄──────回拨：带回原字节──────────────────────────────┘
   按 sealed payload 内各节点的 code identity + state 重建等价 carrier，执行

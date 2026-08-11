@@ -14,7 +14,7 @@ Skiff 当前不使用分号。简单语句由逻辑行结束；在括号、方�
 
 普通标识符只使用 ASCII：首字符为 `_` 或 ASCII 字母，后续字符可含 `_`、ASCII 字母和 ASCII 数字。关键字不能作为普通标识符。
 
-关键字包括声明、控制流、并发、导入导出和基础 literal 相关单词：`function`、`fn`、`native`、`static`、`type`、`alias`、`interface`、`impl`、`const`、`let`、`var`、`inout`、`if`、`else`、`match`、`value`、`for`、`while`、`return`、`break`、`continue`、`throw`、`rethrow`、`catch`、`with`、`emit`、`concurrent`、`serial`、`timeout`、`import`、`export`、`implements`、`in`、`as`、`true`、`false`、`null`、`Self`。
+关键字包括声明、控制流、并发、导入导出和基础 literal 相关单词：`function`、`fn`、`native`、`static`、`type`、`alias`、`interface`、`impl`、`const`、`final`、`var`、`inout`、`if`、`else`、`match`、`value`、`for`、`while`、`return`、`break`、`continue`、`throw`、`rethrow`、`catch`、`with`、`emit`、`concurrent`、`serial`、`timeout`、`import`、`export`、`implements`、`in`、`as`、`true`、`false`、`null`、`Self`。
 
 基础类型名、prelude 核心类型名和内建 value root 是保留名；它们不能被声明、import alias 或局部绑定 shadow。关键 root 包括 `std`、`root` 和 `config`。
 
@@ -32,18 +32,20 @@ duration literal 是单个 token，由正整数和单位 `ms`、`s`、`m`、`h`�
 是 source-layer metadata，不是 Skiff source file 语法的一部分。
 
 顶层 item 包括 `function`、`type`、`alias`、`interface`、`impl` 和 `const`。`const` 只是
-顶层声明；`let` 与 `var` 只允许出现在 block 内，局部 `const` 不是语法。三者都必须在
+顶层声明；`final` 与 `var` 只允许出现在 block 内，局部 `const` 不是语法。三者都必须在
 声明处提供 initializer：
 
 ```ebnf
 TopLevelConstDecl = "const" Identifier (":" Type)? "=" Expr
-LocalBindingDecl = ("let" | "var") Identifier (":" Type)? "=" Expr
+LocalBindingDecl = ("final" | "var") Identifier (":" Type)? "=" Expr
 ```
+
+`let` 已移除，不再作为局部 binding 语法；解析器只保留明确的迁移错误。
 
 三个名称的职责不重叠：
 
 - 顶层 `const` 表示 compiler-evaluated、request-independent、deeply frozen 值；
-- 局部 `let` 表示运行时不可重绑且不可通过该 binding 修改的值；
+- 局部 `final` 表示运行时不可重绑且不可通过该 binding 修改的值；
 - 局部 `var` 表示可重绑、可作为 writable access-path root 的值。
 
 普通裸 block 不是 statement。block 只出现在函数体、控制流、`with`、`timeout`、`concurrent`、`serial`、`value` 等语法结构要求的位置。

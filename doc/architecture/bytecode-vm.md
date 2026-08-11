@@ -9,7 +9,7 @@ Skiff 尚未发布。本架构落地时整体升级 artifact/runtime 格式并�
 不保留旧 artifact reader、双解释器或按版本 fallback。
 
 本文依赖的用户可见语义已在`../reference/`收敛：普通aggregate value semantics、
-top-level frozen `const`、local `var` / immutable `let`，以及只允许Package Local ABI使用的
+top-level frozen `const`、local `var` / immutable `final`，以及只允许Package Local ABI使用的
 显式`InOut`。Collection bracket 的 strict read、indexed assignment、atomic loan 与公开错误同样
 由`../reference/syntax.md`、`../reference/static-semantics.md`、`../reference/runtime.md`和
 `../reference/std-surface.md`定义。本文只规定它们的VM物理实现与验证边界。
@@ -1288,7 +1288,7 @@ implementation benchmark plan绑定workload、release profile、机器、统计�
 
 - `runtime-lazy-load-deployment.md`、`package-service-contract-deployment.md` 与runtime实现都以buildId
   `DeploymentExecutionImage`为执行单位，旧`RuntimeAssembly`已删除，可选`ReleaseBundle`只用于离线聚合；
-- `../reference/syntax.md` 明确 local `var`、immutable `let`与top-level frozen `const`；
+- `../reference/syntax.md` 明确 local `var`、immutable `final`与top-level frozen `const`；
 - `../reference/static-semantics.md`、`../reference/runtime.md`和Actor文档从mutable aggregate reference
   semantics收敛到value semantics、writable path、ordinary value argument与Package-only `InOut`；
 - `../reference/std-surface.md`明确receiver mutation与static transformation API；

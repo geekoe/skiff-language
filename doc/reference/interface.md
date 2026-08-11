@@ -215,7 +215,7 @@ first-class interface value（动态分派）是 `any I`，见 `any-interface.md
 pattern / narrowing 可以用 interface conformance 做有限类型测试，但不创建 interface value。当前
 Package 的普通 public const 不会自动成为可调用 root。这里的 `const` 是顶层、由
 compiler 求值并 deep freeze 的常量；它不是局部 writable binding，也不因被公开就获得
-receiver identity。局部 runtime binding 使用不可写的 `let` 或可写的 `var`。
+receiver identity。局部 runtime binding 使用不可写的 `final` 或可写的 `var`。
 
 `any I` 的 value layout 见 `any-interface.md §3` 和 `../architecture/any-interface-value.md`（含本地 /
 远程两类装箱源的泛化布局）。不能把 ordinary object 的 per-instance runtime shape 偷偷扩展成隐式 vtable。
