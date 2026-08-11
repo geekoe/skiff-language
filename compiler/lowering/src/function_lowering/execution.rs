@@ -90,7 +90,7 @@ impl FunctionLowerer<'_> {
             TypeRefIr::builtin("null"),
         );
         let init_stmt = self.push_stmt(
-            StmtIr::Let {
+            StmtIr::InitSlot {
                 slot: temp_slot,
                 value: init_value,
             },

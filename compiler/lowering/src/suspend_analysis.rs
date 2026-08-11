@@ -410,7 +410,7 @@ impl SuspendContext<'_, '_> {
                 expect_suspend || step_expect_suspend || outcome_suspend
             }
             Stmt::Assert { condition, .. } => self.expr_may_suspend(condition),
-            Stmt::Let {
+            Stmt::LocalBinding {
                 name, ty, value, ..
             } => {
                 let fact_type = self.next_expression_type();

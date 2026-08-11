@@ -146,7 +146,7 @@ fn statement_use_def(
         expression_use_def(expression, uses, defs, function, &mut BTreeSet::new())
     }
     match statement {
-        MirStmtKind::Let { slot, value } => {
+        MirStmtKind::InitSlot { slot, value } => {
             defs.insert(*slot);
             visit(value.expression, uses, defs, function)?;
         }

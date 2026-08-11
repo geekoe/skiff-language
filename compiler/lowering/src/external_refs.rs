@@ -222,7 +222,7 @@ fn collect_stmt_external_refs(stmt: &StmtIr, refs: &mut ExternalRefTable) {
                 }
             }
         }
-        StmtIr::Let { .. }
+        StmtIr::InitSlot { .. }
         | StmtIr::Timeout { .. }
         | StmtIr::Concurrent { .. }
         | StmtIr::If { .. }

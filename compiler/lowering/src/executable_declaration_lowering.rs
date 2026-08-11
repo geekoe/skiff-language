@@ -1021,7 +1021,7 @@ fn stmt_contains_bare_return(stmt: &Stmt) -> bool {
         Stmt::Match { arms, .. } => arms.iter().any(|arm| block_contains_bare_return(&arm.body)),
         Stmt::Assert { .. }
         | Stmt::CompilerTestEffectRegister { .. }
-        | Stmt::Let { .. }
+        | Stmt::LocalBinding { .. }
         | Stmt::Assign { .. }
         | Stmt::Throw { .. }
         | Stmt::Rethrow { .. }

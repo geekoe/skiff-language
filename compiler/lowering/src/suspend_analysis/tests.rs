@@ -6,11 +6,11 @@ fn missing_expression_facts_do_not_invent_full_type_for_projected_db_read() {
     let ast = parse_source(
         r#"
               function projected(id: string) -> void {
-                let credential = db require Credential(id) { fields { label } }
+                final credential = db require Credential(id) { fields { label } }
               }
 
               function full(id: string) -> void {
-                let credential = db require Credential(id)
+                final credential = db require Credential(id)
               }
             "#,
     )
@@ -51,8 +51,8 @@ fn missing_expression_facts_do_not_invent_full_type_for_projected_db_read() {
 }
 
 fn let_value(stmt: &Stmt) -> &Expr {
-    let Stmt::Let { value, .. } = stmt else {
-        panic!("expected let statement, got {stmt:?}");
+    let Stmt::LocalBinding { value, .. } = stmt else {
+        panic!("expected local binding statement, got {stmt:?}");
     };
     value
 }

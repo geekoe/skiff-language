@@ -353,7 +353,7 @@ fn rewrite_stmt(index: &PublicationLocalRefIndex, module_path: &str, stmt: &mut 
         } => {
             rewrite_type_ref(index, module_path, field_type);
         }
-        StmtIr::Let { .. }
+        StmtIr::InitSlot { .. }
         | StmtIr::Assign { .. }
         | StmtIr::Timeout { .. }
         | StmtIr::Concurrent { .. }

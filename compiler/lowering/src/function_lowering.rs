@@ -17,7 +17,8 @@ use skiff_compiler_source::{
 };
 use skiff_syntax::{
     ast::{
-        BinaryOp, CallArg, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding, LetKind,
+        BinaryOp, CallArg, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding,
+        LocalBindingKind,
         Literal, ObjectLiteralEntry, ObjectLiteralKey, PatchOperation, Stmt, TestEffectStepOutcome,
         TypeRef, UnaryOp,
     },
@@ -589,7 +590,7 @@ impl<'a> FunctionLowerer<'a> {
                     outcome,
                 }
             }
-            Stmt::Let {
+            Stmt::LocalBinding {
                 kind,
                 name,
                 ty,
@@ -609,13 +610,13 @@ impl<'a> FunctionLowerer<'a> {
                 let slot = self.declare_slot_with_type(
                     name,
                     SlotKind::Local,
-                    matches!(kind, LetKind::Var),
+                    matches!(kind, LocalBindingKind::Var),
                     readonly,
                     type_text,
                 )?;
-                self.slots[slot as usize].writable_local = matches!(kind, LetKind::Var);
+                self.slots[slot as usize].writable_local = matches!(kind, LocalBindingKind::Var);
                 self.set_slot_type(slot, value_ty);
-                StmtIr::Let { slot, value }
+                StmtIr::InitSlot { slot, value }
             }
             Stmt::Assign { target, value } => {
                 let target = self.lower_assign_target(target)?;
@@ -1094,7 +1095,7 @@ impl<'a> FunctionLowerer<'a> {
         };
         let mut locals = BTreeMap::new();
         for stmt in prefix {
-            if let Stmt::Let { name, value, .. } = stmt {
+            if let Stmt::LocalBinding { name, value, .. } = stmt {
                 let flags = self.readonly_flags_for_value_with_locals(value, &locals);
                 locals.insert(name.clone(), flags);
             }
@@ -3615,7 +3616,7 @@ fn stmt_preorder_node_count(stmt: &Stmt) -> u32 {
                     .sum::<u32>()
         }
         Stmt::Assert { condition, .. } => expr_preorder_node_count(condition),
-        Stmt::Let { value, .. } => expr_preorder_node_count(value),
+        Stmt::LocalBinding { value, .. } => expr_preorder_node_count(value),
         Stmt::Assign { target, value } => {
             expr_preorder_node_count(target) + expr_preorder_node_count(value)
         }
@@ -3721,7 +3722,7 @@ fn stmt_contains_return_stmt(stmt: &Stmt) -> bool {
         Stmt::Match { arms, .. } => arms.iter().any(|arm| block_contains_return_stmt(&arm.body)),
         Stmt::Assert { .. }
         | Stmt::CompilerTestEffectRegister { .. }
-        | Stmt::Let { .. }
+        | Stmt::LocalBinding { .. }
         | Stmt::Assign { .. }
         | Stmt::Throw { .. }
         | Stmt::Rethrow { .. }

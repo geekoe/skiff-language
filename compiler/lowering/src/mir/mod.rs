@@ -278,7 +278,7 @@ pub struct MirStmt {
 /// `Jump` is the unconditional fall-through / loop edge.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MirStmtKind {
-    Let {
+    InitSlot {
         slot: u32,
         value: ExprRefIr,
     },
