@@ -1,5 +1,7 @@
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity, BoundaryCallbackExpirationError,
+    current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
+    validate_current_platform_error_projection_registry_ref,
+    validate_platform_error_projection_registry_ref_shape, BoundaryCallbackExpirationError,
     BoundaryCallbackLifetime, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryParameter, BoundaryReturn, BoundaryValueCarrier, BoundaryValueEncoding,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, PackageBuildId,
@@ -316,6 +318,26 @@ fn manifest_selection_projection_allows_stable_zero_operation_contract() {
     }));
 }
 
+#[test]
+fn package_fixture_uses_current_artifact_epoch_and_platform_error_registry() {
+    let package = package_fixture();
+
+    assert_eq!(package.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
+    assert_eq!(package.schema_version, "skiff-package-artifact-v15");
+    assert_eq!(
+        &package.platform_error_projection_registry,
+        current_platform_error_projection_registry_ref()
+    );
+    validate_platform_error_projection_registry_ref_shape(
+        &package.platform_error_projection_registry,
+    )
+    .unwrap();
+    validate_current_platform_error_projection_registry_ref(
+        &package.platform_error_projection_registry,
+    )
+    .unwrap();
+}
+
 fn package_fixture() -> PackageArtifact {
     let paths = [
         "selected",
@@ -439,6 +461,8 @@ fn package_fixture() -> PackageArtifact {
         package_id: "example.package".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("build"),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,
