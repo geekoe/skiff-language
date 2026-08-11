@@ -32,9 +32,9 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
-    response_stream_writer::ResponseStreamWriter, vm_heap::RequestVmHeap, BoundaryResponse,
-    ExecutionBudget, ExecutionControl, RequestEnvelope, RequestError, RequestResult,
-    ResponseEventSink,
+    continuation_handoff::resume_pending_wake, response_stream_writer::ResponseStreamWriter,
+    vm_heap::RequestVmHeap, BoundaryResponse, ExecutionBudget, ExecutionControl, RequestEnvelope,
+    RequestError, RequestResult, ResponseEventSink,
 };
 
 pub use skiff_runtime_scheduler::{
@@ -444,7 +444,7 @@ where
         // includes `ResumeOutcome::StreamEnd`; restoring it through the scheduler
         // reaches the VM's independent end resume PC instead of an item path or a
         // producer backpressure `Empty`.
-        BytecodeScheduler::resume_from_pending_wake(self, ports)
+        resume_pending_wake(self, ports)
     }
 }
 

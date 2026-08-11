@@ -2,6 +2,7 @@
 
 mod bytecode_ingress;
 pub mod cancellation;
+mod continuation_handoff;
 mod envelope;
 mod error;
 pub mod execution_budget;
