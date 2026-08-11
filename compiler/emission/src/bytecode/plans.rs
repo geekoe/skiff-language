@@ -31,6 +31,8 @@ pub fn derive_bytecode_value_transfer_plans(
                     .as_ref()
                     .ok_or_else(|| unsupported_slot_type(&function_key, slot))?;
                 slot_plans.push(concrete_snapshot_plan(
+                    units,
+                    &unit.module_path,
                     &function_key,
                     &format!("slot `{}`", slot.name),
                     ty,
@@ -40,6 +42,8 @@ pub fn derive_bytecode_value_transfer_plans(
                 Vec::new()
             } else {
                 vec![concrete_snapshot_plan(
+                    units,
+                    &unit.module_path,
                     &function_key,
                     "return value",
                     &function.return_type,
@@ -70,10 +74,17 @@ pub fn derive_bytecode_value_transfer_plans(
 }
 
 fn concrete_snapshot_plan(
+    units: &[MirUnit],
+    module_path: &str,
     function_key: &str,
     location: &str,
     ty: &skiff_artifact_model::TypeRefIr,
 ) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+    if is_record_aggregate(units, module_path, ty)? {
+        return Ok(ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::SnapshotRelease,
+        });
+    }
     let resolution = native_value_lifecycle_registry()
         .lookup(ty)
         .map_err(|error| BytecodeEmissionError::UnsupportedConstruct {
@@ -100,6 +111,88 @@ fn concrete_snapshot_plan(
         }
     };
     Ok(ValueTransferPlan::SnapshotShare { drop })
+}
+
+fn is_record_aggregate(
+    units: &[MirUnit],
+    module_path: &str,
+    ty: &skiff_artifact_model::TypeRefIr,
+) -> Result<bool, BytecodeEmissionError> {
+    match ty {
+        skiff_artifact_model::TypeRefIr::Record { .. } => Ok(true),
+        skiff_artifact_model::TypeRefIr::LocalType { type_index } => {
+            let unit = units
+                .iter()
+                .find(|unit| unit.module_path == module_path)
+                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+                    context: format!("value lifecycle plan for module `{module_path}`"),
+                    message: "owning MIR unit disappeared".to_string(),
+                })?;
+            record_declaration(unit, *type_index)
+        }
+        skiff_artifact_model::TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            let unit = units
+                .iter()
+                .find(|unit| unit.module_path == *module_path)
+                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+                    context: format!("value lifecycle plan for publication module `{module_path}`"),
+                    message: "publication MIR unit disappeared".to_string(),
+                })?;
+            record_declaration(unit, *type_index)
+        }
+        skiff_artifact_model::TypeRefIr::AppliedNominal {
+            base: skiff_artifact_model::NominalTypeRefBaseIr::LocalType { type_index },
+            arguments,
+        } if arguments.is_empty() => {
+            let unit = units
+                .iter()
+                .find(|unit| unit.module_path == module_path)
+                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+                    context: format!("value lifecycle plan for module `{module_path}`"),
+                    message: "owning MIR unit disappeared".to_string(),
+                })?;
+            record_declaration(unit, *type_index)
+        }
+        skiff_artifact_model::TypeRefIr::AppliedNominal {
+            base:
+                skiff_artifact_model::NominalTypeRefBaseIr::PublicationType {
+                    module_path,
+                    type_index,
+                },
+            arguments,
+        } if arguments.is_empty() => {
+            let unit = units
+                .iter()
+                .find(|unit| unit.module_path == *module_path)
+                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+                    context: format!("value lifecycle plan for publication module `{module_path}`"),
+                    message: "publication MIR unit disappeared".to_string(),
+                })?;
+            record_declaration(unit, *type_index)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn record_declaration(unit: &MirUnit, type_index: u32) -> Result<bool, BytecodeEmissionError> {
+    let declaration = unit.type_table.get(type_index as usize).ok_or_else(|| {
+        BytecodeEmissionError::MissingLocalType {
+            module_path: unit.module_path.clone(),
+            location: "value lifecycle record shape".to_string(),
+            type_index,
+            type_count: unit.type_table.len(),
+        }
+    })?;
+    if !declaration.type_params.is_empty() {
+        return Ok(false);
+    }
+    Ok(matches!(
+        declaration.descriptor,
+        skiff_artifact_model::TypeDescriptorIr::Record { .. }
+    ))
 }
 
 fn unsupported_slot_type(function_key: &str, slot: &MirSlot) -> BytecodeEmissionError {

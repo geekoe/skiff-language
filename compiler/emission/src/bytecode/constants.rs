@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     bytecode::limits, BytecodeConstantRef, BytecodePoolEntry, BytecodePools, ExprIr,
-    FrozenConstantGraph, FrozenConstantNode, NominalTypeRefBaseIr, TypeRefIr, ValueTransferPlan,
+    FrozenConstantGraph, FrozenConstantNode, NominalTypeRefBaseIr, ResumeDescriptor,
+    ShapeDeclaration, ShapeFieldDeclaration, TypeRefIr, ValueTransferPlan, WritablePathDeclaration,
+    WritablePathSegment,
 };
 use skiff_compiler_core::type_ref::{map_type_ref, walk_type_ref};
 use skiff_compiler_lowering::mir::{MirFunction, MirUnit};
@@ -14,6 +16,8 @@ pub(crate) struct ConstantImage {
     pub(crate) roots: BTreeMap<String, u32>,
     pub(crate) graph: FrozenConstantGraph,
     type_indices: BTreeMap<String, u32>,
+    shape_indices: BTreeMap<String, u32>,
+    writable_path_indices: BTreeMap<String, u32>,
 }
 
 impl ConstantImage {
@@ -78,6 +82,111 @@ impl ConstantImage {
             plan,
         });
         Ok(pool_index)
+    }
+
+    pub(crate) fn intern_shape(
+        &mut self,
+        module_path: &str,
+        ty: &TypeRefIr,
+        fields: &BTreeMap<String, TypeRefIr>,
+        context: &str,
+    ) -> Result<u32, BytecodeEmissionError> {
+        let type_ref = self.intern_type(module_path, ty, context)?;
+        let field_declarations = fields
+            .iter()
+            .map(|(name, field_ty)| {
+                let field_type_ref = self.intern_type(module_path, field_ty, context)?;
+                let qualified = qualify_local_types(module_path, field_ty);
+                Ok(ShapeFieldDeclaration {
+                    name: name.clone(),
+                    type_ref: field_type_ref,
+                    plan: ValueTransferPlan::FromType { ty: qualified },
+                })
+            })
+            .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
+        let shape = ShapeDeclaration {
+            type_ref,
+            fields: field_declarations,
+        };
+        let key = serde_json::to_string(&shape).map_err(|error| {
+            BytecodeEmissionError::CanonicalSerialization {
+                context: context.to_string(),
+                message: error.to_string(),
+            }
+        })?;
+        if let Some(index) = self.shape_indices.get(&key) {
+            return Ok(*index);
+        }
+        let index = checked_index(self.pools.shapes.len(), "indexing canonical record shapes")?;
+        self.pools
+            .shapes
+            .push(BytecodePoolEntry::ShapeRef { shape });
+        check_limit(
+            "MAX_POOL_ENTRIES",
+            "image.pools.shapes",
+            self.pools.shapes.len(),
+            limits::MAX_POOL_ENTRIES,
+        )?;
+        self.shape_indices.insert(key, index);
+        Ok(index)
+    }
+
+    pub(crate) fn intern_writable_path(
+        &mut self,
+        module_path: &str,
+        root_ty: &TypeRefIr,
+        leaf_ty: &TypeRefIr,
+        segments: Vec<WritablePathSegment>,
+        context: &str,
+    ) -> Result<u32, BytecodeEmissionError> {
+        let root_type_ref = self.intern_type(module_path, root_ty, context)?;
+        let leaf_type_ref = self.intern_type(module_path, leaf_ty, context)?;
+        let path = WritablePathDeclaration {
+            root_type_ref,
+            leaf_type_ref,
+            segments,
+        };
+        let key = serde_json::to_string(&path).map_err(|error| {
+            BytecodeEmissionError::CanonicalSerialization {
+                context: context.to_string(),
+                message: error.to_string(),
+            }
+        })?;
+        if let Some(index) = self.writable_path_indices.get(&key) {
+            return Ok(*index);
+        }
+        let index = checked_index(
+            self.pools.writable_paths.len(),
+            "indexing canonical writable paths",
+        )?;
+        self.pools
+            .writable_paths
+            .push(BytecodePoolEntry::WritablePath(path));
+        check_limit(
+            "MAX_POOL_ENTRIES",
+            "image.pools.writablePaths",
+            self.pools.writable_paths.len(),
+            limits::MAX_POOL_ENTRIES,
+        )?;
+        self.writable_path_indices.insert(key, index);
+        Ok(index)
+    }
+
+    pub(crate) fn add_resume_descriptor(
+        &mut self,
+        descriptor: ResumeDescriptor,
+    ) -> Result<u32, BytecodeEmissionError> {
+        let index = checked_index(self.pools.resume.len(), "indexing resume descriptors")?;
+        self.pools
+            .resume
+            .push(BytecodePoolEntry::ResumeDescriptor(descriptor));
+        check_limit(
+            "MAX_POOL_ENTRIES",
+            "image.pools.resume",
+            self.pools.resume.len(),
+            limits::MAX_POOL_ENTRIES,
+        )?;
+        Ok(index)
     }
 }
 
@@ -277,6 +386,8 @@ fn merge_graphs(
         roots,
         graph: FrozenConstantGraph { nodes },
         type_indices: type_indices.clone(),
+        shape_indices: BTreeMap::new(),
+        writable_path_indices: BTreeMap::new(),
     })
 }
 
@@ -401,7 +512,7 @@ fn qualify_transfer_plan(module_path: &str, plan: &ValueTransferPlan) -> ValueTr
     }
 }
 
-fn qualify_local_types(module_path: &str, ty: &TypeRefIr) -> TypeRefIr {
+pub(crate) fn qualify_local_types(module_path: &str, ty: &TypeRefIr) -> TypeRefIr {
     map_type_ref(ty.clone(), &mut |node| match node {
         TypeRefIr::LocalType { type_index } => TypeRefIr::PublicationType {
             module_path: module_path.to_string(),
