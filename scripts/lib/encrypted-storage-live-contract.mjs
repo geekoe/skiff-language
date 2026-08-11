@@ -6,8 +6,6 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 export const repoRoot = resolve(scriptDir, '..', '..');
 export const ENCRYPTED_STORAGE_TARGET_PROFILE = 'dev';
 
-const RUNTIME_ASSEMBLY_IDENTITY =
-  /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
 const RUNTIME_CONFIG_SNAPSHOT_IDENTITY =
   /^skiff-runtime-config-snapshot-v1:[0-9a-f]{32}$/;
 const REQUIRED_PACKAGE_COORDINATES = new Set([
@@ -23,16 +21,12 @@ const REQUIRED_SERVICE_IDS = new Set([
 export function encryptedStorageTestRunnerArgs({
   testFile,
   artifactRoot,
-  baseAssembly,
   baseConfigSnapshot,
   ingressUrl,
   profile,
 }) {
   requiredAbsolutePath(testFile, 'encrypted-storage test file');
   requiredAbsolutePath(artifactRoot, 'encrypted-storage artifact root');
-  if (!RUNTIME_ASSEMBLY_IDENTITY.test(baseAssembly ?? '')) {
-    throw new Error('encrypted-storage base assembly must be canonical');
-  }
   if (!RUNTIME_CONFIG_SNAPSHOT_IDENTITY.test(baseConfigSnapshot ?? '')) {
     throw new Error('encrypted-storage base config snapshot must be canonical');
   }
@@ -56,8 +50,6 @@ export function encryptedStorageTestRunnerArgs({
     artifactRoot,
     '--platform-source-root',
     repoRoot,
-    '--base-assembly',
-    baseAssembly,
     '--base-config-snapshot',
     baseConfigSnapshot,
     '--live',
@@ -99,27 +91,6 @@ export function encryptedStorageBuildArgs({
 }
 
 export function encryptedStorageProductionAssembly(receipt) {
-  if (!isPlainObject(receipt?.runtimeAssemblyReceipt)) {
-    throw new Error('runtime assembly receipt is missing');
-  }
-  const { runtimeAssemblyReceipt } = receipt;
-  if (
-    runtimeAssemblyReceipt.profile !== ENCRYPTED_STORAGE_TARGET_PROFILE
-  ) {
-    throw new Error(
-      `runtime assembly receipt profile must be ${ENCRYPTED_STORAGE_TARGET_PROFILE}`,
-    );
-  }
-  const assembly = runtimeAssemblyReceipt.assembly;
-  if (!isPlainObject(assembly) || assembly.assemblyIdentity === undefined) {
-    throw new Error('assembly identity is missing');
-  }
-  if (
-    Object.keys(assembly).length !== 1
-    || !RUNTIME_ASSEMBLY_IDENTITY.test(assembly.assemblyIdentity)
-  ) {
-    throw new Error('assembly identity is not canonical');
-  }
   const configSnapshot = receipt?.runtimeConfigSnapshotReceipt?.snapshot;
   if (
     !isPlainObject(configSnapshot)
@@ -154,7 +125,6 @@ export function encryptedStorageProductionAssembly(receipt) {
     return deployment;
   });
   return Object.freeze({
-    assemblyIdentity: assembly.assemblyIdentity,
     configSnapshotId: configSnapshot.snapshotId,
     deployments,
   });
@@ -210,11 +180,9 @@ export async function runEncryptedStorageTestLifecycle({
       throw new Error(`encrypted-storage lifecycle requires ${name}`);
     }
   }
-  const baseAssembly = productionAssembly.assemblyIdentity;
   const baseConfigSnapshot = productionAssembly.configSnapshotId;
   const [testOutcome, observationOutcome] = await Promise.allSettled([
     Promise.resolve().then(() => runTest({
-      baseAssembly,
       baseConfigSnapshot,
     })),
     Promise.resolve().then(() => observeStorage()),
@@ -329,23 +297,17 @@ function assertProductionAssembly(state) {
   if (!isPlainObject(state)) {
     throw new Error('encrypted-storage lifecycle requires caller-owned production assembly');
   }
-  const assembly = state;
-  if (
-    !RUNTIME_ASSEMBLY_IDENTITY.test(assembly.assemblyIdentity ?? '')
-    || !RUNTIME_CONFIG_SNAPSHOT_IDENTITY.test(
-      assembly.configSnapshotId ?? '',
-    )
-  ) {
+  if (!RUNTIME_CONFIG_SNAPSHOT_IDENTITY.test(state.configSnapshotId ?? '')) {
     throw new Error(
       'encrypted-storage lifecycle requires a canonical production assembly',
     );
   }
-  if (!Array.isArray(assembly.deployments) || assembly.deployments.length === 0) {
+  if (!Array.isArray(state.deployments) || state.deployments.length === 0) {
     throw new Error(
       'encrypted-storage lifecycle requires the production deployment refs',
     );
   }
-  for (const deployment of assembly.deployments) {
+  for (const deployment of state.deployments) {
     exactDeploymentRef(deployment);
   }
 }

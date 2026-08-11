@@ -8,13 +8,10 @@ import { initStack } from '../lib/stack-init.mjs';
 
 const skiffRoot = resolve(import.meta.dirname, '..', '..');
 
-test('init authors empty assembly + profile snapshot + std records and keeps an empty pointer table baseline', async (t) => {
+test('init authors empty profile snapshot + std records and keeps an empty pointer table baseline', async (t) => {
   const { configDir, shell, calls, authoring, authoringState } = await initFixture(t);
   const result = await initStack({ configDir, skiffRoot, shell, authoring });
 
-  assert.equal(authoringState.assemblyCall.profile, 'prod');
-  assert.deepEqual(authoringState.assemblyCall.rootDeployments, []);
-  assert.equal(authoringState.assemblyCall.action, 'build');
   assert.equal(authoringState.snapshotCall.profile, 'prod');
   assert.deepEqual(authoringState.snapshotCall.sources, []);
   assert.equal(typeof authoringState.stdCall.artifactRoot, 'string');
@@ -51,7 +48,7 @@ test('init fails closed before authoring when router.yml has no serviceDb.mongoU
     /router\.yml serviceDb\.mongoUrl is required/,
   );
   assert.equal(calls.length, 0);
-  assert.equal(authoringState.assemblyCall, undefined);
+  assert.equal(authoringState.snapshotCall, undefined);
 });
 
 test('init fails closed when the actor routing projection record is missing', async (t) => {
@@ -131,31 +128,21 @@ async function initFixture(t, {
     },
   };
   const authoringState = {
-    assemblyCall: undefined,
     snapshotCall: undefined,
     stdCall: undefined,
     writeProjection: true,
   };
   const authoring = {
-    runCompilerAuthoring: async ({ artifactRoot, ...args }) => {
-      authoringState.assemblyCall = { ...args, artifactRoot };
+    runConfigSnapshotAuthoring: async (args) => {
+      authoringState.snapshotCall = args;
       if (authoringState.writeProjection) {
-        const projectionPath = join(artifactRoot, 'records', 'actor-routing', 'current.json');
+        const projectionPath = join(args.artifactRoot, 'records', 'actor-routing', 'current.json');
         await mkdir(dirname(projectionPath), { recursive: true });
         await writeFile(
           projectionPath,
           '{"methods":[],"schemaVersion":"skiff-actor-routing-projection-v1"}',
         );
       }
-      return {
-        runtimeAssemblyReceipt: {
-          assembly: { assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}` },
-          recordPath: 'records/runtime-assemblies/assembly.json',
-        },
-      };
-    },
-    runConfigSnapshotAuthoring: async (args) => {
-      authoringState.snapshotCall = args;
       return {
         runtimeConfigSnapshotReceipt: {
           snapshot: { snapshotId: 'skiff-runtime-config-snapshot-v1:snapshot-1' },

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // `router-live:session` managed harness (E-session gate, plan §7/§8).
 //
-// Builds a real compiler artifact (`skiff package build` + `skiff assembly
-// build` through the actual compiler binary), produces the runtime config
+// Builds a real compiler artifact (`skiff package build` through the actual compiler
+// binary), produces the runtime config
 // snapshot with the real snapshot tooling, starts an isolated temporary Mongo
 // replica set (never the stable 27017), builds the explicit `skiff-router`
 // Rust binary and the explicit `runtime` Rust binary, then drives the ignored
@@ -76,28 +76,11 @@ try {
     profile: PROFILE,
   });
 
-  console.log('router-live:session: projecting real RuntimeAssembly');
-  const assemblyReceipt = await runCompilerAuthoring({
-    skiffRoot: repoRoot,
-    kind: 'assembly',
-    action: 'build',
-    artifactRoot,
-    profile: PROFILE,
-    rootDeployments: [],
-  });
-  const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
-  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
-  const assemblyIdentity = assembly?.assemblyIdentity;
-  if (typeof assemblyIdentity !== 'string' || typeof recordPath !== 'string') {
-    throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
-  }
-
   console.log('router-live:session: producing runtime config snapshot');
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot: repoRoot,
     artifactRoot,
     profile: PROFILE,
-    assemblyRecord: recordPath,
     sources: [],
   });
   const configSnapshotId = snapshotReceipt?.runtimeConfigSnapshotReceipt?.snapshot?.snapshotId;
@@ -169,7 +152,6 @@ try {
         SKIFF_ROUTER_SESSION_LIVE_DB: DATABASE,
         SKIFF_ROUTER_SESSION_LIVE_ARTIFACT_ROOT: artifactRoot,
         SKIFF_ROUTER_SESSION_LIVE_ENVIRONMENT: PROFILE,
-        SKIFF_ROUTER_SESSION_LIVE_ASSEMBLY_IDENTITY: assemblyIdentity,
         SKIFF_ROUTER_SESSION_LIVE_CONFIG_SNAPSHOT_ID: configSnapshotId,
         SKIFF_ROUTER_SESSION_LIVE_GENERATION: String(GENERATION),
         SKIFF_ROUTER_SESSION_LIVE_HTTP_PORT: String(httpPort),

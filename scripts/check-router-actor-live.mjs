@@ -87,7 +87,7 @@ try {
     artifactRoot,
     profile: PROFILE,
   });
-  const { assemblyIdentity, configSnapshotId, deployment } = authored;
+  const { configSnapshotId, deployment } = authored;
   const deploymentRecord = await loadActorLiveDeploymentRecord(artifactRoot);
   const entrypoints = Object.entries(ACTOR_LIVE_ENTRYPOINTS).map(
     ([gatewayEntryKey, entry]) => ({
@@ -155,7 +155,6 @@ try {
         SKIFF_ROUTER_ACTOR_LIVE_DB: DATABASE,
         SKIFF_ROUTER_ACTOR_LIVE_ARTIFACT_ROOT: artifactRoot,
         SKIFF_ROUTER_ACTOR_LIVE_PROFILE: PROFILE,
-        SKIFF_ROUTER_ACTOR_LIVE_ASSEMBLY_IDENTITY: assemblyIdentity,
         SKIFF_ROUTER_ACTOR_LIVE_CONFIG_SNAPSHOT_ID: configSnapshotId,
         SKIFF_ROUTER_ACTOR_LIVE_GENERATION: String(GENERATION),
         SKIFF_ROUTER_ACTOR_LIVE_HTTP_PORT: String(httpPort),

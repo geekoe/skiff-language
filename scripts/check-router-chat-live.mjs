@@ -170,9 +170,7 @@ try {
     packageArtifactReceipts,
     deployments,
     serviceSources,
-    assemblyIdentity,
     configSnapshotId,
-    assemblyRecordPath,
   } = await authorAgineStack({ repoRoot, artifactRoot, profile: PROFILE });
 
   const projectionDirectory = join(artifactRoot, 'records', 'actor-routing');
@@ -283,7 +281,6 @@ try {
     // records the legacy generation evidence value; the runtime no longer
     // coordinates generations.
     generation: 1,
-    assembly: { assemblyIdentity },
     configSnapshot: { snapshotId: configSnapshotId },
     services: deployments.map((deployment) => {
       const implementation = packageArtifactReceipts.find(
@@ -336,7 +333,6 @@ try {
     skiffSha,
     internalsSha,
     skiffPackagesSha,
-    assemblyIdentity,
     configSnapshotId,
     manifestPath,
   }));
@@ -469,28 +465,10 @@ async function authorAgineStack({
     pending.splice(0, pending.length, ...deferred);
   }
 
-  const rootDeployments = deployments;
-  const assemblyReceipt = await runCompilerAuthoring({
-    skiffRoot,
-    kind: 'assembly',
-    action: 'build',
-    rootDeployments,
-    artifactRoot,
-    profile,
-  });
-  const runtimeAssembly = assemblyReceipt?.runtimeAssemblyReceipt;
-  const assembly = runtimeAssembly?.assembly;
-  const assemblyIdentity = assembly?.assemblyIdentity;
-  const assemblyRecordPath = runtimeAssembly?.recordPath;
-  if (typeof assemblyIdentity !== 'string' || typeof assemblyRecordPath !== 'string') {
-    throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
-  }
-
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
     profile,
-    assemblyRecord: assemblyRecordPath,
     sources: serviceSources,
   });
   const configSnapshotId =
@@ -503,9 +481,7 @@ async function authorAgineStack({
     packageArtifactReceipts,
     deployments,
     serviceSources,
-    assemblyIdentity,
     configSnapshotId,
-    assemblyRecordPath,
   };
 }
 
@@ -734,7 +710,6 @@ function evidenceSummary({
   skiffSha,
   internalsSha,
   skiffPackagesSha,
-  assemblyIdentity,
   configSnapshotId,
   manifestPath,
 }) {
@@ -743,7 +718,6 @@ function evidenceSummary({
     `  skiff: ${skiffSha}`,
     `  internals: ${internalsSha}`,
     `  skiff-packages: ${skiffPackagesSha}`,
-    `  assembly: ${assemblyIdentity}`,
     `  configSnapshot: ${configSnapshotId}`,
     `  manifest: ${manifestPath}`,
   ].join('\n');

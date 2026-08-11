@@ -19,7 +19,6 @@ import {
   skiffSourceSubjectPublishArgs,
 } from '../lib/skiff-source-test-suite.mjs';
 
-const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const configSnapshotIdentity =
   `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`;
 
@@ -257,7 +256,6 @@ test('one isolated runtime owner executes every registry entry with strict non-l
       profile: 'skiff-test',
     }),
   );
-  assert.equal(commands[4].args.includes('--base-assembly'), true);
   assert.equal(commands[4].args.includes('--base-config-snapshot'), true);
   assert.deepEqual(commands[4].options.env, environment);
   assert.deepEqual(logs, [
@@ -413,7 +411,7 @@ test('subject publish command writes an exact package pointer into the shared ar
   );
 });
 
-test('package-service host receipt has one strict schema and canonical assembly identity', async () => {
+test('package-service host receipt has one strict schema and canonical config snapshot identity', async () => {
   const root = await mkdtemp(join(tmpdir(), 'skiff-host-receipt-'));
   const path = join(root, 'receipt.json');
   try {
@@ -428,29 +426,7 @@ test('package-service host receipt has one strict schema and canonical assembly 
       [(value) => { value.legacy = true; }, /must contain exactly/],
       [(value) => { value.schemaVersion = 'legacy'; }, /schemaVersion/],
       [(value) => { value.profile = 'other'; }, /profile/],
-      [(value) => { value.baseAssembly.assemblyIdentity = 'not-canonical'; }, /must be canonical/],
       [(value) => { value.baseConfigSnapshot.snapshotId = 'not-canonical'; }, /must be canonical/],
-      [
-        (value) => {
-          value.baseAssembly.assemblyIdentity =
-            `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
-        },
-        /must be canonical/,
-      ],
-      [
-        (value) => {
-          value.baseAssembly.assemblyIdentity =
-            `skiff-runtime-assembly-v3:sha256:${'A'.repeat(64)}`;
-        },
-        /must be canonical/,
-      ],
-      [
-        (value) => {
-          value.baseAssembly.assemblyIdentity =
-            `skiff-runtime-assembly-v3:sha256:${'a'.repeat(63)}`;
-        },
-        /must be canonical/,
-      ],
       [(value) => { delete value.packages.helper.packageBuildId; }, /helper package must contain exactly/],
     ]) {
       const invalid = structuredClone(valid);
@@ -483,7 +459,6 @@ function hostFixtureReceipt() {
       provider: deploymentRef('provider'),
       consumer: deploymentRef('consumer'),
     },
-    baseAssembly: { assemblyIdentity },
     baseConfigSnapshot: { snapshotId: configSnapshotIdentity },
   };
 }

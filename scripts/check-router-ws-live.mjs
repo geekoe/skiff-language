@@ -3,8 +3,8 @@
 //
 // Builds a real compiler artifact for a WebSocket gateway service
 // (`websocket.yml`: connect handler + `status.get` / `chat.big` JSON-RPC
-// methods), projects the RuntimeAssembly with that exact ServiceDeploymentRef,
-// produces the runtime config snapshot with the real snapshot tooling, starts
+// methods), produces the runtime config snapshot for that exact ServiceDeploymentRef
+// with the real snapshot tooling, starts
 // an isolated temporary Mongo replica set (never the stable 27017), builds the
 // explicit `skiff-router` Rust binary and the explicit `runtime` Rust binary,
 // then drives the ignored `ws_live_probe` test which:
@@ -204,28 +204,11 @@ try {
     throw new Error('package build returned no exact ServiceDeploymentRef receipt');
   }
 
-  console.log('router-live:ws: projecting real RuntimeAssembly');
-  const assemblyReceipt = await runCompilerAuthoring({
-    skiffRoot: repoRoot,
-    kind: 'assembly',
-    action: 'build',
-    artifactRoot,
-    profile: PROFILE,
-    rootDeployments: [deployment],
-  });
-  const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
-  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
-  const assemblyIdentity = assembly?.assemblyIdentity;
-  if (typeof assemblyIdentity !== 'string' || typeof recordPath !== 'string') {
-    throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
-  }
-
   console.log('router-live:ws: producing runtime config snapshot');
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot: repoRoot,
     artifactRoot,
     profile: PROFILE,
-    assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment }],
   });
   const configSnapshotId = snapshotReceipt?.runtimeConfigSnapshotReceipt?.snapshot?.snapshotId;
@@ -297,7 +280,6 @@ try {
         SKIFF_ROUTER_WS_LIVE_DB: DATABASE,
         SKIFF_ROUTER_WS_LIVE_ARTIFACT_ROOT: artifactRoot,
         SKIFF_ROUTER_WS_LIVE_ENVIRONMENT: PROFILE,
-        SKIFF_ROUTER_WS_LIVE_ASSEMBLY_IDENTITY: assemblyIdentity,
         SKIFF_ROUTER_WS_LIVE_CONFIG_SNAPSHOT_ID: configSnapshotId,
         SKIFF_ROUTER_WS_LIVE_GENERATION: String(GENERATION),
         SKIFF_ROUTER_WS_LIVE_HTTP_PORT: String(httpPort),

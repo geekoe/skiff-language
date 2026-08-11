@@ -25,7 +25,7 @@ import {
   publishSources,
   readSourceManifest,
   renderPlan,
-  resolveBasePair,
+  resolveBaseSnapshot,
   runShardedTests,
 } from './lib/test-orchestration.mjs';
 import {
@@ -46,7 +46,7 @@ const defaultDevControlUrl = 'http://127.0.0.1:4001';
 const defaultLocalMongoUrl = 'mongodb://127.0.0.1:27017/?directConnection=true&replicaSet=rs0&retryWrites=false';
 
 const usage = `usage:
-  skiff test <package-root-or-file>... --artifact-root <dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--sources <manifest.json>] [--fresh] [--plan] [--shards <n>] [--max-cases <n>] [--live --ingress-url <url> --profile <id>] [--deny-skips] [--require-tests]
+  skiff test <package-root-or-file>... --artifact-root <dir> [--base-config-snapshot <identity>] [--sources <manifest.json>] [--fresh] [--plan] [--shards <n>] [--max-cases <n>] [--live --ingress-url <url> --profile <id>] [--deny-skips] [--require-tests]
   skiff project init [root] [--force]
   skiff project paths [root] [--json]
   skiff dev init --http-max-request-bytes <bytes> --http-max-response-bytes <bytes> [--dev-home <dir>] [--bin-dir <dir>] [--service-db-mongo-url <url>] [--force] [--no-bin]
@@ -61,7 +61,6 @@ const usage = `usage:
   skiff watch [--once] [--runtime <dir>] --config <watchDir> [--poll-interval-ms <ms>] [--build-only] [--json]
   skiff package build <root> --artifact-root <dir> [--profile <name>] [--no-bytecode] [--json]
   skiff package publish <root> --artifact-root <dir> [--profile <name>] [--no-bytecode] [--json]
-  skiff assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
   skiff release set --artifact-root <dir> --profile <name> --service <id> --version <v> --build-id <id> [--expected '<exact ReleasePointer JSON>'] [--json]
   skiff release unset --artifact-root <dir> --profile <name> --service <id> --version <v> [--expected '<exact ReleasePointer JSON>'] [--json]
   skiff release get --artifact-root <dir> --profile <name> --service <id> --version <v> [--json]
@@ -116,9 +115,6 @@ async function main(args) {
       return;
     case 'package':
       await packageCommand(args);
-      return;
-    case 'assembly':
-      await runAuthoringObjectCommand(command, args, { skiffRoot });
       return;
     case 'release':
       await runReleaseCommand(args, { skiffRoot });
@@ -237,7 +233,6 @@ async function test(rawArgs) {
   const args = parseRootCommand(rawArgs, {
     optionsWithValues: new Set([
       '--artifact-root',
-      '--base-assembly',
       '--base-config-snapshot',
       '--ingress-url',
       '--profile',
@@ -256,14 +251,6 @@ async function test(rawArgs) {
   }
   if (args.options.artifactRoot === undefined) {
     throw new Error('skiff test requires --artifact-root');
-  }
-  if (
-    (args.options.baseAssembly === undefined)
-    !== (args.options.baseConfigSnapshot === undefined)
-  ) {
-    throw new Error(
-      '--base-assembly and --base-config-snapshot must be provided together',
-    );
   }
   const orchestrated = args.options.sources !== undefined || args.options.shards !== undefined;
   const planOnly = args.flags.has('--plan');
@@ -333,8 +320,8 @@ async function test(rawArgs) {
   }
 
   let baseLabel;
-  if (args.options.baseAssembly !== undefined) {
-    baseLabel = `explicit：${args.options.baseAssembly} / ${args.options.baseConfigSnapshot}`;
+  if (args.options.baseConfigSnapshot !== undefined) {
+    baseLabel = `explicit：${args.options.baseConfigSnapshot}`;
   } else if (args.options.sources !== undefined) {
     const derived = deriveBaseServices(manifest, args.roots);
     baseLabel = `resolve from store：${derived.baseServices.map((entry) => entry.coordinate).join('、')}`;
@@ -370,17 +357,15 @@ async function test(rawArgs) {
     }
   }
 
-  let baseAssembly = args.options.baseAssembly;
   let baseConfigSnapshot = args.options.baseConfigSnapshot;
-  if (baseAssembly === undefined && args.options.sources !== undefined) {
-    const resolved = await resolveBasePair({
+  if (baseConfigSnapshot === undefined && args.options.sources !== undefined) {
+    const resolved = await resolveBaseSnapshot({
       skiffRoot,
       manifest,
       store: explicitArtifactRoot,
       testRoots: args.roots,
       env: cargoBuildEnv(skiffRoot),
     });
-    baseAssembly = resolved.baseAssembly;
     baseConfigSnapshot = resolved.baseConfigSnapshot;
   }
 
@@ -389,7 +374,6 @@ async function test(rawArgs) {
       skiffRoot,
       shards,
       store: explicitArtifactRoot,
-      baseAssembly,
       baseConfigSnapshot,
       maxCases: args.options.maxCases === undefined
         ? undefined
@@ -419,8 +403,7 @@ async function test(rawArgs) {
   }
   testArgs.push('--artifact-root', explicitArtifactRoot);
   testArgs.push('--platform-source-root', skiffRoot);
-  if (baseAssembly !== undefined) {
-    testArgs.push('--base-assembly', baseAssembly);
+  if (baseConfigSnapshot !== undefined) {
     testArgs.push('--base-config-snapshot', baseConfigSnapshot);
   }
   if (live) {

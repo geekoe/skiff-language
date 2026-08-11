@@ -2,8 +2,8 @@
 // `router-live:dispatch` managed harness (E-dispatch gate, plan §7/§8).
 //
 // Builds a real compiler artifact with HTTP gateway entries (`skiff package
-// build` through the actual compiler binary, then `skiff assembly build`
-// with the exact generated `ServiceDeploymentRef`), produces the runtime
+// build` through the actual compiler binary with the exact generated
+// `ServiceDeploymentRef`), produces the runtime
 // config snapshot with the real snapshot tooling, starts an isolated
 // temporary Mongo replica set (never the stable 27017), builds the explicit
 // Rust `runtime` binary, then drives the ignored `dispatch_live_probe` test
@@ -151,28 +151,11 @@ try {
     throw new Error('package build returned no exact ServiceDeploymentRef receipt');
   }
 
-  console.log('router-live:dispatch: projecting real RuntimeAssembly with HTTP ingress');
-  const assemblyReceipt = await runCompilerAuthoring({
-    skiffRoot: repoRoot,
-    kind: 'assembly',
-    action: 'build',
-    artifactRoot,
-    profile: PROFILE,
-    rootDeployments: [deployment],
-  });
-  const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
-  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
-  const assemblyIdentity = assembly?.assemblyIdentity;
-  if (typeof assemblyIdentity !== 'string' || typeof recordPath !== 'string') {
-    throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
-  }
-
   console.log('router-live:dispatch: producing runtime config snapshot');
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot: repoRoot,
     artifactRoot,
     profile: PROFILE,
-    assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment }],
   });
   const configSnapshotId = snapshotReceipt?.runtimeConfigSnapshotReceipt?.snapshot?.snapshotId;
@@ -239,7 +222,6 @@ try {
         SKIFF_ROUTER_DISPATCH_LIVE_DB: DATABASE,
         SKIFF_ROUTER_DISPATCH_LIVE_ARTIFACT_ROOT: artifactRoot,
         SKIFF_ROUTER_DISPATCH_LIVE_ENVIRONMENT: PROFILE,
-        SKIFF_ROUTER_DISPATCH_LIVE_ASSEMBLY_IDENTITY: assemblyIdentity,
         SKIFF_ROUTER_DISPATCH_LIVE_CONFIG_SNAPSHOT_ID: configSnapshotId,
         SKIFF_ROUTER_DISPATCH_LIVE_GENERATION: String(GENERATION),
         SKIFF_ROUTER_DISPATCH_LIVE_HTTP_PORT: String(httpPort),

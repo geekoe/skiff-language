@@ -72,12 +72,8 @@ test(
   },
 );
 
-test('public package/assembly CLI does not expose the internal platform trust option', () => {
-  for (const kind of ['package', 'assembly']) {
-    assert.doesNotMatch(objectUsage(kind), /platform-source-root/);
-  }
+test('public package CLI does not expose the internal platform trust option', () => {
   assert.match(objectUsage('package'), /--no-bytecode/);
-  assert.doesNotMatch(objectUsage('assembly'), /--no-bytecode/);
   assert.throws(
     () => parseObjectArgs('package', 'build', [
       '/tmp/object-root',
@@ -88,19 +84,7 @@ test('public package/assembly CLI does not expose the internal platform trust op
     ]),
     /unknown option --platform-source-root/,
   );
-  assert.throws(
-    () => parseObjectArgs('assembly', 'build', [
-      '--artifact-root',
-      '/tmp/artifacts',
-      '--profile',
-      'dev',
-      '--root-deployment',
-      JSON.stringify(rootDeployment),
-      '--platform-source-root',
-      skiffRoot,
-    ]),
-    /unknown option --platform-source-root/,
-  );
+  assert.throws(() => objectUsage('assembly'), /unsupported authoring object/);
 });
 
 test('package authoring accepts --no-bytecode as the explicit legacy opt-out', () => {
@@ -139,130 +123,15 @@ test('package authoring accepts --no-bytecode as the explicit legacy opt-out', (
       'dev',
       '--no-bytecode',
     ]),
-    /unknown option --no-bytecode/,
+    /unsupported authoring object/,
   );
-});
-
-test('assembly authoring transports only exact inline deployment roots', () => {
-  const second = {
-    ...rootDeployment,
-    deploymentRevision: 'revision-2',
-    deploymentArtifactIdentity:
-      `skiff-deployment-artifact-v2:sha256:${'2'.repeat(64)}`,
-  };
-  const parsed = parseObjectArgs('assembly', 'publish', [
-    '--artifact-root=/tmp/artifacts',
-    '--profile',
-    'dev',
-    '--root-deployment',
-    JSON.stringify(rootDeployment),
-    `--root-deployment=${JSON.stringify(second)}`,
-  ]);
-  assert.equal(parsed.root, undefined);
-  assert.deepEqual(parsed.rootDeployments, [rootDeployment, second]);
-
-  const invocation = compilerAuthoringInvocation({
-    skiffRoot,
-    kind: 'assembly',
-    action: 'publish',
-    artifactRoot: parsed.artifactRoot,
-    profile: parsed.profile,
-    rootDeployments: parsed.rootDeployments,
-  });
-  assert.equal(invocation.args.includes('/tmp/object-root'), false);
-  assert.equal(invocation.args.includes('--platform-source-root'), false);
-  assert.deepEqual(
-    invocation.args.flatMap((value, index) => (
-      value === '--root-deployment' ? [JSON.parse(invocation.args[index + 1])] : []
-    )),
-    [rootDeployment, second],
-  );
-});
-
-test('assembly authoring accepts empty roots and rejects duplicate, malformed, and retired inputs', () => {
-  const base = [
-    '--artifact-root',
-    '/tmp/artifacts',
-    '--profile',
-    'dev',
-  ];
-  const empty = parseObjectArgs('assembly', 'build', base);
-  assert.deepEqual(empty.rootDeployments, []);
-  assert.throws(
-    () => parseObjectArgs('assembly', 'build', [
-      ...base,
-      '--root-deployment',
-      JSON.stringify(rootDeployment),
-      '--root-deployment',
-      JSON.stringify({
-        serviceId: rootDeployment.serviceId,
-        deploymentRevision: rootDeployment.deploymentRevision,
-        contractVersion: rootDeployment.contractVersion,
-        deploymentArtifactIdentity: rootDeployment.deploymentArtifactIdentity,
-      }),
-    ]),
-    /duplicate exact reference/,
-  );
-  for (const bad of [
-    '{',
-    '[]',
-    JSON.stringify({ ...rootDeployment, extra: true }),
-    JSON.stringify({ ...rootDeployment, serviceId: ' ' }),
-  ]) {
-    assert.throws(
-      () => parseObjectArgs('assembly', 'build', [
-        ...base,
-        '--root-deployment',
-        bad,
-      ]),
-      /ServiceDeploymentRef|fields must be exactly|non-empty trimmed string/,
-    );
-  }
-  assert.throws(
-    () => parseObjectArgs('assembly', 'build', [
-      '/tmp/object-root',
-      ...base,
-      '--root-deployment',
-      JSON.stringify(rootDeployment),
-    ]),
-    /does not accept a positional root/,
-  );
-  assert.throws(
-    () => parseObjectArgs('assembly', 'build', [
-      '--root',
-      '/tmp/object-root',
-      ...base,
-      '--root-deployment',
-      JSON.stringify(rootDeployment),
-    ]),
-    /unknown option --root/,
-  );
-  assert.throws(
-    () => compilerAuthoringInvocation({
-      skiffRoot,
-      kind: 'assembly',
-      action: 'build',
-      artifactRoot: '/tmp/artifacts',
-      rootDeployments: [rootDeployment],
-    }),
-    /explicit profile/,
-  );
-  const emptyInvocation = compilerAuthoringInvocation({
-    skiffRoot,
-    kind: 'assembly',
-    action: 'build',
-    artifactRoot: '/tmp/artifacts',
-    profile: 'dev',
-    rootDeployments: [],
-  });
-  assert.equal(emptyInvocation.args.includes('--root-deployment'), false);
 });
 
 test('config snapshot production requires an explicit canonical profile', async () => {
   const base = {
     skiffRoot,
     artifactRoot: '/tmp/artifacts',
-    assemblyRecord: 'records/assembly.json',
+
     sources: [{
       root: '/tmp/service',
       deployment: rootDeployment,
@@ -283,15 +152,13 @@ test('config snapshot authoring transports an explicit empty service source set'
     skiffRoot,
     artifactRoot: '/tmp/artifacts',
     profile: 'dev',
-    assemblyRecord: 'records/runtime-assembly.json',
+
     sources: [],
   });
   assert.equal(invocation.args.includes('--source'), false);
   assert.deepEqual(
-    invocation.args.slice(-4),
+    invocation.args.slice(-2),
     [
-      '--assembly-record',
-      'records/runtime-assembly.json',
       '--profile',
       'dev',
     ],
@@ -309,7 +176,7 @@ test(
         skiffRoot,
         artifactRoot: '/tmp/artifacts',
         profile: 'dev',
-        assemblyRecord: 'records/assembly.json',
+
         sources: [{
           root,
           deployment: rootDeployment,
@@ -442,7 +309,7 @@ test('service package build returns one stable API receipt with operation identi
   assert.equal(result.serviceApiReceipt.serviceId, 'example.com/ping');
   assert.match(
     result.serviceApiReceipt.serviceProtocolIdentity,
-    /^skiff-service-protocol-v5:sha256:/,
+    /^skiff-service-protocol-v6:sha256:/,
   );
   assert.deepEqual(
     result.serviceApiReceipt.projection.functions.map((entry) => ({
@@ -524,7 +391,7 @@ test('duplicate dependency aliases and retired options are rejected without comp
       '--expected-generation',
       '0',
     ]),
-    /unknown option --expected-generation/,
+    /unsupported authoring object/,
   );
   assert.throws(
     () => parseObjectArgs('assembly', 'build', [
@@ -535,6 +402,6 @@ test('duplicate dependency aliases and retired options are rejected without comp
       '--activation-url',
       'http://router.test:4101/__skiff/activate-assembly',
     ]),
-    /unknown option --activation-url/,
+    /unsupported authoring object/,
   );
 });

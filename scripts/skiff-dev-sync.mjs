@@ -319,19 +319,11 @@ export async function runDevSyncOnce({
       serviceContractReceipts,
       packageArtifactReceipts,
       serviceDeploymentReceipts,
-      assemblyReceipt,
     } = build;
-    if (!isPlainObject(assemblyReceipt?.assembly)) {
-      throw new Error('assembly build did not return an exact RuntimeAssembly reference');
-    }
-    if (typeof assemblyReceipt.recordPath !== 'string' || assemblyReceipt.recordPath.length === 0) {
-      throw new Error('assembly build did not return a RuntimeAssembly record path');
-    }
     const snapshotResult = await configSnapshotRunner({
       skiffRoot: compilerRoot,
       artifactRoot,
       profile,
-      assemblyRecord: assemblyReceipt.recordPath,
       sources: build.serviceConfigSources,
     });
     const configSnapshotReceipt = snapshotResult?.runtimeConfigSnapshotReceipt;
@@ -343,7 +335,6 @@ export async function runDevSyncOnce({
       serviceContractReceipts,
       packageArtifactReceipts,
       serviceDeploymentReceipts,
-      runtimeAssemblyReceipt: assemblyReceipt,
       runtimeConfigSnapshotReceipt: configSnapshotReceipt,
     };
   } catch (error) {
@@ -429,18 +420,6 @@ async function buildDevAssembly({
       });
     }
   }
-  const rootDeployments = serviceDeploymentReceipts.map((receipt) => receipt?.deployment);
-  if (rootDeployments.some((reference) => !isPlainObject(reference))) {
-    throw new Error('deployment publish did not return an exact ServiceDeployment reference');
-  }
-  const assemblyResult = await compilerRunner({
-    skiffRoot: compilerRoot,
-    kind: 'assembly',
-    action: 'build',
-    rootDeployments,
-    artifactRoot,
-    profile,
-  });
   return {
     profile,
     artifactRoot,
@@ -448,7 +427,6 @@ async function buildDevAssembly({
     packageArtifactReceipts,
     serviceDeploymentReceipts,
     serviceConfigSources,
-    assemblyReceipt: assemblyResult.runtimeAssemblyReceipt,
   };
 }
 
@@ -461,7 +439,6 @@ function validateReusableBuildState(state, { profile, artifactRoot }) {
     || !Array.isArray(state.packageArtifactReceipts)
     || !Array.isArray(state.serviceDeploymentReceipts)
     || !Array.isArray(state.serviceConfigSources)
-    || !isPlainObject(state.assemblyReceipt)
   ) {
     throw new Error('dev sync reusable build state does not match this profile and artifact root');
   }

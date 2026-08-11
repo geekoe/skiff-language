@@ -35,8 +35,8 @@ From a service directory, `skiff service dev sync` and `skiff service dev watch`
 compile Package/service control files and publish an immutable
 ServiceDeployment. `config.yml`, `config.<profile>.yml`, and ignored
 `config.<profile>.secret.yml` form its protected config payload; a config-only
-change therefore creates a new deployment buildId. The retired RuntimeAssembly and
-independently switched RuntimeConfigSnapshot models are not used. For the main
+change therefore creates a new deployment buildId. The retired runtime assembly model is not used; runtime config snapshots are produced directly from
+published ServiceDeployment records. For the main
 worktree instance the artifact root is `.stack/dev-home/artifacts`.
 `skiff check <root>` runs compile validation without syncing local instance
 artifacts. `skiff dev sync` / `skiff dev watch` publish packages, contracts and

@@ -189,15 +189,11 @@ export class EncryptedStorageLiveHarness {
     const databasesBefore = new Set(await this.databaseNames());
     const result = await runEncryptedStorageTestLifecycle({
       productionAssembly: this.productionAssembly,
-      runTest: ({
-        baseAssembly,
-        baseConfigSnapshot,
-      }) => runCommand(
+      runTest: ({ baseConfigSnapshot }) => runCommand(
         'cargo',
         encryptedStorageTestRunnerArgs({
           testFile,
           artifactRoot: this.paths.artifactRoot,
-          baseAssembly,
           baseConfigSnapshot,
           ingressUrl: this.routerHttpUrl,
           profile: TARGET_PROFILE,

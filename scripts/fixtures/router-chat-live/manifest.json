@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "skiff-router-chat-live-manifest-v1",
+  "schemaVersion": "skiff-router-chat-live-manifest-v2",
   "pinned": {
     "skiff": {
       "repository": "skiff",
@@ -16,9 +16,6 @@
   },
   "profile": "router-live-chat",
   "generation": 1,
-  "assembly": {
-    "assemblyIdentity": "skiff-runtime-assembly-v3:sha256:2a8fa377f903002abcbbf972050f64f1fdef183741aebe956290b2e611e5ff3d"
-  },
   "configSnapshot": {
     "snapshotId": "skiff-runtime-config-snapshot-v1:06976ada6a4c4d789de9c1564bf48153"
   },

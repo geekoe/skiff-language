@@ -5,8 +5,6 @@ const snapshotIdentity = (character) =>
   `skiff-runtime-config-snapshot-v1:${character.repeat(32)}`;
 
 export const smokeFixtureIdentities = Object.freeze({
-  assembly: identity('skiff-runtime-assembly-v3:sha256', 'a'),
-  bootstrapAssembly: identity('skiff-runtime-assembly-v3:sha256', '0'),
   configSnapshot: snapshotIdentity('c'),
   bootstrapConfigSnapshot: snapshotIdentity('0'),
   testServiceBuild: identity('skiff-package-build-v10:sha256', '1'),
@@ -44,7 +42,6 @@ export function validSmokeFixtureReceipt(profile) {
     profile,
     bootstrap: null,
     candidate: {
-      assembly: { assemblyIdentity: smokeFixtureIdentities.assembly },
       configSnapshot: { snapshotId: smokeFixtureIdentities.configSnapshot },
       testService,
       testServiceRecordPath:
@@ -91,14 +88,12 @@ export function validBootstrapReceipt(profile, {
   const recordPath =
     `records/package-artifacts/skiff~drun~sstd/1.0.0/${hash(artifact.packageBuildId)}/package.json`;
   return {
-    schemaVersion: 'skiff-package-service-bootstrap-v2',
+    schemaVersion: 'skiff-package-service-bootstrap-v3',
     profile,
     bootstrap: {
-      assembly: { assemblyIdentity: smokeFixtureIdentities.bootstrapAssembly },
       configSnapshot: {
         snapshotId: smokeFixtureIdentities.bootstrapConfigSnapshot,
       },
-      generation: 0,
       std: {
         package: {
           artifact,

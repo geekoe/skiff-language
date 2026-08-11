@@ -187,9 +187,7 @@ try {
     packageArtifactReceipts,
     deployments,
     serviceSources,
-    assemblyIdentity,
     configSnapshotId,
-    assemblyRecordPath,
   } = await authorAgineStack({ repoRoot, artifactRoot, profile: PROFILE });
 
   console.log('router-live:agine: leasing isolated router + ingress ports');
@@ -302,7 +300,6 @@ try {
     artifactRoot,
     ports: { http: httpPort, runtime: runtimePort, ingress: ingressPort },
     mongo: { url: harness.mongoUrl },
-    assembly: { assemblyIdentity },
     configSnapshot: { snapshotId: configSnapshotId },
     services: deployments.map((deployment) => {
       const implementation = packageArtifactReceipts.find(
@@ -418,7 +415,6 @@ try {
   console.log(evidenceSummary({
     pinned,
     binaries,
-    assemblyIdentity,
     configSnapshotId,
     manifestPath,
   }));
@@ -557,34 +553,10 @@ async function authorAgineStack({
     pending.splice(0, pending.length, ...deferred);
   }
 
-  const rootDeployments = deployments;
-  const assemblyReceipt = await runCompilerAuthoring({
-    skiffRoot,
-    kind: 'assembly',
-    action: 'build',
-    rootDeployments,
-    artifactRoot,
-    profile,
-  });
-  const runtimeAssembly = assemblyReceipt?.runtimeAssemblyReceipt;
-  const assembly = runtimeAssembly?.assembly;
-  const assemblyIdentity = assembly?.assemblyIdentity;
-  const assemblyRecordPath = runtimeAssembly?.recordPath;
-  if (typeof assemblyIdentity !== 'string' || typeof assemblyRecordPath !== 'string') {
-    throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
-  }
-
-  // Config snapshot authoring must use the 'dev' profile, not PROFILE:
-  // agine/aihub/codex-relay services only ship config.dev.yml (+ config.dev.secret.yml),
-  // so load_service_config fails with "missing required config path" for any other
-  // profile. This matches the E-chat PASS precedent (c5463fda) where
-  // runConfigSnapshotAuthoring was explicitly called with profile: 'dev'; package and
-  // assembly authoring above keep PROFILE for release pointer directories.
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
     profile: 'dev',
-    assemblyRecord: assemblyRecordPath,
     sources: serviceSources,
   });
   const configSnapshotId =
@@ -597,9 +569,7 @@ async function authorAgineStack({
     packageArtifactReceipts,
     deployments,
     serviceSources,
-    assemblyIdentity,
     configSnapshotId,
-    assemblyRecordPath,
   };
 }
 
@@ -1000,7 +970,6 @@ async function dumpManagedLogs(tempRoot, harness) {
 function evidenceSummary({
   pinned,
   binaries,
-  assemblyIdentity,
   configSnapshotId,
   manifestPath,
 }) {
@@ -1013,7 +982,6 @@ function evidenceSummary({
     `  router: ${binaries.router.sha256} ${binaries.router.path}`,
     `  runtime: ${binaries.runtime.sha256} ${binaries.runtime.path}`,
     `  engine: legacy-tree`,
-    `  assembly: ${assemblyIdentity}`,
     `  configSnapshot: ${configSnapshotId}`,
     `  manifest: ${manifestPath}`,
   ].join('\n');
@@ -1148,7 +1116,7 @@ function range(start, end) {
 // Provenance manifest schema (`router-live:agine` Phase 0)
 // ---------------------------------------------------------------------------
 
-const AGINE_LIVE_MANIFEST_SCHEMA_VERSION = 'skiff-router-agine-live-manifest-v1';
+const AGINE_LIVE_MANIFEST_SCHEMA_VERSION = 'skiff-router-agine-live-manifest-v2';
 
 export function agineLiveManifestSchemaVersion() {
   return AGINE_LIVE_MANIFEST_SCHEMA_VERSION;
@@ -1160,8 +1128,6 @@ const PROFILE_PATTERN = /^[A-Za-z0-9._-]{1,200}$/;
 const SERVICE_ID_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)+$/;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
-const ASSEMBLY_IDENTITY_PATTERN =
-  /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
 const CONFIG_SNAPSHOT_ID_PATTERN =
   /^skiff-runtime-config-snapshot-v1:[0-9a-f]{32}$/;
 const DEPLOYMENT_REVISION_PATTERN = /^sha256-[0-9a-f]{64}$/;
@@ -1191,7 +1157,6 @@ export function validateAgineLiveManifest(value, label = 'manifest') {
     'artifactRoot',
     'ports',
     'mongo',
-    'assembly',
     'configSnapshot',
     'services',
     'packages',
@@ -1213,12 +1178,6 @@ export function validateAgineLiveManifest(value, label = 'manifest') {
   }
   const mongo = exactObject(value.mongo, ['url'], `${label}.mongo`);
   const mongoUrl = validateNonEmptyString(mongo.url, `${label}.mongo.url`);
-  const assembly = exactObject(value.assembly, ['assemblyIdentity'], `${label}.assembly`);
-  const assemblyIdentity = validatePattern(
-    assembly.assemblyIdentity,
-    ASSEMBLY_IDENTITY_PATTERN,
-    `${label}.assembly.assemblyIdentity`,
-  );
   const configSnapshot = exactObject(
     value.configSnapshot,
     ['snapshotId'],
@@ -1244,7 +1203,6 @@ export function validateAgineLiveManifest(value, label = 'manifest') {
     artifactRoot,
     ports: { http: ports.http, runtime: ports.runtime, ingress: ports.ingress },
     mongo: { url: mongoUrl },
-    assembly: { assemblyIdentity },
     configSnapshot: { snapshotId },
     services,
     packages,
