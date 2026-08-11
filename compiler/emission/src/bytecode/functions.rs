@@ -244,6 +244,15 @@ impl<'a> FunctionEmitter<'a> {
                 _ => {}
             }
         }
+        if block.successors.is_empty()
+            && self.function.stream_result.is_some()
+            && self
+                .instructions
+                .last()
+                .is_some_and(|instruction| instruction.opcode == Opcode::EmitStream)
+        {
+            self.emit_op(Opcode::Return, Vec::new())?;
+        }
         Ok(())
     }
 
@@ -831,7 +840,7 @@ impl<'a> FunctionEmitter<'a> {
             )
         })?;
         let value_expression = self.function.expression(value)?;
-        if value_expression.ty != stream.item_type {
+        if !stream_item_type_matches(&value_expression.ty, &stream.item_type) {
             return Err(unsupported(
                 &self.key,
                 "EmitStream",
@@ -2337,6 +2346,26 @@ fn binary_opcode(op: skiff_artifact_model::BinaryOpIr) -> Result<Opcode, Bytecod
     })
 }
 
+fn stream_item_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
+    actual == expected
+        || matches!(
+            (actual, expected),
+            (
+                TypeRefIr::Builtin {
+                    name: actual_name,
+                    args: actual_args,
+                },
+                TypeRefIr::Builtin {
+                    name: expected_name,
+                    args: expected_args,
+                },
+            ) if actual_name == "integer"
+                && expected_name == "number"
+                && actual_args.is_empty()
+                && expected_args.is_empty()
+        )
+}
+
 fn literal_type(literal: &LiteralIr) -> TypeRefIr {
     TypeRefIr::builtin(match literal {
         LiteralIr::Null => "null",
@@ -2390,5 +2419,5 @@ fn check_limit(
 }
 
 fn return_count(function: &MirFunction) -> usize {
-    usize::from(!is_void(&function.return_type))
+    usize::from(!is_void(&function.return_type) && function.stream_result.is_none())
 }

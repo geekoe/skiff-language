@@ -10,10 +10,11 @@ mod tests {
         LiteralIr, NativeTarget, PackageCallableId, PatternIr, RemoteOperationSlotPlanIr,
         RemoteOperationTablePlanIr, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
         SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
-        TypeDescriptorIr, TypeRefIr, ValueTransferPlan,
+        TypeDescriptorIr, TypeRefIr, ResourceDropPlan, ValueTransferPlan,
     };
     use skiff_compiler_emission::{
-        emit_bytecode_artifact, BytecodeValueTransferPlans, FunctionValueTransferPlans,
+        derive_bytecode_value_transfer_plans, emit_bytecode_artifact, BytecodeValueTransferPlans,
+        FunctionValueTransferPlans,
     };
     use skiff_compiler_lowering::{
         mir::{
@@ -1167,6 +1168,102 @@ mod tests {
     }
 
     #[test]
+    fn stream_return_derives_affine_plan_and_emits_bytecode() {
+        let item_type = TypeRefIr::builtin("number");
+        let stream_type = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![item_type.clone()],
+        };
+        let expressions = vec![MirExpression {
+            index: 0,
+            expression: ExprIr::Literal {
+                value: LiteralIr::Number {
+                    value: serde_json::Number::from(7),
+                },
+            },
+            ty: TypeRefIr::builtin("integer"),
+            writable: None,
+            direct_call: None,
+            stream_result: None,
+            remote_interface: None,
+        }];
+        let mut function = function(
+            "streams",
+            "produce",
+            stream_type.clone(),
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![
+                    MirStmt {
+                        statement_index: 0,
+                        span: None,
+                        kind: MirStmtKind::Emit {
+                            operation: String::new(),
+                            value: expression(0),
+                        },
+                    },
+                    MirStmt {
+                        statement_index: 1,
+                        span: None,
+                        kind: MirStmtKind::Emit {
+                            operation: String::new(),
+                            value: expression(0),
+                        },
+                    },
+                ],
+                successors: Vec::new(),
+            }],
+            vec![
+                MirStatementEntry {
+                    statement_index: 0,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 1,
+                    span: None,
+                },
+            ],
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        function.stream_result = Some(MirStreamResultFacts {
+            item_type: item_type.clone(),
+        });
+        let (unit, bundle) =
+            mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
+        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()])
+            .expect("stream producer plan derives");
+        assert_eq!(
+            plans.function("streams::produce").unwrap().result_plans,
+            vec![ValueTransferPlan::AffineResource {
+                drop: ResourceDropPlan::ResourceTableRelease,
+            }]
+        );
+
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("stream producer emits bytecode");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("stream producer bytecode must validate");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "streams::produce")
+            .expect("stream producer function");
+        assert_eq!(
+            function.frame_layout.result_plans,
+            vec![ValueTransferPlan::AffineResource {
+                drop: ResourceDropPlan::ResourceTableRelease,
+            }]
+        );
+        assert!(function.instructions.iter().any(|instruction| {
+            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::EmitStream
+        }));
+    }
+
+    #[test]
     fn stream_emit_and_stream_next_emit_exact_resume_descriptors() {
         let item_type = TypeRefIr::builtin("number");
         let stream_type = TypeRefIr::Builtin {
@@ -1248,12 +1345,28 @@ mod tests {
         });
         let (unit, bundle) =
             mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
+        let derived = derive_bytecode_value_transfer_plans(&[unit.clone()])
+            .expect("stream endpoint plans derive");
+        let endpoint_plan = ValueTransferPlan::AffineResource {
+            drop: ResourceDropPlan::ResourceTableRelease,
+        };
+        assert_eq!(
+            derived.function("streams::run").unwrap().slot_plans,
+            vec![endpoint_plan.clone()]
+        );
+        assert_eq!(
+            derived.function("streams::run").unwrap().result_plans,
+            vec![endpoint_plan.clone()]
+        );
         let artifact = emit_bytecode_artifact(
             &[unit],
             &[bundle],
-            &plans("streams::run", &[stream_type.clone()], &stream_type),
+            &derived,
         )
         .expect("stream body emits");
+        let function = artifact.image.functions["streams::run"].clone();
+        assert_eq!(function.frame_layout.slot_plans, vec![endpoint_plan.clone()]);
+        assert_eq!(function.frame_layout.result_plans, vec![endpoint_plan]);
         assert_eq!(artifact.image.pools.resume.len(), 2);
         let mut saw_item_resume = false;
         let mut saw_emit_resume = false;
@@ -1269,6 +1382,12 @@ mod tests {
                         panic!("resume result type refs resolve to the types pool");
                     };
                     assert_eq!(ty, &item_type);
+                    assert_eq!(
+                        descriptor.result_plans,
+                        vec![ValueTransferPlan::FromType {
+                            ty: item_type.clone(),
+                        }]
+                    );
                     saw_item_resume = true;
                 }
                 [] => saw_emit_resume = true,
