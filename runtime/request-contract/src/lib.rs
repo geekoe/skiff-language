@@ -1,10 +1,12 @@
 pub mod actor_invocation;
 pub mod actor_ref;
 pub mod addr;
+mod diagnostic;
 pub mod envelope;
 pub mod error;
 pub mod outbound;
 pub mod outbound_control;
+mod projection;
 pub mod response;
 pub mod response_event;
 pub mod service_error;
@@ -18,6 +20,10 @@ pub use actor_ref::ActorRef;
 pub use addr::{
     ConstAddr, ExecutableAddr, ExecutableIndex, FileAddr, LoadedFileIndex, PackageSlot, TypeAddr,
     TypeIndex, UnitAddr,
+};
+pub use diagnostic::{
+    DiagnosticAttributeRecordOutcome, DiagnosticAttributes, DiagnosticCode, DiagnosticFieldKey,
+    DiagnosticFieldValue, RuntimeDiagnostic, StaticDiagnosticToken, MAX_DIAGNOSTIC_ATTRIBUTES,
 };
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
@@ -39,6 +45,7 @@ pub use outbound_control::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
     WebSocketConnectionPolicyOverflowControl,
 };
+pub use projection::ProjectableDiagnostic;
 pub use response::{
     FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource, ResponseError,
 };
