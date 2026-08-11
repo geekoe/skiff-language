@@ -1,291 +1,497 @@
-# Rust Runtime Error 到 Skiff 的映射讨论
+# Runtime 错误分类与 Skiff 异常投影
 
-Status: discussion draft, not canonical contract
+Status: canonical architecture contract
 
 Last updated: 2026-08-11
 
-## 1. 背景
+## 1. Scope
 
-这次讨论从一个 clippy 问题开始：完整 linker/vm clippy 被 `runtime/boundary` 的存量
-`result_large_err` 阻塞，其中最大原因是 `RuntimeError::Recoverable` 内嵌了较大的
-`RecoverableBoundaryError`。
+本文定义 Rust runtime failure 如何分类、记录诊断、在 request 内投影成 Skiff
+异常，以及未被投影的 failure 如何进入 request、service、external ingress、control plane
+和后台执行终态。
 
-讨论过程中，真正的问题逐渐变成：Rust runtime 错误应该如何映射到 Skiff，特别是
-recoverable 相关错误是否应该让 Skiff 可见、可 catch，并在跨 service 场景继续传播。
+本文负责：
 
-本文只记录当前讨论，不声称已经是最终设计。
+- 区分内部执行终态、Rust typed error、Skiff user exception 和已经固定的 service failure。
+- 规定哪些错误信息属于程序语义，哪些只属于诊断。
+- 规定 Rust error 获得 Skiff projection 的显式声明和 compiler/codegen owner。
+- 规定 request phase、活跃 Skiff call site 和 operation policy 对实际投影的共同约束。
+- 规定 deep source error、recoverable error、跨 service error 和 ingress error 的处理边界。
 
-## 2. 当前实现
+本文不负责：
 
-Rust 没有 checked exception。可失败函数使用 `Result<T, E>`，错误通过返回值向上传播。
+- 为函数、Package ABI 或 ServiceContract 增加 checked exception / throw set。
+- 把所有 Rust error 合并成一个 Skiff `RuntimeError` 类型。
+- 定义业务预期失败；这类失败仍应优先使用业务返回 union。
+- 规定 telemetry 消费、聚合或告警实现。
 
-当前有多个 `RuntimeError`：
+Skiff 尚未发布；实现应直接收敛到本文模型，不保留旧 projection table、旧字符串
+identity 或旧 catch 行为的兼容层。
 
-- `skiff-runtime-boundary::RuntimeError`
-- `skiff-runtime-eval::RuntimeError`
-- `skiff-runtime-native::RuntimeError`
-- `skiff-runtime-host::RuntimeError`
+## 2. Position
 
-它们各自定义在不同 crate 的命名空间中，因此同名不冲突。不同 crate 之间通过 `From`
-实现手动转换，并不是因为格式相同，而是因为不同执行层需要保留不同控制语义。
+Runtime error 由两个正交维度决定：
 
-共享的扁平化错误结构已经存在：
+1. **错误是什么**：它是否有程序需要处理的专门语义类型，还是只需要形成诊断。
+2. **错误发生在哪里**：当前是否存在仍可继续执行的 Skiff request frame / call site，以及该
+   operation 是否允许把此错误交给业务代码处理。
 
-```rust
-pub struct RuntimeErrorPayload {
-    pub code: String,
-    pub message: String,
-    pub status: Option<u16>,
-    pub details: Option<Value>,
-}
-```
+某个 Rust failure class 能经 semantic adapter 生成 Skiff payload，不代表它每次出现都自动成为 Skiff
+exception。反过来，
+一个 failure 发生在 request 内，也不代表它必然可被 `catch<E>` 捕获。
 
-对应的 trait 是 `WirePayload`，它让各 crate 的 typed error 能产生同一份
-`RuntimeErrorPayload`，并提供可选的 catch projection。
-
-Skiff 侧的异常模型是 `RequestException` / `UserException`。只有带 `CatchIdentity`
-的错误才能被 Skiff 的 `catch` 捕获。Rust 内部错误需要先投影成 Skiff value，再包成
-`UserException`。
-
-## 3. Recoverable 当前路径
-
-`RecoverableBoundaryError` 定义在：
+最终规则是：
 
 ```text
-runtime/boundary/src/error.rs
+Rust typed error
+  -> source-operation semantic classification
+  + generated Skiff projection DTO/declaration（可选）
+  + current failure site
+  + operation admission policy
+  -> Skiff exception / request failure / external response / control failure /
+     background terminal / internal stop
 ```
 
-它内部有 `code`、`message`、`context`、`expected`、`detail`。`code` 本身已经承担分类，
-例如：
+## 3. Runtime failure categories
 
-- `UnsupportedEncode`
-- `UnsupportedDecode`
-- `StateInvalid`
-- `ExpectedTypeMismatch`
-- `CodeIdentityMissing`
-- `ArtifactUnavailable`
-- `NativeMissingAdapter`
-- `InterfaceConformanceMissing`
+### 3.1 Internal execution terminal
 
-`runtime/boundary` 是一个 crate，包名是 `skiff-runtime-boundary`。但 recoverable 不只属于
-这一个 crate：
+`Cancelled`、scope terminal、ancestor stop 等只用于 runtime 内部执行控制。它们不是 ordinary
+error，不产生 public error payload，不获得 catch identity，也不能因为经过 host、request 或
+transport 层就变成普通异常。
 
-- `runtime/model` 定义 recoverable DTO 和 expected type plan。
-- `runtime/boundary` 实现 recoverable codec，并抛出 `RecoverableBoundaryError`。
-- `runtime/eval` 使用 recoverable behavior hooks、task dispatch payload。
-- `runtime/host` 负责 request、service call、telemetry 的最终边界。
+Deadline / instruction budget 是否产生 `TimeoutError` 由 timeout contract 决定；底层用于停止未完成
+work item 的 cancellation carrier 仍是 internal terminal，不能与可捕获 timeout 混淆。
 
-当前 recoverable 错误在 eval 的 `ordinary_catch_projection()` 中返回 `None`，所以 Skiff
-的 `catch` 不能直接捕获它。它最终通常被 `export_provider_failure` 固化为
-`std.service.InternalError`，或者在 request boundary 变成 `response.error`。
+### 3.2 Rust typed error
 
-## 4. 讨论中形成的共识
+当 Rust 代码需要根据 failure 的字段决定重试、fallback、资源释放、公开 payload 或其它行为时，
+failure 必须使用专门的 enum variant / struct 保存这些字段。例如：
 
-### 4.1 Rust 内部错误模型
+- provider unavailable 的 `target` / `reason`；
+- protocol error 的 `target` / `message`；
+- DB conflict 的 `retryable` 与逻辑 target；
+- recoverable failure 的稳定 code；
+- HTTP error 的公开 detail（若对应 Skiff 类型确实声明该字段）。
 
-建议不是“一个 crate 一种具体错误类型”，而是“一个 crate 一个 `RuntimeError` enum，概念对应
-variant”。
+专门类型可以实现生成式 Skiff projection，也可以永远只在 Rust 内部处理。是否存在专门类型与
+是否向 Skiff 暴露是两个独立事实。
 
-例如：
+### 3.3 Diagnostic-only Rust error
 
-```rust
-pub enum RuntimeError {
-    DecodeTarget { target: String, message: String },
-    Recoverable { ... },
-    HttpError { message: String, detail: Option<Value> },
-    ...
-}
-```
+如果字段不参与 Rust 或 Skiff 程序决策，只用于开发者阅读，则不为它建立全局、穷举的
+`RuntimeFaultData`。这类信息应进入：
 
-不要为每个错误概念都建一个独立 struct，否则边界之间的 `From` 映射会重复膨胀。
+- error `message`；
+- Rust `source` error chain；
+- runtime 逐层追加的 diagnostic frame；
+- 受限 telemetry 所需的少量结构化 diagnostic attribute。
 
-### 4.2 RecoverableBoundaryError 还需要存在吗
+“业务代码不处理”不等于“telemetry 永远不需要结构化查询”。需要聚合的
+`boundaryKind`、有限 reason 等可以作为受限 diagnostic attribute，但它们不是 public error
+schema，也不要求进入所有 crate 共享的 Rust enum。
 
-作为 Skiff 类型，不需要。
+### 3.4 Request-local user exception
 
-作为 Rust 内部类型，仍建议存在，至少需要保留 recoverable 错误所需的字段：
+`RequestException` / `UserException` 保存：
 
-- code
-- message
-- nodePath
-- boundaryKind
-- detail
+- 实际 Skiff value 和 exact `CatchIdentity`，或无法在本地 materialize 的 opaque service cause；
+- 当前 request 的 source site 和 exception stack；
+- `traceId` / `errorId` correlation；
+- 已经固定的 service error（若来自远端）。
 
-它可以继续是共享 struct，也可以内联成 `RuntimeError::Recoverable { ... }`。关键不是名字，
-而是内部错误在到达 Skiff 前保留足够的诊断字段。
+它不是普通 Rust diagnostic struct，不能扁平化成 `code + message + stack` 后继续保持
+`catch`、`rethrow`、opaque forwarding 和 exact nominal identity 语义。
 
-`Boundary` 这个名字表示它来自 runtime boundary codec 层，不是必须保留的字眼。如果觉得容易
-混淆，可以改成 `RecoverableCodecError` 或 `RecoverableFailure`。
+### 3.5 Fixed service failure
 
-### 4.3 recoverable crate 的错误不都是 RecoverableBoundaryError
+`OpaqueServiceError` / `FixedServiceFailure` 保存已经严格验证并固定的
+`ServiceErrorEnvelope` 及原始 canonical bytes。中间 service 未链接实际错误类型时必须原样转发，
+不能把它降成 generic runtime diagnostic 后重新编码。
 
-正确。
+## 4. Diagnostic contract
 
-`runtime/boundary` 这个 crate 还处理普通 binary、JSON、HTTP、file、DB codec。它产出的错误
-包括 `DecodeTarget`、`BytesDecode`、`DbDecode`、`FileError`、`HttpError` 等。
+### 4.1 Common diagnostic shape
 
-只有 `runtime/boundary/src/recoverable.rs` 这个 recoverable 模块产出的错误，才应该收敛成
-`RecoverableBoundaryError`。
-
-JSON 错误需要区分：
-
-- 普通 `std.json.decode` 失败，应该是 `DecodeTarget("std.json.decode")`，最终变成
-  `std.json.DecodeError`。
-- recoverable envelope 内部恢复 JSON 数据失败，应该包成 `RecoverableBoundaryError`，例如
-  `ExpectedTypeMismatch` 或 `StateInvalid`，并把原始错误放进 detail。
-
-### 4.4 到 Skiff 的映射应该扁平化
-
-所有 Rust 内部错误在 Skiff 边界都可以收敛成几个稳定字段：
+所有非 internal-terminal failure 都必须能在负责记录它的边界形成以下逻辑诊断：
 
 ```text
-code
-message
-traceId
-errorId
-details
-```
-
-这符合现有 `RuntimeErrorPayload` 的方向。Skiff 不需要看到 Rust enum、expected type plan 或
-内部 stack。
-
-一个候选 Skiff 类型：
-
-```skiff
-type RuntimeError {
-  code: string
-  message: string
-  traceId: string
-  errorId: string
-  details: Json?
+RuntimeDiagnostic {
+  code
+  message
+  diagnosticFrames
+  correlation?
 }
 ```
 
-如果采用这个单一类型，Skiff 只 catch `RuntimeError`，再根据 `code` 判断具体错误。这能极大
-减少错误映射代码，但代价是失去按类型 catch 的精确性。
+- `code` 是有限、低基数的机器标签。Rust 内优先使用 enum / constant，只有在日志或 wire
+  DTO 投影时转成 string。
+- `message` 面向人阅读，可以包含不需要程序处理的上下文，但必须在进入 external/service
+  response 或普通业务日志前完成脱敏和限长。
+- `diagnosticFrames` 由 eval / host 在 failure 向上经过 source/call boundary 时追加；底层
+  boundary/native error 创建时不要求知道 Skiff source stack。
+- `correlation` 由 request/exception owner 分配；无 request 的 control/background failure
+  可以没有 request correlation。
 
-如果保留 `catch<std.json.DecodeError>` 这类精确 catch，就需要保留具体公开错误类型，同时用
-扁平字段作为通用 fallback。
+现有 `RuntimeErrorPayload { code, message, status, details }` 是 control/internal/legacy response
+使用的扁平 DTO，不是 Skiff error type，也不是判断 catchability 的依据。`status` 属于具体外部协议
+adapter；开放 `details: Json` 不能替代 typed error schema。
 
-## 5. 候选映射规则
+### 4.2 Three different stacks
+
+实现必须区分：
+
+1. Rust `Backtrace`：定位 runtime 实现 bug，只进入 operator 诊断，不稳定也不跨业务边界。
+2. Runtime diagnostic frames：记录 source id、callable 和内部阶段，完整版本只进入受限 telemetry。
+3. Skiff exception stack：属于 `Exception<E>` 的 request-local 语言语义；跨 service 后由 caller
+   在自己的 call site 建立新栈。
+
+三者不能合并成公开 error value 的一个 `stacktrace` 字段。公开 Skiff error payload 只保存该错误
+类型声明的业务可见字段；stack 和 correlation 由 exception / service envelope 承载。
+
+### 4.3 Message and source safety
+
+底层 library error 可以作为 Rust `source` 保留，但 generic `Display` 文本不得自动进入 Skiff payload、
+service error 或 external response。公开 message 必须由对应 projection 产生固定或脱敏文本。
+
+私有源码路径、原始 JSON/BSON、secret、credential、recoverable expected plan、runtime-local address、
+artifact filesystem path 和任意用户 payload 只允许进入经过权限和限长约束的诊断面。
+
+## 5. Generated Rust-to-Skiff projection
+
+### 5.1 Explicit opt-in
+
+Rust error 默认只有 diagnostic capability。只有 operation semantic adapter 能构造、且在 canonical
+platform error projection catalog 中显式声明的 generated DTO，才具备生成 Skiff error value 的能力。
+
+每个 projection declaration 必须固定：
+
+- projection key；
+- exact Skiff nominal type identity；
+- Rust producer family 与生成式 projection DTO；
+- public message 与其它 schema-declared fields 的 sanitization policy；
+- service envelope kind 与 local/wire failure 的 fallback。
+
+Public field set、字段类型和顺序不在 projection catalog 中再抄一份；它们只从 exact Skiff type
+解析后的 canonical type IR 取得。
+
+不能仅凭 `RuntimeErrorPayload.code`、Rust type name、`Display` 文本或 JSON shape 猜测
+Skiff identity。
+
+### 5.2 Compiler and codegen ownership
+
+Skiff `.skiff` type declaration及 `std/api.yml` public surface 是公开 symbol 与字段 schema 的唯一
+事实源。Compiler-owned projection catalog 只声明 projection key 到 exact public type 的关联，以及
+producer/message/wire/fallback policy；它不得复制 public 字段列表或字段类型。
+
+唯一 generator 必须先用 compiler 解析 public type 得到 canonical type IR，再把 type IR 与 catalog
+关联生成：
+
+- Rust projection key、typed payload DTO 和字段 encoder；
+- compiler/linker 使用的 exact catch identity 和 type/materialization plan；
+- service `PlatformError` payload codec；
+- schema fingerprint、registry descriptor 和 surface 一致性检查。
+
+Runtime producer 不得在 boundary、native、eval、host、request 中分别手写字段名 JSON 和
+symbol string。若 Rust internal error 与 public error 字段完全一致，字段 projection 由 derive/codegen
+直接生成；若必须脱敏或归并内部状态，应先在语义 owner 处转换成生成的 typed projection DTO，之后的
+materialization 仍完全生成。
+
+Compiler 无法隐式反射任意 Rust struct。需要脱敏或归并的 producer 只允许构造生成的 typed DTO；DTO
+字段及其 Skiff materializer 仍来自 canonical type IR。Repository 使用 checked-in generated source：一个
+generator 同时更新 compiler/runtime 共享 descriptor 与 Rust DTO，并提供 `--check` gate；各 Cargo crate
+不得在 `OUT_DIR` 中各自解析 catalog 或生成另一份 registry。
+
+### 5.3 Registry identity and evolution
+
+Generator 必须计算 whole-registry fingerprint 和每个 entry fingerprint，输入至少包含 projection key、
+exact nominal identity、canonical public type IR 和 codec version。
+
+Canonical registry descriptor 固定为：
 
 ```text
-RecoverableBoundaryErrorCode::*  -> std.service.RecoverableError
-DecodeTarget("std.json.decode")  -> std.json.DecodeError
-BytesDecode                      -> std.bytes.DecodeError
-DbDecode                         -> std.db.DecodeError
-FileError                        -> std.file.FileError
-HttpError                        -> std.http.HttpError
-ExecutionBudgetExceeded          -> TimeoutError
-Protocol                         -> std.service.ProtocolError
-ProviderUnavailable              -> std.service.ProviderUnavailableError
-其它                              -> std.service.InternalError
-```
-
-建议把这张表放在一个投影器里，而不是继续在 eval、native、host、request 各维护一套 match。
-
-一个可能的 trait 形态：
-
-```rust
-pub trait SkiffErrorProjection: WirePayload {
-    fn skiff_error_kind(&self) -> SkiffErrorKind;
-    fn project_user_exception(
-        &self,
-        context: ProjectionContext<'_>,
-    ) -> Result<Option<RequestException>>;
+PlatformErrorProjectionRegistryRef {
+  registryId: "skiff-platform-error-projections",
+  registryVersion: 1,
+  fingerprint: "sha256:<64 lowercase hex>",
 }
 ```
 
-这样各 crate 仍然保留自己的 `RuntimeError` enum，但“变成哪个 Skiff 错误、怎么 materialize、
-怎么跨 service”只在一个地方维护。
+`registryVersion` 表示 descriptor/fingerprint algorithm version；entry 增删只改变 fingerprint。M3 首次
+cutover 必须把该 descriptor 作为 bytecode header 的第六个 semantic authority，并在 PackageArtifact root
+保存同一 exact value。它进入 bytecode identity 与 Package build identity preimage，但不进入 Package Local
+ABI 或 ServiceProtocol identity。
 
-## 6. Recoverable 传给 Skiff 的候选实现
+- Compiler 把 whole-registry fingerprint 固定进可包含 platform projection 的 PackageArtifact / bytecode
+  header。
+- Runtime binary 只加载 fingerprint 与自身 generated registry 一致的 artifact，并在 runtime session
+  registration 中声明该 fingerprint；Router 只能把 build 路由给匹配的 runtime session。
+- Service `PlatformError` carrier 替换 closed `builtinErrorIdentity`，exact shape 为
+  `{ projectionKey, entryFingerprint, encodedPayload, traceId, errorId }`。`projectionKey` 是 generated
+  ASCII token（`[A-Za-z0-9._-]`，1–128 bytes），entry fingerprint 必须是
+  `sha256:<64 lowercase hex>`，encoded payload 必须非空且不超过 64 KiB；outer object strict
+  deny-unknown-fields 并继续使用 canonical correlation validation。Outer envelope 合法但本地不知道该
+  key/fingerprint 时，runtime把它固定为 opaque service cause；它在本地不可匹配，但可原样继续转发。
+- 本地认识 key/fingerprint、payload 却不满足 generated codec 时，这是 protocol failure，不得把畸形
+  wire 伪造成 provider `InternalError`。
 
-如果决定让 recoverable 错误在 Skiff 内可 catch，建议按下面顺序改。
+同一个 projection key / nominal identity 的 public schema 不做原地变更；需要改变字段 contract 时新增
+identity/key，或执行显式的全栈 hard cut。Registry 的 additive rolling upgrade 依靠 unknown entry 的
+bounded opaque forwarding，而不是靠 string/JSON shape 猜测旧 schema。Skiff 尚未发布，首次迁移可以直接
+hard cut 当前手写 registry，不保留其兼容 reader。
 
-### 6.1 新增公开错误类型
+首次 hard cut 的 version owner 同时升级：bytecode schema `skiff-bytecode-v6` →
+`skiff-bytecode-v7`；bytecode identity generation 4 → 5、marker `skiff-bytecode-artifact-v4` →
+`skiff-bytecode-artifact-v5`、prefix `skiff-bytecode-image-v4:sha256` →
+`skiff-bytecode-image-v5:sha256`；PackageArtifact schema `skiff-package-artifact-v14` →
+`skiff-package-artifact-v15`；Package build prefix `skiff-package-build-v13:sha256` →
+`skiff-package-build-v14:sha256`；runtime frame `skiff-runtime-frame-v4` →
+`skiff-runtime-frame-v5`。`runtime.capabilities` 在 v5 metadata 中携带上述 registry descriptor；Router 保存
+它并与 build 的 PackageArtifact descriptor exact-match 后才可 dispatch。旧 frame、缺失 descriptor、
+PackageArtifact/bytecode descriptor不一致都 strict reject，不提供 dual reader。
 
-在 `std/service.skiff` 增加：
+这些 carrier/version 变化不能只由本文单独落地。M3 的第一个提交必须同步更新
+[`bytecode-vm.md`](bytecode-vm.md) §3.1 与
+[`package-service-contract-deployment.md`](package-service-contract-deployment.md) §6.3，再修改 schema/code；
+三份 canonical contract 与 generated schema必须在同一提交一致，M8不能补写这一决定。
+
+在该原子 M3 contract commit 合入前，当前有效 carrier 仍是 service contract 的 closed
+`builtinErrorIdentity`、bytecode v6 的五个 authority 和 runtime-frame-v4；不得提前写出本文目标 wire，
+也不得出现新旧字段混用。本文 §5.3 冻结的是 cutover target 与原子性要求，不是 dual-format 过渡期。
+
+Rolling runtime upgrade 期间，不同 registry fingerprint 的 runtime session 可以并存；release pointer仍
+引用旧 fingerprint artifact 时，operator不得先清退最后一个 matching runtime。旧 registry/runtime 的回收
+条件是没有可路由 release/artifact 再引用它，而不是新 binary 已经启动。跨 fingerprint service call仍按
+上述 per-entry opaque规则传递未知 platform error。
+
+### 5.4 Projection capability is not automatic exposure
+
+生成 projection 只证明“能够安全构造哪个 Skiff value”。实际 failure 是否投影，由发生位置和
+operation policy 决定。Runtime 只有在以下条件全部满足时才能创建 `UserException`：
+
+1. 当前存在 active Skiff request execution context。
+2. Runtime 签发的 continuation guard 仍证明 request generation、lane / resume ownership 和 call site
+   都是 active；只有 source site 与 request heap 不足以证明这一点。
+3. Source operation 的 semantic adapter 已把具体 failure class / phase 转成 exact generated projection
+   DTO；不能由底层 Rust error type 自报 public identity。
+4. Closed operation policy 显式准入 `(operation, projection key, semantic failure class, phase)`；default
+   是 deny。
+5. 当前结果已经进入该 operation contract 定义的 error outcome，不是 pending work、timeout loser、
+   late response 或 internal cancellation carrier。
+6. Projected error 与 operation contract 如实表达 effect certainty。可捕获错误可以表示远端 effect
+   已发生、未发生或 outcome unknown；`catch` 只允许处理失败，不承诺 rollback、幂等或安全重试。
+7. Public payload 已通过 generated schema validation 和脱敏规则。
+
+任一条件不满足时，不得为了“让业务有机会处理”而伪造 catchable exception。
+
+`task.submit` 是显式特例：业务 continuation 无法继续持有同一 submission context / TaskId 完成
+ambiguous-acceptance 恢复，因此其 definite rejection 与 outcome unknown 按 durable task contract 都不可
+捕获。HTTP、service 或 WebSocket operation 若 reference contract 已定义可捕获的 timeout / transport
+failure，不因远端 effect 可能不确定而失去 catchability；重试仍服从各自 effect / idempotency contract。
+
+### 5.5 Failure site matrix
+
+| Failure site | Skiff projection rule |
+| --- | --- |
+| Runtime/router 启动、artifact load、deployment admission、activation/control | 无 active Skiff frame；只能形成 control failure 和 operator diagnostic。 |
+| External ingress 在 handler 之前 | 业务尚未运行；按 gateway protocol 返回，不能进入业务 `catch`。 |
+| Handler / function 正在执行 | 只有 continuation guard 有效、semantic class/phase 被 operation 准入且 projection 不夸大 effect certainty 时才能投影。 |
+| Skiff 发起的 std/native/service call site | 由该 operation 的 projection allowlist 决定；底层 source error 类型本身不决定。 |
+| Handler 返回后的 response encode / egress | Provider 已无可继续执行的 catch frame；不能回投 provider。Caller 是否得到 typed error 由 service/gateway contract 决定。 |
+| Scheduler、retention、telemetry、queue scan 等后台平台逻辑 | 不属于原业务 request；形成 background/control terminal，不回投已结束 request。 |
+| Durable task body 内的普通 Skiff 执行 | 只在该 attempt 当前 active frame 内按普通规则 catch；scheduler/lease/settlement failure 不回投 task body。 |
+| Internal cancellation / scope stop | 始终是 internal terminal，不投影。 |
+
+“发生在 request 生命周期中”只是必要条件，不是充分条件；真正的投影点必须还有一个 runtime-owned、
+仍然有效的 Skiff continuation guard。Timeout winner、concurrent loser、已结束 stream consumer 和 late
+service/host response 都不能借仍存活的 request heap 重新创建 exception。
+
+## 6. Deep source error conversion
+
+底层 Rust library error 不携带 Skiff public semantics。只有知道 source operation 意图的 adapter
+才能把它转换成 projectable typed error。
+
+JSON 规则固定为：
+
+| Source operation | `serde_json::Error` conversion |
+| --- | --- |
+| Skiff 直接调用 `std.json.decode` / typed JSON API | 转成专门的 std JSON decode error，允许该调用点投影。 |
+| Recoverable envelope encode/decode | 转成 `RecoverableBoundaryError` 的对应 code；不伪装成 `std.json.DecodeError`。 |
+| Artifact/config/runtime protocol decode | 转成 `InvalidArtifact`、protocol 或 internal diagnostic failure。 |
+| External ingress 在 handler 前 decode | 转成 gateway protocol response；不能进入 Skiff catch。 |
+| Service/provider 内部深层 JSON 使用 | 由最近的语义 owner 处理或转换；generic `serde_json::Error` 不具备 Skiff projection。 |
+
+相同规则适用于 BSON、HTTP parser、filesystem、database driver 和其它 library error：source type
+可以保留在 Rust error chain 中，public type 由 operation 语义决定。
+
+## 7. Recoverable boundary error
+
+### 7.1 Rust type
+
+`RecoverableBoundaryError` 是专门 Rust error type，至少保存：
+
+- typed `RecoverableBoundaryErrorCode`；
+- diagnostic message；
+- codec / trust / expected-plan 等受限诊断所需上下文。
+
+Runtime 可以按整个类型分类；不要求业务代码理解每个内部字段。体积较大的 context、expected plan
+和 detail 应装箱在该 error 内部，使 boundary/native/eval/host 的外层 error enum 不因嵌入它而扩大。
+
+`RecoverableBoundaryErrorCode` 的内部细分可以用于 telemetry 和 runtime policy，但不能自动成为
+Skiff catch identity。
+
+### 7.2 Skiff projection
+
+`RecoverableBoundaryError` 整个 Rust type 不直接实现 projectable capability。Recoverable semantic
+adapter 必须先根据 source operation、failure phase 和 trust/effect contract 把一次 failure 分成：
+
+- **projectable value rejection**：当前 operation contract 允许交给业务处理的 recoverable-value
+  拒绝；adapter 可以构造 generated public DTO；
+- **platform integrity failure**：artifact unavailable、损坏 state/sealed payload、runtime adapter/image
+  不一致等平台完整性失败；保持 internal/platform terminal。
+
+不能只按 `RecoverableBoundaryErrorCode` 建全局 allowlist。同一个 code 在不同 phase 可能代表不同 owner；
+只有 operation semantic adapter 能创建 projectable DTO，底层 codec 和 error producer 都不能创建。
+
+为将来确有 production operation 需要捕获整个 recoverable-value 拒绝类别时，保留以下 public projection
+contract：
 
 ```skiff
-type RecoverableError {
-  code: string
-  message: string
-  nodePath: string
-  boundaryKind: string
-  traceId: string
-  errorId: string
+type BoundaryError {
+  message: string,
 }
 ```
 
-在 `std/api.yml` 的 `service` 段导出：
+其 public symbol 是 `std.recoverable.BoundaryError`。该类型在第一个 production operation 明确准入前
+不加入当前 std public surface；architecture reservation 本身不激活可捕获行为。首次激活必须在同一
+change 中更新 `std` source、`std/api.yml`、reference contract、projection catalog 和 operation admission。
 
-```yaml
-RecoverableError: service.RecoverableError
-```
+Public payload 只有脱敏 `message`。内部 `RecoverableBoundaryErrorCode` 仍是 bounded diagnostic
+attribute，不进入 public string field；否则代码会事实上依赖这个所谓“仅诊断”字段。若未来某类 failure
+需要不同的程序处理 contract，应新增专门 public error type 和 typed fields，而不是扩张一个公开 code
+字符串协议。
 
-同时更新 std surface checker 和 compiler 的 public symbol 断言。
+`nodePath`、`boundaryKind`、expected plan、raw detail、`traceId`、`errorId` 和 stack 不属于
+`BoundaryError` payload：
 
-### 6.2 在 eval 中物化成 UserException
+- `nodePath` / `boundaryKind` / expected / raw detail 只进入受限 diagnostic；
+- `traceId` / `errorId` 由 exception/service envelope 承载；
+- stack 由 `Exception<std.recoverable.BoundaryError>` 承载。
 
-在 `runtime/eval/src/exceptions.rs` 增加 helper，类似现有的
-`request_exception_for_resource_error`。
+该 projection 由 compiler-owned declaration/codegen 生成，不在 eval 新增专用字段 materializer。
 
-它负责：
+### 7.3 Admission
 
-- 解析 `std.service.RecoverableError` 的公开类型 identity 和 schema plan。
-- 从 `RecoverableBoundaryError` 投影稳定字段。
-- 构造带 catch identity 的 Skiff value。
-- 返回 `RequestException::local(...)`。
+Recoverable codec 本身不具备 projection capability。每个调用 codec 的 source operation 必须在自己的
+reference/architecture contract 中，按 semantic failure class 和 phase 显式选择：
 
-然后在 `promote_call_site_error` 中，遇到 `RuntimeError::Recoverable` 时调用这个 helper，
-包成 `UserException`。
+- `catchable-with-contract`：operation 已定义该 error outcome、effect certainty 和可继续语义，并可在
+  active call site 投影；或
+- `platform-fatal`：failure 终止当前 request/attempt，只记录诊断；或
+- `protocol-rejection`：failure 属 ingress/remote protocol，不进入本地 catch；或
+- `background-terminal`：failure 属 durable/control/background owner。
 
-### 6.3 未捕获时跨 service 传播
+没有声明等同于 `platform-fatal`。同一个 `RecoverableBoundaryErrorCode` 在不同 operation 中可以有不同
+admission，因为可捕获性由 operation 的 continuation/effect 语义决定，不由 codec code 单独决定。
 
-未捕获的 `UserException` 会走现有 `export_local_exception`。只要
-`std.service.RecoverableError` 是公开且 schema-closed，它就会变成
-`ServiceErrorEnvelope::PublicTypedError`。
+`task.submit` 当前 contract 是 `platform-fatal`；其 failure 不投影给提交业务代码。External ingress
+handler 前是 `protocol-rejection`。Control/background recoverable failure 是
+`background-terminal`。未来 DB、materialization 或显式 service recoverable slot 若要允许业务 catch，
+必须先为具体 semantic class/phase 标记 `catchable-with-contract`，明确 effect 是否可能已经发生或
+outcome unknown，并保证 continuation guard 仍有效。不得因为某个 operation 准入 value rejection，就把
+该 operation 中所有 recoverable integrity failure 一并准入。
 
-caller service 通过现有 `import_caller_failure` 恢复成同名 Skiff value，因此可以：
+### 7.4 Cross-service behavior
 
-```skiff
-catch<std.service.RecoverableError>
-```
+一个 admitted recoverable failure 在 provider active call site 被投影成 `UserException` 后，未捕获时按
+现有 canonical service error channel 导出为 exact `PlatformError`。Caller 在自己的 service call site
+materialize 同一 `std.recoverable.BoundaryError` identity，并建立自己的 exception stack。
 
-如果 caller 没有链接该类型，envelope 仍可作为不可匹配的异常因果继续转发。
+未在 active call site 投影的 provider-internal recoverable failure不能在 service export 时仅凭 Rust type
+“补投影”；它按 internal failure 脱敏为 `std.service.InternalError`。这避免把 provider 私有 codec、DB
+或 artifact 实现细节自动变成远端 API。
 
-### 6.4 fallback 保留
+Provider 在 envelope 固定前无法编码 generated payload 时，exporter fallback 到固定 `InternalError`，
+不能退回 generic JSON 或发送内部 detail。Inbound fixed envelope 的处理遵守 §8.1，不把 wire decode
+失败伪造成 provider `InternalError`。
 
-如果 `std.service.RecoverableError` 解析失败、schema 不合法或编码失败，仍然走
-`fixed_internal()`，降级为 `std.service.InternalError`。
+## 8. Service and external boundaries
 
-## 7. 需要另一个人确认的问题
+### 8.1 Service error channel
 
-1. Recoverable 错误是否允许在同一个 request 内被 Skiff `catch`？这会改变当前“平台错误不可
-   catch”的语义，需要同步更新 runtime 文档。
-2. 是否接受单一公开 `RuntimeError { code, message, traceId, errorId, details }`？还是保留
-   `std.json.DecodeError` 等具体类型？
-3. `std.service.RecoverableError` 应该暴露哪些字段？是否要包含 `nodePath`、
-   `boundaryKind`，还是只保留 `code`、`message`、`traceId`、`errorId`？
-4. `RecoverableBoundaryError` 应该继续作为共享 struct，还是内联成
-   `RuntimeError::Recoverable { ... }`？
-5. 中央投影器应该放在 `runtime/request-contract`、`runtime/eval`，还是新建 crate？
-6. ingress 阶段发生在 Skiff handler 之前的 decode 错误，是否仍保持不可 catch？
-7. 这个设计是否要和 `result_large_err` 的 refactor 一起做，还是分开？
+Service channel 必须区分 producer/local failure 与已经收到的 fixed wire cause：
 
-## 8. 相关代码位置
+- 已经是 `UserException` 的 generated platform error 使用 exact `PlatformError` envelope；公开且
+  schema-closed 的 user-thrown Package type 使用 `PublicTypedError`。
+- Local projection/materialization 在形成 `UserException` 前失败，是本地 internal failure；若它需要越过
+  service boundary，provider exporter 生成固定 `InternalError`。Provider 已有 `UserException`、但其
+  payload encode 在 envelope 固定前失败时，同样生成固定 `InternalError`。
+- Outer envelope 非 canonical / 非法，或本地认识 projection key/fingerprint 但 payload codec 校验失败，
+  是 inbound protocol failure。Active caller call site 按 service operation contract 投影
+  `std.service.ProtocolError`；没有有效 continuation 时形成 protocol/request terminal。它不能改写成声称
+  来自 provider 的 `InternalError`。
+- Outer envelope 合法、projection key/fingerprint 对本地 registry 未知时，保存 bounded canonical bytes
+  为 fixed opaque service cause。本地 catch 不匹配；未捕获时原样转发。
+- Provider local fallback 使用当前 cause 的 canonical correlation；caller-side protocol failure 分配 caller
+  本地 correlation；unknown opaque 保留已经验证的原 envelope correlation。未通过 outer validation 的
+  metadata 不能进入可信 correlation 或业务日志。
+- 非 projectable Rust failure、私有用户错误和不能安全保留原类型的 provider failure 使用固定
+  `InternalError`。已经固定的 opaque service failure 原样转发，不重新分类。
+- Provider 的完整 stack 和内部 diagnostic 留在 provider telemetry；caller 只得到自己这一跳的新栈。
 
-- `runtime/boundary/src/error.rs`: `RecoverableBoundaryError` 和 boundary
-  `RuntimeError`。
-- `runtime/eval/src/error.rs`: eval `RuntimeError`、`ordinary_payload()`、
-  `ordinary_catch_projection()`。
-- `runtime/eval/src/eval_context.rs`: `promote_call_site_error`，Skiff 调用点错误提升。
-- `runtime/eval/src/exceptions.rs`: `request_exception_for_catch` 和
-  `request_exception_for_resource_error`。
-- `runtime/eval/src/assembly_execution/service_error_channel.rs`: provider 错误导出和 caller
-  错误导入。
-- `runtime/request-contract/src/error.rs`: `RuntimeErrorPayload` 和 `WirePayload`。
-- `std/service.skiff`: 现有 `ProviderUnavailableError`、`ProtocolError`、
-  `InternalError`。
-- `std/api.yml`: std public surface。
+### 8.2 External ingress
+
+Gateway 在 handler 前的 decode、routing、selector 和 protocol failure永远不进入业务 catch。Handler
+执行中产生并未捕获的 Skiff exception可以进入 gateway 的固定 external error projection，但 external
+client 不因此成为一个 Skiff caller，也不接收任意内部 error payload。
+
+## 9. Rust error organization
+
+每个 crate 可以拥有自己的 `RuntimeError` / `Error` enum，但应遵守：
+
+- internal terminal 与 ordinary error 在 API 上可区分；不能靠 magic code 判断 cancellation。
+- 下层 error 语义未改变时，上层优先用 wrapper/source delegation，而不是复制全部字段 variants。
+- 只有上层确实改变 retry、catch、wire、ownership 或 terminal 语义时才显式 reclassify。
+- 大型 leaf error 应在 leaf type 内部装箱，而不是让每个上层 enum 各自重复 boxing 规则。
+- Diagnostic formatting 与 Skiff projection 是不同能力；实现一个不自动获得另一个。
+- `WirePayload.code == public symbol` 不能作为 catch projection 的证据。
+
+## 10. Required invariants
+
+实现和测试必须持续证明：
+
+1. Internal cancellation/scope terminal没有 ordinary payload或catch identity。
+2. Generic deep JSON/BSON/driver error不能因 source type 相同而自动投影。
+3. 每个 generated platform error 的 Rust DTO、catch identity 和 service codec 使用 catalog 指向的同一
+   canonical Skiff type IR；catalog 不复制字段 schema，字段增删会由 generator `--check` 拒绝漂移。
+4. Artifact、runtime session 和 generated registry fingerprint 不匹配时不能执行该 artifact。
+5. 没有有效 continuation guard 时，即使已有 request heap/site 或 projectable DTO 也不能构造
+   `UserException`。
+6. 未按 operation + semantic class + phase 准入的 recoverable failure 保持不可捕获；integrity failure
+   不能因相同 Rust type/code 被一起准入。
+7. Catchable error 如实保留 operation contract 的 effect certainty；catchability 本身不授予 rollback 或
+   safe-retry 语义。
+8. Public payload 不含 diagnostic-only 字段、原始 source message 或私有 stack；recoverable internal
+   code 不成为 public string protocol。
+9. Local/provider encode failure、inbound malformed known payload 和 well-formed unknown projection
+   分别走 internal、protocol、opaque 三条互斥路径。
+10. 跨 service 保留 exact identity/correlation；本地未知但合法的 projection 可 bounded opaque forward。
+11. Opcode/bytecode/VM 等 producer 与 Rust boundary producer 一样只能使用 generated projection key 和
+    payload builder，不能保存手写 symbol。
+12. `RuntimeErrorPayload` 始终只是 diagnostic/control DTO，不成为 universal Skiff error value。
+
+## 11. Related contracts
+
+- [`recoverable-value.md`](recoverable-value.md)：可恢复值、boundary context、fail-closed codec。
+- [`package-service-contract-deployment.md`](package-service-contract-deployment.md)：开放 service error
+  channel、fixed envelope、跨 service stack/correlation。
+- [`durable-task-dispatch.md`](durable-task-dispatch.md)：task submission、ambiguous acceptance 和
+  platform-fatal 规则。
+- [`bytecode-vm.md`](bytecode-vm.md)：artifact/runtime registry fingerprint、opcode contract 和 VM
+  fail-closed load。
+- [`../reference/runtime.md`](../reference/runtime.md)：`throw` / `catch` / `rethrow`、request terminal
+  和 ingress 语义。
+- [`../reference/std-surface.md`](../reference/std-surface.md)：标准平台错误 public surface。
+- [`../reference/observability.md`](../reference/observability.md)：受限 diagnostic、stack 和 correlation。
+- [`../implementation/runtime-error-to-skiff.md`](../implementation/runtime-error-to-skiff.md)：从当前
+  手写 projection 到本文模型的实施计划。
