@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     native_callable_semantics, CallableProvenanceUnknownReason, TypeRefIr, ValueProjectionPath,
 };
+use skiff_compiler_core::type_ref::BuiltinShape;
 
 use crate::{
     shared::ast::TypeRef, ExpressionKey, ExpressionTypeModel, ResolvedCallTargetFacts,
@@ -403,6 +404,19 @@ impl Evaluator<'_, '_> {
             .and_then(|fact| fact.ty.as_ref())
             .map(|resolved| type_ir_may_be_reference(&resolved.ir))
             .unwrap_or(true)
+    }
+
+    fn expression_type_is_stream(&self, key: &ExpressionKey) -> bool {
+        self.expression_types
+            .fact(key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|resolved| {
+                let TypeRefIr::Builtin { name, args } = &resolved.ir else {
+                    return false;
+                };
+                BuiltinShape::of_name(name) == Some(BuiltinShape::Stream) && args.len() == 1
+            })
+            .unwrap_or(false)
     }
 
     fn value_at(&self, preorder_index: u32) -> Option<&AbstractValue> {

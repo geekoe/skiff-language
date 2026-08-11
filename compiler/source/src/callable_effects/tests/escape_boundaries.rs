@@ -190,6 +190,31 @@ fn stream_task_database_and_callback_escape_lanes_are_explicit() {
 }
 
 #[test]
+fn stream_for_in_consumers_record_stream_pending_effects() {
+    let model = AnalysisFixture::new(
+        r#"
+            function consume(values: Stream<number>) -> number {
+              final stream = values
+              for item in stream {}
+              return 0
+            }
+
+            function consumeArray(values: Array<number>) -> number {
+              for item in values {}
+              return 0
+            }
+        "#,
+    )
+    .analyze();
+
+    assert_eq!(
+        effects(&model, "consume"),
+        pending_only_effects(vec![PendingEffectCategory::Stream])
+    );
+    assert_eq!(effects(&model, "consumeArray"), no_effects());
+}
+
+#[test]
 fn database_queries_and_detached_writes_do_not_escape_caller_values() {
     let model = AnalysisFixture::new(
         r#"
