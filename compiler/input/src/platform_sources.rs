@@ -11,9 +11,13 @@ use skiff_compiler_core::{
 };
 use thiserror::Error;
 
-use crate::{package_config::PackageManifest, ManifestOwner};
+use crate::{
+    error_projection_catalog::PlatformErrorProjectionCatalog, package_config::PackageManifest,
+    ManifestOwner,
+};
 
 const STD_REGISTRY_SCHEMA_VERSION: &str = "skiff-std-registry-v1";
+pub const PLATFORM_ERROR_PROJECTION_CATALOG_FILE: &str = "error-projections.yml";
 
 /// Runtime-validated authority for every compiler-owned platform source.
 ///
@@ -25,6 +29,7 @@ pub struct CompilerPlatformSources {
     std_dir: PathBuf,
     prelude_dir: PathBuf,
     registry_path: PathBuf,
+    error_projection_catalog_path: PathBuf,
     prelude_error_path: PathBuf,
     packages: BTreeMap<String, PlatformPackageSource>,
 }
@@ -62,6 +67,8 @@ pub enum CompilerPlatformSourcesError {
     },
     #[error("failed to parse compiler platform registry {path}: {message}")]
     RegistryParse { path: PathBuf, message: String },
+    #[error("invalid compiler platform error projection catalog {path}: {message}")]
+    ErrorProjectionCatalog { path: PathBuf, message: String },
     #[error("invalid compiler platform source layout: {message}")]
     InvalidLayout { message: String },
 }
@@ -94,6 +101,11 @@ impl CompilerPlatformSources {
             canonical_contained_directory(&root, &root.join("prelude"), "prelude directory")?;
         let registry_path =
             canonical_contained_file(&std_dir, &std_dir.join("registry.yml"), "std registry")?;
+        let error_projection_catalog_path = canonical_contained_file(
+            &std_dir,
+            &std_dir.join(PLATFORM_ERROR_PROJECTION_CATALOG_FILE),
+            "platform error projection catalog",
+        )?;
         let prelude_error_path = canonical_contained_file(
             &prelude_dir,
             &prelude_dir.join("error.skiff"),
@@ -107,6 +119,7 @@ impl CompilerPlatformSources {
             std_dir,
             prelude_dir,
             registry_path,
+            error_projection_catalog_path,
             prelude_error_path,
             packages,
         })
@@ -128,8 +141,30 @@ impl CompilerPlatformSources {
         &self.registry_path
     }
 
+    pub fn error_projection_catalog_path(&self) -> &Path {
+        &self.error_projection_catalog_path
+    }
+
     pub fn prelude_error_path(&self) -> &Path {
         &self.prelude_error_path
+    }
+
+    pub fn read_platform_error_projection_catalog(
+        &self,
+    ) -> Result<PlatformErrorProjectionCatalog, CompilerPlatformSourcesError> {
+        self.revalidate()?;
+        let text = fs::read_to_string(&self.error_projection_catalog_path).map_err(|source| {
+            CompilerPlatformSourcesError::Inspect {
+                path: self.error_projection_catalog_path.clone(),
+                source,
+            }
+        })?;
+        PlatformErrorProjectionCatalog::parse(&text).map_err(|message| {
+            CompilerPlatformSourcesError::ErrorProjectionCatalog {
+                path: self.error_projection_catalog_path.clone(),
+                message,
+            }
+        })
     }
 
     pub fn official_package_roots(
