@@ -6,6 +6,9 @@ use skiff_compiler::authoring::{
     build_authoring_object, build_authoring_object_legacy, seed_official_std_package,
     AuthoringObject,
 };
+use skiff_compiler::platform_error_projection_codegen::{
+    run_platform_error_projection_codegen, PlatformErrorProjectionCodegenAction,
+};
 use skiff_compiler::CompilerPlatformSources;
 use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
 
@@ -38,6 +41,11 @@ fn run_with_args(
         // used by `skiff stack init` through the Node authoring library.
         return run_std_seed_action(args);
     }
+    if object == "platform-error-projections" {
+        // Internal tool action (absent from public help): the one compiler-owned
+        // checked-in platform projection generator.
+        return run_platform_error_projection_action(args);
+    }
     if object == "release" {
         return run_release_action(args);
     }
@@ -53,6 +61,44 @@ fn run_with_args(
         }
     };
     run_package_action(args, publish_pointer)
+}
+
+fn run_platform_error_projection_action(
+    mut args: impl Iterator<Item = String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let action = match args
+        .next()
+        .ok_or("platform-error-projections requires generate or check")?
+        .as_str()
+    {
+        "generate" => PlatformErrorProjectionCodegenAction::Generate,
+        "check" => PlatformErrorProjectionCodegenAction::Check,
+        unknown => {
+            return Err(format!(
+                "unknown platform-error-projections action {unknown}; expected generate or check"
+            )
+            .into())
+        }
+    };
+    let mut repository_root = None;
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--repository-root" => {
+                if repository_root.is_some() {
+                    return Err("--repository-root was provided more than once".into());
+                }
+                repository_root = Some(PathBuf::from(
+                    args.next().ok_or("--repository-root requires a path")?,
+                ));
+            }
+            _ => {
+                return Err(format!("unknown platform-error-projections option {argument}").into())
+            }
+        }
+    }
+    let repository_root = repository_root.ok_or("--repository-root is required")?;
+    run_platform_error_projection_codegen(action, &repository_root)?;
+    Ok(())
 }
 
 fn run_std_seed_action(

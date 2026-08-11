@@ -3,6 +3,8 @@ mod generated_deployment;
 mod http_gateway_projection;
 pub(crate) mod input;
 pub(crate) mod pipeline;
+#[doc(hidden)]
+pub mod platform_error_projection_codegen;
 pub(crate) mod shared;
 pub(crate) mod source_compile;
 mod websocket_gateway_projection;

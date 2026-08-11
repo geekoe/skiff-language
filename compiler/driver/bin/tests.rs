@@ -5,11 +5,67 @@ use super::{render_authoring_receipt, run_with_args, USAGE};
 #[test]
 fn internal_actions_are_absent_from_public_help() {
     assert!(!USAGE.contains("platform-source"));
+    assert!(!USAGE.contains("platform-error-projections"));
     assert!(!USAGE.contains("std-seed"));
     for object in ["package", "release"] {
         assert!(USAGE.contains(object));
     }
     assert!(!USAGE.contains("assembly"));
+}
+
+#[test]
+fn platform_error_projection_action_requires_known_action_and_repository_root() {
+    let missing_action = run_error(&["platform-error-projections"]);
+    assert_eq!(
+        missing_action,
+        "platform-error-projections requires generate or check"
+    );
+
+    let unknown_action = run_error(&["platform-error-projections", "refresh"]);
+    assert_eq!(
+        unknown_action,
+        "unknown platform-error-projections action refresh; expected generate or check"
+    );
+
+    let missing_root = run_error(&["platform-error-projections", "check"]);
+    assert_eq!(missing_root, "--repository-root is required");
+}
+
+#[test]
+fn platform_error_projection_action_requires_one_absolute_root_and_rejects_options() {
+    let duplicate = run_error(&[
+        "platform-error-projections",
+        "generate",
+        "--repository-root",
+        "/missing-repository-a",
+        "--repository-root",
+        "/missing-repository-b",
+    ]);
+    assert_eq!(duplicate, "--repository-root was provided more than once");
+
+    let missing_value = run_error(&["platform-error-projections", "check", "--repository-root"]);
+    assert_eq!(missing_value, "--repository-root requires a path");
+
+    let relative = run_error(&[
+        "platform-error-projections",
+        "check",
+        "--repository-root",
+        "relative/repository",
+    ]);
+    assert!(relative.contains("must be absolute"), "{relative}");
+
+    let unknown = run_error(&[
+        "platform-error-projections",
+        "check",
+        "--repository-root",
+        "/missing-repository",
+        "--profile",
+        "dev",
+    ]);
+    assert_eq!(
+        unknown,
+        "unknown platform-error-projections option --profile"
+    );
 }
 
 #[test]
