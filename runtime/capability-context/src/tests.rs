@@ -1,7 +1,9 @@
 use std::fmt;
 
 use serde_json::json;
-use skiff_artifact_model::{InstructionSourceSite, PackageBuildId, SyntheticInstructionSiteReason};
+use skiff_artifact_model::{
+    InstructionSourceSite, PackageBuildId, PackageSchemaTypeId, SyntheticInstructionSiteReason,
+};
 use skiff_runtime_model::{
     addr::ExecutableAddr,
     error::{RuntimeErrorPayload, WirePayload},
@@ -12,6 +14,7 @@ use skiff_runtime_model::{
         ServiceErrorEnvelope,
     },
 };
+use skiff_runtime_request_contract::{PlatformErrorProjectionPayload, StdDbConflictErrorPayload};
 
 use super::*;
 
@@ -57,31 +60,23 @@ impl WirePayload for TestWirePayload {
 }
 
 fn fixed_service_error(label: &str) -> OpaqueServiceError {
-    OpaqueServiceError::decode(
-            format!(
-                r#"{{"kind":"internalError","payload":{{"message":"Internal service error","traceId":"trace-{label}","errorId":"trace-{label}:error"}}}}"#
-            )
-            .into_bytes(),
-        )
-        .expect("fixed service error fixture should decode")
+    let trace_id = format!("trace-{label}");
+    let error_id = format!("{trace_id}:error");
+    OpaqueServiceError::internal_error("Internal service error", &trace_id, &error_id)
+        .expect("fixed service error fixture should encode")
 }
 
 fn public_service_error(stable_schema_key: &str, trace_id: &str) -> OpaqueServiceError {
-    OpaqueServiceError::decode(
-        format!(
-            r#"{{
-  "kind":"publicTypedError",
-  "packageId":"example.errors",
-  "stableSchemaKey":"{stable_schema_key}",
-  "packageSchemaTypeId":"schema:{stable_schema_key}",
-  "encodedPayload":[123,125],
-  "traceId":"{trace_id}",
-  "errorId":"{trace_id}:error"
-}}"#
-        )
-        .into_bytes(),
+    let error_id = format!("{trace_id}:error");
+    OpaqueServiceError::public_typed_error(
+        "example.errors",
+        stable_schema_key,
+        PackageSchemaTypeId::new(format!("schema:{stable_schema_key}")),
+        b"{}",
+        trace_id,
+        &error_id,
     )
-    .expect("public service error fixture should decode")
+    .expect("public service error fixture should encode")
 }
 
 #[test]
@@ -451,12 +446,21 @@ fn unlinked_fixed_stream_terminal_outlives_provider_heap_without_reencoding() {
 
 #[test]
 fn fixed_stream_carrier_does_not_reclassify_platform_and_resource_errors() {
-    let platform = OpaqueServiceError::decode(
-            br#"{"kind":"platformError","builtinErrorIdentity":"std.db.ConflictError","encodedPayload":[123,125],"traceId":"trace-platform","errorId":"trace-platform:error"}"#
-                .to_vec(),
-        )
-        .expect("platform service error fixture should decode");
+    let platform_payload =
+        PlatformErrorProjectionPayload::StdDbConflictError(StdDbConflictErrorPayload {
+            message: "write conflict".to_string(),
+            retryable: true,
+            target: "orders".to_string(),
+        });
+    let platform = OpaqueServiceError::platform_error(
+        &platform_payload,
+        "trace-platform",
+        "trace-platform:error",
+    )
+    .expect("platform service error fixture should encode");
     let resource = public_service_error("std.resource.ResourceError", "trace-resource");
+    let platform_encoded = platform.encoded_bytes().to_vec();
+    let resource_encoded = resource.encoded_bytes().to_vec();
 
     let platform_terminal = StreamRuntimeError::fixed_service_failure(platform);
     let resource_terminal = StreamRuntimeError::fixed_service_failure(resource);
@@ -478,6 +482,8 @@ fn fixed_stream_carrier_does_not_reclassify_platform_and_resource_errors() {
             ..
         } if stable_schema_key == "std.resource.ResourceError"
     ));
+    assert_eq!(platform.encoded_bytes(), platform_encoded);
+    assert_eq!(resource.encoded_bytes(), resource_encoded);
 }
 
 #[test]
