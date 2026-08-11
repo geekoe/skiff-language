@@ -122,6 +122,16 @@ pub struct BytecodeHandoff<U: BytecodeUnit> {
     pub outcome: U::ResumeOutcome,
 }
 
+/// Result of handing one stream item to the supervisor.
+///
+/// `Ready` gives the scheduler a continuation handoff to inject immediately.
+/// `Pending` means the item is supervisor-owned and the active producer must
+/// park with the returned actual-`Pending` operation.
+pub enum BytecodeStreamHandoff<U: BytecodeUnit> {
+    Ready(BytecodeHandoff<U>),
+    Pending(U::PendingOperation),
+}
+
 /// Port used to start child fibers and run host adapters once.
 pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
     fn execute_child(
@@ -141,12 +151,30 @@ pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
 
 /// Port used for stream emission and actual-Pending parking.
 pub trait BytecodeStreamSupervisor<U: BytecodeUnit>: Send + Sync + 'static {
+    /// Synchronous handoff retained for supervisors that do not yet model
+    /// backpressure. The scheduler uses [`Self::emit_stream_handoff`].
     fn emit_stream(
         &self,
         item: U::StreamItem,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeHandoff<U>, BytecodeSchedulerError>;
+    ) -> Result<BytecodeHandoff<U>, BytecodeSchedulerError> {
+        let _ = (item, heap, budget);
+        Err(BytecodeSchedulerError::UnsupportedStream)
+    }
+
+    /// Emits one item and reports whether the producer can continue immediately
+    /// or must park with a real backpressure operation.
+    fn emit_stream_handoff(
+        &self,
+        item: U::StreamItem,
+        _depth: usize,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeStreamHandoff<U>, BytecodeSchedulerError> {
+        self.emit_stream(item, heap, budget)
+            .map(BytecodeStreamHandoff::Ready)
+    }
 
     fn park(
         &self,
@@ -155,6 +183,20 @@ pub trait BytecodeStreamSupervisor<U: BytecodeUnit>: Send + Sync + 'static {
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
     ) -> Result<(), BytecodeSchedulerError>;
+
+    /// Notifies the supervisor that the unit at `depth` completed.
+    ///
+    /// A producer that emitted at this depth normally transitions to a stream
+    /// terminal here. Implementations that do not supervise the completed unit
+    /// must return `Ok(())` without changing state.
+    fn finish_stream(
+        &self,
+        depth: usize,
+        result: &U::RootResult,
+    ) -> Result<(), BytecodeSchedulerError> {
+        let _ = (depth, result);
+        Ok(())
+    }
 }
 
 /// Execution ports supplied to a [`BytecodeScheduler`].
@@ -237,6 +279,10 @@ where
             match control {
                 BytecodeControl::Continue => {}
                 BytecodeControl::Complete(result) => {
+                    let depth = self.trampoline.blocked_depth();
+                    if let Some(supervisor) = self.ports.stream_supervisor.as_ref() {
+                        supervisor.finish_stream(depth, &result)?;
+                    }
                     if self.trampoline.blocked_depth() == 0 {
                         return Ok(BytecodeSchedulerOutcome::Complete(result));
                     }
@@ -275,10 +321,19 @@ where
                         .stream_supervisor
                         .as_ref()
                         .ok_or(BytecodeSchedulerError::UnsupportedStream)?;
-                    let handoff = supervisor.emit_stream(item, heap, budget)?;
-                    self.trampoline
-                        .active_mut()
-                        .resume(handoff.resume, handoff.outcome)?;
+                    let depth = self.trampoline.blocked_depth();
+                    match supervisor.emit_stream_handoff(item, depth, heap, budget)? {
+                        BytecodeStreamHandoff::Ready(handoff) => {
+                            self.trampoline
+                                .active_mut()
+                                .resume(handoff.resume, handoff.outcome)?;
+                        }
+                        BytecodeStreamHandoff::Pending(operation) => {
+                            let suspended = self.trampoline.suspend();
+                            supervisor.park(operation, suspended, heap, budget)?;
+                            return Ok(BytecodeSchedulerOutcome::Parked);
+                        }
+                    }
                 }
                 BytecodeControl::Park(operation) => {
                     let supervisor = self
@@ -439,6 +494,7 @@ mod tests {
     struct TestUnit {
         control: Option<TestControl>,
         resumed: Option<(usize, usize)>,
+        finish_after_resume: Option<usize>,
     }
 
     impl TestUnit {
@@ -446,6 +502,15 @@ mod tests {
             Self {
                 control: Some(TestControl::Park(operation)),
                 resumed: None,
+                finish_after_resume: None,
+            }
+        }
+
+        fn emit(item: usize, finish: usize) -> Self {
+            Self {
+                control: Some(TestControl::EmitStream(item)),
+                resumed: None,
+                finish_after_resume: Some(finish),
             }
         }
     }
@@ -471,7 +536,7 @@ mod tests {
             _budget: &mut dyn VmBudget,
         ) -> TestControl {
             if let Some((_, outcome)) = self.resumed.take() {
-                TestControl::Complete(outcome)
+                TestControl::Complete(self.finish_after_resume.take().unwrap_or(outcome))
             } else if let Some(control) = self.control.take() {
                 control
             } else {
@@ -491,16 +556,19 @@ mod tests {
 
     struct TestStreamSupervisor {
         parked: Mutex<Option<(usize, TestSuspended)>>,
+        emitted: Mutex<Vec<usize>>,
     }
 
     impl BytecodeStreamSupervisor<TestUnit> for TestStreamSupervisor {
-        fn emit_stream(
+        fn emit_stream_handoff(
             &self,
-            _item: usize,
+            item: usize,
+            _depth: usize,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeHandoff<TestUnit>, BytecodeSchedulerError> {
-            Err(BytecodeSchedulerError::UnsupportedStream)
+        ) -> Result<BytecodeStreamHandoff<TestUnit>, BytecodeSchedulerError> {
+            self.emitted.lock().unwrap().push(item);
+            Ok(BytecodeStreamHandoff::Pending(item))
         }
 
         fn park(
@@ -547,6 +615,7 @@ mod tests {
         let mut budget = NoopBudget;
         let supervisor = Arc::new(TestStreamSupervisor {
             parked: Mutex::new(None),
+            emitted: Mutex::new(Vec::new()),
         });
         let ports = BytecodeSchedulerPorts {
             child_executor: None,
@@ -590,5 +659,60 @@ mod tests {
         .unwrap();
         let outcome = scheduler.run(&mut heap, &mut budget).unwrap();
         assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(42)));
+    }
+
+    #[test]
+    fn emit_stream_backpressure_parks_then_zero_result_wake_continues() {
+        let mut heap = NoopHeap;
+        let mut budget = NoopBudget;
+        let supervisor = Arc::new(TestStreamSupervisor {
+            parked: Mutex::new(None),
+            emitted: Mutex::new(Vec::new()),
+        });
+        let ports = BytecodeSchedulerPorts {
+            child_executor: None,
+            stream_supervisor: Some(
+                supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<TestUnit>>
+            ),
+        };
+
+        let outcome = BytecodeScheduler::new(TestUnit::emit(7, 99), ports)
+            .run(&mut heap, &mut budget)
+            .unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
+        assert_eq!(*supervisor.emitted.lock().unwrap(), [7]);
+
+        let (operation, suspended) = supervisor.parked.lock().unwrap().take().unwrap();
+        assert_eq!(operation, 7);
+
+        let registry = PendingRegistry::<usize, TestSuspended, usize>::default();
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(EmptyRoots)))
+            .unwrap();
+        let queue = Arc::new(TestWakeQueue(Mutex::new(Vec::new())));
+        let wake_queue: Arc<dyn PendingWakeQueue<usize, TestSuspended, usize>> = queue.clone();
+        assert_eq!(
+            registry
+                .publish(
+                    completion.ticket(),
+                    PendingOwnerDraft::new(11, suspended),
+                    wake_queue
+                )
+                .unwrap(),
+            PendingPublication::Waiting
+        );
+        assert!(matches!(
+            completion.complete(0),
+            SettleDisposition::Enqueued
+        ));
+
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+        let scheduler = BytecodeScheduler::<TestUnit>::resume_from_pending_wake(
+            wake,
+            BytecodeSchedulerPorts::default(),
+        )
+        .unwrap();
+        let outcome = scheduler.run(&mut heap, &mut budget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(99)));
     }
 }

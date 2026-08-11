@@ -23,12 +23,13 @@ mod bytecode;
 mod pending;
 mod root_escrow;
 mod stream;
+mod stream_driver;
 mod trampoline;
 
 pub use bytecode::{
     BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeHandoff, BytecodeScheduler,
     BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
-    BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
+    BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
 };
 pub use pending::{
     BeginPendingError, CompletionHandle, PendingCellState, PendingOwner, PendingOwnerDraft,
@@ -42,6 +43,7 @@ pub use stream::{
     StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll, StreamProducer,
     StreamSupervisor, WakeSignal, STREAM_BUFFER_CAPACITY,
 };
+pub use stream_driver::{VmStreamSupervisor, VmStreamTerminal};
 pub use trampoline::{
     BlockedUnit, FlatTrampoline, ParentResume, SuspendedTrampoline, TrampolineCompletion,
 };

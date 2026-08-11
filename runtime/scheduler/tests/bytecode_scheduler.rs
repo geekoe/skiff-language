@@ -264,6 +264,7 @@ mod tests {
 
     struct RecordingStream {
         emitted: Mutex<Vec<usize>>,
+        finished: Mutex<Vec<StreamResult>>,
         mode: StreamPortMode,
     }
 
@@ -287,6 +288,15 @@ mod tests {
             }
         }
 
+        fn finish_stream(
+            &self,
+            _depth: usize,
+            result: &StreamResult,
+        ) -> Result<(), BytecodeSchedulerError> {
+            self.finished.lock().unwrap().push(*result);
+            Ok(())
+        }
+
         fn park(
             &self,
             _operation: usize,
@@ -302,6 +312,7 @@ mod tests {
     fn stream_item_is_handed_to_supervisor_and_resumes_producer() {
         let stream = Arc::new(RecordingStream {
             emitted: Mutex::new(Vec::new()),
+            finished: Mutex::new(Vec::new()),
             mode: StreamPortMode::Ready,
         });
         let ports = BytecodeSchedulerPorts {
@@ -318,12 +329,14 @@ mod tests {
             BytecodeSchedulerOutcome::Complete(Ok(99))
         ));
         assert_eq!(*stream.emitted.lock().unwrap(), [7]);
+        assert_eq!(*stream.finished.lock().unwrap(), [Ok(99)]);
     }
 
     #[test]
     fn stream_error_handoff_resumes_with_error() {
         let stream = Arc::new(RecordingStream {
             emitted: Mutex::new(Vec::new()),
+            finished: Mutex::new(Vec::new()),
             mode: StreamPortMode::Error,
         });
         let ports = BytecodeSchedulerPorts {
@@ -340,6 +353,7 @@ mod tests {
             BytecodeSchedulerOutcome::Complete(Err("stream failed"))
         ));
         assert_eq!(*stream.emitted.lock().unwrap(), [9]);
+        assert_eq!(*stream.finished.lock().unwrap(), [Err("stream failed")]);
     }
 
     #[test]
