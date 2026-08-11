@@ -170,7 +170,7 @@ fn decode_control_dispatch_failure(
         "runtime test dispatch response.header.error",
     )?;
     validate_optional_error_status(error, "runtime test dispatch response.header.error")?;
-    if string_field(root, "payloadBase64", "runtime test dispatch response")? != "" {
+    if !string_field(root, "payloadBase64", "runtime test dispatch response")?.is_empty() {
         return Err("control response.error payloadBase64 must be empty".to_string());
     }
     Ok(TestDispatchOutcome::Failed(format!("{code}: {message}")))

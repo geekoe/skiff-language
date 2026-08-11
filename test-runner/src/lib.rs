@@ -125,6 +125,7 @@ fn is_canonical_http_authority(authority: &str) -> bool {
             .any(|byte| matches!(byte, b'/' | b'?' | b'#' | b'@' | b'\\'))
 }
 
+#[allow(clippy::result_large_err)]
 pub fn run_skiff_tests_with_options(
     inputs: &[PathBuf],
     options: &SkiffTestOptions,

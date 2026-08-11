@@ -485,15 +485,16 @@ stream-producing native std / package API 的返回类型，表示 request-local
 
 `Stream<T>` 当前不能作为用户 operation 参数、用户 record 字段、持久化字段、collection 元素或普通 public API type 字段。平台 std 的 runtime-owned handle 字段和 native host operation 参数是特权例外；例如 `std.file.createFromStream(source: Stream<bytes>, ...)` 在同一 request 内消费 source，不把 stream 传出为远程 API 或 durable value。普通 Skiff package / local function 不能通过源码 body 创建独立、可逃逸的 stream source。
 
-返回`Stream<T>`的service operation或允许stream的external gateway entry是server-stream producer。
-Producer共享当前request frame、deadline、trace、call stack和request heap。函数体内`emit expr`要求
-`expr`可赋给`T`，并向当前stream sink写一个ordered chunk。函数体自然结束或裸`return`表示stream
-normal end；`return expr`在server-stream handler中是编译错误。当前不提供`Stream<T, R>`或stream完成后的
-独立response值。
+返回`Stream<T>`的service operation或允许stream的external gateway entry是server-stream producer；该
+`Stream<T>`是入口/边界的显式producer authority，不是producer body的返回值。Producer共享当前request
+frame、deadline、trace、call stack和request heap。函数体内`emit expr`要求`expr`可赋给`T`，并向当前
+stream sink写一个ordered chunk。函数体自然结束或裸`return`表示stream normal end；producer body的
+`return`栈 arity 为 0，不返回`Stream<T>`值，`return expr`在server-stream handler中是编译错误。当前不提供
+`Stream<T, R>`或stream完成后的独立response值。
 
 `emit` 是 backpressure point。Consumer 不读取、gateway / client 断开或 buffer 达到平台上限时，当前 request 必须暂停、内部停止或按平台错误结束，不能无限积压。`emit` 不允许出现在 `concurrent` surface 内；`concurrent value` 的 tail lane 也属于该 surface。需要并发计算后输出时，先在 lane 中计算值，等 `concurrent` block 结束后，在后续顺序代码中按确定顺序 emit。
 
-调用方把 `Stream<T>` 当作只能顺序消费的一次性值。每次迭代读取下一个 item；chunk 产生一次 loop body 执行；end 使 loop normal exit；error 映射为当前 lane 中的 ordinary throw，可被外层 `catch<E>` 捕获。已经处理过的 chunk 不回滚。
+调用方把 `Stream<T>` 当作只能顺序消费的一次性值。每次迭代读取下一个 item；item 路径产生 1 个 `T` 并执行一次 loop body，end 路径零结果并使 loop normal exit；error 映射为当前 lane 中的 ordinary throw，可被外层 `catch<E>` 捕获。已经处理过的 chunk 不回滚。
 
 `break`、`return`、timeout或ancestor内部停止必须结束当前stream consumption，并向source发送
 best-effort stop hint。Stream被消费、结束或停止后不能再次迭代，也不能复制到多个lane同时消费。

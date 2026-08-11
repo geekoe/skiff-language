@@ -24,6 +24,7 @@ use super::{
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
+    resumable::{drive_bytecode_request, RejectingResponseEventSink},
 };
 use crate::{
     error::RuntimeError,
@@ -69,15 +70,18 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let result =
-                request_runner::execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            let result = drive_bytecode_request(
+                BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
                     cancelled,
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
-                });
+                },
+                response_sink.clone(),
+            )
+            .await;
             host.finish_http_gateway_request(
                 &supervised_request,
                 &request_id,
@@ -124,15 +128,18 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let result =
-                request_runner::execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            let result = drive_bytecode_request(
+                BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
                     cancelled,
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
-                });
+                },
+                Arc::new(RejectingResponseEventSink),
+            )
+            .await;
             match result {
                 Ok(response) => {
                     if !host
@@ -188,15 +195,18 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let result =
-                request_runner::execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            let result = drive_bytecode_request(
+                BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
                     cancelled,
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
-                });
+                },
+                Arc::new(RejectingResponseEventSink),
+            )
+            .await;
             let mapped_error = match result {
                 Ok(_) => RequestError::Unsupported(
                     "bytecode WebSocket connect response mapping is not supported; refusing legacy ActiveAssemblyRoute fallback"
@@ -243,15 +253,18 @@ impl RuntimeHost {
         };
         let host = self.clone();
         tokio::spawn(async move {
-            let result =
-                request_runner::execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            let result = drive_bytecode_request(
+                BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
                     cancelled,
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
-                });
+                },
+                Arc::new(RejectingResponseEventSink),
+            )
+            .await;
             let error = match result {
                 Ok(_) => RequestError::Unsupported(
                     "bytecode WebSocket connection close response mapping is not supported; refusing legacy ActiveAssemblyRoute fallback"

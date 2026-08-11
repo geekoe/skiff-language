@@ -404,7 +404,7 @@ fn execute_deployment_batches(
                 },
             )
         },
-        |active, entrypoint| {
+        |_, entrypoint| {
             execute_business_request_once(|| {
                 execute_control_test_dispatch(control_url, ingress_url, entrypoint)
             })

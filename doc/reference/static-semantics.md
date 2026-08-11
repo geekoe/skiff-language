@@ -545,15 +545,15 @@ request-local pass-through，不创建新的 stream sink，也不能跨请求持
 
 `Stream<T>` 不能作为用户 operation 参数、用户 record 字段、持久化字段、collection 元素或普通 public API type 字段。平台 std 的 runtime-owned handle 字段和 native host operation 参数是特权例外；例如 `std.file.createFromStream(source: Stream<bytes>, ...)` 只在同一 request 内消费 source，不把 stream 作为远程 API 或持久化值暴露。
 
-返回 `Stream<T>` 的 service operation 是 server-stream producer。函数体内 `emit expr` 要求 `expr` 可赋给 `T`，并写入当前 stream sink。
+返回 `Stream<T>` 的 service operation 是 server-stream producer；这里的 `Stream<T>` 是入口/边界的显式 producer authority，不是 producer body 的返回值。函数体内 `emit expr` 要求 `expr` 可赋给 `T`，并写入当前 stream sink。
 
-`Stream<T>` operation 不需要 `return expr`。自然结束或裸 `return` 表示 normal end；带值 return 是编译错误。
+`Stream<T>` operation 的 body `return` 是自然结束，不是返回 `Stream<T>` 值；该 `return` 的栈 arity 为 0。自然结束或裸 `return` 都表示 normal end；带值 return 是编译错误。
 
 helper 若使用 `emit`，其 effect metadata 必须标记 `emits T`，并且只能在兼容当前 stream sink 的上下文调用。
 
 `emit` 不能出现在普通 unary request、顶层 const 初始化、escaping callback、后台清理路径或 request 结束后。`emit` 不允许出现在 `concurrent` surface 内，包括 sibling lane、`serial` lane 和 `concurrent value` tail lane。
 
-消费 stream 的 `for` loop 是一次性顺序消费。break、return、外层 timeout 或 ancestor cancel 必须向 source 传播 cancel；消费后不能再次迭代或复制到多个 lane。
+消费 stream 的 `for` loop 是一次性顺序消费。每次迭代从 item 路径得到 1 个 `T` 并执行一次 body；end 路径零结果并使 loop normal exit；error 映射为当前 lane 的 ordinary throw。break、return、外层 timeout 或 ancestor cancel 必须向 source 传播 cancel；消费后不能再次迭代或复制到多个 lane。
 
 ## 16. Boundary Schema Closure
 

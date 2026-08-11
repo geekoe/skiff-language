@@ -116,7 +116,7 @@ pub fn compile_package_artifact(
     available_packages: &[PackageArtifact],
     contract_dependencies: &[PackageContractCompileDependency],
 ) -> Result<PublishedPackageArtifact, PackageCompileError> {
-    compile_package_artifact_with_context(
+    let (package, _bytecode) = compile_package_artifact_with_context(
         platform_sources,
         package,
         CanonicalPackageCompileContext::new(
@@ -125,7 +125,8 @@ pub fn compile_package_artifact(
             available_packages,
             contract_dependencies,
         ),
-    )
+    )?;
+    Ok(package)
 }
 
 pub(crate) struct CanonicalPackageCompileContext<'a> {

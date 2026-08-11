@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
-    self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, RequestEnvelope, ResponseEnd, ResponseEvent,
-    RouterWriterMessage,
+    BoundaryResponse, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
+    RequestEnvelope, ResponseEnd, ResponseEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -16,7 +15,10 @@ use skiff_runtime_transport::{
 use tokio::sync::mpsc;
 use tracing::error;
 
-use super::assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest;
+use super::{
+    assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest,
+    resumable::{drive_bytecode_request, RejectingResponseEventSink},
+};
 use crate::{
     host::{
         request_supervisor::{CompletionTrace, SupervisedRequest},
@@ -68,15 +70,18 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let result =
-                request_runner::execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            let result = drive_bytecode_request(
+                BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
                     cancelled: supervised_request.cancelled(),
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
-                });
+                },
+                Arc::new(RejectingResponseEventSink),
+            )
+            .await;
             let terminal = match result {
                 Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))) => {
                     WebSocketJsonRpcTerminal::Response(WebSocketJsonRpcOutcome::Success { payload })

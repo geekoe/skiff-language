@@ -399,8 +399,10 @@ error path：
 `copy_slot`、`dup`、container store 和普通 by-value argument preparation 按 linked `ValueTransferPlan`执行；
 ordinary aggregate 才做 semantic share transition。它们不能只复制16 bytes后留下两个“唯一”edit token，
 也不能复制move-only/affine resource。`move_slot`转移value并使source slot dead；verifier必须证明之后不再读取。
-`stream_next`消费一次性stream endpoint的下一项；`emit_stream`只能出现在verified server-stream producer，
-并在buffer满/consumer未就绪时形成真实backpressure Pending。
+`stream_next`（`StreamNext`）消费一次性stream endpoint的下一项。`for item in stream` 的 lowering 有
+item/end 两个 successor：item 路径 resume 后压 1 个 `T`，end 路径走独立 end resume PC、零结果并使用
+显式 `ResumeOutcome::StreamEnd`。`emit_stream`只能出现在verified server-stream producer，并在buffer满/
+consumer未就绪时形成真实backpressure Pending。
 
 `tail_call_local` 是新 bytecode ISA 的显式操作。它只由 emitter 在 source eligibility 已确定且 relocation
 为 exact-local kind 时产生，并由 post-link verifier 再证明 return plan 与 region eligibility。它有意取代
@@ -969,10 +971,13 @@ frame/deadline/trace/call stack与provider heap；它不是detached coroutine，
 一个可逃逸stream。
 
 Producer执行`emit_stream`时返回`EmitStream`。Supervisor只在waiting consumer或bounded buffer有容量时同步接收；
-否则把producer停在真实backpressure `PendingOperation`。`stream_next`消费一个item、end或error；item按boundary
-plan materialize，不能共享provider heap handle。Producer normal exit生成一次end，throw/timeout生成一次error；
-consumer break/drop/ancestor stop关闭affine endpoint并向producer发送best-effort stop，晚到item只做内部清理。
-同一endpoint不得被两个fiber/lane消费。
+否则把producer停在真实backpressure `PendingOperation`。`stream_next`（`StreamNext`）的 item/end 是两个独立
+resume contract：item 路径 resume 后压 1 个 `T` 并按 boundary plan materialize，不能共享provider heap
+handle；自然 end 走独立 end resume PC、零结果，使用显式 `ResumeOutcome::StreamEnd` 并跳到 continuation；
+error映射为ordinary throw。Producer body 的 natural end `return` 栈 arity 为 0：它只生成一次end，不把
+`Stream<T>` 作为返回值 materialize，`Stream<T>` 仅作为调用入口/边界的显式 producer authority。
+Producer normal exit生成一次end，throw/timeout生成一次error；consumer break/drop/ancestor stop关闭affine
+endpoint并向producer发送best-effort stop，晚到item只做内部清理。同一endpoint不得被两个fiber/lane消费。
 
 Native external source stream也登记在同一ResourceTable/Supervisor contract，但其producer由host adapter拥有。
 Package-direct stream wrapper复用当前request已有的stream registry；普通Skiff package/local body仍不能创建新的

@@ -11,6 +11,7 @@ mod assembly;
 mod assembly_wire;
 #[cfg(test)]
 mod bytecode_http_tests;
+mod resumable;
 mod websocket_jsonrpc;
 
 impl RuntimeHost {

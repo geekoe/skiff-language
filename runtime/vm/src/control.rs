@@ -469,8 +469,12 @@ pub enum VmInternalTerminal {
 #[must_use = "a resume outcome may own VM roots"]
 pub enum ResumeOutcome {
     Values(VmOwnedValues),
-    /// Verified zero-result resume, used by `EmitStream` backpressure wakes.
+    /// Verified zero-result resume for `EmitStream` backpressure wakes. Stream
+    /// natural end must use [`ResumeOutcome::StreamEnd`], never this variant.
     Empty,
+    /// Explicit stream producer natural end. Natural end uses an independent
+    /// end resume PC and zero-result resume path, not `EmitStream` backpressure.
+    StreamEnd,
     Throw(VmOwnedValues),
     Failure(VmError),
     InternalTerminal(VmInternalTerminal),
@@ -480,7 +484,7 @@ impl VmRootSource for ResumeOutcome {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         match self {
             Self::Values(values) | Self::Throw(values) => values.visit_roots(visitor),
-            Self::Empty | Self::Failure(_) | Self::InternalTerminal(_) => Ok(()),
+            Self::Empty | Self::StreamEnd | Self::Failure(_) | Self::InternalTerminal(_) => Ok(()),
         }
     }
 }
@@ -576,9 +580,15 @@ fn visit_values(values: &[ValueSlot], visitor: &mut dyn VmRootVisitor) -> Result
 mod tests {
     use std::mem::size_of;
 
+    use skiff_runtime_model::{
+        vm_heap::VmHeapError,
+        vm_root::{VmRootSource, VmRootVisitor},
+        vm_value::ValueSlot,
+    };
+
     use super::{
-        PendingOperation, PendingTicket, ResumeOutcome, StreamItem, VmControl, VmOwnedValues,
-        VmResumeToken,
+        PendingOperation, PendingTicket, ResumeOutcome, StreamItem, VmControl, VmError,
+        VmOwnedValues, VmResumeToken,
     };
 
     #[test]
@@ -616,6 +626,31 @@ mod tests {
     #[test]
     fn empty_resume_outcome_is_a_public_zero_result_path() {
         let _: fn() -> ResumeOutcome = || ResumeOutcome::Empty;
+    }
+
+    #[test]
+    fn stream_end_resume_outcome_is_public_and_rootless() {
+        let _: fn() -> ResumeOutcome = || ResumeOutcome::StreamEnd;
+
+        struct UnreachableVisitor;
+
+        impl VmRootVisitor for UnreachableVisitor {
+            fn visit_root(&mut self, _root: &ValueSlot) -> Result<(), VmHeapError> {
+                panic!("StreamEnd must not own VM roots")
+            }
+        }
+
+        ResumeOutcome::StreamEnd
+            .visit_roots(&mut UnreachableVisitor)
+            .unwrap();
+    }
+
+    #[test]
+    fn stream_end_constructor_is_distinct_from_values_empty_and_failure() {
+        let _: fn(VmOwnedValues) -> ResumeOutcome = ResumeOutcome::Values;
+        let _: fn() -> ResumeOutcome = || ResumeOutcome::Empty;
+        let _: fn() -> ResumeOutcome = || ResumeOutcome::StreamEnd;
+        let _: fn(VmError) -> ResumeOutcome = ResumeOutcome::Failure;
     }
 
     #[test]

@@ -60,12 +60,12 @@ fn shared_executor_prepares_and_becomes_ready_once_then_dispatches_every_case() 
             timeline.borrow_mut().push("prepare".to_string());
             Ok(test_active_execution())
         },
-        |active| {
+        |_| {
             readiness_calls.set(readiness_calls.get() + 1);
             timeline.borrow_mut().push("readiness".to_string());
             Ok(())
         },
-        |active, entrypoint| {
+        |_, entrypoint| {
             timeline
                 .borrow_mut()
                 .push(format!("dispatch:{}", entrypoint.case.name));
