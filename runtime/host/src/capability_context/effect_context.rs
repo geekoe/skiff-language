@@ -1,4 +1,4 @@
-use super::{HttpRuntimeOptions, TelemetryCapabilityContext, TestHttpSelfIngressContext};
+use super::{HttpRuntimeOptions, TelemetryCapabilityContext};
 use skiff_runtime_capability_context::CancellationToken;
 
 #[derive(Clone)]
@@ -6,7 +6,6 @@ pub struct EffectDispatchContext {
     http: HttpEffectContext,
     telemetry: TelemetryCapabilityContext,
     http_options: HttpRuntimeOptions,
-    test_http_self_ingress: Option<TestHttpSelfIngressContext>,
 }
 
 impl EffectDispatchContext {
@@ -19,16 +18,7 @@ impl EffectDispatchContext {
             http,
             telemetry,
             http_options,
-            test_http_self_ingress: None,
         }
-    }
-
-    pub(crate) fn with_test_http_self_ingress(
-        mut self,
-        context: Option<TestHttpSelfIngressContext>,
-    ) -> Self {
-        self.test_http_self_ingress = context;
-        self
     }
 
     pub fn http(&self) -> &HttpEffectContext {
@@ -41,10 +31,6 @@ impl EffectDispatchContext {
 
     pub fn http_options(&self) -> HttpRuntimeOptions {
         self.http_options.clone()
-    }
-
-    pub(crate) fn test_http_self_ingress(&self) -> Option<TestHttpSelfIngressContext> {
-        self.test_http_self_ingress.clone()
     }
 }
 

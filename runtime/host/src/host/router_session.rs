@@ -3,9 +3,7 @@ use std::{collections::HashSet, future::Future, panic::AssertUnwindSafe, pin::Pi
 use futures_util::{stream::FuturesUnordered, FutureExt, Sink, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
-use skiff_runtime_capability_context::{
-    ConnectionRequestSession, ConnectionRequestTerminal,
-};
+use skiff_runtime_capability_context::{ConnectionRequestSession, ConnectionRequestTerminal};
 use skiff_runtime_request::{OutboundResponse, ResponseError};
 #[cfg(test)]
 use skiff_runtime_transport::protocol::RouterControlEnvelope;
@@ -330,8 +328,7 @@ impl Drop for ConnectedRouterSessionGuard {
 
 #[derive(Clone)]
 pub(crate) struct ConnectionBootstrap {
-    pub(crate) resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver,
-    pub(crate) service_db: skiff_artifact_model::AssemblyActivationServiceDb,
+    pub(crate) resolver: skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver,
     pub(crate) activation: skiff_runtime_transport::protocol::RouterBootstrapActivationFrameHeader,
     pub(crate) max_response_bytes: usize,
 }
@@ -354,13 +351,10 @@ fn test_connection_bootstrap(name: &str) -> Result<ConnectionBootstrap> {
     std::fs::create_dir_all(&artifact_path)
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
     Ok(ConnectionBootstrap {
-        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+        resolver: skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver::open(
             &artifact_path,
         )
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
-        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
-            mongo_url: "mongodb://127.0.0.1:27017".to_string(),
-        },
         activation: test_bootstrap_activation(),
         max_response_bytes: 67_108_864,
     })
@@ -379,16 +373,12 @@ fn decode_connection_bootstrap(
     value.insert("type".to_string(), Value::String(typed.envelope_type));
     let header = decode_router_bootstrap_frame_header(Value::Object(value))
         .map_err(super::transport_error_into_runtime_error)?;
-    let resolver = skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+    let resolver = skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver::open(
         &header.artifacts_path,
     )
     .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
-    let service_db = skiff_artifact_model::AssemblyActivationServiceDb {
-        mongo_url: header.service_db.mongo_url.clone(),
-    };
     Ok(ConnectionBootstrap {
         resolver,
-        service_db,
         activation: header.activation,
         max_response_bytes: usize::try_from(header.http.max_response_bytes).map_err(|_| {
             RuntimeError::Decode(
@@ -518,13 +508,10 @@ async fn dispatch_router_binary_frame(
     std::fs::create_dir_all(&artifact_path)
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
     let mut bootstrap = Some(ConnectionBootstrap {
-        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+        resolver: skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver::open(
             &artifact_path,
         )
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
-        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
-            mongo_url: "mongodb://127.0.0.1:27017".to_string(),
-        },
         activation: test_bootstrap_activation(),
         max_response_bytes: 67_108_864,
     });
@@ -552,13 +539,10 @@ async fn dispatch_router_binary_frame_with_http_response_max(
     std::fs::create_dir_all(&artifact_path)
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
     let mut bootstrap = Some(ConnectionBootstrap {
-        resolver: skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver::open(
+        resolver: skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver::open(
             &artifact_path,
         )
         .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?,
-        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
-            mongo_url: "mongodb://127.0.0.1:27017".to_string(),
-        },
         activation: test_bootstrap_activation(),
         max_response_bytes,
     });
@@ -658,8 +642,7 @@ async fn dispatch_router_binary_frame_inner(
         }
         "router.control" => {
             return Err(RuntimeError::Decode(
-                "router.control artifactRoots/serviceConfig reload is not supported"
-                    .to_string(),
+                "router.control artifactRoots/serviceConfig reload is not supported".to_string(),
             ));
         }
         "request.start" => {

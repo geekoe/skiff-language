@@ -6,18 +6,17 @@ use serde_json::Value;
 use serde_json::{json, Map};
 #[cfg(any())]
 use skiff_artifact_model::ConfigShape;
-use skiff_artifact_model::{GatewayDispatchMode, GatewayEntryProtocolSurface, GatewayProtocolSurface};
+use skiff_artifact_model::{
+    GatewayDispatchMode, GatewayEntryProtocolSurface, GatewayProtocolSurface,
+};
 use skiff_runtime_request::{self as request_runner, RequestEnvelope, RouterWriterMessage};
+use skiff_runtime_transport::protocol::{
+    encode_binary_frame, RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
+    RuntimeDispatchModeCapability, TelemetryEvent, TelemetrySource, RUNTIME_FRAME_SCHEMA_VERSION,
+};
 #[cfg(any())]
 use skiff_runtime_transport::protocol::{
     RouterControlEnvelope, RouterControlPackageConfig, RouterControlServiceConfig,
-};
-use skiff_runtime_transport::{
-    protocol::{
-        encode_binary_frame, RuntimeCapabilitiesFrameHeader,
-        RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDispatchModeCapability, TelemetryEvent,
-        TelemetrySource, RUNTIME_FRAME_SCHEMA_VERSION,
-    },
 };
 use tokio::sync::mpsc;
 use tracing::{info, warn};
@@ -122,9 +121,6 @@ impl RuntimeHost {
         // fail with no eligible runtime (the deployment's own surface decides
         // the request shape after lazy loading).
         let dispatch_modes = engine_dispatch_modes();
-        #[cfg(test)]
-        let loaded_build_ids = self.assembly_admission.loaded_build_ids();
-        #[cfg(not(test))]
         let loaded_build_ids = Vec::new();
         let artifact_root = self.bootstrap_artifact_root();
         let header = RuntimeCapabilitiesFrameHeader {
@@ -244,9 +240,6 @@ mod tests {
         GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
         GatewayWebSocketShapeVersion,
     };
-
-
-
 
     #[test]
     fn capabilities_frame_advertises_engine_modes_without_admitted_assembly() {
