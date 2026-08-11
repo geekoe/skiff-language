@@ -22,7 +22,8 @@ use skiff_artifact_model::{
     validate_bytecode_statement_manifest_identity, BytecodeArtifact, BytecodeArtifactRef,
     BytecodeFunctionOrigin, BytecodeFunctionStatementManifest, BytecodeStatementManifestIdentity,
     HostEffectRegistryIdentity, IntrinsicRegistryIdentity, NativeValueLifecycleRegistryIdentity,
-    StatementManifestIdentityError, ValueLifecyclePolicyIdentity,
+    PlatformErrorProjectionRegistryRef, StatementManifestIdentityError,
+    ValueLifecyclePolicyIdentity,
 };
 use thiserror::Error;
 
@@ -81,17 +82,18 @@ pub struct BytecodeStatementManifestReceipt {
 
 /// Exact semantic authorities retained from an admitted bytecode image.
 ///
-/// The four pins stay grouped so a receipt consumer cannot select the native
-/// lifecycle registry while overlooking the classifier, host-effect, or
-/// intrinsic authority introduced by bytecode schema v6. Construction is
-/// private: production values can only be derived from the artifact admitted
-/// by [`BytecodeCompilationHandoff::try_new`].
+/// The five pins stay grouped so a receipt consumer cannot select the native
+/// lifecycle registry while overlooking the classifier, host-effect,
+/// intrinsic, or platform-error projection authority required by bytecode
+/// schema v7. Construction is private: production values can only be derived
+/// from the artifact admitted by [`BytecodeCompilationHandoff::try_new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BytecodeCompilationAuthorityPins {
     native_value_lifecycle_registry: NativeValueLifecycleRegistryIdentity,
     value_lifecycle_policy: ValueLifecyclePolicyIdentity,
     host_effect_registry: HostEffectRegistryIdentity,
     intrinsic_registry: IntrinsicRegistryIdentity,
+    platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
 }
 
 /// Failure to admit the exact emission output at the compiled-package seam.
@@ -340,7 +342,7 @@ impl BytecodeCompilationReceipt {
         &self.opcode_table_fingerprint
     }
 
-    /// All exact semantic authorities admitted with this v6 image.
+    /// All exact semantic authorities admitted with this v7 image.
     pub const fn authorities(&self) -> &BytecodeCompilationAuthorityPins {
         &self.authorities
     }
@@ -365,6 +367,7 @@ impl BytecodeCompilationAuthorityPins {
             value_lifecycle_policy: artifact.value_lifecycle_policy.clone(),
             host_effect_registry: artifact.host_effect_registry.clone(),
             intrinsic_registry: artifact.intrinsic_registry.clone(),
+            platform_error_projection_registry: artifact.platform_error_projection_registry.clone(),
         }
     }
 
@@ -382,6 +385,10 @@ impl BytecodeCompilationAuthorityPins {
 
     pub const fn intrinsic_registry(&self) -> &IntrinsicRegistryIdentity {
         &self.intrinsic_registry
+    }
+
+    pub const fn platform_error_projection_registry(&self) -> &PlatformErrorProjectionRegistryRef {
+        &self.platform_error_projection_registry
     }
 }
 

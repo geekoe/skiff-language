@@ -9,9 +9,9 @@ use skiff_artifact_model::{
     BytecodeArtifactRef, BytecodeFunctionOrigin, BytecodeFunctionStatementManifest, BytecodeImage,
     BytecodePools, BytecodeStatementManifestIdentity, FrameLayout, FrozenConstantGraph,
     InstructionSourceSite, Opcode, PackageCallableId, PackageExecutableCoordinate,
-    RelocatableBytecodeFunction, SourcePosition, SourceSpanRef, StatementAttributionId,
-    StatementEntry, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
-    BYTECODE_STATEMENT_MANIFEST_IDENTITY_PREFIX,
+    PlatformErrorProjectionRegistryRef, RelocatableBytecodeFunction, SourcePosition, SourceSpanRef,
+    StatementAttributionId, StatementEntry, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION, BYTECODE_STATEMENT_MANIFEST_IDENTITY_PREFIX,
 };
 
 use super::*;
@@ -36,6 +36,22 @@ fn source_site(source_id: u64) -> InstructionSourceSite {
             end: SourcePosition::new(1, 2),
         },
     }
+}
+
+fn historical_platform_error_projection_registry_ref() -> PlatformErrorProjectionRegistryRef {
+    let current = skiff_artifact_model::current_platform_error_projection_registry_ref();
+    let zero_fingerprint = format!("sha256:{}", "0".repeat(64));
+    let fingerprint = if zero_fingerprint == current.fingerprint() {
+        format!("sha256:{}", "1".repeat(64))
+    } else {
+        zero_fingerprint
+    };
+    serde_json::from_value(serde_json::json!({
+        "registryId": current.registry_id(),
+        "registryVersion": current.registry_version(),
+        "fingerprint": fingerprint,
+    }))
+    .expect("historical registry descriptor must satisfy the strict general shape")
 }
 
 fn statement_entries() -> Vec<StatementEntry> {
@@ -107,6 +123,8 @@ fn canonical_artifact() -> BytecodeArtifact {
         value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
         host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
         intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         bytecode_identity: "identity-is-assigned-after-structural-validation".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::from([
@@ -203,16 +221,41 @@ fn exact_join_retains_manifest_and_receipts_inside_one_handoff() {
 }
 
 #[test]
+fn receipt_retains_the_admitted_artifact_platform_error_registry_authority() {
+    let artifact = canonical_artifact();
+    let admitted_descriptor = artifact.platform_error_projection_registry.clone();
+    let manifest = canonical_manifest(&artifact);
+    let identity = manifest_identity(PACKAGE_ID, &manifest);
+    let handoff = try_handoff(PACKAGE_ID, manifest, identity, artifact).unwrap();
+    let retained = handoff
+        .receipt()
+        .authorities()
+        .platform_error_projection_registry();
+    let current = skiff_artifact_model::current_platform_error_projection_registry_ref();
+
+    assert_eq!(retained, &admitted_descriptor);
+    assert_eq!(
+        retained,
+        &handoff.artifact().platform_error_projection_registry
+    );
+    assert_eq!(retained, current);
+    assert!(
+        !std::ptr::eq(retained, current),
+        "the getter must expose receipt-owned evidence, not the ambient singleton"
+    );
+}
+
+#[test]
 fn fixture_carries_current_bytecode_and_statement_schema() {
     let artifact = canonical_artifact();
     let wire = serde_json::to_value(&artifact).unwrap();
     let entry = &wire["image"]["functions"]["module::event"]["statementEntries"][0];
 
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v6");
-    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v4:sha256");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v7");
+    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v5:sha256");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
-        "skiff-bytecode-artifact-v4"
+        "skiff-bytecode-artifact-v5"
     );
     assert_eq!(entry["sequenceOrdinal"], 0);
     assert!(entry.get("attributionId").is_some());
@@ -339,6 +382,25 @@ fn artifact_admission_and_reference_identity_still_fail_closed() {
             reference,
         ),
         Err(BytecodeCompilationHandoffError::ReferenceIdentityMismatch { .. })
+    ));
+}
+
+#[test]
+fn historical_platform_error_registry_fingerprint_fails_artifact_admission() {
+    let mut artifact = canonical_artifact();
+    let manifest = canonical_manifest(&artifact);
+    let identity = manifest_identity(PACKAGE_ID, &manifest);
+    let historical = historical_platform_error_projection_registry_ref();
+    let current = skiff_artifact_model::current_platform_error_projection_registry_ref();
+
+    assert_eq!(historical.registry_id(), current.registry_id());
+    assert_eq!(historical.registry_version(), current.registry_version());
+    assert_ne!(historical.fingerprint(), current.fingerprint());
+    artifact.platform_error_projection_registry = historical;
+
+    assert!(matches!(
+        try_handoff(PACKAGE_ID, manifest, identity, artifact),
+        Err(BytecodeCompilationHandoffError::InvalidCanonicalArtifact { .. })
     ));
 }
 
