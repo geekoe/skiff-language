@@ -321,8 +321,8 @@ fn applied_nominals_flow_from_source_through_file_ir_signatures_sites_and_calls(
               }
             "#,
     );
-    assert_eq!(unit.schema_version, "skiff-file-ir-v14");
-    assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v8");
+    assert_eq!(unit.schema_version, "skiff-file-ir-v15");
+    assert_eq!(unit.ir_format_version, "skiff-file-ir-format-v9");
     assert_eq!(unit.opcode_table_version, "skiff-opcode-table-v2");
 
     let declaration = |name: &str| {
