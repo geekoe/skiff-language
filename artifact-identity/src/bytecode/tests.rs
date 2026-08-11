@@ -18,6 +18,17 @@ use super::*;
 
 type BytecodeMutation = (&'static str, fn(&mut BytecodeArtifact));
 
+fn historical_platform_error_projection_registry_ref(
+    character: char,
+) -> skiff_artifact_model::PlatformErrorProjectionRegistryRef {
+    serde_json::from_value(serde_json::json!({
+        "registryId": skiff_artifact_model::PLATFORM_ERROR_PROJECTION_REGISTRY_ID,
+        "registryVersion": skiff_artifact_model::PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION,
+        "fingerprint": format!("sha256:{}", character.to_string().repeat(64)),
+    }))
+    .expect("historical registry descriptor must satisfy the strict general shape")
+}
+
 fn snapshot_share() -> ValueTransferPlan {
     ValueTransferPlan::SnapshotShare {
         drop: ValueDropPlan::Trivial,
@@ -101,6 +112,8 @@ fn fixture() -> BytecodeArtifact {
         value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
         host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
         intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         bytecode_identity: format!("{BYTECODE_IDENTITY_PREFIX}:fixture"),
         image: BytecodeImage {
             functions,
@@ -171,10 +184,51 @@ fn schema_isa_and_all_semantic_authorities_participate_in_the_preimage() {
     let base = fixture();
     let base_view = skiff_artifact_model::structurally_validate(&base).unwrap();
     let base_hash = bytecode_identity_after_structural(&base, Some(&base_view)).unwrap();
+    let preimage =
+        serde_json::to_value(BytecodeIdentityPayload::from_view(&base, Some(&base_view))).unwrap();
+    assert_eq!(preimage["schema"], "skiff-bytecode-artifact-v5");
+    assert_eq!(
+        preimage
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            "schema",
+            "schemaVersion",
+            "isaVersion",
+            "opcodeTableFingerprint",
+            "nativeValueLifecycleRegistry",
+            "valueLifecyclePolicy",
+            "hostEffectRegistry",
+            "intrinsicRegistry",
+            "platformErrorProjectionRegistry",
+            "image",
+            "intrinsicContracts",
+            "functionStreamItems",
+        ]
+    );
+    assert_eq!(
+        preimage["platformErrorProjectionRegistry"],
+        serde_json::to_value(
+            skiff_artifact_model::current_platform_error_projection_registry_ref()
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        preimage["platformErrorProjectionRegistry"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["registryId", "registryVersion", "fingerprint"]
+    );
 
-    let mutations: [BytecodeMutation; 14] = [
+    let mutations: [BytecodeMutation; 15] = [
         ("schemaVersion", |artifact| {
-            artifact.schema_version = "skiff-bytecode-v5".to_string();
+            artifact.schema_version = "skiff-bytecode-v6".to_string();
         }),
         ("isaVersion", |artifact| {
             artifact.isa_version = "skiff-bytecode-isa-v3".to_string();
@@ -223,6 +277,10 @@ fn schema_isa_and_all_semantic_authorities_participate_in_the_preimage() {
         }),
         ("intrinsicRegistry.fingerprint", |artifact| {
             artifact.intrinsic_registry.fingerprint = "0".repeat(64);
+        }),
+        ("platformErrorProjectionRegistry.fingerprint", |artifact| {
+            artifact.platform_error_projection_registry =
+                historical_platform_error_projection_registry_ref('0');
         }),
     ];
     for (label, mutate) in mutations {
@@ -286,7 +344,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&slot_type_changed).unwrap(),
         base_identity,
-        "schema v6 frame slot types must participate in the identity"
+        "schema v7 frame slot types must participate in the identity"
     );
 
     let mut result_type_changed = base.clone();
@@ -300,7 +358,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&result_type_changed).unwrap(),
         base_identity,
-        "schema v6 frame result types must participate in the identity"
+        "schema v7 frame result types must participate in the identity"
     );
 
     let mut writable_locals_changed = base.clone();
@@ -314,7 +372,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&writable_locals_changed).unwrap(),
         base_identity,
-        "schema v6 writable-local frame facts must participate in the identity"
+        "schema v7 writable-local frame facts must participate in the identity"
     );
 
     let mut origin_changed = base.clone();
@@ -331,7 +389,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&origin_changed).unwrap(),
         base_identity,
-        "schema v6 executable origins must participate in the identity"
+        "schema v7 executable origins must participate in the identity"
     );
 
     let mut source_event_changed = base.clone();
@@ -347,7 +405,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(
         bytecode_identity(&source_event_changed).unwrap(),
         base_identity,
-        "schema v6 source-event rows must participate in the image identity"
+        "schema v7 source-event rows must participate in the image identity"
     );
 
     let mut graph_changed = base.clone();
@@ -433,7 +491,7 @@ fn identity_format_validation_accepts_only_framed_lowercase_sha256() {
         format!("{BYTECODE_IDENTITY_PREFIX}:{}", leaf.to_uppercase()),
         format!("{BYTECODE_IDENTITY_PREFIX}:short"),
         format!("{BYTECODE_IDENTITY_PREFIX}:{}", "z".repeat(64)),
-        format!("skiff-bytecode-image-v3:sha256:{leaf}"),
+        format!("skiff-bytecode-image-v4:sha256:{leaf}"),
         "unframed".to_string(),
     ] {
         assert!(matches!(

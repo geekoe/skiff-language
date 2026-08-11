@@ -9,7 +9,7 @@ use skiff_artifact_model::{
     PackageCallableId, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
     PackageLocalInterfaceConformance, PackageRuntimeRequirements, PackageSchemaIndexRef,
     PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
-    PackageSyntheticCallbackOwner, ServiceCallRef,
+    PackageSyntheticCallbackOwner, PlatformErrorProjectionRegistryRef, ServiceCallRef,
 };
 
 use self::implementation_links::{
@@ -97,6 +97,7 @@ pub struct PackageArtifactBuildIdentityProjection {
     schema: &'static str,
     package_id: String,
     local_abi_identity: PackageLocalAbiIdentity,
+    platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
     implementation_symbols: BTreeMap<String, PackageLocalAbiSymbol>,
     package_schema_index: PackageSchemaIndexRef,
     package_schema_type_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecordRef>,

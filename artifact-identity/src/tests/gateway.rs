@@ -517,7 +517,7 @@ fn websocket_json_rpc_identity_tracks_only_the_canonical_protocol_surface() {
         "status-entry",
         "pkg-callable:example.provider:status",
         "connectionFormal",
-        "skiff-package-build-v13",
+        "skiff-package-build-v14",
         "example.internal.Nominal",
     ] {
         assert!(

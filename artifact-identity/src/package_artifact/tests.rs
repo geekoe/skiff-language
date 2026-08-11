@@ -46,7 +46,7 @@ fn current_package_artifact_generation_assigns_and_rejects_stale_domains() {
     validate_package_artifact_identities(&artifact).unwrap();
 
     let mut stale_schema = artifact.clone();
-    stale_schema.schema_version = "skiff-package-artifact-v13".to_string();
+    stale_schema.schema_version = "skiff-package-artifact-v14".to_string();
     assert!(matches!(
         validate_package_artifact_identities(&stale_schema),
         Err(ArtifactIdentityError::InvalidPackageArtifact { .. })
@@ -73,7 +73,7 @@ fn current_package_artifact_generation_assigns_and_rejects_stale_domains() {
     stale_build.package_build_id =
         PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
             crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-            "skiff-package-build-v12:sha256",
+            "skiff-package-build-v13:sha256",
             1,
         ));
     assert!(matches!(
@@ -456,7 +456,7 @@ fn implementation_throw_facts_without_matching_boundary_projection_are_rejected(
 }
 
 #[test]
-fn package_artifact_build_v13_preimage_excludes_service_selection() {
+fn package_artifact_build_v14_preimage_excludes_service_selection() {
     let mut artifact = two_callable_fixture();
     artifact.bytecode = Some(skiff_artifact_model::BytecodeArtifactRef {
         bytecode_identity: bytecode_identity_leaf('a'),
@@ -475,7 +475,7 @@ fn package_artifact_build_v13_preimage_excludes_service_selection() {
         build["schema"],
         crate::PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER
     );
-    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v12");
+    assert_eq!(build["schema"], "skiff-package-artifact-build-identity-v13");
     assert_eq!(
         build
             .as_object()
@@ -487,6 +487,7 @@ fn package_artifact_build_v13_preimage_excludes_service_selection() {
             "schema",
             "packageId",
             "localAbiIdentity",
+            "platformErrorProjectionRegistry",
             "implementationSymbols",
             "packageSchemaIndex",
             "packageSchemaTypeRecords",
@@ -511,6 +512,22 @@ fn package_artifact_build_v13_preimage_excludes_service_selection() {
     );
     assert!(build.get("serviceCallRoots").is_none());
     assert!(wire.get("serviceCallRoots").is_none());
+    assert_eq!(
+        build["platformErrorProjectionRegistry"],
+        serde_json::to_value(
+            skiff_artifact_model::current_platform_error_projection_registry_ref()
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        build["platformErrorProjectionRegistry"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["registryId", "registryVersion", "fingerprint"]
+    );
     assert_eq!(build["syntheticCallbackOwners"], serde_json::json!([]));
     assert_eq!(build["bytecodeSchemaRecords"], serde_json::json!({}));
     assert_eq!(wire["syntheticCallbackOwners"], serde_json::json!([]));
@@ -520,7 +537,7 @@ fn package_artifact_build_v13_preimage_excludes_service_selection() {
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v13:sha256:"));
+        .starts_with("skiff-package-build-v14:sha256:"));
 
     assert_eq!(
         local["schema"],
@@ -536,6 +553,7 @@ fn package_artifact_build_v13_preimage_excludes_service_selection() {
         vec!["schema", "packageId", "publicSymbols"]
     );
     assert!(local.get("serviceCallRoots").is_none());
+    assert!(local.get("platformErrorProjectionRegistry").is_none());
     assert!(local.get("syntheticCallbackOwners").is_none());
     assert!(local.get("bytecodeSchemaRecords").is_none());
     assert!(artifact
@@ -543,6 +561,58 @@ fn package_artifact_build_v13_preimage_excludes_service_selection() {
         .local_abi_identity
         .as_str()
         .starts_with("skiff-package-local-abi-v7:sha256:"));
+}
+
+#[test]
+fn registry_fingerprint_changes_build_identity_but_not_local_abi() {
+    let base = fixture();
+    let base_build = package_artifact_build_identity(&base).unwrap();
+    let base_local = package_artifact_local_abi_identity(&base).unwrap();
+
+    let mut historical = base.clone();
+    historical.platform_error_projection_registry =
+        historical_platform_error_projection_registry_ref('0');
+    assert_eq!(
+        historical.platform_error_projection_registry.registry_id(),
+        base.platform_error_projection_registry.registry_id()
+    );
+    assert_eq!(
+        historical
+            .platform_error_projection_registry
+            .registry_version(),
+        base.platform_error_projection_registry.registry_version()
+    );
+    assert_ne!(
+        historical.platform_error_projection_registry.fingerprint(),
+        base.platform_error_projection_registry.fingerprint()
+    );
+
+    assign_package_artifact_identities(&mut historical).unwrap();
+    validate_package_artifact_identities(&historical).unwrap();
+    assert_ne!(
+        package_artifact_build_identity(&historical).unwrap(),
+        base_build
+    );
+    assert_eq!(
+        package_artifact_local_abi_identity(&historical).unwrap(),
+        base_local
+    );
+
+    let build =
+        serde_json::to_value(package_artifact_build_identity_projection(&historical).unwrap())
+            .unwrap();
+    assert_eq!(
+        build["platformErrorProjectionRegistry"],
+        serde_json::to_value(&historical.platform_error_projection_registry).unwrap()
+    );
+    let local =
+        serde_json::to_value(package_artifact_local_abi_identity_projection(&historical).unwrap())
+            .unwrap();
+    assert!(local.get("platformErrorProjectionRegistry").is_none());
+
+    let round_tripped: PackageArtifact =
+        serde_json::from_value(serde_json::to_value(&historical).unwrap()).unwrap();
+    validate_package_artifact_identities(&round_tripped).unwrap();
 }
 
 #[test]
@@ -1651,6 +1721,8 @@ fn fixture() -> PackageArtifact {
         package_id: "example.identity".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,
@@ -2447,6 +2519,17 @@ fn bytecode_identity_leaf(character: char) -> String {
         crate::BYTECODE_IDENTITY_PREFIX,
         std::iter::repeat_n(character, 64).collect::<String>()
     )
+}
+
+fn historical_platform_error_projection_registry_ref(
+    character: char,
+) -> skiff_artifact_model::PlatformErrorProjectionRegistryRef {
+    serde_json::from_value(serde_json::json!({
+        "registryId": skiff_artifact_model::PLATFORM_ERROR_PROJECTION_REGISTRY_ID,
+        "registryVersion": skiff_artifact_model::PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION,
+        "fingerprint": format!("sha256:{}", character.to_string().repeat(64)),
+    }))
+    .expect("historical registry descriptor must satisfy the strict general shape")
 }
 
 fn statement_manifest_identity_leaf(
