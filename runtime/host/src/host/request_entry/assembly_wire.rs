@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayDispatchMode, GatewayProtocolSurface, GatewayWebSocketRpcProfile,
-    IngressProtocol, IngressSelector, ServiceIngressKey,
+    IngressProtocol, IngressSelector, ServiceDeploymentRef, ServiceIngressKey,
 };
 use skiff_runtime_activation::ActivationContext;
 use skiff_runtime_capability_context::{DbCapabilitySource, ExecutionBudgetReason};
@@ -54,10 +54,22 @@ pub(super) struct AdmittedWebSocketConnectRequest {
     pub(super) request: RuntimeWebSocketConnectIngress,
 }
 
+pub(super) struct AdmittedBytecodeWebSocketConnectRequest {
+    pub(super) route: BytecodeRoute,
+    pub(super) header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+    pub(super) target: BytecodeRequestTarget,
+}
+
 pub(super) struct AdmittedWebSocketConnectionClosedRequest {
     pub(super) route: ActiveAssemblyRoute,
     pub(super) header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
     pub(super) request: RuntimeWebSocketConnectionClosedIngress,
+}
+
+pub(super) struct AdmittedBytecodeWebSocketConnectionClosedRequest {
+    pub(super) route: BytecodeRoute,
+    pub(super) header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+    pub(super) target: BytecodeRequestTarget,
 }
 
 /// Per-request WebSocket JSON-RPC resolution: the physical WebSocket route is
@@ -76,6 +88,13 @@ pub(super) struct AdmittedWebSocketJsonRpcRequest {
     pub(super) params: Vec<u8>,
 }
 
+pub(super) struct AdmittedBytecodeWebSocketJsonRpcRequest {
+    pub(super) route: BytecodeRoute,
+    pub(super) header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    pub(super) target: BytecodeRequestTarget,
+    pub(super) params: Vec<u8>,
+}
+
 pub(super) struct AdmittedTaskRequest {
     pub(super) header: RuntimeAssemblyTaskRequestStartFrameHeader,
     pub(super) request: RuntimeTaskRequest,
@@ -86,6 +105,13 @@ pub(super) struct AdmittedTaskRequest {
     pub(super) config_views: Arc<crate::loader::config_snapshot::ActivationConfigViews>,
     pub(super) db_source: DbCapabilitySource,
     pub(super) service_protocol_identity: String,
+}
+
+pub(super) struct AdmittedBytecodeTaskRequest {
+    pub(super) route: BytecodeRoute,
+    pub(super) header: RuntimeAssemblyTaskRequestStartFrameHeader,
+    pub(super) target: BytecodeRequestTarget,
+    pub(super) payload: Vec<u8>,
 }
 
 impl RuntimeHost {
@@ -124,22 +150,21 @@ impl RuntimeHost {
                 self.http_gateway_request_from_wire(header, body, bootstrap)
                     .await
             }
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => self
-                .websocket_connect_request_from_wire(header, body, bootstrap)
-                .await
-                .map(AdmittedRuntimeAssemblyRequest::WebSocketConnect),
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => self
-                .websocket_connection_closed_request_from_wire(header, body, bootstrap)
-                .await
-                .map(AdmittedRuntimeAssemblyRequest::WebSocketConnectionClosed),
-            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => self
-                .websocket_jsonrpc_request_from_wire(header, body, bootstrap)
-                .await
-                .map(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc),
-            RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => self
-                .task_request_from_wire(header, body, bootstrap)
-                .await
-                .map(AdmittedRuntimeAssemblyRequest::Task),
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => {
+                self.websocket_connect_request_from_wire(header, body, bootstrap)
+                    .await
+            }
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
+                self.websocket_connection_closed_request_from_wire(header, body, bootstrap)
+                    .await
+            }
+            RuntimeAssemblyRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
+                self.websocket_jsonrpc_request_from_wire(header, body, bootstrap)
+                    .await
+            }
+            RuntimeAssemblyRequestStartFrameWireHeader::Task(header) => {
+                self.task_request_from_wire(header, body, bootstrap).await
+            }
         };
         if !was_loaded {
             let _ = self.queue_runtime_capabilities(sender.clone());
@@ -172,8 +197,26 @@ impl RuntimeHost {
                 )
                 .await
             }
+            Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketConnect(request)) => {
+                self.task_bytecode_websocket_connect_request(
+                    router_session_id.to_string(),
+                    request,
+                    bootstrap.max_response_bytes,
+                    sender,
+                )
+                .await
+            }
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnectionClosed(request)) => {
                 self.task_websocket_connection_closed_on_active_assembly_route(
+                    router_session_id.to_string(),
+                    request,
+                    bootstrap.max_response_bytes,
+                    sender,
+                )
+                .await
+            }
+            Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketConnectionClosed(request)) => {
+                self.task_bytecode_websocket_connection_closed_request(
                     router_session_id.to_string(),
                     request,
                     bootstrap.max_response_bytes,
@@ -190,8 +233,26 @@ impl RuntimeHost {
                 )
                 .await
             }
+            Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketJsonRpc(request)) => {
+                self.task_bytecode_websocket_jsonrpc_request(
+                    router_session_id.to_string(),
+                    request,
+                    bootstrap.max_response_bytes,
+                    sender,
+                )
+                .await
+            }
             Ok(AdmittedRuntimeAssemblyRequest::Task(request)) => {
                 self.task_direct_request_on_active_assembly(
+                    router_session_id.to_string(),
+                    request,
+                    bootstrap.max_response_bytes,
+                    sender,
+                )
+                .await
+            }
+            Ok(AdmittedRuntimeAssemblyRequest::BytecodeTask(request)) => {
+                self.task_bytecode_task_request(
                     router_session_id.to_string(),
                     request,
                     bootstrap.max_response_bytes,
@@ -239,19 +300,61 @@ impl RuntimeHost {
             .map_err(|error| RuntimeError::Decode(error.to_string()))
     }
 
+    async fn resolve_bytecode_request_route(
+        &self,
+        deployment: &ServiceDeploymentRef,
+        bootstrap: &ConnectionBootstrap,
+    ) -> Result<Option<BytecodeRoute>> {
+        self.bytecode_deployments
+            .route(deployment, bootstrap.resolver.store().root())
+            .await
+            .map_err(|error| RuntimeError::Decode(error.to_string()))
+    }
+
     async fn websocket_connect_request_from_wire(
         &self,
-        header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        mut header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedWebSocketConnectRequest> {
+    ) -> Result<AdmittedRuntimeAssemblyRequest> {
         validate_websocket_connect_header(&header, &body)?;
+        if let Some(bytecode_route) = self
+            .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
+            .await?
+        {
+            validate_bytecode_build_id(
+                &header.routing.deployment,
+                header.routing.build_id.as_deref(),
+                &header.request_id,
+            )?;
+            header.deadline =
+                effective_request_deadline(header.deadline.as_ref(), "WebSocket connect")?;
+            if header
+                .deadline
+                .as_ref()
+                .is_some_and(|deadline| deadline.timeout_ms == 0)
+            {
+                return Err(deadline_exceeded());
+            }
+            let target = bytecode_route
+                .request_target()
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+            return Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketConnect(
+                AdmittedBytecodeWebSocketConnectRequest {
+                    route: bytecode_route,
+                    header,
+                    target,
+                },
+            ));
+        }
         let selector = websocket_connect_ingress_selector(&header);
         let key = ServiceIngressKey {
             deployment: header.routing.deployment.clone(),
             selector: selector.clone(),
         };
-        let route = self.resolve_active_assembly_request_route(&key, bootstrap).await?;
+        let route = self
+            .resolve_active_assembly_request_route(&key, bootstrap)
+            .await?;
         validate_websocket_connect_route(&header, &selector, &route)?;
         if route.entry().optional_handler().is_none()
             && !route
@@ -265,26 +368,61 @@ impl RuntimeHost {
             });
         }
         let request = websocket_connect_ingress_from_wire(&route, &header);
-        Ok(AdmittedWebSocketConnectRequest {
-            route,
-            header,
-            request,
-        })
+        Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnect(
+            AdmittedWebSocketConnectRequest {
+                route,
+                header,
+                request,
+            },
+        ))
     }
 
     async fn websocket_connection_closed_request_from_wire(
         &self,
-        header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
+        mut header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedWebSocketConnectionClosedRequest> {
+    ) -> Result<AdmittedRuntimeAssemblyRequest> {
         validate_websocket_connection_closed_header(&header, &body)?;
+        if let Some(bytecode_route) = self
+            .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
+            .await?
+        {
+            validate_bytecode_build_id(
+                &header.routing.deployment,
+                header.routing.build_id.as_deref(),
+                &header.request_id,
+            )?;
+            header.deadline =
+                effective_request_deadline(header.deadline.as_ref(), "WebSocket connection close")?;
+            if header
+                .deadline
+                .as_ref()
+                .is_some_and(|deadline| deadline.timeout_ms == 0)
+            {
+                return Err(deadline_exceeded());
+            }
+            let target = bytecode_route
+                .request_target()
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+            return Ok(
+                AdmittedRuntimeAssemblyRequest::BytecodeWebSocketConnectionClosed(
+                    AdmittedBytecodeWebSocketConnectionClosedRequest {
+                        route: bytecode_route,
+                        header,
+                        target,
+                    },
+                ),
+            );
+        }
         let selector = websocket_connection_closed_ingress_selector(&header);
         let key = ServiceIngressKey {
             deployment: header.routing.deployment.clone(),
             selector: selector.clone(),
         };
-        let route = self.resolve_active_assembly_request_route(&key, bootstrap).await?;
+        let route = self
+            .resolve_active_assembly_request_route(&key, bootstrap)
+            .await?;
         validate_websocket_connection_closed_route(&header, &selector, &route)?;
         if route.entry().close_handler().is_none() {
             return Err(RuntimeError::Decode(
@@ -292,11 +430,13 @@ impl RuntimeHost {
             ));
         }
         let request = websocket_connection_closed_ingress_from_wire(&route, &header);
-        Ok(AdmittedWebSocketConnectionClosedRequest {
-            route,
-            header,
-            request,
-        })
+        Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnectionClosed(
+            AdmittedWebSocketConnectionClosedRequest {
+                route,
+                header,
+                request,
+            },
+        ))
     }
 
     async fn http_gateway_request_from_wire(
@@ -307,20 +447,14 @@ impl RuntimeHost {
     ) -> Result<AdmittedRuntimeAssemblyRequest> {
         validate_http_header(&header)?;
         if let Some(bytecode_route) = self
-            .bytecode_deployments
-            .route(
-                &header.routing.deployment,
-                bootstrap.resolver.store().root(),
-            )
-            .await
-            .map_err(|error| RuntimeError::Decode(error.to_string()))?
+            .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
+            .await?
         {
-            if header.mode != "unary" {
-                return Err(RuntimeError::Unsupported(format!(
-                    "bytecode scalar ingress only supports unary request.start, got {}",
-                    header.mode
-                )));
-            }
+            validate_bytecode_build_id(
+                &header.routing.deployment,
+                header.routing.build_id.as_deref(),
+                &header.request_id,
+            )?;
             let target = bytecode_route
                 .request_target()
                 .map_err(|error| RuntimeError::Decode(error.to_string()))?;
@@ -346,7 +480,9 @@ impl RuntimeHost {
             deployment: header.routing.deployment.clone(),
             selector: selector.clone(),
         };
-        let route = self.resolve_active_assembly_request_route(&key, bootstrap).await?;
+        let route = self
+            .resolve_active_assembly_request_route(&key, bootstrap)
+            .await?;
         validate_route(&header, &selector, &route)?;
         header.deadline = effective_deadline(&header)?;
         if header
@@ -371,7 +507,7 @@ impl RuntimeHost {
         mut header: RuntimeAssemblyTaskRequestStartFrameHeader,
         payload: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedTaskRequest> {
+    ) -> Result<AdmittedRuntimeAssemblyRequest> {
         validate_task_header(&header, &payload)?;
         let deployment = &header.routing.deployment;
         if let Some(build_id) = &header.routing.build_id {
@@ -381,6 +517,30 @@ impl RuntimeHost {
                     message: "task routing buildId does not match its exact deployment".to_string(),
                 });
             }
+        }
+        if let Some(bytecode_route) = self
+            .resolve_bytecode_request_route(deployment, bootstrap)
+            .await?
+        {
+            header.deadline = effective_request_deadline(header.deadline.as_ref(), "task")?;
+            if header
+                .deadline
+                .as_ref()
+                .is_some_and(|deadline| deadline.timeout_ms == 0)
+            {
+                return Err(deadline_exceeded());
+            }
+            let target = bytecode_route
+                .request_target()
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+            return Ok(AdmittedRuntimeAssemblyRequest::BytecodeTask(
+                AdmittedBytecodeTaskRequest {
+                    route: bytecode_route,
+                    header,
+                    target,
+                    payload,
+                },
+            ));
         }
         let active = self
             .assembly_admission
@@ -393,12 +553,13 @@ impl RuntimeHost {
             )
             .await
             .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-        let linked_activation = active
-            .activation(deployment)
-            .ok_or_else(|| RuntimeError::Protocol {
-                target: header.invocation.target.clone(),
-                message: "task routing deployment is not loaded".to_string(),
-            })?;
+        let linked_activation =
+            active
+                .activation(deployment)
+                .ok_or_else(|| RuntimeError::Protocol {
+                    target: header.invocation.target.clone(),
+                    message: "task routing deployment is not loaded".to_string(),
+                })?;
         let activation = active
             .contexts()
             .activation_for_deployment(deployment)
@@ -439,13 +600,14 @@ impl RuntimeHost {
                 target: header.invocation.target.clone(),
                 message: "task activation has no DB capability source".to_string(),
             })?;
-        let config_views = active
-            .contexts()
-            .config_views(deployment)
-            .ok_or_else(|| RuntimeError::Protocol {
-                target: header.invocation.target.clone(),
-                message: "task activation has no scoped config views".to_string(),
-            })?;
+        let config_views =
+            active
+                .contexts()
+                .config_views(deployment)
+                .ok_or_else(|| RuntimeError::Protocol {
+                    target: header.invocation.target.clone(),
+                    message: "task activation has no scoped config views".to_string(),
+                })?;
         header.deadline = effective_request_deadline(header.deadline.as_ref(), "task")?;
         if header
             .deadline
@@ -461,7 +623,7 @@ impl RuntimeHost {
             test_effects_enabled: header.test_effects_enabled,
             test_case_capability: header.test_case_capability.clone(),
         };
-        Ok(AdmittedTaskRequest {
+        Ok(AdmittedRuntimeAssemblyRequest::Task(AdmittedTaskRequest {
             header,
             request,
             target,
@@ -476,7 +638,7 @@ impl RuntimeHost {
                 .service_protocol_identity
                 .as_str()
                 .to_string(),
-        })
+        }))
     }
 
     async fn websocket_jsonrpc_request_from_wire(
@@ -484,8 +646,38 @@ impl RuntimeHost {
         mut header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
         params: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedWebSocketJsonRpcRequest> {
+    ) -> Result<AdmittedRuntimeAssemblyRequest> {
         validate_websocket_jsonrpc_header(&header, &params)?;
+        if let Some(bytecode_route) = self
+            .resolve_bytecode_request_route(&header.routing.deployment, bootstrap)
+            .await?
+        {
+            validate_bytecode_build_id(
+                &header.routing.deployment,
+                header.routing.build_id.as_deref(),
+                &header.request_id,
+            )?;
+            header.deadline =
+                effective_request_deadline(header.deadline.as_ref(), "WebSocket JSON-RPC")?;
+            if header
+                .deadline
+                .as_ref()
+                .is_some_and(|deadline| deadline.timeout_ms == 0)
+            {
+                return Err(deadline_exceeded());
+            }
+            let target = bytecode_route
+                .request_target()
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+            return Ok(AdmittedRuntimeAssemblyRequest::BytecodeWebSocketJsonRpc(
+                AdmittedBytecodeWebSocketJsonRpcRequest {
+                    route: bytecode_route,
+                    header,
+                    target,
+                    params,
+                },
+            ));
+        }
         let routing = &header.routing;
         let ingress = &routing.ingress;
         let request = &header.websocket_json_rpc;
@@ -509,7 +701,9 @@ impl RuntimeHost {
             deployment: routing.deployment.clone(),
             selector: selector.clone(),
         };
-        let physical_route = self.resolve_active_assembly_request_route(&key, bootstrap).await?;
+        let physical_route = self
+            .resolve_active_assembly_request_route(&key, bootstrap)
+            .await?;
         let method_route = physical_route
             .websocket_jsonrpc_method_route(
                 &ingress.path,
@@ -535,11 +729,13 @@ impl RuntimeHost {
         validate_websocket_jsonrpc_execution_route(&header, &resolved)?;
         header.deadline =
             effective_request_deadline(header.deadline.as_ref(), "WebSocket JSON-RPC")?;
-        Ok(AdmittedWebSocketJsonRpcRequest {
-            resolved,
-            header,
-            params,
-        })
+        Ok(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc(
+            AdmittedWebSocketJsonRpcRequest {
+                resolved,
+                header,
+                params,
+            },
+        ))
     }
     #[cfg(test)]
     pub(crate) fn runtime_assembly_request_deadline_from_wire_for_test(
@@ -562,9 +758,13 @@ enum AdmittedRuntimeAssemblyRequest {
     Http(AdmittedHttpGatewayRequest),
     BytecodeHttp(AdmittedBytecodeHttpRequest),
     WebSocketConnect(AdmittedWebSocketConnectRequest),
+    BytecodeWebSocketConnect(AdmittedBytecodeWebSocketConnectRequest),
     WebSocketConnectionClosed(AdmittedWebSocketConnectionClosedRequest),
+    BytecodeWebSocketConnectionClosed(AdmittedBytecodeWebSocketConnectionClosedRequest),
     WebSocketJsonRpc(AdmittedWebSocketJsonRpcRequest),
+    BytecodeWebSocketJsonRpc(AdmittedBytecodeWebSocketJsonRpcRequest),
     Task(AdmittedTaskRequest),
+    BytecodeTask(AdmittedBytecodeTaskRequest),
 }
 
 fn gateway_ingress_pin(
@@ -580,6 +780,21 @@ fn gateway_ingress_pin(
         deployment: route.deployment().clone(),
         gateway_entry_identity: gateway_entry_identity.clone(),
     }
+}
+
+fn validate_bytecode_build_id(
+    deployment: &ServiceDeploymentRef,
+    build_id: Option<&str>,
+    target: &str,
+) -> Result<()> {
+    if build_id.is_some_and(|build_id| build_id != deployment.deployment_artifact_identity.as_str())
+    {
+        return Err(RuntimeError::Protocol {
+            target: target.to_string(),
+            message: "bytecode routing buildId does not match its exact deployment".to_string(),
+        });
+    }
+    Ok(())
 }
 
 /// Exact buildId a request resolves against: the deployment artifact identity

@@ -15,7 +15,7 @@ use skiff_artifact_model::{
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity, PackageArtifact,
-    ServiceContract, ServiceDeployment, SERVICE_CONTRACT_SCHEMA_VERSION,
+    ServiceContract, ServiceDeployment, WebSocketEntryId, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
@@ -30,12 +30,21 @@ use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver;
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::{
-    protocol::{decode_response_end_frame, RUNTIME_FRAME_SCHEMA_VERSION},
+    protocol::{
+        decode_binary_frame, decode_response_end_frame, RUNTIME_FRAME_SCHEMA_VERSION,
+    },
     runtime_assembly_request::{
         RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
         RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
         RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
         RuntimeAssemblyRequestStartFrameWireHeader, RuntimeAssemblyRequestTraceFrameHeader,
+        RuntimeAssemblyTaskInvocationFrameHeader, RuntimeAssemblyTaskRequestCallerFrameHeader,
+        RuntimeAssemblyTaskRequestRoutingFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
+        RuntimeAssemblyWebSocketConnectIngressFrameHeader,
+        RuntimeAssemblyWebSocketConnectIngressProtocol,
+        RuntimeAssemblyWebSocketConnectRequestFrameHeader,
+        RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
+        RuntimeAssemblyWebSocketConnectRoutingFrameHeader,
     },
 };
 use tokio::{sync::mpsc, time::timeout};
@@ -286,6 +295,148 @@ fn canonical_header(
     }
 }
 
+fn task_header(
+    fixture: &CompiledFixture,
+    request_id: &str,
+) -> RuntimeAssemblyTaskRequestStartFrameHeader {
+    RuntimeAssemblyTaskRequestStartFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        frame_type: "request.start".to_string(),
+        request_id: request_id.to_string(),
+        mode: "unary".to_string(),
+        caller: RuntimeAssemblyTaskRequestCallerFrameHeader {
+            kind: "service".to_string(),
+        },
+        routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
+            kind: "runtimeAssembly".to_string(),
+            assembly_identity: None,
+            assembly_generation: None,
+            deployment: fixture.deployment.clone(),
+            build_id: Some(
+                fixture
+                    .deployment
+                    .deployment_artifact_identity
+                    .as_str()
+                    .to_string(),
+            ),
+        },
+        invocation: RuntimeAssemblyTaskInvocationFrameHeader {
+            kind: "task".to_string(),
+            target_kind: "function".to_string(),
+            target: "function:run".to_string(),
+        },
+        deadline: None,
+        trace: RuntimeAssemblyRequestTraceFrameHeader {
+            trace_id: format!("trace-{request_id}"),
+            span_id: "span-bytecode-task".to_string(),
+            parent_span_id: None,
+            sampled: None,
+        },
+        test_effects_enabled: false,
+        test_case_capability: None,
+        task_attempt: None,
+    }
+}
+
+fn websocket_connect_header(
+    fixture: &CompiledFixture,
+    request_id: &str,
+) -> RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+    let gateway_entry_identity =
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "b".repeat(64)))
+            .expect("gateway identity");
+    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        frame_type: "request.start".to_string(),
+        request_id: request_id.to_string(),
+        mode: "unary".to_string(),
+        caller: RuntimeAssemblyRequestCallerFrameHeader {
+            kind: "gateway".to_string(),
+        },
+        routing: RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
+            kind: "runtimeAssembly".to_string(),
+            assembly_identity: None,
+            assembly_generation: None,
+            deployment: fixture.deployment.clone(),
+            build_id: Some(
+                fixture
+                    .deployment
+                    .deployment_artifact_identity
+                    .as_str()
+                    .to_string(),
+            ),
+            gateway_entry_identity: gateway_entry_identity.clone(),
+            ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader {
+                protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
+                method: (),
+                path: "/run".to_string(),
+            },
+        },
+        client_session: None,
+        deadline: None,
+        trace: RuntimeAssemblyRequestTraceFrameHeader {
+            trace_id: format!("trace-{request_id}"),
+            span_id: "span-bytecode-websocket-connect".to_string(),
+            parent_span_id: None,
+            sampled: None,
+        },
+        websocket_connect: RuntimeAssemblyWebSocketConnectRequestFrameHeader {
+            connection_id: "bytecode-websocket-connection".to_string(),
+            url: "ws://api.example.test/run".to_string(),
+            query: Vec::new(),
+            headers: Vec::new(),
+            cookies: Vec::new(),
+            version: None,
+            websocket_entry_id: WebSocketEntryId::parse(format!(
+                "skiff-websocket-entry-v1:sha256:{}",
+                "0".repeat(64)
+            ))
+            .expect("websocket entry id"),
+            gateway_entry_identity,
+        },
+        test_effects_enabled: false,
+    }
+}
+
+async fn assert_bytecode_response_error(
+    receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
+    expected_request_id: &str,
+    message_substring: &str,
+) {
+    loop {
+        let message = timeout(Duration::from_secs(10), receiver.recv())
+            .await
+            .expect("bytecode failure response timeout")
+            .expect("bytecode failure response channel closed");
+        let RouterWriterMessage::Binary(frame) = message else {
+            panic!("bytecode failure must be a binary transport frame")
+        };
+        let raw = decode_binary_frame(&frame).expect("bytecode response.error");
+        let header = raw
+            .header
+            .as_object()
+            .expect("bytecode response.error header must be an object");
+        if header.get("type").and_then(serde_json::Value::as_str) == Some("runtime.capabilities") {
+            continue;
+        }
+        assert_eq!(
+            header.get("type").and_then(serde_json::Value::as_str),
+            Some("response.error")
+        );
+        assert_eq!(
+            header.get("requestId").and_then(serde_json::Value::as_str),
+            Some(expected_request_id)
+        );
+        let serialized =
+            serde_json::to_string(&raw.header).expect("bytecode error header serializes");
+        assert!(
+            serialized.contains(message_substring),
+            "expected bytecode error containing {message_substring:?}, got {serialized}"
+        );
+        return;
+    }
+}
+
 fn connection_bootstrap(fixture: &CompiledFixture) -> ConnectionBootstrap {
     ConnectionBootstrap {
         resolver: FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
@@ -373,4 +524,66 @@ async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
     };
     let (_header, payload) = decode_response_end_frame(&frame).expect("bytecode response.end");
     assert_eq!(payload, b"42.0");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canonical_http_server_stream_bytecode_request_fails_closed_without_legacy() {
+    let fixture = fixture();
+    let host = test_host();
+    let bootstrap = connection_bootstrap(fixture);
+    let mut header = canonical_header(fixture, "bytecode-http-server-stream");
+    header.mode = "serverStream".to_string();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    host.spawn_runtime_assembly_request(
+        "bytecode-http-server-stream-session",
+        RuntimeAssemblyRequestStartFrameWireHeader::Http(header.clone()),
+        Vec::new(),
+        &bootstrap,
+        sender,
+    )
+    .await;
+    assert_bytecode_response_error(&mut receiver, &header.request_id, "only supports unary").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canonical_task_bytecode_request_reaches_bytecode_admission_and_fails_closed_without_legacy(
+) {
+    let fixture = fixture();
+    let host = test_host();
+    let bootstrap = connection_bootstrap(fixture);
+    let header = task_header(fixture, "bytecode-task-42");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    host.spawn_runtime_assembly_request(
+        "bytecode-task-session",
+        RuntimeAssemblyRequestStartFrameWireHeader::Task(header.clone()),
+        b"{}".to_vec(),
+        &bootstrap,
+        sender,
+    )
+    .await;
+    assert_bytecode_response_error(&mut receiver, &header.request_id, "ingress_selector").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canonical_websocket_connect_bytecode_request_executes_scalar_vm_then_fails_closed_without_legacy(
+) {
+    let fixture = fixture();
+    let host = test_host();
+    let bootstrap = connection_bootstrap(fixture);
+    let header = websocket_connect_header(fixture, "bytecode-websocket-connect-42");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    host.spawn_runtime_assembly_request(
+        "bytecode-websocket-connect-session",
+        RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header.clone()),
+        Vec::new(),
+        &bootstrap,
+        sender,
+    )
+    .await;
+    assert_bytecode_response_error(
+        &mut receiver,
+        &header.request_id,
+        "bytecode WebSocket connect response mapping is not supported",
+    )
+    .await;
 }

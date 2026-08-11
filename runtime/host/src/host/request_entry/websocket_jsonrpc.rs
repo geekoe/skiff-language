@@ -1,9 +1,14 @@
 use std::sync::Arc;
 
+use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_eval::{
     RuntimeWebSocketJsonRpcExecutionOutcome, RuntimeWebSocketJsonRpcExecutionTerminal,
 };
-use skiff_runtime_request::{self as request_runner, RequestEnvelope, RouterWriterMessage};
+use skiff_runtime_request::{
+    self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, RequestEnvelope, ResponseEnd, ResponseEvent,
+    RouterWriterMessage,
+};
 use skiff_runtime_transport::{
     response_mapper::runtime_assembly_websocket_jsonrpc_response_into_frame,
     runtime_assembly_request::{
@@ -14,14 +19,16 @@ use skiff_runtime_transport::{
 use tokio::sync::mpsc;
 use tracing::error;
 
-use super::assembly_wire::AdmittedWebSocketJsonRpcRequest;
+use super::assembly_wire::{
+    AdmittedBytecodeWebSocketJsonRpcRequest, AdmittedWebSocketJsonRpcRequest,
+};
 use crate::{
     error::{Result, RuntimeError},
     host::{
         request_supervisor::{CompletionTrace, SupervisedRequest},
         RuntimeHost,
     },
-    loader::assembly_admission::ActiveAssemblyRoute,
+    loader::{assembly_admission::ActiveAssemblyRoute, bytecode_admission::BytecodeRoute},
     telemetry::RequestTelemetryContext,
 };
 
@@ -89,6 +96,69 @@ impl RuntimeHost {
             .await;
             // The old method route owns every capability fact through execution and terminal
             // settlement. Active replacement cannot substitute current assembly context.
+            drop(route);
+        });
+    }
+
+    pub(super) async fn task_bytecode_websocket_jsonrpc_request(
+        &self,
+        _router_session_id: String,
+        request: AdmittedBytecodeWebSocketJsonRpcRequest,
+        _http_response_max_bytes: usize,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        let AdmittedBytecodeWebSocketJsonRpcRequest {
+            route,
+            header,
+            target,
+            params,
+        } = request;
+        let request_envelope = bytecode_websocket_jsonrpc_request_envelope(&route, &header, params);
+        let telemetry = bytecode_websocket_jsonrpc_telemetry_context(self, &header, &route);
+        let supervised_request = self
+            .request_supervisor
+            .begin(&request_envelope, telemetry)
+            .await;
+        let cancellation = supervised_request.cancellation_token();
+        let execution_budget = supervised_request.execution_budget();
+        let handles = BytecodeRequestExecutionHandles {
+            request_heap_limits: self.request_heap_limits(),
+        };
+        let request_id = header.request_id.clone();
+        let host = self.clone();
+        tokio::spawn(async move {
+            let result =
+                request_runner::execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+                    target,
+                    request: request_envelope,
+                    cancelled: supervised_request.cancelled(),
+                    cancellation,
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                });
+            let terminal = match result {
+                Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))) => {
+                    RuntimeWebSocketJsonRpcExecutionTerminal::Response(
+                        RuntimeWebSocketJsonRpcExecutionOutcome::Success { payload },
+                    )
+                }
+                Ok(_) => RuntimeWebSocketJsonRpcExecutionTerminal::Response(
+                    RuntimeWebSocketJsonRpcExecutionOutcome::InternalError,
+                ),
+                Err(error) if error.is_cancellation_terminal() => {
+                    RuntimeWebSocketJsonRpcExecutionTerminal::Cancelled
+                }
+                Err(_) => RuntimeWebSocketJsonRpcExecutionTerminal::Response(
+                    RuntimeWebSocketJsonRpcExecutionOutcome::InternalError,
+                ),
+            };
+            host.finish_websocket_jsonrpc_request(
+                &supervised_request,
+                request_id,
+                terminal,
+                &sender,
+            )
+            .await;
             drop(route);
         });
     }
@@ -179,6 +249,61 @@ impl RuntimeHost {
         context.parent_span_id = header.trace.parent_span_id.clone();
         context
     }
+}
+
+fn bytecode_websocket_jsonrpc_request_envelope(
+    route: &BytecodeRoute,
+    header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    params: Vec<u8>,
+) -> RequestEnvelope {
+    let mut extra = serde_json::Map::new();
+    if let Some(deadline) = &header.deadline {
+        extra.insert(
+            "deadline".to_string(),
+            serde_json::to_value(deadline)
+                .expect("typed bytecode WebSocket JSON-RPC deadline remains serializable"),
+        );
+    }
+    RequestEnvelope {
+        request_id: header.request_id.clone(),
+        mode: header.mode.clone(),
+        target: route.operation_id().as_str().to_string(),
+        operation_abi_id: None,
+        selector: None,
+        service_id: Some(route.deployment().service_id.clone()),
+        build_id: route.build_id().to_string(),
+        service_protocol_identity: route.service_protocol_identity().to_string(),
+        contract_identity: None,
+        activation_identity: None,
+        ingress_selector: Some(IngressSelector {
+            protocol: IngressProtocol::WebSocket,
+            method: Some(header.routing.ingress.method.clone()),
+            path: header.routing.ingress.path.clone(),
+        }),
+        binary_http: None,
+        http_adapter: None,
+        test_effects_enabled: header.test_effects_enabled,
+        test_effect_doubles: Default::default(),
+        payload_bytes: params,
+        extra,
+    }
+}
+
+fn bytecode_websocket_jsonrpc_telemetry_context(
+    host: &RuntimeHost,
+    header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    route: &BytecodeRoute,
+) -> RequestTelemetryContext {
+    let mut context = RequestTelemetryContext::new(host.telemetry.clone());
+    context.service_id = Some(route.deployment().service_id.clone());
+    context.build_id = Some(route.build_id().to_string());
+    context.runtime_id = Some(host.base_runtime_id.clone());
+    context.request_id = Some(header.request_id.clone());
+    context.target = Some(route.operation_id().as_str().to_string());
+    context.trace_id = Some(header.trace.trace_id.clone());
+    context.span_id = Some(header.trace.span_id.clone());
+    context.parent_span_id = header.trace.parent_span_id.clone();
+    context
 }
 
 fn websocket_jsonrpc_supervisor_request(
