@@ -2893,10 +2893,15 @@ dependencies = [
 name = "skiff-runtime-request"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "serde",
  "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-compiler",
+ "skiff-compiler-core",
+ "skiff-compiler-input",
+ "skiff-compiler-source",
  "skiff-runtime-boundary",
  "skiff-runtime-bytecode-verifier",
  "skiff-runtime-capability-context",
@@ -2904,6 +2909,7 @@ dependencies = [
  "skiff-runtime-eval",
  "skiff-runtime-linked-program",
  "skiff-runtime-linker",
+ "skiff-runtime-loader",
  "skiff-runtime-model",
  "skiff-runtime-request-contract",
  "skiff-runtime-vm",

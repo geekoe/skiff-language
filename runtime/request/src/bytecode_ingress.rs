@@ -15,18 +15,15 @@ use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason}
 use skiff_runtime_deployment_image::{
     DeploymentImage, PinnedDeploymentEntry, PinnedDeploymentEntryError,
 };
-use skiff_runtime_model::{
-    request_heap::RequestHeapLimits,
-    vm_heap::{VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation},
-    vm_value::{ValueKind, ValueSlot},
-};
+use skiff_runtime_model::{request_heap::RequestHeapLimits, vm_heap::VmHeap, vm_value::ValueSlot};
 use skiff_runtime_vm::{
-    Vm, VmBudget, VmBudgetError, VmControl, VmError, VmLimits, VmSemanticCharge,
+    AdapterInvocation, ChildInvocation, PendingOperation, ResumeOutcome, StreamItem, Vm, VmBudget,
+    VmBudgetError, VmControl, VmError, VmLimits, VmResumeToken, VmSemanticCharge,
 };
 
 use crate::{
-    BoundaryResponse, ExecutionBudget, ExecutionControl, RequestEnvelope, RequestError,
-    RequestResult,
+    vm_heap::RequestVmHeap, BoundaryResponse, ExecutionBudget, ExecutionControl, RequestEnvelope,
+    RequestError, RequestResult,
 };
 
 /// One verified deployment image and the exact operation entry selected from it.
@@ -106,9 +103,77 @@ pub struct BytecodeRequestExecutionHandles {
     pub request_heap_limits: RequestHeapLimits,
 }
 
+/// Execution ports that a host or scheduler can supply for VM handoffs.
+///
+/// The existing host path constructs [`BytecodeRequestExecutionHandles`] with
+/// only heap limits and calls [`execute_runtime_bytecode_request`]. Ports are
+/// an additive seam so that same call can be upgraded without changing the
+/// host's current struct literal.
+#[derive(Default)]
+pub struct BytecodeRequestExecutionPorts {
+    pub child_executor: Option<Arc<dyn BytecodeChildExecutor>>,
+    pub stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor>>,
+}
+
+/// One completed VM handoff plus the unique continuation that resumes its
+/// parent fiber.
+pub struct BytecodeInvocationHandoff {
+    pub resume: VmResumeToken,
+    pub outcome: ResumeOutcome,
+}
+
+/// Flat execution seam for child and host-adapter invocations.
+///
+/// The request crate never starts a child VM itself. Implementations receive
+/// the same heap and budget as the parent so child result slots remain valid
+/// for the parent's continuation.
+pub trait BytecodeChildExecutor: Send + Sync + 'static {
+    fn execute_child(
+        &self,
+        invocation: ChildInvocation,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> RequestResult<BytecodeInvocationHandoff>;
+
+    fn execute_adapter(
+        &self,
+        invocation: AdapterInvocation,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> RequestResult<BytecodeInvocationHandoff>;
+}
+
+/// Future seam for stream emission and actual-Pending parking.
+///
+/// This path is currently fail-closed because the bytecode HTTP entry has no
+/// stream response sink or pending registry yet.
+pub trait BytecodeStreamSupervisor: Send + Sync + 'static {
+    fn emit_stream(
+        &self,
+        item: StreamItem,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> RequestResult<BytecodeInvocationHandoff>;
+
+    fn park(
+        &self,
+        operation: PendingOperation,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> RequestResult<BytecodeInvocationHandoff>;
+}
+
 /// Executes one scalar bytecode request against a verified deployment image.
 pub fn execute_runtime_bytecode_request(
     input: BytecodeRequestExecutionInput,
+) -> RequestResult<BoundaryResponse> {
+    execute_runtime_bytecode_request_with_ports(input, BytecodeRequestExecutionPorts::default())
+}
+
+/// Executes one bytecode request with optional child/adapter execution ports.
+pub fn execute_runtime_bytecode_request_with_ports(
+    input: BytecodeRequestExecutionInput,
+    ports: BytecodeRequestExecutionPorts,
 ) -> RequestResult<BoundaryResponse> {
     let BytecodeRequestExecutionInput {
         target,
@@ -128,12 +193,11 @@ pub fn execute_runtime_bytecode_request(
         entry,
         operation_id: _,
     } = target;
-    let heap_image = Arc::clone(&image);
     let pinned = PinnedDeploymentEntry::try_new(image, entry)
         .map_err(pinned_entry_error_to_request_error)?;
     let mut fiber = Vm::start(pinned, Box::new([]), vm_limits())
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-    let mut heap = ScalarVmHeap::new(heap_image, handles.request_heap_limits);
+    let mut heap = RequestVmHeap::new(handles.request_heap_limits);
     let mut budget = BytecodeVmBudget::new(execution_budget.clone(), cancelled, cancellation);
 
     loop {
@@ -148,9 +212,45 @@ pub fn execute_runtime_bytecode_request(
                     .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
                 return Ok(BoundaryResponse::payload(payload));
             }
-            _ => {
+            VmControl::EnterChild(invocation) => {
+                let handoff = match &ports.child_executor {
+                    Some(executor) => executor.execute_child(invocation, &mut heap, &mut budget)?,
+                    None => {
+                        return Err(RequestError::Unsupported(
+                            "bytecode VM child invocation requires a child executor port"
+                                .to_string(),
+                        ))
+                    }
+                };
+                fiber
+                    .resume(handoff.resume, handoff.outcome)
+                    .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
+            }
+            VmControl::EnterAdapter(invocation) => {
+                let handoff = match &ports.child_executor {
+                    Some(executor) => {
+                        executor.execute_adapter(invocation, &mut heap, &mut budget)?
+                    }
+                    None => {
+                        return Err(RequestError::Unsupported(
+                            "bytecode VM adapter invocation requires a child executor port"
+                                .to_string(),
+                        ))
+                    }
+                };
+                fiber
+                    .resume(handoff.resume, handoff.outcome)
+                    .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
+            }
+            VmControl::EmitStream(_) => {
                 return Err(RequestError::Unsupported(
-                    "scalar bytecode VM produced an unsupported control handoff".to_string(),
+                    "bytecode VM stream emission requires stream supervisor integration"
+                        .to_string(),
+                ))
+            }
+            VmControl::Park(_) => {
+                return Err(RequestError::Unsupported(
+                    "bytecode VM parking requires stream supervisor integration".to_string(),
                 ))
             }
         }
@@ -233,88 +333,6 @@ fn json_bytes_from_value(value: &ValueSlot) -> RequestResult<Vec<u8>> {
         "scalar bytecode VM returned unsupported value kind {:?}",
         value.kind()
     )))
-}
-
-struct ScalarVmHeap {
-    image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-    _request_heap_limits: RequestHeapLimits,
-}
-
-impl ScalarVmHeap {
-    fn new(
-        image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-        request_heap_limits: RequestHeapLimits,
-    ) -> Self {
-        Self {
-            image,
-            _request_heap_limits: request_heap_limits,
-        }
-    }
-
-    fn require_supported(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
-        match value.kind() {
-            Some(ValueKind::ConstRef) => self.require_image_const(value),
-            Some(
-                ValueKind::Null
-                | ValueKind::Bool
-                | ValueKind::Number
-                | ValueKind::Integer
-                | ValueKind::Date,
-            ) => Ok(()),
-            Some(kind) => Err(VmHeapError::OperationKindMismatch {
-                operation: VmHeapOperation::ValidateLive,
-                kind,
-            }),
-            None => Err(VmHeapError::InvalidValueMetadata),
-        }
-    }
-
-    fn require_image_const(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
-        let Some(handle) = value.as_const_ref() else {
-            return Err(VmHeapError::InvalidValueMetadata);
-        };
-        let valid = usize::try_from(handle.get())
-            .is_ok_and(|index| index < self.image.program().constant_heap().len());
-        if valid {
-            Ok(())
-        } else {
-            Err(VmHeapError::InvalidHandle {
-                kind: ValueKind::ConstRef,
-                handle,
-                reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
-            })
-        }
-    }
-}
-
-impl VmHeap for ScalarVmHeap {
-    fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
-        self.require_supported(value)
-    }
-
-    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
-        self.require_supported(source)?;
-        Ok(*source)
-    }
-
-    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
-        self.require_supported(source)?;
-        Ok(*source)
-    }
-
-    fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
-        self.require_supported(owner)
-    }
-
-    fn release_resource(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
-        let Some(kind) = owner.kind() else {
-            return Err(VmHeapError::InvalidValueMetadata);
-        };
-        Err(VmHeapError::OperationKindMismatch {
-            operation: VmHeapOperation::ReleaseResource,
-            kind,
-        })
-    }
 }
 
 struct BytecodeVmBudget {

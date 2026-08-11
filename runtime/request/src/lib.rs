@@ -44,8 +44,10 @@ pub use assembly_ingress::{
 };
 pub use assembly_seam::{RuntimeAssemblyRequestSeamError, RuntimeAssemblyRequestTarget};
 pub use bytecode_ingress::{
-    execute_runtime_bytecode_request, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, BytecodeRequestTarget, BytecodeRequestTargetError,
+    execute_runtime_bytecode_request, execute_runtime_bytecode_request_with_ports,
+    BytecodeChildExecutor, BytecodeInvocationHandoff, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, BytecodeRequestExecutionPorts, BytecodeRequestTarget,
+    BytecodeRequestTargetError, BytecodeStreamSupervisor,
 };
 pub use context::{
     invocation_context_from_request, request_payload_context_from_request, RequestPayloadContext,
