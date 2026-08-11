@@ -7,11 +7,11 @@ use skiff_artifact_model::{
     BytecodeStatementManifestIdentity, ContractDiagnosticText, DeploymentArtifactIdentity,
     DeploymentDiagnosticText, DeploymentRevision, FrozenConstantGraph, PackageArtifact,
     PackageArtifactRef, PackageBuildId, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef, ServiceProtocolIdentity,
-    ShapeDeclaration, TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndexRef,
+    PlatformErrorProjectionRegistryRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceProtocolIdentity, ShapeDeclaration, TypeRefIr,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
     BytecodePackageIndex, LinkedBytecodeAuthorityPins, LinkedBytecodeCandidate,
@@ -54,6 +54,7 @@ pub(crate) enum AuthorityPinCorruption {
     ValueLifecyclePolicy,
     HostEffectRegistry,
     IntrinsicRegistry,
+    PlatformErrorProjectionRegistry,
 }
 
 impl DeploymentBytecodeContentResolver for ExactResolver {
@@ -180,6 +181,8 @@ fn admit_bytecode(
         value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
         host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
         intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         bytecode_identity: "unassigned".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::new(),
@@ -203,6 +206,8 @@ fn package(bytecode: &ValidatedBytecodeArtifact) -> PackageArtifact {
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: Some(bytecode.reference().clone()),
@@ -324,6 +329,7 @@ pub(crate) fn candidate_parts(
             let mut policy = view.value_lifecycle_policy().clone();
             let mut host_registry = view.host_effect_registry().clone();
             let mut intrinsic_registry = view.intrinsic_registry().clone();
+            let mut platform_error_registry = view.platform_error_projection_registry().clone();
             match authority_corruption {
                 Some(AuthorityPinCorruption::NativeValueLifecycleRegistry) => {
                     native_registry.fingerprint.push_str(":corrupt");
@@ -336,6 +342,9 @@ pub(crate) fn candidate_parts(
                 }
                 Some(AuthorityPinCorruption::IntrinsicRegistry) => {
                     intrinsic_registry.fingerprint.push_str(":corrupt");
+                }
+                Some(AuthorityPinCorruption::PlatformErrorProjectionRegistry) => {
+                    platform_error_registry = historical_platform_error_projection_registry_ref();
                 }
                 None => {}
             }
@@ -353,6 +362,7 @@ pub(crate) fn candidate_parts(
                     policy,
                     host_registry,
                     intrinsic_registry,
+                    platform_error_registry,
                 )
                 .unwrap(),
             )
@@ -381,6 +391,22 @@ pub(crate) fn candidate_parts(
         resume_sites: Vec::new(),
         writable_paths: Vec::new(),
     }
+}
+
+fn historical_platform_error_projection_registry_ref() -> PlatformErrorProjectionRegistryRef {
+    let current = skiff_artifact_model::current_platform_error_projection_registry_ref();
+    let zero_fingerprint = format!("sha256:{}", "0".repeat(64));
+    let fingerprint = if zero_fingerprint == current.fingerprint() {
+        format!("sha256:{}", "1".repeat(64))
+    } else {
+        zero_fingerprint
+    };
+    serde_json::from_value(serde_json::json!({
+        "registryId": current.registry_id(),
+        "registryVersion": current.registry_version(),
+        "fingerprint": fingerprint,
+    }))
+    .expect("historical registry descriptor satisfies strict serde validation")
 }
 
 pub(crate) fn generous_limits() -> VerificationLimits {

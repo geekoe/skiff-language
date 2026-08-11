@@ -1,14 +1,14 @@
 use skiff_artifact_model::{
-    host_effect_registry_identity, intrinsic_registry_identity,
-    native_value_lifecycle_registry_identity, opcode_table_fingerprint,
-    value_lifecycle_policy_identity, BytecodeArtifactRef, CallableEffectSummary,
-    InstructionSourceSite, Opcode, PackageBuildId, PackageCallableId, ResumeErrorMode,
-    SyntheticInstructionSiteReason, TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION,
+    current_platform_error_projection_registry_ref, host_effect_registry_identity,
+    intrinsic_registry_identity, native_value_lifecycle_registry_identity,
+    opcode_table_fingerprint, value_lifecycle_policy_identity, BytecodeArtifactRef,
+    CallableEffectSummary, InstructionSourceSite, Opcode, PackageBuildId, PackageCallableId,
+    ResumeErrorMode, SyntheticInstructionSiteReason, TypeRefIr, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
-    ActiveRegionIndex, ArtifactFunctionKey, ArtifactTypeIndex, BytecodePackageIndex, FrameSlotIndex,
-    FunctionIndex, InstructionBoundaryIndex, InstructionIndex, LinkedActiveRegion,
+    ActiveRegionIndex, ArtifactFunctionKey, ArtifactTypeIndex, BytecodePackageIndex,
+    FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex, LinkedActiveRegion,
     LinkedActiveRegionKind, LinkedArtifactPoolOrigin, LinkedBytecodeAuthorityPins,
     LinkedBytecodeCandidate, LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts,
     LinkedCallableEffectDeclaration, LinkedFrameLayout, LinkedFunction, LinkedFunctionTables,
@@ -179,11 +179,8 @@ fn stream_next_without_end_resume_is_rejected_by_candidate_shape() {
         ResumeErrorMode::RaiseAtSite,
     )
     .unwrap();
-    let error = try_stream_candidate(
-        vec![stream_next(0), plain(Opcode::Return)],
-        vec![resume],
-    )
-    .unwrap_err();
+    let error = try_stream_candidate(vec![stream_next(0), plain(Opcode::Return)], vec![resume])
+        .unwrap_err();
     assert!(matches!(
         error,
         LinkedBytecodeCandidateError::StreamNextMissingEndResume { .. }
@@ -204,11 +201,8 @@ fn non_stream_resume_with_end_resume_is_rejected_by_candidate_shape() {
         ResumeErrorMode::RaiseAtSite,
     )
     .unwrap();
-    let error = try_stream_candidate(
-        vec![emit_stream(0), plain(Opcode::Return)],
-        vec![resume],
-    )
-    .unwrap_err();
+    let error = try_stream_candidate(vec![emit_stream(0), plain(Opcode::Return)], vec![resume])
+        .unwrap_err();
     assert!(matches!(
         error,
         LinkedBytecodeCandidateError::EndResumeOnlyValidForStreamNext { .. }
@@ -343,7 +337,10 @@ fn try_stream_candidate(
     })
 }
 
-fn linked_stream_function(build: PackageBuildId, instructions: Vec<LinkedInstruction>) -> LinkedFunction {
+fn linked_stream_function(
+    build: PackageBuildId,
+    instructions: Vec<LinkedInstruction>,
+) -> LinkedFunction {
     let states = (0..instructions.len())
         .map(|instruction| {
             LinkedProgramPointState::new(
@@ -469,6 +466,7 @@ fn linked_package(build: PackageBuildId) -> LinkedPackageBytecodeProvenance {
             value_lifecycle_policy_identity().clone(),
             host_effect_registry_identity().clone(),
             intrinsic_registry_identity().clone(),
+            current_platform_error_projection_registry_ref().clone(),
         )
         .unwrap(),
     )

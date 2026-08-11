@@ -34,9 +34,9 @@ pub(super) fn linked_load_slot(slot: u32, pc: u32) -> LinkedInstruction {
         Box::new([slot]),
         Box::new([LinkedResolvedOperand::new(
             0,
-            LinkedInstructionTarget::FrameSlot(
-                skiff_runtime_linked_bytecode::FrameSlotIndex::new(slot),
-            ),
+            LinkedInstructionTarget::FrameSlot(skiff_runtime_linked_bytecode::FrameSlotIndex::new(
+                slot,
+            )),
         )]),
         pc,
     )

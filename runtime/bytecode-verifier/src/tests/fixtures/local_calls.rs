@@ -106,6 +106,8 @@ fn admitted_bytecode() -> Arc<ValidatedBytecodeArtifact> {
         value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
         host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
         intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         bytecode_identity: "unassigned".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::from([
@@ -215,6 +217,8 @@ fn package_with_caller_summary(
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: skiff_artifact_model::PackageBuildId::new("unassigned"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: vec![file.clone()],
         static_resources: Vec::new(),
         bytecode: Some(bytecode.reference().clone()),

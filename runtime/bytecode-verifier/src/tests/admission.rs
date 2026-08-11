@@ -1,4 +1,8 @@
-use skiff_artifact_model::{CallableEffectSummary, TypeRefIr};
+use skiff_artifact_model::{
+    current_platform_error_projection_registry_ref,
+    validate_platform_error_projection_registry_ref_shape, CallableEffectSummary, TypeRefIr,
+    BYTECODE_SCHEMA_VERSION,
+};
 use skiff_runtime_linked_bytecode::{
     ArtifactTypeIndex, CandidateTable, LinkedArtifactPoolOrigin, LinkedBytecodeCandidate,
     LinkedBytecodeCandidateParts, LinkedTypeEntry, TypeIndex,
@@ -22,6 +26,53 @@ fn exact_empty_admission_completes_the_vacuous_effect_proof() {
     let image = verify(hydrated, candidate, &generous_limits())
         .expect("empty image has a real vacuous effect certificate");
     assert_eq!(image.functions().len(), 0);
+}
+
+#[test]
+fn current_v7_platform_error_registry_getter_matrix_passes_exact_admission() {
+    let hydrated = exact_hydration();
+    let candidate = candidate_for(&hydrated, None);
+    let current = current_platform_error_projection_registry_ref();
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v7");
+    {
+        let candidate_package = &candidate.packages()[0];
+        let hydrated_package = hydrated.packages().values().next().unwrap();
+        assert_eq!(candidate_package.schema_version(), BYTECODE_SCHEMA_VERSION);
+        assert_eq!(
+            candidate_package
+                .authorities()
+                .platform_error_projection_registry(),
+            current
+        );
+        assert_eq!(hydrated.platform_error_projection_registry(), current);
+        assert_eq!(
+            hydrated_package.platform_error_projection_registry(),
+            current
+        );
+        assert_eq!(
+            &hydrated_package
+                .artifact()
+                .platform_error_projection_registry,
+            current
+        );
+        assert_eq!(
+            &hydrated_package
+                .bytecode()
+                .artifact()
+                .platform_error_projection_registry,
+            current
+        );
+        assert_eq!(
+            hydrated_package
+                .bytecode()
+                .view()
+                .platform_error_projection_registry(),
+            current
+        );
+    }
+
+    verify(hydrated, candidate, &generous_limits())
+        .expect("the current v7 registry authority matrix must verify exactly");
 }
 
 #[test]
@@ -263,6 +314,115 @@ fn corrupt_intrinsic_registry_pin_is_rejected_before_p2() {
         AuthorityPinCorruption::IntrinsicRegistry,
         "intrinsic registry",
     );
+}
+
+#[test]
+fn same_v1_different_valid_registry_fingerprint_is_rejected_before_p2() {
+    let hydrated = exact_hydration();
+    let candidate = candidate_for_with_authority_corruption(
+        &hydrated,
+        None,
+        Some(AuthorityPinCorruption::PlatformErrorProjectionRegistry),
+    );
+    let candidate_registry = candidate.packages()[0]
+        .authorities()
+        .platform_error_projection_registry();
+    let current = current_platform_error_projection_registry_ref();
+    validate_platform_error_projection_registry_ref_shape(candidate_registry)
+        .expect("the historical descriptor must retain a strict valid v1 shape");
+    assert_eq!(candidate_registry.registry_id(), current.registry_id());
+    assert_eq!(
+        candidate_registry.registry_version(),
+        current.registry_version()
+    );
+    assert_ne!(candidate_registry.fingerprint(), current.fingerprint());
+    let historical_fingerprint = candidate_registry.fingerprint().to_string();
+    let current_fingerprint = current.fingerprint().to_string();
+
+    let error = verify(hydrated, candidate, &generous_limits())
+        .expect_err("a historical candidate registry pin must fail before instruction proofs");
+    let VerificationError::SemanticViolation {
+        obligation,
+        location,
+        detail,
+    } = error
+    else {
+        panic!("historical registry pin reached a later verifier phase: {error:?}");
+    };
+    assert_eq!(obligation, VerificationObligation::ExactHydrationBinding);
+    assert_eq!(
+        location,
+        VerificationLocation::Table {
+            table: CandidateTable::Packages,
+            row: 0,
+        }
+    );
+    assert!(detail.contains("platform error projection registry"));
+    assert!(
+        !detail.contains(historical_fingerprint.as_str()),
+        "historical registry fingerprint leaked into verifier failure detail"
+    );
+    assert!(
+        !detail.contains(current_fingerprint.as_str()),
+        "current registry fingerprint leaked into verifier failure detail"
+    );
+}
+
+#[test]
+fn wrong_candidate_registry_pin_is_not_repaired_from_hydration_or_runtime() {
+    let hydrated = exact_hydration();
+    let candidate = candidate_for_with_authority_corruption(
+        &hydrated,
+        None,
+        Some(AuthorityPinCorruption::PlatformErrorProjectionRegistry),
+    );
+    let candidate_registry = candidate.packages()[0]
+        .authorities()
+        .platform_error_projection_registry();
+    let current = current_platform_error_projection_registry_ref();
+    let hydrated_package = hydrated.packages().values().next().unwrap();
+    assert_ne!(candidate_registry, current);
+    assert_eq!(hydrated.platform_error_projection_registry(), current);
+    assert_eq!(
+        hydrated_package.platform_error_projection_registry(),
+        current
+    );
+    assert_eq!(
+        &hydrated_package
+            .artifact()
+            .platform_error_projection_registry,
+        current
+    );
+    assert_eq!(
+        &hydrated_package
+            .bytecode()
+            .artifact()
+            .platform_error_projection_registry,
+        current
+    );
+    assert_eq!(
+        hydrated_package
+            .bytecode()
+            .view()
+            .platform_error_projection_registry(),
+        current
+    );
+
+    let error = prove_admission(&hydrated, &candidate, &generous_limits())
+        .expect_err("P1 must consume the candidate receipt rather than reconstructing current");
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ExactHydrationBinding,
+            location: VerificationLocation::Table {
+                table: CandidateTable::Packages,
+                row: 0,
+            },
+            detail,
+        } if detail.contains("candidate")
+            && detail.contains("deployment hydration receipt")
+            && detail.contains("package hydration receipt")
+    ));
 }
 
 #[test]
