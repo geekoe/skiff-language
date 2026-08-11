@@ -1,3 +1,5 @@
+#![cfg(feature = "legacy-wire")]
+
 //! Task-family byte-exact wire corpus + resolver/router reference model.
 //! Durable task semantics are defined by
 //! `doc/architecture/durable-task-dispatch.md`; this test owns the byte-exact

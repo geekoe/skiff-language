@@ -1,3 +1,5 @@
+#![cfg(feature = "legacy-wire")]
+
 //! W-model-task corpus gate: the task-wire corpus is consumed through the
 //! canonical production codec (`callerKind` closed enum + required
 //! `callerRequestId`). The legacy old shape has no compatible reader; the

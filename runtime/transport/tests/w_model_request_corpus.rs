@@ -1,3 +1,5 @@
+#![cfg(feature = "legacy-wire")]
+
 //! W-model-request corpus gate.
 //!
 //! Consumes the frozen C-model-request corpus

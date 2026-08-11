@@ -1,3 +1,5 @@
+#![cfg(feature = "legacy-wire")]
+
 //! W-model-bootstrap-wire corpus gate.
 //!
 //! Consumes the frozen C-model-bootstrap-wire corpus

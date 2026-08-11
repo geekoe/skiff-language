@@ -3,6 +3,14 @@ use skiff_runtime_request_contract::{
     ResponseEnd, ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 
+#[cfg(any(test, feature = "legacy-wire"))]
+use crate::runtime_assembly_request::{
+    encode_runtime_assembly_websocket_jsonrpc_response_end_frame,
+    RuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
+    RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+    RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
+    RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
+};
 use crate::{
     error::TransportResult,
     protocol::{
@@ -11,15 +19,9 @@ use crate::{
         ResponseStartFrameHeader, RuntimeErrorFramePayload, RuntimeHttpNameValueFrameHeader,
         RuntimeHttpResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
     },
-    runtime_assembly_request::{
-        encode_runtime_assembly_websocket_jsonrpc_response_end_frame,
-        RuntimeAssemblyWebSocketConnectResponseEndFrameHeader,
-        RuntimeAssemblyWebSocketConnectResponseFrameHeader,
-        RuntimeAssemblyWebSocketJsonRpcResponseEndFrameHeader,
-        RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,
-    },
 };
 
+#[cfg(any(test, feature = "legacy-wire"))]
 pub fn runtime_assembly_websocket_connect_response_into_frame(
     request_id: String,
     response: RuntimeAssemblyWebSocketConnectResponseFrameHeader,
@@ -35,6 +37,7 @@ pub fn runtime_assembly_websocket_connect_response_into_frame(
     )
 }
 
+#[cfg(any(test, feature = "legacy-wire"))]
 pub fn runtime_assembly_websocket_jsonrpc_response_into_frame(
     request_id: String,
     response: RuntimeAssemblyWebSocketJsonRpcResponseFrameHeader,

@@ -10,6 +10,7 @@ pub mod pid_lock;
 pub mod protocol;
 pub mod request_mapper;
 pub mod response_mapper;
+#[cfg(any(test, feature = "legacy-wire"))]
 pub mod runtime_assembly_request;
 
 pub use error::{BinaryFrameError, TransportError, TransportResult};

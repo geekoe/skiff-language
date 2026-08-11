@@ -1,3 +1,5 @@
+#![cfg(feature = "legacy-wire")]
+
 //! C-model-bootstrap-wire corpus consumer.
 //!
 //! Freezes the Router→Runtime `router.bootstrap` frame, the

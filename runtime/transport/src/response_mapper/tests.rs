@@ -1,11 +1,13 @@
 use serde_json::{json, Value};
 
 use super::{
-    response_event_into_frame, runtime_assembly_websocket_jsonrpc_response_into_frame,
-    validate_response_end_frame, OrdinaryResponseEvent, ResponseEndPhase,
+    response_event_into_frame, response_stream_event_into_frame,
+    runtime_assembly_websocket_jsonrpc_response_into_frame, validate_response_end_frame,
+    OrdinaryResponseEvent, ResponseEndPhase,
 };
 use crate::protocol::{
-    decode_binary_frame, decode_response_error_frame, decode_typed_binary_frame,
+    decode_binary_frame, decode_response_chunk_frame, decode_response_end_frame,
+    decode_response_error_frame, decode_response_start_frame, decode_typed_binary_frame,
     ResponseEndFrameHeader, ResponseErrorFrameHeader, ValidatedResponseErrorFrame,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
@@ -17,7 +19,7 @@ use crate::runtime_assembly_request::{
 use skiff_runtime_request_contract::OpaqueServiceError;
 use skiff_runtime_request_contract::{
     FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource, ResponseEnd,
-    ResponseError, ResponseEvent,
+    ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 
 struct TestOrdinaryError(ResponseError);
@@ -55,6 +57,44 @@ fn response_boundary_rejects_http_and_payload_phase_confusion() {
         decode_typed_binary_frame(&http).expect("HTTP response.end must decode");
     assert!(validate_response_end_frame(&header, &payload, ResponseEndPhase::Http).is_ok());
     assert!(validate_response_end_frame(&header, &payload, ResponseEndPhase::Payload).is_err());
+}
+
+#[test]
+fn canonical_stream_response_mapper_round_trips_start_chunk_and_end() {
+    let request_id = "request-stream".to_string();
+
+    let start = response_stream_event_into_frame(
+        &request_id,
+        ResponseStreamEvent::Start {
+            http_response: HttpResponseMetadata::new(200, Vec::new()),
+        },
+    )
+    .expect("stream start must encode");
+    let start_header = decode_response_start_frame(&start).expect("stream start must decode");
+    assert_eq!(start_header.request_id, request_id);
+    assert_eq!(start_header.http_response.status, 200);
+
+    let chunk = response_stream_event_into_frame(
+        &request_id,
+        ResponseStreamEvent::Chunk {
+            seq: 7,
+            payload: b"body".to_vec(),
+        },
+    )
+    .expect("stream chunk must encode");
+    let (chunk_header, chunk_payload) =
+        decode_response_chunk_frame(&chunk).expect("stream chunk must decode");
+    assert_eq!(chunk_header.request_id, request_id);
+    assert_eq!(chunk_header.seq, 7);
+    assert_eq!(chunk_payload, b"body");
+
+    let end = response_stream_event_into_frame(&request_id, ResponseStreamEvent::End)
+        .expect("stream end must encode");
+    let (end_header, end_payload) =
+        decode_response_end_frame(&end).expect("stream end must decode");
+    assert_eq!(end_header.request_id, request_id);
+    assert!(!end_header.payload_present);
+    assert!(end_payload.is_empty());
 }
 
 #[test]
