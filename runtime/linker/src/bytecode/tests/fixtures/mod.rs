@@ -68,12 +68,17 @@ pub(super) enum RootProgram {
     FromType,
     RecordShape,
     ArraysMaps,
+    StreamNext,
+    StreamProducer,
     Constant(ConstantProgram),
 }
 
 impl RootProgram {
     pub(super) const fn root_has_parameter(self) -> bool {
-        matches!(self, Self::Interface | Self::RecordShape)
+        matches!(
+            self,
+            Self::Interface | Self::RecordShape | Self::StreamNext | Self::StreamProducer
+        )
     }
 }
 
@@ -116,6 +121,14 @@ impl Fixture {
 
     pub(super) fn arrays_maps() -> Self {
         Self::new(RootProgram::ArraysMaps, false)
+    }
+
+    pub(super) fn stream_next() -> Self {
+        Self::new(RootProgram::StreamNext, false)
+    }
+
+    pub(super) fn stream_producer() -> Self {
+        Self::new(RootProgram::StreamProducer, false)
     }
 
     pub(super) fn from_type() -> Self {

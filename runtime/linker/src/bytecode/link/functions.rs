@@ -84,6 +84,19 @@ impl DeploymentLinker<'_> {
             .iter()
             .map(|plan| type_linker.link_transfer_plan(plan, &substitutions, location.clone()))
             .collect::<Result<Vec<_>, _>>()?;
+        let stream_result_type_ref = function
+            .frame_layout
+            .stream_result_type_ref
+            .map(|artifact_index| {
+                type_linker.intern_pool_type(
+                    package,
+                    key,
+                    artifact_index,
+                    &substitutions,
+                    location.clone(),
+                )
+            })
+            .transpose()?;
         LinkedFrameLayout::new(
             slot_types.into_boxed_slice(),
             parameters.into_boxed_slice(),
@@ -98,6 +111,7 @@ impl DeploymentLinker<'_> {
             result_types.into_boxed_slice(),
             slot_plans.into_boxed_slice(),
             result_plans.into_boxed_slice(),
+            stream_result_type_ref,
         )
         .map_err(|error| {
             unsatisfied(

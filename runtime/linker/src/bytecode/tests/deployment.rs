@@ -7,8 +7,8 @@ use skiff_artifact_model::{
     StructuralValidationError, SyntheticInstructionSiteReason, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedBytecodeCandidate, LinkedContainerLayoutKind, LinkedFunction, LinkedInstructionTarget,
-    LinkedIntrinsicKind, LinkedPackageBytecodeProvenance,
+    InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind, LinkedFunction,
+    LinkedInstructionTarget, LinkedIntrinsicKind, LinkedPackageBytecodeProvenance,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -278,6 +278,53 @@ fn production_entry_rejects_from_type_transfer_authority() {
             location: BytecodeLinkLocation::Function { .. },
         })
     ));
+}
+
+#[test]
+fn production_entry_links_stream_next_dual_resume_successors() {
+    let fixture = Fixture::stream_next();
+    let hydrated = fixture.hydrate();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.resume_sites().len(), 1);
+    let resume = &candidate.resume_sites()[0];
+    assert_eq!(resume.site(), InstructionIndex::new(0));
+    assert_eq!(resume.resume(), InstructionIndex::new(1));
+    assert_eq!(resume.end_resume(), Some(InstructionIndex::new(3)));
+
+    let root = function(&candidate, ROOT_FUNCTION);
+    assert_eq!(root.instructions().len(), 4);
+    assert_eq!(root.instructions()[0].opcode(), Opcode::StreamNext);
+    assert!(root.frame().result_types().is_empty());
+    assert!(root.frame().result_plans().is_empty());
+    assert_eq!(root.stack_map().entries()[1].stack_before().len(), 1);
+    assert_eq!(root.stack_map().entries()[3].stack_before().len(), 0);
+}
+
+#[test]
+fn production_entry_links_stream_producer_with_zero_ordinary_results() {
+    let fixture = Fixture::stream_producer();
+    let hydrated = fixture.hydrate();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.resume_sites().len(), 1);
+    let resume = &candidate.resume_sites()[0];
+    assert_eq!(resume.end_resume(), None);
+    assert!(resume.result_types().is_empty());
+    assert!(resume.result_plans().is_empty());
+
+    let root = function(&candidate, ROOT_FUNCTION);
+    assert_eq!(root.frame().parameters().len(), 1);
+    assert_eq!(root.instructions().len(), 3);
+    assert_eq!(root.instructions()[1].opcode(), Opcode::EmitStream);
+    assert!(root.frame().result_types().is_empty());
+    assert!(root.frame().result_plans().is_empty());
+    let stream_type = root.stream_result_type_ref().expect("producer stream authority");
+    assert!(matches!(
+        candidate.types()[stream_type.get() as usize].type_ref(),
+        TypeRefIr::Builtin { name, .. } if name == "Stream"
+    ));
+    assert_eq!(root.stack_map().entries()[0].stack_before().len(), 0);
+    assert_eq!(root.stack_map().entries()[1].stack_before().len(), 1);
+    assert_eq!(root.stack_map().entries()[2].stack_before().len(), 0);
 }
 
 #[test]
