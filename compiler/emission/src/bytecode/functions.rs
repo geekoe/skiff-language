@@ -1605,7 +1605,9 @@ impl<'a> FunctionEmitter<'a> {
         let iterable_slot = self.push_generated_slot(&iterable_ty, "$forIterable")?;
         if stream {
             let index_slot = 0;
-            if let ExprIr::LoadSlot { slot } = &self.function.expression(iterable)?.expression {
+            let iterable_expression = self.function.expression(iterable)?;
+            if let ExprIr::LoadSlot { slot } = &iterable_expression.expression {
+                self.begin_expression(iterable_expression.index);
                 self.emit_op(Opcode::MoveSlot, vec![*slot, iterable_slot])?;
             } else {
                 self.emit_expression(iterable)?;
@@ -1779,6 +1781,11 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn generated_slot_plan(&self, ty: &TypeRefIr) -> skiff_artifact_model::ValueTransferPlan {
+        if is_stream_type(ty) {
+            return skiff_artifact_model::ValueTransferPlan::AffineResource {
+                drop: skiff_artifact_model::ResourceDropPlan::ResourceTableRelease,
+            };
+        }
         if is_never_type(ty) {
             return skiff_artifact_model::ValueTransferPlan::SnapshotShare {
                 drop: skiff_artifact_model::ValueDropPlan::Trivial,
@@ -2534,6 +2541,13 @@ fn stream_item_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
                 && actual_args.is_empty()
                 && expected_args.is_empty()
         )
+}
+
+fn is_stream_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args } if name == "Stream" && args.len() == 1
+    )
 }
 
 fn is_never_type(ty: &TypeRefIr) -> bool {
