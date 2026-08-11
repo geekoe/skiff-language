@@ -26,9 +26,9 @@ function read(
   position: integer,
   key: string
 ) -> number {
-  let item = items[position]
-  let mapped = values[key]
-  let nested = matrix[position][position]
+  final item = items[position]
+  final mapped = values[key]
+  final nested = matrix[position][position]
   return item + mapped
 }
 "#,
@@ -36,17 +36,17 @@ function read(
     .expect("array and map index reads should parse");
 
     let statements = &source.functions[0].body.statements;
-    let Stmt::Let { value: item, .. } = &statements[0] else {
+    let Stmt::LocalBinding { value: item, .. } = &statements[0] else {
         panic!("expected indexed array binding");
     };
     assert_named_index(item, "items", "position");
 
-    let Stmt::Let { value: mapped, .. } = &statements[1] else {
+    let Stmt::LocalBinding { value: mapped, .. } = &statements[1] else {
         panic!("expected indexed map binding");
     };
     assert_named_index(mapped, "values", "key");
 
-    let Stmt::Let { value: nested, .. } = &statements[2] else {
+    let Stmt::LocalBinding { value: nested, .. } = &statements[2] else {
         panic!("expected chained index binding");
     };
     let Expr::Index { object, index } = nested else {

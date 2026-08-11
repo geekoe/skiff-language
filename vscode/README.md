@@ -5,7 +5,7 @@ This extension provides syntax highlighting and language configuration for `.ski
 Included support:
 
 - `.skiff` files using the `source.skiff` grammar
-- Skiff declarations: `function`, `type`, `alias`, `interface`, `impl`, `const`, `let`, `test`, and modifiers such as `export`, `native`, and `static`
+- Skiff declarations: `function`, `type`, `alias`, `interface`, `impl`, `const`, `final`, `var`, `test`, and modifiers such as `export`, `native`, and `static`
 - Block-oriented syntax including `match`, `catch`, `emit`, `concurrent`, `serial`, `value`, and `timeout(...)` block/value-block modifiers
 - Core roots and types such as `std`, `root`, `config`, `Array`, `Map`, `Stream`, `JsonObject`, `Exception`, `std.http.HttpRequest`, `std.http.HttpResponse`, `bool`, `integer`, and `bytes`
 - Strings, numbers, duration literals, operators, `//` line comments, and `/* ... */` block comments

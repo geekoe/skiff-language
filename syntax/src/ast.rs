@@ -545,8 +545,8 @@ pub enum ForBinding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
-pub enum LetKind {
-    Let,
+pub enum LocalBindingKind {
+    Final,
     Var,
 }
 
@@ -570,8 +570,8 @@ pub enum Stmt {
         condition: Expr,
         message: Option<String>,
     },
-    Let {
-        kind: LetKind,
+    LocalBinding {
+        kind: LocalBindingKind,
         name: String,
         ty: Option<TypeRef>,
         value: Expr,

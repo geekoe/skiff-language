@@ -125,7 +125,9 @@ async function main() {
     "  function handle(request: HttpRequest) -> HttpResponse {",
     "    /* timeout block modifier */",
     "    const headers: Map<string, string> = Map.empty<string, string>()",
-    "    let active = true",
+    "    let legacy = true",
+    "    final active = true",
+    "    var mutable = 0",
     "    const mapper: fn(item: string) -> string = fn(item: string) -> string { return item }",
     "    timeout(200ms) {",
     '      emit({ tag: "tick" })',
@@ -187,7 +189,11 @@ async function main() {
   expectScope(findToken(collected, "const"), "storage.type.variable.skiff");
   expectScope(findToken(collected, "headers"), "variable.other.readwrite.skiff");
   expectScope(findToken(collected, "Map"), "support.type.core.skiff");
-  expectScope(findToken(collected, "let"), "storage.type.variable.skiff");
+  expectScope(findToken(collected, "final"), "storage.type.variable.skiff");
+  expectScope(findToken(collected, "var"), "storage.type.variable.skiff");
+  const legacyLet = findToken(collected, "    let legacy ");
+  expectNoScope(legacyLet, "storage.type.variable.skiff");
+  expectNoScope(legacyLet, "meta.binding.declaration.skiff");
   expectScope(findToken(collected, "fn"), "storage.type.function.skiff");
   expectScope(findToken(collected, "timeout"), "keyword.control.timeout.skiff");
   expectScope(findToken(collected, "200ms"), "constant.numeric.duration.skiff");
@@ -238,6 +244,11 @@ async function main() {
       expectNoScope(token, "keyword.control.timeout.skiff");
       expectNoScope(token, "meta.interpolation.skiff");
     }
+  }
+
+  const obsoleteLet = scopesForLine(null, grammar, "let removed = true");
+  for (const token of obsoleteLet.tokens) {
+    expectNoScope(token, "storage.type.variable.skiff");
   }
 }
 

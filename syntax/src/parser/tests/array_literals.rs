@@ -168,7 +168,7 @@ fn array_literal_has_one_required_serde_shape() {
 #[test]
 fn array_literal_source_spans_cover_items_and_children() {
     let source = r#"function run() -> void {
-  let values = [1, [2]]
+  final values = [1, [2]]
 }
 "#;
     let ast = parse_source(source).unwrap();

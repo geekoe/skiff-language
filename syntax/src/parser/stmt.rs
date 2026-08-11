@@ -32,15 +32,27 @@ impl Parser {
     pub(super) fn parse_statement(&mut self, in_test: bool) -> Result<ParsedStmt> {
         if self.match_ident("const") {
             return Err(CompileError::syntax(
-                "local const is not syntax; use let or var",
+                "local const is not syntax; use final or var",
                 self.previous().span.start,
             ));
         }
         if self.match_ident("let") {
-            return self.parse_let(LetKind::Let, self.previous().span.start);
+            return Err(CompileError::syntax(
+                "`let` has been removed; use `final`",
+                self.previous().span.start,
+            ));
+        }
+        if self.match_ident("final") {
+            return self.parse_local_binding(
+                LocalBindingKind::Final,
+                self.previous().span.start,
+            );
         }
         if self.match_ident("var") {
-            return self.parse_let(LetKind::Var, self.previous().span.start);
+            return self.parse_local_binding(
+                LocalBindingKind::Var,
+                self.previous().span.start,
+            );
         }
         if self.match_ident("timeout") {
             return self.parse_timeout_statement(in_test, self.previous().span.start);
@@ -261,7 +273,11 @@ impl Parser {
         ))
     }
 
-    pub(super) fn parse_let(&mut self, kind: LetKind, start: SourceLocation) -> Result<ParsedStmt> {
+    pub(super) fn parse_local_binding(
+        &mut self,
+        kind: LocalBindingKind,
+        start: SourceLocation,
+    ) -> Result<ParsedStmt> {
         let name = self.expect_ident("expected binding name")?;
         let ty = if self.match_symbol(":") {
             Some(self.parse_type()?)
@@ -272,7 +288,7 @@ impl Parser {
         let (value_expr, value_spans) = self.parse_expression()?.into_parts();
         let end = value_spans.span.end;
         Ok(ParsedStmt::with_expression(
-            Stmt::Let {
+            Stmt::LocalBinding {
                 kind,
                 name,
                 ty,

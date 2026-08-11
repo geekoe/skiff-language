@@ -416,9 +416,9 @@ fn parses_db_declaration_with_key_indexes_and_contextual_keywords() {
             }
 
             function useContextualNames() -> number {
-              let key = 1
-              let index = 2
-              let activate = 3
+              final key = 1
+              final index = 2
+              final activate = 3
               return key + index + activate
             }
         "#;
@@ -555,7 +555,7 @@ fn parses_db_object_with_contract_keyword_in_bodies() {
             }
 
             function useContractName() -> string {
-              let contract = "ok"
+              final contract = "ok"
               contract
             }
         "#,
@@ -977,7 +977,7 @@ fn parses_impl_method_bodies_tolerantly_without_fixture() {
           }
 
           function receive(self: ClubService, connectionId: string, frame: string) -> void {
-            let accepted = true
+            final accepted = true
             if accepted {
               return
             }
@@ -1395,7 +1395,7 @@ fn parses_function_type_in_native_method_signature() {
 fn parses_throw_rethrow_and_catch_expressions() {
     let source = r#"
             function run(error: LoginError, exception: Exception<LoginError>) -> CatchResult<number, LoginError> {
-                let result = catch<LoginError>(compute(throw error))
+                final result = catch<LoginError>(compute(throw error))
                 rethrow exception
             }
         "#;
@@ -1403,7 +1403,7 @@ fn parses_throw_rethrow_and_catch_expressions() {
     let ast = parse_source(source).unwrap();
     let statements = &ast.functions[0].body.statements;
 
-    let crate::ast::Stmt::Let { value, .. } = &statements[0] else {
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[0] else {
         panic!("expected catch binding");
     };
     let crate::ast::Expr::Catch {
@@ -1828,10 +1828,10 @@ fn parses_db_transaction_expressions() {
     let source = r#"
             function run(id: string) -> string {
               db transaction {
-                let user = db require User(id)
+                final user = db require User(id)
                 db insert User { id = id name = "Ada" }
               }
-              let committed = db transaction value { id }
+              final committed = db transaction value { id }
               return id
             }
         "#;
@@ -1849,9 +1849,9 @@ fn parses_db_transaction_expressions() {
     assert_eq!(transaction.body.statements.len(), 2);
     assert!(matches!(
         transaction.body.statements[0],
-        crate::ast::Stmt::Let { .. }
+        crate::ast::Stmt::LocalBinding { .. }
     ));
-    let crate::ast::Stmt::Let { value, .. } = &statements[1] else {
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[1] else {
         panic!(
             "expected transaction value binding, got {:?}",
             statements[1]
@@ -1903,7 +1903,7 @@ fn rejects_old_db_dotted_builtins_without_rejecting_local_receivers() {
         let source = format!(
             r#"
                 function run(id: string) -> string {{
-                  let old = db.{operation}
+                  final old = db.{operation}
                   return id
                 }}
             "#
@@ -1917,7 +1917,7 @@ fn rejects_old_db_dotted_builtins_without_rejecting_local_receivers() {
 
     let source = r#"
             function run(db: DbFactory) -> string {
-              let collection = db.Collection("thread")
+              final collection = db.Collection("thread")
               return "ok"
             }
         "#;
@@ -1928,9 +1928,9 @@ fn rejects_old_db_dotted_builtins_without_rejecting_local_receivers() {
 fn parses_object_db_operation_surface() {
     let source = r#"
             function run(threadId: string, rows: Array<Message>) -> string {
-              let one = db require Thread(threadId) { fields { title, status } }
-              let many = db find many Message { fields { id, body, where, profile.displayName; profile.avatar.url } offset 5 where threadId == threadId order createdAt desc limit 50 }
-              let inserted = db insert many Message values rows
+              final one = db require Thread(threadId) { fields { title, status } }
+              final many = db find many Message { fields { id, body, where, profile.displayName; profile.avatar.url } offset 5 where threadId == threadId order createdAt desc limit 50 }
+              final inserted = db insert many Message values rows
               db update Thread(threadId) { title = "Updated" messageCount += 1 }
               db delete many Message { where threadId == threadId }
               return threadId
@@ -1939,7 +1939,7 @@ fn parses_object_db_operation_surface() {
 
     let ast = parse_source(source).unwrap();
     let statements = &ast.functions[0].body.statements;
-    let crate::ast::Stmt::Let { value, .. } = &statements[0] else {
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[0] else {
         panic!("expected db require binding");
     };
     let crate::ast::Expr::DbOperation(require) = value else {
@@ -1953,7 +1953,7 @@ fn parses_object_db_operation_surface() {
         "status"
     );
 
-    let crate::ast::Stmt::Let { value, .. } = &statements[1] else {
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[1] else {
         panic!("expected db find many binding");
     };
     let crate::ast::Expr::DbOperation(find_many) = value else {
@@ -1994,7 +1994,7 @@ fn parses_object_db_operation_surface() {
 fn rejects_old_unbounded_db_projection_syntax() {
     let source = r#"
             function run(id: string) -> string {
-              let user = db require User(id) { fields name visits }
+              final user = db require User(id) { fields name visits }
               return id
             }
         "#;
@@ -2010,7 +2010,7 @@ fn rejects_old_unbounded_db_projection_syntax() {
 fn rejects_query_entries_after_key_read_projection() {
     let source = r#"
             function run(id: string, active: bool) -> string {
-              let user = db require User(id) { fields { name } where active }
+              final user = db require User(id) { fields { name } where active }
               return id
             }
         "#;
@@ -2026,7 +2026,7 @@ fn rejects_query_entries_after_key_read_projection() {
 fn parses_db_query_value_and_conditional_where() {
     let source = r#"
             function run(enabled: bool, owner: string) -> string {
-              let query = db query Thread {
+              final query = db query Thread {
                 where ownerId == owner
                 where if enabled { archived == false }
                 order updatedAt desc
@@ -2037,7 +2037,7 @@ fn parses_db_query_value_and_conditional_where() {
         "#;
 
     let ast = parse_source(source).expect("db query expression should parse");
-    let crate::ast::Stmt::Let { value, .. } = &ast.functions[0].body.statements[0] else {
+    let crate::ast::Stmt::LocalBinding { value, .. } = &ast.functions[0].body.statements[0] else {
         panic!("expected db query binding");
     };
     let crate::ast::Expr::DbQuery(query) = value else {
@@ -2065,15 +2065,15 @@ fn parses_db_query_value_and_conditional_where() {
 fn parses_dotted_db_operation_targets() {
     let source = r#"
             function run(id: string) -> string {
-              let one = db require root.prompt_model.PromptDocument(id)
-              let many = db find many prompt_model.PromptDocument { limit 1 }
+              final one = db require root.prompt_model.PromptDocument(id)
+              final many = db find many prompt_model.PromptDocument { limit 1 }
               return one.id
             }
         "#;
 
     let ast = parse_source(source).expect("dotted db operation targets should parse");
     let statements = &ast.functions[0].body.statements;
-    let crate::ast::Stmt::Let { value, .. } = &statements[0] else {
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[0] else {
         panic!("expected db require binding");
     };
     let crate::ast::Expr::DbOperation(require) = value else {
@@ -2081,7 +2081,7 @@ fn parses_dotted_db_operation_targets() {
     };
     assert_eq!(require.target.name, "root.prompt_model.PromptDocument");
 
-    let crate::ast::Stmt::Let { value, .. } = &statements[1] else {
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[1] else {
         panic!("expected db find binding");
     };
     let crate::ast::Expr::DbOperation(find_many) = value else {
@@ -2094,7 +2094,7 @@ fn parses_dotted_db_operation_targets() {
 fn rejects_object_db_query_after_with_offset_hint() {
     let source = r#"
             function run(previous: Array<Message>) -> string {
-              let many = db find many Message { after previous }
+              final many = db find many Message { after previous }
               return "ok"
             }
         "#;
@@ -2111,7 +2111,7 @@ fn rejects_many_db_operations_with_key_selectors() {
     for source in [
         r#"
             function run(id: string) -> bool {
-              let row = db find many Thread(id)
+              final row = db find many Thread(id)
               return true
             }
         "#,
@@ -2140,7 +2140,7 @@ fn rejects_many_db_operations_with_key_selectors() {
 fn rejects_db_key_read_query_entries_after_selector() {
     let source = r#"
             function run(id: string) -> bool {
-              let one = db require Thread(id) { where status == "open" fields { title } }
+              final one = db require Thread(id) { where status == "open" fields { title } }
               return true
             }
         "#;
@@ -2156,7 +2156,7 @@ fn rejects_db_key_read_query_entries_after_selector() {
 fn rejects_query_upsert_first_version() {
     let source = r#"
             function run(id: string) -> bool {
-              let result = db upsert Thread { where id == id } { id = id } { title = "x" }
+              final result = db upsert Thread { where id == id } { id = id } { title = "x" }
               return true
             }
         "#;
@@ -2292,14 +2292,14 @@ interface Repository<T, U> {
   function load(self: Self, id: T) -> U
 }
 function make() -> void {
-  let provider = RepoImpl {} as Repository<string, User>
+  final provider = RepoImpl {} as Repository<string, User>
 }
 "#,
     )
     .unwrap();
 
-    let crate::ast::Stmt::Let { value, .. } = &ast.functions[0].body.statements[0] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { value, .. } = &ast.functions[0].body.statements[0] else {
+        panic!("expected final binding");
     };
     let crate::ast::Expr::InterfaceBox { value, interface } = value else {
         panic!("expected interface box expression, got {value:?}");
@@ -2316,9 +2316,9 @@ fn parses_record_construct_regardless_of_identifier_case() {
     let ast = parse_source(
         r#"
 function make() -> void {
-  let upper = RepoImpl { name: "a" }
-  let lower = repoImpl { name: "b" }
-  let dotted = user.repoImpl { name: "c" }
+  final upper = RepoImpl { name: "a" }
+  final lower = repoImpl { name: "b" }
+  final dotted = user.repoImpl { name: "c" }
   return
 }
 "#,
@@ -2327,8 +2327,8 @@ function make() -> void {
 
     let statements = &ast.functions[0].body.statements;
     for (index, expected) in ["RepoImpl", "repoImpl", "user.repoImpl"].iter().enumerate() {
-        let crate::ast::Stmt::Let { value, .. } = &statements[index] else {
-            panic!("expected let statement at {index}");
+        let crate::ast::Stmt::LocalBinding { value, .. } = &statements[index] else {
+            panic!("expected final binding at {index}");
         };
         assert!(
             matches!(
@@ -2531,15 +2531,15 @@ fn parses_ternary_expression() {
     let ast = parse_source(
         r#"
 function pick(flag: bool, a: string, b: string) -> string {
-  let value = flag ? a : b
+  final value = flag ? a : b
   return value
 }
 "#,
     )
     .unwrap();
 
-    let crate::ast::Stmt::Let { value, .. } = &ast.functions[0].body.statements[0] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { value, .. } = &ast.functions[0].body.statements[0] else {
+        panic!("expected final binding");
     };
     let crate::ast::Expr::Ternary {
         condition,
@@ -2559,10 +2559,10 @@ fn ternary_precedence_is_below_all_binary_operators_and_right_associative() {
     let ast = parse_source(
         r#"
 function run(a: bool, b: bool, c: string, d: string, e: string) -> string {
-  let left = a || b ? c : d
-  let right = a ? c : d || e
-  let nestedElse = a ? c : d ? e : c
-  let nestedThen = a ? c ? d : e : c
+  final left = a || b ? c : d
+  final right = a ? c : d || e
+  final nestedElse = a ? c : d ? e : c
+  final nestedThen = a ? c ? d : e : c
   return c
 }
 "#,
@@ -2570,8 +2570,8 @@ function run(a: bool, b: bool, c: string, d: string, e: string) -> string {
     .unwrap();
 
     let statements = &ast.functions[0].body.statements;
-    let crate::ast::Stmt::Let { value, .. } = &statements[0] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[0] else {
+        panic!("expected final binding");
     };
     let crate::ast::Expr::Ternary { condition, .. } = value else {
         panic!("expected ternary, got {value:?}");
@@ -2584,8 +2584,8 @@ function run(a: bool, b: bool, c: string, d: string, e: string) -> string {
         }
     ));
 
-    let crate::ast::Stmt::Let { value, .. } = &statements[1] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[1] else {
+        panic!("expected final binding");
     };
     let crate::ast::Expr::Ternary { else_expr, .. } = value else {
         panic!("expected ternary, got {value:?}");
@@ -2598,8 +2598,8 @@ function run(a: bool, b: bool, c: string, d: string, e: string) -> string {
         }
     ));
 
-    let crate::ast::Stmt::Let { value, .. } = &statements[2] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[2] else {
+        panic!("expected final binding");
     };
     let crate::ast::Expr::Ternary { else_expr, .. } = value else {
         panic!("expected ternary, got {value:?}");
@@ -2609,8 +2609,8 @@ function run(a: bool, b: bool, c: string, d: string, e: string) -> string {
         crate::ast::Expr::Ternary { .. }
     ));
 
-    let crate::ast::Stmt::Let { value, .. } = &statements[3] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { value, .. } = &statements[3] else {
+        panic!("expected final binding");
     };
     let crate::ast::Expr::Ternary { then_expr, .. } = value else {
         panic!("expected ternary, got {value:?}");
@@ -2662,15 +2662,15 @@ fn ternary_branches_in_expression_slots_still_parse_constructs() {
     let ast = parse_source(
         r#"
 function run(flag: bool) -> void {
-  let value = flag ? Point { x: 1 } : point { x: 2 }
+  final value = flag ? Point { x: 1 } : point { x: 2 }
   return
 }
 "#,
     )
     .unwrap();
 
-    let crate::ast::Stmt::Let { value, .. } = &ast.functions[0].body.statements[0] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { value, .. } = &ast.functions[0].body.statements[0] else {
+        panic!("expected final binding");
     };
     let crate::ast::Expr::Ternary {
         then_expr,
@@ -2692,7 +2692,7 @@ function run(flag: bool) -> void {
 
 #[test]
 fn ternary_requires_colon_separator() {
-    let error = parse_source("function run(flag: bool) -> void { let x = flag ? 1\n}")
+    let error = parse_source("function run(flag: bool) -> void { final x = flag ? 1\n}")
         .unwrap_err()
         .to_string();
     assert!(
@@ -2709,15 +2709,15 @@ interface LlmClient {
   function send(self: Self, input: string) -> string
 }
 function make() -> void {
-  let response = remoteLlm/managedLlm.send("hi")
-  let boxed = remoteLlm/managedLlm as LlmClient
+  final response = remoteLlm/managedLlm.send("hi")
+  final boxed = remoteLlm/managedLlm as LlmClient
 }
 "#,
     )
     .unwrap();
 
-    let crate::ast::Stmt::Let { value: call, .. } = &ast.functions[0].body.statements[0] else {
-        panic!("expected call let statement");
+    let crate::ast::Stmt::LocalBinding { value: call, .. } = &ast.functions[0].body.statements[0] else {
+        panic!("expected call final binding");
     };
     let crate::ast::Expr::Call { callee, .. } = call else {
         panic!("expected remote direct call expression, got {call:?}");
@@ -2733,8 +2733,8 @@ function make() -> void {
                 && source.public_path == "managedLlm"
     ));
 
-    let crate::ast::Stmt::Let { value: boxed, .. } = &ast.functions[0].body.statements[1] else {
-        panic!("expected boxed let statement");
+    let crate::ast::Stmt::LocalBinding { value: boxed, .. } = &ast.functions[0].body.statements[1] else {
+        panic!("expected boxed final binding");
     };
     assert!(matches!(
         boxed,
@@ -2801,14 +2801,14 @@ fn slash_with_whitespace_remains_binary_division() {
     let ast = parse_source(
         r#"
 function make(a: number, b: number) -> void {
-  let value = a / b
+  final value = a / b
 }
 "#,
     )
     .unwrap();
 
-    let crate::ast::Stmt::Let { value, .. } = &ast.functions[0].body.statements[0] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { value, .. } = &ast.functions[0].body.statements[0] else {
+        panic!("expected final binding");
     };
     assert!(matches!(
         value,
@@ -2827,14 +2827,14 @@ interface ToolProvider {
   function list(self: Self) -> Array<string>
 }
 function make() -> void {
-  let provider = a + b as ToolProvider
+  final provider = a + b as ToolProvider
 }
 "#,
     )
     .unwrap();
 
-    let crate::ast::Stmt::Let { value, .. } = &ast.functions[0].body.statements[0] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { value, .. } = &ast.functions[0].body.statements[0] else {
+        panic!("expected final binding");
     };
     let crate::ast::Expr::Binary { left, right, .. } = value else {
         panic!("expected binary expression");
@@ -2854,7 +2854,7 @@ fn interface_box_rejects_any_interface_rhs_in_parser() {
     let error = parse_source(
         r#"
 function make() -> void {
-  let provider = value as any ToolProvider
+  final provider = value as any ToolProvider
 }
 "#,
     )
@@ -2934,23 +2934,23 @@ function run() -> void {
   serial {
     standaloneSerialWork()
   }
-  let plain = value {
-    let seed = prepare()
+  final plain = value {
+    final seed = prepare()
     finish(seed)
   }
-  let joined = concurrent value {
-    let left = leftWork()
+  final joined = concurrent value {
+    final left = leftWork()
     serial {
       serialValueWork()
     }
     join(left)
   }
-  let timed = timeout(2s) value {
-    let item = timedWork()
+  final timed = timeout(2s) value {
+    final item = timedWork()
     item
   }
-  let timedJoined = timeout(3m) concurrent value {
-    let item = concurrentTimedWork()
+  final timedJoined = timeout(3m) concurrent value {
+    final item = concurrentTimedWork()
     item
   }
 }
@@ -2981,7 +2981,7 @@ function run() -> void {
 
     assert!(matches!(&statements[2], Stmt::Serial { .. }));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::ValueBlock(value),
         ..
     } = &statements[3]
@@ -2995,7 +2995,7 @@ function run() -> void {
             if matches!(callee.as_ref(), Expr::Identifier(name) if name == "finish")
     ));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::ConcurrentValue(value),
         ..
     } = &statements[4]
@@ -3010,7 +3010,7 @@ function run() -> void {
             if matches!(callee.as_ref(), Expr::Identifier(name) if name == "join")
     ));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::Timeout {
             duration,
             value: timed,
@@ -3023,7 +3023,7 @@ function run() -> void {
     assert_eq!(duration.checked_milliseconds().unwrap(), 2_000);
     assert!(matches!(timed.as_ref(), Expr::ValueBlock(_)));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::Timeout {
             duration,
             value: timed,
@@ -3044,8 +3044,8 @@ function run() -> void {
 fn timeout_value_spans_and_ast_round_trip_preserve_wrapper_body_tail_and_duration() {
     let source = r#"
 function run() -> void {
-  let result = timeout(15s) concurrent value {
-    let first = root.alpha.first()
+  final result = timeout(15s) concurrent value {
+    final first = root.alpha.first()
     serial {
       root.beta.second()
     }
@@ -3054,7 +3054,7 @@ function run() -> void {
 }
 "#;
     let mut ast = parse_source(source).unwrap();
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::Timeout {
             duration,
             value: wrapped,
@@ -3084,7 +3084,7 @@ function run() -> void {
     let expression_spans = &ast.source_spans.functions[0].body.statements[0].expressions[0];
     assert_eq!(
         &source[expression_spans.span.start.offset..expression_spans.span.end.offset],
-        "timeout(15s) concurrent value {\n    let first = root.alpha.first()\n    serial {\n      root.beta.second()\n    }\n    root.gamma.finish(first)\n  }"
+        "timeout(15s) concurrent value {\n    final first = root.alpha.first()\n    serial {\n      root.beta.second()\n    }\n    root.gamma.finish(first)\n  }"
     );
     assert_eq!(expression_spans.children.len(), 1);
     let concurrent_spans = &expression_spans.children[0];
@@ -3107,33 +3107,33 @@ fn value_tail_accepts_canonical_value_modifiers_and_parenthesized_timeout_catch(
     let ast = parse_source(
         r#"
 function run() -> void {
-  let nestedValue = value {
+  final nestedValue = value {
     value {
       plainTail
     }
   }
-  let nestedConcurrent = value {
+  final nestedConcurrent = value {
     concurrent value {
       concurrentTail
     }
   }
-  let nestedTimeout = value {
+  final nestedTimeout = value {
     timeout(4s) concurrent value {
       timeoutTail
     }
   }
-  let caught = catch<TimeoutError>(
+  final caught = catch<TimeoutError>(
     timeout(5s) value {
       caughtTail
     }
   )
-  let thrown = value {
+  final thrown = value {
     throw problem
   }
-  let rethrown = value {
+  final rethrown = value {
     rethrow exception
   }
-  let object = value {
+  final object = value {
     ({ name: caughtTail })
   }
 }
@@ -3142,7 +3142,7 @@ function run() -> void {
     .unwrap();
     let statements = &ast.functions[0].body.statements;
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::ValueBlock(outer),
         ..
     } = &statements[0]
@@ -3151,7 +3151,7 @@ function run() -> void {
     };
     assert!(matches!(outer.tail.as_ref(), Expr::ValueBlock(_)));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::ValueBlock(outer),
         ..
     } = &statements[1]
@@ -3160,7 +3160,7 @@ function run() -> void {
     };
     assert!(matches!(outer.tail.as_ref(), Expr::ConcurrentValue(_)));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::ValueBlock(outer),
         ..
     } = &statements[2]
@@ -3172,7 +3172,7 @@ function run() -> void {
         Expr::Timeout { value, .. } if matches!(value.as_ref(), Expr::ConcurrentValue(_))
     ));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::Catch { try_expr, .. },
         ..
     } = &statements[3]
@@ -3184,7 +3184,7 @@ function run() -> void {
         Expr::Timeout { value, .. } if matches!(value.as_ref(), Expr::ValueBlock(_))
     ));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::ValueBlock(value),
         ..
     } = &statements[4]
@@ -3193,7 +3193,7 @@ function run() -> void {
     };
     assert!(matches!(value.tail.as_ref(), Expr::Throw { .. }));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::ValueBlock(value),
         ..
     } = &statements[5]
@@ -3202,7 +3202,7 @@ function run() -> void {
     };
     assert!(matches!(value.tail.as_ref(), Expr::Rethrow { .. }));
 
-    let Stmt::Let {
+    let Stmt::LocalBinding {
         value: Expr::ValueBlock(value),
         ..
     } = &statements[6]
@@ -3257,44 +3257,44 @@ fn rejects_invalid_duration_literals_and_timeout_shapes() {
 fn rejects_duration_outside_timeout_missing_value_tails_and_noncanonical_modifiers() {
     let cases = [
         (
-            "let invalid = 15s",
+            "final invalid = 15s",
             "duration literal is only allowed as a timeout duration",
         ),
-        ("let invalid = value {}", "requires a tail expression"),
+        ("final invalid = value {}", "requires a tail expression"),
         (
-            "let invalid = value { let item = work() }",
+            "final invalid = value { final item = work() }",
             "requires a tail expression",
         ),
         (
-            "let invalid = concurrent value { let item = work() }",
+            "final invalid = concurrent value { final item = work() }",
             "requires a tail expression",
         ),
         (
-            "let invalid = timeout(1s) value { let item = work() }",
+            "final invalid = timeout(1s) value { final item = work() }",
             "requires a tail expression",
         ),
         (
-            "let invalid = value { { name: item } }",
+            "final invalid = value { { name: item } }",
             "object literal tail must be parenthesized",
         ),
         (
-            "let invalid = concurrent timeout(1s) value { work() }",
+            "final invalid = concurrent timeout(1s) value { work() }",
             "canonical modifier order",
         ),
         (
-            "let invalid = value concurrent { work() }",
+            "final invalid = value concurrent { work() }",
             "canonical modifier order",
         ),
         (
-            "let invalid = timeout(1s) value concurrent { work() }",
+            "final invalid = timeout(1s) value concurrent { work() }",
             "canonical modifier order",
         ),
         (
-            "let invalid = timeout(1s) serial value { work() }",
+            "final invalid = timeout(1s) serial value { work() }",
             "canonical modifier order",
         ),
         (
-            "let invalid = serial value { work() }",
+            "final invalid = serial value { work() }",
             "canonical modifier order",
         ),
     ];
@@ -3310,13 +3310,13 @@ fn rejects_duration_outside_timeout_missing_value_tails_and_noncanonical_modifie
 }
 
 #[test]
-fn parses_let_and_var_local_bindings_with_kinds() {
+fn parses_final_and_var_local_bindings_with_kinds() {
     let ast = parse_source(
         r#"
         function run() -> void {
-          let immutable = 1
+          final immutable = 1
           var mutable = 2
-          let typed: number = 3
+          final typed: number = 3
           var labeled: string = "x"
           return
         }
@@ -3324,25 +3324,44 @@ fn parses_let_and_var_local_bindings_with_kinds() {
     )
     .unwrap();
     let statements = &ast.functions[0].body.statements;
-    let crate::ast::Stmt::Let { kind, name, .. } = &statements[0] else {
-        panic!("expected let statement");
+    let crate::ast::Stmt::LocalBinding { kind, name, .. } = &statements[0] else {
+        panic!("expected final binding");
     };
-    assert_eq!(*kind, crate::ast::LetKind::Let);
+    assert_eq!(*kind, crate::ast::LocalBindingKind::Final);
     assert_eq!(name, "immutable");
-    let crate::ast::Stmt::Let { kind, name, .. } = &statements[1] else {
+    let crate::ast::Stmt::LocalBinding { kind, name, .. } = &statements[1] else {
         panic!("expected var statement");
     };
-    assert_eq!(*kind, crate::ast::LetKind::Var);
+    assert_eq!(*kind, crate::ast::LocalBindingKind::Var);
     assert_eq!(name, "mutable");
+    let crate::ast::Stmt::LocalBinding { kind, name, .. } = &statements[2] else {
+        panic!("expected typed final binding");
+    };
+    assert_eq!(*kind, crate::ast::LocalBindingKind::Final);
+    assert_eq!(name, "typed");
+    let crate::ast::Stmt::LocalBinding { kind, name, .. } = &statements[3] else {
+        panic!("expected typed var binding");
+    };
+    assert_eq!(*kind, crate::ast::LocalBindingKind::Var);
+    assert_eq!(name, "labeled");
 }
 
 #[test]
-fn rejects_local_const_and_top_level_let_var() {
+fn rejects_local_const_and_top_level_final_var() {
     let error = parse_source("function run() -> void {\n  const x = 1\n}\n").unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("local const is not syntax; use let or var"),
+            .contains("local const is not syntax; use final or var"),
+        "got {error:?}"
+    );
+
+    let error = parse_source("function run() -> void {\n  let x = 1\n}\n")
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("`let` has been removed; use `final`"),
         "got {error:?}"
     );
 
@@ -3350,14 +3369,21 @@ fn rejects_local_const_and_top_level_let_var() {
     assert!(
         error
             .to_string()
-            .contains("let/var are only allowed inside blocks"),
+            .contains("`let` has been removed; use `final`"),
+        "got {error:?}"
+    );
+    let error = parse_source("final x = 1\n").unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("final/var are only allowed inside blocks"),
         "got {error:?}"
     );
     let error = parse_source("var x = 1\n").unwrap_err();
     assert!(
         error
             .to_string()
-            .contains("let/var are only allowed inside blocks"),
+            .contains("final/var are only allowed inside blocks"),
         "got {error:?}"
     );
 

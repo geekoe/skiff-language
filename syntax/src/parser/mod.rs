@@ -10,7 +10,7 @@ pub(super) use crate::{
         DbSelector, DbStorageCodec, DbStorageDecl, DbTransaction, DbWhereClause,
         DependencySourceAddress, DispatchTiming, DurationLiteral, ExecutableSourceSpans, Expr,
         ExprSourceSpans, FieldDecl, FieldPath, ForBinding, FunctionDecl, ImplDecl, ImportDecl,
-        InterfaceDecl, InterfaceOperation, LetKind, Literal, MatchArm, PackageId, Param,
+        InterfaceDecl, InterfaceOperation, Literal, LocalBindingKind, MatchArm, PackageId, Param,
         ParamMode, Pattern, PatternField, RecordFieldSourceSpans, SourceFile, SourceSpanTable,
         Stmt, StmtSourceSpans, TypeDecl, TypeRef, UnaryOp, ValueBlock,
     },
@@ -195,9 +195,14 @@ impl Parser {
             } else if self.check_ident("const") {
                 self.reject_export_modifier_if_needed(exported, export_token_start)?;
                 consts.push(self.parse_const_decl(exported)?);
-            } else if self.check_ident("let") || self.check_ident("var") {
+            } else if self.match_ident("let") {
                 return Err(CompileError::syntax(
-                    "let/var are only allowed inside blocks",
+                    "`let` has been removed; use `final`",
+                    self.previous().span.start,
+                ));
+            } else if self.check_ident("final") || self.check_ident("var") {
+                return Err(CompileError::syntax(
+                    "final/var are only allowed inside blocks",
                     self.peek().span.start,
                 ));
             } else if self.check_ident("type") {
