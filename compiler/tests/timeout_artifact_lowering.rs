@@ -74,8 +74,8 @@ function sequentialValue() -> string {
         assert_eq!(file.schema_version, FILE_IR_SCHEMA_VERSION);
         assert_eq!(file.ir_format_version, FILE_IR_FORMAT_VERSION);
         assert_eq!(file.opcode_table_version, FILE_IR_OPCODE_TABLE_VERSION);
-        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v14");
-        assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v8");
+        assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v15");
+        assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v9");
         assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
         // The exact hash churns whenever File IR identity inputs change; the
         // meaningful assertion is that the recorded identity equals a fresh
@@ -83,7 +83,7 @@ function sequentialValue() -> string {
         // current schema prefix.
         assert!(file
             .file_ir_identity
-            .starts_with("skiff-file-ir-v14:sha256:"));
+            .starts_with("skiff-file-ir-v15:sha256:"));
         assert_eq!(
             skiff_artifact_identity::file_ir_identity(file).unwrap(),
             file.file_ir_identity

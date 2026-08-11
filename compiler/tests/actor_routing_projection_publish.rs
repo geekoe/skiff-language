@@ -327,6 +327,13 @@ mod tests {
             beta_expected,
             "a later package publish must replace the current projection with its own deployment facts"
         );
+        for entry in &beta_projection.methods {
+            assert_eq!(
+                entry.deployment, beta_deployment,
+                "exact deployment binding"
+            );
+            assert_eq!(entry.package, beta_package, "exact owning package binding");
+        }
 
         fs::remove_dir_all(temp).unwrap();
     }
