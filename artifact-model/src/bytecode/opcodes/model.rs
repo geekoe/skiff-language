@@ -2,6 +2,8 @@ use std::fmt;
 
 use serde::Serialize;
 
+use crate::PlatformErrorProjectionKey;
+
 /// Operand word kind. Operand order is word order in the encoded instruction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OperandKind {
@@ -589,7 +591,9 @@ impl FailureTrigger {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FailureDisposition {
-    Catchable { identity: &'static str },
+    Catchable {
+        projection_key: PlatformErrorProjectionKey,
+    },
     UncatchableTerminal,
     InvariantTerminal,
 }
@@ -605,12 +609,12 @@ impl FailureContract {
     pub const fn catchable(
         kind: FailureKind,
         trigger: FailureTrigger,
-        identity: &'static str,
+        projection_key: PlatformErrorProjectionKey,
     ) -> Self {
         Self {
             kind,
             trigger,
-            disposition: FailureDisposition::Catchable { identity },
+            disposition: FailureDisposition::Catchable { projection_key },
         }
     }
 
@@ -630,9 +634,6 @@ impl FailureContract {
         }
     }
 }
-
-pub const COLLECTION_INDEX_OUT_OF_BOUNDS_ERROR: &str = "std.collection.IndexOutOfBoundsError";
-pub const COLLECTION_MISSING_KEY_ERROR: &str = "std.collection.MissingKeyError";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExceptionBehavior {

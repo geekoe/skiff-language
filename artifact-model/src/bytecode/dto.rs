@@ -62,7 +62,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v6";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v7";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v4";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -89,6 +89,9 @@ pub struct BytecodeArtifact {
     /// Exact intrinsic target and instantiated-signature authority used when
     /// validating IntrinsicRef rows.
     pub intrinsic_registry: crate::IntrinsicRegistryIdentity,
+    /// Exact generated platform error projection registry used by catchable
+    /// opcode failure plans and service error materialization.
+    pub platform_error_projection_registry: crate::PlatformErrorProjectionRegistryRef,
     /// Declared identity. Filled by artifact-identity (C9); validation of the
     /// declared value against the recomputed identity is a later task.
     pub bytecode_identity: String,

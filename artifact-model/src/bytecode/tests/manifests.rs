@@ -1,4 +1,4 @@
-//! Bytecode v6 manifest ownership and cross-row structural invariants.
+//! Bytecode v7 manifest ownership and cross-row structural invariants.
 
 use crate::bytecode::dto::{
     BytecodeFunctionOrigin, BytecodePoolEntry, BytecodeRelocation, CallLoanBinding,
@@ -66,6 +66,10 @@ fn manifest_header_is_pinned_to_every_exact_semantic_authority() {
         ("valueLifecyclePolicy", fn_corrupt_lifecycle_policy),
         ("hostEffectRegistry", fn_corrupt_host_registry),
         ("intrinsicRegistry", fn_corrupt_intrinsic_registry),
+        (
+            "platformErrorProjectionRegistry",
+            fn_corrupt_platform_error_projection_registry,
+        ),
     ] {
         let mut artifact = canonical_artifact();
         corrupt(&mut artifact);
@@ -98,6 +102,15 @@ fn fn_corrupt_host_registry(artifact: &mut BytecodeArtifact) {
 
 fn fn_corrupt_intrinsic_registry(artifact: &mut BytecodeArtifact) {
     artifact.intrinsic_registry.fingerprint.push_str(":corrupt");
+}
+
+fn fn_corrupt_platform_error_projection_registry(artifact: &mut BytecodeArtifact) {
+    artifact.platform_error_projection_registry = serde_json::from_value(serde_json::json!({
+        "registryId": crate::PLATFORM_ERROR_PROJECTION_REGISTRY_ID,
+        "registryVersion": crate::PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION,
+        "fingerprint": format!("sha256:{}", "0".repeat(64)),
+    }))
+    .expect("historical registry reference has valid general shape");
 }
 
 #[test]

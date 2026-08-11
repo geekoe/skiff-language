@@ -222,6 +222,7 @@ impl ValidatedResumeSite {
 ///     value_lifecycle_policy: todo!(),
 ///     host_effect_registry: todo!(),
 ///     intrinsic_registry: todo!(),
+///     platform_error_projection_registry: todo!(),
 ///     resume_sites: Vec::new(),
 /// };
 /// ```
@@ -240,6 +241,7 @@ pub struct StructurallyValidatedView {
     value_lifecycle_policy: crate::ValueLifecyclePolicyIdentity,
     host_effect_registry: crate::HostEffectRegistryIdentity,
     intrinsic_registry: crate::IntrinsicRegistryIdentity,
+    platform_error_projection_registry: crate::PlatformErrorProjectionRegistryRef,
     resume_sites: Vec<ValidatedResumeSite>,
     intrinsic_contracts: Vec<ValidatedIntrinsicContract>,
     function_stream_items: Vec<ValidatedFunctionStreamItem>,
@@ -296,6 +298,10 @@ impl StructurallyValidatedView {
 
     pub fn intrinsic_registry(&self) -> &crate::IntrinsicRegistryIdentity {
         &self.intrinsic_registry
+    }
+
+    pub fn platform_error_projection_registry(&self) -> &crate::PlatformErrorProjectionRegistryRef {
+        &self.platform_error_projection_registry
     }
 
     pub fn resume_sites(&self) -> &[ValidatedResumeSite] {
@@ -359,6 +365,7 @@ pub fn structurally_validate(
         value_lifecycle_policy: artifact.value_lifecycle_policy.clone(),
         host_effect_registry: artifact.host_effect_registry.clone(),
         intrinsic_registry: artifact.intrinsic_registry.clone(),
+        platform_error_projection_registry: artifact.platform_error_projection_registry.clone(),
         resume_sites,
         intrinsic_contracts,
         function_stream_items,
@@ -422,6 +429,16 @@ fn validate_header(artifact: &BytecodeArtifact) -> Result<(), StructuralValidati
             crate::intrinsic_registry_identity()
         )));
     }
+    crate::validate_current_platform_error_projection_registry_ref(
+        &artifact.platform_error_projection_registry,
+    )
+    .map_err(|error| {
+        header_error(format!(
+            "platformErrorProjectionRegistry {:?} does not match the compile-time generated registry {:?}: {error}",
+            artifact.platform_error_projection_registry,
+            crate::current_platform_error_projection_registry_ref()
+        ))
+    })?;
     Ok(())
 }
 

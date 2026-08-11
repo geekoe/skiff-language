@@ -38,6 +38,7 @@ pub mod native_signature;
 pub mod native_value_lifecycle;
 pub mod package_artifact;
 pub mod package_unit;
+pub mod platform_error_projection;
 pub mod publication_abi;
 pub mod recoverable;
 pub mod refs;
@@ -206,6 +207,17 @@ pub use package_unit::{
     PackageImplementationLinks, PackageOperationTarget, PackageUsedSymbol, PackageUsedSymbolKind,
     TypeExport,
 };
+pub use platform_error_projection::{
+    assert_platform_error_projection_generated_surface,
+    current_platform_error_projection_registry_ref, platform_error_projection_descriptor,
+    platform_error_projection_descriptor_by_key, platform_error_projection_registry,
+    validate_current_platform_error_projection_registry_ref,
+    validate_platform_error_projection_registry_ref_shape, PlatformErrorProjectionDescriptor,
+    PlatformErrorProjectionKey, PlatformErrorProjectionRegistryRef,
+    PlatformErrorProjectionRegistryRefValidationError, UnknownPlatformErrorProjectionKey,
+    PLATFORM_ERROR_PROJECTION_CODEC_VERSION, PLATFORM_ERROR_PROJECTION_REGISTRY_FINGERPRINT,
+    PLATFORM_ERROR_PROJECTION_REGISTRY_ID, PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION,
+};
 pub use publication_abi::{
     CanonicalPublicCallableSignature, InterfaceInstantiationRef, OperationAbiRef,
     PublicationOperationKind,
@@ -236,9 +248,9 @@ pub use runtime_config_snapshot::{
 };
 pub use schema::{
     FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION, FILE_IR_SCHEMA_VERSION,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_DEFINITION_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 pub use service_contract::{
     ContractDiagnosticText, ContractPublicInstance, ContractPublicInstanceInterface,

@@ -2,7 +2,7 @@ use crate::StatementAttributionClass;
 
 /// Budget/profiling charge kind distilled from authenticated source events or
 /// immutable execution contracts. This enum is not persisted in statement
-/// rows in bytecode schema v6.
+/// rows in bytecode schema v7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StatementChargeKind {
     FunctionEntry,

@@ -742,6 +742,8 @@ fn package_validator_requires_exact_public_callable_coverage() {
         package_id: "example.pkg".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("build"),
+        platform_error_projection_registry: crate::current_platform_error_projection_registry_ref()
+            .clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,

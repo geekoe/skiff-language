@@ -139,10 +139,13 @@ fn any_interface_wire_rejects_missing_or_opaque_interface_target() {
 fn package_artifact_wire_rejects_legacy_aggregate_fields() {
     let statement_manifest_identity = empty_statement_manifest_identity("example.pkg");
     let value = json!({
-        "schemaVersion": "skiff-package-artifact-v14",
+        "schemaVersion": "skiff-package-artifact-v15",
         "packageId": "example.pkg",
         "packageVersion": "1.0.0",
         "packageBuildId": "build",
+        "platformErrorProjectionRegistry": serde_json::to_value(
+            crate::current_platform_error_projection_registry_ref()
+        ).unwrap(),
         "files": [],
         "staticResources": [],
         "bytecodeStatementManifestIdentity": statement_manifest_identity,
@@ -170,6 +173,26 @@ fn package_artifact_wire_rejects_legacy_aggregate_fields() {
     });
     serde_json::from_value::<PackageArtifact>(value.clone())
         .expect("complete strict package artifact wire");
+
+    let mut missing_registry = value.clone();
+    missing_registry
+        .as_object_mut()
+        .unwrap()
+        .remove("platformErrorProjectionRegistry");
+    assert!(serde_json::from_value::<PackageArtifact>(missing_registry).is_err());
+
+    let mut historical_registry = value.clone();
+    historical_registry["platformErrorProjectionRegistry"]["fingerprint"] =
+        json!(format!("sha256:{}", "0".repeat(64)));
+    let historical: PackageArtifact = serde_json::from_value(historical_registry)
+        .expect("same registry/version historical fingerprint is general-shape valid");
+    validate_package_build_authority(&historical)
+        .expect("single PackageArtifact authority accepts a valid historical fingerprint");
+
+    let mut v14 = value.clone();
+    v14["schemaVersion"] = json!("skiff-package-artifact-v14");
+    let v14: PackageArtifact = serde_json::from_value(v14).expect("schema field decodes strictly");
+    assert!(validate_package_build_authority(&v14).is_err());
 
     for field in ["state", "resources", "runtimeCapabilities"] {
         let mut retired = value.clone();
@@ -326,10 +349,13 @@ fn package_build_authority_vectors_reject_duplicate_or_noncanonical_rows() {
         let wire = serde_json::to_value(rows).unwrap();
         let statement_manifest_identity = empty_statement_manifest_identity("example.pkg");
         let wrapper = json!({
-            "schemaVersion": "skiff-package-artifact-v14",
+            "schemaVersion": "skiff-package-artifact-v15",
             "packageId": "example.pkg",
             "packageVersion": "1.0.0",
             "packageBuildId": "build",
+            "platformErrorProjectionRegistry": serde_json::to_value(
+                crate::current_platform_error_projection_registry_ref()
+            ).unwrap(),
             "files": [],
             "staticResources": [],
             "bytecodeStatementManifestIdentity": statement_manifest_identity,
@@ -369,10 +395,13 @@ fn package_local_conformances_reject_duplicate_or_noncanonical_rows() {
     };
     let statement_manifest_identity = empty_statement_manifest_identity("example.pkg");
     let base = json!({
-        "schemaVersion": "skiff-package-artifact-v14",
+        "schemaVersion": "skiff-package-artifact-v15",
         "packageId": "example.pkg",
         "packageVersion": "1.0.0",
         "packageBuildId": "build",
+        "platformErrorProjectionRegistry": serde_json::to_value(
+            crate::current_platform_error_projection_registry_ref()
+        ).unwrap(),
         "files": [],
         "staticResources": [],
         "bytecodeStatementManifestIdentity": statement_manifest_identity,
