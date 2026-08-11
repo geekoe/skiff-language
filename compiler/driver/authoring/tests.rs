@@ -327,6 +327,11 @@ impl MinimalPlatformFixture {
             "id: skiff.run/std\nversion: 1.0.0\n",
         )
         .unwrap();
+        fs::write(
+            root.join("std/error-projections.yml"),
+            "schemaVersion: skiff-platform-error-projection-catalog-v1\nentries: []\n",
+        )
+        .unwrap();
         fs::write(root.join("prelude/error.skiff"), "").unwrap();
         Self { root }
     }

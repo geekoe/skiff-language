@@ -496,6 +496,11 @@ impl MinimalPlatformFixture {
             "id: skiff.run/std\nversion: 1.0.0\n",
         )
         .unwrap();
+        fs::copy(
+            repository_platform_sources().error_projection_catalog_path(),
+            root.join("std/error-projections.yml"),
+        )
+        .unwrap();
         fs::write(root.join("std/api.yml"), "http:\n  request: http.request\n").unwrap();
         fs::write(
             root.join("std/http.skiff"),
