@@ -15,7 +15,7 @@ use skiff_artifact_model::{
     DeploymentDiagnosticText, DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentRevision,
     GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
     GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
-    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayIngressBinding,
+    GatewayExternalSchema, GatewayHttpProtocolSurface,
     GatewayProtocolSurface, GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
     GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
     GatewayWebSocketShapeVersion, IngressProtocol, IngressSelector, PackageArtifactRef,
