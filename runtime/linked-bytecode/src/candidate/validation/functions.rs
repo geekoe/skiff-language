@@ -1,3 +1,5 @@
+use skiff_artifact_model::TypeRefIr;
+
 use crate::{
     CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedBytecodeCandidateError,
     LinkedBytecodeCandidateParts, LinkedInstructionTarget, LinkedSlotState,
@@ -37,6 +39,7 @@ pub(super) fn validate_function(
     for parameter in function.frame().parameters() {
         validate_plan(parameter.plan(), function_location, parts)?;
     }
+    validate_stream_producer_authority(function, parts, function_location)?;
 
     for (position, instruction) in function.instructions().iter().enumerate() {
         let instruction_index =
@@ -54,6 +57,45 @@ pub(super) fn validate_function(
     }
     validate_function_tables(function, parts)?;
     validate_stack_map(function, parts)
+}
+
+fn validate_stream_producer_authority(
+    function: &crate::LinkedFunction,
+    parts: &LinkedBytecodeCandidateParts,
+    location: CandidateLocation,
+) -> Result<(), LinkedBytecodeCandidateError> {
+    let Some(stream_type) = function.stream_result_type_ref() else {
+        return Ok(());
+    };
+    check_index(
+        location,
+        CandidateReferenceKind::Type,
+        stream_type.get(),
+        parts.types.len(),
+    )?;
+    let result_count = function.frame().result_types().len();
+    if result_count != 0 {
+        return Err(LinkedBytecodeCandidateError::StreamProducerResultCountNotZero {
+            function: function.index(),
+            result_count,
+        });
+    }
+    let Some(row) = parts.types.get(stream_type.get() as usize) else {
+        return Ok(());
+    };
+    let TypeRefIr::Builtin { name, args } = row.type_ref() else {
+        return Err(LinkedBytecodeCandidateError::StreamProducerTypeMismatch {
+            function: function.index(),
+            stream_type,
+        });
+    };
+    if name.as_str() != "Stream" || args.len() != 1 {
+        return Err(LinkedBytecodeCandidateError::StreamProducerTypeMismatch {
+            function: function.index(),
+            stream_type,
+        });
+    }
+    Ok(())
 }
 
 fn validate_instruction_target(

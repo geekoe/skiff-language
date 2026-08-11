@@ -326,6 +326,31 @@ pub enum LinkedBytecodeCandidateError {
         expected: skiff_artifact_model::NativeValueAdapterRole,
         actual: skiff_artifact_model::NativeValueAdapterRole,
     },
+    StreamProducerResultCountNotZero {
+        function: crate::FunctionIndex,
+        result_count: usize,
+    },
+    StreamProducerTypeMismatch {
+        function: crate::FunctionIndex,
+        stream_type: crate::TypeIndex,
+    },
+    EndResumeOnlyValidForStreamNext {
+        resume_site: u32,
+        function: crate::FunctionIndex,
+        site: crate::InstructionIndex,
+    },
+    StreamNextMissingEndResume {
+        resume_site: u32,
+        function: crate::FunctionIndex,
+        site: crate::InstructionIndex,
+    },
+    StreamNextResumeEndTargetsEqual {
+        resume_site: u32,
+        function: crate::FunctionIndex,
+        site: crate::InstructionIndex,
+        resume: crate::InstructionIndex,
+        end_resume: crate::InstructionIndex,
+    },
     EmptyLifecycleAdapterBindingKey {
         location: CandidateLocation,
     },

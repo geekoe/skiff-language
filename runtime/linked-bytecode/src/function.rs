@@ -3,7 +3,7 @@ use skiff_artifact_model::{CallableEffectSummary, PackageCallableId};
 use crate::{
     LinkedActiveRegion, LinkedCallLoanLayout, LinkedExceptionRegion, LinkedFrameLayout,
     LinkedInstruction, LinkedSourceMapEntry, LinkedStackMapCandidate, LinkedStatementEntry,
-    LinkedSwitchTable, SpecializationKey,
+    LinkedSwitchTable, SpecializationKey, TypeIndex,
 };
 
 /// Linker-declared effect facts. The summary remains untrusted until the
@@ -147,6 +147,10 @@ impl LinkedFunction {
 
     pub const fn frame(&self) -> &LinkedFrameLayout {
         &self.frame
+    }
+
+    pub const fn stream_result_type_ref(&self) -> Option<TypeIndex> {
+        self.frame.stream_result_type_ref()
     }
 
     pub const fn max_operand_depth(&self) -> u32 {

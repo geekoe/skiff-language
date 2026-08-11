@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use skiff_artifact_model::PackageBuildId;
+use skiff_artifact_model::{Opcode, PackageBuildId};
 
 use crate::{
     CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedBytecodeCandidateError,
@@ -289,6 +289,43 @@ fn validate_resume_site(
         resume.resume().get(),
         instruction_len,
     )?;
+    if let Some(end_resume) = resume.end_resume() {
+        check_index(
+            location,
+            CandidateReferenceKind::Instruction,
+            end_resume.get(),
+            instruction_len,
+        )?;
+    }
+    let function = &parts.functions[resume.function().get() as usize];
+    let site_instruction = &function.instructions()[resume.site().get() as usize];
+    match (site_instruction.opcode(), resume.end_resume()) {
+        (Opcode::StreamNext, None) => {
+            return Err(LinkedBytecodeCandidateError::StreamNextMissingEndResume {
+                resume_site: resume.index().get(),
+                function: resume.function(),
+                site: resume.site(),
+            });
+        }
+        (Opcode::StreamNext, Some(end_resume)) if end_resume == resume.resume() => {
+            return Err(LinkedBytecodeCandidateError::StreamNextResumeEndTargetsEqual {
+                resume_site: resume.index().get(),
+                function: resume.function(),
+                site: resume.site(),
+                resume: resume.resume(),
+                end_resume,
+            });
+        }
+        (Opcode::StreamNext, Some(_)) => {}
+        (_, Some(_)) => {
+            return Err(LinkedBytecodeCandidateError::EndResumeOnlyValidForStreamNext {
+                resume_site: resume.index().get(),
+                function: resume.function(),
+                site: resume.site(),
+            });
+        }
+        (_, None) => {}
+    }
     for ty in resume.result_types() {
         check_index(
             location,

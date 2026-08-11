@@ -171,6 +171,7 @@ pub struct LinkedResumeSite {
     function: FunctionIndex,
     site: InstructionIndex,
     resume: InstructionIndex,
+    end_resume: Option<InstructionIndex>,
     expected_stack_height_before_result: u32,
     result_types: Box<[TypeIndex]>,
     result_plans: Box<[LinkedValueTransferPlan]>,
@@ -187,6 +188,7 @@ impl LinkedResumeSite {
         function: FunctionIndex,
         site: InstructionIndex,
         resume: InstructionIndex,
+        end_resume: Option<InstructionIndex>,
         expected_stack_height_before_result: u32,
         result_types: Box<[TypeIndex]>,
         result_plans: Box<[LinkedValueTransferPlan]>,
@@ -203,6 +205,7 @@ impl LinkedResumeSite {
             function,
             site,
             resume,
+            end_resume,
             expected_stack_height_before_result,
             result_types,
             result_plans,
@@ -224,6 +227,10 @@ impl LinkedResumeSite {
 
     pub const fn resume(&self) -> InstructionIndex {
         self.resume
+    }
+
+    pub const fn end_resume(&self) -> Option<InstructionIndex> {
+        self.end_resume
     }
 
     pub const fn expected_stack_height_before_result(&self) -> u32 {
