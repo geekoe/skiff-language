@@ -178,32 +178,32 @@ pub enum StdWebsocketWebSocketRequestErrorPayload {
     #[serde(rename = "connectionUnavailable")]
     ConnectionUnavailable {
         #[serde(rename = "message")]
-        pub message: String,
+        message: String,
     },
     #[serde(rename = "transportUnavailable")]
     TransportUnavailable {
         #[serde(rename = "message")]
-        pub message: String,
+        message: String,
     },
     #[serde(rename = "protocolError")]
     ProtocolError {
         #[serde(rename = "message")]
-        pub message: String,
+        message: String,
     },
     #[serde(rename = "resourceLimit")]
     ResourceLimit {
         #[serde(rename = "message")]
-        pub message: String,
+        message: String,
     },
     #[serde(rename = "remote")]
     Remote {
         #[serde(rename = "code")]
-        pub code: i64,
+        code: i64,
         #[serde(rename = "data")]
         #[serde(deserialize_with = "deserialize_required_nullable")]
-        pub data: Option<serde_json::Value>,
+        data: Option<serde_json::Value>,
         #[serde(rename = "message")]
-        pub message: String,
+        message: String,
     },
 }
 

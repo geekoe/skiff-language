@@ -249,7 +249,13 @@ fn render_record(
         return Ok(());
     }
     writeln!(output, "pub struct {payload_name} {{").unwrap();
-    render_fields(output, fields, None, "    ")?;
+    render_fields(
+        output,
+        fields,
+        None,
+        "    ",
+        RenderedFieldVisibility::Public,
+    )?;
     output.push_str("}\n\n");
     Ok(())
 }
@@ -315,7 +321,13 @@ fn render_named_union(
             writeln!(output, "    {variant},").unwrap();
         } else {
             writeln!(output, "    {variant} {{").unwrap();
-            render_fields(output, fields, Some(discriminator_field), "        ")?;
+            render_fields(
+                output,
+                fields,
+                Some(discriminator_field),
+                "        ",
+                RenderedFieldVisibility::Inherited,
+            )?;
             output.push_str("    },\n");
         }
     }
@@ -346,7 +358,12 @@ fn render_fields(
     fields: &std::collections::BTreeMap<String, TypeRefIr>,
     skipped_field: Option<&str>,
     indentation: &str,
+    visibility: RenderedFieldVisibility,
 ) -> Result<(), PlatformErrorProjectionCodegenError> {
+    let visibility = match visibility {
+        RenderedFieldVisibility::Public => "pub ",
+        RenderedFieldVisibility::Inherited => "",
+    };
     let mut rust_fields = BTreeSet::new();
     for (field, ty) in fields {
         if skipped_field == Some(field.as_str()) {
@@ -366,9 +383,20 @@ fn render_fields(
             )
             .unwrap();
         }
-        writeln!(output, "{indentation}pub {rust_field}: {},", rust_type(ty)?).unwrap();
+        writeln!(
+            output,
+            "{indentation}{visibility}{rust_field}: {},",
+            rust_type(ty)?
+        )
+        .unwrap();
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenderedFieldVisibility {
+    Public,
+    Inherited,
 }
 
 fn rust_type(ty: &TypeRefIr) -> Result<String, PlatformErrorProjectionCodegenError> {

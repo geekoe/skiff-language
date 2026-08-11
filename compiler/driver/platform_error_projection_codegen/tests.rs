@@ -277,7 +277,6 @@ fn render_is_deterministic_and_covers_current_typed_dto_shapes() {
         assert!(artifact.contains(fingerprint));
     }
     assert!(request.contains("pub struct StdCollectionMapKeyNotFoundErrorPayload {}"));
-    assert!(request.contains("pub detail: Option<serde_json::Value>"));
     assert!(request.contains("deserialize_with = \"deserialize_required_nullable\""));
     assert!(request.contains("#[serde(tag = \"kind\", deny_unknown_fields)]"));
     for branch in [
@@ -289,8 +288,30 @@ fn render_is_deterministic_and_covers_current_typed_dto_shapes() {
     ] {
         assert!(request.contains(&format!("#[serde(rename = {branch:?})]")));
     }
-    assert!(request.contains("pub data: Option<serde_json::Value>"));
-    assert!(request.contains("pub code: i64"));
+    let websocket_union = request
+        .split_once("pub enum StdWebsocketWebSocketRequestErrorPayload {\n")
+        .unwrap()
+        .1
+        .split_once("\n}\n\n")
+        .unwrap()
+        .0;
+    assert!(!websocket_union.contains("pub "));
+    for variant_field in [
+        "message: String,",
+        "code: i64,",
+        "data: Option<serde_json::Value>,",
+    ] {
+        assert!(websocket_union.contains(variant_field));
+    }
+    let nullable_record = request
+        .split_once("pub struct StdHttpHttpErrorPayload {\n")
+        .unwrap()
+        .1
+        .split_once("\n}\n\n")
+        .unwrap()
+        .0;
+    assert!(nullable_record.contains("pub detail: Option<serde_json::Value>"));
+    assert!(nullable_record.contains("pub message: String"));
     assert!(request.contains("canonical != raw_payload"));
     assert!(request.contains("UnknownValid"));
     assert!(request.contains("skiff_canonical_json::canonical_json_bytes(value)"));
