@@ -116,6 +116,7 @@ impl VmFiber {
         validate_entry_arguments(
             program,
             entry.entry().signature().parameter_types(),
+            entry.entry().signature().parameter_plans(),
             &arguments,
         )?;
 
@@ -2269,7 +2270,7 @@ impl VmFiber {
         let token = self.mint_resume(
             function,
             instruction,
-            VmResumeAuthority::StreamChild(ChildTarget::StreamNext),
+            VmResumeAuthority::Child(ChildTarget::StreamNext),
             resume_site,
             resume.resume(),
             expected_stack_height,
