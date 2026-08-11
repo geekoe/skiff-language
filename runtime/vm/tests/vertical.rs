@@ -147,14 +147,14 @@ fn compile_package_with_dependencies(
 fn compile_stream_package(
     package_id: &str,
 ) -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
-    let text = "function produce() -> Stream<number> {\n  emit(1)\n  emit(2)\n  return\n}\nfunction consume(values: Stream<number>) -> number {\n  return 0\n}\nfunction value() -> number { return 42 }\n";
+    let text = "function produce() -> Stream<number> {\n  emit(1)\n  emit(2)\n  return\n}\nfunction consume(values: Stream<number>) -> number {\n  var total = 0\n  for item in values { total = total + item }\n  return total\n}\nfunction value() -> number { return 42 }\n";
     compile_package_text(package_id, text, "skiff-vm-stream")
 }
 
 fn compile_host_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
     compile_package_text(
         "example.com/vm-host",
-        "function run() -> number { std.time.sleep(1); return 1 }\n",
+        "function run() -> number { std.time.sleep(Duration.milliseconds(1)); return 1 }\n",
         "skiff-vm-host",
     )
 }
@@ -743,13 +743,14 @@ mod tests {
     }
 
     #[test]
-    fn stream_end_resume_fails_closed_until_end_resume_pc_is_wired() {
+    fn stream_end_resume_fails_closed_when_end_pc_is_missing() {
         let (mut fiber, _verified) = host_test_fiber();
         let mut heap = TestHeap;
         let mut budget = TestBudget::new();
         let invocation = next_adapter(&mut fiber, &mut heap, &mut budget);
         let (_adapter, _arguments, resume) = invocation.into_parts();
 
+        assert_eq!(resume.end_resume_pc(), None);
         assert_eq!(
             fiber.resume(resume, ResumeOutcome::StreamEnd),
             Err(VmError::StreamEndResumeUnavailable)
@@ -875,8 +876,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "source-level stream iteration is not emitted yet"]
-    fn stream_next_hands_off_affine_endpoint_and_resumes_ordinary_item() {
+    #[ignore = "runtime/bytecode-verifier FrameAndValueTransferPlan for StreamNext is not wired yet"]
+    fn stream_next_hands_off_affine_endpoint_and_resumes_item_then_end() {
         let image = StreamTestImage::new("example.com/vm-stream");
         let mut heap = TestHeap;
         let mut budget = TestBudget::new();
@@ -888,6 +889,7 @@ mod tests {
         assert!(invocation.arguments().values()[0] == stream_endpoint());
         let (target, endpoint_escrow, resume) = invocation.into_parts();
         assert_eq!(target, ChildTarget::StreamNext);
+        assert!(resume.end_resume_pc().is_some());
         let _endpoint_escrow = endpoint_escrow;
 
         let mut item_fiber = image.start("value", Box::new([]));
@@ -898,13 +900,22 @@ mod tests {
             .resume(resume, ResumeOutcome::Values(item_values))
             .unwrap();
 
+        let invocation = next_child(&mut consumer, &mut heap, &mut budget);
+        let (target, endpoint_escrow, resume) = invocation.into_parts();
+        assert_eq!(target, ChildTarget::StreamNext);
+        assert!(resume.end_resume_pc().is_some());
+        let _endpoint_escrow = endpoint_escrow;
+        consumer
+            .resume(resume, ResumeOutcome::StreamEnd)
+            .unwrap();
+
         let values = run_to_complete(&mut consumer, &mut heap, &mut budget);
         assert_eq!(values.len(), 1);
         assert_eq!(values.values()[0].as_number(), Some(42.0));
     }
 
     #[test]
-    #[ignore = "source-level stream iteration is not emitted yet"]
+    #[ignore = "runtime/bytecode-verifier StreamNext verification is not wired yet"]
     fn stream_resume_tokens_reject_authority_and_image_reuse() {
         let image_a = StreamTestImage::new("example.com/vm-stream");
         let image_b = StreamTestImage::new("example.com/vm-stream-other");

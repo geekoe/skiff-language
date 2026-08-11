@@ -283,7 +283,7 @@ impl fmt::Display for VmError {
                 "VM resume expects {expected} values but received {actual}"
             ),
             Self::StreamEndResumeUnavailable => formatter.write_str(
-                "VM stream end resume is unavailable until the artifact end resume PC is wired",
+                "VM StreamEnd resume requires an end resume PC",
             ),
             Self::LinkedTableRowMissing { table, row } => write!(
                 formatter,
