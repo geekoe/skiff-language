@@ -124,6 +124,24 @@ impl OwnerCollector<'_> {
                     )?;
                 }
             }
+            Expr::MapLiteral { entries } => {
+                if spans.record_fields.len() != entries.len() {
+                    return Err(self.error(format!(
+                        "map literal field span count {} does not match AST entry count {}",
+                        spans.record_fields.len(),
+                        entries.len()
+                    )));
+                }
+                for (index, entry) in entries.iter().enumerate() {
+                    self.visit_expr(
+                        &entry.value,
+                        next_expression_child(
+                            &mut children,
+                            &format!("map literal entry {index}"),
+                        )?,
+                    )?;
+                }
+            }
             Expr::ArrayLiteral { items } => {
                 for (index, item) in items.iter().enumerate() {
                     self.visit_expr(
@@ -366,6 +384,7 @@ fn expression_kind(expression: &Expr) -> &'static str {
         Expr::Index { .. } => "index",
         Expr::Record { .. } => "record",
         Expr::ObjectLiteral { .. } => "object literal",
+        Expr::MapLiteral { .. } => "map literal",
         Expr::ArrayLiteral { .. } => "array literal",
         Expr::Patch { .. } => "patch",
         Expr::ValueBlock(_) => "value block",

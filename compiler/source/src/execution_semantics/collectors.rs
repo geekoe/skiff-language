@@ -236,6 +236,7 @@ impl AstVisitor for ExecutionScopeDetector {
                 | Expr::Index { .. }
                 | Expr::Record { .. }
                 | Expr::ObjectLiteral { .. }
+                | Expr::MapLiteral { .. }
                 | Expr::ArrayLiteral { .. }
                 | Expr::Patch { .. }
                 | Expr::Throw { .. }

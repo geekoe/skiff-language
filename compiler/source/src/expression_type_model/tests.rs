@@ -240,6 +240,93 @@ fn array_literal_publishes_exact_array_and_item_types() {
 }
 
 #[test]
+fn map_literal_publishes_exact_map_and_item_types() {
+    let model = expression_type_result(
+        r#"
+              function values() -> Map<string, number> {
+                return { alpha: 1, beta: 2 }
+              }
+
+              function localValues() -> void {
+                let values = { alpha: 1 }
+              }
+
+              function emptyValues() -> Map<string, string> {
+                return {}
+              }
+            "#,
+    )
+    .expect("map literals should type-check");
+
+    let owner = ExpressionOwnerKey::Function("values".to_string());
+    let map_key = ExpressionKey::new(ANY_INTERFACE_MODULE, owner.clone(), 0);
+    assert_eq!(
+        model
+            .fact(&map_key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| ty.ir.clone()),
+        Some(TypeRefIr::Builtin {
+            name: BuiltinShape::Map.name().to_string(),
+            args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("number")],
+        })
+    );
+    for (offset, expected) in [(1, "integer"), (2, "integer")] {
+        let key = ExpressionKey::new(ANY_INTERFACE_MODULE, owner.clone(), offset);
+        assert_eq!(
+            model
+                .fact(&key)
+                .and_then(|fact| fact.ty.as_ref())
+                .map(|ty| ty.ir.clone()),
+            Some(TypeRefIr::builtin(expected)),
+            "map value {offset} should retain its source type"
+        );
+    }
+
+    let local_owner = ExpressionOwnerKey::Function("localValues".to_string());
+    let local_map_key = ExpressionKey::new(ANY_INTERFACE_MODULE, local_owner, 0);
+    assert_eq!(
+        model
+            .fact(&local_map_key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| ty.ir.clone()),
+        Some(TypeRefIr::Builtin {
+            name: BuiltinShape::Map.name().to_string(),
+            args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("integer")],
+        })
+    );
+
+    let empty_owner = ExpressionOwnerKey::Function("emptyValues".to_string());
+    let empty_key = ExpressionKey::new(ANY_INTERFACE_MODULE, empty_owner, 0);
+    assert_eq!(
+        model
+            .fact(&empty_key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| ty.ir.clone()),
+        Some(TypeRefIr::Builtin {
+            name: BuiltinShape::Map.name().to_string(),
+            args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("string")],
+        })
+    );
+}
+
+#[test]
+fn map_literal_rejects_duplicate_keys() {
+    let model = expression_type_result(
+        r#"
+              function values() -> Map<string, number> {
+                return { alpha: 1, alpha: 2 }
+              }
+            "#,
+    )
+    .expect_err("duplicate map literal keys should fail");
+    assert!(
+        model.message().contains("duplicate map literal key `alpha`"),
+        "unexpected model error: {}",
+        model.message()
+    );
+}
+
+#[test]
 fn indexed_places_publish_exact_policies_and_evaluation_dependencies() {
     let model = expression_type_result(
         r#"

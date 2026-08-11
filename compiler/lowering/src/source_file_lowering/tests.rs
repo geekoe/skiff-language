@@ -1192,6 +1192,96 @@ fn array_literal_lowers_to_exact_array_builder_inputs() {
 }
 
 #[test]
+fn map_literal_lowers_to_exact_map_literal_inputs() {
+    let unit = lowered_unit(
+        r#"
+          function values() -> Map<string, number> {
+            return { alpha: 1, beta: 2 }
+          }
+
+          function localValues() -> void {
+            let values = { alpha: 3 }
+          }
+
+          function emptyValues() -> Map<string, string> {
+            return {}
+          }
+        "#,
+    );
+
+    let values_executable = executable(&unit, "values");
+    let map_index = values_executable
+        .body
+        .expressions
+        .iter()
+        .position(|expression| matches!(expression, ExprIr::MapLiteral { .. }))
+        .expect("map literal should lower");
+    let ExprIr::MapLiteral { entries } = &values_executable.body.expressions[map_index] else {
+        panic!("map literal expression should be present");
+    };
+    assert_eq!(
+        entries.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["alpha", "beta"]
+    );
+    assert!(entries.iter().enumerate().all(|(index, (_, value))| {
+        matches!(
+            &values_executable.body.expressions[value.expression as usize],
+            ExprIr::Literal {
+                value: LiteralIr::Number { value }
+            } if value.as_f64() == Some(index as f64 + 1.0)
+        )
+    }));
+    assert_eq!(
+        values_executable.expression_types[map_index],
+        TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("number")],
+        }
+    );
+
+    let local = executable(&unit, "localValues");
+    let local_map_index = local
+        .body
+        .expressions
+        .iter()
+        .position(|expression| matches!(expression, ExprIr::MapLiteral { .. }))
+        .expect("local map literal should lower");
+    let ExprIr::MapLiteral { entries } = &local.body.expressions[local_map_index] else {
+        panic!("local map literal expression should be present");
+    };
+    assert_eq!(
+        entries.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["alpha"]
+    );
+    assert_eq!(
+        local.expression_types[local_map_index],
+        TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("integer")],
+        }
+    );
+
+    let empty = executable(&unit, "emptyValues");
+    let empty_map_index = empty
+        .body
+        .expressions
+        .iter()
+        .position(|expression| matches!(expression, ExprIr::MapLiteral { .. }))
+        .expect("empty map literal should lower");
+    let ExprIr::MapLiteral { entries } = &empty.body.expressions[empty_map_index] else {
+        panic!("empty map literal expression should be present");
+    };
+    assert!(entries.is_empty());
+    assert_eq!(
+        empty.expression_types[empty_map_index],
+        TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("string")],
+        }
+    );
+}
+
+#[test]
 fn ternary_lowers_to_lazy_value_block_with_if_and_temp_slot() {
     let unit = lowered_unit(
         r#"

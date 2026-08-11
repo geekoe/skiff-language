@@ -258,7 +258,10 @@ impl<'a> OwnerChecker<'a> {
                 context,
             );
         }
-        if matches!(target_value, Expr::ObjectLiteral { .. }) {
+        if matches!(
+            target_value,
+            Expr::ObjectLiteral { .. } | Expr::MapLiteral { .. }
+        ) {
             let target_actual = self
                 .outputs
                 .facts
@@ -361,8 +364,19 @@ impl<'a> OwnerChecker<'a> {
         if assignable {
             return true;
         }
+        let object_source = self
+            .outputs
+            .object_materialization
+            .sources
+            .get(value_key);
         if let Some(diagnostics) = assignability.object_literal_assignability_diagnostics(
-            annotation, value, value_key, actual, expected, context,
+            annotation,
+            value,
+            value_key,
+            actual,
+            expected,
+            context,
+            object_source,
         ) {
             if !diagnostics.is_empty() {
                 self.outputs.diagnostics.extend(diagnostics);

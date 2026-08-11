@@ -57,6 +57,7 @@ impl<'a> OwnerChecker<'a> {
                     .map(|fact| fact.span)
                     .unwrap_or_else(SourceSpan::synthetic),
                 fields: source_fields,
+                allow_targetless: false,
             },
         );
         Some(ResolvedTypeRef::with_text(
@@ -316,8 +317,19 @@ impl<'a> OwnerChecker<'a> {
         } else {
             assignability
         };
+        let object_source = self
+            .outputs
+            .object_materialization
+            .sources
+            .get(value_key);
         let plan = match assignability.object_literal_materialization_plan(
-            annotation, value, value_key, actual, expected, context,
+            annotation,
+            value,
+            value_key,
+            actual,
+            expected,
+            context,
+            object_source,
         ) {
             Ok(plan) => plan,
             Err(diagnostics) => {
@@ -325,13 +337,7 @@ impl<'a> OwnerChecker<'a> {
                 return false;
             }
         };
-        let Some(source) = self
-            .outputs
-            .object_materialization
-            .sources
-            .get(value_key)
-            .cloned()
-        else {
+        let Some(source) = object_source.cloned() else {
             self.outputs.diagnostics.push(format!(
                 "{}: {context} target-typed object literal is missing source facts at {}",
                 self.module_path,
@@ -402,14 +408,32 @@ impl<'a> OwnerChecker<'a> {
             });
         }
         if valid {
+            let map_materialization = matches!(&plan.kind, ObjectMaterializationKind::Map);
+            let resolved_target = plan.resolved_target.clone();
+            let source_fields = source
+                .fields
+                .iter()
+                .filter_map(|field| {
+                    field.actual.clone().map(|ty| MaterializedObjectSourceField {
+                        name: field.name.clone(),
+                        ty,
+                    })
+                })
+                .collect::<Vec<_>>();
             self.outputs.object_materialization.facts.insert(
                 value_key.clone(),
                 TargetTypedObjectMaterialization {
-                    resolved_target: plan.resolved_target,
+                    resolved_target: resolved_target.clone(),
                     kind: plan.kind,
                     fields,
+                    source_fields,
                 },
             );
+            if map_materialization {
+                if let Some(fact) = self.outputs.facts.get_mut(value_key) {
+                    fact.ty = Some(resolved_target);
+                }
+            }
         }
         valid
     }
@@ -579,7 +603,7 @@ fn record_field_name_source_span(
         .unwrap_or_else(SourceSpan::synthetic)
 }
 
-fn record_field_value_source_span(
+pub(super) fn record_field_value_source_span(
     fact: Option<&crate::ExpressionSourceFact>,
     index: usize,
 ) -> SourceSpan {

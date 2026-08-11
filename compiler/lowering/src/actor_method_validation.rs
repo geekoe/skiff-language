@@ -383,6 +383,11 @@ impl CreateValidator<'_> {
                     self.check_reads(&entry.value, assigned)?;
                 }
             }
+            Expr::MapLiteral { entries } => {
+                for entry in entries {
+                    self.check_reads(&entry.value, assigned)?;
+                }
+            }
             Expr::ArrayLiteral { items } => {
                 for item in items {
                     self.check_reads(item, assigned)?;
@@ -493,6 +498,11 @@ impl CreateValidator<'_> {
                 }
             }
             Expr::ObjectLiteral { entries } => {
+                for entry in entries {
+                    self.check_self_calls(&entry.value)?;
+                }
+            }
+            Expr::MapLiteral { entries } => {
                 for entry in entries {
                     self.check_self_calls(&entry.value)?;
                 }

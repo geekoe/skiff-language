@@ -267,6 +267,11 @@ pub fn walk_expr(visitor: &mut (impl AstVisitor + ?Sized), expr: &Expr) {
                 visitor.visit_expr(&entry.value);
             }
         }
+        Expr::MapLiteral { entries } => {
+            for entry in entries {
+                visitor.visit_expr(&entry.value);
+            }
+        }
         Expr::ArrayLiteral { items } => {
             for item in items {
                 visitor.visit_expr(item);
@@ -759,6 +764,11 @@ pub fn walk_expr_mut(visitor: &mut (impl AstVisitorMut + ?Sized), expr: &mut Exp
                 visitor.visit_expr(&mut entry.value);
             }
         }
+        Expr::MapLiteral { entries } => {
+            for entry in entries {
+                visitor.visit_expr(&mut entry.value);
+            }
+        }
         Expr::ArrayLiteral { items } => {
             for item in items {
                 visitor.visit_expr(item);
@@ -931,6 +941,9 @@ pub fn expr_contains_with(expr: &Expr, predicate: &mut impl FnMut(&Expr) -> bool
             .iter()
             .any(|(_, value)| expr_contains_with(value, predicate)),
         Expr::ObjectLiteral { entries } => entries
+            .iter()
+            .any(|entry| expr_contains_with(&entry.value, predicate)),
+        Expr::MapLiteral { entries } => entries
             .iter()
             .any(|entry| expr_contains_with(&entry.value, predicate)),
         Expr::ArrayLiteral { items } => items
@@ -1474,6 +1487,11 @@ fn collect_expr_type_ref_dotted_root_imports(
             }
         }
         Expr::ObjectLiteral { entries } => {
+            for entry in entries {
+                collect_expr_type_ref_dotted_root_imports(&entry.value, root, imports);
+            }
+        }
+        Expr::MapLiteral { entries } => {
             for entry in entries {
                 collect_expr_type_ref_dotted_root_imports(&entry.value, root, imports);
             }

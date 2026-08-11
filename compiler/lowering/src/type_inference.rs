@@ -258,6 +258,10 @@ impl<'a> FunctionLowerer<'a> {
             }
             Expr::Generic { callee, .. } => self.infer_expr_type_text(callee),
             Expr::Timeout { value, .. } => self.infer_expr_type_text(value),
+            Expr::MapLiteral { entries } => entries.iter().find_map(|entry| {
+                self.infer_expr_type_text(&entry.value)
+                    .map(|value| format!("Map<string, {value}>"))
+            }),
             Expr::ArrayLiteral { items } => items.iter().find_map(|item| {
                 self.infer_expr_type_text(item)
                     .map(|item| format!("Array<{item}>"))

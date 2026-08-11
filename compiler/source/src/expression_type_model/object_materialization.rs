@@ -12,6 +12,13 @@ pub struct TargetTypedObjectMaterialization {
     pub resolved_target: ResolvedTypeRef,
     pub kind: ObjectMaterializationKind,
     pub fields: Vec<MaterializedObjectField>,
+    pub source_fields: Vec<MaterializedObjectSourceField>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaterializedObjectSourceField {
+    pub name: String,
+    pub ty: ResolvedTypeRef,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -45,6 +52,7 @@ pub(super) struct ObjectMaterializationState {
 pub(super) struct ObjectLiteralSource {
     pub span: SourceSpan,
     pub fields: Vec<ObjectLiteralSourceField>,
+    pub allow_targetless: bool,
 }
 
 #[derive(Clone, Debug)]

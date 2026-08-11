@@ -299,7 +299,7 @@ impl StreamEmitTypeChecker<'_> {
             ));
             return;
         };
-        if matches!(value, Expr::ObjectLiteral { .. })
+        if matches!(value, Expr::ObjectLiteral { .. } | Expr::MapLiteral { .. })
             && self
                 .expression_types
                 .object_materialization(value_key)
@@ -354,6 +354,11 @@ impl StreamEmitTypeChecker<'_> {
                 }
             }
             Expr::ObjectLiteral { entries } => {
+                for entry in entries {
+                    self.check_expr(&entry.value);
+                }
+            }
+            Expr::MapLiteral { entries } => {
                 for entry in entries {
                     self.check_expr(&entry.value);
                 }

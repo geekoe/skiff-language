@@ -65,6 +65,11 @@ pub(super) fn collect_emit_expression_call_violations(
                 collect_emit_expression_call_violations(path, &entry.value, violations);
             }
         }
+        Expr::MapLiteral { entries } => {
+            for entry in entries {
+                collect_emit_expression_call_violations(path, &entry.value, violations);
+            }
+        }
         Expr::ArrayLiteral { items } => {
             for item in items {
                 collect_emit_expression_call_violations(path, item, violations);
@@ -332,6 +337,10 @@ pub(super) fn infer_expr_type(
             infer_concurrent_value_type(value, env, function_return_types)
         }
         Expr::Timeout { value, .. } => infer_expr_type(value, env, function_return_types),
+        Expr::MapLiteral { entries } => entries.iter().find_map(|entry| {
+            infer_expr_type(&entry.value, env, function_return_types)
+                .map(|value| format!("Map<string, {value}>"))
+        }),
         Expr::ArrayLiteral { items } => items.iter().find_map(|item| {
             infer_expr_type(item, env, function_return_types).map(|item| format!("Array<{item}>"))
         }),

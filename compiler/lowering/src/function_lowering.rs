@@ -18,7 +18,8 @@ use skiff_compiler_source::{
 use skiff_syntax::{
     ast::{
         BinaryOp, CallArg, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding, LetKind,
-        Literal, ObjectLiteralKey, PatchOperation, Stmt, TestEffectStepOutcome, TypeRef, UnaryOp,
+        Literal, ObjectLiteralEntry, ObjectLiteralKey, PatchOperation, Stmt, TestEffectStepOutcome,
+        TypeRef, UnaryOp,
     },
     ast_utils::{compiler_test_effect_expressions, dependency_source_address_parts, expr_path},
     error::{CompileError, Result},
@@ -1822,6 +1823,43 @@ impl<'a> FunctionLowerer<'a> {
                     expected_target,
                 )?
             }
+            Expr::MapLiteral { entries } => {
+                let target_typed = expression_key
+                    .as_ref()
+                    .is_some_and(|key| {
+                        self.expression_types
+                            .as_ref()
+                            .is_some_and(|types| types.object_materialization(key).is_some())
+                    });
+                if target_typed {
+                    let object_entries = entries
+                        .iter()
+                        .map(|entry| ObjectLiteralEntry {
+                            key: ObjectLiteralKey::Name(entry.key.clone()),
+                            key_span: entry.key_span,
+                            value: entry.value.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    self.lower_target_typed_object_literal(
+                        expression_key.as_ref(),
+                        &object_entries,
+                        expected_target,
+                    )?
+                } else if expected_target.is_none() {
+                    let mut lowered_entries = BTreeMap::new();
+                    for entry in entries {
+                        let value = self.lower_expr(&entry.value)?;
+                        lowered_entries.insert(entry.key.clone(), value);
+                    }
+                    ExprIr::MapLiteral {
+                        entries: lowered_entries,
+                    }
+                } else {
+                    return Err(CompileError::Semantic(
+                        "map literal lowering requires source-owned materialization fact or no expected target".to_string(),
+                    ));
+                }
+            }
             Expr::ArrayLiteral { items } => ExprIr::ArrayLiteral {
                 items: items
                     .iter()
@@ -3524,6 +3562,12 @@ pub(super) fn expr_preorder_node_count(expr: &Expr) -> u32 {
                 .sum::<u32>()
         }
         Expr::ObjectLiteral { entries } => {
+            1 + entries
+                .iter()
+                .map(|entry| expr_preorder_node_count(&entry.value))
+                .sum::<u32>()
+        }
+        Expr::MapLiteral { entries } => {
             1 + entries
                 .iter()
                 .map(|entry| expr_preorder_node_count(&entry.value))

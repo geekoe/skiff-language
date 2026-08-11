@@ -168,6 +168,13 @@ impl Evaluator<'_, '_> {
                 }
                 self.allocate_fresh_container(key.preorder_index(), value)
             }
+            Expr::MapLiteral { entries } => {
+                let mut value = AbstractValue::default();
+                for entry in entries {
+                    value.join(&self.eval_expr(&entry.value, env));
+                }
+                self.allocate_fresh_container(key.preorder_index(), value)
+            }
             Expr::ArrayLiteral { items } => {
                 let mut value = AbstractValue::default();
                 for item in items {
@@ -394,6 +401,7 @@ fn is_static_field_projection(expression: &Expr) -> bool {
         | Expr::InterfaceBox { .. }
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
+        | Expr::MapLiteral { .. }
         | Expr::ArrayLiteral { .. }
         | Expr::Patch { .. }
         | Expr::ValueBlock(_)
@@ -427,6 +435,7 @@ fn is_static_projection_root(expression: &Expr) -> bool {
         | Expr::InterfaceBox { .. }
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
+        | Expr::MapLiteral { .. }
         | Expr::ArrayLiteral { .. }
         | Expr::Patch { .. }
         | Expr::ValueBlock(_)

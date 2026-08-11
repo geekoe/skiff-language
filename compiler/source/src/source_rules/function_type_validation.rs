@@ -197,6 +197,11 @@ fn collect_expr_function_type_violations(path: &str, expr: &Expr, violations: &m
                 collect_expr_function_type_violations(path, &entry.value, violations);
             }
         }
+        Expr::MapLiteral { entries } => {
+            for entry in entries {
+                collect_expr_function_type_violations(path, &entry.value, violations);
+            }
+        }
         Expr::ArrayLiteral { items } => {
             for item in items {
                 collect_expr_function_type_violations(path, item, violations);

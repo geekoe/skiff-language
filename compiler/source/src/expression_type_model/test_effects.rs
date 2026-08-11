@@ -6,9 +6,19 @@ impl<'a> OwnerChecker<'a> {
         value: &Expr,
         expected: &PackageTypeRef,
     ) {
-        let Expr::ObjectLiteral { entries } = value else {
-            self.check_test_effect_value(value, expected, "expect");
-            return;
+        let entries = match value {
+            Expr::ObjectLiteral { entries } => entries
+                .iter()
+                .map(|entry| object_literal_key_text(&entry.key))
+                .collect::<Vec<_>>(),
+            Expr::MapLiteral { entries } => entries
+                .iter()
+                .map(|entry| Some(entry.key.clone()))
+                .collect::<Vec<_>>(),
+            _ => {
+                self.check_test_effect_value(value, expected, "expect");
+                return;
+            }
         };
         let resolved = resolved_package_type_ref(expected);
         let Some(TypeRefIr::Record { fields }) = self
@@ -19,8 +29,8 @@ impl<'a> OwnerChecker<'a> {
             return;
         };
         let mut selected = BTreeMap::new();
-        for entry in entries {
-            let Some(name) = object_literal_key_text(&entry.key) else {
+        for name in entries {
+            let Some(name) = name else {
                 self.outputs.diagnostics.push(format!(
                     "{}: test effect expect subset keys must name static request fields",
                     self.module_path

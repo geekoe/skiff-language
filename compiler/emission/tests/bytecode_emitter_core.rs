@@ -487,7 +487,90 @@ mod tests {
             &plans("maps::answer", &[], &TypeRefIr::builtin("number")),
         )
         .expect("map body emits");
-        assert!(!artifact.image.functions["maps::answer"].words.is_empty());
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("map body must validate");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "maps::answer")
+            .expect("map function");
+        let opcodes = function
+            .instructions
+            .iter()
+            .map(|instruction| instruction.descriptor.kind)
+            .collect::<Vec<_>>();
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::NewMapBuilder));
+        assert_eq!(
+            opcodes
+                .iter()
+                .filter(
+                    |opcode| **opcode == skiff_artifact_model::bytecode::Opcode::MapBuilderPut
+                )
+                .count(),
+            1
+        );
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::FreezeMap));
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::MapGet));
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::Return));
+    }
+
+    #[test]
+    fn empty_map_literal_emits_new_builder_and_freeze() {
+        let map_ty = TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("number")],
+        };
+        let expressions = vec![MirExpression {
+            index: 0,
+            expression: ExprIr::MapLiteral {
+                entries: BTreeMap::new(),
+            },
+            ty: map_ty.clone(),
+            writable: None,
+            direct_call: None,
+            stream_result: None,
+            remote_interface: None,
+        }];
+        let function = function(
+            "maps",
+            "empty",
+            map_ty.clone(),
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: one_return(expression(0)),
+                successors: Vec::new(),
+            }],
+            return_statements(0),
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("maps", Vec::new(), ExternalRefTable::default(), function);
+        let artifact = emit_bytecode_artifact(
+            &[unit],
+            &[bundle],
+            &plans("maps::empty", &[], &map_ty),
+        )
+        .expect("empty map body emits");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("empty map body must validate");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "maps::empty")
+            .expect("empty map function");
+        let opcodes = function
+            .instructions
+            .iter()
+            .map(|instruction| instruction.descriptor.kind)
+            .collect::<Vec<_>>();
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::NewMapBuilder));
+        assert!(!opcodes.contains(&skiff_artifact_model::bytecode::Opcode::MapBuilderPut));
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::FreezeMap));
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::Return));
     }
 
     #[test]

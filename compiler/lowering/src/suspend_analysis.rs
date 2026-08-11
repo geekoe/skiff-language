@@ -543,6 +543,9 @@ impl SuspendContext<'_, '_> {
             Expr::ObjectLiteral { entries } => entries
                 .iter()
                 .any(|entry| self.expr_may_suspend(&entry.value)),
+            Expr::MapLiteral { entries } => entries
+                .iter()
+                .any(|entry| self.expr_may_suspend(&entry.value)),
             Expr::ArrayLiteral { items } => items.iter().any(|item| self.expr_may_suspend(item)),
             Expr::Patch { operations, .. } => operations.iter().any(|operation| match operation {
                 PatchOperation::Set { value, .. } | PatchOperation::Inc { value, .. } => {
@@ -771,6 +774,10 @@ impl SuspendContext<'_, '_> {
             | Expr::Catch { .. }
             | Expr::DbQuery(_) => None,
             Expr::Timeout { value, .. } => self.legacy_expr_type(value),
+            Expr::MapLiteral { entries } => entries.iter().find_map(|entry| {
+                self.legacy_expr_type(&entry.value)
+                    .map(|value| format!("Map<string, {value}>"))
+            }),
             Expr::ArrayLiteral { items } => items.iter().find_map(|item| {
                 self.legacy_expr_type(item)
                     .map(|item| format!("Array<{item}>"))

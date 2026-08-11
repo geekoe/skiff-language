@@ -177,6 +177,18 @@ pub(super) fn collect_package_expr_std_type_violations(
                 );
             }
         }
+        Expr::MapLiteral { entries } => {
+            for entry in entries {
+                collect_package_expr_std_type_violations(
+                    path,
+                    &entry.value,
+                    imported_std_roots,
+                    dependency_roots,
+                    package_type_names,
+                    violations,
+                );
+            }
+        }
         Expr::ArrayLiteral { items } => {
             for item in items {
                 collect_package_expr_std_type_violations(

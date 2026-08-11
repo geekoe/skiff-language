@@ -1046,6 +1046,9 @@ pub enum Expr {
     ObjectLiteral {
         entries: Vec<ObjectLiteralEntry>,
     },
+    MapLiteral {
+        entries: Vec<MapLiteralEntry>,
+    },
     ArrayLiteral {
         items: Vec<Expr>,
     },
@@ -1097,6 +1100,14 @@ pub struct DependencySourceAddress {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ObjectLiteralEntry {
     pub key: ObjectLiteralKey,
+    #[serde(skip)]
+    pub key_span: Option<SourceSpan>,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MapLiteralEntry {
+    pub key: String,
     #[serde(skip)]
     pub key_span: Option<SourceSpan>,
     pub value: Expr,

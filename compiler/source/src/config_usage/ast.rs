@@ -616,6 +616,19 @@ fn collect_config_uses_in_expr(
                 );
             }
         }
+        Expr::MapLiteral { entries } => {
+            for (entry_index, entry) in entries.iter().enumerate() {
+                collect_config_uses_in_expr(
+                    paths,
+                    &entry.value,
+                    child_span(expr_spans, entry_index),
+                    const_strings,
+                    uses,
+                    presence_uses,
+                    violations,
+                );
+            }
+        }
         Expr::ArrayLiteral { items } => {
             for (item_index, item) in items.iter().enumerate() {
                 collect_config_uses_in_expr(

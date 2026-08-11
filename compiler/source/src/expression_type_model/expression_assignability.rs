@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use super::{
     object_literal_key_text,
-    object_materialization::{ObjectMaterializationKind, ObjectMaterializationPlan},
+    object_materialization::{
+        ObjectLiteralSource, ObjectMaterializationKind, ObjectMaterializationPlan,
+    },
     resolved_type_from_ir, span_label, transparent_value_target, ExpressionKey,
     ExpressionSourceMap, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
 };
@@ -321,8 +323,9 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         actual: &ResolvedTypeRef,
         expected: &ResolvedTypeRef,
         context: &str,
+        source: Option<&ObjectLiteralSource>,
     ) -> Option<Vec<String>> {
-        let actual_fields = self.object_literal_actual_fields(value, value_key, actual)?;
+        let actual_fields = self.object_literal_actual_fields(value, value_key, actual, source)?;
         let candidates = self.object_literal_target_candidates(annotation, expected);
         candidates
             .into_iter()
@@ -345,8 +348,9 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         actual: &ResolvedTypeRef,
         expected: &ResolvedTypeRef,
         context: &str,
+        source: Option<&ObjectLiteralSource>,
     ) -> Result<ObjectMaterializationPlan, Vec<String>> {
-        let Some(actual_fields) = self.object_literal_actual_fields(value, value_key, actual)
+        let Some(actual_fields) = self.object_literal_actual_fields(value, value_key, actual, source)
         else {
             return Err(vec![format!(
                 "{}: {context} object materialization requires an object literal at {}",
@@ -469,31 +473,61 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         value: &Expr,
         value_key: &ExpressionKey,
         actual: &ResolvedTypeRef,
+        source: Option<&ObjectLiteralSource>,
     ) -> Option<Vec<ObjectLiteralActualField>> {
-        let Expr::ObjectLiteral { entries } = value else {
-            return None;
+        let entries = match value {
+            Expr::ObjectLiteral { entries } => entries
+                .iter()
+                .map(|entry| {
+                    (
+                        object_literal_key_text(&entry.key),
+                        entry.key_span,
+                    )
+                })
+                .collect::<Vec<_>>(),
+            Expr::MapLiteral { entries } => entries
+                .iter()
+                .map(|entry| (Some(entry.key.clone()), entry.key_span))
+                .collect::<Vec<_>>(),
+            _ => return None,
         };
-        let TypeRefIr::Record { fields } = &actual.ir else {
-            return None;
+        let record_fields = match &actual.ir {
+            TypeRefIr::Record { fields } => Some(fields),
+            _ => None,
         };
         let source_fact = self.expression_sources.fact(value_key);
+        let source_fields = source.map(|source| source.fields.as_slice());
         Some(
             entries
-                .iter()
+                .into_iter()
                 .enumerate()
-                .filter_map(|(index, entry)| {
-                    let name = object_literal_key_text(&entry.key)?;
+                .filter_map(|(index, (name, key_span))| {
+                    let name = name?;
+                    let ty = source_fields
+                        .and_then(|fields| fields.get(index))
+                        .and_then(|field| field.actual.clone())
+                        .or_else(|| {
+                            record_fields
+                                .and_then(|fields| fields.get(&name))
+                                .map(|ty| ResolvedTypeRef::new(ty.clone()))
+                        });
                     let field_spans = source_fact.and_then(|fact| fact.record_fields.get(index));
+                    let value_span = field_spans
+                        .map(|field| field.value_span)
+                        .or_else(|| {
+                            source_fields
+                                .and_then(|fields| fields.get(index))
+                                .map(|field| field.value_span)
+                        })
+                        .unwrap_or_else(SourceSpan::synthetic);
                     Some(ObjectLiteralActualField {
-                        ty: fields.get(&name).map(|ty| ResolvedTypeRef::new(ty.clone())),
+                        ty,
                         name,
                         name_span: field_spans
                             .map(|field| field.name_span)
-                            .or(entry.key_span)
+                            .or(key_span)
                             .unwrap_or_else(SourceSpan::synthetic),
-                        value_span: field_spans
-                            .map(|field| field.value_span)
-                            .unwrap_or_else(SourceSpan::synthetic),
+                        value_span,
                     })
                 })
                 .collect(),

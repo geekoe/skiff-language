@@ -47,21 +47,20 @@ impl FunctionLowerer<'_> {
                     "is missing its current object expression type fact",
                 )
             })?;
-        let TypeRefIr::Record {
-            fields: expression_fields,
-        } = &expression_fact.ir
-        else {
-            return Err(materialization_error(
-                object_key,
-                format!("has non-record current expression type {expression_fact}"),
-            ));
+        let expression_fields = match &expression_fact.ir {
+            TypeRefIr::Record { fields } => fields.clone(),
+            _ => materialization
+                .source_fields
+                .iter()
+                .map(|field| (field.name.clone(), field.ty.ir.clone()))
+                .collect::<BTreeMap<_, _>>(),
         };
-        let mut remaining_expression_fields = expression_fields.clone();
+        let mut remaining_expression_fields = expression_fields;
         let materialized_by_name = self.validate_object_materialization_fact(
             object_key,
             expected_target,
             &materialization,
-            expression_fields,
+            &remaining_expression_fields,
         )?;
 
         let mut provided_values = BTreeMap::<ExpressionKey, (String, ExprRefIr)>::new();
@@ -114,7 +113,10 @@ impl FunctionLowerer<'_> {
                         ),
                     )
                 })?;
-            if !self.same_canonical_type(&expression_field_type, &child_fact.ir) {
+            let expected_field_type = materialized.ty.ir.clone();
+            if !self.same_canonical_type(&expression_field_type, &child_fact.ir)
+                && !self.same_canonical_type(&expected_field_type, &child_fact.ir)
+            {
                 return Err(materialization_error(
                     object_key,
                     format!(
@@ -124,7 +126,6 @@ impl FunctionLowerer<'_> {
                 ));
             }
 
-            let expected_field_type = materialized.ty.ir.clone();
             let value = self.lower_expr_with_expected(&entry.value, Some(&expected_field_type))?;
             if provided_values
                 .insert(value_key.clone(), (field_name.clone(), value))

@@ -53,8 +53,8 @@ use contract_call_typing::{
 use db_projection::DbProjectionTypeResolver;
 use expression_assignability::ExpressionAssignability;
 pub use object_materialization::{
-    MaterializedObjectField, ObjectFieldValueSource, ObjectMaterializationKind,
-    TargetTypedObjectMaterialization,
+    MaterializedObjectField, MaterializedObjectSourceField, ObjectFieldValueSource,
+    ObjectMaterializationKind, TargetTypedObjectMaterialization,
 };
 use object_materialization::{
     ObjectLiteralSource, ObjectLiteralSourceField, ObjectMaterializationState,
@@ -365,6 +365,9 @@ impl ExpressionTypeModel {
         }
 
         for (key, source) in &outputs.object_materialization.sources {
+            if source.allow_targetless {
+                continue;
+            }
             if outputs.object_materialization.targeted.contains(key) {
                 continue;
             }
@@ -1020,7 +1023,12 @@ impl<'a> OwnerChecker<'a> {
 
     fn check_let_stmt(&mut self, name: &String, ty: Option<&TypeRef>, value: &Expr) -> bool {
         let value_key = self.peek_key();
-        let actual = self.check_expr(value);
+        let actual = if ty.is_none() {
+            let actual = self.check_expr(value);
+            self.maybe_upgrade_map_literal_expression_type(&value_key, value, actual)
+        } else {
+            self.check_expr(value)
+        };
         let projected_actual = self
             .contract_projection
             .expression_type(&value_key)
@@ -1460,6 +1468,11 @@ impl<'a> OwnerChecker<'a> {
     fn check_return_value(&mut self, value: &Expr) {
         let value_key = self.peek_key();
         let actual = self.check_expr(value);
+        let actual = if self.return_type.is_none() {
+            self.maybe_upgrade_map_literal_expression_type(&value_key, value, actual)
+        } else {
+            actual
+        };
         if self.stream_chunk.is_some() {
             match actual.as_ref() {
                 Some(actual) if type_ir_is_void_or_null(&actual.ir) => return,
@@ -1534,6 +1547,110 @@ impl<'a> OwnerChecker<'a> {
                 .unwrap_or(ty),
             _ => ty,
         }
+    }
+
+    fn check_map_literal_expr(
+        &mut self,
+        key: &ExpressionKey,
+        entries: &[crate::shared::ast::MapLiteralEntry],
+    ) -> Option<ResolvedTypeRef> {
+        let source_fact = self.expression_sources.fact(key);
+        let mut source_fields = Vec::with_capacity(entries.len());
+        let mut seen = BTreeSet::new();
+        for (index, entry) in entries.iter().enumerate() {
+            let value_key = self.peek_key();
+            let actual = self.check_expr(&entry.value);
+            if !seen.insert(entry.key.clone()) {
+                self.outputs.diagnostics.push(format!(
+                    "{}: duplicate map literal key `{}` at {}",
+                    self.module_path,
+                    entry.key,
+                    self.expression_span_label(key)
+                ));
+            }
+            source_fields.push(ObjectLiteralSourceField {
+                name: entry.key.clone(),
+                expression: value_key,
+                actual,
+                value_span: materialization::record_field_value_source_span(source_fact, index),
+            });
+        }
+        self.outputs.object_materialization.sources.insert(
+            key.clone(),
+            ObjectLiteralSource {
+                span: source_fact
+                    .map(|fact| fact.span)
+                    .unwrap_or_else(SourceSpan::synthetic),
+                fields: source_fields.clone(),
+                allow_targetless: true,
+            },
+        );
+        let fields = source_fields
+            .iter()
+            .filter_map(|field| {
+                field
+                    .actual
+                    .as_ref()
+                    .map(|ty| (field.name.clone(), ty.ir.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
+        Some(ResolvedTypeRef::with_text(
+            TypeRefIr::Record { fields },
+            "{}".to_string(),
+        ))
+    }
+
+    fn map_literal_value_candidate(&self, ty: ResolvedTypeRef) -> ResolvedTypeRef {
+        match &ty.ir {
+            TypeRefIr::Literal {
+                value: LiteralIr::String { .. },
+            } => self
+                .resolve_builtin(BuiltinShape::String.name())
+                .unwrap_or(ty),
+            TypeRefIr::Literal {
+                value: LiteralIr::Bool { .. },
+            } => self
+                .resolve_builtin(BuiltinShape::Bool.name())
+                .unwrap_or(ty),
+            _ => ty,
+        }
+    }
+
+    fn maybe_upgrade_map_literal_expression_type(
+        &mut self,
+        value_key: &ExpressionKey,
+        value: &Expr,
+        actual: Option<ResolvedTypeRef>,
+    ) -> Option<ResolvedTypeRef> {
+        let actual = actual?;
+        let Expr::MapLiteral { entries } = value else {
+            return Some(actual);
+        };
+        let TypeRefIr::Record { fields } = &actual.ir else {
+            return Some(actual);
+        };
+        let mut value_types = Vec::new();
+        for entry in entries {
+            if let Some(ty) = fields.get(&entry.key) {
+                value_types.push(self.map_literal_value_candidate(ResolvedTypeRef::new(ty.clone())));
+            }
+        }
+        let value = if value_types.is_empty() {
+            TypeRefIr::builtin(BuiltinShape::Unknown.name())
+        } else {
+            normalize_union(TypeRefIr::Union {
+                items: value_types.into_iter().map(|ty| ty.ir).collect(),
+            })
+        };
+        let key_ty = self
+            .resolve_builtin(BuiltinShape::String.name())
+            .map(|ty| ty.ir)
+            .unwrap_or_else(|| TypeRefIr::builtin(BuiltinShape::String.name()));
+        let map_ty = map_type_from_ir(key_ty, value);
+        if let Some(fact) = self.outputs.facts.get_mut(value_key) {
+            fact.ty = Some(map_ty.clone());
+        }
+        Some(map_ty)
     }
 
     fn check_expr(&mut self, expr: &Expr) -> Option<ResolvedTypeRef> {
@@ -1623,6 +1740,7 @@ impl<'a> OwnerChecker<'a> {
                     fields,
                 } => self.check_record_expr(&key, type_name, type_args, fields),
                 Expr::ObjectLiteral { entries } => self.check_object_literal_expr(&key, entries),
+                Expr::MapLiteral { entries } => self.check_map_literal_expr(&key, entries),
                 Expr::ArrayLiteral { items } => self.check_array_literal_expr(&key, items),
                 Expr::Patch { operations, .. } => self.check_patch_expr(operations),
                 Expr::ValueBlock(value) => self.check_value_block_expr(&key, value),
@@ -2239,6 +2357,7 @@ impl<'a> OwnerChecker<'a> {
             | Expr::Call { .. }
             | Expr::Record { .. }
             | Expr::ObjectLiteral { .. }
+            | Expr::MapLiteral { .. }
             | Expr::ArrayLiteral { .. }
             | Expr::Patch { .. }
             | Expr::InterfaceBox { .. }
@@ -2582,6 +2701,17 @@ fn array_type_from_ir(element: TypeRefIr) -> ResolvedTypeRef {
     ResolvedTypeRef::with_text(ty.clone(), format!("Array<{}>", debug_text(&element)))
 }
 
+fn map_type_from_ir(key: TypeRefIr, value: TypeRefIr) -> ResolvedTypeRef {
+    let ty = TypeRefIr::Builtin {
+        name: BuiltinShape::Map.name().to_string(),
+        args: vec![key.clone(), value.clone()],
+    };
+    ResolvedTypeRef::with_text(
+        ty.clone(),
+        format!("Map<{}, {}>", debug_text(&key), debug_text(&value)),
+    )
+}
+
 fn nullable_type(inner: ResolvedTypeRef) -> ResolvedTypeRef {
     let text = format!("{inner}?");
     ResolvedTypeRef::with_text(
@@ -2625,12 +2755,16 @@ fn transparent_value_target(expression: &Expr) -> &Expr {
 }
 
 fn object_literal_field_value<'a>(value: &'a Expr, name: &str) -> Option<&'a Expr> {
-    let Expr::ObjectLiteral { entries } = value else {
-        return None;
-    };
-    entries.iter().find_map(|entry| {
-        (object_literal_key_text(&entry.key).as_deref() == Some(name)).then_some(&entry.value)
-    })
+    match value {
+        Expr::ObjectLiteral { entries } => entries.iter().find_map(|entry| {
+            (object_literal_key_text(&entry.key).as_deref() == Some(name))
+                .then_some(&entry.value)
+        }),
+        Expr::MapLiteral { entries } => entries.iter().find_map(|entry| {
+            (entry.key.as_str() == name).then_some(&entry.value)
+        }),
+        _ => None,
+    }
 }
 
 fn expr_is_null_literal(expr: &Expr) -> bool {
@@ -2659,6 +2793,7 @@ fn expr_obviously_non_null(expr: &Expr) -> bool {
         Expr::Literal(_)
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
+        | Expr::MapLiteral { .. }
         | Expr::ArrayLiteral { .. } => true,
         Expr::Binary {
             op: BinaryOp::Add,
@@ -2692,6 +2827,7 @@ fn place_contains_index(expr: &Expr) -> bool {
         | Expr::InterfaceBox { .. }
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
+        | Expr::MapLiteral { .. }
         | Expr::ArrayLiteral { .. }
         | Expr::Patch { .. }
         | Expr::ValueBlock(_)

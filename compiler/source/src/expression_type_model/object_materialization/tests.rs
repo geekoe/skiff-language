@@ -564,14 +564,6 @@ fn object_literal_negatives_fail_closed() {
     let cases = [
         (
             r#"
-              function targetless() -> void {
-                let value = { label: "missing-target" }
-              }
-            "#,
-            "requires an explicit target type",
-        ),
-        (
-            r#"
               alias Choice = { left: string? } | { right: string? }
               function ambiguous() -> Choice { return {} }
             "#,

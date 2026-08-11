@@ -256,6 +256,11 @@ impl OwnerAnalyzer<'_> {
                     Self::walk_expr_for_loans(&entry.value, loans, found);
                 }
             }
+            Expr::MapLiteral { entries } => {
+                for entry in entries {
+                    Self::walk_expr_for_loans(&entry.value, loans, found);
+                }
+            }
             Expr::ArrayLiteral { items } => {
                 for item in items {
                     Self::walk_expr_for_loans(item, loans, found);
@@ -307,6 +312,7 @@ fn expr_root_name(expr: &Expr) -> Option<&str> {
         | Expr::InterfaceBox { .. }
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
+        | Expr::MapLiteral { .. }
         | Expr::ArrayLiteral { .. }
         | Expr::Patch { .. }
         | Expr::ValueBlock(_)

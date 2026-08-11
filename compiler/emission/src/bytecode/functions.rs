@@ -1322,12 +1322,12 @@ impl<'a> FunctionEmitter<'a> {
         entries: &BTreeMap<String, ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
         let (key_ty, value_ty) = self.map_key_value_types(&expression.ty, "map literal")?;
-        let key_ref = self.image.type_index(
+        let key_ref = self.image.intern_type(
             self.unit.module_path.as_str(),
             &key_ty,
             &format!("map literal key type in `{}`", self.key),
         )?;
-        let value_ref = self.image.type_index(
+        let value_ref = self.image.intern_type(
             self.unit.module_path.as_str(),
             &value_ty,
             &format!("map literal value type in `{}`", self.key),

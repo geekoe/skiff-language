@@ -1,12 +1,6 @@
 use super::span::{expr_source_spans, expr_source_spans_from_span, parsed_leaf_expr, ParsedExpr};
 use super::*;
 
-fn object_literal_key_name(key: &crate::ast::ObjectLiteralKey) -> Option<String> {
-    match key {
-        crate::ast::ObjectLiteralKey::Name(name) => Some(name.clone()),
-    }
-}
-
 impl Parser {
     pub(super) fn parse_expression(&mut self) -> Result<ParsedExpr> {
         let condition = self.parse_binary(0)?;
@@ -475,9 +469,9 @@ impl Parser {
                 Ok(expr)
             }
             TokenKind::Symbol(value) if value == "{" => {
-                let (entries, children, record_fields) = self.parse_object_literal_entries()?;
+                let (entries, children, record_fields) = self.parse_map_literal_entries()?;
                 Ok(ParsedExpr::with_children_and_parts(
-                    Expr::ObjectLiteral { entries },
+                    Expr::MapLiteral { entries },
                     SourceSpan {
                         start,
                         end: self.previous().span.end,
@@ -907,10 +901,10 @@ impl Parser {
         Ok((operations, spans))
     }
 
-    pub(super) fn parse_object_literal_entries(
+    fn parse_map_literal_entries(
         &mut self,
     ) -> Result<(
-        Vec<crate::ast::ObjectLiteralEntry>,
+        Vec<crate::ast::MapLiteralEntry>,
         Vec<ExprSourceSpans>,
         Vec<RecordFieldSourceSpans>,
     )> {
@@ -919,19 +913,16 @@ impl Parser {
         let mut record_fields = Vec::new();
         if !self.check_symbol("}") {
             loop {
-                let (key, key_span) = self.parse_object_literal_key()?;
+                let (key, key_span) = self.parse_map_literal_key()?;
                 self.expect_symbol(":")?;
                 let value = self.parse_slot_expression()?;
-                let field_name = object_literal_key_name(&key);
-                if let Some(field_name) = field_name {
-                    record_fields.push(RecordFieldSourceSpans {
-                        name: field_name,
-                        name_span: key_span,
-                        value_span: value.spans.span,
-                    });
-                }
+                record_fields.push(RecordFieldSourceSpans {
+                    name: key.clone(),
+                    name_span: key_span,
+                    value_span: value.spans.span,
+                });
                 spans.push(value.spans);
-                entries.push(crate::ast::ObjectLiteralEntry {
+                entries.push(crate::ast::MapLiteralEntry {
                     key,
                     key_span: Some(key_span),
                     value: value.expr,
@@ -975,22 +966,23 @@ impl Parser {
         ))
     }
 
-    pub(super) fn parse_object_literal_key(
+    pub(super) fn parse_map_literal_key(
         &mut self,
-    ) -> Result<(crate::ast::ObjectLiteralKey, SourceSpan)> {
+    ) -> Result<(String, SourceSpan)> {
         let token = self.advance().clone();
         match token.kind {
-            TokenKind::Ident(value) => Ok((crate::ast::ObjectLiteralKey::Name(value), token.span)),
+            TokenKind::Ident(value) | TokenKind::String(value) => Ok((value, token.span)),
             TokenKind::Symbol(value) if value == "[" => Err(CompileError::syntax(
-                "computed object literal keys are not supported; construct an empty object and call set",
+                "computed map literal keys are not supported; use string keys",
                 token.span.start,
             )),
             _ => Err(CompileError::syntax(
-                "expected object literal key",
+                "expected map literal key",
                 token.span.start,
             )),
         }
     }
+
 }
 
 fn contiguous_locations(left: SourceLocation, right: SourceLocation) -> bool {

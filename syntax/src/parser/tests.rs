@@ -13,6 +13,7 @@ mod array_literals;
 mod binary_precedence;
 mod dispatch;
 mod index_expressions;
+mod map_literals;
 mod parse_output_carrier;
 mod span_sensitive;
 mod tolerant_recovery;
@@ -1450,17 +1451,14 @@ fn parses_object_literal_bare_key() {
         "#;
 
     let ast = parse_source(source).unwrap();
-    let crate::ast::Stmt::Return(Some(crate::ast::Expr::ObjectLiteral { entries })) =
+    let crate::ast::Stmt::Return(Some(crate::ast::Expr::MapLiteral { entries })) =
         &ast.functions[0].body.statements[0]
     else {
-        panic!("expected object literal return");
+        panic!("expected map literal return");
     };
 
     assert_eq!(entries.len(), 1);
-    assert!(matches!(
-        &entries[0].key,
-        crate::ast::ObjectLiteralKey::Name(name) if name == "name"
-    ));
+    assert_eq!(entries[0].key, "name");
     assert_eq!(
         entries[0].key_span.map(|span| span.start.offset),
         source.find("name")
@@ -1520,25 +1518,26 @@ fn rejects_object_literal_computed_key() {
     assert!(
         error
             .to_string()
-            .contains("computed object literal keys are not supported"),
+            .contains("computed map literal keys are not supported"),
         "unexpected error: {error}"
     );
 }
 
 #[test]
-fn rejects_object_literal_string_key() {
+fn parses_map_literal_string_key() {
     let source = r#"
             function build(items: Items) -> Value {
                 return { "$or": items }
             }
         "#;
 
-    let error = parse_source(source).unwrap_err();
-
-    assert!(
-        error.to_string().contains("expected object literal key"),
-        "unexpected error: {error}"
-    );
+    let ast = parse_source(source).unwrap();
+    let crate::ast::Stmt::Return(Some(crate::ast::Expr::MapLiteral { entries })) =
+        &ast.functions[0].body.statements[0]
+    else {
+        panic!("expected map literal return");
+    };
+    assert_eq!(entries[0].key, "$or");
 }
 
 #[test]
@@ -3212,7 +3211,7 @@ function run() -> void {
     };
     assert!(matches!(
         value.tail.as_ref(),
-        Expr::ObjectLiteral { entries } if entries.len() == 1
+        Expr::MapLiteral { entries } if entries.len() == 1
     ));
 }
 

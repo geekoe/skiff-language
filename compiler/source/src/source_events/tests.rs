@@ -169,6 +169,27 @@ fn array_literal_expression_spans_cover_items_and_children() {
 }
 
 #[test]
+fn map_literal_expression_spans_cover_items_and_children() {
+    let source = r#"function run() -> Map<string, number> {
+  return { alpha: 1, beta: [2] }
+}"#;
+    let events = facts("pkg.maps", source);
+    let owner = function_owner("run");
+    let expected = [
+        (0, "{ alpha: 1, beta: [2] }"),
+        (1, "1"),
+        (2, "[2]"),
+        (3, "2"),
+    ];
+    for (index, expected_text) in expected {
+        let event = events
+            .fact(&expression_key("pkg.maps", &owner, index))
+            .unwrap_or_else(|| panic!("missing map expression preorder index {index}"));
+        assert_eq!(source_text(source, event.site()), expected_text);
+    }
+}
+
+#[test]
 fn zero_expression_statements_and_nested_blocks_have_statement_facts() {
     let source = r#"function run(flag: bool) -> void {
   while flag {
