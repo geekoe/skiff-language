@@ -1046,6 +1046,9 @@ pub enum Expr {
     ObjectLiteral {
         entries: Vec<ObjectLiteralEntry>,
     },
+    ArrayLiteral {
+        items: Vec<Expr>,
+    },
     Patch {
         target: TypeRef,
         operations: Vec<PatchOperation>,

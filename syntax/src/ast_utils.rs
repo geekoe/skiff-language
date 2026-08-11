@@ -267,6 +267,11 @@ pub fn walk_expr(visitor: &mut (impl AstVisitor + ?Sized), expr: &Expr) {
                 visitor.visit_expr(&entry.value);
             }
         }
+        Expr::ArrayLiteral { items } => {
+            for item in items {
+                visitor.visit_expr(item);
+            }
+        }
         Expr::Patch { target, operations } => {
             visitor.visit_type_ref(target);
             for operation in operations {
@@ -754,6 +759,11 @@ pub fn walk_expr_mut(visitor: &mut (impl AstVisitorMut + ?Sized), expr: &mut Exp
                 visitor.visit_expr(&mut entry.value);
             }
         }
+        Expr::ArrayLiteral { items } => {
+            for item in items {
+                visitor.visit_expr(item);
+            }
+        }
         Expr::Patch { target, operations } => {
             visitor.visit_type_ref(target);
             for operation in operations {
@@ -923,6 +933,9 @@ pub fn expr_contains_with(expr: &Expr, predicate: &mut impl FnMut(&Expr) -> bool
         Expr::ObjectLiteral { entries } => entries
             .iter()
             .any(|entry| expr_contains_with(&entry.value, predicate)),
+        Expr::ArrayLiteral { items } => items
+            .iter()
+            .any(|item| expr_contains_with(item, predicate)),
         Expr::Patch { operations, .. } => operations.iter().any(|operation| match operation {
             crate::ast::PatchOperation::Set { value, .. }
             | crate::ast::PatchOperation::Inc { value, .. } => expr_contains_with(value, predicate),
@@ -1463,6 +1476,11 @@ fn collect_expr_type_ref_dotted_root_imports(
         Expr::ObjectLiteral { entries } => {
             for entry in entries {
                 collect_expr_type_ref_dotted_root_imports(&entry.value, root, imports);
+            }
+        }
+        Expr::ArrayLiteral { items } => {
+            for item in items {
+                collect_expr_type_ref_dotted_root_imports(item, root, imports);
             }
         }
         Expr::Patch { target, operations } => {

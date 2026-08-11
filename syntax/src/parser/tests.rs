@@ -9,6 +9,7 @@ use super::{
     PackageId,
 };
 
+mod array_literals;
 mod binary_precedence;
 mod dispatch;
 mod index_expressions;

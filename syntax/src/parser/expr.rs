@@ -487,6 +487,9 @@ impl Parser {
                     record_fields,
                 ))
             }
+            TokenKind::Symbol(value) if value == "[" => {
+                self.parse_array_literal_expression(start)
+            }
             _ => Err(CompileError::syntax(
                 "expected expression",
                 token.span.start,
@@ -943,6 +946,33 @@ impl Parser {
         }
         self.expect_symbol("}")?;
         Ok((entries, spans, record_fields))
+    }
+
+    fn parse_array_literal_expression(&mut self, start: SourceLocation) -> Result<ParsedExpr> {
+        let mut items = Vec::new();
+        let mut children = Vec::new();
+        if !self.check_symbol("]") {
+            loop {
+                let item = self.parse_slot_expression()?;
+                children.push(item.spans);
+                items.push(item.expr);
+                if !self.match_symbol(",") {
+                    break;
+                }
+                if self.check_symbol("]") {
+                    break;
+                }
+            }
+        }
+        self.expect_symbol("]")?;
+        Ok(ParsedExpr::new(
+            Expr::ArrayLiteral { items },
+            SourceSpan {
+                start,
+                end: self.previous().span.end,
+            },
+            children,
+        ))
     }
 
     pub(super) fn parse_object_literal_key(
