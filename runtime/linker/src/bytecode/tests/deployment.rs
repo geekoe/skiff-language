@@ -4,11 +4,11 @@ use skiff_artifact_identity::{
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
     InstructionSourceSite, Opcode, SourcePosition, SourceSpanRef, StatementAttributionId,
-    StructuralValidationError, SyntheticInstructionSiteReason, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    StructuralValidationError, SyntheticInstructionSiteReason, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedBytecodeCandidate, LinkedFunction, LinkedInstructionTarget,
-    LinkedPackageBytecodeProvenance,
+    LinkedBytecodeCandidate, LinkedContainerLayoutKind, LinkedFunction, LinkedInstructionTarget,
+    LinkedIntrinsicKind, LinkedPackageBytecodeProvenance,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -208,59 +208,62 @@ fn production_entry_rejects_synthetic_callback_as_an_ordinary_local_target() {
 }
 
 #[test]
-fn production_entry_rejects_symbolic_service_authority() {
+fn production_entry_links_symbolic_service_authority() {
     let fixture = Fixture::service_dependency();
     let hydrated = fixture.hydrate();
-
-    assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::ImplementationUnavailable {
-            obligation: BytecodeLinkObligation::ConcreteTargetTables,
-            location: BytecodeLinkLocation::ServiceDependency { .. },
-        })
-    ));
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.service_operations().len(), 1);
+    assert_eq!(candidate.interface_tables().len(), 0);
 }
 
 #[test]
-fn production_entry_rejects_interface_relocation() {
+fn production_entry_links_interface_requirement_relocation() {
     let fixture = Fixture::interface();
     let hydrated = fixture.hydrate();
-
-    assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::ImplementationUnavailable {
-            obligation: BytecodeLinkObligation::RelocationResolution,
-            location: BytecodeLinkLocation::Instruction { artifact_pc: 2, .. },
-        })
-    ));
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.interface_tables().len(), 1);
+    assert_eq!(candidate.resume_sites().len(), 1);
+    let table = &candidate.interface_tables()[0];
+    match table.kind() {
+        skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Requirement(methods) => {
+            assert_eq!(methods.methods().len(), 1);
+            assert_eq!(methods.methods()[0].signature().result_types().len(), 1);
+        }
+        _ => panic!("interface table must be a requirement table"),
+    }
+    let root = function(&candidate, ROOT_FUNCTION);
+    assert_eq!(root.instructions()[1].opcode(), Opcode::CallInterface);
+    assert_eq!(
+        root.instructions()[1].resolved_operands()[0].target(),
+        LinkedInstructionTarget::InterfaceTable(table.index())
+    );
 }
 
 #[test]
-fn production_entry_rejects_host_effect_relocation() {
+fn production_entry_links_registered_host_effect_relocation() {
     let fixture = Fixture::host();
     let hydrated = fixture.hydrate();
-
-    assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::ImplementationUnavailable {
-            obligation: BytecodeLinkObligation::RelocationResolution,
-            location: BytecodeLinkLocation::Instruction { artifact_pc: 0, .. },
-        })
-    ));
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.host_effect_adapters().len(), 1);
+    assert_eq!(candidate.resume_sites().len(), 1);
+    let host = &candidate.host_effect_adapters()[0];
+    assert_eq!(host.binding_key().as_str(), "core.date.now");
+    assert_eq!(host.signature().result_types().len(), 1);
 }
 
 #[test]
-fn production_entry_rejects_static_intrinsic_relocation() {
+fn production_entry_links_registered_intrinsic_relocation() {
     let fixture = Fixture::intrinsic();
     let hydrated = fixture.hydrate();
-
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.intrinsics().len(), 1);
+    let intrinsic = &candidate.intrinsics()[0];
     assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::ImplementationUnavailable {
-            obligation: BytecodeLinkObligation::RelocationResolution,
-            location: BytecodeLinkLocation::Instruction { artifact_pc: 0, .. },
-        })
+        intrinsic.kind(),
+        LinkedIntrinsicKind::Static(target)
+            if target.canonical_key().as_str() == "core.array.empty"
     ));
+    assert_eq!(intrinsic.signature().result_types().len(), 1);
 }
 
 #[test]
@@ -370,4 +373,47 @@ fn assert_exact_v6_provenance(
         provenance.authorities().intrinsic_registry(),
         view.intrinsic_registry()
     );
+}
+
+
+#[test]
+fn production_entry_links_record_shape_and_dense_field_relocation() {
+    let fixture = Fixture::record_shape();
+    let hydrated = fixture.hydrate();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.shapes().len(), 1);
+    let shape = &candidate.shapes()[0];
+    assert_eq!(shape.fields().len(), 1);
+    assert_eq!(shape.fields()[0].name(), "name");
+    let root = function(&candidate, ROOT_FUNCTION);
+    assert_eq!(root.instructions()[1].opcode(), Opcode::NewRecord);
+    assert_eq!(
+        root.instructions()[1].resolved_operands()[0].target(),
+        LinkedInstructionTarget::Shape(shape.index())
+    );
+    assert_eq!(root.instructions()[2].opcode(), Opcode::GetDenseField);
+    assert_eq!(
+        root.instructions()[2].resolved_operands()[0].target(),
+        LinkedInstructionTarget::Shape(shape.index())
+    );
+    assert_eq!(root.stack_map().entries()[1].stack_before().len(), 1);
+}
+
+#[test]
+fn production_entry_links_array_builder_with_container_stack_map() {
+    let fixture = Fixture::arrays_maps();
+    let hydrated = fixture.hydrate();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    let array = candidate
+        .types()
+        .iter()
+        .find(|entry| matches!(entry.type_ref(), TypeRefIr::Builtin { name, .. } if name == "Array"))
+        .unwrap();
+    assert_eq!(
+        array.container_layout().map(|layout| layout.kind()),
+        Some(LinkedContainerLayoutKind::Array)
+    );
+    let root = function(&candidate, ROOT_FUNCTION);
+    assert_eq!(root.instructions()[0].opcode(), Opcode::NewArrayBuilder);
+    assert_eq!(root.stack_map().entries()[1].stack_before().len(), 1);
 }

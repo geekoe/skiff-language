@@ -13,13 +13,17 @@ use skiff_runtime_linked_bytecode::{
 use skiff_runtime_loader::HydratedBytecodePackage;
 
 use crate::bytecode::{
-    types::TypeLinker, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
+    link::dispatch::LinkedDispatchTables,
+    types::TypeLinker,
+    BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MachineState {
     stack: Vec<LinkedStackValue>,
     slots: Vec<LinkedSlotState>,
+    active_regions: Vec<skiff_runtime_linked_bytecode::ActiveRegionIndex>,
+    writable_loans: Vec<skiff_runtime_linked_bytecode::LinkedWritableLoanState>,
 }
 
 pub(super) struct StackMapSource<'a> {
@@ -48,15 +52,17 @@ pub(super) struct StackMapLinked<'a> {
     all_frames: &'a [LinkedFrameLayout],
     switch_tables: &'a [LinkedSwitchTable],
     constants: &'a [LinkedConstantEntry],
+    dispatch_tables: &'a LinkedDispatchTables,
 }
 
 impl<'a> StackMapLinked<'a> {
-    pub(super) const fn new(
+    pub(super) fn new(
         instructions: &'a [LinkedInstruction],
         frame: &'a LinkedFrameLayout,
         all_frames: &'a [LinkedFrameLayout],
         switch_tables: &'a [LinkedSwitchTable],
         constants: &'a [LinkedConstantEntry],
+        dispatch_tables: &'a LinkedDispatchTables,
     ) -> Self {
         Self {
             instructions,
@@ -64,6 +70,7 @@ impl<'a> StackMapLinked<'a> {
             all_frames,
             switch_tables,
             constants,
+            dispatch_tables,
         }
     }
 }
@@ -73,6 +80,7 @@ struct StackMapContext<'a, 'limits> {
     frame: &'a LinkedFrameLayout,
     all_frames: &'a [LinkedFrameLayout],
     constants: &'a [LinkedConstantEntry],
+    dispatch_tables: &'a LinkedDispatchTables,
     type_linker: &'a mut TypeLinker<'limits>,
     substitutions: &'a BTreeMap<String, TypeRefIr>,
 }
@@ -88,6 +96,7 @@ pub(super) fn build_stack_map(
         frame: linked.frame,
         all_frames: linked.all_frames,
         constants: linked.constants,
+        dispatch_tables: linked.dispatch_tables,
         type_linker,
         substitutions,
     };

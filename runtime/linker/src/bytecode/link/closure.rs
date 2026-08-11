@@ -202,16 +202,17 @@ impl<'a> DeploymentLinker<'a> {
                                 self.resolve_direct_target(package, relocation, function)?,
                             ));
                         }
-                        _ => {
-                            return Err(BytecodeLinkError::ImplementationUnavailable {
-                                obligation: BytecodeLinkObligation::RelocationResolution,
-                                location: self.instruction_location(
-                                    package,
-                                    function,
-                                    instruction.pc,
-                                ),
-                            });
-                        }
+                        BytecodeRelocation::ServiceOperationRef { .. }
+                        | BytecodeRelocation::ActorMethodRef { .. }
+                        | BytecodeRelocation::InterfaceRequirementRef { .. }
+                        | BytecodeRelocation::RemoteInterfaceRef { .. }
+                        | BytecodeRelocation::LocalInterfaceRef { .. }
+                        | BytecodeRelocation::SyntheticCallbackRef { .. }
+                        | BytecodeRelocation::HostEffectRef(..)
+                        | BytecodeRelocation::IntrinsicRef { .. }
+                        | BytecodeRelocation::TypeRef { .. }
+                        | BytecodeRelocation::ShapeRef { .. }
+                        | BytecodeRelocation::FrozenConstantRef { .. } => {}
                     }
                 }
             }
@@ -248,11 +249,12 @@ impl<'a> DeploymentLinker<'a> {
                     ),
                 )
             })?;
-        let canonical =
-            package.canonical_implementation_callable_for_function_key(&function.function_key);
+        let canonical = package
+            .canonical_implementation_callable_for_function_key(&function.function_key)
+            .or_else(|| package.canonical_effect_callable_for_function_key(&function.function_key));
         if canonical != Some(key.template_function_key())
             || !key.concrete_type_arguments().is_empty()
-            || key.concrete_receiver().is_some()
+            || key.concrete_receiver().is_some() != function.self_type_ref.is_some()
         {
             return Err(unsatisfied(
                 BytecodeLinkObligation::ConcreteSpecialization,

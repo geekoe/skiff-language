@@ -1,0 +1,1515 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use skiff_artifact_model::{
+    self, BoundaryOperationContract, BytecodeIntrinsicRef, BytecodeRelocation,
+    CallableEffectSummary, CallableMayEffects, ContractOperationId, ContractTypeRef,
+    InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, PackageBuildId,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId, PackageSymbolRef, ParamModeIr,
+    PendingEffectCategory, ResolvedPackageValueType, ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver, ValueLifecycleResolverError,
+    ValueLifecyclePolicyBudget,
+};
+use skiff_runtime_linked_bytecode::{
+    ArtifactFunctionKey, FunctionIndex, LinkedActorCreateTarget, LinkedActorImplementationRef,
+    LinkedActorMethodTarget, LinkedCallableSignature, LinkedFrameLayout,
+    LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId,
+    LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable, LinkedInterfaceTable,
+    LinkedInterfaceTableKind, LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable,
+    LinkedNativeCallableSignature, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
+    LinkedRemoteInterfaceTable, LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget,
+    SpecializationKey, TypeIndex,
+};
+use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
+
+use crate::bytecode::{
+    types::TypeLinker, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
+};
+
+use super::{unsatisfied, DeploymentLinker};
+
+pub(in crate::bytecode) struct LinkedDispatchTables {
+    pub(in crate::bytecode) service_operations: Vec<LinkedServiceOperationTarget>,
+    pub(in crate::bytecode) actor_creates: Vec<LinkedActorCreateTarget>,
+    pub(in crate::bytecode) actor_methods: Vec<LinkedActorMethodTarget>,
+    pub(in crate::bytecode) interface_tables: Vec<LinkedInterfaceTable>,
+    pub(in crate::bytecode) synthetic_callbacks: Vec<LinkedSyntheticCallbackTarget>,
+    pub(in crate::bytecode) synthetic_callback_origins: BTreeMap<(PackageBuildId, String), skiff_runtime_linked_bytecode::SyntheticCallbackIndex>,
+    pub(in crate::bytecode) host_effect_adapters: Vec<LinkedHostEffectAdapterTarget>,
+    pub(in crate::bytecode) intrinsics: Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>,
+}
+
+impl DeploymentLinker<'_> {
+    pub(super) fn link_dispatch_tables(
+        &self,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        frames: &[LinkedFrameLayout],
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<LinkedDispatchTables, BytecodeLinkError> {
+        let service_operations = self.link_service_operations(type_linker)?;
+        let (actor_creates, actor_methods) = self.link_actor_targets(indices, frames, type_linker)?;
+        let interface_tables = self.link_interface_tables(indices, frames, type_linker)?;
+        let synthetic_callbacks = self.link_synthetic_callbacks(indices, frames, type_linker)?;
+        let (host_effect_adapters, intrinsics) =
+            self.link_host_and_intrinsics(indices, type_linker)?;
+
+        let synthetic_callback_origins = synthetic_callbacks
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                let package_build_id = indices
+                    .iter()
+                    .find(|(_, function)| function.get() == target.function().get())
+                    .map(|(key, _)| key.package_build_id().clone())
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            self.deployment_location(),
+                            "synthetic callback function is absent from the closure".to_string(),
+                        )
+                    })?;
+                Ok((
+                    (package_build_id, target.artifact_function_key().as_str().to_string()),
+                    skiff_runtime_linked_bytecode::SyntheticCallbackIndex::new(index as u32),
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, BytecodeLinkError>>()?;
+
+        let mut tables = LinkedDispatchTables {
+            service_operations,
+            actor_creates,
+            actor_methods,
+            interface_tables,
+            synthetic_callbacks,
+            synthetic_callback_origins,
+            host_effect_adapters,
+            intrinsics,
+        };
+        tables.sort_and_validate()?;
+        Ok(tables)
+    }
+
+    fn link_service_operations(
+        &self,
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<Vec<LinkedServiceOperationTarget>, BytecodeLinkError> {
+        let mut rows = Vec::new();
+        for (key, dependency) in self.deployment.service_dependencies() {
+            let contract = self
+                .deployment
+                .contract_store()
+                .get(dependency.contract())
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        BytecodeLinkLocation::ServiceDependency { key: key.clone() },
+                        "service dependency contract is absent from hydration".to_string(),
+                    )
+                })?;
+            for operation in dependency.used_operations() {
+                let descriptor = contract.operations.get(operation).ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        BytecodeLinkLocation::ServiceDependency { key: key.clone() },
+                        format!("service dependency operation {operation} is absent from its contract"),
+                    )
+                })?;
+                let caller = self
+                    .deployment
+                    .packages()
+                    .get(&key.caller_package_build_id)
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            BytecodeLinkLocation::ServiceDependency { key: key.clone() },
+                            "service dependency caller package is absent".to_string(),
+                        )
+                    })?;
+                let signature = boundary_signature(
+                    &descriptor.contract,
+                    caller,
+                    type_linker,
+                    BytecodeLinkLocation::ServiceDependency { key: key.clone() },
+                )?;
+                rows.push(LinkedServiceOperationTarget::new(
+                    skiff_runtime_linked_bytecode::ServiceOperationIndex::new(rows.len() as u32),
+                    key.clone(),
+                    operation.clone(),
+                    contract.service_protocol_identity.clone(),
+                    signature,
+                ));
+            }
+        }
+        Ok(rows)
+    }
+
+    fn link_actor_targets(
+        &self,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        frames: &[LinkedFrameLayout],
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<(Vec<LinkedActorCreateTarget>, Vec<LinkedActorMethodTarget>), BytecodeLinkError> {
+        let mut creates = Vec::new();
+        let mut methods = Vec::new();
+        for package in self.deployment.packages().values() {
+            for actor in &package.artifact().actor_implementations {
+                let actor_abi = package
+                    .artifact()
+                    .implementation_links
+                    .types
+                    .values()
+                    .find(|export| {
+                        export.file.module_path == actor.actor.module_path
+                            && export.symbol == actor.actor.symbol
+                    })
+                    .and_then(|export| export.actor.as_ref())
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            self.package_location(package),
+                            format!(
+                                "actor {} has no package ABI authority",
+                                actor.actor.symbol_path()
+                            ),
+                        )
+                    })?;
+                let actor_ref = LinkedActorImplementationRef::new(
+                    package.reference().package_build_id.clone(),
+                    actor.actor.clone(),
+                    actor_abi.actor_abi_identity.clone(),
+                    actor.actor_implementation_identity.clone(),
+                );
+                for (method_identity, callable) in &actor.methods {
+                    let key = self.key_for_receiver_callable(package, callable, type_linker)?;
+                    let function = indices.get(&key).copied().ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            self.package_location(package),
+                            format!("actor method {method_identity:?} is absent from the closure"),
+                        )
+                    })?;
+                    let signature = frame_signature(
+                        frames.get(function.get() as usize).ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                self.package_location(package),
+                                "actor method frame is absent".to_string(),
+                            )
+                        })?,
+                        package,
+                        package.function_key_for_callable(callable),
+                    )?;
+                    methods.push(LinkedActorMethodTarget::new(
+                        skiff_runtime_linked_bytecode::ActorMethodIndex::new(methods.len() as u32),
+                        actor_ref.clone(),
+                        method_identity.clone(),
+                        function,
+                        signature,
+                    ));
+                }
+                if let Some(create) = &actor.create {
+                    let key = self.key_for_receiver_callable(
+                        package,
+                        &create.package_callable_id,
+                        type_linker,
+                    )?;
+                    let function = indices.get(&key).copied().ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            self.package_location(package),
+                            format!("actor create {:?} is absent from the closure", create.method_identity),
+                        )
+                    })?;
+                    let signature = frame_signature(
+                        frames.get(function.get() as usize).ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                self.package_location(package),
+                                "actor create frame is absent".to_string(),
+                            )
+                        })?,
+                        package,
+                        package.function_key_for_callable(&create.package_callable_id),
+                    )?;
+                    creates.push(LinkedActorCreateTarget::new(
+                        skiff_runtime_linked_bytecode::ActorCreateIndex::new(creates.len() as u32),
+                        actor_ref,
+                        create.method_identity.clone(),
+                        function,
+                        signature,
+                    ));
+                }
+            }
+        }
+        Ok((creates, methods))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(in crate::bytecode) enum InterfaceKind {
+    Requirement,
+    Callback,
+    Local,
+    Remote,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum InterfaceSource {
+    Requirement,
+    Local(skiff_artifact_model::LocalInterfaceRef),
+    Remote(skiff_artifact_model::RemoteInterfaceRef),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct InterfaceKey {
+    interface: InterfaceInstantiationRef,
+    kind: InterfaceKind,
+    concrete_type: Option<TypeIndex>,
+    service_requirement_key: Option<ServiceRequirementKey>,
+    public_instance_key: Option<String>,
+    source: InterfaceSource,
+}
+
+fn boundary_signature(
+    contract: &BoundaryOperationContract,
+    caller: &HydratedBytecodePackage,
+    type_linker: &mut TypeLinker<'_>,
+    location: BytecodeLinkLocation,
+) -> Result<LinkedCallableSignature, BytecodeLinkError> {
+    let specialization = first_specialization(caller, &location)?;
+    let parameter_types = contract
+        .parameters
+        .iter()
+        .map(|parameter| {
+            intern_contract_type(caller, &specialization, &parameter.ty, type_linker, &location)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let result_types = contract_return_types(&contract.return_value.ty)
+        .into_iter()
+        .map(|ty| intern_contract_type(caller, &specialization, &ty, type_linker, &location))
+        .collect::<Result<Vec<_>, _>>()?;
+    let parameter_plans = parameter_types
+        .iter()
+        .copied()
+        .map(|ty| {
+            let concrete = type_linker
+                .linked_type_ref(ty)
+                .cloned()
+                .ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "service parameter type is absent".to_string()))?;
+            type_linker.plan_for_concrete_type(&concrete, location.clone())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let result_plans = result_types
+        .iter()
+        .copied()
+        .map(|ty| {
+            let concrete = type_linker
+                .linked_type_ref(ty)
+                .cloned()
+                .ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "service result type is absent".to_string()))?;
+            type_linker.plan_for_concrete_type(&concrete, location.clone())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let parameter_mode_count = parameter_types.len();
+    LinkedCallableSignature::new(
+        parameter_types.into_boxed_slice(),
+        vec![ParamModeIr::Value; parameter_mode_count].into_boxed_slice(),
+        parameter_plans.into_boxed_slice(),
+        result_types.into_boxed_slice(),
+        result_plans.into_boxed_slice(),
+        service_effect_summary(contract),
+    )
+    .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location, error.to_string()))
+}
+
+fn contract_return_types(ty: &ContractTypeRef) -> Vec<ContractTypeRef> {
+    if matches!(ty, ContractTypeRef::Builtin { name, .. } if name == "void") {
+        Vec::new()
+    } else {
+        vec![ty.clone()]
+    }
+}
+
+fn service_effect_summary(contract: &BoundaryOperationContract) -> CallableEffectSummary {
+    let guarantee = &contract.effect_guarantee;
+    CallableEffectSummary::Analyzed {
+        effects: CallableMayEffects {
+            escapes_caller_value: !guarantee.detached_parameters
+                || !guarantee.detached_return
+                || !guarantee.detached_error,
+            requires_same_heap_identity: !guarantee.no_same_heap_identity,
+            invokes_unknown_target: false,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::ServiceCall],
+            inout_path_effects: Vec::new(),
+        },
+    }
+}
+
+fn intern_contract_type(
+    caller: &HydratedBytecodePackage,
+    specialization: &SpecializationKey,
+    ty: &ContractTypeRef,
+    type_linker: &mut TypeLinker<'_>,
+    location: &BytecodeLinkLocation,
+) -> Result<TypeIndex, BytecodeLinkError> {
+    let ir = contract_type_to_type_ref(ty, location)?;
+    type_linker.intern_concrete_type(caller, specialization, &ir, &BTreeMap::new(), location.clone())
+}
+
+fn contract_type_to_type_ref(
+    ty: &ContractTypeRef,
+    location: &BytecodeLinkLocation,
+) -> Result<TypeRefIr, BytecodeLinkError> {
+    Ok(match ty {
+        ContractTypeRef::Builtin { name, arguments } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: arguments
+                .iter()
+                .map(|arg| contract_type_to_type_ref(arg, location))
+                .collect::<Result<_, _>>()?,
+        },
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => TypeRefIr::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        },
+        ContractTypeRef::AnyInterface { interface, arguments } => TypeRefIr::AnyInterface {
+            interface: InterfaceInstantiationRef {
+                interface_abi_id: String::from_utf8(
+                    skiff_canonical_json::canonical_json_bytes(&contract_type_to_type_ref(interface, location)?)
+                        .map_err(|error| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location.clone(),
+                                format!("contract interface identity cannot be canonicalized: {error}"),
+                            )
+                        })?,
+                )
+                .map_err(|_| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "contract interface identity is not UTF-8".to_string(),
+                    )
+                })?,
+                canonical_type_args: arguments
+                    .iter()
+                    .map(|arg| contract_type_to_type_ref(arg, location))
+                    .collect::<Result<_, _>>()?,
+            },
+        },
+        ContractTypeRef::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, field)| Ok((name.clone(), contract_type_to_type_ref(field, location)?)))
+                .collect::<Result<_, _>>()?,
+        },
+        ContractTypeRef::StructuralUnion { variants } => TypeRefIr::Union {
+            items: variants
+                .iter()
+                .map(|variant| contract_type_to_type_ref(variant, location))
+                .collect::<Result<_, _>>()?,
+        },
+        ContractTypeRef::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(contract_type_to_type_ref(inner, location)?),
+        },
+        ContractTypeRef::Literal { value } => {
+            let value = match value {
+                skiff_artifact_model::ContractLiteral::String { value } => value,
+            };
+            TypeRefIr::Literal {
+                value: LiteralIr::String { value: value.clone() },
+            }
+        }
+        ContractTypeRef::TypeParam { name } => {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("service contract retains unresolved type parameter {name:?}"),
+            ));
+        }
+    })
+}
+
+fn first_specialization(
+    package: &HydratedBytecodePackage,
+    location: &BytecodeLinkLocation,
+) -> Result<SpecializationKey, BytecodeLinkError> {
+    let function = package
+        .bytecode()
+        .view()
+        .functions()
+        .iter()
+        .next()
+        .ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "caller package has no linked specialization".to_string(),
+            )
+        })?;
+    let canonical = package
+        .canonical_implementation_callable_for_function_key(&function.function_key)
+        .ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("function {} has no canonical callable", function.function_key),
+            )
+        })?;
+    super::relocations::specialization_key(
+        package,
+        &function.function_key,
+        canonical.clone(),
+        location.clone(),
+    )
+}
+
+fn frame_signature(
+    frame: &LinkedFrameLayout,
+    _package: &HydratedBytecodePackage,
+    _effect_callable: Option<&str>,
+) -> Result<LinkedCallableSignature, BytecodeLinkError> {
+    let location = BytecodeLinkLocation::Deployment {
+        deployment: Box::new(skiff_artifact_model::ServiceDeploymentRef {
+            service_id: "service".to_string(),
+            contract_version: "1.0.0".to_string(),
+            deployment_revision: skiff_artifact_model::DeploymentRevision::new("revision:targets"),
+            deployment_artifact_identity: skiff_artifact_model::DeploymentArtifactIdentity::new(
+                "deployment:targets",
+            ),
+        }),
+    };
+    LinkedCallableSignature::new(
+        frame
+            .parameters()
+            .iter()
+            .map(|parameter| {
+                frame
+                    .slot_types()
+                    .get(parameter.slot().get() as usize)
+                    .copied()
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::FrameAndValueTransferPlan,
+                            location.clone(),
+                            format!("parameter slot {} is out of bounds", parameter.slot().get()),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice(),
+        frame
+            .parameters()
+            .iter()
+            .map(skiff_runtime_linked_bytecode::LinkedParameterSlot::mode)
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        frame
+            .parameters()
+            .iter()
+            .map(|parameter| parameter.plan().clone())
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        frame.result_types().to_vec().into_boxed_slice(),
+        frame.result_plans().to_vec().into_boxed_slice(),
+        CallableEffectSummary::Unknown {
+            reason: skiff_artifact_model::CallableEffectUnknownReason::AnalysisPending,
+        },
+    )
+    .map_err(|error| {
+        unsatisfied(
+            BytecodeLinkObligation::FrameAndValueTransferPlan,
+            location,
+            error.to_string(),
+        )
+    })
+}
+
+impl LinkedDispatchTables {
+    fn sort_and_validate(&mut self) -> Result<(), BytecodeLinkError> {
+        let mut seen = BTreeSet::new();
+        for target in &self.service_operations {
+            let key = (
+                target.service_requirement_key().clone(),
+                target.contract_operation_id().clone(),
+            );
+            if !seen.insert(key) {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    BytecodeLinkLocation::Deployment {
+                        deployment: Box::new(skiff_artifact_model::ServiceDeploymentRef {
+                            service_id: "service".to_string(),
+                            contract_version: "1.0.0".to_string(),
+                            deployment_revision:
+                                skiff_artifact_model::DeploymentRevision::new("revision:targets"),
+                            deployment_artifact_identity:
+                                skiff_artifact_model::DeploymentArtifactIdentity::new(
+                                    "deployment:targets",
+                                ),
+                        }),
+                    },
+                    "duplicate service operation target".to_string(),
+                ));
+            }
+        }
+        let mut actor_method_seen = BTreeSet::new();
+        for target in &self.actor_methods {
+            let key = (
+                target.owner_package_build_id().clone(),
+                target.actor().module_path.clone(),
+                target.actor().symbol.clone(),
+                target.actor_implementation_identity().clone(),
+                target.method_identity().clone(),
+            );
+            if !actor_method_seen.insert(key) {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    BytecodeLinkLocation::Deployment {
+                        deployment: Box::new(skiff_artifact_model::ServiceDeploymentRef {
+                            service_id: "service".to_string(),
+                            contract_version: "1.0.0".to_string(),
+                            deployment_revision:
+                                skiff_artifact_model::DeploymentRevision::new("revision:targets"),
+                            deployment_artifact_identity:
+                                skiff_artifact_model::DeploymentArtifactIdentity::new(
+                                    "deployment:targets",
+                                ),
+                        }),
+                    },
+                    "duplicate actor method target".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl DeploymentLinker<'_> {
+    fn link_interface_tables(
+        &self,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        frames: &[LinkedFrameLayout],
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<Vec<LinkedInterfaceTable>, BytecodeLinkError> {
+        let mut unique = Vec::<InterfaceKey>::new();
+        for package in self.deployment.packages().values() {
+            for function in package.bytecode().view().functions() {
+                for instruction in &function.instructions {
+                    let contract = skiff_artifact_model::contract_for_opcode(instruction.descriptor.kind);
+                    for (ordinal, operand) in contract.operands.iter().enumerate() {
+                        if operand.kind != skiff_artifact_model::OperandKind::Reloc {
+                            continue;
+                        }
+                        let relocation_index = *instruction.operand_words.get(ordinal).ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::RelocationResolution,
+                                self.instruction_location(package, function, instruction.pc),
+                                "relocation operand is absent".to_string(),
+                            )
+                        })?;
+                        let relocation = function.relocations.get(relocation_index as usize).ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::RelocationResolution,
+                                self.instruction_location(package, function, instruction.pc),
+                                "relocation index is out of bounds".to_string(),
+                            )
+                        })?;
+                        let key = match relocation {
+                            BytecodeRelocation::InterfaceRequirementRef { interface } => {
+                                let kind = if instruction.descriptor.kind == skiff_artifact_model::Opcode::InvokeCallback {
+                                    InterfaceKind::Callback
+                                } else {
+                                    InterfaceKind::Requirement
+                                };
+                                Some(InterfaceKey {
+                                    interface: interface.clone(),
+                                    kind,
+                                    concrete_type: None,
+                                    service_requirement_key: None,
+                                    public_instance_key: None,
+                                    source: InterfaceSource::Requirement,
+                                })
+                            }
+                            BytecodeRelocation::LocalInterfaceRef { interface } => {
+                                let specialization = self.specialization_for_function_key(package, &function.function_key, indices)?;
+                                let concrete_type = type_linker.intern_concrete_type(
+                                    package,
+                                    specialization,
+                                    &interface.concrete_type,
+                                    &BTreeMap::new(),
+                                    self.instruction_location(package, function, instruction.pc),
+                                )?;
+                                Some(InterfaceKey {
+                                    interface: interface.interface.clone(),
+                                    kind: InterfaceKind::Local,
+                                    concrete_type: Some(concrete_type),
+                                    service_requirement_key: None,
+                                    public_instance_key: None,
+                                    source: InterfaceSource::Local(interface.clone()),
+                                })
+                            }
+                            BytecodeRelocation::RemoteInterfaceRef { interface } => {
+                                Some(InterfaceKey {
+                                    interface: interface.interface.clone(),
+                                    kind: InterfaceKind::Remote,
+                                    concrete_type: None,
+                                    service_requirement_key: Some(ServiceRequirementKey {
+                                        caller_package_build_id: package.reference().package_build_id.clone(),
+                                        service_requirement_slot: interface.service_requirement_slot,
+                                    }),
+                                    public_instance_key: Some(interface.public_instance_key.clone()),
+                                    source: InterfaceSource::Remote(interface.clone()),
+                                })
+                            }
+                            _ => None,
+                        };
+                        if let Some(key) = key {
+                            if !unique.contains(&key) {
+                                unique.push(key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut rows = Vec::new();
+        for key in unique {
+            let index = skiff_runtime_linked_bytecode::InterfaceTableIndex::new(rows.len() as u32);
+            let package = self.deployment.packages().values().next().ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    self.deployment_location(),
+                    "no package is hydrated for interface target".to_string(),
+                )
+            })?;
+            rows.push(self.link_one_interface_table(package, index, &key, indices, frames, type_linker)?);
+        }
+        Ok(rows)
+    }
+
+    fn link_one_interface_table(
+        &self,
+        package: &HydratedBytecodePackage,
+        index: skiff_runtime_linked_bytecode::InterfaceTableIndex,
+        key: &InterfaceKey,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        frames: &[LinkedFrameLayout],
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<LinkedInterfaceTable, BytecodeLinkError> {
+        let location = self.package_location(package);
+        let specialization = self.specialization_for_package_linked(package, indices, &location)?;
+        let instantiation = linked_instantiation(&key.interface, package, specialization, type_linker, &location)?;
+        let kind = match &key.kind {
+            InterfaceKind::Requirement | InterfaceKind::Callback => {
+                let methods = self.interface_requirement_methods(package, &key.interface, specialization, type_linker, &location)?;
+                let table = LinkedInterfaceRequirementTable::new(methods.into_boxed_slice())
+                    .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?;
+                if key.kind == InterfaceKind::Callback {
+                    LinkedInterfaceTableKind::Callback(table)
+                } else {
+                    LinkedInterfaceTableKind::Requirement(table)
+                }
+            }
+            InterfaceKind::Local => {
+                let source = match &key.source {
+                    InterfaceSource::Local(source) => source,
+                    _ => return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "local interface source is absent".to_string())),
+                };
+                let concrete_type = key.concrete_type.ok_or_else(|| {
+                    unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "local interface concrete type is absent".to_string())
+                })?;
+                let mut methods = Vec::new();
+                for method in &source.methods {
+                    let signature = interface_slot_signature(package, specialization, &method.signature, type_linker, &location)?;
+                    let function_key = method.function_key.clone();
+                    let specialization = self.specialization_for_function_key(package, &function_key, indices)?;
+                    let function = indices.get(specialization).copied().ok_or_else(|| {
+                        unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("local interface method {function_key:?} is absent from the closure"))
+                    })?;
+                    let abi_id = LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
+                        .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?;
+                    methods.push(
+                        LinkedLocalInterfaceMethod::new(
+                            method.slot,
+                            method.method_name.clone(),
+                            abi_id,
+                            signature,
+                            function,
+                            method.receiver_call_abi,
+                        )
+                        .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                    );
+                }
+                LinkedInterfaceTableKind::Local(
+                    LinkedLocalInterfaceTable::new(concrete_type, methods.into_boxed_slice())
+                        .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                )
+            }
+            InterfaceKind::Remote => {
+                let source = match &key.source {
+                    InterfaceSource::Remote(source) => source,
+                    _ => return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "remote interface source is absent".to_string())),
+                };
+                let mut methods = Vec::new();
+                for method in &source.methods {
+                    let signature = interface_slot_signature(package, specialization, &method.signature, type_linker, &location)?;
+                    let abi_id = LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
+                        .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?;
+                    methods.push(LinkedRemoteInterfaceMethod::new(
+                        method.slot,
+                        abi_id,
+                        signature,
+                        method.contract_operation_id.clone(),
+                    ));
+                }
+                let requirement_key = key.service_requirement_key.clone().ok_or_else(|| {
+                    unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "remote interface requirement key is absent".to_string())
+                })?;
+                let public_instance_key = key.public_instance_key.clone().ok_or_else(|| {
+                    unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "remote interface public instance is absent".to_string())
+                })?;
+                LinkedInterfaceTableKind::Remote(
+                    LinkedRemoteInterfaceTable::new(
+                        requirement_key,
+                        LinkedPublicInstanceKey::parse(public_instance_key)
+                            .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                        methods.into_boxed_slice(),
+                        source.callee_protocol_identity.clone(),
+                    )
+                    .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                )
+            }
+        };
+        let _ = frames;
+        Ok(LinkedInterfaceTable::new(index, instantiation, kind))
+    }
+
+    fn interface_requirement_methods(
+        &self,
+        package: &HydratedBytecodePackage,
+        interface: &InterfaceInstantiationRef,
+        specialization: &SpecializationKey,
+        type_linker: &mut TypeLinker<'_>,
+        location: &BytecodeLinkLocation,
+    ) -> Result<Vec<LinkedInterfaceRequirementMethod>, BytecodeLinkError> {
+        let identity = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id)
+            .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("interface ABI is not TypeRefIr: {error}")))?;
+        let mut methods = Vec::new();
+        match identity {
+            TypeRefIr::PackageSymbol { symbol } => {
+                let owner = self.resolve_package_symbol_owner(package, &symbol, location)?;
+                let abi_symbol = owner.artifact().package_local_abi.implementation_symbols.get(&symbol.symbol_path)
+                    .or_else(|| owner.artifact().package_local_abi.public_symbols.get(&symbol.symbol_path))
+                    .ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("interface symbol {} is absent", symbol.symbol_path)))?;
+                let PackageLocalAbiSymbol::Type { interface_methods, type_params, .. } = abi_symbol else {
+                    return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "interface identity is not a type symbol".to_string()));
+                };
+                if type_params.len() != interface.canonical_type_args.len() {
+                    return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "interface type parameter arity mismatch".to_string()));
+                }
+                for (slot, method) in interface_methods.iter().enumerate() {
+                    let _ = specialization;
+                    let signature = interface_method_signature(package, specialization, method, type_linker, location)?;
+                    let abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(interface, &method.name);
+                    methods.push(LinkedInterfaceRequirementMethod::new(
+                        slot as u32,
+                        LinkedInterfaceMethodAbiId::parse(abi_id).map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                        signature,
+                    ));
+                }
+            }
+            TypeRefIr::ServiceSymbol { symbol } => {
+                let export = package
+                    .artifact()
+                    .implementation_links
+                    .types
+                    .values()
+                    .find(|export| {
+                        export.file.module_path == symbol.module_path
+                            && export.symbol == symbol.symbol
+                    })
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            location.clone(),
+                            format!("interface service symbol {} is absent", symbol.symbol_path()),
+                        )
+                    })?;
+                if export.type_params.len() != interface.canonical_type_args.len() {
+                    return Err(unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "interface type parameter arity mismatch".to_string(),
+                    ));
+                }
+                for (slot, method) in export.interface_methods.iter().enumerate() {
+                    let _ = specialization;
+                    let signature = interface_method_signature(package, specialization, method, type_linker, location)?;
+                    let abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(interface, &method.name);
+                    methods.push(LinkedInterfaceRequirementMethod::new(
+                        slot as u32,
+                        LinkedInterfaceMethodAbiId::parse(abi_id).map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                        signature,
+                    ));
+                }
+            }
+            TypeRefIr::PackageSchema { package_id, stable_schema_key, package_schema_type_id } => {
+                let owner = self.deployment.packages().values().find(|candidate| candidate.reference().package_id == package_id)
+                    .ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("interface schema owner {package_id} is absent")))?;
+                let record = owner.artifact().bytecode_schema_records.get(&package_schema_type_id)
+                    .filter(|record| record.package_id == package_id && record.stable_schema_key == stable_schema_key)
+                    .ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "interface schema record is absent".to_string()))?;
+                let skiff_artifact_model::ContractTypeDescriptor::CallbackInterface { operations } = &record.canonical_descriptor.descriptor else {
+                    return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "interface schema is not a CallbackInterface".to_string()));
+                };
+                for (slot, (name, operation)) in operations.iter().enumerate() {
+                    let _ = specialization;
+                    let mut params = Vec::new();
+                    for (index, ty) in operation.parameters.iter().enumerate() {
+                        params.push(skiff_artifact_model::FunctionTypeParamIr {
+                            name: format!("arg{index}"),
+                            ty: contract_type_to_type_ref(ty, location)?,
+                        });
+                    }
+                    let return_type = contract_type_to_type_ref(&operation.return_type, location)?;
+                    let signature = interface_slot_signature_from_types(
+                        package, specialization, &params, &return_type, type_linker, location,
+                    )?;
+                    let abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(interface, name);
+                    methods.push(LinkedInterfaceRequirementMethod::new(
+                        slot as u32,
+                        LinkedInterfaceMethodAbiId::parse(abi_id).map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                        signature,
+                    ));
+                }
+            }
+            _ => return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "interface ABI identity is not PackageSymbol or PackageSchema".to_string())),
+        }
+        Ok(methods)
+    }
+
+    fn link_synthetic_callbacks(
+        &self,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        frames: &[LinkedFrameLayout],
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<Vec<LinkedSyntheticCallbackTarget>, BytecodeLinkError> {
+        let mut seen = BTreeSet::new();
+        let mut rows = Vec::new();
+        for package in self.deployment.packages().values() {
+            for function in package.bytecode().view().functions() {
+                for relocation in &function.relocations {
+                    let BytecodeRelocation::SyntheticCallbackRef { function_key } = relocation else {
+                        continue;
+                    };
+                    if !seen.insert((package.reference().package_build_id.clone(), function_key.clone())) {
+                        continue;
+                    }
+                    let key = self.key_for_synthetic_callback(package, function_key)?;
+                    let function = indices.get(&key).copied().ok_or_else(|| {
+                        unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, self.package_location(package), format!("synthetic callback {function_key} is absent from the closure"))
+                    })?;
+                    let signature = frame_signature(
+                        frames.get(function.get() as usize).ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, self.package_location(package), "synthetic callback frame is absent".to_string()))?,
+                        package,
+                        Some(function_key.as_str()),
+                    )?;
+                    let artifact_function_key = ArtifactFunctionKey::parse(function_key.clone())
+                        .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, self.package_location(package), error.to_string()))?;
+                    rows.push(LinkedSyntheticCallbackTarget::new(
+                        skiff_runtime_linked_bytecode::SyntheticCallbackIndex::new(rows.len() as u32),
+                        artifact_function_key,
+                        function,
+                        None,
+                        signature,
+                    ));
+                }
+            }
+        }
+        let _ = type_linker;
+        Ok(rows)
+    }
+
+    fn link_host_and_intrinsics(
+        &self,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<(Vec<LinkedHostEffectAdapterTarget>, Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>), BytecodeLinkError> {
+        let mut host = Vec::new();
+        let mut intrinsics = Vec::new();
+        for package in self.deployment.packages().values() {
+            for function in package.bytecode().view().functions() {
+                for relocation in &function.relocations {
+                    let location = self.function_location(package, function);
+                    match relocation {
+                        BytecodeRelocation::HostEffectRef(effect) => {
+                            let specialization = self.specialization_for_function_key(package, &function.function_key, indices)?;
+                            let mut resolver = DeploymentLifecycleResolver::new(self.deployment, package);
+                            let mut budget = ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64)
+                                .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?;
+                            skiff_artifact_model::host_effect_registry()
+                                .match_reference(&effect.target, &effect.signature, &mut resolver, &mut budget)
+                                .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("host effect registry rejected target: {error:?}")))?;
+                            let signature = native_signature(package, specialization, &effect.signature, type_linker, &location)?;
+                            let binding_key = effect.target.binding_key.as_deref().ok_or_else(|| {
+                                unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "host effect target has no binding key".to_string())
+                            })?;
+                            host.push(LinkedHostEffectAdapterTarget::new(
+                                skiff_runtime_linked_bytecode::HostEffectAdapterIndex::new(host.len() as u32),
+                                effect.target.namespace.clone(),
+                                effect.target.symbol.clone(),
+                                skiff_runtime_linked_bytecode::LinkedHostBindingKey::parse(binding_key)
+                                    .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                                effect.target.metadata.clone(),
+                                signature,
+                            )
+                            .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?);
+                        }
+                        BytecodeRelocation::IntrinsicRef { intrinsic } => {
+                            let specialization = self.specialization_for_function_key(package, &function.function_key, indices)?;
+                            let mut resolver = DeploymentLifecycleResolver::new(self.deployment, package);
+                            let mut budget = ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64)
+                                .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?;
+                            skiff_artifact_model::intrinsic_registry()
+                                .match_reference(intrinsic, &mut resolver, &mut budget)
+                                .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("intrinsic registry rejected target: {error:?}")))?;
+                            let signature = native_signature(package, specialization, &intrinsic.signature, type_linker, &location)?;
+                            let kind = match &intrinsic.target {
+                                BytecodeIntrinsicRef::Static { canonical_key, signature_version } => skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(
+                                    skiff_runtime_linked_bytecode::LinkedStaticIntrinsicTarget::new(
+                                        skiff_runtime_linked_bytecode::LinkedIntrinsicCanonicalKey::parse(canonical_key.clone())
+                                            .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                                        *signature_version,
+                                    )
+                                    .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
+                                ),
+                                BytecodeIntrinsicRef::Receiver { op } => skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Receiver(*op),
+                            };
+                            intrinsics.push(skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(
+                                skiff_runtime_linked_bytecode::IntrinsicIndex::new(intrinsics.len() as u32),
+                                kind,
+                                signature,
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok((host, intrinsics))
+    }
+
+    fn key_for_receiver_callable(
+        &self,
+        package: &HydratedBytecodePackage,
+        callable: &skiff_artifact_model::PackageCallableId,
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<SpecializationKey, BytecodeLinkError> {
+        let location = self.package_location(package);
+        let function_key = package.function_key_for_callable(callable).ok_or_else(|| {
+            unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("callable {callable} has no function key"))
+        })?;
+        let function = package.bytecode().view().functions().iter().find(|function| function.function_key == function_key)
+            .ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("function {function_key} is absent")))?;
+        if !function.type_parameters.is_empty() {
+            return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location, "receiver callable is generic".to_string()));
+        }
+        let self_ref = function.self_type_ref.ok_or_else(|| {
+            unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "receiver callable has no self type".to_string())
+        })?;
+        let receiver = type_linker.intern_package_global_type(package, self_ref, location.clone())?.0;
+        let canonical = package.canonical_implementation_callable_for_function_key(function_key).ok_or_else(|| {
+            unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "receiver callable has no canonical implementation".to_string())
+        })?;
+        if canonical != callable {
+            return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location, "receiver callable aliases a different canonical identity".to_string()));
+        }
+        let artifact_function_key = ArtifactFunctionKey::parse(function_key)
+            .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?;
+        Ok(SpecializationKey::new(
+            package.reference().package_build_id.clone(),
+            artifact_function_key,
+            canonical.clone(),
+            Box::new([]),
+            Some(receiver),
+        ))
+    }
+
+    fn key_for_synthetic_callback(
+        &self,
+        package: &HydratedBytecodePackage,
+        function_key: &str,
+    ) -> Result<SpecializationKey, BytecodeLinkError> {
+        let location = self.package_location(package);
+        let function = package.bytecode().view().functions().iter().find(|function| function.function_key == function_key)
+            .ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("synthetic callback {function_key} is absent")))?;
+        let skiff_artifact_model::BytecodeFunctionOrigin::SyntheticCallback { owner, site_ordinal } = &function.origin else {
+            return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location, "callback target is not synthetic".to_string()));
+        };
+        let callable = package.synthetic_callback_callable(owner, *site_ordinal).ok_or_else(|| {
+            unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("synthetic callback {function_key} has no callable identity"))
+        })?;
+        super::relocations::specialization_key(package, function_key, callable.clone(), location)
+    }
+
+    fn specialization_for_function_key<'b>(
+        &self,
+        package: &HydratedBytecodePackage,
+        function_key: &str,
+        indices: &'b BTreeMap<SpecializationKey, FunctionIndex>,
+    ) -> Result<&'b SpecializationKey, BytecodeLinkError> {
+        indices.keys().find(|key| {
+            key.package_build_id() == &package.reference().package_build_id
+                && key.artifact_function_key().as_str() == function_key
+        }).ok_or_else(|| {
+            unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, self.package_location(package), format!("function {function_key} has no linked specialization"))
+        })
+    }
+
+    fn specialization_for_package_linked<'b>(
+        &self,
+        package: &HydratedBytecodePackage,
+        indices: &'b BTreeMap<SpecializationKey, FunctionIndex>,
+        location: &BytecodeLinkLocation,
+    ) -> Result<&'b SpecializationKey, BytecodeLinkError> {
+        indices
+            .keys()
+            .find(|key| key.package_build_id() == &package.reference().package_build_id)
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "package has no linked specialization for interface target".to_string(),
+                )
+            })
+    }
+
+    fn resolve_package_symbol_owner(
+        &self,
+        caller: &HydratedBytecodePackage,
+        symbol: &PackageSymbolRef,
+        location: &BytecodeLinkLocation,
+    ) -> Result<&HydratedBytecodePackage, BytecodeLinkError> {
+        match &symbol.package {
+            PackageRefIr::PackageId { package_id } => self.deployment.packages().values().find(|package| package.reference().package_id == *package_id).ok_or_else(|| {
+                unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("package owner {package_id} is absent"))
+            }),
+            PackageRefIr::Dependency { dependency_ref } => {
+                let key = skiff_artifact_model::PackageRequirementKey {
+                    caller_package_build_id: caller.reference().package_build_id.clone(),
+                    package_requirement_alias: dependency_ref.clone(),
+                };
+                let binding = self.deployment.deployment().package_bindings.iter().find(|binding| binding.key == key).ok_or_else(|| {
+                    unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("dependency alias {dependency_ref} is absent"))
+                })?;
+                self.deployment.packages().get(&binding.package.package_build_id).filter(|package| package.reference() == &binding.package).ok_or_else(|| {
+                    unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "dependency target is absent".to_string())
+                })
+            }
+        }
+    }
+}
+
+fn linked_instantiation(
+    interface: &InterfaceInstantiationRef,
+    package: &HydratedBytecodePackage,
+    specialization: &SpecializationKey,
+    type_linker: &mut TypeLinker<'_>,
+    location: &BytecodeLinkLocation,
+) -> Result<LinkedInterfaceInstantiation, BytecodeLinkError> {
+    let concrete_type_arguments = interface
+        .canonical_type_args
+        .iter()
+        .map(|ty| type_linker.intern_concrete_type(package, specialization, ty, &BTreeMap::new(), location.clone()))
+        .collect::<Result<Vec<_>, _>>()?;
+    LinkedInterfaceInstantiation::new(interface.clone(), concrete_type_arguments.into_boxed_slice())
+        .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))
+}
+
+fn interface_slot_signature(
+    package: &HydratedBytecodePackage,
+    specialization: &SpecializationKey,
+    signature: &InterfaceMethodSlotSignatureIr,
+    type_linker: &mut TypeLinker<'_>,
+    location: &BytecodeLinkLocation,
+) -> Result<LinkedCallableSignature, BytecodeLinkError> {
+    interface_slot_signature_from_types(
+        package,
+        specialization,
+        &signature.params,
+        &signature.return_type,
+        type_linker,
+        location,
+    )
+}
+
+fn interface_slot_signature_from_types(
+    package: &HydratedBytecodePackage,
+    specialization: &SpecializationKey,
+    params: &[skiff_artifact_model::FunctionTypeParamIr],
+    return_type: &TypeRefIr,
+    type_linker: &mut TypeLinker<'_>,
+    location: &BytecodeLinkLocation,
+) -> Result<LinkedCallableSignature, BytecodeLinkError> {
+    let mut parameter_types = Vec::new();
+    let mut parameter_plans = Vec::new();
+    for parameter in params {
+        let ty = type_linker.intern_concrete_type(package, specialization, &parameter.ty, &BTreeMap::new(), location.clone())?;
+        let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "interface parameter type is absent".to_string()))?;
+        let plan = type_linker.plan_for_concrete_type(&concrete, location.clone())?;
+        parameter_types.push(ty);
+        parameter_plans.push(plan);
+    }
+    let result_types = if matches!(return_type, TypeRefIr::Builtin { name, .. } if name == "void") {
+        Vec::new()
+    } else {
+        vec![type_linker.intern_concrete_type(package, specialization, return_type, &BTreeMap::new(), location.clone())?]
+    };
+    let mut result_plans = Vec::new();
+    for ty in &result_types {
+        let concrete = type_linker.linked_type_ref(*ty).cloned().ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "interface result type is absent".to_string()))?;
+        result_plans.push(type_linker.plan_for_concrete_type(&concrete, location.clone())?);
+    }
+    let parameter_mode_count = parameter_types.len();
+    LinkedCallableSignature::new(
+        parameter_types.into_boxed_slice(),
+        vec![ParamModeIr::Value; parameter_mode_count].into_boxed_slice(),
+        parameter_plans.into_boxed_slice(),
+        result_types.into_boxed_slice(),
+        result_plans.into_boxed_slice(),
+        CallableEffectSummary::Unknown {
+            reason: skiff_artifact_model::CallableEffectUnknownReason::AnalysisPending,
+        },
+    )
+    .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))
+}
+
+fn interface_method_signature(
+    package: &HydratedBytecodePackage,
+    specialization: &SpecializationKey,
+    method: &skiff_artifact_model::InterfaceMethodSignature,
+    type_linker: &mut TypeLinker<'_>,
+    location: &BytecodeLinkLocation,
+) -> Result<LinkedCallableSignature, BytecodeLinkError> {
+    interface_slot_signature_from_types(package, specialization, &method.params, &method.return_type, type_linker, location)
+}
+
+fn native_signature(
+    package: &HydratedBytecodePackage,
+    specialization: &SpecializationKey,
+    signature: &skiff_artifact_model::HostEffectSignature,
+    type_linker: &mut TypeLinker<'_>,
+    location: &BytecodeLinkLocation,
+) -> Result<LinkedNativeCallableSignature, BytecodeLinkError> {
+    let mut parameter_types = Vec::new();
+    let mut parameter_plans = Vec::new();
+    for (ty, plan) in signature.parameter_types.iter().zip(&signature.parameter_plans) {
+        let index = type_linker.intern_concrete_type(package, specialization, ty, &BTreeMap::new(), location.clone())?;
+        let concrete = type_linker.linked_type_ref(index).cloned().ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "native parameter type is absent".to_string()))?;
+        parameter_types.push(index);
+        parameter_plans.push(type_linker.link_plan_for_type(plan, &concrete, location.clone())?);
+    }
+    let mut result_types = Vec::new();
+    let mut result_plans = Vec::new();
+    for (ty, plan) in signature.result_types.iter().zip(&signature.result_plans) {
+        let index = type_linker.intern_concrete_type(package, specialization, ty, &BTreeMap::new(), location.clone())?;
+        let concrete = type_linker.linked_type_ref(index).cloned().ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "native result type is absent".to_string()))?;
+        result_types.push(index);
+        result_plans.push(type_linker.link_plan_for_type(plan, &concrete, location.clone())?);
+    }
+    LinkedNativeCallableSignature::new(
+        parameter_types.into_boxed_slice(),
+        signature.parameter_modes.clone().into_boxed_slice(),
+        parameter_plans.into_boxed_slice(),
+        result_types.into_boxed_slice(),
+        result_plans.into_boxed_slice(),
+        signature.effects.clone(),
+    )
+    .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))
+}
+
+struct DeploymentLifecycleResolver<'a> {
+    deployment: &'a HydratedDeploymentBytecode,
+    caller: &'a HydratedBytecodePackage,
+}
+
+impl<'a> DeploymentLifecycleResolver<'a> {
+    fn new(deployment: &'a HydratedDeploymentBytecode, caller: &'a HydratedBytecodePackage) -> Self {
+        Self { deployment, caller }
+    }
+}
+
+impl ValueLifecycleFactResolver for DeploymentLifecycleResolver<'_> {
+    fn resolve_package_symbol(
+        &mut self,
+        symbol: &PackageSymbolRef,
+    ) -> Result<ResolvedPackageValueType, ValueLifecycleResolverError> {
+        let owner = match &symbol.package {
+            PackageRefIr::PackageId { package_id } => self.deployment.packages().values().find(|package| package.reference().package_id == *package_id).ok_or_else(|| resolver_error("package owner absent"))?,
+            PackageRefIr::Dependency { dependency_ref } => {
+                let key = skiff_artifact_model::PackageRequirementKey {
+                    caller_package_build_id: self.caller.reference().package_build_id.clone(),
+                    package_requirement_alias: dependency_ref.clone(),
+                };
+                let binding = self.deployment.deployment().package_bindings.iter().find(|binding| binding.key == key).ok_or_else(|| resolver_error("dependency binding absent"))?;
+                self.deployment.packages().get(&binding.package.package_build_id).ok_or_else(|| resolver_error("dependency package absent"))?
+            }
+        };
+        let symbol = owner.artifact().package_local_abi.implementation_symbols.get(&symbol.symbol_path)
+            .or_else(|| owner.artifact().package_local_abi.public_symbols.get(&symbol.symbol_path))
+            .ok_or_else(|| resolver_error("package symbol absent"))?;
+        let PackageLocalAbiSymbol::Type { descriptor, type_params, .. } = symbol else {
+            return Err(resolver_error("package symbol is not a type"));
+        };
+        Ok(ResolvedPackageValueType {
+            type_parameters: type_params.clone(),
+            descriptor: descriptor.clone(),
+        })
+    }
+
+    fn resolve_package_schema(
+        &mut self,
+        package_id: &str,
+        stable_schema_key: &str,
+        package_schema_type_id: &PackageSchemaTypeId,
+    ) -> Result<skiff_artifact_model::PackageSchemaTypeRecord, ValueLifecycleResolverError> {
+        let owner = self.deployment.packages().values().find(|package| package.reference().package_id == package_id).ok_or_else(|| resolver_error("schema owner absent"))?;
+        owner.artifact().bytecode_schema_records.get(package_schema_type_id)
+            .filter(|record| record.package_id == package_id && record.stable_schema_key == stable_schema_key)
+            .cloned()
+            .ok_or_else(|| resolver_error("schema record absent"))
+    }
+
+    fn validate_interface(
+        &mut self,
+        interface: &InterfaceInstantiationRef,
+    ) -> Result<(), ValueLifecycleResolverError> {
+        let identity: TypeRefIr = serde_json::from_str(&interface.interface_abi_id).map_err(|_| resolver_error("interface identity is not TypeRefIr"))?;
+        let TypeRefIr::PackageSymbol { symbol } = identity else {
+            return Err(resolver_error("interface identity is not PackageSymbol"));
+        };
+        self.resolve_package_symbol(&symbol)?;
+        Ok(())
+    }
+
+    fn validate_contract_interface(
+        &mut self,
+        interface: &skiff_artifact_model::ContractTypeRef,
+        arguments: &[skiff_artifact_model::ContractTypeRef],
+    ) -> Result<(), ValueLifecycleResolverError> {
+        let skiff_artifact_model::ContractTypeRef::PackageSchema { package_id, stable_schema_key, package_schema_type_id } = interface else {
+            return Err(resolver_error("contract interface is not PackageSchema"));
+        };
+        let record = self.resolve_package_schema(package_id, stable_schema_key, package_schema_type_id)?;
+        if !matches!(record.canonical_descriptor.descriptor, skiff_artifact_model::ContractTypeDescriptor::CallbackInterface { .. }) {
+            return Err(resolver_error("contract interface is not callback"));
+        }
+        if record.canonical_descriptor.type_params.len() != arguments.len() {
+            return Err(resolver_error("contract interface arity mismatch"));
+        }
+        Ok(())
+    }
+}
+
+fn resolver_error(message: impl Into<String>) -> ValueLifecycleResolverError {
+    ValueLifecycleResolverError {
+        authority: "bytecodeLinker.hydratedValueLifecycle".to_string(),
+        message: message.into(),
+    }
+}
+
+impl DeploymentLinker<'_> {
+    pub(super) fn extend_target_roots(
+        &self,
+        roots: &mut Vec<SpecializationKey>,
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<(), BytecodeLinkError> {
+        for package in self.deployment.packages().values() {
+            for actor in &package.artifact().actor_implementations {
+                for callable in actor.methods.values() {
+                    roots.push(self.key_for_receiver_callable(package, callable, type_linker)?);
+                }
+                if let Some(create) = &actor.create {
+                    roots.push(self.key_for_receiver_callable(
+                        package,
+                        &create.package_callable_id,
+                        type_linker,
+                    )?);
+                }
+            }
+            for function in package.bytecode().view().functions() {
+                for relocation in &function.relocations {
+                    match relocation {
+                        BytecodeRelocation::SyntheticCallbackRef { function_key } => {
+                            roots.push(self.key_for_synthetic_callback(package, function_key)?);
+                        }
+                        BytecodeRelocation::LocalInterfaceRef { interface } => {
+                            for method in &interface.methods {
+                                roots.push(self.key_for_receiver_function(
+                                    package,
+                                    &method.function_key,
+                                    type_linker,
+                                )?);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn key_for_receiver_function(
+        &self,
+        package: &HydratedBytecodePackage,
+        function_key: &str,
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<SpecializationKey, BytecodeLinkError> {
+        let location = self.package_location(package);
+        let function = package
+            .bytecode()
+            .view()
+            .functions()
+            .iter()
+            .find(|function| function.function_key == function_key)
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!("receiver function {function_key} is absent"),
+                )
+            })?;
+        if !function.type_parameters.is_empty() {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location,
+                "receiver function is generic".to_string(),
+            ));
+        }
+        let self_ref = function.self_type_ref.ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("receiver function {function_key} has no self type"),
+            )
+        })?;
+        let receiver = type_linker
+            .intern_package_global_type(package, self_ref, location.clone())?
+            .0;
+        let canonical = package
+            .canonical_implementation_callable_for_function_key(function_key)
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!("receiver function {function_key} has no canonical callable"),
+                )
+            })?;
+        let artifact_function_key = ArtifactFunctionKey::parse(function_key)
+            .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?;
+        Ok(SpecializationKey::new(
+            package.reference().package_build_id.clone(),
+            artifact_function_key,
+            canonical.clone(),
+            Box::new([]),
+            Some(receiver),
+        ))
+    }
+}
+
+impl LinkedDispatchTables {
+    pub(in crate::bytecode) fn service_operation_index(
+        &self,
+        caller_package_build_id: &PackageBuildId,
+        slot: u32,
+        operation: &ContractOperationId,
+    ) -> Option<skiff_runtime_linked_bytecode::ServiceOperationIndex> {
+        self.service_operations.iter().find(|target| {
+            target.service_requirement_key().caller_package_build_id == *caller_package_build_id
+                && target.service_requirement_key().service_requirement_slot == slot
+                && target.contract_operation_id() == operation
+        }).map(|target| target.index())
+    }
+
+    pub(in crate::bytecode) fn actor_method_index(
+        &self,
+        package: &HydratedBytecodePackage,
+        actor: &skiff_artifact_model::ServiceSymbolRef,
+        abi: &skiff_artifact_model::ActorAbiIdentity,
+        implementation: &skiff_artifact_model::ActorImplementationIdentity,
+        method: &skiff_artifact_model::ActorMethodIdentity,
+    ) -> Option<skiff_runtime_linked_bytecode::ActorMethodIndex> {
+        self.actor_methods.iter().find(|target| {
+            target.owner_package_build_id() == &package.reference().package_build_id
+                && target.actor() == actor
+                && target.actor_abi_identity() == abi
+                && target.actor_implementation_identity() == implementation
+                && target.method_identity() == method
+        }).map(|target| target.index())
+    }
+
+    pub(in crate::bytecode) fn interface_index(
+        &self,
+        interface: &InterfaceInstantiationRef,
+        kind: &InterfaceKind,
+    ) -> Option<skiff_runtime_linked_bytecode::InterfaceTableIndex> {
+        self.interface_tables.iter().find(|table| {
+            table.interface().artifact() == interface
+                && matches!(
+                    (kind, table.kind()),
+                    (InterfaceKind::Requirement, LinkedInterfaceTableKind::Requirement(_))
+                        | (InterfaceKind::Callback, LinkedInterfaceTableKind::Callback(_))
+                        | (InterfaceKind::Local, LinkedInterfaceTableKind::Local(_))
+                        | (InterfaceKind::Remote, LinkedInterfaceTableKind::Remote(_))
+                )
+        }).map(|table| table.index())
+    }
+
+    pub(in crate::bytecode) fn synthetic_callback_index(
+        &self,
+        package: &HydratedBytecodePackage,
+        function_key: &str,
+    ) -> Option<skiff_runtime_linked_bytecode::SyntheticCallbackIndex> {
+        self.synthetic_callback_origins
+            .get(&(package.reference().package_build_id.clone(), function_key.to_string()))
+            .copied()
+    }
+
+    pub(in crate::bytecode) fn host_index(
+        &self,
+        namespace: &str,
+        symbol: &str,
+        binding_key: &str,
+        metadata: &BTreeMap<String, skiff_artifact_model::MetadataValue>,
+    ) -> Option<skiff_runtime_linked_bytecode::HostEffectAdapterIndex> {
+        self.host_effect_adapters.iter().find(|target| {
+            target.namespace() == namespace
+                && target.symbol() == symbol
+                && target.binding_key().as_str() == binding_key
+                && target.metadata() == metadata
+        }).map(|target| target.index())
+    }
+
+    pub(in crate::bytecode) fn intrinsic_index(
+        &self,
+        reference: &BytecodeIntrinsicRef,
+    ) -> Option<skiff_runtime_linked_bytecode::IntrinsicIndex> {
+        self.intrinsics.iter().find(|target| match (target.kind(), reference) {
+            (
+                skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(linked),
+                BytecodeIntrinsicRef::Static { canonical_key, signature_version },
+            ) => linked.canonical_key().as_str() == canonical_key && linked.signature_version() == *signature_version,
+            (
+                skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Receiver(linked),
+                BytecodeIntrinsicRef::Receiver { op },
+            ) => linked == op,
+            _ => false,
+        }).map(|target| target.index())
+    }
+}

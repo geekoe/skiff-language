@@ -14,7 +14,7 @@ use skiff_artifact_model::{
 };
 
 use super::{
-    constants, no_effects, synthetic_callback_callable, RootProgram, CALLBACK_FUNCTION,
+    constants, synthetic_callback_callable, RootProgram, CALLBACK_FUNCTION,
     HELPER_CALLABLE, HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
 };
 
@@ -79,7 +79,10 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
     let has_parameter = program.root_has_parameter();
     let has_local = matches!(program, RootProgram::FromType);
     let slot_count = u32::from(has_parameter || has_local);
-    let slot_type_refs = (slot_count == 1).then_some(0).into_iter().collect();
+    let slot_type_refs = (slot_count == 1)
+        .then_some(if program == RootProgram::Interface { 1 } else { 0 })
+        .into_iter()
+        .collect();
     let slot_plan = if has_local {
         ValueTransferPlan::FromType {
             ty: TypeRefIr::builtin("string"),
@@ -87,6 +90,18 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
     } else {
         snapshot_plan()
     };
+    let has_result = matches!(
+            program,
+            RootProgram::Host
+                | RootProgram::Intrinsic
+                | RootProgram::RecordShape
+                | RootProgram::ArraysMaps
+        );
+    let result_type_refs = has_result.then_some(0).into_iter().collect::<Vec<_>>();
+    let result_plans = has_result
+        .then(|| result_plan(program))
+        .into_iter()
+        .collect::<Vec<_>>();
     RelocatableBytecodeFunction {
         function_key: ROOT_FUNCTION.to_string(),
         origin: BytecodeFunctionOrigin::Executable {
@@ -109,15 +124,20 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
                 .into_iter()
                 .collect(),
             writable_local_slots: Vec::new(),
-            result_count: 0,
-            result_type_refs: Vec::new(),
-            result_plans: Vec::new(),
+            result_count: u32::from(has_result),
+            result_type_refs,
+            result_plans,
             slot_plans: (slot_count == 1).then_some(slot_plan).into_iter().collect(),
         },
-        max_operand_depth: u32::from(matches!(
-            program,
-            RootProgram::Interface | RootProgram::Constant(_)
-        )),
+        max_operand_depth: match program {
+            RootProgram::RecordShape => 2,
+            RootProgram::Interface
+            | RootProgram::Host
+            | RootProgram::Intrinsic
+            | RootProgram::ArraysMaps
+            | RootProgram::Constant(_) => 1,
+            _ => 0,
+        },
         effect_summary_ref: PackageCallableId::new(ROOT_CALLABLE),
         exception_regions: Vec::new(),
         active_regions: Vec::new(),
@@ -253,57 +273,41 @@ fn root_body(
             vec![source_map(0, 4)],
         ),
         RootProgram::Interface => (
-            vec![0x06, 0, 0x24, 0, 0, 0, 0, 0, 0x25],
+            vec![0x06, 0, 0x24, 0, 0, 0, 1, 0, 0x08, 0x25],
             vec![BytecodeRelocation::InterfaceRequirementRef {
                 interface: skiff_artifact_model::InterfaceInstantiationRef {
                     interface_abi_id: interface_identity(),
                     canonical_type_args: Vec::new(),
                 },
             }],
-            Some(resume_descriptor(2, 8)),
+            Some(interface_resume_descriptor()),
             vec![source_map(2, 8)],
         ),
         RootProgram::Host => (
-            vec![0x80, 0, 0, 0, 0, 0x25],
-            vec![BytecodeRelocation::HostEffectRef(HostEffectReference {
-                target: NativeTarget {
-                    namespace: "fixture".to_string(),
-                    symbol: "host".to_string(),
-                    binding_key: Some("fixture.host".to_string()),
-                    metadata: BTreeMap::new(),
-                },
-                signature: HostEffectSignature {
-                    parameter_types: Vec::new(),
-                    parameter_modes: Vec::new(),
-                    parameter_plans: Vec::new(),
-                    result_types: Vec::new(),
-                    result_plans: Vec::new(),
-                    effects: no_effects(),
-                },
-            })],
-            Some(resume_descriptor(0, 5)),
+            vec![0x80, 0, 0, 1, 0, 0x25],
+            vec![BytecodeRelocation::HostEffectRef(valid_host_effect())],
+            Some(host_resume_descriptor()),
             vec![source_map(0, 5)],
         ),
         RootProgram::Intrinsic => (
-            vec![0x81, 0, 0, 0, 0x25],
+            vec![0x81, 0, 0, 1, 0x25],
             vec![BytecodeRelocation::IntrinsicRef {
-                intrinsic: IntrinsicReference {
-                    target: BytecodeIntrinsicRef::Static {
-                        canonical_key: "core.fixture.unavailable".to_string(),
-                        signature_version: 1,
-                    },
-                    signature: HostEffectSignature {
-                        parameter_types: Vec::new(),
-                        parameter_modes: Vec::new(),
-                        parameter_plans: Vec::new(),
-                        result_types: Vec::new(),
-                        result_plans: Vec::new(),
-                        effects: no_effects(),
-                    },
-                },
+                intrinsic: valid_intrinsic(),
             }],
             None,
             vec![source_map(0, 4)],
+        ),
+        RootProgram::RecordShape => (
+            vec![0x06, 0, 0x40, 0, 1, 0x41, 0, 0, 0x25],
+            Vec::new(),
+            None,
+            vec![source_map(2, 5)],
+        ),
+        RootProgram::ArraysMaps => (
+            vec![0x50, 1, 0x25],
+            Vec::new(),
+            None,
+            vec![source_map(0, 2)],
         ),
         RootProgram::FromType => (vec![0x25], Vec::new(), None, Vec::new()),
         RootProgram::Constant(_) => (vec![0x00, 0, 0x08, 0x25], Vec::new(), None, Vec::new()),
@@ -323,13 +327,76 @@ fn interface_identity() -> String {
 fn pools(program: RootProgram) -> BytecodePools {
     BytecodePools {
         constants: Vec::new(),
-        types: matches!(program, RootProgram::Interface | RootProgram::FromType)
-            .then(|| BytecodePoolEntry::TypeRef {
+        types: match program {
+            RootProgram::Host => vec![BytecodePoolEntry::TypeRef {
+                ty: TypeRefIr::builtin("Date"),
+            }],
+            RootProgram::Intrinsic => vec![
+                BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::builtin("string")],
+                    },
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::builtin("string"),
+                },
+            ],
+            RootProgram::Interface => vec![
+                BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::builtin("string"),
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::AnyInterface {
+                        interface: skiff_artifact_model::InterfaceInstantiationRef {
+                            interface_abi_id: interface_identity(),
+                            canonical_type_args: Vec::new(),
+                        },
+                    },
+                },
+            ],
+            RootProgram::FromType => vec![BytecodePoolEntry::TypeRef {
                 ty: TypeRefIr::builtin("string"),
-            })
-            .into_iter()
-            .collect(),
-        shapes: Vec::new(),
+            }],
+            RootProgram::RecordShape => vec![
+                BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::builtin("string"),
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::Record {
+                        fields: BTreeMap::from([(
+                            "name".to_string(),
+                            TypeRefIr::builtin("string"),
+                        )]),
+                    },
+                },
+            ],
+            RootProgram::ArraysMaps => vec![
+                BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::builtin("string")],
+                    },
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::builtin("string"),
+                },
+            ],
+            _ => Vec::new(),
+        },
+        shapes: match program {
+            RootProgram::RecordShape => vec![BytecodePoolEntry::ShapeRef {
+                shape: skiff_artifact_model::ShapeDeclaration {
+                    type_ref: 1,
+                    fields: vec![skiff_artifact_model::ShapeFieldDeclaration {
+                        name: "name".to_string(),
+                        type_ref: 0,
+                        plan: snapshot_plan(),
+                    }],
+                },
+            }],
+            _ => Vec::new(),
+        },
         effects: Vec::new(),
         resume: match root_body(program).2 {
             Some(descriptor) => vec![BytecodePoolEntry::ResumeDescriptor(descriptor)],
@@ -340,14 +407,80 @@ fn pools(program: RootProgram) -> BytecodePools {
     }
 }
 
-fn resume_descriptor(site_pc: u32, resume_pc: u32) -> ResumeDescriptor {
+fn valid_host_effect() -> HostEffectReference {
+    let entry = skiff_artifact_model::host_effect_registry()
+        .entries()
+        .iter()
+        .find(|entry| entry.binding_key == "core.date.now")
+        .expect("built-in host registry has core.date.now");
+    HostEffectReference {
+        target: NativeTarget {
+            namespace: "Date".to_string(),
+            symbol: "now".to_string(),
+            binding_key: Some(entry.binding_key.clone()),
+            metadata: BTreeMap::new(),
+        },
+        signature: HostEffectSignature {
+            parameter_types: Vec::new(),
+            parameter_modes: Vec::new(),
+            parameter_plans: Vec::new(),
+            result_types: vec![TypeRefIr::builtin("Date")],
+            result_plans: vec![snapshot_plan()],
+            effects: entry.signature.effects.clone(),
+        },
+    }
+}
+
+fn valid_intrinsic() -> IntrinsicReference {
+    let entry = skiff_artifact_model::intrinsic_registry()
+        .entries()
+        .iter()
+        .find(|entry| {
+            matches!(
+                &entry.target,
+                BytecodeIntrinsicRef::Static { canonical_key, .. }
+                    if canonical_key == "core.array.empty"
+            )
+        })
+        .expect("built-in intrinsic registry has core.array.empty");
+    IntrinsicReference {
+        target: entry.target.clone(),
+        signature: HostEffectSignature {
+            parameter_types: Vec::new(),
+            parameter_modes: Vec::new(),
+            parameter_plans: Vec::new(),
+            result_types: vec![TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![TypeRefIr::builtin("string")],
+            }],
+            result_plans: vec![ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease,
+            }],
+            effects: entry.signature.effects.clone(),
+        },
+    }
+}
+
+fn interface_resume_descriptor() -> ResumeDescriptor {
     ResumeDescriptor {
         function_key: ROOT_FUNCTION.to_string(),
-        site_pc,
-        resume_pc,
+        site_pc: 2,
+        resume_pc: 8,
         expected_stack_height_before_result: 0,
-        result_type_refs: Vec::new(),
-        result_plans: Vec::new(),
+        result_type_refs: vec![0],
+        result_plans: vec![snapshot_plan()],
+        error_mode: ResumeErrorMode::RaiseAtSite,
+    }
+}
+
+fn host_resume_descriptor() -> ResumeDescriptor {
+    ResumeDescriptor {
+        function_key: ROOT_FUNCTION.to_string(),
+        site_pc: 0,
+        resume_pc: 5,
+        expected_stack_height_before_result: 0,
+        result_type_refs: vec![0],
+        result_plans: vec![snapshot_plan()],
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }
@@ -372,6 +505,15 @@ fn empty_frame() -> FrameLayout {
         result_type_refs: Vec::new(),
         result_plans: Vec::new(),
         slot_plans: Vec::new(),
+    }
+}
+
+fn result_plan(program: RootProgram) -> ValueTransferPlan {
+    match program {
+        RootProgram::ArraysMaps | RootProgram::Intrinsic => ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::SnapshotRelease,
+        },
+        _ => snapshot_plan(),
     }
 }
 

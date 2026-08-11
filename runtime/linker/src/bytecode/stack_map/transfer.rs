@@ -37,9 +37,49 @@ pub(super) fn apply_instruction(
         transition.stack_out,
         &inputs,
         &mut next,
-        location,
+        location.clone(),
     )?;
+    apply_region_effects(instruction, &mut next, location)?;
     Ok(next)
+}
+
+fn apply_region_effects(
+    instruction: &LinkedInstruction,
+    state: &mut MachineState,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    use skiff_artifact_model::Opcode;
+    match instruction.opcode() {
+        Opcode::EnterRegion => {
+            let region = instruction
+                .resolved_operands()
+                .iter()
+                .find_map(|resolved| match resolved.target() {
+                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::ActiveRegion(index) => Some(index),
+                    _ => None,
+                })
+                .ok_or_else(|| obligation_error(location.clone(), "enter_region has no active region target".to_string()))?;
+            state.active_regions.push(region);
+        }
+        Opcode::LeaveRegion => {
+            let region = instruction
+                .resolved_operands()
+                .iter()
+                .find_map(|resolved| match resolved.target() {
+                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::ActiveRegion(index) => Some(index),
+                    _ => None,
+                })
+                .ok_or_else(|| obligation_error(location.clone(), "leave_region has no active region target".to_string()))?;
+            if state.active_regions.pop() != Some(region) {
+                return Err(obligation_error(
+                    location,
+                    "leave_region does not match the innermost active region".to_string(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn apply_stack_inputs(
@@ -104,7 +144,11 @@ fn validate_input_group(
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     match source {
-        ValueSource::AnyStackValue | ValueSource::TaggedValue => return Ok(()),
+        ValueSource::AnyStackValue
+        | ValueSource::TaggedValue
+        | ValueSource::ArrayValue
+        | ValueSource::MapValue
+        | ValueSource::InterfaceCarrier { .. } => return Ok(()),
         ValueSource::ComparablePair => {
             if matches!(actual, [left, right] if left == right) {
                 return Ok(());

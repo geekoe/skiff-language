@@ -66,12 +66,14 @@ pub(super) enum RootProgram {
     Host,
     Intrinsic,
     FromType,
+    RecordShape,
+    ArraysMaps,
     Constant(ConstantProgram),
 }
 
 impl RootProgram {
     pub(super) const fn root_has_parameter(self) -> bool {
-        matches!(self, Self::Interface)
+        matches!(self, Self::Interface | Self::RecordShape)
     }
 }
 
@@ -106,6 +108,14 @@ impl Fixture {
 
     pub(super) fn intrinsic() -> Self {
         Self::new(RootProgram::Intrinsic, false)
+    }
+
+    pub(super) fn record_shape() -> Self {
+        Self::new(RootProgram::RecordShape, false)
+    }
+
+    pub(super) fn arrays_maps() -> Self {
+        Self::new(RootProgram::ArraysMaps, false)
     }
 
     pub(super) fn from_type() -> Self {

@@ -2,8 +2,12 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{BytecodePoolEntry, PackageBuildId, TypeRefIr};
 use skiff_runtime_linked_bytecode::{
-    ArtifactTypeIndex, LinkedArtifactPoolOrigin, LinkedContainerLayout, LinkedContainerPosition,
-    LinkedTypeEntry, SpecializationKey, TypeIndex,
+    ArtifactCallbackCaptureIndex, ArtifactShapeIndex, ArtifactTypeIndex,
+    ArtifactWritablePathIndex, CallbackCaptureLayoutIndex, FunctionIndex, InstructionIndex,
+    LinkedArtifactPoolOrigin, LinkedCallbackCapture, LinkedCallbackCaptureLayout,
+    LinkedContainerLayout, LinkedContainerPosition, LinkedResumeSite, LinkedShapeEntry,
+    LinkedShapeField, LinkedTypeEntry, LinkedWritablePathEntry, LinkedWritablePathSegment,
+    ResumeSiteIndex, ShapeIndex, SpecializationKey, TypeIndex, WritablePathIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -17,6 +21,17 @@ use super::{
 };
 
 type TypeOriginKey = (PackageBuildId, u32, Option<SpecializationKey>);
+type ShapeOriginKey = (PackageBuildId, u32, Option<SpecializationKey>);
+type WritablePathOriginKey = (PackageBuildId, u32, Option<SpecializationKey>);
+type CallbackOriginKey = (PackageBuildId, u32, Option<SpecializationKey>);
+
+pub(in crate::bytecode) struct LinkedPoolTables {
+    pub(in crate::bytecode) types: Vec<LinkedTypeEntry>,
+    pub(in crate::bytecode) shapes: Vec<LinkedShapeEntry>,
+    pub(in crate::bytecode) writable_paths: Vec<LinkedWritablePathEntry>,
+    pub(in crate::bytecode) callback_capture_layouts: Vec<LinkedCallbackCaptureLayout>,
+    pub(in crate::bytecode) resume_sites: Vec<LinkedResumeSite>,
+}
 
 /// Deployment-wide interner keyed by exact artifact row and specialization.
 /// The independent verifier can therefore trace every concrete type back to
@@ -26,6 +41,15 @@ pub(in crate::bytecode) struct TypeLinker<'a> {
     tracker: LinkLimitTracker<'a>,
     origins: BTreeMap<TypeOriginKey, TypeIndex>,
     entries: Vec<Option<LinkedTypeEntry>>,
+    shape_origins: BTreeMap<ShapeOriginKey, ShapeIndex>,
+    shape_entries: Vec<LinkedShapeEntry>,
+    writable_path_origins: BTreeMap<WritablePathOriginKey, WritablePathIndex>,
+    writable_path_entries: Vec<LinkedWritablePathEntry>,
+    callback_origins: BTreeMap<CallbackOriginKey, CallbackCaptureLayoutIndex>,
+    callback_entries: Vec<LinkedCallbackCaptureLayout>,
+    resume_sites: Vec<LinkedResumeSite>,
+    resume_origins: BTreeMap<(PackageBuildId, u32, SpecializationKey), ResumeSiteIndex>,
+    function_indices: Option<&'a BTreeMap<SpecializationKey, FunctionIndex>>,
 }
 
 impl<'a> TypeLinker<'a> {
@@ -38,7 +62,23 @@ impl<'a> TypeLinker<'a> {
             tracker: LinkLimitTracker::new(limits),
             origins: BTreeMap::new(),
             entries: Vec::new(),
+            shape_origins: BTreeMap::new(),
+            shape_entries: Vec::new(),
+            writable_path_origins: BTreeMap::new(),
+            writable_path_entries: Vec::new(),
+            callback_origins: BTreeMap::new(),
+            callback_entries: Vec::new(),
+            resume_sites: Vec::new(),
+            resume_origins: BTreeMap::new(),
+            function_indices: None,
         }
+    }
+
+    pub(in crate::bytecode) fn set_function_indices(
+        &mut self,
+        function_indices: &'a BTreeMap<SpecializationKey, FunctionIndex>,
+    ) {
+        self.function_indices = Some(function_indices);
     }
 
     pub(in crate::bytecode) fn intern_pool_type(
@@ -154,6 +194,37 @@ impl<'a> TypeLinker<'a> {
         Ok((index, concrete))
     }
 
+    pub(in crate::bytecode) fn intern_concrete_type(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        expected: &TypeRefIr,
+        substitutions: &BTreeMap<String, TypeRefIr>,
+        location: BytecodeLinkLocation,
+    ) -> Result<TypeIndex, BytecodeLinkError> {
+        let artifact_index = find_pool_type_after_substitution(
+            self.deployment,
+            package,
+            expected,
+            substitutions,
+        )?
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!(
+                    "concrete type {expected:?} has no exact admitted type-pool origin"
+                ),
+            )
+        })?;
+        self.intern_pool_type(
+            package,
+            specialization,
+            artifact_index,
+            substitutions,
+            location,
+        )
+    }
+
     pub(in crate::bytecode) fn intern_builtin(
         &mut self,
         package: &HydratedBytecodePackage,
@@ -180,6 +251,16 @@ impl<'a> TypeLinker<'a> {
         )
     }
 
+    pub(in crate::bytecode) fn container_layout(
+        &self,
+        index: TypeIndex,
+    ) -> Option<&LinkedContainerLayout> {
+        self.entries
+            .get(index.get() as usize)
+            .and_then(Option::as_ref)
+            .and_then(LinkedTypeEntry::container_layout)
+    }
+
     pub(in crate::bytecode) fn linked_type_ref(&self, index: TypeIndex) -> Option<&TypeRefIr> {
         self.entries
             .get(index.get() as usize)
@@ -190,8 +271,9 @@ impl<'a> TypeLinker<'a> {
     pub(in crate::bytecode) fn finish(
         self,
         location: BytecodeLinkLocation,
-    ) -> Result<Vec<LinkedTypeEntry>, BytecodeLinkError> {
-        self.entries
+    ) -> Result<LinkedPoolTables, BytecodeLinkError> {
+        let types = self
+            .entries
             .into_iter()
             .enumerate()
             .map(|(index, entry)| {
@@ -202,7 +284,14 @@ impl<'a> TypeLinker<'a> {
                     )
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(LinkedPoolTables {
+            types,
+            shapes: self.shape_entries,
+            writable_paths: self.writable_path_entries,
+            callback_capture_layouts: self.callback_entries,
+            resume_sites: self.resume_sites,
+        })
     }
 
     fn concrete_type(
@@ -282,6 +371,529 @@ impl<'a> TypeLinker<'a> {
         self.origins.insert(origin_key, index);
         self.entries.push(None);
         Ok((index, position))
+    }
+
+    pub(in crate::bytecode) fn intern_pool_shape(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        artifact_index: u32,
+        substitutions: &BTreeMap<String, TypeRefIr>,
+        location: BytecodeLinkLocation,
+    ) -> Result<ShapeIndex, BytecodeLinkError> {
+        let origin_key = (
+            package.reference().package_build_id.clone(),
+            artifact_index,
+            Some(specialization.clone()),
+        );
+        if let Some(index) = self.shape_origins.get(&origin_key) {
+            return Ok(*index);
+        }
+        let entry = package
+            .bytecode()
+            .view()
+            .pools()
+            .shapes
+            .get(usize::try_from(artifact_index).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated shape pool row {artifact_index} does not fit usize"),
+                )
+            })?)
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated shape pool row {artifact_index} is absent"),
+                )
+            })?;
+        let skiff_artifact_model::BytecodePoolEntry::ShapeRef { shape } = entry else {
+            return Err(obligation_error(
+                location,
+                format!("validated shape pool row {artifact_index} has the wrong entry kind"),
+            ));
+        };
+        let nominal_type = self.intern_pool_type(
+            package,
+            specialization,
+            shape.type_ref,
+            substitutions,
+            location.clone(),
+        )?;
+        let mut fields = Vec::with_capacity(shape.fields.len());
+        for field in &shape.fields {
+            let ty = self.intern_pool_type(
+                package,
+                specialization,
+                field.type_ref,
+                substitutions,
+                location.clone(),
+            )?;
+            let concrete = self.linked_type_ref(ty).cloned().ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("linked shape field type {} is absent", ty.get()),
+                )
+            })?;
+            let plan = self.link_plan_for_type(&field.plan, &concrete, location.clone())?;
+            fields.push(LinkedShapeField::new(field.name.clone(), ty, plan).map_err(
+                |error| obligation_error(location.clone(), error.to_string()),
+            )?);
+        }
+        let raw_index = self.reserve_shape(origin_key, location.clone())?;
+        let index = ShapeIndex::new(raw_index);
+        let origin = LinkedArtifactPoolOrigin::new(
+            package.reference().package_build_id.clone(),
+            ArtifactShapeIndex::new(artifact_index),
+            Some(specialization.clone()),
+        )
+        .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
+        self.shape_entries.push(
+            LinkedShapeEntry::new(index, origin, nominal_type, fields.into_boxed_slice())
+                .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
+        );
+        Ok(index)
+    }
+
+    pub(in crate::bytecode) fn shape(&self, index: ShapeIndex) -> Option<&LinkedShapeEntry> {
+        self.shape_entries.get(index.get() as usize)
+    }
+
+    pub(in crate::bytecode) fn intern_writable_path(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        artifact_index: u32,
+        substitutions: &BTreeMap<String, TypeRefIr>,
+        location: BytecodeLinkLocation,
+    ) -> Result<WritablePathIndex, BytecodeLinkError> {
+        let origin_key = (
+            package.reference().package_build_id.clone(),
+            artifact_index,
+            Some(specialization.clone()),
+        );
+        if let Some(index) = self.writable_path_origins.get(&origin_key) {
+            return Ok(*index);
+        }
+        let entry = package
+            .bytecode()
+            .view()
+            .pools()
+            .writable_paths
+            .get(usize::try_from(artifact_index).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated writable path row {artifact_index} does not fit usize"),
+                )
+            })?)
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated writable path row {artifact_index} is absent"),
+                )
+            })?;
+        let skiff_artifact_model::BytecodePoolEntry::WritablePath(path) = entry else {
+            return Err(obligation_error(
+                location,
+                format!("validated writable path row {artifact_index} has the wrong entry kind"),
+            ));
+        };
+        let root_type = self.intern_pool_type(
+            package,
+            specialization,
+            path.root_type_ref,
+            substitutions,
+            location.clone(),
+        )?;
+        let leaf_type = self.intern_pool_type(
+            package,
+            specialization,
+            path.leaf_type_ref,
+            substitutions,
+            location.clone(),
+        )?;
+        let mut segments = Vec::with_capacity(path.segments.len());
+        for segment in &path.segments {
+            segments.push(match segment {
+                skiff_artifact_model::WritablePathSegment::DenseField {
+                    shape_ref,
+                    field_ordinal,
+                } => LinkedWritablePathSegment::DenseField {
+                    shape: self.intern_pool_shape(
+                        package,
+                        specialization,
+                        *shape_ref,
+                        substitutions,
+                        location.clone(),
+                    )?,
+                    field_ordinal: *field_ordinal,
+                },
+                skiff_artifact_model::WritablePathSegment::ArrayIndex {
+                    selector_ordinal,
+                    element_type_ref,
+                } => LinkedWritablePathSegment::ArrayIndex {
+                    selector_ordinal: *selector_ordinal,
+                    element_type: self.intern_pool_type(
+                        package,
+                        specialization,
+                        *element_type_ref,
+                        substitutions,
+                        location.clone(),
+                    )?,
+                },
+                skiff_artifact_model::WritablePathSegment::MapKey {
+                    selector_ordinal,
+                    key_type_ref,
+                    value_type_ref,
+                } => LinkedWritablePathSegment::MapKey {
+                    selector_ordinal: *selector_ordinal,
+                    key_type: self.intern_pool_type(
+                        package,
+                        specialization,
+                        *key_type_ref,
+                        substitutions,
+                        location.clone(),
+                    )?,
+                    value_type: self.intern_pool_type(
+                        package,
+                        specialization,
+                        *value_type_ref,
+                        substitutions,
+                        location.clone(),
+                    )?,
+                },
+            });
+        }
+        let raw_index = self.reserve_writable_path(origin_key, location.clone())?;
+        let index = WritablePathIndex::new(raw_index);
+        let origin = LinkedArtifactPoolOrigin::new(
+            package.reference().package_build_id.clone(),
+            ArtifactWritablePathIndex::new(artifact_index),
+            Some(specialization.clone()),
+        )
+        .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
+        self.writable_path_entries.push(
+            LinkedWritablePathEntry::new(index, origin, root_type, leaf_type, segments.into_boxed_slice())
+                .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
+        );
+        Ok(index)
+    }
+
+    pub(in crate::bytecode) fn writable_path(
+        &self,
+        index: WritablePathIndex,
+    ) -> Option<&LinkedWritablePathEntry> {
+        self.writable_path_entries.get(index.get() as usize)
+    }
+
+    pub(in crate::bytecode) fn intern_callback_capture_layout(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        artifact_index: u32,
+        location: BytecodeLinkLocation,
+    ) -> Result<CallbackCaptureLayoutIndex, BytecodeLinkError> {
+        let entry = package
+            .bytecode()
+            .view()
+            .pools()
+            .callback_capture
+            .get(usize::try_from(artifact_index).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated callback capture row {artifact_index} does not fit usize"),
+                )
+            })?)
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated callback capture row {artifact_index} is absent"),
+                )
+            })?;
+        let skiff_artifact_model::BytecodePoolEntry::CallbackCaptureLayout(layout) = entry else {
+            return Err(obligation_error(
+                location,
+                format!("validated callback capture row {artifact_index} has the wrong entry kind"),
+            ));
+        };
+        let target_specialization = self
+            .function_indices
+            .and_then(|indices| self.specialization_for_function_key(package, &layout.function_key, indices))
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!(
+                        "callback capture layout {:?} has no exact linked function specialization",
+                        layout.function_key
+                    ),
+                )
+            })?
+            .clone();
+        let origin_key = (
+            package.reference().package_build_id.clone(),
+            artifact_index,
+            Some(target_specialization.clone()),
+        );
+        if let Some(index) = self.callback_origins.get(&origin_key) {
+            return Ok(*index);
+        }
+        let function = self
+            .function_indices
+            .and_then(|indices| indices.get(&target_specialization))
+            .copied()
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!(
+                        "callback capture layout {:?} has no function index",
+                        layout.function_key
+                    ),
+                )
+            })?;
+        let artifact_function_key =
+            skiff_runtime_linked_bytecode::ArtifactFunctionKey::parse(layout.function_key.clone())
+                .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
+        let mut captures = Vec::with_capacity(layout.captures.len());
+        for capture in &layout.captures {
+            let ty = self.intern_pool_type(
+                package,
+                &target_specialization,
+                capture.type_ref,
+                &BTreeMap::new(),
+                location.clone(),
+            )?;
+            let concrete = self.linked_type_ref(ty).cloned().ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("linked callback capture type {} is absent", ty.get()),
+                )
+            })?;
+            let plan = self.link_plan_for_type(&capture.plan, &concrete, location.clone())?;
+            captures.push(LinkedCallbackCapture::new(
+                skiff_runtime_linked_bytecode::FrameSlotIndex::new(capture.target_slot),
+                ty,
+                plan,
+            ));
+        }
+        let raw_index = self.reserve_callback(origin_key, location.clone())?;
+        let index = CallbackCaptureLayoutIndex::new(raw_index);
+        let origin = LinkedArtifactPoolOrigin::new(
+            package.reference().package_build_id.clone(),
+            ArtifactCallbackCaptureIndex::new(artifact_index),
+            Some(target_specialization.clone()),
+        )
+        .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
+        self.callback_entries.push(
+            LinkedCallbackCaptureLayout::try_new(
+                index,
+                origin,
+                artifact_function_key,
+                function,
+                captures.into_boxed_slice(),
+            )
+            .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
+        );
+        Ok(index)
+    }
+
+    pub(in crate::bytecode) fn callback_capture_layout(
+        &self,
+        index: CallbackCaptureLayoutIndex,
+    ) -> Option<&LinkedCallbackCaptureLayout> {
+        self.callback_entries.get(index.get() as usize)
+    }
+
+    pub(in crate::bytecode) fn intern_resume_site(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        artifact_index: u32,
+        specialization: &SpecializationKey,
+        function: FunctionIndex,
+        location: BytecodeLinkLocation,
+    ) -> Result<ResumeSiteIndex, BytecodeLinkError> {
+        let descriptor = package
+            .bytecode()
+            .view()
+            .resume_sites()
+            .get(usize::try_from(artifact_index).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    format!("resume pool row {artifact_index} does not fit usize"),
+                )
+            })?)
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated resume pool row {artifact_index} is absent"),
+                )
+            })?;
+        let descriptor = skiff_artifact_model::ResumeDescriptor {
+            function_key: descriptor.function_key.clone(),
+            site_pc: descriptor.site_pc,
+            resume_pc: descriptor.resume_pc,
+            expected_stack_height_before_result: descriptor.expected_stack_height_before_result,
+            result_type_refs: descriptor.result_type_refs.clone(),
+            result_plans: descriptor.result_plans.clone(),
+            error_mode: descriptor.error_mode,
+        };
+        self.link_resume_site(package, &descriptor, specialization, function, location)
+    }
+
+    pub(in crate::bytecode) fn link_resume_site(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        descriptor: &skiff_artifact_model::ResumeDescriptor,
+        specialization: &SpecializationKey,
+        function: skiff_runtime_linked_bytecode::FunctionIndex,
+        location: BytecodeLinkLocation,
+    ) -> Result<ResumeSiteIndex, BytecodeLinkError> {
+        let source = self.source_function_for_key(specialization).ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!(
+                    "resume descriptor {:?} has no admitted source function",
+                    descriptor.function_key
+                ),
+            )
+        })?;
+        let site = instruction_index_for_pc(source, descriptor.site_pc, location.clone())?;
+        let resume = instruction_index_for_pc(source, descriptor.resume_pc, location.clone())?;
+        let mut result_types = Vec::with_capacity(descriptor.result_type_refs.len());
+        for type_ref in &descriptor.result_type_refs {
+            result_types.push(self.intern_pool_type(
+                package,
+                specialization,
+                *type_ref,
+                &BTreeMap::new(),
+                location.clone(),
+            )?);
+        }
+        let mut result_plans = Vec::with_capacity(descriptor.result_plans.len());
+        for (type_index, plan) in result_types.iter().copied().zip(&descriptor.result_plans) {
+            let concrete = self.linked_type_ref(type_index).cloned().ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("linked resume result type {} is absent", type_index.get()),
+                )
+            })?;
+            result_plans.push(self.link_plan_for_type(plan, &concrete, location.clone())?);
+        }
+        let origin_key = (
+            package.reference().package_build_id.clone(),
+            descriptor_index(package, descriptor, location.clone())?,
+            specialization.clone(),
+        );
+        if let Some(index) = self.resume_origins.get(&origin_key) {
+            return Ok(*index);
+        }
+        let raw_index = self.reserve_resume(location.clone())?;
+        let index = ResumeSiteIndex::new(raw_index);
+        self.resume_origins.insert(origin_key, index);
+        self.resume_sites.push(
+            LinkedResumeSite::new(
+                index,
+                function,
+                site,
+                resume,
+                descriptor.expected_stack_height_before_result,
+                result_types.into_boxed_slice(),
+                result_plans.into_boxed_slice(),
+                descriptor.error_mode,
+            )
+            .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
+        );
+        Ok(index)
+    }
+
+    fn reserve_shape(
+        &mut self,
+        origin_key: ShapeOriginKey,
+        location: BytecodeLinkLocation,
+    ) -> Result<u32, BytecodeLinkError> {
+        let raw_index = self.reserve_table(&self.shape_entries.len(), location.clone())?;
+        if self.shape_origins.insert(origin_key, ShapeIndex::new(raw_index)).is_some() {
+            return Err(obligation_error(
+                location,
+                "duplicate shape pool origin".to_string(),
+            ));
+        }
+        Ok(raw_index)
+    }
+
+    fn reserve_writable_path(
+        &mut self,
+        origin_key: WritablePathOriginKey,
+        location: BytecodeLinkLocation,
+    ) -> Result<u32, BytecodeLinkError> {
+        let raw_index = self.reserve_table(&self.writable_path_entries.len(), location.clone())?;
+        if self.writable_path_origins.insert(origin_key, WritablePathIndex::new(raw_index)).is_some() {
+            return Err(obligation_error(
+                location,
+                "duplicate writable path origin".to_string(),
+            ));
+        }
+        Ok(raw_index)
+    }
+
+    fn reserve_callback(
+        &mut self,
+        origin_key: CallbackOriginKey,
+        location: BytecodeLinkLocation,
+    ) -> Result<u32, BytecodeLinkError> {
+        let raw_index = self.reserve_table(&self.callback_entries.len(), location.clone())?;
+        if self.callback_origins.insert(origin_key, CallbackCaptureLayoutIndex::new(raw_index)).is_some() {
+            return Err(obligation_error(
+                location,
+                "duplicate callback capture origin".to_string(),
+            ));
+        }
+        Ok(raw_index)
+    }
+
+    fn reserve_resume(&mut self, location: BytecodeLinkLocation) -> Result<u32, BytecodeLinkError> {
+        self.reserve_table(&self.resume_sites.len(), location)
+    }
+
+    fn reserve_table(
+        &mut self,
+        len: &usize,
+        location: BytecodeLinkLocation,
+    ) -> Result<u32, BytecodeLinkError> {
+        let next = (u64::try_from(*len).unwrap_or(u64::MAX))
+            .checked_add(1)
+            .ok_or_else(|| obligation_error(location.clone(), "table row count overflowed".to_string()))?;
+        self.tracker
+            .check_image_table_entries(next, location.clone())?;
+        self.tracker.add_image_table(1, location.clone())?;
+        u32::try_from(*len).map_err(|_| BytecodeLinkError::LimitExceeded {
+            limit: crate::bytecode::BytecodeLinkLimit::ImageTableEntries,
+            actual: next,
+            max: u32::MAX as u64,
+            location,
+        })
+    }
+
+    fn specialization_for_function_key<'b>(
+        &self,
+        package: &HydratedBytecodePackage,
+        function_key: &str,
+        indices: &'b BTreeMap<SpecializationKey, FunctionIndex>,
+    ) -> Option<&'b SpecializationKey> {
+        indices.keys().find(|key| {
+            key.package_build_id() == &package.reference().package_build_id
+                && key.artifact_function_key().as_str() == function_key
+        })
+    }
+
+    fn source_function_for_key(
+        &self,
+        key: &SpecializationKey,
+    ) -> Option<&skiff_artifact_model::ValidatedFunction> {
+        let package = self.deployment.packages().get(key.package_build_id())?;
+        package
+            .bytecode()
+            .view()
+            .functions()
+            .iter()
+            .find(|function| function.function_key == key.artifact_function_key().as_str())
     }
 
     fn link_container_layout(
@@ -418,4 +1030,57 @@ fn obligation_error(location: BytecodeLinkLocation, detail: String) -> BytecodeL
         location,
         detail,
     }
+}
+
+
+fn instruction_index_for_pc(
+    source: &skiff_artifact_model::ValidatedFunction,
+    pc: u32,
+    location: BytecodeLinkLocation,
+) -> Result<InstructionIndex, BytecodeLinkError> {
+    let index = source
+        .instructions
+        .iter()
+        .position(|instruction| instruction.pc == pc)
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("resume descriptor references missing instruction pc {pc}"),
+            )
+        })?;
+    let raw = u32::try_from(index).map_err(|_| {
+        obligation_error(
+            location,
+            "resume instruction index does not fit u32".to_string(),
+        )
+    })?;
+    Ok(InstructionIndex::new(raw))
+}
+
+
+fn descriptor_index(
+    package: &HydratedBytecodePackage,
+    descriptor: &skiff_artifact_model::ResumeDescriptor,
+    location: BytecodeLinkLocation,
+) -> Result<u32, BytecodeLinkError> {
+    package
+        .bytecode()
+        .view()
+        .resume_sites()
+        .iter()
+        .position(|site| {
+            site.function_key == descriptor.function_key
+                && site.site_pc == descriptor.site_pc
+                && site.resume_pc == descriptor.resume_pc
+                && site.result_type_refs == descriptor.result_type_refs
+                && site.result_plans == descriptor.result_plans
+                && site.error_mode == descriptor.error_mode
+        })
+        .and_then(|index| u32::try_from(index).ok())
+        .ok_or_else(|| {
+            obligation_error(
+                location,
+                "resume descriptor is absent from the admitted resume pool".to_string(),
+            )
+        })
 }

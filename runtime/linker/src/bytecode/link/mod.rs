@@ -1,5 +1,6 @@
 mod closure;
 mod constants;
+pub(super) mod dispatch;
 mod functions;
 mod relocations;
 mod tables;
@@ -38,16 +39,19 @@ impl<'a> DeploymentLinker<'a> {
         self.validate_exact_package_closure()?;
         self.reject_unsupported_global_authorities()?;
         let packages = self.link_package_provenance()?;
-        let roots = self.canonical_roots()?;
+        let mut type_linker = TypeLinker::new(self.deployment, self.limits);
+        let mut roots = self.canonical_roots()?;
+        self.extend_target_roots(&mut roots, &mut type_linker)?;
         let keys = self.discover_closure(roots)?;
         let function_indices = canonical_function_indices(&keys, deployment_location.clone())?;
+        type_linker.set_function_indices(&function_indices);
 
-        let mut type_linker = TypeLinker::new(self.deployment, self.limits);
         let constant_tables = self.link_constant_tables(&mut type_linker)?;
         let frames = keys
             .iter()
             .map(|key| self.link_frame(key, &mut type_linker))
             .collect::<Result<Vec<_>, _>>()?;
+        let dispatch_tables = self.link_dispatch_tables(&function_indices, &frames, &mut type_linker)?;
         let functions = keys
             .iter()
             .map(|key| {
@@ -64,6 +68,7 @@ impl<'a> DeploymentLinker<'a> {
                     &function_indices,
                     &frames,
                     &constant_tables,
+                    &dispatch_tables,
                     &mut type_linker,
                 )
             })
@@ -87,7 +92,7 @@ impl<'a> DeploymentLinker<'a> {
                     })
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let types = type_linker.finish(deployment_location.clone())?;
+        let pool_tables = type_linker.finish(deployment_location.clone())?;
         let (constants, constant_roots, frozen_constant_nodes) = constant_tables.into_parts();
 
         for count in [
@@ -96,7 +101,11 @@ impl<'a> DeploymentLinker<'a> {
             operation_entries.len(),
             gateway_entries.len(),
             exact_local_targets.len(),
-            types.len(),
+            pool_tables.types.len(),
+            pool_tables.shapes.len(),
+            pool_tables.writable_paths.len(),
+            pool_tables.callback_capture_layouts.len(),
+            pool_tables.resume_sites.len(),
         ] {
             self.tracker
                 .add_image_table(count as u64, deployment_location.clone())?;
@@ -108,21 +117,21 @@ impl<'a> DeploymentLinker<'a> {
             operation_entries,
             gateway_entries,
             exact_local_targets,
-            service_operations: Vec::new(),
-            actor_creates: Vec::new(),
-            actor_methods: Vec::new(),
-            interface_tables: Vec::new(),
-            synthetic_callbacks: Vec::new(),
-            callback_capture_layouts: Vec::new(),
-            host_effect_adapters: Vec::new(),
-            intrinsics: Vec::new(),
-            types,
-            shapes: Vec::new(),
+            service_operations: dispatch_tables.service_operations,
+            actor_creates: dispatch_tables.actor_creates,
+            actor_methods: dispatch_tables.actor_methods,
+            interface_tables: dispatch_tables.interface_tables,
+            synthetic_callbacks: dispatch_tables.synthetic_callbacks,
+            callback_capture_layouts: pool_tables.callback_capture_layouts,
+            host_effect_adapters: dispatch_tables.host_effect_adapters,
+            intrinsics: dispatch_tables.intrinsics,
+            types: pool_tables.types,
+            shapes: pool_tables.shapes,
             constants,
             constant_roots,
             frozen_constant_nodes,
-            resume_sites: Vec::new(),
-            writable_paths: Vec::new(),
+            resume_sites: pool_tables.resume_sites,
+            writable_paths: pool_tables.writable_paths,
         })
         .map_err(|error| {
             unsatisfied(

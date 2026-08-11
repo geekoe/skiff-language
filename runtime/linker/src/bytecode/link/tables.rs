@@ -2,8 +2,11 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{TypeRefIr, ValidatedFunction};
 use skiff_runtime_linked_bytecode::{
-    InstructionBoundaryIndex, InstructionIndex, LinkedFunctionTables, LinkedSourceMapEntry,
-    LinkedStatementEntry, LinkedSwitchCase, LinkedSwitchTable, SpecializationKey,
+    ActiveRegionIndex, CallLoanLayoutIndex, FrameSlotIndex,
+    InstructionBoundaryIndex, InstructionIndex, LinkedActiveRegion, LinkedActiveRegionKind,
+    LinkedCallLoanBinding, LinkedCallLoanLayout, LinkedCatchMatcher, LinkedExceptionRegion,
+    LinkedFunctionTables, LinkedSourceMapEntry, LinkedStatementEntry, LinkedSwitchCase,
+    LinkedSwitchTable, SpecializationKey,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -23,8 +26,24 @@ impl DeploymentLinker<'_> {
         substitutions: &BTreeMap<String, TypeRefIr>,
     ) -> Result<LinkedFunctionTables, BytecodeLinkError> {
         let location = self.function_location(package, function);
-        reject_unsupported_tables(package, function, location.clone())?;
+        let exception_regions = link_exception_regions(
+            package,
+            function,
+            specialization,
+            type_linker,
+            substitutions,
+            location.clone(),
+        )?;
+        let active_regions = link_active_regions(function, location.clone())?;
         let switch_tables = link_switch_tables(
+            package,
+            function,
+            specialization,
+            type_linker,
+            substitutions,
+            location.clone(),
+        )?;
+        let call_loan_layouts = link_call_loan_layouts(
             package,
             function,
             specialization,
@@ -35,46 +54,144 @@ impl DeploymentLinker<'_> {
         let statements = link_statement_entries(function, location.clone())?;
         let source_map = link_source_map(function, location)?;
         Ok(LinkedFunctionTables::new(
-            Box::new([]),
-            Box::new([]),
+            exception_regions.into_boxed_slice(),
+            active_regions.into_boxed_slice(),
             switch_tables.into_boxed_slice(),
-            Box::new([]),
+            call_loan_layouts.into_boxed_slice(),
             statements.into_boxed_slice(),
             source_map.into_boxed_slice(),
         ))
     }
 }
 
-fn reject_unsupported_tables(
+fn link_exception_regions(
     package: &HydratedBytecodePackage,
     function: &ValidatedFunction,
+    specialization: &SpecializationKey,
+    type_linker: &mut TypeLinker<'_>,
+    substitutions: &BTreeMap<String, TypeRefIr>,
     location: BytecodeLinkLocation,
-) -> Result<(), BytecodeLinkError> {
-    if !function.exception_regions.is_empty() || !function.active_regions.is_empty() {
-        return Err(BytecodeLinkError::ImplementationUnavailable {
-            obligation: BytecodeLinkObligation::ExceptionAndResumePlan,
-            location,
-        });
-    }
-    if !function.call_loan_layouts.is_empty() {
-        return Err(BytecodeLinkError::ImplementationUnavailable {
-            obligation: BytecodeLinkObligation::ConcreteTargetTables,
-            location,
-        });
-    }
-    if package
-        .bytecode()
-        .view()
-        .resume_sites()
+) -> Result<Vec<LinkedExceptionRegion>, BytecodeLinkError> {
+    function
+        .exception_regions
         .iter()
-        .any(|site| site.function_key == function.function_key)
-    {
-        return Err(BytecodeLinkError::ImplementationUnavailable {
-            obligation: BytecodeLinkObligation::ExceptionAndResumePlan,
-            location,
-        });
-    }
-    Ok(())
+        .map(|region| {
+            let catch_matchers = region
+                .catch_matchers
+                .iter()
+                .map(|matcher| match matcher {
+                    skiff_artifact_model::CatchMatcher::TypeRef { type_ref } => Ok(
+                        LinkedCatchMatcher::Type(type_linker.intern_pool_type(
+                            package,
+                            specialization,
+                            *type_ref,
+                            substitutions,
+                            location.clone(),
+                        )?),
+                    ),
+                    skiff_artifact_model::CatchMatcher::CatchAll => Ok(LinkedCatchMatcher::CatchAll),
+                })
+                .collect::<Result<Vec<_>, BytecodeLinkError>>()?;
+            Ok(LinkedExceptionRegion::new(
+                instruction_index(function, region.start_pc, location.clone())?,
+                instruction_boundary(function, region.end_pc, location.clone())?,
+                instruction_index(function, region.handler_pc, location.clone())?,
+                region.handler_stack_height,
+                catch_matchers.into_boxed_slice(),
+                FrameSlotIndex::new(region.catch_slot),
+                type_linker.intern_pool_type(
+                    package,
+                    specialization,
+                    region.catch_slot_type_ref,
+                    substitutions,
+                    location.clone(),
+                )?,
+                region.cleanup_depth,
+            ))
+        })
+        .collect()
+}
+
+fn link_active_regions(
+    function: &ValidatedFunction,
+    location: BytecodeLinkLocation,
+) -> Result<Vec<LinkedActiveRegion>, BytecodeLinkError> {
+    function
+        .active_regions
+        .iter()
+        .enumerate()
+        .map(|(index, region)| {
+            let index = u32::try_from(index).map_err(|_| {
+                unsatisfied(
+                    BytecodeLinkObligation::ExceptionAndResumePlan,
+                    location.clone(),
+                    "active region index does not fit u32".to_string(),
+                )
+            })?;
+            Ok(LinkedActiveRegion::new(
+                ActiveRegionIndex::new(index),
+                instruction_index(function, region.start_pc, location.clone())?,
+                instruction_boundary(function, region.end_pc, location.clone())?,
+                match &region.kind {
+                    skiff_artifact_model::ActiveRegionKind::Timeout { duration_ms, site } => {
+                        LinkedActiveRegionKind::Timeout {
+                            duration_ms: *duration_ms,
+                            site: site.clone(),
+                        }
+                    }
+                },
+            ))
+        })
+        .collect()
+}
+
+fn link_call_loan_layouts(
+    package: &HydratedBytecodePackage,
+    function: &ValidatedFunction,
+    specialization: &SpecializationKey,
+    type_linker: &mut TypeLinker<'_>,
+    substitutions: &BTreeMap<String, TypeRefIr>,
+    location: BytecodeLinkLocation,
+) -> Result<Vec<LinkedCallLoanLayout>, BytecodeLinkError> {
+    function
+        .call_loan_layouts
+        .iter()
+        .enumerate()
+        .map(|(index, layout)| {
+            let index = u32::try_from(index).map_err(|_| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "call loan layout index does not fit u32".to_string(),
+                )
+            })?;
+            let loans = layout
+                .loans
+                .iter()
+                .map(|loan| {
+                    Ok(LinkedCallLoanBinding::new(
+                        loan.parameter_ordinal,
+                        FrameSlotIndex::new(loan.root_slot),
+                        type_linker.intern_writable_path(
+                            package,
+                            specialization,
+                            loan.writable_path_ref,
+                            substitutions,
+                            location.clone(),
+                        )?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, BytecodeLinkError>>()?;
+            LinkedCallLoanLayout::try_new(CallLoanLayoutIndex::new(index), loans.into_boxed_slice())
+                .map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        error.to_string(),
+                    )
+                })
+        })
+        .collect()
 }
 
 fn link_switch_tables(

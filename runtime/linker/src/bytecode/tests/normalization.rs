@@ -56,7 +56,7 @@ fn type_linker_interns_only_the_owner_complete_type() {
             location.clone(),
         )
         .unwrap();
-    let entries = linker.finish(location).unwrap();
+    let entries = linker.finish(location).unwrap().types;
 
     let entry = entries
         .iter()

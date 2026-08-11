@@ -2,9 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::ValidatedFunction;
 use skiff_runtime_linked_bytecode::{
-    ActiveRegionIndex, InstructionIndex, LinkedFrameLayout, LinkedInstruction,
-    LinkedProgramPointState, LinkedSlotState, LinkedStackMapCandidate, LinkedStackValue,
-    LinkedWritableLoanState, SpecializationKey,
+    InstructionIndex, LinkedFrameLayout, LinkedInstruction,
+    LinkedProgramPointState, LinkedSlotState, LinkedStackMapCandidate, LinkedStackValue, SpecializationKey,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -36,6 +35,8 @@ pub(super) fn initial_state(
     Ok(MachineState {
         stack: Vec::new(),
         slots,
+        active_regions: Vec::new(),
+        writable_loans: Vec::new(),
     })
 }
 
@@ -123,8 +124,8 @@ pub(super) fn finish_stack_map(
                 InstructionIndex::new(instruction),
                 state.stack.into_boxed_slice(),
                 state.slots.into_boxed_slice(),
-                Box::<[ActiveRegionIndex]>::default(),
-                Box::<[LinkedWritableLoanState]>::default(),
+                state.active_regions.into_boxed_slice(),
+                state.writable_loans.into_boxed_slice(),
             ))
         })
         .collect::<Result<Vec<_>, BytecodeLinkError>>()?;

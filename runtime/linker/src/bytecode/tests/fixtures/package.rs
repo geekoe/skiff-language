@@ -4,7 +4,7 @@ use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BoundaryCallableProjection,
     BoundaryImplementationRequirements, BytecodeFunctionStatementManifest, ExecutableExport,
-    ExecutableSignatureIr, FileIrRef, OperationCallableKind, OperationTargetRef, PackageArtifact,
+    ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature, OperationCallableKind, OperationTargetRef, PackageArtifact,
     PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableSignature,
     PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
@@ -61,6 +61,32 @@ pub(super) fn package(
     ]);
     implementation_symbols.extend(constants::implementation_symbols(bytecode, package_id));
     let mut public_symbols = BTreeMap::new();
+    if program == RootProgram::Interface {
+        implementation_symbols.insert(
+            "fixture.Reader".to_string(),
+            PackageLocalAbiSymbol::Type {
+                local_type_id: "type:example.bytecode-link:top-level:fixture.Reader".to_string(),
+                descriptor: TypeDescriptorIr::Interface,
+                is_alias: false,
+                is_interface: true,
+                type_params: Vec::new(),
+                interface_methods: vec![interface_method("read")],
+                actor: None,
+            },
+        );
+        public_symbols.insert(
+            "Reader".to_string(),
+            PackageLocalAbiSymbol::Type {
+                local_type_id: "type:Reader".to_string(),
+                descriptor: TypeDescriptorIr::Interface,
+                is_alias: false,
+                is_interface: true,
+                type_params: Vec::new(),
+                interface_methods: vec![interface_method("read")],
+                actor: None,
+            },
+        );
+    }
     if include_normalization_surface {
         implementation_symbols.insert(
             OWNER_IMPLEMENTATION_PATH.to_string(),
@@ -144,10 +170,28 @@ pub(super) fn package(
         },
         package_schema_type_records: BTreeMap::new(),
         implementation_links: PackageImplementationLinks {
-            types: if include_normalization_surface {
-                type_links(descriptor)
-            } else {
-                BTreeMap::new()
+            types: {
+                let mut types = if include_normalization_surface {
+                    type_links(descriptor)
+                } else {
+                    BTreeMap::new()
+                };
+                if program == RootProgram::Interface {
+                    types.insert(
+                        "fixture.Reader".to_string(),
+                        TypeExport {
+                            file: file_ref(),
+                            type_index: 0,
+                            symbol: "Reader".to_string(),
+                            is_interface: true,
+                            descriptor: Some(TypeDescriptorIr::Interface),
+                            type_params: Vec::new(),
+                            interface_methods: vec![interface_method("read")],
+                            actor: None,
+                        },
+                    );
+                }
+                types
             },
             functions: entry_alias
                 .is_some()
@@ -310,6 +354,19 @@ pub(super) fn dependency_type_owner_package(
         .unwrap();
     skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
     artifact
+}
+
+fn interface_method(name: &str) -> InterfaceMethodSignature {
+    InterfaceMethodSignature {
+        name: name.to_string(),
+        type_params: Vec::new(),
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("string"),
+        is_native: false,
+        is_provider: false,
+        is_static: false,
+        implicit_self: None,
+    }
 }
 
 fn statement_manifest_identity(

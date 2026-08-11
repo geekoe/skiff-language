@@ -6,8 +6,9 @@ use skiff_artifact_model::{
     PackageRefIr, TypeRefIr, ValidatedFunction,
 };
 use skiff_runtime_linked_bytecode::{
-    ArtifactFunctionKey, FrameSlotIndex, FunctionIndex, LinkedInstruction, LinkedInstructionTarget,
-    LinkedResolvedOperand, SpecializationKey, SwitchTableIndex,
+    ArtifactFunctionKey, FrameSlotIndex, FunctionIndex,
+    LinkedInstruction, LinkedInstructionTarget, LinkedResolvedOperand,
+    SpecializationKey, SwitchTableIndex,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -16,7 +17,10 @@ use crate::bytecode::{
 };
 
 use super::{
-    constants::LinkedConstantTables, tables::instruction_index, unsatisfied, DeploymentLinker,
+    constants::LinkedConstantTables,
+    dispatch::{InterfaceKind, LinkedDispatchTables},
+    tables::instruction_index,
+    unsatisfied, DeploymentLinker,
 };
 
 impl<'a> DeploymentLinker<'a> {
@@ -229,6 +233,7 @@ pub(super) struct RelocationContext<'a, 'deployment, 'limits> {
     source: RelocationSource<'a>,
     function_indices: &'a BTreeMap<SpecializationKey, FunctionIndex>,
     constant_tables: &'a LinkedConstantTables,
+    dispatch_tables: &'a LinkedDispatchTables,
     type_linker: &'a mut TypeLinker<'limits>,
 }
 
@@ -238,6 +243,7 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
         source: RelocationSource<'a>,
         function_indices: &'a BTreeMap<SpecializationKey, FunctionIndex>,
         constant_tables: &'a LinkedConstantTables,
+        dispatch_tables: &'a LinkedDispatchTables,
         type_linker: &'a mut TypeLinker<'limits>,
     ) -> Self {
         Self {
@@ -245,6 +251,7 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
             source,
             function_indices,
             constant_tables,
+            dispatch_tables,
             type_linker,
         }
     }
@@ -326,7 +333,7 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
             ),
             OperandKind::Table => table_target(operand.linked_kind, raw, location),
             OperandKind::Pool => self.pool_target(operand.linked_kind, raw, location),
-            OperandKind::Reloc => self.relocation_target(raw, location),
+            OperandKind::Reloc => self.relocation_target(instruction, raw, location),
         }
     }
 
@@ -350,20 +357,49 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                 .constant_tables
                 .resolve(self.source.package, raw, location)
                 .map(LinkedInstructionTarget::Constant),
-            LinkedOperandKind::Shape => Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                location,
-            }),
-            LinkedOperandKind::WritablePath | LinkedOperandKind::CallbackCaptureLayout => {
-                Err(BytecodeLinkError::ImplementationUnavailable {
-                    obligation: BytecodeLinkObligation::CallbackCapturePlan,
+            LinkedOperandKind::Shape => self
+                .type_linker
+                .intern_pool_shape(
+                    self.source.package,
+                    self.source.specialization,
+                    raw,
+                    self.source.substitutions,
                     location,
-                })
-            }
-            LinkedOperandKind::ResumeSite => Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ExceptionAndResumePlan,
-                location,
-            }),
+                )
+                .map(LinkedInstructionTarget::Shape),
+            LinkedOperandKind::WritablePath => self
+                .type_linker
+                .intern_writable_path(
+                    self.source.package,
+                    self.source.specialization,
+                    raw,
+                    self.source.substitutions,
+                    location,
+                )
+                .map(LinkedInstructionTarget::WritablePath),
+            LinkedOperandKind::CallbackCaptureLayout => self
+                .type_linker
+                .intern_callback_capture_layout(self.source.package, raw, location)
+                .map(LinkedInstructionTarget::CallbackCaptureLayout),
+            LinkedOperandKind::ResumeSite => self
+                .type_linker
+                .intern_resume_site(
+                    self.source.package,
+                    raw,
+                    self.source.specialization,
+                    self.function_indices
+                        .get(self.source.specialization)
+                        .copied()
+                        .ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ExceptionAndResumePlan,
+                                location.clone(),
+                                "resume site function has no linked index".to_string(),
+                            )
+                        })?,
+                    location,
+                )
+                .map(LinkedInstructionTarget::ResumeSite),
             _ => Err(unsatisfied(
                 BytecodeLinkObligation::RelocationResolution,
                 location,
@@ -373,7 +409,8 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
     }
 
     fn relocation_target(
-        &self,
+        &mut self,
+        instruction: &DecodedInstruction,
         raw: u32,
         location: BytecodeLinkLocation,
     ) -> Result<LinkedInstructionTarget, BytecodeLinkError> {
@@ -409,10 +446,158 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                         )
                     })
             }
-            _ => Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::RelocationResolution,
-                location,
-            }),
+            BytecodeRelocation::ServiceOperationRef { service_call } => self
+                .dispatch_tables
+                .service_operation_index(
+                    &self.source.package.reference().package_build_id,
+                    service_call.service_requirement_slot,
+                    &service_call.contract_operation_id,
+                )
+                .map(LinkedInstructionTarget::ServiceOperation)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        location,
+                        "service operation target is absent from the linked dispatch table"
+                            .to_string(),
+                    )
+                }),
+            BytecodeRelocation::ActorMethodRef {
+                actor,
+                actor_abi_identity,
+                actor_implementation_identity,
+                method_identity,
+            } => self
+                .dispatch_tables
+                .actor_method_index(
+                    self.source.package,
+                    actor,
+                    actor_abi_identity,
+                    actor_implementation_identity,
+                    method_identity,
+                )
+                .map(LinkedInstructionTarget::ActorMethod)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        location,
+                        "actor method target is absent from the linked dispatch table".to_string(),
+                    )
+                }),
+            BytecodeRelocation::InterfaceRequirementRef { interface } => {
+                let kind = if instruction.descriptor.kind == skiff_artifact_model::Opcode::InvokeCallback
+                {
+                    InterfaceKind::Callback
+                } else {
+                    InterfaceKind::Requirement
+                };
+                self.dispatch_tables
+                    .interface_index(interface, &kind)
+                    .map(LinkedInstructionTarget::InterfaceTable)
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::RelocationResolution,
+                            location,
+                            "interface requirement target is absent from the linked dispatch table"
+                                .to_string(),
+                        )
+                    })
+            }
+            BytecodeRelocation::LocalInterfaceRef { interface } => self
+                .dispatch_tables
+                .interface_index(&interface.interface, &InterfaceKind::Local)
+                .map(LinkedInstructionTarget::InterfaceTable)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        location,
+                        "local interface target is absent from the linked dispatch table".to_string(),
+                    )
+                }),
+            BytecodeRelocation::RemoteInterfaceRef { interface } => self
+                .dispatch_tables
+                .interface_index(&interface.interface, &InterfaceKind::Remote)
+                .map(LinkedInstructionTarget::InterfaceTable)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        location,
+                        "remote interface target is absent from the linked dispatch table".to_string(),
+                    )
+                }),
+            BytecodeRelocation::SyntheticCallbackRef { function_key } => self
+                .dispatch_tables
+                .synthetic_callback_index(self.source.package, function_key)
+                .map(LinkedInstructionTarget::SyntheticCallback)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        location,
+                        "synthetic callback target is absent from the linked dispatch table"
+                            .to_string(),
+                    )
+                }),
+            BytecodeRelocation::HostEffectRef(effect) => {
+                let binding_key = effect.target.binding_key.as_deref().ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        location.clone(),
+                        "host effect target has no binding key".to_string(),
+                    )
+                })?;
+                self.dispatch_tables
+                    .host_index(
+                        &effect.target.namespace,
+                        &effect.target.symbol,
+                        binding_key,
+                        &effect.target.metadata,
+                    )
+                    .map(LinkedInstructionTarget::HostEffectAdapter)
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::RelocationResolution,
+                            location,
+                            "host effect target is absent from the linked dispatch table".to_string(),
+                        )
+                    })
+            }
+            BytecodeRelocation::IntrinsicRef { intrinsic } => self
+                .dispatch_tables
+                .intrinsic_index(&intrinsic.target)
+                .map(LinkedInstructionTarget::Intrinsic)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        location,
+                        "intrinsic target is absent from the linked dispatch table".to_string(),
+                    )
+                }),
+            BytecodeRelocation::TypeRef { ty } => self
+                .type_linker
+                .intern_concrete_type(
+                    self.source.package,
+                    self.source.specialization,
+                    ty,
+                    self.source.substitutions,
+                    location,
+                )
+                .map(LinkedInstructionTarget::Type),
+            BytecodeRelocation::ShapeRef { shape_index } => self
+                .type_linker
+                .intern_pool_shape(
+                    self.source.package,
+                    self.source.specialization,
+                    *shape_index,
+                    self.source.substitutions,
+                    location,
+                )
+                .map(LinkedInstructionTarget::Shape),
+            BytecodeRelocation::FrozenConstantRef { .. } => Err(
+                BytecodeLinkError::ImplementationUnavailable {
+                    obligation: BytecodeLinkObligation::ConstantInitializationPlan,
+                    location,
+                },
+            ),
         }
     }
 }
@@ -443,6 +628,12 @@ fn table_target(
     match kind {
         LinkedOperandKind::SwitchTable => Ok(LinkedInstructionTarget::SwitchTable(
             SwitchTableIndex::new(raw),
+        )),
+        LinkedOperandKind::ActiveRegion => Ok(LinkedInstructionTarget::ActiveRegion(
+            skiff_runtime_linked_bytecode::ActiveRegionIndex::new(raw),
+        )),
+        LinkedOperandKind::CallLoanLayout => Ok(LinkedInstructionTarget::CallLoanLayout(
+            skiff_runtime_linked_bytecode::CallLoanLayoutIndex::new(raw),
         )),
         _ => Err(BytecodeLinkError::ImplementationUnavailable {
             obligation: BytecodeLinkObligation::ConcreteTargetTables,

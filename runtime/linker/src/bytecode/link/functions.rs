@@ -14,6 +14,7 @@ use crate::bytecode::{
 
 use super::{
     constants::LinkedConstantTables,
+    dispatch::LinkedDispatchTables,
     relocations::{RelocationContext, RelocationSource},
     unsatisfied, DeploymentLinker,
 };
@@ -107,6 +108,7 @@ impl DeploymentLinker<'_> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn link_function(
         &mut self,
         key: &SpecializationKey,
@@ -114,6 +116,7 @@ impl DeploymentLinker<'_> {
         function_indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         frames: &[LinkedFrameLayout],
         constant_tables: &LinkedConstantTables,
+        dispatch_tables: &LinkedDispatchTables,
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<LinkedFunction, BytecodeLinkError> {
         let (package, source) = self.source_function(key)?;
@@ -134,6 +137,7 @@ impl DeploymentLinker<'_> {
                 relocation_source,
                 function_indices,
                 constant_tables,
+                dispatch_tables,
                 type_linker,
             );
             source
@@ -157,6 +161,7 @@ impl DeploymentLinker<'_> {
                 frames,
                 tables.switch_tables(),
                 constant_tables.constants(),
+                dispatch_tables,
             ),
             type_linker,
             &substitutions,

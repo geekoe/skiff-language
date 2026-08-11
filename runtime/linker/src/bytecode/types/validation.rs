@@ -54,21 +54,61 @@ impl TypeLinker<'_> {
         }
     }
 
+    pub(in crate::bytecode) fn link_plan_for_type(
+        &self,
+        declared: &ValueTransferPlan,
+        concrete_type: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
+        match declared {
+            ValueTransferPlan::FromType { ty } if ty == concrete_type => {
+                self.plan_for_concrete_type(ty, location)
+            }
+            ValueTransferPlan::FromType { .. } => Err(obligation_error(
+                BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location,
+                "FromType plan does not name its exact concrete type".to_string(),
+            )),
+            concrete => self.link_transfer_plan(concrete, &BTreeMap::new(), location),
+        }
+    }
+
     pub(in crate::bytecode) fn plan_for_concrete_type(
         &self,
         ty: &TypeRefIr,
         location: BytecodeLinkLocation,
     ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
-        let resolution = native_value_lifecycle_registry()
-            .lookup(ty)
-            .map_err(|error| {
-                obligation_error(
-                    BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                    location,
-                    format!("container position has no authoritative lifecycle: {error}"),
-                )
-            })?;
-        Ok(link_native_lifecycle(resolution.lifecycle))
+        match ty {
+            TypeRefIr::Record { .. }
+            | TypeRefIr::Union { .. }
+            | TypeRefIr::Nullable { .. } => Ok(LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::SnapshotRelease,
+            }),
+            TypeRefIr::Literal { .. } => {
+                let resolution = native_value_lifecycle_registry()
+                    .lookup(&lifecycle_registry_type(ty))
+                    .map_err(|error| {
+                        obligation_error(
+                            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                            location,
+                            format!("concrete literal has no authoritative lifecycle: {error}"),
+                        )
+                    })?;
+                Ok(link_native_lifecycle(resolution.lifecycle))
+            }
+            _ => {
+                let resolution = native_value_lifecycle_registry()
+                    .lookup(ty)
+                    .map_err(|error| {
+                        obligation_error(
+                            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                            location,
+                            format!("concrete value has no authoritative lifecycle: {error}"),
+                        )
+                    })?;
+                Ok(link_native_lifecycle(resolution.lifecycle))
+            }
+        }
     }
 
     /// Eliminates a constant-local `FromType` only after checking that it names
