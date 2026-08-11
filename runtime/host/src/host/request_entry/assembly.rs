@@ -1,38 +1,42 @@
-use std::{
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::time::Instant;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
+#[cfg(test)]
 use skiff_runtime_capability_context::{ConnectionRequestSession, ExecutionBudgetReason};
+#[cfg(test)]
 use skiff_runtime_eval::RuntimeWebSocketConnectResult;
 use skiff_runtime_request::{
     self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
     BytecodeRequestExecutionInput, RequestEnvelope, RequestError, ResponseEventSink,
     ResponseStreamEvent, RouterWriterMessage,
 };
+#[cfg(test)]
+use skiff_runtime_transport::response_mapper::runtime_assembly_websocket_connect_response_into_frame;
+#[cfg(test)]
+use skiff_runtime_transport::runtime_assembly_request::{
+    RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+    RuntimeAssemblyWebSocketConnectionPolicyFrameHeader,
+    RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader,
+};
 use skiff_runtime_transport::{
-    response_mapper::{
-        runtime_assembly_websocket_connect_response_into_frame, OrdinaryResponseEvent,
-    },
+    response_mapper::OrdinaryResponseEvent,
     runtime_assembly_request::{
         RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
         RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
-        RuntimeAssemblyWebSocketConnectResponseFrameHeader,
         RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
-        RuntimeAssemblyWebSocketConnectionPolicyFrameHeader,
-        RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader,
     },
 };
-use tokio::{sync::mpsc, time::Duration};
+use tokio::sync::mpsc;
+#[cfg(test)]
+use tokio::time::Duration;
 use tracing::error;
 
 use super::{
     assembly_wire::{
         AdmittedBytecodeHttpRequest, AdmittedBytecodeTaskRequest,
         AdmittedBytecodeWebSocketConnectRequest, AdmittedBytecodeWebSocketConnectionClosedRequest,
-        AdmittedHttpGatewayRequest, AdmittedTaskRequest, AdmittedWebSocketConnectRequest,
-        AdmittedWebSocketConnectionClosedRequest,
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
@@ -44,11 +48,20 @@ use crate::{
         request_supervisor::{CompletionTrace, SupervisedRequest},
         RuntimeHost,
     },
-    loader::{assembly_admission::ActiveAssemblyRoute, bytecode_admission::BytecodeRoute},
+    loader::bytecode_admission::BytecodeRoute,
     telemetry::RequestTelemetryContext,
 };
 
+#[cfg(test)]
+use super::assembly_wire::{
+    AdmittedHttpGatewayRequest, AdmittedTaskRequest, AdmittedWebSocketConnectRequest,
+    AdmittedWebSocketConnectionClosedRequest,
+};
+#[cfg(test)]
+use crate::loader::assembly_admission::ActiveAssemblyRoute;
+
 impl RuntimeHost {
+    #[cfg(test)]
     pub(super) async fn task_direct_request_on_active_assembly(
         &self,
         router_session_id: String,
@@ -243,6 +256,7 @@ impl RuntimeHost {
         });
     }
 
+    #[cfg(test)]
     pub(super) async fn task_websocket_connect_on_active_assembly_route(
         &self,
         router_session_id: String,
@@ -382,6 +396,7 @@ impl RuntimeHost {
         });
     }
 
+    #[cfg(test)]
     pub(super) async fn task_websocket_connection_closed_on_active_assembly_route(
         &self,
         router_session_id: String,
@@ -456,6 +471,7 @@ impl RuntimeHost {
         });
     }
 
+    #[cfg(test)]
     pub(super) async fn task_request_on_active_assembly_route(
         &self,
         router_session_id: String,
@@ -944,6 +960,7 @@ impl RuntimeHost {
         }
     }
 
+    #[cfg(test)]
     fn http_gateway_execution_handles(
         &self,
         route: &ActiveAssemblyRoute,
@@ -974,6 +991,7 @@ impl RuntimeHost {
         })
     }
 
+    #[cfg(test)]
     fn http_gateway_telemetry_context(
         &self,
         header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestStartFrameHeader,
@@ -1101,6 +1119,7 @@ impl RuntimeHost {
         }
     }
 
+    #[cfg(test)]
     fn websocket_connect_execution_handles(
         &self,
         route: &ActiveAssemblyRoute,
@@ -1129,6 +1148,7 @@ impl RuntimeHost {
         })
     }
 
+    #[cfg(test)]
     fn websocket_connection_closed_execution_handles(
         &self,
         route: &ActiveAssemblyRoute,
@@ -1160,6 +1180,7 @@ impl RuntimeHost {
         )
     }
 
+    #[cfg(test)]
     fn log_websocket_connection_closed_admission_error(
         &self,
         request_id: &str,
@@ -1198,6 +1219,7 @@ impl RuntimeHost {
             .await;
     }
 
+    #[cfg(test)]
     fn websocket_connection_closed_telemetry_context(
         &self,
         header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
@@ -1222,6 +1244,7 @@ impl RuntimeHost {
         context
     }
 
+    #[cfg(test)]
     pub(super) fn runtime_assembly_eval_adapter_context(
         &self,
         route: &ActiveAssemblyRoute,
@@ -1263,6 +1286,7 @@ impl RuntimeHost {
         )
     }
 
+    #[cfg(test)]
     fn websocket_connect_telemetry_context(
         &self,
         header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
@@ -1288,6 +1312,7 @@ impl RuntimeHost {
     }
 }
 
+#[cfg(test)]
 fn websocket_connect_supervisor_request(
     header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
     route: &ActiveAssemblyRoute,
@@ -1325,6 +1350,7 @@ fn websocket_connect_supervisor_request(
     }
 }
 
+#[cfg(test)]
 fn websocket_connection_closed_supervisor_request(
     header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
     route: &ActiveAssemblyRoute,
@@ -1557,6 +1583,7 @@ fn bytecode_deadline_extra(
     extra
 }
 
+#[cfg(test)]
 fn websocket_connect_result_into_message(
     request_id: String,
     result: RuntimeWebSocketConnectResult,
@@ -1723,6 +1750,7 @@ impl ResponseEventSink for HostHttpGatewayResponseSink {
     }
 }
 
+#[cfg(test)]
 fn deadline_exceeded_error() -> RequestError {
     RequestError::ExecutionBudgetExceeded {
         reason: ExecutionBudgetReason::DeadlineExceeded,
@@ -1732,6 +1760,7 @@ fn deadline_exceeded_error() -> RequestError {
     }
 }
 
+#[cfg(test)]
 fn runtime_deadline(
     execution_budget: &skiff_runtime_request::ExecutionBudget,
     timeout_ms: Option<u64>,
@@ -1745,6 +1774,7 @@ fn runtime_deadline(
         .min()
 }
 
+#[cfg(test)]
 fn prefer_cancel_then_deadline<T>(
     result: request_runner::RequestResult<T>,
     deadline: Instant,

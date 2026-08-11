@@ -4,6 +4,7 @@
 // RequestError intentionally carries eval and boundary payloads by value; the
 // large-error lints are advisory in the normal workspace gate.
 
+#[cfg(test)]
 mod assembly_ingress;
 mod assembly_seam;
 mod bytecode_ingress;
@@ -18,9 +19,12 @@ mod execution_control;
 mod gateway_ingress;
 mod http_gateway_execution;
 mod http_gateway_target;
+#[cfg(test)]
 mod http_ingress;
+#[cfg(test)]
 mod ingress;
 #[path = "eval_invocation_builder.rs"]
+#[cfg(test)]
 mod invocation_builder;
 mod operation_context;
 mod outbound;
@@ -28,6 +32,7 @@ mod response_event;
 mod response_stream_writer;
 mod response_writer;
 mod runner;
+#[cfg(test)]
 mod runtime_ingress;
 mod task_execution;
 pub mod vm_heap;
@@ -38,11 +43,12 @@ mod websocket_connection_closed_target;
 mod websocket_jsonrpc_execution;
 mod websocket_jsonrpc_target;
 
+#[cfg(test)]
 pub use assembly_ingress::{
     execute_runtime_assembly_request, AssemblyRequestExecutionHandles,
     AssemblyRequestExecutionInput,
 };
-pub use assembly_seam::{RuntimeAssemblyRequestSeamError, RuntimeAssemblyRequestTarget};
+pub(crate) use assembly_seam::RuntimeAssemblyRequestTarget;
 pub use bytecode_ingress::{
     execute_runtime_bytecode_request, execute_runtime_bytecode_request_with_ports,
     BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff, BytecodeInvocationHandoff,
@@ -60,9 +66,9 @@ pub use envelope::{
     RequestEffectDouble, RequestEnvelope,
 };
 pub use error::{OrdinaryRequestError, RequestError, RequestResult};
-pub use eval_adapter::{
-    AssemblyRequestEvalAdapter, RequestEvalAdapter, RequestEvalExecutionInputParts,
-};
+#[cfg(test)]
+pub use eval_adapter::AssemblyRequestEvalAdapter;
+pub use eval_adapter::{RequestEvalAdapter, RequestEvalExecutionInputParts};
 pub use execution_budget::ExecutionBudget;
 pub use execution_control::{ExecutionControl, OwnedExecutionControl};
 pub use gateway_ingress::{

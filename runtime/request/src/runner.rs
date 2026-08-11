@@ -18,6 +18,7 @@ pub struct RequestExecutionError {
 }
 
 impl RequestExecutionError {
+    #[cfg(test)]
     fn with_request_diagnostic(error: RequestError) -> Self {
         Self {
             error,
@@ -61,39 +62,49 @@ pub struct RequestExecutionHandles {
 }
 
 pub async fn execute_runtime_request(input: RequestExecutionInput) -> RequestExecutionResult {
-    let RequestExecutionInput {
-        operation_context,
-        request,
-        cancelled,
-        cancellation,
-        execution_budget,
-        handles,
-    } = input;
-    let RequestOperationContext {
-        metadata,
-        eval_program,
-        operation,
-        addr,
-    } = operation_context;
-    let execution = super::ExecutionControl::new(cancellation.clone(), &execution_budget);
-    execution.check_cancelled().map_err(RequestError::from)?;
-    super::ingress::IngressDispatcher::validate_request(&request)?;
+    #[cfg(test)]
+    {
+        let RequestExecutionInput {
+            operation_context,
+            request,
+            cancelled,
+            cancellation,
+            execution_budget,
+            handles,
+        } = input;
+        let RequestOperationContext {
+            metadata,
+            eval_program,
+            operation,
+            addr,
+        } = operation_context;
+        let execution = super::ExecutionControl::new(cancellation.clone(), &execution_budget);
+        execution.check_cancelled().map_err(RequestError::from)?;
+        super::ingress::IngressDispatcher::validate_request(&request)?;
 
-    super::ingress::IngressDispatcher::new(super::ingress::IngressDispatchInput {
-        operation: &operation,
-        addr: &addr,
-        metadata: &metadata,
-        request: &request,
-        execution,
-        cancellation,
-        cancelled: cancelled.as_ref(),
-        execution_budget: execution_budget.clone(),
-        handles: &handles,
-        eval_program: eval_program.clone(),
-    })
-    .dispatch()
-    .await
-    .map_err(RequestExecutionError::with_request_diagnostic)
+        super::ingress::IngressDispatcher::new(super::ingress::IngressDispatchInput {
+            operation: &operation,
+            addr: &addr,
+            metadata: &metadata,
+            request: &request,
+            execution,
+            cancellation,
+            cancelled: cancelled.as_ref(),
+            execution_budget: execution_budget.clone(),
+            handles: &handles,
+            eval_program: eval_program.clone(),
+        })
+        .dispatch()
+        .await
+        .map_err(RequestExecutionError::with_request_diagnostic)
+    }
+    #[cfg(not(test))]
+    {
+        let _ = input;
+        Err(RequestExecutionError::from(RequestError::Unsupported(
+            "legacy tree-evaluator request execution is disabled".to_string(),
+        )))
+    }
 }
 
 pub fn response_error_to_telemetry_map(error: &ResponseError) -> serde_json::Map<String, Value> {

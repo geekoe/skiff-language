@@ -1,27 +1,41 @@
+#[cfg(test)]
 use std::sync::Arc;
 
+use skiff_artifact_model::ServiceDeploymentRef;
+#[cfg(test)]
 use skiff_artifact_model::{
     GatewayAdapterKind, GatewayDispatchMode, GatewayProtocolSurface, GatewayWebSocketRpcProfile,
-    IngressProtocol, IngressSelector, ServiceDeploymentRef, ServiceIngressKey,
+    IngressProtocol, IngressSelector, ServiceIngressKey,
 };
+#[cfg(test)]
 use skiff_runtime_activation::ActivationContext;
-use skiff_runtime_capability_context::{DbCapabilitySource, ExecutionBudgetReason};
+#[cfg(test)]
+use skiff_runtime_capability_context::DbCapabilitySource;
+use skiff_runtime_capability_context::ExecutionBudgetReason;
+#[cfg(test)]
 use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
+#[cfg(test)]
 use skiff_runtime_linked_program::AssemblyExecutionImage;
 use skiff_runtime_request::{
     BinaryHttpRequestMetadata, BytecodeRequestTarget, HttpNameValue, RequestError,
-    RouterWriterMessage, RuntimeAssemblyTaskTarget, RuntimeAssemblyWebSocketJsonRpcTarget,
-    RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest, RuntimeTaskRequest,
-    RuntimeWebSocketConnectIngress, RuntimeWebSocketConnectionClosedIngress,
+    RouterWriterMessage,
+};
+#[cfg(test)]
+use skiff_runtime_request::{
+    RuntimeAssemblyTaskTarget, RuntimeAssemblyWebSocketJsonRpcTarget, RuntimeGatewayIngressPin,
+    RuntimeHttpGatewayRequest, RuntimeTaskRequest, RuntimeWebSocketConnectIngress,
+    RuntimeWebSocketConnectionClosedIngress,
 };
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
+#[cfg(test)]
+use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketJsonRpcProfile;
 use skiff_runtime_transport::runtime_assembly_request::{
     RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressProtocol,
     RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestStartFrameWireHeader,
     RuntimeAssemblyTaskRequestStartFrameHeader,
     RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
     RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
-    RuntimeAssemblyWebSocketJsonRpcProfile, RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
+    RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
 };
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
@@ -29,12 +43,15 @@ use tracing::error;
 use url::Url;
 
 use super::{request_error_into_runtime_error, response_event_into_transport_message};
+#[cfg(test)]
+use crate::loader::assembly_admission::ActiveAssemblyRoute;
 use crate::{
     error::{Result, RuntimeError},
     host::{router_session::ConnectionBootstrap, RuntimeHost},
-    loader::{assembly_admission::ActiveAssemblyRoute, bytecode_admission::BytecodeRoute},
+    loader::bytecode_admission::BytecodeRoute,
 };
 
+#[cfg(test)]
 pub(super) struct AdmittedHttpGatewayRequest {
     pub(super) route: ActiveAssemblyRoute,
     pub(super) header: RuntimeAssemblyRequestStartFrameHeader,
@@ -48,6 +65,7 @@ pub(super) struct AdmittedBytecodeHttpRequest {
     pub(super) target: BytecodeRequestTarget,
 }
 
+#[cfg(test)]
 pub(super) struct AdmittedWebSocketConnectRequest {
     pub(super) route: ActiveAssemblyRoute,
     pub(super) header: RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
@@ -60,6 +78,7 @@ pub(super) struct AdmittedBytecodeWebSocketConnectRequest {
     pub(super) target: BytecodeRequestTarget,
 }
 
+#[cfg(test)]
 pub(super) struct AdmittedWebSocketConnectionClosedRequest {
     pub(super) route: ActiveAssemblyRoute,
     pub(super) header: RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
@@ -77,11 +96,13 @@ pub(super) struct AdmittedBytecodeWebSocketConnectionClosedRequest {
 /// demand), and the method capability route plus execution target derive from
 /// that exact physical route. No connection-scoped pin is retained.
 #[derive(Debug)]
+#[cfg(test)]
 pub(super) struct ResolvedWebSocketJsonRpcExecution {
     pub(super) target: RuntimeAssemblyWebSocketJsonRpcTarget,
     pub(super) method_route: ActiveAssemblyRoute,
 }
 
+#[cfg(test)]
 pub(super) struct AdmittedWebSocketJsonRpcRequest {
     pub(super) resolved: ResolvedWebSocketJsonRpcExecution,
     pub(super) header: RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
@@ -95,6 +116,7 @@ pub(super) struct AdmittedBytecodeWebSocketJsonRpcRequest {
     pub(super) params: Vec<u8>,
 }
 
+#[cfg(test)]
 pub(super) struct AdmittedTaskRequest {
     pub(super) header: RuntimeAssemblyTaskRequestStartFrameHeader,
     pub(super) request: RuntimeTaskRequest,
@@ -139,9 +161,16 @@ impl RuntimeHost {
         // A request whose build id was not loaded yet may trigger the lazy-load
         // path; refresh the router's capability view when that happens.
         let build_id = wire_routing_build_id(&header);
+        #[cfg(test)]
         let was_loaded = if let Some(build_id) = build_id.as_deref() {
             self.assembly_admission.is_loaded(build_id)
                 || self.bytecode_deployments.is_loaded_build_id(build_id).await
+        } else {
+            false
+        };
+        #[cfg(not(test))]
+        let was_loaded = if let Some(build_id) = build_id.as_deref() {
+            self.bytecode_deployments.is_loaded_build_id(build_id).await
         } else {
             false
         };
@@ -170,6 +199,7 @@ impl RuntimeHost {
             let _ = self.queue_runtime_capabilities(sender.clone());
         }
         match result {
+            #[cfg(test)]
             Ok(AdmittedRuntimeAssemblyRequest::Http(request)) => {
                 self.task_request_on_active_assembly_route(
                     router_session_id.to_string(),
@@ -188,6 +218,7 @@ impl RuntimeHost {
                 )
                 .await
             }
+            #[cfg(test)]
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnect(request)) => {
                 self.task_websocket_connect_on_active_assembly_route(
                     router_session_id.to_string(),
@@ -206,6 +237,7 @@ impl RuntimeHost {
                 )
                 .await
             }
+            #[cfg(test)]
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnectionClosed(request)) => {
                 self.task_websocket_connection_closed_on_active_assembly_route(
                     router_session_id.to_string(),
@@ -224,6 +256,7 @@ impl RuntimeHost {
                 )
                 .await
             }
+            #[cfg(test)]
             Ok(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc(request)) => {
                 self.task_websocket_jsonrpc_on_resolved_route(
                     router_session_id.to_string(),
@@ -242,6 +275,7 @@ impl RuntimeHost {
                 )
                 .await
             }
+            #[cfg(test)]
             Ok(AdmittedRuntimeAssemblyRequest::Task(request)) => {
                 self.task_direct_request_on_active_assembly(
                     router_session_id.to_string(),
@@ -283,6 +317,7 @@ impl RuntimeHost {
     /// Resolves the canonical ingress route through the loaded deployment
     /// registry, lazy-loading the deployment under its per-buildId critical
     /// section when it is not loaded yet.
+    #[cfg(test)]
     pub(crate) async fn resolve_active_assembly_request_route(
         &self,
         key: &ServiceIngressKey,
@@ -355,34 +390,41 @@ impl RuntimeHost {
                 },
             ));
         }
-        let selector = websocket_connect_ingress_selector(&header);
-        let key = ServiceIngressKey {
-            deployment: header.routing.deployment.clone(),
-            selector: selector.clone(),
-        };
-        let route = self
-            .resolve_active_assembly_request_route(&key, bootstrap)
-            .await?;
-        validate_websocket_connect_route(&header, &selector, &route)?;
-        if route.entry().optional_handler().is_none()
-            && !route
-                .has_websocket_jsonrpc_methods()
-                .map_err(|error| RuntimeError::Decode(error.to_string()))?
+        #[cfg(any(test))]
         {
-            return Err(RuntimeError::Protocol {
-                target: route.gateway_entry_key().as_str().to_string(),
-                message: "Runtime refuses WebSocket connect dispatch for a path-only entry"
-                    .to_string(),
-            });
+            let selector = websocket_connect_ingress_selector(&header);
+            let key = ServiceIngressKey {
+                deployment: header.routing.deployment.clone(),
+                selector: selector.clone(),
+            };
+            let route = self
+                .resolve_active_assembly_request_route(&key, bootstrap)
+                .await?;
+            validate_websocket_connect_route(&header, &selector, &route)?;
+            if route.entry().optional_handler().is_none()
+                && !route
+                    .has_websocket_jsonrpc_methods()
+                    .map_err(|error| RuntimeError::Decode(error.to_string()))?
+            {
+                return Err(RuntimeError::Protocol {
+                    target: route.gateway_entry_key().as_str().to_string(),
+                    message: "Runtime refuses WebSocket connect dispatch for a path-only entry"
+                        .to_string(),
+                });
+            }
+            let request = websocket_connect_ingress_from_wire(&route, &header);
+            Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnect(
+                AdmittedWebSocketConnectRequest {
+                    route,
+                    header,
+                    request,
+                },
+            ))
         }
-        let request = websocket_connect_ingress_from_wire(&route, &header);
-        Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnect(
-            AdmittedWebSocketConnectRequest {
-                route,
-                header,
-                request,
-            },
-        ))
+        #[cfg(not(test))]
+        {
+            Err(bytecode_required_error(&header.routing.deployment))
+        }
     }
 
     async fn websocket_connection_closed_request_from_wire(
@@ -423,28 +465,35 @@ impl RuntimeHost {
                 ),
             );
         }
-        let selector = websocket_connection_closed_ingress_selector(&header);
-        let key = ServiceIngressKey {
-            deployment: header.routing.deployment.clone(),
-            selector: selector.clone(),
-        };
-        let route = self
-            .resolve_active_assembly_request_route(&key, bootstrap)
-            .await?;
-        validate_websocket_connection_closed_route(&header, &selector, &route)?;
-        if route.entry().close_handler().is_none() {
-            return Err(RuntimeError::Decode(
-                "connection close handler is not declared".to_string(),
-            ));
+        #[cfg(any(test))]
+        {
+            let selector = websocket_connection_closed_ingress_selector(&header);
+            let key = ServiceIngressKey {
+                deployment: header.routing.deployment.clone(),
+                selector: selector.clone(),
+            };
+            let route = self
+                .resolve_active_assembly_request_route(&key, bootstrap)
+                .await?;
+            validate_websocket_connection_closed_route(&header, &selector, &route)?;
+            if route.entry().close_handler().is_none() {
+                return Err(RuntimeError::Decode(
+                    "connection close handler is not declared".to_string(),
+                ));
+            }
+            let request = websocket_connection_closed_ingress_from_wire(&route, &header);
+            Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnectionClosed(
+                AdmittedWebSocketConnectionClosedRequest {
+                    route,
+                    header,
+                    request,
+                },
+            ))
         }
-        let request = websocket_connection_closed_ingress_from_wire(&route, &header);
-        Ok(AdmittedRuntimeAssemblyRequest::WebSocketConnectionClosed(
-            AdmittedWebSocketConnectionClosedRequest {
-                route,
-                header,
-                request,
-            },
-        ))
+        #[cfg(not(test))]
+        {
+            Err(bytecode_required_error(&header.routing.deployment))
+        }
     }
 
     async fn http_gateway_request_from_wire(
@@ -483,31 +532,38 @@ impl RuntimeHost {
                 },
             ));
         }
-        let selector = ingress_selector(&header);
-        let key = ServiceIngressKey {
-            deployment: header.routing.deployment.clone(),
-            selector: selector.clone(),
-        };
-        let route = self
-            .resolve_active_assembly_request_route(&key, bootstrap)
-            .await?;
-        validate_route(&header, &selector, &route)?;
-        header.deadline = effective_deadline(&header)?;
-        if header
-            .deadline
-            .as_ref()
-            .is_some_and(|deadline| deadline.timeout_ms == 0)
+        #[cfg(any(test))]
         {
-            return Err(deadline_exceeded());
+            let selector = ingress_selector(&header);
+            let key = ServiceIngressKey {
+                deployment: header.routing.deployment.clone(),
+                selector: selector.clone(),
+            };
+            let route = self
+                .resolve_active_assembly_request_route(&key, bootstrap)
+                .await?;
+            validate_route(&header, &selector, &route)?;
+            header.deadline = effective_deadline(&header)?;
+            if header
+                .deadline
+                .as_ref()
+                .is_some_and(|deadline| deadline.timeout_ms == 0)
+            {
+                return Err(deadline_exceeded());
+            }
+            let request = http_gateway_request_from_admitted_wire(&route, &header, body)?;
+            Ok(AdmittedRuntimeAssemblyRequest::Http(
+                AdmittedHttpGatewayRequest {
+                    route,
+                    header,
+                    request,
+                },
+            ))
         }
-        let request = http_gateway_request_from_admitted_wire(&route, &header, body)?;
-        Ok(AdmittedRuntimeAssemblyRequest::Http(
-            AdmittedHttpGatewayRequest {
-                route,
-                header,
-                request,
-            },
-        ))
+        #[cfg(not(test))]
+        {
+            Err(bytecode_required_error(&header.routing.deployment))
+        }
     }
 
     async fn task_request_from_wire(
@@ -550,103 +606,109 @@ impl RuntimeHost {
                 },
             ));
         }
-        let active = self
-            .assembly_admission
-            .deployment_image_or_lazy_load(
-                deployment,
-                &bootstrap.resolver,
-                Some(&bootstrap.service_db),
-                bootstrap.activation.profile.as_str(),
-                Some(bootstrap.resolver.store().root()),
-            )
-            .await
-            .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-        let linked_activation =
-            active
-                .activation(deployment)
+        #[cfg(any(test))]
+        {
+            let active = self
+                .assembly_admission
+                .deployment_image_or_lazy_load(
+                    deployment,
+                    &bootstrap.resolver,
+                    Some(&bootstrap.service_db),
+                    bootstrap.activation.profile.as_str(),
+                    Some(bootstrap.resolver.store().root()),
+                )
+                .await
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+            let linked_activation =
+                active
+                    .activation(deployment)
+                    .ok_or_else(|| RuntimeError::Protocol {
+                        target: header.invocation.target.clone(),
+                        message: "task routing deployment is not loaded".to_string(),
+                    })?;
+            let activation = active
+                .contexts()
+                .activation_for_deployment(deployment)
                 .ok_or_else(|| RuntimeError::Protocol {
                     target: header.invocation.target.clone(),
-                    message: "task routing deployment is not loaded".to_string(),
+                    message: "task routing deployment has no admitted activation".to_string(),
                 })?;
-        let activation = active
-            .contexts()
-            .activation_for_deployment(deployment)
-            .ok_or_else(|| RuntimeError::Protocol {
-                target: header.invocation.target.clone(),
-                message: "task routing deployment has no admitted activation".to_string(),
-            })?;
-        if activation.identity().deployment != *deployment
-            || linked_activation.deployment_ref() != deployment
-            || activation.implementation_package_build_id()
-                != linked_activation.implementation_package_build_id()
-        {
-            return Err(RuntimeError::Protocol {
-                target: header.invocation.target.clone(),
-                message: "task routing does not match the admitted activation owner".to_string(),
-            });
-        }
-        let execution_image = Arc::clone(active.candidate().execution_image());
-        let request_activation =
-            skiff_runtime_activation::RequestActivationContext::begin(Arc::clone(&activation))
-                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-        let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::clone(active.contexts()) as _;
-        let eval = RuntimeAssemblyEvalTarget::new(
-            Arc::clone(&execution_image),
-            request_activation,
-            resolver,
-        )
-        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-        let target = RuntimeAssemblyTaskTarget::new(eval, header.invocation.target.clone())
-            .map_err(|error| RuntimeError::Protocol {
-                target: header.invocation.target.clone(),
-                message: error.to_string(),
-            })?;
-        let db_source = active
-            .contexts()
-            .db_source(activation.activation_id())
-            .ok_or_else(|| RuntimeError::Protocol {
-                target: header.invocation.target.clone(),
-                message: "task activation has no DB capability source".to_string(),
-            })?;
-        let config_views =
-            active
+            if activation.identity().deployment != *deployment
+                || linked_activation.deployment_ref() != deployment
+                || activation.implementation_package_build_id()
+                    != linked_activation.implementation_package_build_id()
+            {
+                return Err(RuntimeError::Protocol {
+                    target: header.invocation.target.clone(),
+                    message: "task routing does not match the admitted activation owner"
+                        .to_string(),
+                });
+            }
+            let execution_image = Arc::clone(active.candidate().execution_image());
+            let request_activation =
+                skiff_runtime_activation::RequestActivationContext::begin(Arc::clone(&activation))
+                    .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+            let resolver: Arc<dyn RuntimeAssemblyEvalResolver> = Arc::clone(active.contexts()) as _;
+            let eval = RuntimeAssemblyEvalTarget::new(
+                Arc::clone(&execution_image),
+                request_activation,
+                resolver,
+            )
+            .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+            let target = RuntimeAssemblyTaskTarget::new(eval, header.invocation.target.clone())
+                .map_err(|error| RuntimeError::Protocol {
+                    target: header.invocation.target.clone(),
+                    message: error.to_string(),
+                })?;
+            let db_source = active
                 .contexts()
-                .config_views(deployment)
+                .db_source(activation.activation_id())
                 .ok_or_else(|| RuntimeError::Protocol {
+                    target: header.invocation.target.clone(),
+                    message: "task activation has no DB capability source".to_string(),
+                })?;
+            let config_views = active.contexts().config_views(deployment).ok_or_else(|| {
+                RuntimeError::Protocol {
                     target: header.invocation.target.clone(),
                     message: "task activation has no scoped config views".to_string(),
-                })?;
-        header.deadline = effective_request_deadline(header.deadline.as_ref(), "task")?;
-        if header
-            .deadline
-            .as_ref()
-            .is_some_and(|deadline| deadline.timeout_ms == 0)
-        {
-            return Err(deadline_exceeded());
+                }
+            })?;
+            header.deadline = effective_request_deadline(header.deadline.as_ref(), "task")?;
+            if header
+                .deadline
+                .as_ref()
+                .is_some_and(|deadline| deadline.timeout_ms == 0)
+            {
+                return Err(deadline_exceeded());
+            }
+            let request = RuntimeTaskRequest {
+                request_id: header.request_id.clone(),
+                target: header.invocation.target.clone(),
+                payload,
+                test_effects_enabled: header.test_effects_enabled,
+                test_case_capability: header.test_case_capability.clone(),
+            };
+            Ok(AdmittedRuntimeAssemblyRequest::Task(AdmittedTaskRequest {
+                header,
+                request,
+                target,
+                activation,
+                execution_image,
+                contexts: Arc::clone(active.contexts()),
+                config_views,
+                db_source,
+                service_protocol_identity: linked_activation
+                    .deployment()
+                    .contract
+                    .service_protocol_identity
+                    .as_str()
+                    .to_string(),
+            }))
         }
-        let request = RuntimeTaskRequest {
-            request_id: header.request_id.clone(),
-            target: header.invocation.target.clone(),
-            payload,
-            test_effects_enabled: header.test_effects_enabled,
-            test_case_capability: header.test_case_capability.clone(),
-        };
-        Ok(AdmittedRuntimeAssemblyRequest::Task(AdmittedTaskRequest {
-            header,
-            request,
-            target,
-            activation,
-            execution_image,
-            contexts: Arc::clone(active.contexts()),
-            config_views,
-            db_source,
-            service_protocol_identity: linked_activation
-                .deployment()
-                .contract
-                .service_protocol_identity
-                .as_str()
-                .to_string(),
-        }))
+        #[cfg(not(test))]
+        {
+            Err(bytecode_required_error(deployment))
+        }
     }
 
     async fn websocket_jsonrpc_request_from_wire(
@@ -686,64 +748,71 @@ impl RuntimeHost {
                 },
             ));
         }
-        let routing = &header.routing;
-        let ingress = &routing.ingress;
-        let request = &header.websocket_json_rpc;
-        let profile = match request.profile {
-            RuntimeAssemblyWebSocketJsonRpcProfile::JsonRpc2_0Text => {
-                GatewayWebSocketRpcProfile::JsonRpc2_0Text
-            }
-        };
-        // The physical WebSocket route is the same admission unit as the
-        // connect path: protocol WebSocket, path-only selector. The JSON-RPC
-        // method capability route then joins on the physical entry, so every
-        // request resolves against the routing.buildId deployment exactly like
-        // HTTP admission (bind version, not build: a build switch mid-connection
-        // applies from the next request).
-        let selector = IngressSelector {
-            protocol: IngressProtocol::WebSocket,
-            method: None,
-            path: ingress.path.clone(),
-        };
-        let key = ServiceIngressKey {
-            deployment: routing.deployment.clone(),
-            selector: selector.clone(),
-        };
-        let physical_route = self
-            .resolve_active_assembly_request_route(&key, bootstrap)
-            .await?;
-        let method_route = physical_route
-            .websocket_jsonrpc_method_route(
-                &ingress.path,
-                &ingress.method,
-                &routing.gateway_entry_identity,
-                profile,
-                &request.websocket_entry_id,
-            )
-            .map_err(|error| RuntimeError::Protocol {
-                target: request.connection_id.clone(),
-                message: error.to_string(),
-            })?;
-        let target = method_route
-            .websocket_jsonrpc_target(&physical_route)
-            .map_err(|error| RuntimeError::Protocol {
-                target: request.connection_id.clone(),
-                message: error.to_string(),
-            })?;
-        let resolved = ResolvedWebSocketJsonRpcExecution {
-            target,
-            method_route,
-        };
-        validate_websocket_jsonrpc_execution_route(&header, &resolved)?;
-        header.deadline =
-            effective_request_deadline(header.deadline.as_ref(), "WebSocket JSON-RPC")?;
-        Ok(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc(
-            AdmittedWebSocketJsonRpcRequest {
-                resolved,
-                header,
-                params,
-            },
-        ))
+        #[cfg(any(test))]
+        {
+            let routing = &header.routing;
+            let ingress = &routing.ingress;
+            let request = &header.websocket_json_rpc;
+            let profile = match request.profile {
+                RuntimeAssemblyWebSocketJsonRpcProfile::JsonRpc2_0Text => {
+                    GatewayWebSocketRpcProfile::JsonRpc2_0Text
+                }
+            };
+            // The physical WebSocket route is the same admission unit as the
+            // connect path: protocol WebSocket, path-only selector. The JSON-RPC
+            // method capability route then joins on the physical entry, so every
+            // request resolves against the routing.buildId deployment exactly like
+            // HTTP admission (bind version, not build: a build switch mid-connection
+            // applies from the next request).
+            let selector = IngressSelector {
+                protocol: IngressProtocol::WebSocket,
+                method: None,
+                path: ingress.path.clone(),
+            };
+            let key = ServiceIngressKey {
+                deployment: routing.deployment.clone(),
+                selector: selector.clone(),
+            };
+            let physical_route = self
+                .resolve_active_assembly_request_route(&key, bootstrap)
+                .await?;
+            let method_route = physical_route
+                .websocket_jsonrpc_method_route(
+                    &ingress.path,
+                    &ingress.method,
+                    &routing.gateway_entry_identity,
+                    profile,
+                    &request.websocket_entry_id,
+                )
+                .map_err(|error| RuntimeError::Protocol {
+                    target: request.connection_id.clone(),
+                    message: error.to_string(),
+                })?;
+            let target = method_route
+                .websocket_jsonrpc_target(&physical_route)
+                .map_err(|error| RuntimeError::Protocol {
+                    target: request.connection_id.clone(),
+                    message: error.to_string(),
+                })?;
+            let resolved = ResolvedWebSocketJsonRpcExecution {
+                target,
+                method_route,
+            };
+            validate_websocket_jsonrpc_execution_route(&header, &resolved)?;
+            header.deadline =
+                effective_request_deadline(header.deadline.as_ref(), "WebSocket JSON-RPC")?;
+            Ok(AdmittedRuntimeAssemblyRequest::WebSocketJsonRpc(
+                AdmittedWebSocketJsonRpcRequest {
+                    resolved,
+                    header,
+                    params,
+                },
+            ))
+        }
+        #[cfg(not(test))]
+        {
+            Err(bytecode_required_error(&header.routing.deployment))
+        }
     }
     #[cfg(test)]
     pub(crate) fn runtime_assembly_request_deadline_from_wire_for_test(
@@ -763,14 +832,19 @@ impl RuntimeHost {
 }
 
 enum AdmittedRuntimeAssemblyRequest {
+    #[cfg(test)]
     Http(AdmittedHttpGatewayRequest),
     BytecodeHttp(AdmittedBytecodeHttpRequest),
+    #[cfg(test)]
     WebSocketConnect(AdmittedWebSocketConnectRequest),
     BytecodeWebSocketConnect(AdmittedBytecodeWebSocketConnectRequest),
+    #[cfg(test)]
     WebSocketConnectionClosed(AdmittedWebSocketConnectionClosedRequest),
     BytecodeWebSocketConnectionClosed(AdmittedBytecodeWebSocketConnectionClosedRequest),
+    #[cfg(test)]
     WebSocketJsonRpc(AdmittedWebSocketJsonRpcRequest),
     BytecodeWebSocketJsonRpc(AdmittedBytecodeWebSocketJsonRpcRequest),
+    #[cfg(test)]
     Task(AdmittedTaskRequest),
     BytecodeTask(AdmittedBytecodeTaskRequest),
 }
@@ -783,6 +857,7 @@ fn bytecode_required_error(deployment: &ServiceDeploymentRef) -> RuntimeError {
     }
 }
 
+#[cfg(test)]
 fn gateway_ingress_pin(
     route: &ActiveAssemblyRoute,
     gateway_entry_identity: &skiff_artifact_model::GatewayEntryIdentity,
@@ -832,6 +907,7 @@ fn wire_routing_build_id(header: &RuntimeAssemblyRequestStartFrameWireHeader) ->
     Some(deployment.deployment_artifact_identity.as_str().to_string())
 }
 
+#[cfg(test)]
 fn http_gateway_request_from_admitted_wire(
     route: &ActiveAssemblyRoute,
     header: &RuntimeAssemblyRequestStartFrameHeader,
@@ -864,6 +940,7 @@ fn http_gateway_request_from_admitted_wire(
     })
 }
 
+#[cfg(test)]
 fn websocket_connect_ingress_from_wire(
     route: &ActiveAssemblyRoute,
     header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
@@ -885,6 +962,7 @@ fn websocket_connect_ingress_from_wire(
     }
 }
 
+#[cfg(test)]
 fn websocket_connection_closed_ingress_from_wire(
     route: &ActiveAssemblyRoute,
     header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
@@ -904,6 +982,7 @@ fn websocket_connection_closed_ingress_from_wire(
     }
 }
 
+#[cfg(test)]
 fn request_name_values(
     values: &[skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader],
 ) -> Vec<HttpNameValue> {
@@ -968,6 +1047,7 @@ fn validate_http_header(header: &RuntimeAssemblyRequestStartFrameHeader) -> Resu
     Ok(())
 }
 
+#[cfg(test)]
 fn ingress_selector(header: &RuntimeAssemblyRequestStartFrameHeader) -> IngressSelector {
     let ingress = &header.routing.ingress;
     IngressSelector {
@@ -1095,6 +1175,7 @@ fn validate_task_header(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_websocket_jsonrpc_execution_route(
     header: &RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
     resolved: &ResolvedWebSocketJsonRpcExecution,
@@ -1128,6 +1209,7 @@ fn validate_websocket_jsonrpc_execution_route(
     Ok(())
 }
 
+#[cfg(test)]
 fn websocket_connect_ingress_selector(
     header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
 ) -> IngressSelector {
@@ -1139,6 +1221,7 @@ fn websocket_connect_ingress_selector(
     }
 }
 
+#[cfg(test)]
 fn websocket_connection_closed_ingress_selector(
     header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
 ) -> IngressSelector {
@@ -1150,6 +1233,7 @@ fn websocket_connection_closed_ingress_selector(
     }
 }
 
+#[cfg(test)]
 fn validate_websocket_connection_closed_route(
     header: &RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
     selector: &IngressSelector,
@@ -1184,6 +1268,7 @@ fn validate_websocket_connection_closed_route(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_websocket_connect_route(
     header: &RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
     selector: &IngressSelector,
@@ -1217,6 +1302,7 @@ fn validate_websocket_connect_route(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_route(
     header: &RuntimeAssemblyRequestStartFrameHeader,
     selector: &IngressSelector,
@@ -1264,6 +1350,7 @@ fn validate_route(
 /// match the route's deployment artifact identity. Routers without buildId
 /// support fall back to the exact deployment ref match performed by the
 /// ingress key; assembly identity/generation are no longer consumed.
+#[cfg(test)]
 fn routing_build_id_mismatch(frame_build_id: Option<&str>, route: &ActiveAssemblyRoute) -> bool {
     frame_build_id.is_some_and(|build_id| {
         build_id != route.deployment().deployment_artifact_identity.as_str()

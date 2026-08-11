@@ -19,20 +19,23 @@ use skiff_runtime_transport::{
 use tokio::sync::mpsc;
 use tracing::error;
 
-use super::assembly_wire::{
-    AdmittedBytecodeWebSocketJsonRpcRequest, AdmittedWebSocketJsonRpcRequest,
-};
+use super::assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest;
+#[cfg(test)]
+use super::assembly_wire::AdmittedWebSocketJsonRpcRequest;
+#[cfg(test)]
+use crate::loader::assembly_admission::ActiveAssemblyRoute;
 use crate::{
     error::{Result, RuntimeError},
     host::{
         request_supervisor::{CompletionTrace, SupervisedRequest},
         RuntimeHost,
     },
-    loader::{assembly_admission::ActiveAssemblyRoute, bytecode_admission::BytecodeRoute},
+    loader::bytecode_admission::BytecodeRoute,
     telemetry::RequestTelemetryContext,
 };
 
 impl RuntimeHost {
+    #[cfg(test)]
     pub(super) async fn task_websocket_jsonrpc_on_resolved_route(
         &self,
         router_session_id: String,
@@ -163,6 +166,7 @@ impl RuntimeHost {
         });
     }
 
+    #[cfg(test)]
     fn websocket_jsonrpc_execution_handles(
         &self,
         route: &ActiveAssemblyRoute,
@@ -226,6 +230,7 @@ impl RuntimeHost {
         }
     }
 
+    #[cfg(test)]
     fn websocket_jsonrpc_telemetry_context(
         &self,
         header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
@@ -306,6 +311,7 @@ fn bytecode_websocket_jsonrpc_telemetry_context(
     context
 }
 
+#[cfg(test)]
 fn websocket_jsonrpc_supervisor_request(
     header: &skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
     route: &ActiveAssemblyRoute,

@@ -5,25 +5,32 @@ use std::sync::RwLock;
 
 #[cfg(test)]
 use anyhow::Context;
-use skiff_artifact_model::{
-    AssemblyActivationServiceDb, AssemblyIdentity, BoundaryOperationDescriptor,
-    ContractOperationId, GatewayAdapterKind, GatewayDispatchMode, GatewayEntryIdentity,
-    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayProtocolSurface,
-    GatewayWebSocketRpcProfile, IngressProtocol, IngressSelector, ServiceContractRef,
-    ServiceDeploymentRef, ServiceIngressKey, WebSocketEntryId,
-};
 #[cfg(test)]
 use skiff_artifact_model::RuntimeAssembly;
-use skiff_runtime_activation::{ActivationContext, RequestActivationContext};
+#[cfg(test)]
+use skiff_artifact_model::{
+    AssemblyActivationServiceDb, GatewayEntryIdentity, GatewayEntryKey,
+    GatewayEntryProtocolSurface, GatewayWebSocketRpcProfile, IngressSelector, ServiceIngressKey,
+};
+use skiff_artifact_model::{
+    AssemblyIdentity, BoundaryOperationDescriptor, ContractOperationId, GatewayAdapterKind,
+    GatewayDispatchMode, GatewayProtocolSurface, IngressProtocol, ServiceContractRef,
+    ServiceDeploymentRef, WebSocketEntryId,
+};
+use skiff_runtime_activation::ActivationContext;
+#[cfg(test)]
+use skiff_runtime_activation::RequestActivationContext;
+#[cfg(test)]
 use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
 use skiff_runtime_linker::{
     link_runtime_assembly, AssemblyLinkedCandidate, LinkedActivationTemplate, LinkedGatewayEntry,
 };
-use skiff_runtime_loader::{
-    DeploymentReleasePointerResolver, RuntimeAssemblyRecordResolver, ServiceContractStore,
-};
+use skiff_runtime_loader::ServiceContractStore;
+#[cfg(test)]
+use skiff_runtime_loader::{DeploymentReleasePointerResolver, RuntimeAssemblyRecordResolver};
 #[cfg(test)]
 use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
+#[cfg(test)]
 use skiff_runtime_request::{
     RuntimeAssemblyHttpGatewayTarget, RuntimeAssemblyWebSocketConnectTarget,
     RuntimeAssemblyWebSocketConnectionClosedTarget, RuntimeAssemblyWebSocketJsonRpcPhysicalRoute,
@@ -64,6 +71,7 @@ struct PreparedAssembly {
 
 /// One request-entry route pinned to the exact active generation used for lookup.
 #[derive(Debug, Clone)]
+#[cfg(test)]
 pub(crate) struct ActiveAssemblyRoute {
     active: Arc<ActiveAssembly>,
     ingress_key: ServiceIngressKey,
@@ -126,6 +134,7 @@ impl ActiveActorExecutionRoute {
     }
 }
 
+#[cfg(test)]
 impl ActiveAssemblyRoute {
     pub(crate) fn assembly_identity(&self) -> &AssemblyIdentity {
         self.active.identity()
@@ -395,6 +404,7 @@ impl ActiveAssembly {
         self.candidate.activation(deployment)
     }
 
+    #[cfg(test)]
     pub(crate) fn ingress(&self, key: &ServiceIngressKey) -> Option<&Arc<LinkedGatewayEntry>> {
         self.candidate.ingress(key)
     }
@@ -501,7 +511,8 @@ impl AssemblyAdmissionController {
     where
         R: RuntimeAssemblyContentResolver + Sync + ?Sized,
     {
-        self.admit_with_profile(assembly, resolver, None, None).await
+        self.admit_with_profile(assembly, resolver, None, None)
+            .await
     }
 
     /// Test-only direct admission with an explicit Router-supplied serviceDb
@@ -530,7 +541,9 @@ impl AssemblyAdmissionController {
         );
 
         let prepared = self
-            .build_started_candidate(generation, &identity, assembly, resolver, service_db, profile)
+            .build_started_candidate(
+                generation, &identity, assembly, resolver, service_db, profile,
+            )
             .await?;
         let active = self.publish(generation, identity, prepared)?;
         info!(
@@ -673,6 +686,7 @@ impl AssemblyAdmissionController {
     }
 
     /// Whether one exact buildId is already in the loaded registry.
+    #[cfg(test)]
     pub(crate) fn is_loaded(&self, build_id: &str) -> bool {
         self.loaded.lookup(build_id).is_some()
     }
@@ -709,6 +723,7 @@ impl AssemblyAdmissionController {
     /// Load failures (missing record, missing release pointer, unreachable
     /// directory, invalid content) fast-fail every waiting request; nothing is
     /// registered on failure.
+    #[cfg(test)]
     pub(crate) async fn route_or_lazy_load<R>(
         &self,
         key: &ServiceIngressKey,
@@ -721,7 +736,13 @@ impl AssemblyAdmissionController {
         R: RuntimeAssemblyRecordResolver + DeploymentReleasePointerResolver + Sync + ?Sized,
     {
         let active = self
-            .deployment_image_or_lazy_load(&key.deployment, resolver, service_db, profile, artifact_root)
+            .deployment_image_or_lazy_load(
+                &key.deployment,
+                resolver,
+                service_db,
+                profile,
+                artifact_root,
+            )
             .await?;
         self.route_from_active(active, key)?.ok_or_else(|| {
             anyhow::anyhow!(
@@ -733,6 +754,7 @@ impl AssemblyAdmissionController {
 
     /// Resolves the loaded image for one exact deployment, lazy-loading it
     /// under its per-buildId critical section when absent.
+    #[cfg(test)]
     pub(crate) async fn deployment_image_or_lazy_load<R>(
         &self,
         deployment: &ServiceDeploymentRef,
@@ -752,6 +774,7 @@ impl AssemblyAdmissionController {
             .await
     }
 
+    #[cfg(test)]
     async fn load_lazy_deployment<R>(
         &self,
         deployment: &ServiceDeploymentRef,
@@ -795,7 +818,8 @@ impl AssemblyAdmissionController {
             candidate,
             contexts: Arc::new(contexts),
         });
-        self.loaded.register_closure(closure_deployments, Arc::clone(&active));
+        self.loaded
+            .register_closure(closure_deployments, Arc::clone(&active));
         info!(
             event = "runtime.deployment_lazy_loaded",
             build_id = %reference.deployment_artifact_identity,
@@ -804,6 +828,7 @@ impl AssemblyAdmissionController {
         Ok(active)
     }
 
+    #[cfg(test)]
     fn route_from_active(
         &self,
         active: Arc<ActiveAssembly>,
