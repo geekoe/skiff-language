@@ -25,7 +25,7 @@ use skiff_artifact_model::{
 };
 use skiff_compiler::{
     authoring::{
-        author_official_std_package, build_authoring_object, project_runtime_assembly,
+        author_official_std_package, build_authoring_object_legacy, project_runtime_assembly,
         publish_package_artifact_records, AuthoringObject,
     },
     CompilerPlatformSources,
@@ -274,7 +274,7 @@ mod tests {
             "example.com/alpha",
             ALPHA_SOURCE,
         );
-        let alpha_receipt = build_authoring_object(
+        let alpha_receipt = build_authoring_object_legacy(
             &platform_sources(),
             AuthoringObject::Package,
             &alpha_root,
@@ -308,7 +308,7 @@ mod tests {
             "example.com/beta",
             BETA_SOURCE,
         );
-        let beta_receipt = build_authoring_object(
+        let beta_receipt = build_authoring_object_legacy(
             &platform_sources(),
             AuthoringObject::Package,
             &beta_root,
@@ -395,7 +395,7 @@ mod tests {
             &[],
             None,
         );
-        let shared_receipt = build_authoring_object(
+        let shared_receipt = build_authoring_object_legacy(
             &platform_sources(),
             AuthoringObject::Package,
             &shared_root,
@@ -414,7 +414,7 @@ mod tests {
             &[("example.com/shared-package", "1.0.0", "shared")],
             None,
         );
-        build_authoring_object(
+        build_authoring_object_legacy(
             &platform_sources(),
             AuthoringObject::Package,
             &middle_root,
@@ -435,7 +435,7 @@ mod tests {
             ],
             Some("example.com/service"),
         );
-        let service_receipt = build_authoring_object(
+        let service_receipt = build_authoring_object_legacy(
             &platform_sources(),
             AuthoringObject::Package,
             &service_root,

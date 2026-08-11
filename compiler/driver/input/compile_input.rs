@@ -26,8 +26,8 @@ pub struct PackageCompileInput<'a> {
 impl<'a> PackageCompileInput<'a> {
     /// Creates one package request with an explicit bytecode-lane decision.
     ///
-    /// Callers must pass `false` for the legacy-only migration lane or `true`
-    /// for fail-closed bytecode emission; there is no ambient/default policy.
+    /// Compiler authoring enables bytecode by default. Pass `false` for the
+    /// explicit legacy-only File-IR lane.
     pub fn new(
         platform_sources: &'a CompilerPlatformSources,
         package: &'a PackageSourceInput,

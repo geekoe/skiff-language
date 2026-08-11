@@ -81,6 +81,21 @@ fn authoring_actions_require_exactly_one_platform_source_root() {
 }
 
 #[test]
+fn package_authoring_accepts_legacy_no_bytecode_flag() {
+    let error = run_error(&[
+        "package",
+        "build",
+        "/missing-authoring-root",
+        "--artifact-root",
+        "/tmp/skiff-artifacts",
+        "--platform-source-root",
+        "/missing-skiff-platform-root",
+        "--no-bytecode",
+    ]);
+    assert!(error.contains("compiler platform source"), "{error}");
+}
+
+#[test]
 fn assembly_projection_rejects_positional_authoring_roots() {
     let error = run_error(&[
         "assembly",

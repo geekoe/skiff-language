@@ -1,3 +1,4 @@
+use serde_json;
 use std::{
     collections::BTreeMap,
     fs,
@@ -13,7 +14,8 @@ use skiff_artifact_identity::{
     PackageResourceRecordPath,
 };
 use skiff_artifact_model::{
-    ContractTypeDescriptor, ContractTypeNameability, PackageLocalAbiSymbol, PublicationResourceRef,
+    ContractTypeDescriptor, ContractTypeNameability, PackageArtifactRef, PackageLocalAbiSymbol,
+    PublicationResourceRef,
 };
 use skiff_compiler_core::json_utils::sha256_hex;
 use skiff_compiler_emission::artifact::PublishedResourceArtifact;
@@ -22,7 +24,7 @@ use skiff_compiler_source::prelude_registry::prelude_identity;
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 use super::*;
-use crate::authoring::{build_authoring_object, AuthoringObject};
+use crate::authoring::{build_authoring_object, build_authoring_object_legacy, AuthoringObject};
 
 // These identities derive from the live repository std/prelude sources, so
 // they are asserted structurally (canonical prefix + sha256) and the
@@ -182,6 +184,46 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
 }
 
 #[test]
+fn default_package_authoring_persists_bytecode_with_the_package_record() {
+    let base = TestDir::new("default-bytecode-authoring");
+    let root = base.path().join("package");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("package.yml"),
+        "id: example.com/default-bytecode\nversion: 1.0.0\n",
+    )
+    .unwrap();
+    fs::write(root.join("api.yml"), "{}\n").unwrap();
+    fs::write(
+        root.join("main.skiff"),
+        "function ping() -> string { return \"pong\" }\n",
+    )
+    .unwrap();
+
+    let artifact_root = base.path().join("artifacts");
+    let receipt = build_authoring_object(
+        &repository_platform_sources(),
+        AuthoringObject::Package,
+        &root,
+        &artifact_root,
+        "dev",
+        false,
+    )
+    .expect("default package authoring must emit bytecode");
+    let artifact: PackageArtifactRef =
+        serde_json::from_value(receipt["packageArtifactReceipt"]["artifact"].clone()).unwrap();
+    let store = CanonicalArtifactStore::open(&artifact_root).unwrap();
+    let stored = store.read_package_artifact(&artifact).unwrap();
+    let bytecode_ref = stored
+        .bytecode
+        .as_ref()
+        .expect("default package authoring must attach bytecode");
+    store
+        .read_package_bytecode(&artifact, bytecode_ref)
+        .expect("default package authoring must persist the bytecode record");
+}
+
+#[test]
 fn package_record_writer_creates_a_missing_artifact_root() {
     let published = repository_std();
     let base = TestDir::new("record-writer-missing-root");
@@ -284,7 +326,7 @@ fn copied_std_remains_a_rejected_user_package_with_zero_record_writes() {
     let copied = MinimalPlatformFixture::new("copied-user-std");
     let artifact_root = copied.base().join("artifact-store");
 
-    let error = build_authoring_object(
+    let error = build_authoring_object_legacy(
         &platform_sources,
         AuthoringObject::Package,
         &copied.root().join("std"),

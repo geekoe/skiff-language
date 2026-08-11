@@ -3,13 +3,14 @@ use std::path::PathBuf;
 use skiff_artifact_identity::ReleasePointerPath;
 use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_compiler::authoring::{
-    build_authoring_object, project_runtime_assembly, seed_official_std_package, AuthoringObject,
+    build_authoring_object, build_authoring_object_legacy, project_runtime_assembly,
+    seed_official_std_package, AuthoringObject,
 };
 use skiff_compiler::CompilerPlatformSources;
 use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
 
 const USAGE: &str = "usage:
-  skiff-compiler package <build|publish> <root> --artifact-root <dir> [--profile <name>] [--json]
+  skiff-compiler package <build|publish> <root> --artifact-root <dir> [--profile <name>] [--no-bytecode] [--json]
   skiff-compiler assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
   skiff-compiler release set --artifact-root <dir> --profile <name> --deployment '<exact ServiceDeploymentRef JSON>' [--expected '<exact ReleasePointer JSON>'] [--json]
   skiff-compiler release <unset|get> --artifact-root <dir> --profile <name> --service <id> --version <v> [--expected '<exact ReleasePointer JSON>'] [--json]";
@@ -344,6 +345,7 @@ fn run_package_action(
     let mut platform_source_root = None;
     let mut profile = None;
     let mut json = false;
+    let mut emit_bytecode = true;
     while let Some(argument) = args.next() {
         match argument.as_str() {
             "--artifact-root" => {
@@ -370,20 +372,38 @@ fn run_package_action(
                 profile = Some(args.next().ok_or("--profile requires a name")?);
             }
             "--json" => json = true,
+            "--no-bytecode" => {
+                if !emit_bytecode {
+                    return Err("--no-bytecode was provided more than once".into());
+                }
+                emit_bytecode = false;
+            }
             _ => return Err(format!("unknown option {argument}\n{USAGE}").into()),
         }
     }
     let artifact_root = artifact_root.ok_or("--artifact-root is required")?;
     let platform_source_root = platform_source_root.ok_or("--platform-source-root is required")?;
     let platform_sources = CompilerPlatformSources::new(&platform_source_root)?;
-    let receipt = build_authoring_object(
-        &platform_sources,
-        AuthoringObject::Package,
-        &root,
-        &artifact_root,
-        profile.as_deref().unwrap_or("dev"),
-        publish_pointer,
-    )?;
+    let authoring = if emit_bytecode {
+        build_authoring_object(
+            &platform_sources,
+            AuthoringObject::Package,
+            &root,
+            &artifact_root,
+            profile.as_deref().unwrap_or("dev"),
+            publish_pointer,
+        )
+    } else {
+        build_authoring_object_legacy(
+            &platform_sources,
+            AuthoringObject::Package,
+            &root,
+            &artifact_root,
+            profile.as_deref().unwrap_or("dev"),
+            publish_pointer,
+        )
+    };
+    let receipt = authoring?;
     print_receipt(&receipt, json)
 }
 

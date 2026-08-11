@@ -29,6 +29,7 @@ export async function runAuthoringObjectCommand(kind, rawArgs, {
     rootDeployments: parsed.rootDeployments,
     artifactRoot: parsed.artifactRoot,
     profile: parsed.profile,
+    emitBytecode: parsed.emitBytecode,
   });
 
   stdout(parsed.json ? JSON.stringify(receipt, null, 2) : renderAuthoringResult(receipt));
@@ -82,6 +83,7 @@ export async function runCompilerAuthoring({
   rootDeployments,
   artifactRoot,
   profile,
+  emitBytecode = true,
   compilerBinary,
 }) {
   if (kind !== 'package' && kind !== 'assembly') {
@@ -95,6 +97,7 @@ export async function runCompilerAuthoring({
     rootDeployments,
     artifactRoot,
     profile,
+    emitBytecode,
     compilerBinary,
   });
   const outcome = await captureAttachedCommand(invocation.command, invocation.args, {
@@ -318,6 +321,7 @@ export function compilerAuthoringInvocation({
   rootDeployments,
   artifactRoot,
   profile,
+  emitBytecode = true,
   compilerBinary,
 }) {
   if (!isAbsolute(skiffRoot)) {
@@ -337,6 +341,9 @@ export function compilerAuthoringInvocation({
       skiffRoot,
       '--json',
     );
+    if (!emitBytecode) {
+      args.push('--no-bytecode');
+    }
   } else {
     if (typeof profile !== 'string' || profile.length === 0) {
       throw new Error('assembly authoring requires an explicit profile');
@@ -360,11 +367,15 @@ export function parseObjectArgs(kind, action, rawArgs) {
   if (kind === 'assembly') {
     optionsWithValues.add('--root-deployment');
   }
+  const booleanFlags = new Set(['--json']);
+  if (kind === 'package') {
+    booleanFlags.add('--no-bytecode');
+  }
   for (let index = 0; index < rawArgs.length; index += 1) {
     const argument = rawArgs[index];
-    if (argument === '--json') {
+    if (booleanFlags.has(argument)) {
       if (flags.has(argument)) {
-        throw new Error('--json was provided more than once');
+        throw new Error(`${argument} was provided more than once`);
       }
       flags.add(argument);
       continue;
@@ -421,11 +432,12 @@ export function parseObjectArgs(kind, action, rawArgs) {
     artifactRoot: resolve(artifactRoot),
     profile: options.get('--profile') ?? 'dev',
     json: flags.has('--json'),
+    emitBytecode: !flags.has('--no-bytecode'),
   };
 }
 
 export function objectUsage(kind) {
-  const base = `skiff ${kind} <build|publish> <root> --artifact-root <dir> [--profile <name>] [--json]`;
+  const base = `skiff ${kind} <build|publish> <root> --artifact-root <dir> [--profile <name>] [--no-bytecode] [--json]`;
   if (kind !== 'assembly') {
     return `usage: ${base}`;
   }

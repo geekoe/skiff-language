@@ -38,7 +38,7 @@ use skiff_deployment::{
 };
 
 use crate::{
-    compile_package, compile_service_package, generate_service_deployment,
+    compile_package, compile_service_package, generate_service_deployment, CompiledServicePackage,
     GeneratedServiceDeploymentInput, PackageCompileInput, PackageContractCompileDependency,
     PackageSourceInput,
 };
@@ -52,7 +52,8 @@ pub use actor_routing::{
 };
 use package_publication::publish_package_artifact_records_to_store;
 pub use package_publication::{
-    author_official_std_package, publish_package_artifact_records, PublishedPackageArtifactReceipt,
+    author_official_std_package, publish_package_artifact_records,
+    publish_package_artifact_records_with_bytecode, PublishedPackageArtifactReceipt,
 };
 
 pub type AuthoringResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -75,12 +76,54 @@ impl AuthoringObject {
     }
 }
 
+/// Authors one object with bytecode emission enabled by default.
 pub fn build_authoring_object(
     platform_sources: &CompilerPlatformSources,
     object: AuthoringObject,
     root: &Path,
     artifact_root: &Path,
     profile: &str,
+    publish_pointer: bool,
+) -> AuthoringResult<Value> {
+    build_authoring_object_with_bytecode(
+        platform_sources,
+        object,
+        root,
+        artifact_root,
+        profile,
+        true,
+        publish_pointer,
+    )
+}
+
+/// Legacy File-IR-only authoring. This is the explicit opt-out for package
+/// artifacts that must remain bytecode-free.
+pub fn build_authoring_object_legacy(
+    platform_sources: &CompilerPlatformSources,
+    object: AuthoringObject,
+    root: &Path,
+    artifact_root: &Path,
+    profile: &str,
+    publish_pointer: bool,
+) -> AuthoringResult<Value> {
+    build_authoring_object_with_bytecode(
+        platform_sources,
+        object,
+        root,
+        artifact_root,
+        profile,
+        false,
+        publish_pointer,
+    )
+}
+
+fn build_authoring_object_with_bytecode(
+    platform_sources: &CompilerPlatformSources,
+    object: AuthoringObject,
+    root: &Path,
+    artifact_root: &Path,
+    profile: &str,
+    emit_bytecode: bool,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     match object {
@@ -94,6 +137,7 @@ pub fn build_authoring_object(
                 &manifest,
                 &store,
                 profile,
+                emit_bytecode,
                 publish_pointer,
             )
         }),
@@ -117,6 +161,7 @@ fn build_package_after_platform_context_guard(
     manifest: &PackageManifest,
     store: &CanonicalArtifactStore,
     profile: &str,
+    emit_bytecode: bool,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
     reject_legacy_service_authoring(root)?;
@@ -132,11 +177,17 @@ fn build_package_after_platform_context_guard(
     let mut available = dependencies.clone();
     read_contract_provider_packages(store, &contracts, &mut available)?;
     read_optional_platform_std(store, &mut available)?;
-    let input = PackageCompileInput::new(platform_sources, &package, &aliases, &package_id, false)
-        .with_canonical_dependencies(&dependencies, &contracts)
-        .with_available_canonical_packages(&available)
-        .with_canonical_artifact_root(store.root());
-    let (published, service_data, service_api_receipt) = if service_root {
+    let input = PackageCompileInput::new(
+        platform_sources,
+        &package,
+        &aliases,
+        &package_id,
+        emit_bytecode,
+    )
+    .with_canonical_dependencies(&dependencies, &contracts)
+    .with_available_canonical_packages(&available)
+    .with_canonical_artifact_root(store.root());
+    let (published, bytecode, service_data, service_api_receipt) = if service_root {
         let service = read_service_package_root(root)?;
         if service.service.kind == ServiceAuthoringKind::Test {
             return Err(invalid_input(format!(
@@ -145,30 +196,38 @@ fn build_package_after_platform_context_guard(
             )));
         }
         let compiled = compile_service_package(input, &service)?;
-        if !matches!(&compiled.bytecode, crate::PackageBytecodeLane::Disabled) {
+        if !emit_bytecode && compiled.bytecode.is_enabled() {
             return Err(invalid_input(
                 "legacy package authoring received an enabled bytecode compilation",
             ));
         }
+        let CompiledServicePackage {
+            package,
+            bytecode,
+            service_api,
+        } = compiled;
         let receipt = json!({
-            "serviceId": &compiled.service_api.contract.service_id,
-            "serviceProtocolIdentity": &compiled.service_api.contract.service_protocol_identity,
-            "projection": &compiled.service_api.visibility,
+            "serviceId": &service_api.contract.service_id,
+            "serviceProtocolIdentity": &service_api.contract.service_protocol_identity,
+            "projection": &service_api.visibility,
         });
         (
-            compiled.package,
-            Some((service, compiled.service_api)),
+            package,
+            bytecode,
+            Some((service, service_api)),
             Some(receipt),
         )
     } else {
-        let published = compile_package(input)?
-            .into_disabled_package()
-            .map_err(|_| {
-                invalid_input("legacy package authoring received an enabled bytecode compilation")
-            })?;
-        (published, None, None)
+        let compilation = compile_package(input)?;
+        let (published, bytecode) = compilation.into_parts();
+        if !emit_bytecode && bytecode.is_enabled() {
+            return Err(invalid_input(
+                "legacy package authoring received an enabled bytecode compilation",
+            ));
+        }
+        (published, bytecode, None, None)
     };
-    let receipt = publish_package_artifact_records_to_store(store, &published)?;
+    let receipt = publish_package_artifact_records_to_store(store, &published, bytecode.handoff())?;
     let mut output = Map::from_iter([(
         "packageArtifactReceipt".to_string(),
         serde_json::to_value(receipt)?,

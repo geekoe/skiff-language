@@ -59,8 +59,8 @@ const usage = `usage:
   skiff <router|runtime> <start|stop|restart|status|logs> --dir <run-dir>
   skiff instance <up|restart|status|down|supervise|repair> [--runtime <dir>] [component]
   skiff watch [--once] [--runtime <dir>] --config <watchDir> [--poll-interval-ms <ms>] [--build-only] [--json]
-  skiff package build <root> --artifact-root <dir> [--profile <name>] [--json]
-  skiff package publish <root> --artifact-root <dir> [--profile <name>] [--json]
+  skiff package build <root> --artifact-root <dir> [--profile <name>] [--no-bytecode] [--json]
+  skiff package publish <root> --artifact-root <dir> [--profile <name>] [--no-bytecode] [--json]
   skiff assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
   skiff release set --artifact-root <dir> --profile <name> --service <id> --version <v> --build-id <id> [--expected '<exact ReleasePointer JSON>'] [--json]
   skiff release unset --artifact-root <dir> --profile <name> --service <id> --version <v> [--expected '<exact ReleasePointer JSON>'] [--json]

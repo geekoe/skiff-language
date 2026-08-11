@@ -1,7 +1,7 @@
 use std::{cell::Cell, fs, path::PathBuf};
 
 use super::{
-    build_authoring_object, project_runtime_assembly,
+    build_authoring_object_legacy, project_runtime_assembly,
     reject_top_level_aliases_outside_test_service, resolve_reachable_package_closure,
     run_after_platform_context_guard, AuthoringObject,
 };
@@ -45,7 +45,7 @@ fn p5_f18b_authoring_mismatch_zero_source_reads() {
     assert_eq!(mismatch_reads.get(), 0);
 
     let hostile_store = different_root.root.join("hostile-authoring-store");
-    let authoring_error = build_authoring_object(
+    let authoring_error = build_authoring_object_legacy(
         &different_root.context(),
         AuthoringObject::Package,
         &different_root.root.join("missing-package"),

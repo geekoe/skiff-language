@@ -76,6 +76,8 @@ test('public package/assembly CLI does not expose the internal platform trust op
   for (const kind of ['package', 'assembly']) {
     assert.doesNotMatch(objectUsage(kind), /platform-source-root/);
   }
+  assert.match(objectUsage('package'), /--no-bytecode/);
+  assert.doesNotMatch(objectUsage('assembly'), /--no-bytecode/);
   assert.throws(
     () => parseObjectArgs('package', 'build', [
       '/tmp/object-root',
@@ -98,6 +100,46 @@ test('public package/assembly CLI does not expose the internal platform trust op
       skiffRoot,
     ]),
     /unknown option --platform-source-root/,
+  );
+});
+
+test('package authoring accepts --no-bytecode as the explicit legacy opt-out', () => {
+  const parsed = parseObjectArgs('package', 'build', [
+    '/tmp/object-root',
+    '--artifact-root',
+    '/tmp/artifacts',
+    '--no-bytecode',
+  ]);
+  assert.equal(parsed.emitBytecode, false);
+  const invocation = compilerAuthoringInvocation({
+    skiffRoot,
+    kind: 'package',
+    action: 'build',
+    root: parsed.root,
+    artifactRoot: parsed.artifactRoot,
+    profile: parsed.profile,
+    emitBytecode: parsed.emitBytecode,
+  });
+  assert.equal(invocation.args.includes('--no-bytecode'), true);
+  const defaultInvocation = compilerAuthoringInvocation({
+    skiffRoot,
+    kind: 'package',
+    action: 'build',
+    root: parsed.root,
+    artifactRoot: parsed.artifactRoot,
+    profile: parsed.profile,
+    emitBytecode: true,
+  });
+  assert.equal(defaultInvocation.args.includes('--no-bytecode'), false);
+  assert.throws(
+    () => parseObjectArgs('assembly', 'build', [
+      '--artifact-root',
+      '/tmp/artifacts',
+      '--profile',
+      'dev',
+      '--no-bytecode',
+    ]),
+    /unknown option --no-bytecode/,
   );
 });
 

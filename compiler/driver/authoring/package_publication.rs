@@ -6,6 +6,7 @@ use skiff_artifact_identity::{
     PackageResourceRecordPath,
 };
 use skiff_artifact_model::{PackageArtifact, PackageArtifactRef};
+use skiff_compiler_compiled::BytecodeCompilationHandoff;
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_emission::package_artifact::{
     materialize_package_artifact, PublishedPackageArtifact,
@@ -91,7 +92,8 @@ fn author_official_std_package_after_platform_context_guard(
         .map_err(|_| invalid_input("official std compilation unexpectedly enabled bytecode"))
 }
 
-/// The sole compiler-side writer for canonical PackageArtifact records.
+/// Legacy compiler-side writer for bytecode-free canonical PackageArtifact
+/// records.
 ///
 /// The emitted candidate is completely validated and all record locations are
 /// planned before the first immutable write. Storage paths emitted by earlier
@@ -105,13 +107,28 @@ pub fn publish_package_artifact_records(
     published: &PublishedPackageArtifact,
 ) -> AuthoringResult<PublishedPackageArtifactReceipt> {
     let store = CanonicalArtifactStore::create(artifact_root)?;
-    publish_package_artifact_records_to_store(&store, published)
+    publish_package_artifact_records_to_store(&store, published, None)
+}
+
+/// Bytecode-aware compiler-side writer for canonical PackageArtifact records.
+///
+/// The bytecode record is written before the referencing PackageArtifact so
+/// the store never contains a package pointer to a missing bytecode record.
+pub fn publish_package_artifact_records_with_bytecode(
+    artifact_root: &Path,
+    published: &PublishedPackageArtifact,
+    bytecode: &BytecodeCompilationHandoff,
+) -> AuthoringResult<PublishedPackageArtifactReceipt> {
+    let store = CanonicalArtifactStore::create(artifact_root)?;
+    publish_package_artifact_records_to_store(&store, published, Some(bytecode))
 }
 
 pub(super) fn publish_package_artifact_records_to_store(
     store: &CanonicalArtifactStore,
     published: &PublishedPackageArtifact,
+    bytecode: Option<&BytecodeCompilationHandoff>,
 ) -> AuthoringResult<PublishedPackageArtifactReceipt> {
+    validate_bytecode_publication_state(published, bytecode)?;
     let plan = PackagePublicationPlan::new(published)?;
 
     for (file_ref, file) in plan.artifact.files.iter().zip(plan.file_ir_units.iter()) {
@@ -129,9 +146,42 @@ pub(super) fn publish_package_artifact_records_to_store(
         store.write_package_schema_type_record(record)?;
     }
     store.write_package_schema_index(&published.package_schema_index)?;
+    if let Some(bytecode) = bytecode {
+        store.write_package_bytecode(&plan.reference, bytecode.artifact())?;
+    }
     store.write_package_artifact(&plan.artifact)?;
 
     Ok(plan.receipt)
+}
+
+fn validate_bytecode_publication_state(
+    published: &PublishedPackageArtifact,
+    bytecode: Option<&BytecodeCompilationHandoff>,
+) -> AuthoringResult<()> {
+    match bytecode {
+        Some(handoff) => {
+            if published.artifact.bytecode.as_ref() != Some(handoff.reference()) {
+                return Err(invalid_input(
+                    "bytecode publication handoff does not match PackageArtifact bytecode reference",
+                ));
+            }
+            if published.artifact.bytecode_statement_manifest_identity
+                != handoff.statement_manifest_receipt().identity().as_str()
+            {
+                return Err(invalid_input(
+                    "bytecode publication handoff does not match PackageArtifact statement manifest",
+                ));
+            }
+        }
+        None => {
+            if published.artifact.bytecode.is_some() {
+                return Err(invalid_input(
+                    "legacy publication cannot write a bytecode-bearing PackageArtifact without its bytecode handoff",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 struct PackagePublicationPlan {
