@@ -33,8 +33,8 @@ pub fn cascade_plan_for_replacement(
     for path in paths {
         let old_id = file_id_at_path(old, path);
         let new_id = file_id_at_path(replacement, path);
-        if old_id.is_some() && old_id != new_id {
-            ids.insert(old_id.expect("old_id is_some"));
+        if let Some(old_id) = old_id.filter(|old_id| new_id.as_ref() != Some(old_id)) {
+            ids.insert(old_id);
         }
     }
     CascadeFileDeletePlan {

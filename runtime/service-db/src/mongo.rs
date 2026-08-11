@@ -108,7 +108,7 @@ impl<'a> MongoSessionExecutor<'a> {
                     .session(&mut **session)
                     .await
                     .map_err(|error| map_mongo_error(error, constraint_context.as_ref()))?;
-                let mut stream = cursor.stream(&mut **session);
+                let mut stream = cursor.stream(session);
                 while let Some(document) = stream
                     .next()
                     .await

@@ -370,7 +370,7 @@ fn mongo_index_matches(model: &IndexModel, expected: &ManagedIndexSpec) -> bool 
     }
     let simple_collation = options
         .and_then(|options| options.collation.as_ref())
-        .map_or(true, |collation| collation.locale == "simple");
+        .is_none_or(|collation| collation.locale == "simple");
     simple_collation && !has_noncanonical_managed_options(options)
 }
 

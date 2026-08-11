@@ -147,14 +147,6 @@ pub(super) fn string_expected() -> RuntimeRecoverableExpectedTypePlan {
     }
 }
 
-pub(super) fn task_ref_expected() -> RuntimeRecoverableExpectedTypePlan {
-    RuntimeRecoverableExpectedTypePlan {
-        label: "std.task.TaskRef".to_string(),
-        identity: None,
-        node: RuntimeRecoverableExpectedTypeNode::TaskRef,
-    }
-}
-
 pub(super) fn nullable_string_expected() -> RuntimeRecoverableExpectedTypePlan {
     RuntimeRecoverableExpectedTypePlan {
         label: "string?".to_string(),

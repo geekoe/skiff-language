@@ -299,24 +299,6 @@ impl ServiceDbRuntime {
             .transpose()
     }
 
-    pub async fn find_one_by_query_runtime(
-        &self,
-        type_name: &str,
-        query: DbQuery,
-        order: Vec<DbOrderEntry>,
-        projection: Option<Vec<FieldPath>>,
-        heap: &mut RequestHeap,
-        context: DbRecoverableRuntimeContext,
-        session: Option<&mut ClientSession>,
-    ) -> Result<Option<RuntimeValue>> {
-        self.prepare_find_one_by_query_runtime_command(
-            type_name, query, order, projection, context,
-        )?
-        .execute(self, session)
-        .await?
-        .finalize(self, heap)
-    }
-
     pub async fn find_many_page(
         &self,
         type_name: &str,
@@ -349,22 +331,6 @@ impl ServiceDbRuntime {
             .collect::<Result<Vec<_>>>()?;
 
         Ok(DbPageResult { values })
-    }
-
-    pub async fn find_many_page_runtime(
-        &self,
-        type_name: &str,
-        query: DbQuery,
-        options: ServiceDbFindOptions,
-        projection: Option<Vec<FieldPath>>,
-        heap: &mut RequestHeap,
-        context: DbRecoverableRuntimeContext,
-        session: Option<&mut ClientSession>,
-    ) -> Result<Vec<RuntimeValue>> {
-        self.prepare_find_many_page_runtime_command(type_name, query, options, projection, context)?
-            .execute(self, session)
-            .await?
-            .finalize(self, heap)
     }
 
     pub async fn exists_by_key(
@@ -498,22 +464,6 @@ impl ServiceDbRuntime {
         document
             .map(|document| binding.business_value_from_document(document))
             .transpose()
-    }
-
-    pub async fn update_one_runtime(
-        &self,
-        type_name: &str,
-        selector: DbOneSelector,
-        change: DbRuntimeChange,
-        heap: &mut RequestHeap,
-        context: DbRecoverableRuntimeContext,
-        lease_guards: &[DbLeaseHold],
-        session: Option<&mut ClientSession>,
-    ) -> Result<Option<RuntimeValue>> {
-        self.prepare_update_one_runtime_command(type_name, selector, change, heap, context)?
-            .execute(self, lease_guards, session)
-            .await?
-            .finalize(self, heap)
     }
 
     pub async fn update_many(
@@ -804,22 +754,6 @@ impl ServiceDbRuntime {
         document
             .map(|document| binding.business_value_from_document(document))
             .transpose()
-    }
-
-    pub async fn replace_one_runtime(
-        &self,
-        type_name: &str,
-        selector: DbOneSelector,
-        value: &RuntimeValue,
-        heap: &mut RequestHeap,
-        context: DbRecoverableRuntimeContext,
-        lease_guards: &[DbLeaseHold],
-        session: Option<&mut ClientSession>,
-    ) -> Result<Option<RuntimeValue>> {
-        self.prepare_replace_one_runtime_command(type_name, selector, value, heap, context)?
-            .execute(self, lease_guards, session)
-            .await?
-            .finalize(self, heap)
     }
 
     pub async fn delete_one(

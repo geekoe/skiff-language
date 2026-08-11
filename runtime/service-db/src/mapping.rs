@@ -124,7 +124,7 @@ impl DbCollectionMetadata {
                 key,
                 heap,
                 self.key_write_projection_plan(),
-                recoverable_context.as_mut().map(|context| &mut **context),
+                recoverable_context.as_deref_mut(),
                 Some(&self.key_field),
             )?,
             None => {
@@ -159,7 +159,7 @@ impl DbCollectionMetadata {
                 value,
                 heap,
                 self.field_write_projection_plan_for_path(field),
-                recoverable_context.as_mut().map(|context| &mut **context),
+                recoverable_context.as_deref_mut(),
                 Some(field),
             )?;
             document.insert(
@@ -581,7 +581,7 @@ impl DbCollectionMetadata {
                 &op.value,
                 heap,
                 self.field_write_projection_plan_for_path(&op.field),
-                recoverable_context.as_mut().map(|context| &mut **context),
+                recoverable_context.as_deref_mut(),
                 Some(&op.field),
             )?;
             set.insert(

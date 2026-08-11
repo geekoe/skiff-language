@@ -366,6 +366,6 @@ struct SanitizationMutation {
     pub(super) reason: String,
 }
 
-fn as_set<'a>(values: &'a [String]) -> BTreeSet<&'a str> {
+fn as_set(values: &[String]) -> BTreeSet<&str> {
     values.iter().map(String::as_str).collect()
 }
