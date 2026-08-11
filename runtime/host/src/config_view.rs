@@ -50,6 +50,7 @@ impl RuntimeConfigView {
         Self::from_resolved_config(Value::Object(Map::new()), config_shape)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn empty_unvalidated_with_shape(config_shape: ConfigShape) -> Self {
         Self {
             resolved_config: Value::Object(Map::new()),

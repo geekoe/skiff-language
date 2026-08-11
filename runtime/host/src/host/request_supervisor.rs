@@ -81,6 +81,7 @@ impl RequestSupervisor {
         .await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn begin_http_gateway(
         &self,
         header: &BytecodeRequestStartFrameHeader,

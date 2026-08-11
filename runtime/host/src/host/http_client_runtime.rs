@@ -76,6 +76,7 @@ impl HttpClientCapabilityContext {
         self.dispatch_http_request_inner(input, None).await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn dispatch_http_request_with_current_scope(
         &self,
         input: &Value,
@@ -91,7 +92,7 @@ impl HttpClientCapabilityContext {
         input: &Value,
         current_scope: Option<ExecutionScope>,
     ) -> Result<Value> {
-        let mut request = HttpEffectRequest::new(
+        let request = HttpEffectRequest::new(
             TARGET_STD_HTTP_REQUEST,
             self.http(),
             input,
@@ -146,6 +147,7 @@ impl HttpClientCapabilityContext {
             .await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn dispatch_http_stream_with_current_scope(
         &self,
         input: &Value,
@@ -169,7 +171,7 @@ impl HttpClientCapabilityContext {
                     .to_string(),
             )
         })?;
-        let mut request = HttpEffectRequest::new(
+        let request = HttpEffectRequest::new(
             TARGET_STD_HTTP_STREAM,
             self.http(),
             input,
@@ -234,6 +236,7 @@ impl HttpClientCapabilityContext {
             .await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn dispatch_http_sse_with_current_scope(
         &self,
         input: &Value,
@@ -308,6 +311,7 @@ impl HttpClientCapabilityContext {
     }
 }
 
+#[allow(dead_code)]
 fn current_http_scope(
     execution_control: &OwnedExecutionControl,
     target: &str,

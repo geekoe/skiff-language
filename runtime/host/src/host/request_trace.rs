@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use serde_json::Value;
 use skiff_runtime_request::RequestEnvelope;
 use skiff_runtime_transport::protocol::TelemetryEvent;

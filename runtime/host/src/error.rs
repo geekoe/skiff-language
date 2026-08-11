@@ -368,6 +368,7 @@ impl Diagnosed {
             })
     }
 
+    #[allow(dead_code)]
     pub(crate) fn try_into_runtime_parts(
         self,
     ) -> std::result::Result<(RuntimeError, Vec<DiagnosticFrame>), Self> {

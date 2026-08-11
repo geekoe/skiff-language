@@ -128,7 +128,8 @@ impl StreamRegistry {
         let ids = self
             .streams
             .iter()
-            .filter_map(|(id, state)| (state.scope == Some(scope)).then(|| id.clone()))
+            .filter(|&(_, state)| state.scope == Some(scope))
+            .map(|(id, _)| id.clone())
             .collect::<Vec<_>>();
         ids.into_iter()
             .filter_map(|id| self.streams.remove(&id))

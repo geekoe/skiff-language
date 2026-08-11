@@ -29,6 +29,7 @@ use crate::{
 };
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum WebSocketJsonRpcOutcome {
     Success { payload: Vec<u8> },
     InvalidParams,

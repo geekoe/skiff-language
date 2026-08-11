@@ -242,7 +242,7 @@ impl FileCapabilityRuntime for FileRuntime {
         mut next_chunk: FileChunkSource<'a>,
     ) -> HostCapabilityFuture<'a, Value> {
         Box::pin(async move {
-            FileRuntime::create_from_chunks(self, store, options, move || next_chunk()).await
+            FileRuntime::create_from_chunks(self, store, options, &mut next_chunk).await
         })
     }
 }

@@ -1,15 +1,14 @@
 use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_runtime_capability_context::ExecutionBudgetReason;
 use skiff_runtime_request::{BytecodeRequestTarget, RequestError, RouterWriterMessage};
-use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::protocol::{
     BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressProtocol,
     BytecodeRequestStartFrameHeader, BytecodeRequestStartFrameWireHeader,
-    BytecodeTaskRequestStartFrameHeader,
-    BytecodeWebSocketConnectRequestStartFrameHeader,
+    BytecodeTaskRequestStartFrameHeader, BytecodeWebSocketConnectRequestStartFrameHeader,
     BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
     BytecodeWebSocketJsonRpcRequestStartFrameHeader,
 };
+use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::mpsc;
 use tracing::error;
@@ -56,11 +55,11 @@ pub(super) struct AdmittedBytecodeTaskRequest {
 }
 
 enum AdmittedBytecodeRequest {
-    BytecodeHttp(AdmittedBytecodeHttpRequest),
-    BytecodeWebSocketConnect(AdmittedBytecodeWebSocketConnectRequest),
-    BytecodeWebSocketConnectionClosed(AdmittedBytecodeWebSocketConnectionClosedRequest),
-    BytecodeWebSocketJsonRpc(AdmittedBytecodeWebSocketJsonRpcRequest),
-    BytecodeTask(AdmittedBytecodeTaskRequest),
+    Http(AdmittedBytecodeHttpRequest),
+    WebSocketConnect(AdmittedBytecodeWebSocketConnectRequest),
+    WebSocketConnectionClosed(AdmittedBytecodeWebSocketConnectionClosedRequest),
+    WebSocketJsonRpc(AdmittedBytecodeWebSocketJsonRpcRequest),
+    Task(AdmittedBytecodeTaskRequest),
 }
 
 impl RuntimeHost {
@@ -116,7 +115,7 @@ impl RuntimeHost {
             let _ = self.queue_runtime_capabilities(sender.clone());
         }
         match result {
-            Ok(AdmittedBytecodeRequest::BytecodeHttp(request)) => {
+            Ok(AdmittedBytecodeRequest::Http(request)) => {
                 self.task_bytecode_http_request(
                     router_session_id.to_string(),
                     request,
@@ -125,7 +124,7 @@ impl RuntimeHost {
                 )
                 .await
             }
-            Ok(AdmittedBytecodeRequest::BytecodeWebSocketConnect(request)) => {
+            Ok(AdmittedBytecodeRequest::WebSocketConnect(request)) => {
                 self.task_bytecode_websocket_connect_request(
                     router_session_id.to_string(),
                     request,
@@ -134,7 +133,7 @@ impl RuntimeHost {
                 )
                 .await
             }
-            Ok(AdmittedBytecodeRequest::BytecodeWebSocketConnectionClosed(request)) => {
+            Ok(AdmittedBytecodeRequest::WebSocketConnectionClosed(request)) => {
                 self.task_bytecode_websocket_connection_closed_request(
                     router_session_id.to_string(),
                     request,
@@ -143,7 +142,7 @@ impl RuntimeHost {
                 )
                 .await
             }
-            Ok(AdmittedBytecodeRequest::BytecodeWebSocketJsonRpc(request)) => {
+            Ok(AdmittedBytecodeRequest::WebSocketJsonRpc(request)) => {
                 self.task_bytecode_websocket_jsonrpc_request(
                     router_session_id.to_string(),
                     request,
@@ -152,7 +151,7 @@ impl RuntimeHost {
                 )
                 .await
             }
-            Ok(AdmittedBytecodeRequest::BytecodeTask(request)) => {
+            Ok(AdmittedBytecodeRequest::Task(request)) => {
                 self.task_bytecode_task_request(
                     router_session_id.to_string(),
                     request,
@@ -223,7 +222,7 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
-        Ok(AdmittedBytecodeRequest::BytecodeWebSocketConnect(
+        Ok(AdmittedBytecodeRequest::WebSocketConnect(
             AdmittedBytecodeWebSocketConnectRequest {
                 route,
                 header,
@@ -258,15 +257,13 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
-        Ok(
-            AdmittedBytecodeRequest::BytecodeWebSocketConnectionClosed(
-                AdmittedBytecodeWebSocketConnectionClosedRequest {
-                    route,
-                    header,
-                    target,
-                },
-            ),
-        )
+        Ok(AdmittedBytecodeRequest::WebSocketConnectionClosed(
+            AdmittedBytecodeWebSocketConnectionClosedRequest {
+                route,
+                header,
+                target,
+            },
+        ))
     }
 
     async fn http_gateway_request_from_wire(
@@ -294,14 +291,12 @@ impl RuntimeHost {
         {
             return Err(deadline_exceeded());
         }
-        Ok(AdmittedBytecodeRequest::BytecodeHttp(
-            AdmittedBytecodeHttpRequest {
-                route,
-                header,
-                body,
-                target,
-            },
-        ))
+        Ok(AdmittedBytecodeRequest::Http(AdmittedBytecodeHttpRequest {
+            route,
+            header,
+            body,
+            target,
+        }))
     }
 
     async fn task_request_from_wire(
@@ -333,14 +328,12 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
-        Ok(AdmittedBytecodeRequest::BytecodeTask(
-            AdmittedBytecodeTaskRequest {
-                route,
-                header,
-                target,
-                payload,
-            },
-        ))
+        Ok(AdmittedBytecodeRequest::Task(AdmittedBytecodeTaskRequest {
+            route,
+            header,
+            target,
+            payload,
+        }))
     }
 
     async fn websocket_jsonrpc_request_from_wire(
@@ -369,7 +362,7 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
-        Ok(AdmittedBytecodeRequest::BytecodeWebSocketJsonRpc(
+        Ok(AdmittedBytecodeRequest::WebSocketJsonRpc(
             AdmittedBytecodeWebSocketJsonRpcRequest {
                 route,
                 header,
@@ -412,15 +405,11 @@ fn validate_bytecode_build_id(
 fn wire_routing_build_id(header: &BytecodeRequestStartFrameWireHeader) -> Option<String> {
     let deployment = match header {
         BytecodeRequestStartFrameWireHeader::Http(header) => &header.routing.deployment,
-        BytecodeRequestStartFrameWireHeader::WebSocketConnect(header) => {
-            &header.routing.deployment
-        }
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(header) => &header.routing.deployment,
         BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
             &header.routing.deployment
         }
-        BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
-            &header.routing.deployment
-        }
+        BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => &header.routing.deployment,
         BytecodeRequestStartFrameWireHeader::Task(header) => &header.routing.deployment,
     };
     Some(deployment.deployment_artifact_identity.as_str().to_string())
@@ -439,8 +428,7 @@ fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> 
     }
     if header.routing.ingress.protocol != BytecodeRequestIngressProtocol::Http {
         return Err(RuntimeError::Unsupported(
-            "Bytecode request bridge accepts only canonical HTTP gateway requests"
-                .to_string(),
+            "Bytecode request bridge accepts only canonical HTTP gateway requests".to_string(),
         ));
     }
     if header.test_effects_enabled != header.test_case_capability.is_some() {

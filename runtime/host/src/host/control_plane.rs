@@ -6,9 +6,6 @@ use serde_json::Value;
 use serde_json::{json, Map};
 #[cfg(any())]
 use skiff_artifact_model::ConfigShape;
-use skiff_artifact_model::{
-    GatewayDispatchMode, GatewayEntryProtocolSurface, GatewayProtocolSurface,
-};
 use skiff_runtime_request::{self as request_runner, RequestEnvelope, RouterWriterMessage};
 use skiff_runtime_transport::protocol::{
     encode_binary_frame, RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
@@ -193,6 +190,7 @@ impl RuntimeHost {
         self.telemetry.emit(event);
     }
 
+    #[allow(dead_code)]
     pub(crate) fn emit_request_route_error(&self, request: &RequestEnvelope, error: &RuntimeError) {
         let Some(response_error) = response_error_from_runtime_error(error) else {
             return;
@@ -212,6 +210,7 @@ impl RuntimeHost {
     }
 }
 
+#[allow(dead_code)]
 fn apply_request_trace_fields(event: &mut TelemetryEvent, request: &RequestEnvelope) {
     request_trace::RequestTraceFields::from_request(request).apply_to_event(event);
 }
@@ -234,12 +233,6 @@ fn engine_dispatch_modes() -> Vec<RuntimeDispatchModeCapability> {
 mod tests {
     use super::*;
     use crate::host::runtime_host::RuntimeConfig;
-    use skiff_artifact_model::{
-        GatewayAdapterKind, GatewayExternalErrorProjection, GatewayExternalSchema,
-        GatewayHttpProtocolSurface, GatewayWebSocketConnectProtocolSurface,
-        GatewayWebSocketJsonRpcProtocolSurface, GatewayWebSocketRpcProfile,
-        GatewayWebSocketShapeVersion,
-    };
 
     #[test]
     fn capabilities_frame_advertises_engine_modes_without_admitted_assembly() {

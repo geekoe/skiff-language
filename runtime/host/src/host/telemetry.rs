@@ -282,6 +282,13 @@ impl TelemetryQueue {
         self.events.lock().map(|events| events.len()).unwrap_or(0)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.events
+            .lock()
+            .map(|events| events.is_empty())
+            .unwrap_or(true)
+    }
+
     pub fn drop_counters(&self) -> TelemetryDropCounters {
         self.counters.snapshot()
     }
