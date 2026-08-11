@@ -84,6 +84,7 @@ mod tests {
             "--artifact-root",
             "--platform-source-root",
             "--base-assembly",
+            "--base-config-snapshot",
             "--live",
             "--control-url",
             "--ingress-url",
@@ -213,6 +214,33 @@ mod tests {
             );
             let stderr = assert_failure_contains(&output, expected);
             assert!(!stderr.contains(sentinel), "{stderr}");
+        }
+    }
+
+    #[test]
+    fn direct_runner_accepts_base_config_snapshot_without_base_assembly_pairing() {
+        let runner = env!("CARGO_BIN_EXE_skiff-test-runner");
+        let platform = repository_root().to_str().unwrap();
+        let base = [
+            "missing-input",
+            "--artifact-root",
+            "/missing-artifacts",
+            "--platform-source-root",
+            platform,
+        ];
+        let snapshot = "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        for extra in [
+            vec!["--base-config-snapshot", snapshot],
+            vec![
+                "--base-assembly",
+                "legacy-assembly",
+                "--base-config-snapshot",
+                snapshot,
+            ],
+        ] {
+            let output = run_runner(runner, base.iter().copied().chain(extra), &[]);
+            let stderr = assert_failure_contains(&output, "failed to inspect input");
+            assert!(!stderr.contains("must be provided together"), "{stderr}");
         }
     }
 
