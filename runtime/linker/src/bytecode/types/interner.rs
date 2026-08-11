@@ -701,6 +701,15 @@ impl<'a> TypeLinker<'a> {
         self.callback_entries.get(index.get() as usize)
     }
 
+    pub(in crate::bytecode) fn resume_site(
+        &self,
+        index: ResumeSiteIndex,
+    ) -> Option<&LinkedResumeSite> {
+        self.resume_sites
+            .get(index.get() as usize)
+            .filter(|site| site.index() == index)
+    }
+
     pub(in crate::bytecode) fn intern_resume_site(
         &mut self,
         package: &HydratedBytecodePackage,
@@ -729,6 +738,7 @@ impl<'a> TypeLinker<'a> {
             function_key: descriptor.function_key.clone(),
             site_pc: descriptor.site_pc,
             resume_pc: descriptor.resume_pc,
+            end_resume_pc: descriptor.end_resume_pc,
             expected_stack_height_before_result: descriptor.expected_stack_height_before_result,
             result_type_refs: descriptor.result_type_refs.clone(),
             result_plans: descriptor.result_plans.clone(),
@@ -756,6 +766,10 @@ impl<'a> TypeLinker<'a> {
         })?;
         let site = instruction_index_for_pc(source, descriptor.site_pc, location.clone())?;
         let resume = instruction_index_for_pc(source, descriptor.resume_pc, location.clone())?;
+        let end_resume = descriptor
+            .end_resume_pc
+            .map(|pc| instruction_index_for_pc(source, pc, location.clone()))
+            .transpose()?;
         let mut result_types = Vec::with_capacity(descriptor.result_type_refs.len());
         for type_ref in &descriptor.result_type_refs {
             result_types.push(self.intern_pool_type(
@@ -793,6 +807,7 @@ impl<'a> TypeLinker<'a> {
                 function,
                 site,
                 resume,
+                end_resume,
                 descriptor.expected_stack_height_before_result,
                 result_types.into_boxed_slice(),
                 result_plans.into_boxed_slice(),
@@ -1072,6 +1087,7 @@ fn descriptor_index(
             site.function_key == descriptor.function_key
                 && site.site_pc == descriptor.site_pc
                 && site.resume_pc == descriptor.resume_pc
+                && site.end_resume_pc == descriptor.end_resume_pc
                 && site.result_type_refs == descriptor.result_type_refs
                 && site.result_plans == descriptor.result_plans
                 && site.error_mode == descriptor.error_mode

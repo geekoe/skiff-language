@@ -16,6 +16,31 @@ pub(super) fn apply_instruction(
     state: MachineState,
     location: BytecodeLinkLocation,
 ) -> Result<MachineState, BytecodeLinkError> {
+    let (mut next, inputs) = apply_instruction_without_results(
+        context,
+        instruction,
+        transition,
+        state,
+        location.clone(),
+    )?;
+    apply_stack_outputs(
+        context,
+        instruction,
+        transition.stack_out,
+        &inputs,
+        &mut next,
+        location.clone(),
+    )?;
+    Ok(next)
+}
+
+pub(super) fn apply_instruction_without_results(
+    context: &mut StackMapContext<'_, '_>,
+    instruction: &LinkedInstruction,
+    transition: TypedTransition,
+    state: MachineState,
+    location: BytecodeLinkLocation,
+) -> Result<(MachineState, Vec<Vec<LinkedStackValue>>), BytecodeLinkError> {
     let (next, inputs) = apply_stack_inputs(
         context,
         instruction,
@@ -31,16 +56,8 @@ pub(super) fn apply_instruction(
         next,
         location.clone(),
     )?;
-    apply_stack_outputs(
-        context,
-        instruction,
-        transition.stack_out,
-        &inputs,
-        &mut next,
-        location.clone(),
-    )?;
     apply_region_effects(instruction, &mut next, location)?;
-    Ok(next)
+    Ok((next, inputs))
 }
 
 fn apply_region_effects(

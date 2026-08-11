@@ -387,8 +387,11 @@ pub(super) fn source_values(
             stream_item_from_endpoint(context, endpoint, location)
         }
         ValueSource::FunctionStreamItem => {
-            let result = context.frame.result_types().first().copied().ok_or_else(|| obligation_error(location.clone(), "stream producer has no result type".to_string()))?;
-            stream_item_from_endpoint(context, result, location)
+            let stream = context
+                .frame
+                .stream_result_type_ref()
+                .ok_or_else(|| obligation_error(location.clone(), "stream producer has no stream result type".to_string()))?;
+            stream_item_from_endpoint(context, stream, location)
         }
         ValueSource::ExceptionPayload { type_ref } => {
             let type_index = pool_index(instruction, type_ref, location.clone())?;

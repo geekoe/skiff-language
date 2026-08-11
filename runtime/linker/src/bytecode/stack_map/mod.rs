@@ -5,10 +5,11 @@ mod values;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{contract_for_opcode, TypeRefIr, ValidatedFunction};
+use skiff_artifact_model::{contract_for_opcode, OperandRole, TypeRefIr, ValidatedFunction};
 use skiff_runtime_linked_bytecode::{
     LinkedConstantEntry, LinkedFrameLayout, LinkedInstruction, LinkedSlotState,
-    LinkedStackMapCandidate, LinkedStackValue, LinkedSwitchTable, SpecializationKey,
+    LinkedStackMapCandidate, LinkedStackValue, LinkedSwitchTable, ResumeSiteIndex,
+    SpecializationKey,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -137,13 +138,12 @@ fn compute_states(
                 format!("pending instruction {index} has no entry state"),
             )
         })?;
-        let (next, successors) =
+        let successors =
             transfer_program_point(context, linked, index, state, function_location.clone())?;
         merge::merge_successors(
             context.source.package,
             context.source.function,
             successors,
-            next,
             &mut states,
             &mut pending,
             function_location.clone(),
@@ -158,7 +158,7 @@ fn transfer_program_point(
     index: usize,
     state: MachineState,
     function_location: BytecodeLinkLocation,
-) -> Result<(MachineState, Vec<usize>), BytecodeLinkError> {
+) -> Result<Vec<(usize, MachineState)>, BytecodeLinkError> {
     let artifact_pc = context
         .source
         .function
@@ -187,18 +187,53 @@ fn transfer_program_point(
         context,
         instruction,
         contract.typed,
-        state,
+        state.clone(),
         location.clone(),
     )?;
-    if next.stack.len() > context.source.function.max_operand_depth as usize {
-        return Err(obligation_error(
+    check_operand_depth(&next, context.source.function.max_operand_depth, &location)?;
+    if instruction.opcode() == skiff_artifact_model::Opcode::StreamNext {
+        let resume_ref =
+            values::operand_word(instruction, OperandRole::ResumeRef, location.clone())?;
+        let resume_index = ResumeSiteIndex::new(resume_ref);
+        let (resume, end_resume) = {
+            let site = context
+                .type_linker
+                .resume_site(resume_index)
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "StreamNext resume target is absent".to_string(),
+                    )
+                })?;
+            let end_resume = site.end_resume().ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "StreamNext resume target has no end successor".to_string(),
+                )
+            })?;
+            (site.resume(), end_resume)
+        };
+        let (end_next, _) = transfer::apply_instruction_without_results(
+            context,
+            instruction,
+            contract.typed,
+            state,
             location.clone(),
-            format!(
-                "computed operand depth {} exceeds declared max {}",
-                next.stack.len(),
-                context.source.function.max_operand_depth
-            ),
-        ));
+        )?;
+        check_operand_depth(
+            &end_next,
+            context.source.function.max_operand_depth,
+            &location,
+        )?;
+        let resume_target = resume.get() as usize;
+        let end_target = end_resume.get() as usize;
+        if resume_target >= linked.instructions.len() || end_target >= linked.instructions.len() {
+            return Err(obligation_error(
+                location,
+                "StreamNext successor target is out of bounds".to_string(),
+            ));
+        }
+        return Ok(vec![(resume_target, next), (end_target, end_next)]);
     }
     let successors = control::successors(
         index,
@@ -214,7 +249,26 @@ fn transfer_program_point(
             "terminal instruction leaves values on the operand stack".to_string(),
         ));
     }
-    Ok((next, successors))
+    let states = successors.iter().map(|_| next.clone()).collect::<Vec<_>>();
+    Ok(successors.into_iter().zip(states).collect())
+}
+
+fn check_operand_depth(
+    state: &MachineState,
+    max: u32,
+    location: &BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    if state.stack.len() > max as usize {
+        return Err(obligation_error(
+            location.clone(),
+            format!(
+                "computed operand depth {} exceeds declared max {}",
+                state.stack.len(),
+                max
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_instruction_coverage(

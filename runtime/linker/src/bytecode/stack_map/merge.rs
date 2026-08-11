@@ -43,13 +43,12 @@ pub(super) fn initial_state(
 pub(super) fn merge_successors(
     package: &HydratedBytecodePackage,
     source: &ValidatedFunction,
-    successors: Vec<usize>,
-    next: MachineState,
+    successors: Vec<(usize, MachineState)>,
     states: &mut BTreeMap<usize, MachineState>,
     pending: &mut BTreeSet<usize>,
     function_location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
-    for successor in successors {
+    for (successor, next) in successors {
         let successor_pc = source
             .instructions
             .get(successor)
@@ -74,7 +73,7 @@ pub(super) fn merge_successors(
             }
             Some(_) => {}
             None => {
-                states.insert(successor, next.clone());
+                states.insert(successor, next);
                 pending.insert(successor);
             }
         }

@@ -8,9 +8,9 @@ use skiff_artifact_model::{
     HostEffectSignature, InstructionSourceSite, IntrinsicReference, NativeTarget,
     PackageCallableId, PackageExecutableCoordinate, ParameterSlotDecl, RelocatableBytecodeFunction,
     ResumeDescriptor, ResumeErrorMode, SourceMapEntry, SourcePosition, SourceSpanRef,
-    StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason, TypeRefIr,
-    ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION,
+    ResourceDropPlan, StatementAttributionId, StatementEntry,
+    SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::{
@@ -80,23 +80,31 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
     let has_local = matches!(program, RootProgram::FromType);
     let slot_count = u32::from(has_parameter || has_local);
     let slot_type_refs = (slot_count == 1)
-        .then_some(if program == RootProgram::Interface { 1 } else { 0 })
+        .then_some(match program {
+            RootProgram::Interface | RootProgram::StreamProducer => 1,
+            _ => 0,
+        })
         .into_iter()
         .collect();
     let slot_plan = if has_local {
         ValueTransferPlan::FromType {
             ty: TypeRefIr::builtin("string"),
         }
+    } else if program == RootProgram::StreamNext {
+        stream_plan()
+    } else if program == RootProgram::StreamProducer {
+        stream_item_plan()
     } else {
         snapshot_plan()
     };
     let has_result = matches!(
-            program,
-            RootProgram::Host
-                | RootProgram::Intrinsic
-                | RootProgram::RecordShape
-                | RootProgram::ArraysMaps
-        );
+        program,
+        RootProgram::Host
+            | RootProgram::Intrinsic
+            | RootProgram::RecordShape
+            | RootProgram::ArraysMaps
+    );
+    let is_stream_producer = matches!(program, RootProgram::StreamProducer);
     let result_type_refs = has_result.then_some(0).into_iter().collect::<Vec<_>>();
     let result_plans = has_result
         .then(|| result_plan(program))
@@ -119,7 +127,11 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
                 .then(|| ParameterSlotDecl {
                     slot: 0,
                     mode: skiff_artifact_model::ParamModeIr::Value,
-                    plan: snapshot_plan(),
+                    plan: match program {
+                        RootProgram::StreamNext => stream_plan(),
+                        RootProgram::StreamProducer => stream_item_plan(),
+                        _ => snapshot_plan(),
+                    },
                 })
                 .into_iter()
                 .collect(),
@@ -127,6 +139,7 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
             result_count: u32::from(has_result),
             result_type_refs,
             result_plans,
+            stream_result_type_ref: is_stream_producer.then_some(0),
             slot_plans: (slot_count == 1).then_some(slot_plan).into_iter().collect(),
         },
         max_operand_depth: match program {
@@ -135,6 +148,8 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
             | RootProgram::Host
             | RootProgram::Intrinsic
             | RootProgram::ArraysMaps
+            | RootProgram::StreamNext
+            | RootProgram::StreamProducer
             | RootProgram::Constant(_) => 1,
             _ => 0,
         },
@@ -193,6 +208,26 @@ fn callback_function() -> RelocatableBytecodeFunction {
 }
 
 fn root_statement_entries(program: RootProgram) -> Vec<StatementEntry> {
+    if matches!(program, RootProgram::StreamNext) {
+        return vec![StatementEntry {
+            pc: 0,
+            sequence_ordinal: 0,
+            attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+            },
+        }];
+    }
+    if matches!(program, RootProgram::StreamProducer) {
+        return vec![StatementEntry {
+            pc: 2,
+            sequence_ordinal: 0,
+            attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+            },
+        }];
+    }
     if !matches!(
         program,
         RootProgram::LocalCall | RootProgram::SyntheticTarget | RootProgram::ServiceDependency
@@ -310,6 +345,18 @@ fn root_body(
             vec![source_map(0, 2)],
         ),
         RootProgram::FromType => (vec![0x25], Vec::new(), None, Vec::new()),
+        RootProgram::StreamNext => (
+            vec![0x60, 0, 0, 0x08, 0x25, 0x25],
+            Vec::new(),
+            Some(stream_next_resume_descriptor()),
+            vec![source_map(0, 3)],
+        ),
+        RootProgram::StreamProducer => (
+            vec![0x06, 0, 0x61, 0, 0x25],
+            Vec::new(),
+            Some(stream_producer_resume_descriptor()),
+            vec![source_map(2, 4)],
+        ),
         RootProgram::Constant(_) => (vec![0x00, 0, 0x08, 0x25], Vec::new(), None, Vec::new()),
     }
 }
@@ -381,6 +428,10 @@ fn pools(program: RootProgram) -> BytecodePools {
                 BytecodePoolEntry::TypeRef {
                     ty: TypeRefIr::builtin("string"),
                 },
+            ],
+            RootProgram::StreamNext | RootProgram::StreamProducer => vec![
+                BytecodePoolEntry::TypeRef { ty: stream_type() },
+                BytecodePoolEntry::TypeRef { ty: item_type() },
             ],
             _ => Vec::new(),
         },
@@ -466,6 +517,7 @@ fn interface_resume_descriptor() -> ResumeDescriptor {
         function_key: ROOT_FUNCTION.to_string(),
         site_pc: 2,
         resume_pc: 8,
+        end_resume_pc: None,
         expected_stack_height_before_result: 0,
         result_type_refs: vec![0],
         result_plans: vec![snapshot_plan()],
@@ -478,10 +530,60 @@ fn host_resume_descriptor() -> ResumeDescriptor {
         function_key: ROOT_FUNCTION.to_string(),
         site_pc: 0,
         resume_pc: 5,
+        end_resume_pc: None,
         expected_stack_height_before_result: 0,
         result_type_refs: vec![0],
         result_plans: vec![snapshot_plan()],
         error_mode: ResumeErrorMode::RaiseAtSite,
+    }
+}
+
+fn stream_next_resume_descriptor() -> ResumeDescriptor {
+    ResumeDescriptor {
+        function_key: ROOT_FUNCTION.to_string(),
+        site_pc: 0,
+        resume_pc: 3,
+        end_resume_pc: Some(5),
+        expected_stack_height_before_result: 0,
+        result_type_refs: vec![1],
+        result_plans: vec![stream_item_plan()],
+        error_mode: ResumeErrorMode::RaiseAtSite,
+    }
+}
+
+fn stream_producer_resume_descriptor() -> ResumeDescriptor {
+    ResumeDescriptor {
+        function_key: ROOT_FUNCTION.to_string(),
+        site_pc: 2,
+        resume_pc: 4,
+        end_resume_pc: None,
+        expected_stack_height_before_result: 0,
+        result_type_refs: Vec::new(),
+        result_plans: Vec::new(),
+        error_mode: ResumeErrorMode::RaiseAtSite,
+    }
+}
+
+fn stream_type() -> TypeRefIr {
+    TypeRefIr::Builtin {
+        name: "Stream".to_string(),
+        args: vec![TypeRefIr::builtin("string")],
+    }
+}
+
+fn item_type() -> TypeRefIr {
+    TypeRefIr::builtin("string")
+}
+
+fn stream_plan() -> ValueTransferPlan {
+    ValueTransferPlan::AffineResource {
+        drop: ResourceDropPlan::ResourceTableRelease,
+    }
+}
+
+fn stream_item_plan() -> ValueTransferPlan {
+    ValueTransferPlan::SnapshotShare {
+        drop: ValueDropPlan::SnapshotRelease,
     }
 }
 
@@ -504,6 +606,7 @@ fn empty_frame() -> FrameLayout {
         result_count: 0,
         result_type_refs: Vec::new(),
         result_plans: Vec::new(),
+        stream_result_type_ref: None,
         slot_plans: Vec::new(),
     }
 }
