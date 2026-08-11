@@ -345,6 +345,25 @@ fn snapshot_share_and_transfer_owner_commit_physical_mutations() {
 }
 
 #[test]
+fn unadapted_heaps_reject_collection_primitives_conservatively() {
+    let mut heap = FakeHeap::new(2);
+    assert!(matches!(
+        heap.allocate_array(&[], CompactTypeTag::new(1), ValueFlags::new(0)),
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::AllocateArray,
+            kind: ValueKind::RequestHeapRef,
+        })
+    ));
+    assert!(matches!(
+        heap.map_len(&request_ref(2, 1)),
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::MapLen,
+            kind: ValueKind::RequestHeapRef,
+        })
+    ));
+}
+
+#[test]
 fn physical_primitives_reject_wrong_kinds_without_adapter_fallback() {
     let value = request_ref(6, 1);
     let resource = resource_ref(6, 2);

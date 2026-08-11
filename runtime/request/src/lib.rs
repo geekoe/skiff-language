@@ -30,6 +30,7 @@ mod response_writer;
 mod runner;
 mod runtime_ingress;
 mod task_execution;
+pub mod vm_heap;
 mod websocket_connect_execution;
 mod websocket_connect_target;
 mod websocket_connection_closed_execution;
@@ -103,6 +104,7 @@ pub use task_execution::{
     RuntimeTaskEvalExecutionInputParts, RuntimeTaskExecutionHandles, RuntimeTaskExecutionInput,
     RuntimeTaskRequest, RuntimeTaskTestEffectExecution,
 };
+pub use vm_heap::RequestVmHeap;
 pub use websocket_connect_execution::{
     execute_runtime_websocket_connect, RuntimeWebSocketConnectEvalAdapter,
     RuntimeWebSocketConnectEvalExecutionInputParts, RuntimeWebSocketConnectExecutionHandles,
