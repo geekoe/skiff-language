@@ -1,4 +1,4 @@
-pub const FILE_IR_IDENTITY_PREFIX: &str = "skiff-file-ir-v13:sha256";
+pub const FILE_IR_IDENTITY_PREFIX: &str = "skiff-file-ir-v14:sha256";
 pub const BYTECODE_IDENTITY_SCHEMA_MARKER: &str = "skiff-bytecode-artifact-v4";
 pub const BYTECODE_IDENTITY_PREFIX: &str = "skiff-bytecode-image-v4:sha256";
 pub const ACTOR_ABI_IDENTITY_SCHEMA_MARKER: &str = "skiff-actor-abi-identity-v1";

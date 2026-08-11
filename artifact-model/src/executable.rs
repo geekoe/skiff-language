@@ -241,7 +241,7 @@ pub enum SyntheticInstructionSiteReason {
 // public construction API solely to optimize a non-hot representation.
 #[allow(clippy::large_enum_variant)]
 pub enum StmtIr {
-    Let {
+    InitSlot {
         slot: u32,
         value: ExprRefIr,
     },
@@ -1068,7 +1068,7 @@ fn visit_statement_type_refs<E>(
             }
         }
         StmtIr::Throw { payload_type, .. } => visit_type_ref(payload_type, visitor)?,
-        StmtIr::Let { .. }
+        StmtIr::InitSlot { .. }
         | StmtIr::Assign { .. }
         | StmtIr::Timeout { .. }
         | StmtIr::Concurrent { .. }
