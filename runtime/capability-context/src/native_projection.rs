@@ -154,6 +154,7 @@ pub trait NativeCapabilityProjectionSource {
     fn resource(&self) -> Self::Resource;
 }
 
+#[allow(clippy::type_complexity)]
 pub fn project_native_capability_context<Source>(
     required_context: NativeRequiredContext,
     source: &Source,

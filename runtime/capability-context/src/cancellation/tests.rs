@@ -156,6 +156,7 @@ async fn signal_set_wakes_when_any_token_cancelled() {
 }
 
 #[test]
+#[allow(clippy::const_is_empty)]
 fn polling_fallback_allowlist_entries_have_counter_and_removal_owner() {
     assert!(!FLAG_BACKED_CANCELLATION_POLLING_FALLBACK_ALLOWLIST.is_empty());
     for entry in FLAG_BACKED_CANCELLATION_POLLING_FALLBACK_ALLOWLIST {

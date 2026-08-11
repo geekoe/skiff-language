@@ -350,6 +350,7 @@ pub trait StreamPullSource: Send {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum StreamPoll {
     Item(Value),
     InternalItem(StreamInternalItem),
