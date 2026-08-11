@@ -60,18 +60,19 @@ pub(super) fn merge_successors(
                 )
             })?;
         match states.get(&successor) {
-            Some(existing) if existing != &next => {
-                return Err(obligation_error(
-                    BytecodeLinkLocation::Instruction {
-                        package: Box::new(package.reference().clone()),
-                        function_key: source.function_key.clone(),
-                        artifact_pc: successor_pc,
-                    },
-                    "control-flow predecessors produce different concrete stack or slot states"
-                        .to_string(),
-                ));
+            Some(existing) => {
+                let merged = merge_machine_states(
+                    package,
+                    source,
+                    successor_pc,
+                    existing,
+                    &next,
+                )?;
+                if &merged != existing {
+                    states.insert(successor, merged);
+                    pending.insert(successor);
+                }
             }
-            Some(_) => {}
             None => {
                 states.insert(successor, next);
                 pending.insert(successor);
@@ -79,6 +80,70 @@ pub(super) fn merge_successors(
         }
     }
     Ok(())
+}
+
+fn merge_machine_states(
+    package: &HydratedBytecodePackage,
+    source: &ValidatedFunction,
+    successor_pc: u32,
+    existing: &MachineState,
+    next: &MachineState,
+) -> Result<MachineState, BytecodeLinkError> {
+    if existing == next {
+        return Ok(existing.clone());
+    }
+    if existing.stack != next.stack
+        || existing.active_regions != next.active_regions
+        || existing.writable_loans != next.writable_loans
+    {
+        return Err(obligation_error(
+            BytecodeLinkLocation::Instruction {
+                package: Box::new(package.reference().clone()),
+                function_key: source.function_key.clone(),
+                artifact_pc: successor_pc,
+            },
+            "control-flow predecessors produce different concrete stack or slot states"
+                .to_string(),
+        ));
+    }
+    if existing.slots.len() != next.slots.len() {
+        return Err(obligation_error(
+            BytecodeLinkLocation::Instruction {
+                package: Box::new(package.reference().clone()),
+                function_key: source.function_key.clone(),
+                artifact_pc: successor_pc,
+            },
+            "control-flow predecessors produce different frame slot counts".to_string(),
+        ));
+    }
+    let slots = existing
+        .slots
+        .iter()
+        .zip(&next.slots)
+        .map(|(left, right)| merge_slot_state(left, right))
+        .collect();
+    Ok(MachineState {
+        stack: existing.stack.clone(),
+        slots,
+        active_regions: existing.active_regions.clone(),
+        writable_loans: existing.writable_loans.clone(),
+    })
+}
+
+fn merge_slot_state(left: &LinkedSlotState, right: &LinkedSlotState) -> LinkedSlotState {
+    // A loop header can see a slot live only on the backedge and not yet
+    // initialized on entry. Keep the merged state non-live; any read or drop
+    // before a write fails closed, while a write converges both paths.
+    if left == right {
+        return left.clone();
+    }
+    match (left, right) {
+        (LinkedSlotState::Uninitialized, _) | (_, LinkedSlotState::Uninitialized) => {
+            LinkedSlotState::Uninitialized
+        }
+        (LinkedSlotState::Moved, _) | (_, LinkedSlotState::Moved) => LinkedSlotState::Moved,
+        (LinkedSlotState::Live(_), LinkedSlotState::Live(_)) => LinkedSlotState::Uninitialized,
+    }
 }
 
 pub(super) fn finish_stack_map(

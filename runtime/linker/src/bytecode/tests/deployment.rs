@@ -9,6 +9,7 @@ use skiff_artifact_model::{
 use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind, LinkedFunction,
     LinkedInstructionTarget, LinkedIntrinsicKind, LinkedPackageBytecodeProvenance,
+    LinkedSlotState,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -298,6 +299,25 @@ fn production_entry_links_stream_next_dual_resume_successors() {
     assert!(root.frame().result_plans().is_empty());
     assert_eq!(root.stack_map().entries()[1].stack_before().len(), 1);
     assert_eq!(root.stack_map().entries()[3].stack_before().len(), 0);
+}
+
+#[test]
+fn stream_for_in_loop_header_merges_item_slot_deadness() {
+    let fixture = Fixture::stream_next_loop();
+    let hydrated = fixture.hydrate();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    let root = function(&candidate, ROOT_FUNCTION);
+    assert_eq!(root.instructions().len(), 5);
+    assert_eq!(root.instructions()[1].opcode(), Opcode::StreamNext);
+    assert_eq!(
+        root.stack_map().entries()[1].slots_before()[1],
+        LinkedSlotState::Uninitialized
+    );
+    assert!(matches!(
+        root.stack_map().entries()[3].slots_before()[1],
+        LinkedSlotState::Live(_)
+    ));
+    assert!(root.stack_map().entries()[4].stack_before().is_empty());
 }
 
 #[test]
