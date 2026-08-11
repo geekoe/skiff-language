@@ -3,15 +3,14 @@ use std::path::PathBuf;
 use skiff_artifact_identity::ReleasePointerPath;
 use skiff_artifact_model::ServiceDeploymentRef;
 use skiff_compiler::authoring::{
-    build_authoring_object, build_authoring_object_legacy, project_runtime_assembly,
-    seed_official_std_package, AuthoringObject,
+    build_authoring_object, build_authoring_object_legacy, seed_official_std_package,
+    AuthoringObject,
 };
 use skiff_compiler::CompilerPlatformSources;
 use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
 
 const USAGE: &str = "usage:
   skiff-compiler package <build|publish> <root> --artifact-root <dir> [--profile <name>] [--no-bytecode] [--json]
-  skiff-compiler assembly <build|publish> --artifact-root <dir> --profile <name> [--root-deployment '<exact ServiceDeploymentRef JSON>']... [--json]
   skiff-compiler release set --artifact-root <dir> --profile <name> --deployment '<exact ServiceDeploymentRef JSON>' [--expected '<exact ReleasePointer JSON>'] [--json]
   skiff-compiler release <unset|get> --artifact-root <dir> --profile <name> --service <id> --version <v> [--expected '<exact ReleasePointer JSON>'] [--json]";
 
@@ -42,7 +41,7 @@ fn run_with_args(
     if object == "release" {
         return run_release_action(args);
     }
-    let object = AuthoringObject::parse(&object)?;
+    AuthoringObject::parse(&object)?;
     let action = args.next().ok_or(USAGE)?;
     let publish_pointer = match action.as_str() {
         "build" => false,
@@ -53,10 +52,7 @@ fn run_with_args(
             )
         }
     };
-    match object {
-        AuthoringObject::Package => run_package_action(args, publish_pointer),
-        AuthoringObject::Assembly => run_assembly_action(args, publish_pointer),
-    }
+    run_package_action(args, publish_pointer)
 }
 
 fn run_std_seed_action(
@@ -404,53 +400,6 @@ fn run_package_action(
         )
     };
     let receipt = authoring?;
-    print_receipt(&receipt, json)
-}
-
-fn run_assembly_action(
-    mut args: impl Iterator<Item = String>,
-    publish_pointer: bool,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut artifact_root = None;
-    let mut profile = None;
-    let mut root_deployments = Vec::new();
-    let mut json = false;
-    while let Some(argument) = args.next() {
-        match argument.as_str() {
-            "--artifact-root" => {
-                if artifact_root.is_some() {
-                    return Err("--artifact-root was provided more than once".into());
-                }
-                artifact_root = Some(PathBuf::from(
-                    args.next().ok_or("--artifact-root requires a path")?,
-                ));
-            }
-            "--profile" => {
-                if profile.is_some() {
-                    return Err("--profile was provided more than once".into());
-                }
-                profile = Some(args.next().ok_or("--profile requires a name")?);
-            }
-            "--root-deployment" => {
-                let source = args
-                    .next()
-                    .ok_or("--root-deployment requires exact ServiceDeploymentRef JSON")?;
-                let reference =
-                    serde_json::from_str::<ServiceDeploymentRef>(&source).map_err(|error| {
-                        format!(
-                            "--root-deployment requires exact ServiceDeploymentRef JSON: {error}"
-                        )
-                    })?;
-                root_deployments.push(reference);
-            }
-            "--json" => json = true,
-            _ => return Err(format!("unknown assembly option {argument}\n{USAGE}").into()),
-        }
-    }
-    let artifact_root = artifact_root.ok_or("--artifact-root is required")?;
-    let profile = profile.ok_or("--profile is required for assembly projection")?;
-    let receipt =
-        project_runtime_assembly(&artifact_root, &profile, &root_deployments, publish_pointer)?;
     print_receipt(&receipt, json)
 }
 

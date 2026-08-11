@@ -6,9 +6,10 @@ use super::{render_authoring_receipt, run_with_args, USAGE};
 fn internal_actions_are_absent_from_public_help() {
     assert!(!USAGE.contains("platform-source"));
     assert!(!USAGE.contains("std-seed"));
-    for object in ["package", "assembly"] {
+    for object in ["package", "release"] {
         assert!(USAGE.contains(object));
     }
+    assert!(!USAGE.contains("assembly"));
 }
 
 #[test]
@@ -96,22 +97,7 @@ fn package_authoring_accepts_legacy_no_bytecode_flag() {
 }
 
 #[test]
-fn assembly_projection_rejects_positional_authoring_roots() {
-    let error = run_error(&[
-        "assembly",
-        "build",
-        "/legacy/assembly.yml",
-        "--artifact-root",
-        "/tmp/skiff-artifacts",
-        "--profile",
-        "dev",
-    ]);
-    assert!(error.contains("unknown assembly option /legacy/assembly.yml"));
-    assert!(!error.contains("No such file"));
-}
-
-#[test]
-fn assembly_projection_requires_inline_exact_reference_json() {
+fn assembly_authoring_object_is_rejected() {
     let error = run_error(&[
         "assembly",
         "build",
@@ -119,10 +105,8 @@ fn assembly_projection_requires_inline_exact_reference_json() {
         "/tmp/skiff-artifacts",
         "--profile",
         "dev",
-        "--root-deployment",
-        "/tmp/deployment.json",
     ]);
-    assert!(error.contains("requires exact ServiceDeploymentRef JSON"));
+    assert!(error.contains("unknown authoring object assembly; expected package"));
     assert!(!error.contains("No such file"));
 }
 

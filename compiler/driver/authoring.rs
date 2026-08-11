@@ -1,8 +1,8 @@
-//! Canonical authoring consumers for the four-object ecosystem.
+//! Canonical authoring consumers for the package/contract/deployment ecosystem.
 //!
 //! This module is intentionally a thin coordinator. Authoring parsing, record
 //! paths, identity validation, immutable writes, pointer CAS, deployment
-//! projection and assembly closure resolution remain owned by their T01 typed
+//! projection and package actor routing remain owned by their T01 typed
 //! boundaries.
 
 use std::{
@@ -13,14 +13,10 @@ use std::{
 
 use serde_json::{json, Map, Value};
 use skiff_artifact_identity::{
-    package_artifact_ref, runtime_assembly_ref, service_contract_ref, service_deployment_ref,
-    PackageArtifactPointerPath, ReleasePointerPath, RuntimeAssemblyPointerPath,
-    ServiceContractPointerPath, ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
+    package_artifact_ref, service_contract_ref, service_deployment_ref, PackageArtifactPointerPath,
+    ReleasePointerPath, ServiceContractPointerPath, ServiceDeploymentPointerPath,
 };
-use skiff_artifact_model::{
-    ContractRequirement, PackageArtifact, PackageArtifactRef, ServiceAuthoringKind,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
-};
+use skiff_artifact_model::{ContractRequirement, PackageArtifact, ServiceAuthoringKind};
 use skiff_compiler_input::{
     package_config::{read_user_package_manifest, PackageManifest, PACKAGE_CONFIG_FILE},
     package_sources::read_package_sources,
@@ -29,12 +25,9 @@ use skiff_compiler_input::{
 };
 use skiff_compiler_source::prelude_registry::initialize_prelude_registry;
 use skiff_compiler_source::source_graph::PublicationSourceGraph;
-use skiff_deployment::{
-    assembly::resolve_runtime_assembly,
-    storage::{
-        CanonicalArtifactStore, EcosystemStorageError, PackageArtifactPointer, ReleasePointer,
-        RuntimeAssemblyPointer, ServiceContractPointer, ServiceDeploymentPointer,
-    },
+use skiff_deployment::storage::{
+    CanonicalArtifactStore, EcosystemStorageError, PackageArtifactPointer, ReleasePointer,
+    ServiceContractPointer, ServiceDeploymentPointer,
 };
 
 use crate::{
@@ -61,16 +54,14 @@ pub type AuthoringResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthoringObject {
     Package,
-    Assembly,
 }
 
 impl AuthoringObject {
     pub fn parse(value: &str) -> AuthoringResult<Self> {
         match value {
             "package" => Ok(Self::Package),
-            "assembly" => Ok(Self::Assembly),
             _ => Err(invalid_input(format!(
-                "unknown authoring object {value}; expected package or assembly"
+                "unknown authoring object {value}; expected package"
             ))),
         }
     }
@@ -126,25 +117,21 @@ fn build_authoring_object_with_bytecode(
     emit_bytecode: bool,
     publish_pointer: bool,
 ) -> AuthoringResult<Value> {
-    match object {
-        AuthoringObject::Package => run_after_platform_context_guard(platform_sources, || {
-            validate_external_manifest_inventory(root)?;
-            let manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
-            let store = CanonicalArtifactStore::create(artifact_root)?;
-            build_package_after_platform_context_guard(
-                platform_sources,
-                root,
-                &manifest,
-                &store,
-                profile,
-                emit_bytecode,
-                publish_pointer,
-            )
-        }),
-        AuthoringObject::Assembly => Err(invalid_input(
-            "RuntimeAssembly is projected from explicit ServiceDeploymentRef operation arguments; it has no authoring root",
-        )),
-    }
+    let AuthoringObject::Package = object;
+    run_after_platform_context_guard(platform_sources, || {
+        validate_external_manifest_inventory(root)?;
+        let manifest = read_user_package_manifest(&root.join(PACKAGE_CONFIG_FILE))?;
+        let store = CanonicalArtifactStore::create(artifact_root)?;
+        build_package_after_platform_context_guard(
+            platform_sources,
+            root,
+            &manifest,
+            &store,
+            profile,
+            emit_bytecode,
+            publish_pointer,
+        )
+    })
 }
 
 fn run_after_platform_context_guard<T>(
@@ -363,78 +350,6 @@ fn build_package_after_platform_context_guard(
     )?;
     store.write_actor_routing_projection(&projection)?;
     Ok(Value::Object(output))
-}
-
-/// Projects one immutable RuntimeAssembly from a closed, operation-owned set of
-/// exact deployment references. The candidate set is never expanded through a
-/// mutable ServiceDeployment pointer.
-pub fn project_runtime_assembly(
-    artifact_root: &Path,
-    profile: &str,
-    root_deployments: &[ServiceDeploymentRef],
-    publish_pointer: bool,
-) -> AuthoringResult<Value> {
-    validate_runtime_assembly_projection_input(profile, root_deployments)?;
-    let store = CanonicalArtifactStore::create(artifact_root)?;
-    project_runtime_assembly_to_store(&store, profile, root_deployments, publish_pointer)
-}
-
-fn project_runtime_assembly_to_store(
-    store: &CanonicalArtifactStore,
-    profile: &str,
-    root_deployments: &[ServiceDeploymentRef],
-    publish_pointer: bool,
-) -> AuthoringResult<Value> {
-    let deployment_values = read_assembly_deployments(store, root_deployments)?;
-    let contracts = read_assembly_contracts(store, &deployment_values)?;
-    let packages = read_assembly_packages(store, &deployment_values)?;
-    let assembly =
-        resolve_runtime_assembly(root_deployments, &deployment_values, &contracts, &packages)?;
-    let record_path = store.write_runtime_assembly(&assembly)?;
-    let projection =
-        actor_routing::project_assembly_actor_routing(store, &deployment_values, &packages)?;
-    store.write_actor_routing_projection(&projection)?;
-    let reference = runtime_assembly_ref(&assembly)?;
-    let mut output = Map::from_iter([(
-        "runtimeAssemblyReceipt".to_string(),
-        json!({
-            "profile": profile,
-            "assembly": reference,
-            "recordPath": relative_path(store, &record_path)?,
-        }),
-    )]);
-
-    if publish_pointer {
-        let release = profile;
-        let candidate = RuntimeAssemblyPointer::new(release, reference.clone())?;
-        let expected = store.read_runtime_assembly_pointer(release)?;
-        store.compare_and_swap_runtime_assembly_pointer(expected.as_ref(), &candidate)?;
-        output.insert(
-            "runtimeAssemblyPointerReceipt".to_string(),
-            json!({
-                "pointer": candidate,
-                "pointerPath": RuntimeAssemblyPointerPath::new(release)?.as_str(),
-            }),
-        );
-    }
-    Ok(Value::Object(output))
-}
-
-fn validate_runtime_assembly_projection_input(
-    profile: &str,
-    root_deployments: &[ServiceDeploymentRef],
-) -> AuthoringResult<()> {
-    RuntimeAssemblyPointerPath::new(profile)?;
-    let mut unique = BTreeSet::new();
-    for reference in root_deployments {
-        ServiceDeploymentRecordPath::new(reference)?;
-        if !unique.insert(reference) {
-            return Err(invalid_input(format!(
-                "runtime assembly root deployment set contains duplicate exact reference {reference:?}"
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Canonical std seed for the internal `std-seed` tool action.
@@ -760,56 +675,6 @@ fn package_aliases(
             roots.dedup();
             Some((alias, roots))
         })
-        .collect()
-}
-
-fn read_assembly_contracts(
-    store: &CanonicalArtifactStore,
-    deployments: &[ServiceDeployment],
-) -> AuthoringResult<Vec<ServiceContract>> {
-    deployments
-        .iter()
-        .flat_map(|deployment| {
-            std::iter::once(deployment.contract.clone()).chain(
-                deployment
-                    .service_selectors
-                    .iter()
-                    .map(|binding| binding.contract.clone()),
-            )
-        })
-        .collect::<BTreeSet<ServiceContractRef>>()
-        .iter()
-        .map(|reference| Ok(store.read_service_contract(reference)?.as_ref().clone()))
-        .collect()
-}
-
-fn read_assembly_deployments(
-    store: &CanonicalArtifactStore,
-    roots: &[ServiceDeploymentRef],
-) -> AuthoringResult<Vec<ServiceDeployment>> {
-    roots
-        .iter()
-        .map(|reference| Ok(store.read_service_deployment(reference)?.as_ref().clone()))
-        .collect()
-}
-
-fn read_assembly_packages(
-    store: &CanonicalArtifactStore,
-    deployments: &[ServiceDeployment],
-) -> AuthoringResult<Vec<PackageArtifact>> {
-    deployments
-        .iter()
-        .flat_map(|deployment| {
-            std::iter::once(deployment.implementation.clone()).chain(
-                deployment
-                    .package_bindings
-                    .iter()
-                    .map(|binding| binding.package.clone()),
-            )
-        })
-        .collect::<BTreeSet<PackageArtifactRef>>()
-        .iter()
-        .map(|reference| Ok(store.read_package_artifact(reference)?.as_ref().clone()))
         .collect()
 }
 
