@@ -20,9 +20,13 @@ use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
     ContractTypeDescriptor, NamedUnionBranchIr, NominalTypeRefBaseIr,
 };
-use skiff_compiler_core::{source_role::PublicationSourceRole, type_ref::contract_type_ref_to_ir};
+use skiff_compiler_core::{
+    id::SKIFF_STD_PUBLICATION_ID, source_role::PublicationSourceRole,
+    type_ref::contract_type_ref_to_ir,
+};
 use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;
+use skiff_compiler_source::prelude_registry::prelude_registry;
 use skiff_compiler_source::PackageSourceModel;
 use skiff_compiler_source::PublicationApiSeed;
 use skiff_compiler_source::SourceCompileError as PublicationError;
@@ -202,16 +206,31 @@ impl LoweredPackage {
                     .iter()
                     .map(|(name, ty)| (name.clone(), contract_type_ref_to_ir(ty)))
                     .collect::<BTreeMap<_, _>>();
+                let package_id = record.package_id.clone();
                 Some([
                     ((alias.to_string(), symbol_path.to_string()), fields.clone()),
                     (
                         (alias.to_string(), record.stable_schema_key.clone()),
-                        fields,
+                        fields.clone(),
                     ),
+                    ((package_id.clone(), symbol_path.to_string()), fields.clone()),
+                    ((package_id, record.stable_schema_key.clone()), fields),
                 ])
             })
             .flatten()
             .collect::<BTreeMap<_, _>>();
+        let mut package_type_records = package_type_records;
+        for declaration in prelude_registry().declared_types() {
+            let Some(fields) = crate::type_lowering::prelude_record_fields(declaration) else {
+                continue;
+            };
+            let symbol = prelude_registry().type_symbol(&declaration.name);
+            package_type_records.insert(
+                (SKIFF_STD_PUBLICATION_ID.to_string(), symbol.clone()),
+                fields.clone(),
+            );
+            package_type_records.insert(("std".to_string(), symbol), fields);
+        }
         let mir_units = crate::mir::builder::build_mir_units_with_source_facts_and_package_records(
             model.policy().package_id(),
             &file_ir_units,

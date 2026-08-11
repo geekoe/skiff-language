@@ -918,6 +918,26 @@ impl<'a> FunctionEmitter<'a> {
                     true,
                 )
             }
+            CallTargetIr::Native { target }
+                if static_intrinsic_canonical_key(
+                    target.binding_key.as_deref().unwrap_or_default(),
+                )
+                .is_some() =>
+            {
+                let binding_key = target.binding_key.as_deref().unwrap_or_default();
+                let canonical_key =
+                    static_intrinsic_canonical_key(binding_key).expect("guard checked key");
+                let relocation = BytecodeRelocation::IntrinsicRef {
+                    intrinsic: self.intrinsic_reference(call, expression, canonical_key)?,
+                };
+                self.emit_pending_call(
+                    expression,
+                    Opcode::InvokeIntrinsic,
+                    relocation,
+                    None,
+                    false,
+                )
+            }
             CallTargetIr::Native { target } => {
                 let relocation = BytecodeRelocation::HostEffectRef(
                     self.host_effect_reference(call, expression, target)?,
@@ -1072,6 +1092,8 @@ impl<'a> FunctionEmitter<'a> {
         expression: &MirExpression,
         canonical_key: &str,
     ) -> Result<IntrinsicReference, BytecodeEmissionError> {
+        let canonical_key =
+            static_intrinsic_canonical_key(canonical_key).unwrap_or(canonical_key);
         let target = BytecodeIntrinsicRef::Static {
             canonical_key: canonical_key.to_string(),
             signature_version: 1,
@@ -2116,21 +2138,17 @@ impl<'a> FunctionEmitter<'a> {
         symbol: &skiff_artifact_model::PackageSymbolRef,
         context: &'static str,
     ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
-        let skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } =
-            &symbol.package
-        else {
-            return Err(unsupported(
-                &self.key,
-                context,
-                &format!(
-                    "package symbol `{}` has no resolved dependency record shape",
-                    symbol.symbol_path
-                ),
-            ));
+        let lookup_key = match &symbol.package {
+            skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => {
+                (dependency_ref.clone(), symbol.symbol_path.clone())
+            }
+            skiff_artifact_model::PackageRefIr::PackageId { package_id } => {
+                (package_id.clone(), symbol.symbol_path.clone())
+            }
         };
         self.unit
             .package_type_records
-            .get(&(dependency_ref.clone(), symbol.symbol_path.clone()))
+            .get(&lookup_key)
             .cloned()
             .ok_or_else(|| {
                 unsupported(
@@ -3182,6 +3200,14 @@ fn stack_effect(
     })
 }
 
+fn static_intrinsic_canonical_key(target: &str) -> Option<&'static str> {
+    match target {
+        "Array.empty" | "core.array.empty" => Some("core.array.empty"),
+        "Map.empty" | "core.map.empty" => Some("core.map.empty"),
+        _ => None,
+    }
+}
+
 fn binary_opcode(op: skiff_artifact_model::BinaryOpIr) -> Result<Opcode, BytecodeEmissionError> {
     Ok(match op {
         skiff_artifact_model::BinaryOpIr::Add => Opcode::Add,
@@ -3206,6 +3232,7 @@ fn binary_opcode(op: skiff_artifact_model::BinaryOpIr) -> Result<Opcode, Bytecod
 
 fn writable_value_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
     actual == expected
+        || package_symbol_type_matches(actual, expected)
         || matches!(
             (actual, expected),
             (
@@ -3229,6 +3256,7 @@ fn writable_value_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool
 
 fn stream_item_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
     actual == expected
+        || package_symbol_type_matches(actual, expected)
         || matches!(
             (actual, expected),
             (
@@ -3254,6 +3282,36 @@ fn stream_item_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
                 && actual_args.is_empty()
                 && expected_args.is_empty()
         )
+}
+
+fn package_symbol_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
+    let (
+        TypeRefIr::PackageSymbol { symbol: actual },
+        TypeRefIr::PackageSymbol { symbol: expected },
+    ) = (actual, expected)
+    else {
+        return false;
+    };
+    if actual == expected {
+        return true;
+    }
+    if actual.symbol_path != expected.symbol_path || actual.abi_expectation != expected.abi_expectation
+    {
+        return false;
+    }
+    matches!(
+        (&actual.package, &expected.package),
+        (
+            skiff_artifact_model::PackageRefIr::Dependency { dependency_ref },
+            skiff_artifact_model::PackageRefIr::PackageId { package_id },
+        ) if dependency_ref == "std" && package_id == "skiff.run/std"
+    ) || matches!(
+        (&actual.package, &expected.package),
+        (
+            skiff_artifact_model::PackageRefIr::PackageId { package_id },
+            skiff_artifact_model::PackageRefIr::Dependency { dependency_ref },
+        ) if dependency_ref == "std" && package_id == "skiff.run/std"
+    )
 }
 
 fn is_stream_type(ty: &TypeRefIr) -> bool {

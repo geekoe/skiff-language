@@ -17,7 +17,7 @@ use skiff_compiler_source::{
     PublicationDbMetadataIndex, PublicationTypeSymbolIndex, SourceSymbolKey,
 };
 use skiff_syntax::{
-    ast::TypeRef,
+    ast::{TypeDecl, TypeRef},
     error::{CompileError, Result},
     type_expr::TypeExpr,
     type_syntax::{
@@ -349,6 +349,33 @@ pub(super) fn lower_type_ref(
     context: TypeLoweringContext<'_>,
 ) -> Result<TypeRefIr> {
     lower_type_text(&ty.name, environment, context)
+}
+
+pub fn prelude_record_fields(decl: &TypeDecl) -> Option<BTreeMap<String, TypeRefIr>> {
+    if !decl.type_params.is_empty() || decl.alias.is_some() || decl.fields.is_empty() {
+        return None;
+    }
+    let type_indices = BTreeMap::new();
+    let package_aliases = BTreeMap::new();
+    let source_alias_targets = BTreeMap::new();
+    let local_db_objects = LocalDbObjectIndex::default();
+    let publication_db_metadata = PublicationDbMetadataIndex::default();
+    let external_type_symbols = PublicationTypeSymbolIndex::default();
+    let environment = TypeLoweringEnvironment::new(
+        &type_indices,
+        &local_db_objects,
+        &publication_db_metadata,
+        &package_aliases,
+        &external_type_symbols,
+        &source_alias_targets,
+    );
+    let context = TypeLoweringContext::value();
+    let mut fields = BTreeMap::new();
+    for field in &decl.fields {
+        let ty = lower_type_ref(&field.ty, environment, context).ok()?;
+        fields.insert(field.name.clone(), ty);
+    }
+    Some(fields)
 }
 
 fn expand_source_alias_type_text(

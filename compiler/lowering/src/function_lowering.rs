@@ -3217,6 +3217,9 @@ impl<'a> FunctionLowerer<'a> {
         }
         let path = expr_path(callee).ok_or_else(|| unsupported_call(callee))?;
         let root = path.split('.').next().unwrap_or(path.as_str());
+        if matches!(path.as_str(), "Array.empty" | "Map.empty") {
+            return Ok(CallTargetIr::Builtin { op: path });
+        }
         if let Some(target) = shared_native_alias_target(&path) {
             return Ok(CallTargetIr::Native {
                 target: native_target_from_symbol(target),
