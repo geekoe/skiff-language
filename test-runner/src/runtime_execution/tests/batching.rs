@@ -276,7 +276,7 @@ fn batches_prepare_and_dispatch_in_discovery_order() {
         batches,
         |context| {
             timeline.borrow_mut().push(format!("prepare:{context}"));
-            Ok(active(*context))
+            Ok(active(context))
         },
         |active| {
             timeline
@@ -322,7 +322,7 @@ fn later_prepare_failure_preserves_all_prior_pass_and_fail_results() {
                     message: "release pointer table write failed".to_string(),
                 });
             }
-            Ok(active(*context))
+            Ok(active(context))
         },
         |_| Ok(()),
         |_, entrypoint| {
@@ -367,7 +367,7 @@ fn later_readiness_failure_preserves_ledger_and_stops_current_and_future_dispatc
         execution_batches(&[("first", 2), ("second", 1), ("never", 1)]),
         |context| {
             prepares.borrow_mut().push(*context);
-            Ok(active(*context))
+            Ok(active(context))
         },
         |active| {
             if active.readiness == "second" {
@@ -423,7 +423,7 @@ fn assertion_failure_continues_through_later_batches_once_and_in_order() {
     let dispatches = RefCell::new(Vec::new());
     let summary = execute_batches_with(
         execution_batches(&[("first", 2), ("second", 2)]),
-        |context| Ok(active(*context)),
+        |context| Ok(active(context)),
         |_| Ok(()),
         |_, entrypoint| {
             dispatches.borrow_mut().push(entrypoint.case.name.clone());
@@ -461,7 +461,7 @@ fn later_dispatch_failure_preserves_prior_batches_and_current_batch_prefix() {
     let batches = execution_batches(&[("first", 1), ("second", 3)]);
     let error = execute_batches_with(
         batches,
-        |context| Ok(active(*context)),
+        |context| Ok(active(context)),
         |_| Ok(()),
         |_, entrypoint| {
             if entrypoint.case.name == "second-1" {

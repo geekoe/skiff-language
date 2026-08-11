@@ -156,8 +156,7 @@ pub(crate) fn load_test_service_run_config(
         .map(|profile| profile.profile_name.as_str())
         .ok_or_else(|| {
             CanonicalFixtureError::InvalidInput(format!(
-                "config snapshot projection requires service.yml kind: test: {}",
-                SERVICE_TEST_FIXTURE_GUIDANCE
+                "config snapshot projection requires service.yml kind: test: {SERVICE_TEST_FIXTURE_GUIDANCE}"
             ))
         })?;
     let mut layers = load_service_config(&project.source_root, profile)

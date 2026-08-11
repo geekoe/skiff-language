@@ -153,6 +153,7 @@ pub(super) fn request_peer(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn request_peer_with_connector<Connector>(
     peer_addr: SocketAddr,
     authority: &str,
