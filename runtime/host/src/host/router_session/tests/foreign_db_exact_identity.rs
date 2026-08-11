@@ -481,6 +481,7 @@ async fn shared_test_assembly_isolation() {
         base_runtime_id: "runtime-p3x-foreign-db".to_string(),
         runtime_home: fixture.child("runtime-home"),
         profile: "skiff-test".to_string(),
+        bytecode_only: false,
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })

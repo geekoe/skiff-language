@@ -123,6 +123,7 @@ fn test_host() -> super::super::RuntimeHost {
         base_runtime_id: "runtime-base".to_string(),
         runtime_home: std::env::temp_dir().join("skiff-runtime-test-home"),
         profile: "test".to_string(),
+        bytecode_only: false,
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })

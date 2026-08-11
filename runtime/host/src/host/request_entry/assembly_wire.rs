@@ -288,6 +288,9 @@ impl RuntimeHost {
         key: &ServiceIngressKey,
         bootstrap: &ConnectionBootstrap,
     ) -> Result<ActiveAssemblyRoute> {
+        if self.bytecode_only {
+            return Err(bytecode_required_error(&key.deployment));
+        }
         self.assembly_admission
             .route_or_lazy_load(
                 key,
@@ -305,10 +308,15 @@ impl RuntimeHost {
         deployment: &ServiceDeploymentRef,
         bootstrap: &ConnectionBootstrap,
     ) -> Result<Option<BytecodeRoute>> {
-        self.bytecode_deployments
+        let route = self
+            .bytecode_deployments
             .route(deployment, bootstrap.resolver.store().root())
             .await
-            .map_err(|error| RuntimeError::Decode(error.to_string()))
+            .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+        if route.is_none() && self.bytecode_only {
+            return Err(bytecode_required_error(deployment));
+        }
+        Ok(route)
     }
 
     async fn websocket_connect_request_from_wire(
@@ -765,6 +773,14 @@ enum AdmittedRuntimeAssemblyRequest {
     BytecodeWebSocketJsonRpc(AdmittedBytecodeWebSocketJsonRpcRequest),
     Task(AdmittedTaskRequest),
     BytecodeTask(AdmittedBytecodeTaskRequest),
+}
+
+fn bytecode_required_error(deployment: &ServiceDeploymentRef) -> RuntimeError {
+    RuntimeError::Protocol {
+        target: deployment.deployment_artifact_identity.as_str().to_string(),
+        message: "bytecode is required for this deployment; legacy assembly routes are disabled"
+            .to_string(),
+    }
 }
 
 fn gateway_ingress_pin(

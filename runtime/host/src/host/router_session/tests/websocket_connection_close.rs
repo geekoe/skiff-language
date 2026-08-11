@@ -457,6 +457,7 @@ async fn smoke_host() -> (RuntimeHost, ActiveAssemblyRoute, Arc<Mutex<Vec<(Strin
         base_runtime_id: "runtime-websocket-close-smoke".to_string(),
         runtime_home: std::env::temp_dir().join("skiff-runtime-websocket-close-smoke-test-home"),
         profile: "skiff-test".to_string(),
+        bytecode_only: false,
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })

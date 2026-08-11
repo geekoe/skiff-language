@@ -10,10 +10,10 @@ use skiff_artifact_identity::{
     ValidatedBytecodeArtifact,
 };
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
-    BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    derive_bytecode_statement_manifest_identity, BoundaryCallbackContract, BoundaryEffectGuarantee,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity, PackageArtifact,
     ServiceContract, ServiceDeployment, WebSocketEntryId, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
@@ -58,6 +58,7 @@ const OPERATION: &str = "run";
 struct CompiledFixture {
     artifact_root: PathBuf,
     deployment: skiff_artifact_model::ServiceDeploymentRef,
+    legacy_deployment: skiff_artifact_model::ServiceDeploymentRef,
 }
 
 static FIXTURE: OnceLock<CompiledFixture> = OnceLock::new();
@@ -192,6 +193,8 @@ fn compile_fixture() -> CompiledFixture {
         .next()
         .expect("compiled scalar package callable")
         .clone();
+    let legacy_callable_id = callable_id.clone();
+    let legacy_operation_id = operation_id.clone();
     let mut deployment = ServiceDeployment {
         schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
         contract: contract_ref,
@@ -237,16 +240,63 @@ fn compile_fixture() -> CompiledFixture {
         .write_service_deployment(&deployment)
         .expect("write deployment");
 
+    let mut legacy_package = package.as_ref().clone();
+    legacy_package.bytecode = None;
+    legacy_package.bytecode_statement_manifest_identity =
+        derive_bytecode_statement_manifest_identity(&legacy_package.package_id, &[])
+            .expect("empty bytecode statement manifest is canonical");
+    legacy_package.synthetic_callback_owners.clear();
+    legacy_package.bytecode_schema_records.clear();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut legacy_package)
+        .expect("legacy package identities");
+    let legacy_package_ref = package_artifact_ref(&legacy_package).expect("legacy package ref");
+    store
+        .write_package_artifact(&legacy_package)
+        .expect("write legacy package");
+    let mut legacy_deployment = ServiceDeployment {
+        schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
+        contract: deployment.contract.clone(),
+        deployment_revision: DeploymentRevision::new("revision-host-legacy-http"),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new("unassigned"),
+        implementation: legacy_package_ref,
+        operation_bindings: vec![DeploymentOperationBinding {
+            contract_operation_id: legacy_operation_id,
+            package_callable_id: legacy_callable_id,
+        }],
+        package_bindings: Vec::new(),
+        service_selectors: Vec::new(),
+        gateway_entries: BTreeMap::new(),
+        ingress: Vec::new(),
+        diagnostic_text: DeploymentDiagnosticText {
+            display_name: "host legacy HTTP".to_string(),
+            notes: BTreeMap::new(),
+        },
+    };
+    skiff_artifact_identity::assign_service_deployment_identity(&mut legacy_deployment)
+        .expect("legacy deployment identity");
+    let legacy_deployment_ref = service_deployment_ref(&legacy_deployment);
+    store
+        .write_service_deployment(&legacy_deployment)
+        .expect("write legacy deployment");
+
     std::fs::remove_dir_all(temp).expect("clean source dir");
 
     CompiledFixture {
         artifact_root,
         deployment: deployment_ref,
+        legacy_deployment: legacy_deployment_ref,
     }
 }
 
 fn canonical_header(
     fixture: &CompiledFixture,
+    request_id: &str,
+) -> RuntimeAssemblyRequestStartFrameHeader {
+    canonical_header_for_deployment(&fixture.deployment, request_id)
+}
+
+fn canonical_header_for_deployment(
+    deployment: &skiff_artifact_model::ServiceDeploymentRef,
     request_id: &str,
 ) -> RuntimeAssemblyRequestStartFrameHeader {
     RuntimeAssemblyRequestStartFrameHeader {
@@ -261,7 +311,7 @@ fn canonical_header(
             kind: "runtimeAssembly".to_string(),
             assembly_identity: None,
             assembly_generation: None,
-            deployment: fixture.deployment.clone(),
+            deployment: deployment.clone(),
             build_id: None,
             gateway_entry_identity: GatewayEntryIdentity::parse(format!(
                 "skiff-gateway-entry-v2:sha256:{}",
@@ -480,12 +530,17 @@ impl skiff_runtime_capability_context::DbProviderFactory for TestDbProviderFacto
 }
 
 fn test_host() -> RuntimeHost {
+    test_host_with_bytecode_only(false)
+}
+
+fn test_host_with_bytecode_only(bytecode_only: bool) -> RuntimeHost {
     RuntimeHost::new(RuntimeConfig {
         db_provider: skiff_runtime_capability_context::DbProviderSource::new(TestDbProviderFactory),
         router_url: "ws://127.0.0.1:4001/runtime".to_string(),
         base_runtime_id: "runtime-bytecode-http".to_string(),
         runtime_home: std::env::temp_dir().join("skiff-runtime-bytecode-http-home"),
         profile: "test".to_string(),
+        bytecode_only: bytecode_only,
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })
@@ -495,7 +550,7 @@ fn test_host() -> RuntimeHost {
 #[tokio::test(flavor = "current_thread")]
 async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
     let fixture = fixture();
-    let host = test_host();
+    let host = test_host_with_bytecode_only(true);
     let route = host
         .bytecode_deployments
         .route(&fixture.deployment, &fixture.artifact_root)
@@ -524,6 +579,39 @@ async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
     };
     let (_header, payload) = decode_response_end_frame(&frame).expect("bytecode response.end");
     assert_eq!(payload, b"42.0");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_legacy() {
+    let fixture = fixture();
+    let host = test_host_with_bytecode_only(true);
+    let legacy_route = host
+        .bytecode_deployments
+        .route(&fixture.legacy_deployment, &fixture.artifact_root)
+        .await
+        .expect("legacy deployment bytecode lookup should succeed");
+    assert!(
+        legacy_route.is_none(),
+        "fixture must carry a deployment without a bytecode record"
+    );
+    let bootstrap = connection_bootstrap(fixture);
+    let header =
+        canonical_header_for_deployment(&fixture.legacy_deployment, "bytecode-only-legacy-http");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    host.spawn_runtime_assembly_request(
+        "bytecode-only-legacy-session",
+        RuntimeAssemblyRequestStartFrameWireHeader::Http(header.clone()),
+        Vec::new(),
+        &bootstrap,
+        sender,
+    )
+    .await;
+    assert_bytecode_response_error(
+        &mut receiver,
+        &header.request_id,
+        "bytecode is required for this deployment",
+    )
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

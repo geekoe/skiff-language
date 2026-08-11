@@ -52,6 +52,7 @@ impl HandshakeSession {
                 uuid::Uuid::new_v4()
             )),
             profile: "test".to_string(),
+            bytecode_only: false,
             http_response_max_bytes: 1024,
             http_egress_proxy: None,
         })

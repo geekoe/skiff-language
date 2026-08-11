@@ -254,6 +254,7 @@ mod tests {
             base_runtime_id: "runtime-no-admit".to_string(),
             runtime_home: std::env::temp_dir().join("skiff-runtime-no-admit-home"),
             profile: "test".to_string(),
+            bytecode_only: false,
             http_response_max_bytes: 1024,
             http_egress_proxy: None,
         })
