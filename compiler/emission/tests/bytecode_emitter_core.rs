@@ -1317,6 +1317,10 @@ mod tests {
                 ty: item_type.clone(),
             }]
         );
+        assert!(
+            descriptor.end_resume_pc.is_some(),
+            "StreamNext must carry a natural end resume pc"
+        );
     }
 
     #[test]
@@ -1397,11 +1401,9 @@ mod tests {
             mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
         let plans = derive_bytecode_value_transfer_plans(&[unit.clone()])
             .expect("stream producer plan derives");
-        assert_eq!(
-            plans.function("streams::produce").unwrap().result_plans,
-            vec![ValueTransferPlan::AffineResource {
-                drop: ResourceDropPlan::ResourceTableRelease,
-            }]
+        assert!(
+            plans.function("streams::produce").unwrap().result_plans.is_empty(),
+            "stream producer body return arity is zero"
         );
 
         let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
@@ -1413,156 +1415,28 @@ mod tests {
             .iter()
             .find(|function| function.function_key == "streams::produce")
             .expect("stream producer function");
-        assert_eq!(
-            function.frame_layout.result_plans,
-            vec![ValueTransferPlan::AffineResource {
-                drop: ResourceDropPlan::ResourceTableRelease,
-            }]
-        );
+        assert_eq!(function.frame_layout.result_count, 0);
+        assert!(function.frame_layout.result_plans.is_empty());
+        let stream_result_type_ref = function
+            .frame_layout
+            .stream_result_type_ref
+            .expect("stream producer frame carries Stream<T> authority");
+        let BytecodePoolEntry::TypeRef { ty } =
+            &artifact.image.pools.types[stream_result_type_ref as usize]
+        else {
+            panic!("stream authority type ref must select the types pool");
+        };
+        assert_eq!(ty, &stream_type);
         assert!(function.instructions.iter().any(|instruction| {
             instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::EmitStream
         }));
-    }
-
-    #[test]
-    fn stream_emit_and_stream_next_emit_exact_resume_descriptors() {
-        let item_type = TypeRefIr::builtin("number");
-        let stream_type = TypeRefIr::Builtin {
-            name: "Stream".to_string(),
-            args: vec![item_type.clone()],
-        };
-        let expressions = vec![MirExpression {
-            index: 0,
-            expression: ExprIr::Literal {
-                value: LiteralIr::Number {
-                    value: serde_json::Number::from(7),
-                },
-            },
-            ty: item_type.clone(),
-            writable: None,
-            direct_call: None,
-            stream_result: None,
-            remote_interface: None,
-        }];
-        let mut function = function(
-            "streams",
-            "run",
-            stream_type.clone(),
-            vec![MirSlot {
-                slot: 0,
-                name: "endpoint".to_string(),
-                kind: MirSlotKind::Local,
-                writable_local: false,
-                ty: Some(stream_type.clone()),
-            }],
-            expressions,
-            vec![MirBlock {
-                id: 0,
-                label: "entry".to_string(),
-                statements: vec![
-                    MirStmt {
-                        statement_index: 0,
-                        span: None,
-                        kind: MirStmtKind::Emit {
-                            operation: String::new(),
-                            value: expression(0),
-                        },
-                    },
-                    MirStmt {
-                        statement_index: 1,
-                        span: None,
-                        kind: MirStmtKind::StreamNext {
-                            endpoint_slot: 0,
-                            item_type: item_type.clone(),
-                        },
-                    },
-                    MirStmt {
-                        statement_index: 2,
-                        span: None,
-                        kind: MirStmtKind::Return { value: None },
-                    },
-                ],
-                successors: Vec::new(),
-            }],
-            vec![
-                MirStatementEntry {
-                    statement_index: 0,
-                    span: None,
-                },
-                MirStatementEntry {
-                    statement_index: 1,
-                    span: None,
-                },
-                MirStatementEntry {
-                    statement_index: 2,
-                    span: None,
-                },
-            ],
-            BTreeMap::new(),
-            Vec::new(),
-        );
-        function.stream_result = Some(MirStreamResultFacts {
-            item_type: item_type.clone(),
-        });
-        let (unit, bundle) =
-            mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
-        let derived = derive_bytecode_value_transfer_plans(&[unit.clone()])
-            .expect("stream endpoint plans derive");
-        let endpoint_plan = ValueTransferPlan::AffineResource {
-            drop: ResourceDropPlan::ResourceTableRelease,
-        };
-        assert_eq!(
-            derived.function("streams::run").unwrap().slot_plans,
-            vec![endpoint_plan.clone()]
-        );
-        assert_eq!(
-            derived.function("streams::run").unwrap().result_plans,
-            vec![endpoint_plan.clone()]
-        );
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &derived,
-        )
-        .expect("stream body emits");
-        let function = artifact.image.functions["streams::run"].clone();
-        assert_eq!(function.frame_layout.slot_plans, vec![endpoint_plan.clone()]);
-        assert_eq!(function.frame_layout.result_plans, vec![endpoint_plan]);
-        assert_eq!(artifact.image.pools.resume.len(), 2);
-        let mut saw_item_resume = false;
-        let mut saw_emit_resume = false;
-        for entry in &artifact.image.pools.resume {
-            let BytecodePoolEntry::ResumeDescriptor(descriptor) = entry else {
-                panic!("resume pool is homogeneous");
-            };
-            match descriptor.result_type_refs.as_slice() {
-                [type_ref] => {
-                    let BytecodePoolEntry::TypeRef { ty } =
-                        &artifact.image.pools.types[*type_ref as usize]
-                    else {
-                        panic!("resume result type refs resolve to the types pool");
-                    };
-                    assert_eq!(ty, &item_type);
-                    assert_eq!(
-                        descriptor.result_plans,
-                        vec![ValueTransferPlan::FromType {
-                            ty: item_type.clone(),
-                        }]
-                    );
-                    saw_item_resume = true;
-                }
-                [] => saw_emit_resume = true,
-                other => panic!("unexpected stream resume arity {other:?}"),
-            }
-        }
-        assert!(
-            saw_item_resume,
-            "StreamNext descriptor must carry item type T"
-        );
-        assert!(
-            saw_emit_resume,
-            "EmitStream descriptor must carry zero results"
-        );
+        assert!(function.instructions.iter().all(|instruction| {
+            instruction.descriptor.kind != skiff_artifact_model::bytecode::Opcode::StreamNext
+        }));
+        assert!(artifact.image.pools.resume.iter().all(|entry| {
+            matches!(entry, BytecodePoolEntry::ResumeDescriptor(descriptor)
+                if descriptor.end_resume_pc.is_none() && descriptor.result_plans.is_empty())
+        }));
     }
 
     #[test]

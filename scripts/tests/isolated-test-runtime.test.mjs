@@ -94,9 +94,7 @@ test('isolated instance initialization provisions runnable configs and dirs', as
 test('readiness requires one connected replica and its own capability handshake', () => {
   const bootstrap = {
     profile: 'skiff-test',
-    bootstrap: {
-      assembly: { assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'1'.repeat(64)}` },
-    },
+    bootstrap: {},
   };
   const readyHealth = {
     activeAssembly: {

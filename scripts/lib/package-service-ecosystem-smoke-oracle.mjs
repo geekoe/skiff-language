@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
 const FIXTURE_SCHEMA_VERSION = 'skiff-package-service-smoke-fixture-v4';
-const BOOTSTRAP_SCHEMA_VERSION = 'skiff-package-service-bootstrap-v2';
+const BOOTSTRAP_SCHEMA_VERSION = 'skiff-package-service-bootstrap-v3';
 const PACKAGE_POINTER_SCHEMA_VERSION = 'skiff-package-artifact-pointer-v1';
 
 const TEST_SERVICE_PACKAGE_ID = 'test.skiff/package-service-websocket-smoke';
@@ -11,7 +11,6 @@ const STD_PACKAGE_ID = 'skiff.run/std';
 const STD_PACKAGE_VERSION = '1.0.0';
 
 const HASH = '[a-f0-9]{64}';
-const ASSEMBLY_IDENTITY = new RegExp(`^skiff-runtime-assembly-v3:sha256:${HASH}$`);
 const PACKAGE_BUILD_IDENTITY = new RegExp(`^skiff-package-build-v10:sha256:${HASH}$`);
 const PACKAGE_ABI_IDENTITY = new RegExp(`^skiff-package-local-abi-v7:sha256:${HASH}$`);
 const DEPLOYMENT_IDENTITY = new RegExp(`^skiff-deployment-artifact-v2:sha256:${HASH}$`);
@@ -41,7 +40,6 @@ export function readPackageServiceFixtureReceipt(
   const candidate = exactObject(
     receipt.candidate,
     [
-      'assembly',
       'configSnapshot',
       'contracts',
       'deployments',
@@ -51,7 +49,6 @@ export function readPackageServiceFixtureReceipt(
     ],
     'fixture candidate',
   );
-  runtimeAssemblyRef(candidate.assembly, 'fixture candidate assembly');
   runtimeConfigSnapshotRef(
     candidate.configSnapshot,
     'fixture candidate config snapshot',
@@ -116,15 +113,13 @@ export function validatePackageServiceBootstrapReceipt(receipt, expectedProfile)
   assert.equal(receipt.profile, expectedProfile);
   const bootstrap = exactObject(
     receipt.bootstrap,
-    ['assembly', 'configSnapshot', 'generation', 'std'],
+    ['configSnapshot', 'std'],
     'bootstrap payload',
   );
-  runtimeAssemblyRef(bootstrap.assembly, 'bootstrap assembly');
   runtimeConfigSnapshotRef(
     bootstrap.configSnapshot,
     'bootstrap config snapshot',
   );
-  assert.equal(bootstrap.generation, 0, 'bootstrap must install generation 0');
 
   const std = exactObject(bootstrap.std, ['package', 'pointer', 'pointerPath'], 'bootstrap std');
   const packageReceipt = exactObject(
@@ -222,12 +217,6 @@ function serviceContractRef(value, label) {
   assert.equal(typeof value.serviceId, 'string');
   assert.equal(typeof value.contractVersion, 'string');
   assert.match(value.serviceProtocolIdentity ?? '', SERVICE_PROTOCOL_IDENTITY);
-  return value;
-}
-
-function runtimeAssemblyRef(value, label) {
-  exactObject(value, ['assemblyIdentity'], label);
-  assert.match(value.assemblyIdentity ?? '', ASSEMBLY_IDENTITY);
   return value;
 }
 

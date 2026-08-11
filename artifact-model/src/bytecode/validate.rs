@@ -181,6 +181,7 @@ pub struct ValidatedResumeSite {
     pub descriptor_index: u32,
     pub site_pc: u32,
     pub resume_pc: u32,
+    pub end_resume_pc: Option<u32>,
     pub expected_stack_height_before_result: u32,
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<crate::bytecode::dto::ValueTransferPlan>,
@@ -193,6 +194,7 @@ impl ValidatedResumeSite {
     pub fn result_authority(&self) -> ValidatedResumeResultAuthority {
         ValidatedResumeResultAuthority {
             descriptor_index: self.descriptor_index,
+            end_resume_pc: self.end_resume_pc,
             expected_stack_height_before_result: self.expected_stack_height_before_result,
             result_type_refs: self.result_type_refs.clone(),
             result_plans: self.result_plans.clone(),
@@ -1225,33 +1227,32 @@ fn derive_function_stream_item(
     pools: &BytecodePools,
 ) -> Result<Option<FunctionStreamItemAuthority>, StructuralValidationError> {
     let frame = &function.frame_layout;
-    if frame.result_count == 0 {
+    let Some(stream_result_type_ref) = frame.stream_result_type_ref else {
         return Ok(None);
-    }
-    if frame.result_type_refs.len() != 1 {
-        return Err(table_error(
-            key,
-            "stream producer frame must have exactly one result type ref".to_string(),
-        ));
-    }
-    let stream_result_type_ref = frame.result_type_refs[0];
+    };
     let Some(BytecodePoolEntry::TypeRef { ty }) = pools.types.get(stream_result_type_ref as usize)
     else {
         return Err(table_error(
             key,
-            "stream producer result type ref must select a types pool entry".to_string(),
+            "frameLayout.streamResultTypeRef must select a types pool entry".to_string(),
         ));
     };
     let TypeRefIr::Builtin { name, args } = ty else {
-        return Ok(None);
+        return Err(table_error(
+            key,
+            "frameLayout.streamResultTypeRef must select Stream<T>".to_string(),
+        ));
     };
     if name != "Stream" {
-        return Ok(None);
+        return Err(table_error(
+            key,
+            "frameLayout.streamResultTypeRef must select Stream<T>".to_string(),
+        ));
     }
     let [item_type] = args.as_slice() else {
         return Err(table_error(
             key,
-            "stream producer result type must have exactly one item type".to_string(),
+            "frameLayout.streamResultTypeRef must select Stream<T>".to_string(),
         ));
     };
     let item_plan = crate::bytecode::dto::ValueTransferPlan::FromType {
@@ -1437,6 +1438,13 @@ fn validate_function_limits(
             limits::MAX_RESULTS_PER_CALL,
             frame.result_count as u64,
             &location("frameLayout.resultCount"),
+        ));
+    }
+    if frame.stream_result_type_ref.is_some() && frame.result_count != 0 {
+        return Err(table_error(
+            key,
+            "stream producer frameLayout.resultCount must be 0; Stream<T> is declared only in streamResultTypeRef"
+                .to_string(),
         ));
     }
     validate_frame_type_refs(key, frame, pools)?;
@@ -1852,6 +1860,38 @@ fn validate_frame_type_refs(
                     format!("frameLayout.{field}[{index}] must reference a TypeRef entry"),
                 ));
             }
+            if field == "resultTypeRefs"
+                && frame.stream_result_type_ref.is_none()
+                && matches!(
+                    entry,
+                    BytecodePoolEntry::TypeRef {
+                        ty: TypeRefIr::Builtin { name, .. },
+                    } if name == "Stream"
+                )
+            {
+                return Err(table_error(
+                    key,
+                    format!(
+                        "frameLayout.resultTypeRefs[{index}] selects Stream; stream producers must declare frameLayout.streamResultTypeRef and return zero ordinary results"
+                    ),
+                ));
+            }
+        }
+    }
+    if let Some(stream_result_type_ref) = frame.stream_result_type_ref {
+        let Some(entry) = pools.types.get(stream_result_type_ref as usize) else {
+            return Err(table_error(
+                key,
+                format!(
+                    "frameLayout.streamResultTypeRef index {stream_result_type_ref} out of bounds of types pool"
+                ),
+            ));
+        };
+        if !entry_is_kind(entry, PoolCategory::Types) {
+            return Err(table_error(
+                key,
+                "frameLayout.streamResultTypeRef must reference a TypeRef entry".to_string(),
+            ));
         }
     }
     Ok(())

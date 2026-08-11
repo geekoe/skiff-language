@@ -9,12 +9,13 @@ use skiff_artifact_model::{
 use crate::{
     ActiveRegionIndex, ActorMethodIndex, ArtifactCallbackCaptureIndex, ArtifactConstantIndex,
     ArtifactConstantNodeIndex, ArtifactShapeIndex, ArtifactWritablePathIndex, CallLoanLayoutIndex,
-    CallbackCaptureLayoutIndex, CandidateReferenceKind, CandidateTable, ConstantIndex,
+    CallbackCaptureLayoutIndex, CandidateLocation, CandidateReferenceKind, CandidateTable,
+    ConstantIndex,
     FrameSlotIndex, FrozenConstantNodeIndex, FunctionIndex, HostEffectAdapterIndex,
     InstructionBoundaryIndex, InstructionIndex, InterfaceTableIndex, IntrinsicIndex,
     LinkedActiveRegion, LinkedActiveRegionKind, LinkedArtifactPoolOrigin, LinkedBytecodeCandidate,
-    LinkedBytecodeCandidateError, LinkedBytecodeHeaderField, LinkedCallLoanBinding,
-    LinkedCallLoanLayout, LinkedCallLoanLayoutError, LinkedCallableSignature,
+    LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedBytecodeHeaderField,
+    LinkedCallLoanBinding, LinkedCallLoanLayout, LinkedCallLoanLayoutError, LinkedCallableSignature,
     LinkedCallableSignatureError, LinkedCallbackCapture, LinkedCallbackCaptureLayout,
     LinkedCatchMatcher, LinkedConstantEntry, LinkedConstantReference, LinkedConstantRoot,
     LinkedConstantSymbolPath, LinkedContainerLayout, LinkedContainerLayoutKind,
@@ -175,6 +176,7 @@ fn frame_rejects_plan_shape_and_parameter_plan_mismatch() {
         Box::new([]),
         Box::new([]),
         Box::new([]),
+        None,
     )
     .expect_err("one slot requires one concrete plan");
     assert_eq!(
@@ -198,6 +200,7 @@ fn frame_rejects_plan_shape_and_parameter_plan_mismatch() {
         Box::new([]),
         Box::new([snapshot_plan()]),
         Box::new([]),
+        None,
     )
     .expect_err("parameter and frame-slot plans must be identical");
     assert!(matches!(
@@ -216,6 +219,7 @@ fn frame_rejects_plan_shape_and_parameter_plan_mismatch() {
         Box::new([]),
         Box::new([snapshot_plan()]),
         Box::new([]),
+        None,
     )
     .expect_err("incoming parameters cannot be caller-owned writable locals");
     assert_eq!(
@@ -267,6 +271,7 @@ fn candidate_retains_specialization_bound_call_loans() {
         Box::new([TypeIndex::new(0)]),
         Box::new([plan.clone(), plan.clone()]),
         Box::new([plan.clone()]),
+        None,
     )
     .expect("fixture frame has one writable non-parameter local");
     let call_loan_layout = LinkedCallLoanLayout::try_new(
@@ -935,6 +940,7 @@ fn candidate_with_nominal_data_resume_and_root_facts() -> LinkedBytecodeCandidat
             FunctionIndex::new(0),
             InstructionIndex::new(0),
             InstructionIndex::new(0),
+            None,
             0,
             Box::new([TypeIndex::new(0)]),
             Box::new([snapshot_plan()]),
@@ -995,6 +1001,8 @@ fn candidate_getters_retain_nominal_data_resume_and_root_facts() {
         candidate.resume_sites()[0].function(),
         FunctionIndex::new(0)
     );
+    assert_eq!(candidate.resume_sites()[0].end_resume(), None);
+    assert_eq!(candidate.functions()[0].stream_result_type_ref(), None);
     assert!(candidate.writable_paths()[0]
         .origin()
         .specialization()
@@ -1093,6 +1101,7 @@ fn candidate_rejects_wrong_lifecycle_adapter_role() {
         Box::new([]),
         Box::new([plan]),
         Box::new([]),
+        None,
     )
     .expect("wrong semantic role is still locally shape-valid");
     let base = function(0, "root");
@@ -1145,4 +1154,330 @@ fn effect_reference_remains_typed_package_callable_identity() {
         function.effect_summary_ref(),
         &PackageCallableId::new("root")
     );
+}
+
+fn frame_with_stream_result(
+    stream_result_type_ref: Option<TypeIndex>,
+    result_types: Box<[TypeIndex]>,
+) -> LinkedFrameLayout {
+    let plan = snapshot_plan();
+    let result_plans = result_types
+        .iter()
+        .map(|_| snapshot_plan())
+        .collect::<Box<[_]>>();
+    LinkedFrameLayout::new(
+        Box::new([TypeIndex::new(0)]),
+        Box::new([LinkedParameterSlot::new(
+            FrameSlotIndex::new(0),
+            ParamModeIr::Value,
+            plan.clone(),
+        )]),
+        Box::new([]),
+        result_types,
+        Box::new([plan]),
+        result_plans,
+        stream_result_type_ref,
+    )
+    .expect("fixture stream frame has aligned slot and result plans")
+}
+
+fn function_with_frame(frame: LinkedFrameLayout) -> crate::LinkedFunction {
+    let base = function(0, "streams");
+    crate::LinkedFunction::new(
+        base.index(),
+        base.key().clone(),
+        base.instructions().to_vec().into_boxed_slice(),
+        frame,
+        base.max_operand_depth(),
+        base.effect().clone(),
+        base.tables().clone(),
+        base.stack_map().clone(),
+    )
+}
+
+fn stream_next_instruction() -> LinkedInstruction {
+    let contract = OPCODE_CONTRACTS
+        .iter()
+        .find(|contract| contract.kind == Opcode::StreamNext)
+        .expect("StreamNext has a canonical opcode contract");
+    let resolved = contract
+        .operands
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, specification)| {
+            target_for_operand_kind(specification.linked_kind)
+                .map(|target| LinkedResolvedOperand::new(ordinal as u32, target))
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    LinkedInstruction::new(
+        Opcode::StreamNext,
+        vec![0; contract.operands.len()].into_boxed_slice(),
+        resolved,
+        0,
+    )
+    .expect("fixture StreamNext follows the canonical operand contract")
+}
+
+fn function_with_instructions(instructions: Box<[LinkedInstruction]>) -> crate::LinkedFunction {
+    let base = function(0, "streams");
+    let stack_map = LinkedStackMapCandidate::try_new(
+        instructions
+            .iter()
+            .enumerate()
+            .map(|(position, _)| {
+                LinkedProgramPointState::new(
+                    InstructionIndex::new(
+                        u32::try_from(position).expect("fixture instruction position fits u32"),
+                    ),
+                    Box::new([]),
+                    Box::new([LinkedSlotState::Live(LinkedStackValue::new(
+                        TypeIndex::new(0),
+                        snapshot_plan(),
+                    ))]),
+                    Box::new([]),
+                    Box::new([]),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        instructions.len(),
+        1,
+        1,
+    )
+    .expect("fixture stack map has one state per instruction");
+    crate::LinkedFunction::new(
+        base.index(),
+        base.key().clone(),
+        instructions,
+        base.frame().clone(),
+        base.max_operand_depth(),
+        base.effect().clone(),
+        base.tables().clone(),
+        stack_map,
+    )
+}
+
+fn parts_with_stream_next_resume(
+    end_resume: Option<InstructionIndex>,
+) -> LinkedBytecodeCandidateParts {
+    let budget =
+        LinkedInstruction::new(Opcode::BudgetCheckpoint, Box::new([]), Box::new([]), 0)
+            .expect("fixture budget checkpoint has no operands");
+    let function = function_with_instructions(Box::new([
+        stream_next_instruction(),
+        budget.clone(),
+        budget,
+    ]));
+    let mut parts = minimal_parts(vec![function]);
+    parts.resume_sites.push(
+        LinkedResumeSite::new(
+            ResumeSiteIndex::new(0),
+            FunctionIndex::new(0),
+            InstructionIndex::new(0),
+            InstructionIndex::new(1),
+            end_resume,
+            0,
+            Box::new([TypeIndex::new(0)]),
+            Box::new([snapshot_plan()]),
+            ResumeErrorMode::RaiseAtSite,
+        )
+        .expect("fixture resume result types and plans align"),
+    );
+    parts
+}
+
+#[test]
+fn linked_function_retains_explicit_stream_producer_authority() {
+    let stream_type = TypeIndex::new(1);
+    let frame = frame_with_stream_result(Some(stream_type), Box::new([]));
+    let function = function_with_frame(frame);
+    let mut parts = minimal_parts(vec![function]);
+    parts.types.push(LinkedTypeEntry::new(
+        TypeIndex::new(1),
+        type_origin(1, None),
+        TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::builtin("string")],
+        },
+        None,
+    ));
+
+    let candidate = LinkedBytecodeCandidate::try_from_parts(parts)
+        .expect("explicit stream producer authority is locally valid");
+    assert_eq!(
+        candidate.functions()[0].stream_result_type_ref(),
+        Some(stream_type)
+    );
+    assert_eq!(
+        candidate.functions()[0].frame().stream_result_type_ref(),
+        Some(stream_type)
+    );
+    assert!(candidate.functions()[0].frame().result_types().is_empty());
+}
+
+#[test]
+fn ordinary_result_frame_is_not_derived_as_stream_producer() {
+    let stream_type = TypeIndex::new(1);
+    let frame = frame_with_stream_result(None, Box::new([stream_type]));
+    let mut parts = minimal_parts(vec![function_with_frame(frame)]);
+    parts.types.push(LinkedTypeEntry::new(
+        TypeIndex::new(1),
+        type_origin(1, None),
+        TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::builtin("string")],
+        },
+        None,
+    ));
+
+    let candidate = LinkedBytecodeCandidate::try_from_parts(parts)
+        .expect("ordinary results never imply stream producer authority");
+    assert_eq!(candidate.functions()[0].stream_result_type_ref(), None);
+    assert_eq!(
+        candidate.functions()[0].frame().result_types(),
+        [stream_type]
+    );
+}
+
+#[test]
+fn candidate_rejects_stream_producer_with_ordinary_results() {
+    let stream_type = TypeIndex::new(1);
+    let frame = frame_with_stream_result(Some(stream_type), Box::new([TypeIndex::new(0)]));
+    let mut parts = minimal_parts(vec![function_with_frame(frame)]);
+    parts.types.push(LinkedTypeEntry::new(
+        TypeIndex::new(1),
+        type_origin(1, None),
+        TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::builtin("string")],
+        },
+        None,
+    ));
+
+    let error = LinkedBytecodeCandidate::try_from_parts(parts)
+        .expect_err("stream producers must not also carry ordinary results");
+    assert!(matches!(
+        error,
+        LinkedBytecodeCandidateError::StreamProducerResultCountNotZero {
+            function,
+            result_count: 1,
+        } if function == FunctionIndex::new(0)
+    ));
+}
+
+#[test]
+fn candidate_rejects_stream_producer_type_that_is_not_stream() {
+    let frame = frame_with_stream_result(Some(TypeIndex::new(0)), Box::new([]));
+
+    let error = LinkedBytecodeCandidate::try_from_parts(minimal_parts(vec![function_with_frame(
+        frame,
+    )]))
+    .expect_err("stream producer authority must select Stream<T>");
+    assert!(matches!(
+        error,
+        LinkedBytecodeCandidateError::StreamProducerTypeMismatch {
+            function,
+            stream_type,
+        } if function == FunctionIndex::new(0) && stream_type == TypeIndex::new(0)
+    ));
+}
+
+#[test]
+fn resume_site_retains_stream_next_end_resume_path() {
+    let candidate = LinkedBytecodeCandidate::try_from_parts(parts_with_stream_next_resume(Some(
+        InstructionIndex::new(2),
+    )))
+    .expect("StreamNext item and end resume paths are locally valid");
+
+    assert_eq!(
+        candidate.resume_sites()[0].end_resume(),
+        Some(InstructionIndex::new(2))
+    );
+    assert_eq!(candidate.resume_sites()[0].resume(), InstructionIndex::new(1));
+}
+
+#[test]
+fn candidate_rejects_stream_next_without_end_resume() {
+    let error = LinkedBytecodeCandidate::try_from_parts(parts_with_stream_next_resume(None))
+        .expect_err("StreamNext requires its natural-end resume path");
+    assert!(matches!(
+        error,
+        LinkedBytecodeCandidateError::StreamNextMissingEndResume {
+            resume_site: 0,
+            function,
+            site,
+        } if function == FunctionIndex::new(0) && site == InstructionIndex::new(0)
+    ));
+}
+
+#[test]
+fn candidate_rejects_end_resume_on_non_stream_resume_site() {
+    let mut parts = minimal_parts(vec![function(0, "root")]);
+    parts.resume_sites.push(
+        LinkedResumeSite::new(
+            ResumeSiteIndex::new(0),
+            FunctionIndex::new(0),
+            InstructionIndex::new(0),
+            InstructionIndex::new(0),
+            Some(InstructionIndex::new(0)),
+            0,
+            Box::new([]),
+            Box::new([]),
+            ResumeErrorMode::RaiseAtSite,
+        )
+        .expect("fixture resume result types and plans align"),
+    );
+
+    let error = LinkedBytecodeCandidate::try_from_parts(parts)
+        .expect_err("end resume pc is only valid for StreamNext");
+    assert!(matches!(
+        error,
+        LinkedBytecodeCandidateError::EndResumeOnlyValidForStreamNext {
+            resume_site: 0,
+            function,
+            site,
+        } if function == FunctionIndex::new(0) && site == InstructionIndex::new(0)
+    ));
+}
+
+#[test]
+fn candidate_rejects_end_resume_outside_stream_next_function() {
+    let error = LinkedBytecodeCandidate::try_from_parts(parts_with_stream_next_resume(Some(
+        InstructionIndex::new(3),
+    )))
+    .expect_err("end resume pc must target the same linked function");
+    assert!(matches!(
+        error,
+        LinkedBytecodeCandidateError::ReferenceOutOfBounds {
+            location: CandidateLocation::TableRow {
+                table: CandidateTable::ResumeSites,
+                row: 0,
+            },
+            reference: CandidateReferenceKind::Instruction,
+            index: 3,
+            len: 3,
+        }
+    ));
+}
+
+#[test]
+fn candidate_rejects_stream_next_end_resume_equal_to_item_resume() {
+    let error = LinkedBytecodeCandidate::try_from_parts(parts_with_stream_next_resume(Some(
+        InstructionIndex::new(1),
+    )))
+    .expect_err("item and natural-end resume targets must differ");
+    assert!(matches!(
+        error,
+        LinkedBytecodeCandidateError::StreamNextResumeEndTargetsEqual {
+            resume_site: 0,
+            function,
+            site,
+            resume,
+            end_resume,
+        } if function == FunctionIndex::new(0)
+            && site == InstructionIndex::new(0)
+            && resume == InstructionIndex::new(1)
+            && end_resume == InstructionIndex::new(1)
+    ));
 }

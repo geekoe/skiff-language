@@ -23,7 +23,6 @@ test('skiff test selects the canonical binary once for absolute and relative roo
   try {
     const artifactRoot = join(fixture.root, 'artifacts');
     await mkdir(artifactRoot);
-    const assembly = `skiff-runtime-assembly-v1:sha256:${'a'.repeat(64)}`;
     const configSnapshot =
       `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`;
     for (const testRoot of [input, relative(root, input)]) {
@@ -33,8 +32,6 @@ test('skiff test selects the canonical binary once for absolute and relative roo
         testRoot,
         '--artifact-root',
         artifactRoot,
-        '--base-assembly',
-        assembly,
         '--base-config-snapshot',
         configSnapshot,
         '--live',
@@ -68,8 +65,6 @@ test('skiff test selects the canonical binary once for absolute and relative roo
         artifactRoot,
         '--platform-source-root',
         root,
-        '--base-assembly',
-        assembly,
         '--base-config-snapshot',
         configSnapshot,
         '--ingress-url',
@@ -302,7 +297,6 @@ test('skiff test rejects duplicate singleton options and flags', async () => {
   try {
     for (const args of [
       ['--artifact-root', fixture.root, '--artifact-root', fixture.root],
-      ['--artifact-root', fixture.root, '--base-assembly', 'one', '--base-assembly=two'],
       [
         '--artifact-root',
         fixture.root,
@@ -325,28 +319,27 @@ test('skiff test rejects duplicate singleton options and flags', async () => {
   }
 });
 
-test('skiff test requires base assembly and config snapshot together', async () => {
+test('skiff test accepts a base config snapshot without a base assembly identity', async () => {
   const fixture = await fakeCargoFixture();
   try {
-    for (const args of [
-      ['--base-assembly', 'assembly'],
-      ['--base-config-snapshot', 'snapshot'],
-    ]) {
-      const result = await runProcess(process.execPath, [
-        skiffPath,
-        'test',
-        input,
-        '--artifact-root',
-        fixture.root,
-        ...args,
-      ], { env: fixture.env });
-      assert.notEqual(result.code, 0);
-      assert.match(
-        result.stderr,
-        /--base-assembly and --base-config-snapshot must be provided together/,
-      );
-      await assert.rejects(access(fixture.marker), { code: 'ENOENT' });
-    }
+    const result = await runProcess(process.execPath, [
+      skiffPath,
+      'test',
+      input,
+      '--artifact-root',
+      fixture.root,
+      '--base-config-snapshot',
+      `skiff-runtime-config-snapshot-v1:${'c'.repeat(32)}`,
+      '--live',
+      '--ingress-url',
+      'http://router.test:4100',
+      '--profile',
+      'test-live',
+    ], { env: fixture.env });
+    assert.equal(result.code, 0, result.stderr);
+    const args = JSON.parse(await readFile(fixture.marker, 'utf8'));
+    assert.equal(args.includes('--base-config-snapshot'), true);
+    assert.equal(args.includes('--base-assembly'), false);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

@@ -74,6 +74,7 @@ fn fixture() -> BytecodeArtifact {
                 result_count: 1,
                 result_type_refs: vec![1],
                 result_plans: vec![snapshot_share()],
+                stream_result_type_ref: None,
                 slot_plans: vec![snapshot_share()],
             },
             max_operand_depth: 2,
@@ -559,6 +560,7 @@ fn authority_fixture() -> BytecodeArtifact {
             function_key: "module::producer".to_string(),
             site_pc: 0,
             resume_pc: 2,
+            end_resume_pc: None,
             expected_stack_height_before_result: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
@@ -583,9 +585,10 @@ fn authority_fixture() -> BytecodeArtifact {
             slot_type_refs: Vec::new(),
             parameter_slots: Vec::new(),
             writable_local_slots: Vec::new(),
-            result_count: 1,
-            result_type_refs: vec![stream_index],
-            result_plans: vec![snapshot_share()],
+            result_count: 0,
+            result_type_refs: Vec::new(),
+            result_plans: Vec::new(),
+            stream_result_type_ref: Some(stream_index),
             slot_plans: Vec::new(),
         },
         max_operand_depth: 1,
@@ -613,6 +616,78 @@ fn authority_fixture() -> BytecodeArtifact {
         .image
         .functions
         .insert("module::producer".to_string(), producer);
+    artifact
+}
+
+fn stream_consumer_fixture() -> BytecodeArtifact {
+    let mut artifact = fixture();
+    artifact
+        .image
+        .pools
+        .resume
+        .push(BytecodePoolEntry::ResumeDescriptor(ResumeDescriptor {
+            function_key: "module::consumer".to_string(),
+            site_pc: 0,
+            resume_pc: 3,
+            end_resume_pc: Some(4),
+            expected_stack_height_before_result: 0,
+            result_type_refs: vec![0],
+            result_plans: vec![snapshot_share()],
+            error_mode: ResumeErrorMode::RaiseAtSite,
+        }));
+    artifact.image.functions.insert(
+        "module::consumer".to_string(),
+        RelocatableBytecodeFunction {
+            function_key: "module::consumer".to_string(),
+            origin: BytecodeFunctionOrigin::Executable {
+                executable: PackageExecutableCoordinate {
+                    file_ir_identity: format!(
+                        "{}:{}",
+                        crate::FILE_IR_IDENTITY_PREFIX,
+                        "a".repeat(64)
+                    ),
+                    module_path: "module".to_string(),
+                    executable_index: 1,
+                },
+            },
+            type_parameters: Vec::new(),
+            self_type_ref: None,
+            words: vec![0x60, 0, 0, 0x08, 0x08, 0x25],
+            relocations: Vec::new(),
+            call_loan_layouts: Vec::new(),
+            frame_layout: FrameLayout {
+                slot_count: 1,
+                slot_type_refs: vec![0],
+                parameter_slots: Vec::new(),
+                writable_local_slots: Vec::new(),
+                result_count: 0,
+                result_type_refs: Vec::new(),
+                result_plans: Vec::new(),
+                stream_result_type_ref: None,
+                slot_plans: vec![snapshot_share()],
+            },
+            max_operand_depth: 1,
+            effect_summary_ref: PackageCallableId::new("operation:module:consumer"),
+            exception_regions: Vec::new(),
+            active_regions: Vec::new(),
+            switch_tables: Vec::new(),
+            statement_entries: vec![StatementEntry {
+                pc: 0,
+                sequence_ordinal: 0,
+                attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+                site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                    reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
+            }],
+            source_map: vec![SourceMapEntry {
+                start_pc: 0,
+                end_pc: 4,
+                site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                    reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+                },
+            }],
+        },
+    );
     artifact
 }
 
@@ -644,10 +719,28 @@ fn derived_execution_authorities_participate_in_the_preimage() {
         .get_mut("module::producer")
         .unwrap()
         .frame_layout
-        .result_type_refs[0] = string_stream_index;
+        .stream_result_type_ref = Some(string_stream_index);
     assert_ne!(
         bytecode_identity(&mutated).unwrap(),
         with_contracts,
         "stream producer item type must participate in bytecode identity"
+    );
+}
+
+#[test]
+fn stream_next_end_resume_pc_participates_in_the_preimage() {
+    let base = stream_consumer_fixture();
+    let baseline = bytecode_identity(&base).unwrap();
+
+    let mut changed = base;
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut changed.image.pools.resume[0]
+    else {
+        unreachable!("stream consumer resume descriptor")
+    };
+    descriptor.end_resume_pc = Some(5);
+    assert_ne!(
+        bytecode_identity(&changed).unwrap(),
+        baseline,
+        "StreamNext endResumePc must participate in bytecode identity"
     );
 }

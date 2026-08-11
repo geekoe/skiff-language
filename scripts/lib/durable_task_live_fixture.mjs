@@ -110,29 +110,10 @@ export async function authorDurableTaskArtifact({
   ) {
     throw new Error('durable task live package build returned no exact ServiceDeploymentRef');
   }
-  const assemblyReceipt = await runCompilerAuthoring({
-    skiffRoot,
-    kind: 'assembly',
-    action: 'build',
-    artifactRoot,
-    profile,
-    rootDeployments: [deploymentRef],
-  });
-  const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
-  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
-  if (
-    assembly === null
-    || typeof assembly !== 'object'
-    || typeof assembly.assemblyIdentity !== 'string'
-    || typeof recordPath !== 'string'
-  ) {
-    throw new Error('durable task live assembly build returned no exact RuntimeAssembly receipt');
-  }
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
     profile,
-    assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment: deploymentRef }],
   });
   const snapshotId =
@@ -141,7 +122,6 @@ export async function authorDurableTaskArtifact({
     throw new Error('durable task live config snapshot production returned no snapshot id');
   }
   return {
-    assemblyIdentity: assembly.assemblyIdentity,
     configSnapshotId: snapshotId,
     deployment: deploymentRef,
   };

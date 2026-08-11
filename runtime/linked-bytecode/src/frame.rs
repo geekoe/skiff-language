@@ -40,6 +40,7 @@ pub struct LinkedFrameLayout {
     result_types: Box<[TypeIndex]>,
     slot_plans: Box<[LinkedValueTransferPlan]>,
     result_plans: Box<[LinkedValueTransferPlan]>,
+    stream_result_type_ref: Option<TypeIndex>,
 }
 
 impl LinkedFrameLayout {
@@ -50,6 +51,7 @@ impl LinkedFrameLayout {
         result_types: Box<[TypeIndex]>,
         slot_plans: Box<[LinkedValueTransferPlan]>,
         result_plans: Box<[LinkedValueTransferPlan]>,
+        stream_result_type_ref: Option<TypeIndex>,
     ) -> Result<Self, LinkedFrameLayoutError> {
         if slot_types.len() != slot_plans.len() {
             return Err(LinkedFrameLayoutError::SlotPlanCountMismatch {
@@ -114,6 +116,7 @@ impl LinkedFrameLayout {
             result_types,
             slot_plans,
             result_plans,
+            stream_result_type_ref,
         })
     }
 
@@ -139,6 +142,12 @@ impl LinkedFrameLayout {
 
     pub fn result_plans(&self) -> &[LinkedValueTransferPlan] {
         &self.result_plans
+    }
+
+    /// Explicit stream producer authority. It is never inferred from ordinary
+    /// result slots; a producer frame also carries zero ordinary results.
+    pub const fn stream_result_type_ref(&self) -> Option<TypeIndex> {
+        self.stream_result_type_ref
     }
 }
 

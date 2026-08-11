@@ -295,25 +295,10 @@ export async function authorHttpLiveArtifact({
   if (!isPlainObject(deploymentRef)) {
     throw new Error('http live package build returned no exact ServiceDeployment reference');
   }
-  const assemblyReceipt = await runCompilerAuthoring({
-    skiffRoot,
-    kind: 'assembly',
-    action: 'build',
-    artifactRoot,
-    profile,
-    rootDeployments: [deploymentRef],
-  });
-  const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
-  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
-  const assemblyIdentity = assembly?.assemblyIdentity;
-  if (typeof assemblyIdentity !== 'string' || typeof recordPath !== 'string') {
-    throw new Error('http live assembly build returned no exact RuntimeAssembly receipt');
-  }
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
     profile,
-    assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment: deploymentRef }],
   });
   const configSnapshotId =
@@ -328,10 +313,8 @@ export async function authorHttpLiveArtifact({
     ACTOR_ROUTING_PROJECTION_CONTENT,
   );
   return {
-    assemblyIdentity,
     configSnapshotId,
     deploymentRef,
-    recordPath,
   };
 }
 

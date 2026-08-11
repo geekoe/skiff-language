@@ -257,21 +257,15 @@ test('a failing package batch never reaches the config snapshot step', async () 
   assert.equal(snapshotRuns, 0);
 });
 
-test('dev sync has one package phase and consumes generated service receipts before assembly', async () => {
+test('dev sync has one package phase and consumes generated service receipts before snapshot', async () => {
   const fixture = await rootsFixture('success');
   const events = [];
-  let assemblyInput;
   const result = await runDevSyncOnce({
     roots: fixture.roots,
     profile: 'dev',
     artifactRoot: fixture.artifactRoot,
     compilerRunner: async (input) => {
-      if (input.kind === 'assembly') {
-        assemblyInput = input;
-      }
-      events.push(input.kind === 'assembly'
-        ? `assembly:${input.profile}`
-        : `${input.kind}:${basename(input.root)}:${input.profile}`);
+      events.push(`${input.kind}:${basename(input.root)}:${input.profile}`);
       return compilerReceipt(input);
     },
     configSnapshotRunner: async (input) => {
@@ -287,14 +281,11 @@ test('dev sync has one package phase and consumes generated service receipts bef
   assert.deepEqual(events, [
     'package:ordinary:dev',
     'package:service:dev',
-    'assembly:dev',
     'snapshot:dev',
   ]);
   assert.equal(result.packageArtifactReceipts.length, 2);
   assert.equal(result.serviceContractReceipts.length, 1);
   assert.equal(result.serviceDeploymentReceipts.length, 1);
-  assert.equal('root' in assemblyInput, false);
-  assert.deepEqual(assemblyInput.rootDeployments, [dummyDeploymentRef]);
   const source = await readFile(
     new URL('../skiff-dev-sync.mjs', import.meta.url),
     'utf8',
@@ -312,7 +303,6 @@ test('dev sync defers roots until exact package/service pointers are available',
     artifactRoot: fixture.artifactRoot,
     buildOnly: true,
     compilerRunner: async (input) => {
-      if (input.kind === 'assembly') return compilerReceipt(input);
       const name = basename(input.root);
       attempts.push(name);
       if (name === 'ordinary' && !providerPublished) {
@@ -340,7 +330,7 @@ test('config-only sync publishes a fresh snapshot without rebuilding code artifa
     },
     configSnapshotRunner: async () => snapshotReceiptFor('4'),
   });
-  assert.equal(compilerCalls, 3);
+  assert.equal(compilerCalls, 2);
 
   await writeFile(
     join(serviceRoot, 'config.dev.yml'),
@@ -360,12 +350,12 @@ test('config-only sync publishes a fresh snapshot without rebuilding code artifa
       return snapshotReceiptFor('6');
     },
   });
-  assert.deepEqual(second.runtimeAssemblyReceipt, first.runtimeAssemblyReceipt);
+  assert.deepEqual(second.serviceDeploymentReceipts, first.serviceDeploymentReceipts);
   assert.notDeepEqual(
     second.runtimeConfigSnapshotReceipt,
     first.runtimeConfigSnapshotReceipt,
   );
-  assert.equal(compilerCalls, 3);
+  assert.equal(compilerCalls, 2);
   assert.equal(second.runtimeConfigSnapshotReceipt.snapshot.snapshotId, secondSnapshotId);
 });
 
@@ -406,19 +396,9 @@ function compilerReceipt({ kind, root = '' }) {
       } : {}),
     };
   }
-  if (kind === 'assembly') {
-    return {
-      runtimeAssemblyReceipt: {
-        profile: 'dev',
-        assembly: { assemblyIdentity },
-        recordPath: 'records/assembly.json',
-      },
-    };
-  }
   throw new Error(`unexpected independent compiler phase ${kind}`);
 }
 
-const assemblyIdentity = `skiff-runtime-assembly-v3:sha256:${'3'.repeat(64)}`;
 const snapshotReceipt = snapshotReceiptFor('4');
 
 function snapshotReceiptFor(digit) {

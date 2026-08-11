@@ -21,12 +21,8 @@ export function skiffSourceTestRunnerCargoArgs({
   skiffRoot,
   root,
   artifactRoot,
-  baseAssembly,
   baseConfigSnapshot,
 }) {
-  if ((baseAssembly === undefined) !== (baseConfigSnapshot === undefined)) {
-    throw new Error('base assembly and base config snapshot must be provided together');
-  }
   return [
     'run',
     '--quiet',
@@ -40,7 +36,6 @@ export function skiffSourceTestRunnerCargoArgs({
     artifactRoot,
     '--platform-source-root',
     resolve(skiffRoot),
-    ...(baseAssembly === undefined ? [] : ['--base-assembly', baseAssembly]),
     ...(baseConfigSnapshot === undefined
       ? []
       : ['--base-config-snapshot', baseConfigSnapshot]),
@@ -117,7 +112,6 @@ export function packageServiceHostFixturePrepareCargoArgs({
 export async function readPackageServiceHostFixtureReceipt(path, expectedProfile) {
   const receipt = JSON.parse(await readFile(path, 'utf8'));
   exactKeys(receipt, [
-    'baseAssembly',
     'baseConfigSnapshot',
     'contracts',
     'deployments',
@@ -141,14 +135,6 @@ export async function readPackageServiceHostFixtureReceipt(path, expectedProfile
   validatePackageRef(receipt.packages.consumer, 'consumer package');
   validateDeploymentRef(receipt.deployments.provider, 'provider deployment');
   validateDeploymentRef(receipt.deployments.consumer, 'consumer deployment');
-  exactKeys(receipt.baseAssembly, ['assemblyIdentity'], 'base assembly');
-  const assemblyIdentity = requiredText(
-    receipt.baseAssembly.assemblyIdentity,
-    'base assembly assemblyIdentity',
-  );
-  if (!/^skiff-runtime-assembly-v3:sha256:[a-f0-9]{64}$/.test(assemblyIdentity)) {
-    throw new Error('base assembly assemblyIdentity must be canonical');
-  }
   exactKeys(receipt.baseConfigSnapshot, ['snapshotId'], 'base config snapshot');
   if (
     !/^skiff-runtime-config-snapshot-v1:[a-f0-9]{32}$/.test(
@@ -239,7 +225,6 @@ export async function runCanonicalSkiffSourceTests({
           skiffRoot,
           root: host.testRoot,
           artifactRoot: stack.sourceArtifactRoot,
-          baseAssembly: receipt.baseAssembly.assemblyIdentity,
           baseConfigSnapshot: receipt.baseConfigSnapshot.snapshotId,
         }),
         { cwd: skiffRoot, env: isolatedEnv, signal },

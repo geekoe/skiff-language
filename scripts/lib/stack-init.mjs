@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
-  runCompilerAuthoring,
   runConfigSnapshotAuthoring,
   runStdSeedAuthoring,
 } from './package-service-authoring.mjs';
@@ -22,7 +21,6 @@ export async function initStack({
   skiffRoot,
   shell = createStackShell({ skiffRoot }),
   authoring = {
-    runCompilerAuthoring,
     runConfigSnapshotAuthoring,
     runStdSeedAuthoring,
   },
@@ -43,25 +41,10 @@ export async function initStack({
   try {
     const artifactRoot = path.join(tempRoot, 'artifacts');
 
-    const assemblyReceipt = await authoring.runCompilerAuthoring({
-      skiffRoot,
-      kind: 'assembly',
-      action: 'build',
-      artifactRoot,
-      profile,
-      rootDeployments: [],
-    });
-    const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
-    const assemblyIdentity = assemblyReceipt?.runtimeAssemblyReceipt?.assembly?.assemblyIdentity;
-    if (typeof recordPath !== 'string' || typeof assemblyIdentity !== 'string') {
-      throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
-    }
-
     const snapshotReceipt = await authoring.runConfigSnapshotAuthoring({
       skiffRoot,
       artifactRoot,
       profile,
-      assemblyRecord: recordPath,
       sources: [],
     });
     const configSnapshotId = snapshotReceipt?.runtimeConfigSnapshotReceipt?.snapshot?.snapshotId;
@@ -96,7 +79,6 @@ export async function initStack({
 
     return {
       profile,
-      assemblyIdentity,
       configSnapshotId,
       std: stdReceipt,
       actorRoutingProjection: ACTOR_ROUTING_PROJECTION_RECORD_PATH,
@@ -135,24 +117,10 @@ async function initLocalStack({
   }
   await mkdir(artifactRoot, { recursive: true });
 
-  const assemblyReceipt = await authoring.runCompilerAuthoring({
-    skiffRoot,
-    kind: 'assembly',
-    action: 'build',
-    artifactRoot,
-    profile,
-    rootDeployments: [],
-  });
-  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
-  const assemblyIdentity = assemblyReceipt?.runtimeAssemblyReceipt?.assembly?.assemblyIdentity;
-  if (typeof recordPath !== 'string' || typeof assemblyIdentity !== 'string') {
-    throw new Error('compiler assembly build returned no exact RuntimeAssembly receipt');
-  }
   const snapshotReceipt = await authoring.runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
     profile,
-    assemblyRecord: recordPath,
     sources: [],
   });
   const configSnapshotId = snapshotReceipt?.runtimeConfigSnapshotReceipt?.snapshot?.snapshotId;
@@ -164,7 +132,6 @@ async function initLocalStack({
 
   return {
     profile,
-    assemblyIdentity,
     configSnapshotId,
     mode: 'local',
     artifactRoot,

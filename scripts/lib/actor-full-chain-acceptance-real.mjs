@@ -285,7 +285,6 @@ export async function runActorFullChainAcceptance({
       return {
         status: 'PASS',
         fixture: FIXTURE_ROOT,
-        assemblyIdentity: receipt.candidate.assembly.assemblyIdentity,
         replicas: replicas.map((replica) => replica.replicaId).sort(),
         results: [first, second],
       };

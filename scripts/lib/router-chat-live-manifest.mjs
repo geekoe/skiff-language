@@ -6,7 +6,7 @@
 // instance. Local verification and the real CI private workflow (owned by the
 // internals repository) share exactly this schema.
 
-const SCHEMA_VERSION = 'skiff-router-chat-live-manifest-v1';
+const SCHEMA_VERSION = 'skiff-router-chat-live-manifest-v2';
 
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
 const PROFILE_PATTERN = /^[A-Za-z0-9._-]{1,200}$/;
@@ -14,8 +14,6 @@ const SERVICE_ID_PATTERN =
   /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)+$/;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const ASSEMBLY_IDENTITY_PATTERN =
-  /^skiff-runtime-assembly-v3:sha256:[0-9a-f]{64}$/;
 const CONFIG_SNAPSHOT_ID_PATTERN =
   /^skiff-runtime-config-snapshot-v1:[0-9a-f]{32}$/;
 const DEPLOYMENT_REVISION_PATTERN = /^sha256-[0-9a-f]{64}$/;
@@ -45,7 +43,6 @@ export function validateRouterChatLiveManifest(value, label = 'manifest') {
     'pinned',
     'profile',
     'generation',
-    'assembly',
     'configSnapshot',
     'services',
     'packages',
@@ -64,12 +61,6 @@ export function validateRouterChatLiveManifest(value, label = 'manifest') {
   if (!Number.isSafeInteger(value.generation) || value.generation < 0) {
     throw new Error(`${label}.generation must be a non-negative safe integer`);
   }
-  const assembly = exactObject(value.assembly, ['assemblyIdentity'], `${label}.assembly`);
-  const assemblyIdentity = validatePattern(
-    assembly.assemblyIdentity,
-    ASSEMBLY_IDENTITY_PATTERN,
-    `${label}.assembly.assemblyIdentity`,
-  );
   const configSnapshot = exactObject(
     value.configSnapshot,
     ['snapshotId'],
@@ -91,7 +82,6 @@ export function validateRouterChatLiveManifest(value, label = 'manifest') {
     pinned,
     profile,
     generation: value.generation,
-    assembly: { assemblyIdentity },
     configSnapshot: { snapshotId },
     services,
     packages,

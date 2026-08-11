@@ -261,6 +261,7 @@ fn corpus_validates_resume_site_bijection_and_result_facts() {
             function_key: "module::main".to_string(),
             site_pc: 20,
             resume_pc: 25,
+            end_resume_pc: None,
             expected_stack_height_before_result: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),

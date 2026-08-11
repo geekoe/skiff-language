@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // `skiff stack init` CLI: formal production bootstrap for a fresh host.
 //
-// Authors an empty RuntimeAssembly + profile RuntimeConfigSnapshot + canonical
+// Authors an empty profile RuntimeConfigSnapshot plus canonical
 // std records + actor routing projection through the compiler/config-snapshot
 // authoring libraries, materializes them to the remote artifact root (the
 // release pointer table baseline stays empty), and starts the router.

@@ -272,7 +272,7 @@ export function deriveBaseServices(manifest, testRoots) {
   );
   if (testService === undefined) {
     throw new Error(
-      'no --sources test root matches a manifest.testServices entry; provide --base-assembly and --base-config-snapshot together, or run a root declared in testServices',
+      'no --sources test root matches a manifest.testServices entry; provide a base config snapshot, or run a root declared in testServices',
     );
   }
   const subjectCoordinate = testService.subjectCoordinate;
@@ -285,7 +285,7 @@ export function deriveBaseServices(manifest, testRoots) {
   return { subjectCoordinate, testService, baseServices };
 }
 
-export async function resolveBasePair({ skiffRoot, manifest, store, testRoots, env }) {
+export async function resolveBaseSnapshot({ skiffRoot, manifest, store, testRoots, env }) {
   const { baseServices } = deriveBaseServices(manifest, testRoots);
   const cargoEnv = cargoBuildEnv(skiffRoot, env);
   const bases = [];
@@ -306,33 +306,6 @@ export async function resolveBasePair({ skiffRoot, manifest, store, testRoots, e
     bases.push({ coordinate: service.coordinate, root: service.root, deployment });
   }
 
-  const assemblyArgs = [
-    join(skiffRoot, 'scripts', 'skiff.mjs'),
-    'assembly',
-    'build',
-    '--artifact-root',
-    store,
-    '--profile',
-    'skiff-test',
-  ];
-  for (const base of bases) {
-    assemblyArgs.push('--root-deployment', JSON.stringify(base.deployment));
-  }
-  assemblyArgs.push('--json');
-  const assemblyOutcome = await captureAttachedCommand('node', assemblyArgs, {
-    cwd: skiffRoot,
-    env: cargoEnv,
-  });
-  if (assemblyOutcome.error !== null || assemblyOutcome.signal !== null || assemblyOutcome.code !== 0) {
-    throw new Error(`assembly build failed: ${commandFailureDetail(assemblyOutcome)}`);
-  }
-  const assemblyReceipt = parseJsonOutput(assemblyOutcome.stdout, 'assembly build');
-  const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly?.assemblyIdentity;
-  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
-  if (typeof assembly !== 'string' || typeof recordPath !== 'string' || recordPath.length === 0) {
-    throw new Error('assembly build did not return runtimeAssemblyReceipt.assembly.assemblyIdentity and recordPath');
-  }
-
   const snapshotArgs = [
     'run',
     '--quiet',
@@ -341,8 +314,6 @@ export async function resolveBasePair({ skiffRoot, manifest, store, testRoots, e
     '--',
     '--artifact-root',
     store,
-    '--assembly-record',
-    recordPath,
     '--profile',
     'skiff-test',
   ];
@@ -362,7 +333,6 @@ export async function resolveBasePair({ skiffRoot, manifest, store, testRoots, e
     throw new Error('config snapshot production did not return runtimeConfigSnapshotReceipt.snapshot.snapshotId');
   }
   return {
-    baseAssembly: assembly,
     baseConfigSnapshot,
     baseServices: bases.map((base) => base.coordinate),
   };
@@ -372,7 +342,6 @@ export async function runShardedTests({
   skiffRoot,
   shards,
   store,
-  baseAssembly,
   baseConfigSnapshot,
   maxCases,
   env,
@@ -386,7 +355,6 @@ export async function runShardedTests({
       shard,
       skiffRoot,
       store,
-      baseAssembly,
       baseConfigSnapshot,
       env: shardEnv,
       cwd,
@@ -485,7 +453,6 @@ async function runOneShard({
   shard,
   skiffRoot,
   store,
-  baseAssembly,
   baseConfigSnapshot,
   env,
   cwd,
@@ -498,8 +465,7 @@ async function runOneShard({
     '--artifact-root',
     store,
   ];
-  if (baseAssembly !== undefined) {
-    args.push('--base-assembly', baseAssembly);
+  if (baseConfigSnapshot !== undefined) {
     args.push('--base-config-snapshot', baseConfigSnapshot);
   }
   args.push('--deny-skips', '--require-tests');

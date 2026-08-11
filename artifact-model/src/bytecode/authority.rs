@@ -11,6 +11,8 @@ use super::dto::{BytecodeIntrinsicRef, ResumeErrorMode, ValueTransferPlan};
 ///
 /// The item type and lifecycle plan are explicit in the validated projection.
 /// Natural stream end is a declared contract, never inferred by the consumer.
+/// The authority comes only from `FrameLayout::stream_result_type_ref`; an
+/// ordinary result frame is never inferred to be a producer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FunctionStreamItemAuthority {
@@ -91,6 +93,7 @@ pub struct ValidatedFunctionStreamItem {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ValidatedResumeResultAuthority {
     pub descriptor_index: u32,
+    pub end_resume_pc: Option<u32>,
     pub expected_stack_height_before_result: u32,
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<ValueTransferPlan>,

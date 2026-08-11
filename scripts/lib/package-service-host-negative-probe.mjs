@@ -130,7 +130,6 @@ export async function runPackageServiceHostNegativeProbe({
             skiffRoot: absoluteSkiffRoot,
             root: negativeConsumerRoot,
             artifactRoot: stack.sourceArtifactRoot,
-            baseAssembly: receipt.baseAssembly.assemblyIdentity,
             baseConfigSnapshot: receipt.baseConfigSnapshot.snapshotId,
           }),
           {

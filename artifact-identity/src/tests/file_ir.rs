@@ -57,7 +57,9 @@ fn file_ir_identity_validation_rejects_stale_identity() {
 #[test]
 fn file_ir_identity_validation_rejects_non_current_generation_even_when_recomputed() {
     for (field, stale) in [
+        ("schemaVersion", "skiff-file-ir-v14"),
         ("schemaVersion", "skiff-file-ir-v12"),
+        ("irFormatVersion", "skiff-file-ir-format-v8"),
         ("irFormatVersion", "skiff-file-ir-format-v5"),
         ("opcodeTableVersion", "skiff-opcode-table-v0"),
     ] {
@@ -464,7 +466,7 @@ fn service_call_table_and_instruction_indices_participate_in_file_ir_identity() 
     let baseline = file_ir_identity(&base).expect("valid service-call File IR identity");
     assert_eq!(
         baseline,
-        "skiff-file-ir-v14:sha256:30c1c7473e5fc358e9ee43f69adf6bc510caaada1333def90e2f85a1bda83c5d"
+        "skiff-file-ir-v15:sha256:a3d61c31dea1c6798304bd185fadcf6b09b12c950c25b4c9badd4f9f37422734"
     );
 
     let mut changed_ref = base.clone();

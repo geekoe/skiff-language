@@ -14,12 +14,9 @@ import {
   runEncryptedStorageTestLifecycle,
 } from '../lib/encrypted-storage-live-harness.mjs';
 
-const productionAssembly =
-  `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`;
 const productionConfigSnapshot =
   `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`;
 const productionTuple = {
-  assemblyIdentity: productionAssembly,
   configSnapshotId: productionConfigSnapshot,
 };
 const productionDeployments = [
@@ -141,7 +138,6 @@ test('encrypted-storage runner uses the canonical live interface exactly once', 
   const args = encryptedStorageTestRunnerArgs({
     testFile: '/tmp/encrypted.live.test.skiff',
     artifactRoot: '/tmp/canonical-store',
-    baseAssembly: productionAssembly,
     baseConfigSnapshot: productionConfigSnapshot,
     ingressUrl: 'http://ingress.test:4100',
     profile: 'dev',
@@ -160,8 +156,6 @@ test('encrypted-storage runner uses the canonical live interface exactly once', 
     '/tmp/canonical-store',
     '--platform-source-root',
     repoRoot,
-    '--base-assembly',
-    productionAssembly,
     '--base-config-snapshot',
     productionConfigSnapshot,
     '--live',
@@ -176,7 +170,6 @@ test('encrypted-storage runner uses the canonical live interface exactly once', 
   for (const singleton of [
     '--artifact-root',
     '--platform-source-root',
-    '--base-assembly',
     '--base-config-snapshot',
     '--ingress-url',
     '--profile',
@@ -226,19 +219,6 @@ test('encrypted-storage production assembly comes only from a complete real rece
     { ...productionTuple, deployments: productionDeployments },
   );
   for (const [label, mutate] of [
-    ['runtime assembly receipt is missing', (receipt) => {
-      delete receipt.runtimeAssemblyReceipt;
-    }],
-    ['assembly identity is missing', (receipt) => {
-      delete receipt.runtimeAssemblyReceipt.assembly.assemblyIdentity;
-    }],
-    ['assembly identity is not canonical', (receipt) => {
-      receipt.runtimeAssemblyReceipt.assembly.assemblyIdentity = 'assembly-latest';
-    }],
-    ['assembly identity is not canonical', (receipt) => {
-      receipt.runtimeAssemblyReceipt.assembly.assemblyIdentity =
-        `skiff-runtime-assembly-v2:sha256:${'a'.repeat(64)}`;
-    }],
     ['config snapshot identity is not canonical', (receipt) => {
       delete receipt.runtimeConfigSnapshotReceipt;
     }],
@@ -282,12 +262,10 @@ test('successful test run is followed by an unconditional idempotent production 
   });
   assert.deepEqual(events, [
     ['test', {
-      baseAssembly: productionAssembly,
       baseConfigSnapshot: productionConfigSnapshot,
     }],
     ['cleanup', 'transient'],
     ['restore', {
-      assemblyIdentity: productionAssembly,
       configSnapshotId: productionConfigSnapshot,
       deployments: productionDeployments,
     }],
@@ -311,12 +289,12 @@ test('production restore still runs after post-test observation failure', async 
         throw new Error('cleanup must not run without storage');
       },
       restoreProductionDeployments: async (assembly) => {
-        restored.push(assembly.assemblyIdentity);
+        restored.push(assembly.configSnapshotId);
       },
     }),
     /storage observation failed/,
   );
-  assert.deepEqual(restored, [productionAssembly]);
+  assert.deepEqual(restored, [productionConfigSnapshot]);
 });
 
 test('test and restore failures remain aggregated without generation proof', async () => {
@@ -438,10 +416,6 @@ function completeBuildReceipt() {
         },
       },
     ],
-    runtimeAssemblyReceipt: {
-      profile: 'dev',
-      assembly: { assemblyIdentity: productionAssembly },
-    },
     runtimeConfigSnapshotReceipt: {
       snapshot: { snapshotId: productionConfigSnapshot },
     },

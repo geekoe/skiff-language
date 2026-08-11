@@ -28,9 +28,6 @@ import { writePackageRoot } from './package-service-fixtures.mjs';
 
 const scriptRoot = dirname(fileURLToPath(new URL('../skiff.mjs', import.meta.url)));
 const skiffCli = join(scriptRoot, 'skiff.mjs');
-const targetAssembly = {
-  assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'a'.repeat(64)}`,
-};
 const targetConfig = {
   snapshotId: `skiff-runtime-config-snapshot-v1:${'b'.repeat(32)}`,
 };
@@ -462,23 +459,15 @@ test('watch retries failed content with exponential delay and new content replac
   assert.equal(maxActive, 1);
 });
 
-test('empty registry still builds the explicit empty assembly candidate', async () => {
-  const temp = await mkdtemp(join(tmpdir(), 'skiff-empty-dev-assembly-'));
-  let assemblyInput;
+test('empty registry still publishes the explicit empty snapshot', async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'skiff-empty-dev-snapshot-'));
   const result = await runDevSyncOnce({
     roots: [],
     profile: 'dev',
     artifactRoot: join(temp, 'artifacts'),
     buildOnly: true,
-    compilerRunner: async (input) => {
-      assemblyInput = input;
-      return {
-        runtimeAssemblyReceipt: {
-          profile: 'dev',
-          assembly: targetAssembly,
-          recordPath: 'records/empty-assembly.json',
-        },
-      };
+    compilerRunner: async () => {
+      throw new Error('empty sync must not invoke compiler');
     },
     configSnapshotRunner: async ({ sources }) => {
       assert.deepEqual(sources, []);
@@ -490,30 +479,22 @@ test('empty registry still builds the explicit empty assembly candidate', async 
       };
     },
   });
-  assert.deepEqual(assemblyInput.rootDeployments, []);
   assert.deepEqual(result.serviceDeploymentReceipts, []);
 });
 
-test('removing the final service converges watch to one exact empty assembly and snapshot pair without coordination', async () => {
+test('removing the final service converges watch to an empty deployment closure and snapshot without coordination', async () => {
   const fixture = await serviceFixture('remove-last', 'example.com/remove-last');
   const registryPath = join(fixture.temp, 'watch.json');
   await writeDevRegistry(registryPath, {
     profile: 'dev',
     roots: [await classifyAuthoringRoot(fixture.root)],
   });
-  const nonemptyAssembly = {
-    assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'c'.repeat(64)}`,
-  };
-  const emptyAssembly = {
-    assemblyIdentity: `skiff-runtime-assembly-v3:sha256:${'d'.repeat(64)}`,
-  };
   const nonemptyConfig = {
     snapshotId: `skiff-runtime-config-snapshot-v1:${'e'.repeat(32)}`,
   };
   const emptyConfig = {
     snapshotId: `skiff-runtime-config-snapshot-v1:${'f'.repeat(32)}`,
   };
-  const assemblyResults = [];
   let watchWaits = 0;
   let networkCalls = 0;
 
@@ -542,18 +523,7 @@ test('removing the final service converges watch to one exact empty assembly and
             },
           };
         }
-        const assembly = input.rootDeployments.length === 0
-          ? emptyAssembly
-          : nonemptyAssembly;
-        assemblyResults.push(input.rootDeployments.length);
-        return {
-          runtimeAssemblyReceipt: {
-            assembly,
-            recordPath: input.rootDeployments.length === 0
-              ? 'records/empty-assembly.json'
-              : 'records/nonempty-assembly.json',
-          },
-        };
+        throw new Error('dev watch must not invoke assembly authoring');
       },
       configSnapshotRunner: async ({ sources }) => ({
         runtimeConfigSnapshotReceipt: {
@@ -588,7 +558,6 @@ test('removing the final service converges watch to one exact empty assembly and
     /remove-last sequence complete/,
   );
 
-  assert.deepEqual(assemblyResults, [1, 0]);
   assert.equal(networkCalls, 0);
   assert.deepEqual((await readDevRegistry(registryPath)).roots, []);
 });

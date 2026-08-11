@@ -110,6 +110,7 @@ pub(super) fn frame() -> LinkedFrameLayout {
         Box::new([TypeIndex::new(0)]),
         Box::new([plan]),
         Box::new([snapshot_plan()]),
+        None,
     )
     .expect("fixture frame is locally well-shaped")
 }

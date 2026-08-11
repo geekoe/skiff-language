@@ -121,29 +121,10 @@ export async function authorActorLiveArtifact({
   ) {
     throw new Error('actor live package build returned no exact ServiceDeployment reference');
   }
-  const assemblyReceipt = await runCompilerAuthoring({
-    skiffRoot,
-    kind: 'assembly',
-    action: 'build',
-    artifactRoot,
-    profile,
-    rootDeployments: [deploymentRef],
-  });
-  const assembly = assemblyReceipt?.runtimeAssemblyReceipt?.assembly;
-  const recordPath = assemblyReceipt?.runtimeAssemblyReceipt?.recordPath;
-  if (
-    assembly === null
-    || typeof assembly !== 'object'
-    || typeof assembly.assemblyIdentity !== 'string'
-    || typeof recordPath !== 'string'
-  ) {
-    throw new Error('actor live assembly build returned no exact RuntimeAssembly receipt');
-  }
   const snapshotReceipt = await runConfigSnapshotAuthoring({
     skiffRoot,
     artifactRoot,
     profile,
-    assemblyRecord: recordPath,
     sources: [{ root: sourceRoot, deployment: deploymentRef }],
   });
   const snapshotId =
@@ -152,7 +133,6 @@ export async function authorActorLiveArtifact({
     throw new Error('actor live config snapshot production returned no exact snapshot reference');
   }
   return {
-    assemblyIdentity: assembly.assemblyIdentity,
     configSnapshotId: snapshotId,
     deployment: deploymentRef,
   };
