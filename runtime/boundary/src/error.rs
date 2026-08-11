@@ -61,8 +61,8 @@ impl fmt::Display for RecoverableBoundaryErrorCode {
 pub struct RecoverableBoundaryError {
     code: RecoverableBoundaryErrorCode,
     message: String,
-    context: RuntimeRecoverableBoundaryContext,
-    expected: RuntimeRecoverableExpectedTypePlan,
+    context: Box<RuntimeRecoverableBoundaryContext>,
+    expected: Box<RuntimeRecoverableExpectedTypePlan>,
     detail: Option<serde_json::Value>,
 }
 
@@ -76,8 +76,8 @@ impl RecoverableBoundaryError {
         Self {
             code,
             message: message.into(),
-            context: context.clone(),
-            expected: expected.clone(),
+            context: Box::new(context.clone()),
+            expected: Box::new(expected.clone()),
             detail: None,
         }
     }

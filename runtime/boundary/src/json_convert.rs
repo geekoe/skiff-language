@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::plan::BoundaryUse;
 #[cfg(any(test, feature = "test-support"))]
 use crate::type_descriptor::RuntimeTypePlanDescriptorExt;
+#[cfg(any(test, feature = "test-support"))]
 use crate::{contract::RuntimeBoundaryContract, json::RuntimeBoundaryCodec};
 use crate::{
     error::{Result, RuntimeError},

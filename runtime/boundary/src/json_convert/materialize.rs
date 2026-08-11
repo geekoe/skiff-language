@@ -139,7 +139,7 @@ pub(super) fn to_wire_inner(
             heap,
             value,
             expected_type,
-            &fields,
+            fields,
             context,
             stream_scope,
             depth,

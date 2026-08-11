@@ -164,7 +164,7 @@ fn coerce_runtime_value_scoped(
         RuntimeTypeNode::Record { fields, .. } => coerce_record_runtime(
             value,
             expected_type,
-            &fields,
+            fields,
             heap,
             context,
             stream_scope,
@@ -454,6 +454,7 @@ enum RecordSourceKind {
     Map,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn coerce_runtime_object_record(
     original: &RuntimeValue,
     record_plan: &RuntimeTypePlan,

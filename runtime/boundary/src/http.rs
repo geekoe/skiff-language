@@ -45,6 +45,7 @@ pub enum HttpBoundaryResponseStreamEvent {
     End,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub enum HttpBoundaryPlanInput<'a> {
     Borrowed(&'a BoundaryConversionPlan),
     Owned(BoundaryConversionPlan),
