@@ -440,6 +440,10 @@ where
         self,
         ports: BytecodeSchedulerPorts<U>,
     ) -> Result<BytecodeScheduler<U>, BytecodeSchedulerError> {
+        // The wake carries the original `U::ResumeOutcome`. For `VmFiber` that
+        // includes `ResumeOutcome::StreamEnd`; restoring it through the scheduler
+        // reaches the VM's independent end resume PC instead of an item path or a
+        // producer backpressure `Empty`.
         BytecodeScheduler::resume_from_pending_wake(self, ports)
     }
 }
@@ -879,7 +883,8 @@ mod tests {
         vm_root::VmRootVisitor,
     };
     use skiff_runtime_scheduler::{
-        BytecodeControl, BytecodeStreamHandoff, RootDisposition, RootEscrow, RootEscrowBacking,
+        BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeStreamHandoff,
+        RootDisposition, RootEscrow, RootEscrowBacking,
     };
 
     use super::*;
@@ -1246,6 +1251,312 @@ mod tests {
         }
         assert_eq!(*stream.delivered.lock().unwrap(), [7]);
         assert!(stream.terminal.load(Ordering::Acquire));
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StreamNextResume {
+        Item,
+        End,
+        Pending,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StreamNextOutcome {
+        Item(usize),
+        End,
+        Failure(&'static str),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StreamNextInvocation {
+        StreamNext {
+            item_resume: StreamNextResume,
+            end_resume: StreamNextResume,
+        },
+    }
+
+    type StreamNextControl = BytecodeControl<
+        StreamNextOutcome,
+        StreamNextInvocation,
+        usize,
+        usize,
+        StreamNextResume,
+    >;
+    type StreamNextSuspended = SuspendedTrampoline<StreamNextUnit, StreamNextResume>;
+
+    struct StreamNextUnit {
+        invocation: Option<StreamNextInvocation>,
+        resumed: Option<(StreamNextResume, StreamNextOutcome)>,
+    }
+
+    impl StreamNextUnit {
+        fn stream_next() -> Self {
+            Self {
+                invocation: Some(StreamNextInvocation::StreamNext {
+                    item_resume: StreamNextResume::Item,
+                    end_resume: StreamNextResume::End,
+                }),
+                resumed: None,
+            }
+        }
+    }
+
+    impl VmRootSource for StreamNextUnit {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl BytecodeUnit for StreamNextUnit {
+        type ResumeToken = StreamNextResume;
+        type ResumeOutcome = StreamNextOutcome;
+        type RootResult = StreamNextOutcome;
+        type ChildInvocation = StreamNextInvocation;
+        type AdapterInvocation = usize;
+        type StreamItem = usize;
+        type PendingOperation = StreamNextResume;
+
+        fn run_segment(
+            &mut self,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> StreamNextControl {
+            if let Some((_, outcome)) = self.resumed.take() {
+                StreamNextControl::Complete(outcome)
+            } else if let Some(invocation) = self.invocation.take() {
+                StreamNextControl::EnterChild(invocation)
+            } else {
+                StreamNextControl::Complete(StreamNextOutcome::Item(0))
+            }
+        }
+
+        fn resume(
+            &mut self,
+            token: StreamNextResume,
+            outcome: StreamNextOutcome,
+        ) -> Result<(), BytecodeSchedulerError> {
+            self.resumed = Some((token, outcome));
+            Ok(())
+        }
+
+        fn child_completion_to_resume_outcome(completed: StreamNextOutcome) -> StreamNextOutcome {
+            completed
+        }
+
+        fn is_stream_next_child(invocation: &StreamNextInvocation) -> bool {
+            matches!(invocation, StreamNextInvocation::StreamNext { .. })
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum StreamNextExecutorMode {
+        Item,
+        End,
+        Error,
+        Pending,
+    }
+
+    struct StreamNextExecutor {
+        mode: StreamNextExecutorMode,
+        pending: Mutex<Option<(StreamNextResume, StreamNextSuspended)>>,
+    }
+
+    impl BytecodeChildExecutor<StreamNextUnit> for StreamNextExecutor {
+        fn execute_child(
+            &self,
+            _invocation: StreamNextInvocation,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeChildStart<StreamNextUnit>, BytecodeSchedulerError> {
+            Err(BytecodeSchedulerError::UnsupportedChild)
+        }
+
+        fn execute_adapter(
+            &self,
+            _invocation: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeHandoff<StreamNextUnit>, BytecodeSchedulerError> {
+            Err(BytecodeSchedulerError::UnsupportedAdapter)
+        }
+
+        fn execute_stream_next(
+            &self,
+            invocation: StreamNextInvocation,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeStreamHandoff<StreamNextUnit>, BytecodeSchedulerError> {
+            let StreamNextInvocation::StreamNext {
+                item_resume,
+                end_resume,
+            } = invocation;
+            match self.mode {
+                StreamNextExecutorMode::Item => {
+                    Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                        resume: item_resume,
+                        outcome: StreamNextOutcome::Item(7),
+                    }))
+                }
+                StreamNextExecutorMode::End => {
+                    Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                        resume: end_resume,
+                        outcome: StreamNextOutcome::End,
+                    }))
+                }
+                StreamNextExecutorMode::Error => {
+                    Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                        resume: item_resume,
+                        outcome: StreamNextOutcome::Failure("stream failed"),
+                    }))
+                }
+                StreamNextExecutorMode::Pending => Ok(BytecodeStreamHandoff::Pending(
+                    StreamNextResume::Pending,
+                )),
+            }
+        }
+
+        fn park_stream_next(
+            &self,
+            operation: StreamNextResume,
+            suspended: StreamNextSuspended,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<(), BytecodeSchedulerError> {
+            *self.pending.lock().unwrap() = Some((operation, suspended));
+            Ok(())
+        }
+    }
+
+    struct StreamNextResumeSource {
+        resume: StreamNextResume,
+        suspended: StreamNextSuspended,
+        outcome: StreamNextOutcome,
+        escrow: RootEscrow,
+    }
+
+    impl BytecodeRequestResume<StreamNextUnit> for StreamNextResumeSource {
+        fn into_scheduler(
+            self,
+            ports: BytecodeSchedulerPorts<StreamNextUnit>,
+        ) -> Result<BytecodeScheduler<StreamNextUnit>, BytecodeSchedulerError> {
+            BytecodeScheduler::resume_from_suspended(
+                self.suspended,
+                self.resume,
+                self.outcome,
+                self.escrow,
+                ports,
+            )
+        }
+    }
+
+    fn stream_next_driver(
+        executor: Arc<StreamNextExecutor>,
+    ) -> BytecodeRequestDriver<StreamNextUnit> {
+        let queue = Arc::new(InMemoryWakeQueue::new());
+        let executor_dyn: Arc<dyn BytecodeChildExecutor<StreamNextUnit>> = executor.clone();
+        let scheduler = BytecodeScheduler::new(
+            StreamNextUnit::stream_next(),
+            BytecodeSchedulerPorts {
+                child_executor: Some(executor_dyn.clone()),
+                stream_supervisor: None,
+            },
+        );
+        let heap: Box<dyn VmHeap + Send> = Box::new(NoopHeap);
+        let budget: Box<dyn VmBudget + Send> = Box::new(NoopBudget);
+        let error_map: Box<dyn Fn(BytecodeSchedulerError) -> RequestError + Send + Sync> =
+            Box::new(|error| RequestError::Decode(error.to_string()));
+        BytecodeRequestDriver::new(
+            scheduler,
+            Some(executor_dyn),
+            None,
+            None,
+            queue,
+            heap,
+            budget,
+            error_map,
+        )
+    }
+
+    #[test]
+    fn stream_next_item_uses_item_continuation() {
+        let executor = Arc::new(StreamNextExecutor {
+            mode: StreamNextExecutorMode::Item,
+            pending: Mutex::new(None),
+        });
+        let mut driver = stream_next_driver(executor);
+
+        match driver.run().unwrap() {
+            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+                assert_eq!(result, StreamNextOutcome::Item(7));
+                assert!(!stream_sent);
+            }
+            BytecodeRequestDriverOutcome::Parked => panic!("item path must not park"),
+        }
+    }
+
+    #[test]
+    fn stream_next_end_uses_end_continuation() {
+        let executor = Arc::new(StreamNextExecutor {
+            mode: StreamNextExecutorMode::End,
+            pending: Mutex::new(None),
+        });
+        let mut driver = stream_next_driver(executor);
+
+        match driver.run().unwrap() {
+            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+                assert_eq!(result, StreamNextOutcome::End);
+                assert!(!stream_sent);
+            }
+            BytecodeRequestDriverOutcome::Parked => panic!("end path must not park"),
+        }
+    }
+
+    #[test]
+    fn stream_next_pending_wake_end_resumes_end_continuation() {
+        let executor = Arc::new(StreamNextExecutor {
+            mode: StreamNextExecutorMode::Pending,
+            pending: Mutex::new(None),
+        });
+        let mut driver = stream_next_driver(Arc::clone(&executor));
+
+        assert!(matches!(driver.run().unwrap(), BytecodeRequestDriverOutcome::Parked));
+        let (operation, suspended) = executor
+            .pending
+            .lock()
+            .unwrap()
+            .take()
+            .expect("pending stream next park");
+        let resume = StreamNextResumeSource {
+            resume: operation,
+            suspended,
+            outcome: StreamNextOutcome::End,
+            escrow: RootEscrow::new(Box::new(EmptyRoots)),
+        };
+
+        match driver.resume(resume).unwrap() {
+            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+                assert_eq!(result, StreamNextOutcome::End);
+                assert!(!stream_sent);
+            }
+            BytecodeRequestDriverOutcome::Parked => panic!("end wake must complete"),
+        }
+    }
+
+    #[test]
+    fn stream_next_error_resume_fails_closed() {
+        let executor = Arc::new(StreamNextExecutor {
+            mode: StreamNextExecutorMode::Error,
+            pending: Mutex::new(None),
+        });
+        let mut driver = stream_next_driver(executor);
+
+        match driver.run().unwrap() {
+            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+                assert_eq!(result, StreamNextOutcome::Failure("stream failed"));
+                assert!(!stream_sent);
+            }
+            BytecodeRequestDriverOutcome::Parked => panic!("error path must complete"),
+        }
     }
 
     #[test]
