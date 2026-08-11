@@ -8,7 +8,6 @@ pub mod execution_budget;
 mod execution_control;
 mod outbound;
 mod response_event;
-mod response_stream_writer;
 mod response_writer;
 mod runner;
 pub mod vm_heap;
