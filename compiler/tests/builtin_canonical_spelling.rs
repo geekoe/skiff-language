@@ -71,7 +71,7 @@ fn assert_direct_lowering_canonicalizes_qualified_aliases() {
     let value = serde_json::to_value(&unit).unwrap();
     let declared_aliases = file_ir_builtin_source_spellings()
         .filter(|builtin| builtin.source_spelling != builtin.canonical_name)
-        .map(|builtin| builtin.source_spelling)
+        .map(|builtin| builtin.source_spelling.into_owned())
         .collect::<BTreeSet<_>>();
     let mut observed_names = BTreeSet::new();
     assert_surface_is_canonical(
@@ -227,7 +227,9 @@ fn assert_fresh_std_database_errors_are_canonical(
 
     assert_eq!(
         std.package_schema_index.package_schema_index_identity,
-        std_repeat.package_schema_index.package_schema_index_identity
+        std_repeat
+            .package_schema_index
+            .package_schema_index_identity
     );
 
     let db_repeat = source_artifact(std_repeat, "db.skiff");
@@ -252,7 +254,7 @@ fn record_field<'a>(descriptor: &'a TypeDescriptorIr, field: &str) -> &'a TypeRe
 fn assert_surface_is_canonical(
     surface: &str,
     value: &serde_json::Value,
-    declared_aliases: &BTreeSet<&str>,
+    declared_aliases: &BTreeSet<String>,
     observed_names: &mut BTreeSet<String>,
 ) {
     let mut names = Vec::new();
@@ -342,7 +344,7 @@ function check(flag: boolean) -> bool {
 
         let declared_aliases = file_ir_builtin_source_spellings()
             .filter(|builtin| builtin.source_spelling != builtin.canonical_name)
-            .map(|builtin| builtin.source_spelling)
+            .map(|builtin| builtin.source_spelling.into_owned())
             .collect::<BTreeSet<_>>();
         let mut observed_names = BTreeSet::new();
         for package in project.artifacts() {
@@ -418,10 +420,14 @@ function check(flag: boolean) -> bool {
 
         let timeout = compiler_builtin_type("TimeoutError")
             .expect("TimeoutError must retain its compiler builtin owner");
-        assert_eq!(timeout.symbol, "std.error.TimeoutError");
+        let timeout_symbol = timeout.canonical_symbol();
+        assert_eq!(timeout_symbol.as_ref(), "std.error.TimeoutError");
         assert_eq!(timeout.arity, 0);
         assert_eq!(timeout.kind, CompilerBuiltinTypeKind::Error);
-        assert_eq!(compiler_builtin_type(timeout.symbol), Some(timeout));
+        assert_eq!(
+            compiler_builtin_type(timeout_symbol.as_ref()),
+            Some(timeout)
+        );
     }
 
     #[test]
