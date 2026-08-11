@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use skiff_compiler_input::CompilerPlatformSources;
 
@@ -62,4 +62,54 @@ fn prelude_declarations_preserve_record_representation_and_named_union_kinds() {
             ..
         } if discriminator_field == "tag"
     )));
+}
+
+#[test]
+fn platform_error_type_ir_fields_come_from_exact_source_declarations() {
+    initialize_test_prelude();
+    let registry = prelude_registry();
+
+    for (symbol, expected_fields) in [
+        (
+            "std.collection.ArrayIndexOutOfBoundsError",
+            vec![("index", "integer"), ("length", "integer")],
+        ),
+        ("std.collection.JsonObjectPropertyNotFoundError", vec![]),
+        ("std.collection.MapKeyNotFoundError", vec![]),
+        (
+            "std.error.InstructionLimitExceededError",
+            vec![("instructionCount", "integer"), ("limit", "integer")],
+        ),
+        ("std.error.TimeoutError", vec![("timeoutMs", "integer")]),
+        (
+            "std.http.RequestTimeoutError",
+            vec![("timeoutMs", "integer")],
+        ),
+        (
+            "std.actor.ActivationTimeoutError",
+            vec![("timeoutMs", "integer")],
+        ),
+        (
+            "std.actor.MethodInvocationTimeoutError",
+            vec![("timeoutMs", "integer")],
+        ),
+    ] {
+        let declaration = registry
+            .type_decl(symbol)
+            .unwrap_or_else(|| panic!("{symbol} declaration must resolve"));
+        let lowered = lower_prelude_type_decl(declaration)
+            .unwrap_or_else(|error| panic!("{symbol} must lower: {error}"));
+        let expected_fields = expected_fields
+            .into_iter()
+            .map(|(name, ty)| (name.to_string(), TypeRefIr::builtin(ty)))
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(
+            lowered.descriptor,
+            TypeDescriptorIr::Record {
+                fields: expected_fields
+            },
+            "{symbol} must lower exactly from its parsed source fields"
+        );
+    }
 }

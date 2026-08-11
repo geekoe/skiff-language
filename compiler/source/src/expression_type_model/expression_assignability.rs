@@ -40,6 +40,16 @@ struct ObjectLiteralTargetCandidate {
     kind: ObjectMaterializationKind,
 }
 
+pub(super) struct ObjectLiteralAssignabilityContext<'a> {
+    pub annotation: Option<&'a TypeRef>,
+    pub value: &'a Expr,
+    pub value_key: &'a ExpressionKey,
+    pub actual: &'a ResolvedTypeRef,
+    pub expected: &'a ResolvedTypeRef,
+    pub diagnostic_context: &'a str,
+    pub source: Option<&'a ObjectLiteralSource>,
+}
+
 pub(super) struct ExpressionAssignability<'a, 'ctx> {
     diagnostic_path: &'a str,
     expression_sources: &'a ExpressionSourceMap,
@@ -317,14 +327,17 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
 
     pub(super) fn object_literal_assignability_diagnostics(
         &self,
-        annotation: Option<&TypeRef>,
-        value: &Expr,
-        value_key: &ExpressionKey,
-        actual: &ResolvedTypeRef,
-        expected: &ResolvedTypeRef,
-        context: &str,
-        source: Option<&ObjectLiteralSource>,
+        input: ObjectLiteralAssignabilityContext<'_>,
     ) -> Option<Vec<String>> {
+        let ObjectLiteralAssignabilityContext {
+            annotation,
+            value,
+            value_key,
+            actual,
+            expected,
+            diagnostic_context: context,
+            source,
+        } = input;
         let actual_fields = self.object_literal_actual_fields(value, value_key, actual, source)?;
         let candidates = self.object_literal_target_candidates(annotation, expected);
         candidates
@@ -342,15 +355,19 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
 
     pub(super) fn object_literal_materialization_plan(
         &self,
-        annotation: Option<&TypeRef>,
-        value: &Expr,
-        value_key: &ExpressionKey,
-        actual: &ResolvedTypeRef,
-        expected: &ResolvedTypeRef,
-        context: &str,
-        source: Option<&ObjectLiteralSource>,
+        input: ObjectLiteralAssignabilityContext<'_>,
     ) -> Result<ObjectMaterializationPlan, Vec<String>> {
-        let Some(actual_fields) = self.object_literal_actual_fields(value, value_key, actual, source)
+        let ObjectLiteralAssignabilityContext {
+            annotation,
+            value,
+            value_key,
+            actual,
+            expected,
+            diagnostic_context: context,
+            source,
+        } = input;
+        let Some(actual_fields) =
+            self.object_literal_actual_fields(value, value_key, actual, source)
         else {
             return Err(vec![format!(
                 "{}: {context} object materialization requires an object literal at {}",

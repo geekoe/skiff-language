@@ -4,7 +4,9 @@ use std::{collections::BTreeMap, fs, path::Path};
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use skiff_compiler_core::prelude_registry::validate_package_api_public_path;
+use skiff_compiler_core::prelude_registry::{
+    compiler_builtin_type, validate_package_api_public_path, COMPILER_BUILTIN_TYPES,
+};
 use skiff_compiler_input::{
     platform_sources::CompilerPlatformSourceSnapshot, read_publication_api_yml,
     CompilerPlatformSources,
@@ -151,6 +153,7 @@ impl PreludeRegistry {
             self.add_source(module_path, text)
                 .map_err(|error| format!("failed to parse {}: {error}", logical_path.display()))?;
         }
+        self.validate_source_backed_builtin_declarations()?;
         self.schema_stable_types = self
             .type_decls
             .values()
@@ -184,12 +187,12 @@ impl PreludeRegistry {
         let source = parse_source(text).map_err(|error| error.to_string())?;
         let symbol_root = module_symbol_root(&self.package_id, module_path);
         for ty in source.types {
-            if skiff_compiler_core::prelude_registry::compiler_builtin_type(&ty.name).is_some() {
-                return Err(format!(
-                    "standard_library source must not declare compiler builtin type {}",
-                    ty.name
-                ));
-            }
+            self.validate_compiler_builtin_source_declaration(
+                &symbol_root,
+                &ty.name,
+                "type",
+                Some(ty.type_params.len()),
+            )?;
             let symbol = format!("{}.{}", symbol_root, ty.name);
             self.type_symbols.insert(ty.name.clone(), symbol.clone());
             self.type_symbols.insert(symbol.clone(), symbol.clone());
@@ -197,12 +200,12 @@ impl PreludeRegistry {
             self.type_decls.insert(ty.name.clone(), ty);
         }
         for alias in source.aliases {
-            if skiff_compiler_core::prelude_registry::compiler_builtin_type(&alias.name).is_some() {
-                return Err(format!(
-                    "standard_library source must not declare compiler builtin type {}",
-                    alias.name
-                ));
-            }
+            self.validate_compiler_builtin_source_declaration(
+                &symbol_root,
+                &alias.name,
+                "alias",
+                None,
+            )?;
             let symbol = format!("{}.{}", symbol_root, alias.name);
             self.type_symbols.insert(alias.name.clone(), symbol.clone());
             self.type_symbols.insert(symbol.clone(), symbol.clone());
@@ -210,14 +213,12 @@ impl PreludeRegistry {
             self.type_aliases.insert(alias.name.clone(), alias);
         }
         for interface in source.interfaces {
-            if skiff_compiler_core::prelude_registry::compiler_builtin_type(&interface.name)
-                .is_some()
-            {
-                return Err(format!(
-                    "standard_library source must not declare compiler builtin type {}",
-                    interface.name
-                ));
-            }
+            self.validate_compiler_builtin_source_declaration(
+                &symbol_root,
+                &interface.name,
+                "interface",
+                None,
+            )?;
             let symbol = format!("{}.{}", symbol_root, interface.name);
             self.type_symbols
                 .insert(interface.name.clone(), symbol.clone());
@@ -287,6 +288,73 @@ impl PreludeRegistry {
                     },
                 };
                 self.insert_declared_native_binding(symbol, binding);
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_compiler_builtin_source_declaration(
+        &self,
+        module: &str,
+        name: &str,
+        declaration_kind: &str,
+        type_parameter_arity: Option<usize>,
+    ) -> Result<(), String> {
+        let Some(builtin) = compiler_builtin_type(name) else {
+            return Ok(());
+        };
+        let canonical_symbol = builtin.canonical_symbol();
+        let Some(expected_module) = builtin.prelude_declaration_module() else {
+            return Err(format!(
+                "standard_library source must not declare compiler intrinsic builtin type {canonical_symbol}"
+            ));
+        };
+        if module != expected_module {
+            return Err(format!(
+                "source-backed compiler builtin {canonical_symbol} must be declared in exact module {expected_module}, found {declaration_kind} in {module}"
+            ));
+        }
+        if declaration_kind != "type" {
+            return Err(format!(
+                "source-backed compiler builtin {canonical_symbol} must be declared as type, found {declaration_kind}"
+            ));
+        }
+        let actual_arity = type_parameter_arity
+            .expect("type declarations must provide their type parameter arity");
+        if actual_arity != builtin.arity {
+            return Err(format!(
+                "source-backed compiler builtin {canonical_symbol} expects {} type parameters, found {actual_arity}",
+                builtin.arity
+            ));
+        }
+        if self
+            .type_decls_by_symbol
+            .contains_key(canonical_symbol.as_ref())
+        {
+            return Err(format!(
+                "source-backed compiler builtin {canonical_symbol} must have exactly one type declaration"
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_source_backed_builtin_declarations(&self) -> Result<(), String> {
+        for builtin in COMPILER_BUILTIN_TYPES {
+            if builtin.prelude_declaration_module().is_none() {
+                continue;
+            }
+            let canonical_symbol = builtin.canonical_symbol();
+            let Some(declaration) = self.type_decls_by_symbol.get(canonical_symbol.as_ref()) else {
+                return Err(format!(
+                    "source-backed compiler builtin {canonical_symbol} must have exactly one type declaration"
+                ));
+            };
+            if declaration.type_params.len() != builtin.arity {
+                return Err(format!(
+                    "source-backed compiler builtin {canonical_symbol} expects {} type parameters, found {}",
+                    builtin.arity,
+                    declaration.type_params.len()
+                ));
             }
         }
         Ok(())

@@ -1,1 +1,9 @@
+type ActivationTimeoutError {
+  timeoutMs: integer,
+}
+
+type MethodInvocationTimeoutError {
+  timeoutMs: integer,
+}
+
 native function get<T, Id>(id: Id) -> T

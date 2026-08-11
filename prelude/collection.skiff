@@ -1,4 +1,13 @@
 
+type ArrayIndexOutOfBoundsError {
+  index: integer,
+  length: integer,
+}
+
+type MapKeyNotFoundError {}
+
+type JsonObjectPropertyNotFoundError {}
+
 impl Array<T> {
   native static function empty<T>() -> Array<T>
   native function length() -> number

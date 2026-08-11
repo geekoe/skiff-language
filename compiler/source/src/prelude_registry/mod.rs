@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -129,7 +132,13 @@ impl PreludeRegistry {
 
     pub fn type_decl_module(&self, name: &str) -> Option<&str> {
         if let Some(builtin) = compiler_builtin_type(name) {
-            return builtin.symbol.rsplit_once('.').map(|(module, _)| module);
+            if let Some(module) = builtin.prelude_declaration_module() {
+                return Some(module);
+            }
+            return match builtin.canonical_symbol() {
+                Cow::Borrowed(symbol) => symbol.rsplit_once('.').map(|(module, _)| module),
+                Cow::Owned(_) => None,
+            };
         }
         let symbol = self.known_type_symbol(name)?;
         let symbol = self.type_symbols.get(&symbol)?;
@@ -152,7 +161,7 @@ impl PreludeRegistry {
     pub fn known_type_symbol(&self, name: &str) -> Option<String> {
         let name = name.trim();
         if let Some(builtin) = compiler_builtin_type(name) {
-            return Some(builtin.symbol.to_string());
+            return Some(builtin.canonical_symbol().into_owned());
         }
         if self
             .type_symbols
@@ -235,11 +244,12 @@ impl PreludeRegistry {
 
     fn install_compiler_builtin_types(&mut self) {
         for builtin in COMPILER_BUILTIN_TYPES {
+            let canonical_symbol = builtin.canonical_symbol().into_owned();
             self.builtin_type_names.insert(builtin.name.to_string());
             self.type_symbols
-                .insert(builtin.name.to_string(), builtin.symbol.to_string());
+                .insert(builtin.name.to_string(), canonical_symbol.clone());
             self.type_symbols
-                .insert(builtin.symbol.to_string(), builtin.symbol.to_string());
+                .insert(canonical_symbol.clone(), canonical_symbol);
         }
     }
 
