@@ -335,7 +335,7 @@ impl PayloadEncoder<'_> {
             BoundaryTypeNode::Nullable(inner) => {
                 if matches!(value, RuntimeValue::Null) {
                     self.output.push(0);
-                    return Ok(());
+                    Ok(())
                 } else {
                     self.output.push(1);
                     self.encode_typed(value, inner)
@@ -343,10 +343,10 @@ impl PayloadEncoder<'_> {
             }
             BoundaryTypeNode::Union(types) => {
                 if types.len() > u8::MAX as usize + 1 {
-                    return Err(RuntimeError::Decode(format!(
+                    Err(RuntimeError::Decode(format!(
                         "runtime payload union has {} branches; maximum is 256",
                         types.len()
-                    )));
+                    )))
                 } else {
                     let mut errors = Vec::new();
                     for (index, ty) in types.iter().enumerate() {

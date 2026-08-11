@@ -179,6 +179,15 @@ impl Default for RecoverableDecodePolicy {
     }
 }
 
+#[derive(Clone, Copy)]
+struct RecoverableBehaviorOperationContext<'a> {
+    boundary_context: &'a RuntimeRecoverableBoundaryContext,
+    root_expected: &'a RuntimeRecoverableExpectedTypePlan,
+    behavior_hooks: &'a dyn RecoverableBehaviorHooks,
+    decode_policy: RecoverableDecodePolicy,
+    operation: &'static str,
+}
+
 pub struct RecoverableBoundaryCodec;
 
 impl RecoverableBoundaryCodec {
@@ -313,15 +322,18 @@ impl RecoverableBoundaryCodec {
         };
         let root = encoder.encode_value(value, "$.root")?;
         let envelope = RecoverableEnvelope::new(root);
+        let behavior_context = RecoverableBehaviorOperationContext {
+            boundary_context: context,
+            root_expected: expected,
+            behavior_hooks,
+            decode_policy: RecoverableDecodePolicy::strict(),
+            operation: "encode",
+        };
         select_expected_plan_for_node_with_behavior_policy(
             &envelope.root,
             expected,
             "$.root",
-            context,
-            expected,
-            behavior_hooks,
-            RecoverableDecodePolicy::strict(),
-            "encode",
+            behavior_context,
         )?;
         Ok(envelope)
     }
@@ -425,15 +437,18 @@ impl RecoverableBoundaryCodec {
             context,
         )?;
         reject_untrusted_behavior_payload(&envelope, context, expected)?;
+        let behavior_context = RecoverableBehaviorOperationContext {
+            boundary_context: context,
+            root_expected: expected,
+            behavior_hooks,
+            decode_policy,
+            operation: "decode",
+        };
         select_expected_plan_for_node_with_behavior_policy(
             &envelope.root,
             expected,
             "$.root",
-            context,
-            expected,
-            behavior_hooks,
-            decode_policy,
-            "decode",
+            behavior_context,
         )?;
 
         let checkpoint = heap.checkpoint();
@@ -441,11 +456,8 @@ impl RecoverableBoundaryCodec {
             &envelope.root,
             expected,
             "$.root",
-            context,
-            expected,
             heap,
-            behavior_hooks,
-            decode_policy,
+            behavior_context,
         ) {
             Ok(value) => Ok(value),
             Err(error) => {
@@ -799,21 +811,17 @@ fn decode_node_with_behavior(
     node: &RecoverableNode,
     expected_for_node: &RuntimeRecoverableExpectedTypePlan,
     path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    root_expected: &RuntimeRecoverableExpectedTypePlan,
     heap: &mut RequestHeap,
-    behavior_hooks: &dyn RecoverableBehaviorHooks,
-    decode_policy: RecoverableDecodePolicy,
+    behavior_context: RecoverableBehaviorOperationContext<'_>,
 ) -> Result<RuntimeValue> {
+    let context = behavior_context.boundary_context;
+    let root_expected = behavior_context.root_expected;
+    let decode_policy = behavior_context.decode_policy;
     let selected_expected = select_expected_plan_for_node_with_behavior_policy(
         node,
         expected_for_node,
         path,
-        context,
-        root_expected,
-        behavior_hooks,
-        decode_policy,
-        "decode",
+        behavior_context,
     )?;
     if !matches!(node.state, RecoverableState::InterfaceValue(_)) {
         reject_behavior_node_for_plain_decode(node, path, context, root_expected)?;
@@ -838,11 +846,8 @@ fn decode_node_with_behavior(
                     item,
                     child_expected.unwrap_or(fallback_expected),
                     &format!("{path}[{index}]"),
-                    context,
-                    root_expected,
                     heap,
-                    behavior_hooks,
-                    decode_policy,
+                    behavior_context,
                 )?);
             }
             Ok(RuntimeValue::Heap(heap.alloc_array(decoded)?))
@@ -866,11 +871,8 @@ fn decode_node_with_behavior(
                     value,
                     child_expected.unwrap_or(fallback_expected),
                     &format!("{path}.map[{index}]"),
-                    context,
-                    root_expected,
                     heap,
-                    behavior_hooks,
-                    decode_policy,
+                    behavior_context,
                 )?;
                 decoded.insert(key, value);
             }
@@ -898,11 +900,8 @@ fn decode_node_with_behavior(
                         &field.value,
                         field_expected.unwrap_or(fallback_expected),
                         &format!("{path}.field({})", field.field_identity),
-                        context,
-                        root_expected,
                         heap,
-                        behavior_hooks,
-                        decode_policy,
+                        behavior_context,
                     )?,
                 );
             }
@@ -915,11 +914,8 @@ fn decode_node_with_behavior(
             state,
             selected_expected,
             path,
-            context,
-            root_expected,
             heap,
-            behavior_hooks,
-            decode_policy,
+            behavior_context,
         ),
         RecoverableState::NominalObject(_) => Err(unsupported_decode_error(
             "nominal object restore outside an any-I self node requires an explicit concrete restore plan, which is not available in the P4 behavior API",
@@ -945,12 +941,11 @@ fn decode_interface_node_with_behavior(
     state: &InterfaceValueState,
     expected_for_node: &RuntimeRecoverableExpectedTypePlan,
     path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    root_expected: &RuntimeRecoverableExpectedTypePlan,
     heap: &mut RequestHeap,
-    behavior_hooks: &dyn RecoverableBehaviorHooks,
-    decode_policy: RecoverableDecodePolicy,
+    behavior_context: RecoverableBehaviorOperationContext<'_>,
 ) -> Result<RuntimeValue> {
+    let context = behavior_context.boundary_context;
+    let root_expected = behavior_context.root_expected;
     let expected_any = expected_any_interface_for_node(expected_for_node, path)
         .map_err(|error| expected_type_mismatch_error(error, "decode", context, root_expected))?;
     match state {
@@ -958,11 +953,8 @@ fn decode_interface_node_with_behavior(
             self_node,
             expected_any,
             path,
-            context,
-            root_expected,
             heap,
-            behavior_hooks,
-            decode_policy,
+            behavior_context,
         ),
     }
 }
@@ -971,12 +963,13 @@ fn decode_local_interface_node_with_behavior(
     self_node: &RecoverableNode,
     expected_any: &RuntimeRecoverableExpectedAnyInterfacePlan,
     path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    root_expected: &RuntimeRecoverableExpectedTypePlan,
     heap: &mut RequestHeap,
-    behavior_hooks: &dyn RecoverableBehaviorHooks,
-    decode_policy: RecoverableDecodePolicy,
+    behavior_context: RecoverableBehaviorOperationContext<'_>,
 ) -> Result<RuntimeValue> {
+    let context = behavior_context.boundary_context;
+    let root_expected = behavior_context.root_expected;
+    let behavior_hooks = behavior_context.behavior_hooks;
+    let decode_policy = behavior_context.decode_policy;
     validate_local_interface_self_node(
         self_node,
         &format!("{path}.selfNode"),
@@ -1599,23 +1592,19 @@ fn select_expected_plan_for_node_with_behavior_policy<'a>(
     node: &RecoverableNode,
     expected: &'a RuntimeRecoverableExpectedTypePlan,
     path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    root_expected: &RuntimeRecoverableExpectedTypePlan,
-    behavior_hooks: &dyn RecoverableBehaviorHooks,
-    decode_policy: RecoverableDecodePolicy,
-    operation: &'static str,
+    behavior_context: RecoverableBehaviorOperationContext<'_>,
 ) -> Result<&'a RuntimeRecoverableExpectedTypePlan> {
+    let context = behavior_context.boundary_context;
+    let root_expected = behavior_context.root_expected;
+    let decode_policy = behavior_context.decode_policy;
+    let operation = behavior_context.operation;
     match &expected.node {
         RuntimeRecoverableExpectedTypeNode::Alias { target } => {
             select_expected_plan_for_node_with_behavior_policy(
                 node,
                 target,
                 path,
-                context,
-                root_expected,
-                behavior_hooks,
-                decode_policy,
-                operation,
+                behavior_context,
             )
         }
         RuntimeRecoverableExpectedTypeNode::Nullable { inner } => {
@@ -1626,11 +1615,7 @@ fn select_expected_plan_for_node_with_behavior_policy<'a>(
                     node,
                     inner,
                     path,
-                    context,
-                    root_expected,
-                    behavior_hooks,
-                    decode_policy,
-                    operation,
+                    behavior_context,
                 )
             }
         }
@@ -1642,10 +1627,7 @@ fn select_expected_plan_for_node_with_behavior_policy<'a>(
                     node,
                     item,
                     path,
-                    context,
-                    root_expected,
-                    behavior_hooks,
-                    decode_policy,
+                    behavior_context,
                 )? {
                     Ok(()) => matches.push(item),
                     Err(error) => errors.push(format!("{}: {}", item.label, error.reason)),
@@ -1656,11 +1638,7 @@ fn select_expected_plan_for_node_with_behavior_policy<'a>(
                     node,
                     matches[0],
                     path,
-                    context,
-                    root_expected,
-                    behavior_hooks,
-                    decode_policy,
-                    operation,
+                    behavior_context,
                 );
             }
             if matches.len() > 1 {
@@ -1701,11 +1679,7 @@ fn select_expected_plan_for_node_with_behavior_policy<'a>(
                 node,
                 payload,
                 path,
-                context,
-                root_expected,
-                behavior_hooks,
-                decode_policy,
-                operation,
+                behavior_context,
             )
         }
         _ => select_expected_plan_for_node_with_policy(node, expected, path, decode_policy)
@@ -1719,11 +1693,12 @@ fn behavior_union_branch_matches(
     node: &RecoverableNode,
     expected: &RuntimeRecoverableExpectedTypePlan,
     path: &str,
-    context: &RuntimeRecoverableBoundaryContext,
-    root_expected: &RuntimeRecoverableExpectedTypePlan,
-    behavior_hooks: &dyn RecoverableBehaviorHooks,
-    decode_policy: RecoverableDecodePolicy,
+    behavior_context: RecoverableBehaviorOperationContext<'_>,
 ) -> Result<std::result::Result<(), ExpectedTypePrecheckError>> {
+    let context = behavior_context.boundary_context;
+    let root_expected = behavior_context.root_expected;
+    let behavior_hooks = behavior_context.behavior_hooks;
+    let decode_policy = behavior_context.decode_policy;
     if matches!(node.state, RecoverableState::Null) {
         return Ok(precheck_expected_type_with_policy(
             node,
@@ -2057,7 +2032,7 @@ fn precheck_record_fields(
                 continue;
             }
             return Err(ExpectedTypePrecheckError::new(
-                &format!("{path}.field({})", field.field_identity),
+                format!("{path}.field({})", field.field_identity),
                 format!(
                     "record field {} is not declared by expected type {}",
                     field.field_identity, "record"

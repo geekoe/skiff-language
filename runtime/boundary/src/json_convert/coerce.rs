@@ -164,7 +164,7 @@ fn coerce_runtime_value_scoped(
         RuntimeTypeNode::Record { fields, .. } => coerce_record_runtime(
             value,
             expected_type,
-            &fields,
+            fields,
             heap,
             context,
             stream_scope,
@@ -411,11 +411,13 @@ fn coerce_record_runtime(
         let shape = RuntimeRecordShape::for_plan(fields, expected_type.boundary_record_kind());
         match node {
             HeapNode::Object(object) => coerce_runtime_object_record(
-                value,
-                expected_type,
-                &shape,
-                RecordSourceKind::Object,
-                object.fields().clone(),
+                RuntimeRecordCoercionInput {
+                    original: value,
+                    record_plan: expected_type,
+                    shape: &shape,
+                    source_kind: RecordSourceKind::Object,
+                    source_fields: object.fields().clone(),
+                },
                 heap,
                 context,
                 stream_scope,
@@ -424,11 +426,13 @@ fn coerce_record_runtime(
             HeapNode::Map(map) => {
                 let object_fields = runtime_object_fields_from_map(map)?;
                 coerce_runtime_object_record(
-                    value,
-                    expected_type,
-                    &shape,
-                    RecordSourceKind::Map,
-                    object_fields,
+                    RuntimeRecordCoercionInput {
+                        original: value,
+                        record_plan: expected_type,
+                        shape: &shape,
+                        source_kind: RecordSourceKind::Map,
+                        source_fields: object_fields,
+                    },
                     heap,
                     context,
                     stream_scope,
@@ -454,17 +458,28 @@ enum RecordSourceKind {
     Map,
 }
 
-fn coerce_runtime_object_record(
-    original: &RuntimeValue,
-    record_plan: &RuntimeTypePlan,
-    shape: &RuntimeRecordShape<'_>,
+struct RuntimeRecordCoercionInput<'input, 'plan> {
+    original: &'input RuntimeValue,
+    record_plan: &'input RuntimeTypePlan,
+    shape: &'input RuntimeRecordShape<'plan>,
     source_kind: RecordSourceKind,
     source_fields: RuntimeObjectFields,
+}
+
+fn coerce_runtime_object_record(
+    input: RuntimeRecordCoercionInput<'_, '_>,
     heap: &mut RequestHeap,
     context: &mut RuntimeCoerceContext,
     stream_scope: StreamHandleScope,
     depth: usize,
 ) -> Result<RuntimeValue> {
+    let RuntimeRecordCoercionInput {
+        original,
+        record_plan,
+        shape,
+        source_kind,
+        source_fields,
+    } = input;
     reject_reserved_runtime_source_fields(&source_fields)?;
     let projection =
         shape.project_runtime_fields(&source_fields, RecordProjectionSource::Runtime)?;

@@ -565,7 +565,7 @@ impl RecoverableArtifactRetentionRootStore for TestRootStore {
 fn task_ref_roundtrips_through_recoverable_codec() {
     let context = recoverable_context();
     let task_ref_expected = expected("taskRef", RuntimeRecoverableExpectedTypeNode::TaskRef);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
     let canonical = "skiff-task-v1:b3duZXI.dGFzay0x";
 
     let bytes = RecoverableBoundaryCodec::encode(
@@ -630,7 +630,7 @@ fn task_status_and_cancel_result_roundtrip_through_recoverable_codec() {
 fn task_ref_rejects_plain_strings_and_malformed_refs() {
     let context = recoverable_context();
     let task_ref_expected = expected("taskRef", RuntimeRecoverableExpectedTypeNode::TaskRef);
-    let mut heap = RequestHeap::default();
+    let heap = RequestHeap::default();
 
     for malformed in [
         "not-a-task-ref",
