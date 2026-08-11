@@ -7,12 +7,9 @@ publish = false
 [dependencies]
 anyhow = "1.0"
 skiff-artifact-model = { path = "../../artifact-model" }
+skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
 skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-loader = { path = "../loader" }
-
-[dev-dependencies]
-skiff-artifact-identity = { path = "../../artifact-identity" }
-skiff-deployment = { path = "../../deployment" }
 
 [lints]
 workspace = true

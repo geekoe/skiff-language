@@ -430,32 +430,6 @@ fn code_free_contract_admits_both_provider_summaries_and_exact_refs_change_ident
         non_suspending_deployment.deployment_artifact_identity,
         suspending_deployment.deployment_artifact_identity
     );
-
-    let non_suspending_root =
-        skiff_artifact_identity::service_deployment_ref(&non_suspending_deployment);
-    let non_suspending_assembly = crate::assembly::resolve_runtime_assembly(
-        std::slice::from_ref(&non_suspending_root),
-        std::slice::from_ref(&non_suspending_deployment),
-        std::slice::from_ref(&non_suspending.contract),
-        std::slice::from_ref(&non_suspending.implementation),
-    )
-    .expect("the non-suspending provider must assemble");
-    let suspending_root = skiff_artifact_identity::service_deployment_ref(&suspending_deployment);
-    let suspending_assembly = crate::assembly::resolve_runtime_assembly(
-        std::slice::from_ref(&suspending_root),
-        std::slice::from_ref(&suspending_deployment),
-        std::slice::from_ref(&suspending.contract),
-        std::slice::from_ref(&suspending.implementation),
-    )
-    .expect("the suspending provider must assemble");
-    assert_ne!(
-        non_suspending_assembly.resolved_packages,
-        suspending_assembly.resolved_packages
-    );
-    assert_ne!(
-        non_suspending_assembly.assembly_identity,
-        suspending_assembly.assembly_identity
-    );
 }
 
 #[test]

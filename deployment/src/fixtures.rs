@@ -1,20 +1,17 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{
-    assign_runtime_assembly_identity, assign_service_deployment_identity, gateway_entry_identity,
+    assign_service_deployment_identity, gateway_entry_identity,
 };
 use skiff_artifact_model::{
-    ActivationTemplate, AssemblyIdentity, CanonicalPackageLinkPlan, ContractOperationId,
-    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
+    ContractOperationId, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
     DeploymentIngressBinding, DeploymentOperationBinding, DeploymentRevision, GatewayAdapterArg,
     GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
     GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
     GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol,
-    IngressSelector, PackageArtifactRef, PackageBuildId, PackageCallableId, PackageCodeSlot,
-    PackageLocalAbiIdentity, RuntimeAssembly, ServiceBindingTemplate, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentOperationInput, ServiceDeploymentRef,
-    ServiceProtocolIdentity, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    IngressSelector, PackageArtifactRef, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
+    ServiceContractRef, ServiceDeployment, ServiceDeploymentOperationInput,
+    ServiceProtocolIdentity, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use crate::Result;
@@ -119,59 +116,4 @@ pub fn service_deployment_fixture() -> Result<ServiceDeployment> {
     };
     assign_service_deployment_identity(&mut deployment)?;
     Ok(deployment)
-}
-
-pub fn empty_runtime_assembly_fixture() -> Result<RuntimeAssembly> {
-    let mut assembly = RuntimeAssembly {
-        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
-        assembly_identity: AssemblyIdentity::new("unassigned"),
-        roots: Vec::new(),
-        resolved_deployments: Vec::new(),
-        resolved_contracts: Vec::new(),
-        resolved_packages: Vec::new(),
-        package_link_plan: CanonicalPackageLinkPlan {
-            code_slots: Vec::new(),
-            package_links: Vec::new(),
-        },
-        service_binding_templates: Vec::new(),
-        activation_templates: Vec::new(),
-        gateway_ingress: Vec::new(),
-    };
-    assign_runtime_assembly_identity(&mut assembly)?;
-    Ok(assembly)
-}
-
-pub fn runtime_assembly_fixture() -> Result<RuntimeAssembly> {
-    let deployment = service_deployment_fixture()?;
-    let deployment_ref = ServiceDeploymentRef {
-        service_id: deployment.contract.service_id.clone(),
-        contract_version: deployment.contract.contract_version.clone(),
-        deployment_revision: deployment.deployment_revision.clone(),
-        deployment_artifact_identity: deployment.deployment_artifact_identity.clone(),
-    };
-    let mut assembly = RuntimeAssembly {
-        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
-        assembly_identity: AssemblyIdentity::new("unassigned"),
-        roots: vec![deployment_ref.clone()],
-        resolved_deployments: vec![deployment_ref.clone()],
-        resolved_contracts: vec![deployment.contract.clone()],
-        resolved_packages: vec![deployment.implementation.clone()],
-        package_link_plan: CanonicalPackageLinkPlan {
-            code_slots: vec![PackageCodeSlot {
-                package: deployment.implementation.clone(),
-            }],
-            package_links: Vec::new(),
-        },
-        service_binding_templates: vec![ServiceBindingTemplate {
-            activation: deployment_ref.clone(),
-            bindings: Vec::new(),
-        }],
-        activation_templates: vec![ActivationTemplate {
-            deployment: deployment_ref.clone(),
-            implementation_package_build_id: deployment.implementation.package_build_id.clone(),
-        }],
-        gateway_ingress: Vec::new(),
-    };
-    assign_runtime_assembly_identity(&mut assembly)?;
-    Ok(assembly)
 }

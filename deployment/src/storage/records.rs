@@ -9,20 +9,19 @@ use crate::projection::actor_routing::{
 };
 use serde_json::Value;
 use skiff_artifact_identity::{
-    package_schema_type_id, runtime_assembly_ref, service_contract_ref, service_deployment_ref,
+    package_schema_type_id, service_contract_ref, service_deployment_ref,
     validate_bytecode_identity, validate_file_ir_identity, validate_package_artifact_identities,
     validate_package_schema_index, validate_package_schema_records,
-    validate_runtime_assembly_identity, validate_service_contract_identities,
+    validate_service_contract_identities,
     validate_service_deployment_ref, ArtifactRelativePath, PackageArtifactRecordPath,
     PackageBytecodeRecordPath, PackageFileIrRecordPath, PackageResourceRecordPath,
-    PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath, RuntimeAssemblyRecordPath,
-    ServiceContractRecordPath, ServiceDeploymentRecordPath, ValidatedBytecodeArtifact,
+    PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath, ServiceContractRecordPath, ServiceDeploymentRecordPath, ValidatedBytecodeArtifact,
 };
 use skiff_artifact_model::{
     package_schema_descriptor_refs, BytecodeArtifact, BytecodeArtifactRef, FileIrRef, FileIrUnit,
     PackageArtifact, PackageArtifactRef, PackageSchemaIndex, PackageSchemaIndexRef,
     PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
-    PublicationResourceRef, RuntimeAssembly, RuntimeAssemblyRef, ServiceContract,
+    PublicationResourceRef, ServiceContract,
     ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 
@@ -353,13 +352,6 @@ impl CanonicalArtifactStore {
         Ok(Arc::new(deployment))
     }
 
-    pub fn write_runtime_assembly(&self, assembly: &RuntimeAssembly) -> StorageResult<PathBuf> {
-        validate_runtime_assembly_identity(assembly)?;
-        let reference = runtime_assembly_ref(assembly)?;
-        let path = RuntimeAssemblyRecordPath::new(&reference)?;
-        self.write_immutable(path.as_relative_path(), &canonical_bytes(assembly)?)
-    }
-
     /// Publishes the mutable "current" actor routing projection record.
     ///
     /// The relative record path is the canonical A1 producer output surface
@@ -381,32 +373,6 @@ impl CanonicalArtifactStore {
             self.replace_locked(destination, &bytes)?;
             Ok(destination.to_path_buf())
         })
-    }
-
-    pub fn read_runtime_assembly(
-        &self,
-        reference: &RuntimeAssemblyRef,
-    ) -> StorageResult<Arc<RuntimeAssembly>> {
-        let path = RuntimeAssemblyRecordPath::new(reference)?;
-        let bytes = self.read_bytes(path.as_relative_path())?;
-        let host_path = self.root().join(path.as_relative_path().as_path());
-        let value = strict_value(&host_path, &bytes)?;
-        raw_string(
-            &host_path,
-            &value,
-            &["assemblyIdentity"],
-            reference.assembly_identity.as_str(),
-        )?;
-        let assembly = typed_from_value::<RuntimeAssembly>(&host_path, value)?;
-        validate_runtime_assembly_identity(&assembly)?;
-        if &runtime_assembly_ref(&assembly)? != reference {
-            return invalid(
-                &host_path,
-                "typed RuntimeAssembly does not match exact reference",
-            );
-        }
-        ensure_canonical(&host_path, &bytes, &assembly)?;
-        Ok(Arc::new(assembly))
     }
 
     pub fn write_file_ir(

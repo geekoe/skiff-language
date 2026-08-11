@@ -1,18 +1,23 @@
 //! Canonical runtime support for package and service tests.
 //!
-//! A package test is a normal immutable package build plus a separate test-owned
-//! package build. Service tests enter through code-free contracts and source-free
-//! deployments. Both paths load one typed `RuntimeAssembly`; no synthetic service
-//! program or publication aggregate exists here.
+//! A package test is a normal immutable package build plus a separate
+//! test-owned package build. Service tests enter through code-free contracts
+//! and source-free deployments, and this crate hydrates and links one exact
+//! deployment bytecode closure for the test entrypoint.
 
 use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayProtocolSurface,
-    OperationTargetRef, RuntimeAssembly, ServiceDeploymentRef, ServiceIngressKey,
+    ServiceDeploymentRef,
 };
-use skiff_runtime_linker::{link_runtime_assembly, AssemblyLinkedCandidate};
-use skiff_runtime_loader::{RuntimeAssemblyContentResolver, RuntimeAssemblyLoader};
+use skiff_runtime_linked_bytecode::{
+    LinkedBytecodeCandidate, LinkedGatewayCallable, LinkedGatewayEntry,
+};
+use skiff_runtime_linker::{link_deployment, LinkLimits};
+use skiff_runtime_loader::{
+    DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageTestEntrypoint {
@@ -28,21 +33,22 @@ pub struct PackageTestRuntimeBuilder<'a, R: ?Sized> {
 
 impl<'a, R> PackageTestRuntimeBuilder<'a, R>
 where
-    R: RuntimeAssemblyContentResolver + ?Sized,
+    R: DeploymentBytecodeContentResolver + ?Sized,
 {
     pub fn new(resolver: &'a R) -> Self {
         Self { resolver }
     }
 
-    pub fn load_template(
+    pub fn load(
         &self,
-        assembly: impl Into<Arc<RuntimeAssembly>>,
+        deployment: &ServiceDeploymentRef,
         entrypoints: impl IntoIterator<Item = PackageTestEntrypoint>,
     ) -> anyhow::Result<PackageTestRuntimeTemplate> {
-        let hydrated = RuntimeAssemblyLoader::new(self.resolver).load(assembly)?;
-        let candidate = Arc::new(link_runtime_assembly(hydrated)?);
-        let entrypoints = validate_entrypoints(&candidate, entrypoints)?;
+        let hydrated = Arc::new(DeploymentBytecodeLoader::new(self.resolver).load(deployment)?);
+        let candidate = Arc::new(link_deployment(&hydrated, &package_test_link_limits())?);
+        let entrypoints = validate_entrypoints(&hydrated, &candidate, entrypoints)?;
         Ok(PackageTestRuntimeTemplate {
+            hydrated,
             candidate,
             entrypoints,
         })
@@ -51,12 +57,17 @@ where
 
 #[derive(Debug)]
 pub struct PackageTestRuntimeTemplate {
-    candidate: Arc<AssemblyLinkedCandidate>,
+    hydrated: Arc<HydratedDeploymentBytecode>,
+    candidate: Arc<LinkedBytecodeCandidate>,
     entrypoints: BTreeMap<String, PackageTestEntrypoint>,
 }
 
 impl PackageTestRuntimeTemplate {
-    pub fn candidate(&self) -> &Arc<AssemblyLinkedCandidate> {
+    pub fn hydrated(&self) -> &Arc<HydratedDeploymentBytecode> {
+        &self.hydrated
+    }
+
+    pub fn candidate(&self) -> &Arc<LinkedBytecodeCandidate> {
         &self.candidate
     }
 
@@ -72,35 +83,10 @@ impl PackageTestRuntimeTemplate {
             .get(entrypoint_id)
             .cloned()
             .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "package-test entrypoint {entrypoint_id} is not part of the assembly"
-                )
+                anyhow::anyhow!("package-test entrypoint {entrypoint_id} is not part of the deployment")
             })?;
         Ok(LoadedPackageTestRuntimeProgram {
-            candidate: Arc::clone(&self.candidate),
-            entrypoint,
-        })
-    }
-
-    pub fn ingress_entrypoint(
-        &self,
-        key: &ServiceIngressKey,
-    ) -> anyhow::Result<LoadedPackageTestRuntimeProgram> {
-        let binding = self
-            .candidate
-            .ingress(key)
-            .ok_or_else(|| anyhow::anyhow!("canonical test assembly has no ingress key {key:?}"))?;
-        let entrypoint = self
-            .entrypoints
-            .values()
-            .find(|entrypoint| {
-                entrypoint.deployment == *binding.owner()
-                    && entrypoint.gateway_entry_key == *binding.gateway_entry_key()
-                    && entrypoint.gateway_entry_identity == *binding.gateway_entry_identity()
-            })
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("ingress key {key:?} has no test-owned entrypoint"))?;
-        Ok(LoadedPackageTestRuntimeProgram {
+            hydrated: Arc::clone(&self.hydrated),
             candidate: Arc::clone(&self.candidate),
             entrypoint,
         })
@@ -109,12 +95,17 @@ impl PackageTestRuntimeTemplate {
 
 #[derive(Debug, Clone)]
 pub struct LoadedPackageTestRuntimeProgram {
-    candidate: Arc<AssemblyLinkedCandidate>,
+    hydrated: Arc<HydratedDeploymentBytecode>,
+    candidate: Arc<LinkedBytecodeCandidate>,
     entrypoint: PackageTestEntrypoint,
 }
 
 impl LoadedPackageTestRuntimeProgram {
-    pub fn candidate(&self) -> &Arc<AssemblyLinkedCandidate> {
+    pub fn hydrated(&self) -> &Arc<HydratedDeploymentBytecode> {
+        &self.hydrated
+    }
+
+    pub fn candidate(&self) -> &Arc<LinkedBytecodeCandidate> {
         &self.candidate
     }
 
@@ -122,27 +113,14 @@ impl LoadedPackageTestRuntimeProgram {
         &self.entrypoint
     }
 
-    pub fn handler_target(&self) -> anyhow::Result<&OperationTargetRef> {
-        self.candidate
-            .gateway_entry(
-                &self.entrypoint.deployment,
-                &self.entrypoint.gateway_entry_key,
-            )
-            .filter(|entry| {
-                entry.gateway_entry_identity() == &self.entrypoint.gateway_entry_identity
-            })
-            .map(|entry| entry.handler().target())
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "package-test entrypoint {} has no exact linked gateway handler target",
-                    self.entrypoint.id
-                )
-            })
+    pub fn handler(&self) -> Option<&LinkedGatewayCallable> {
+        linked_entry(&self.candidate, &self.entrypoint).and_then(LinkedGatewayEntry::handler)
     }
 }
 
 fn validate_entrypoints(
-    candidate: &AssemblyLinkedCandidate,
+    hydrated: &HydratedDeploymentBytecode,
+    candidate: &LinkedBytecodeCandidate,
     entrypoints: impl IntoIterator<Item = PackageTestEntrypoint>,
 ) -> anyhow::Result<BTreeMap<String, PackageTestEntrypoint>> {
     let mut validated = BTreeMap::new();
@@ -150,31 +128,37 @@ fn validate_entrypoints(
         if entrypoint.id.trim().is_empty() {
             anyhow::bail!("package-test entrypoint id must not be empty");
         }
-        candidate
-            .activation(&entrypoint.deployment)
+        if entrypoint.deployment != *hydrated.reference() {
+            anyhow::bail!(
+                "package-test entrypoint {} deployment is not part of the package-test deployment",
+                entrypoint.id
+            );
+        }
+        let declared = hydrated
+            .deployment()
+            .gateway_entries
+            .get(&entrypoint.gateway_entry_key)
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "package-test entrypoint {} deployment is not in RuntimeAssembly",
+                    "package-test entrypoint {} gateway entry is missing from the deployment",
                     entrypoint.id
                 )
             })?;
-        let linked_entry = candidate
-            .gateway_entry(&entrypoint.deployment, &entrypoint.gateway_entry_key)
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "package-test entrypoint {} gateway entry is missing",
-                    entrypoint.id
-                )
-            })?;
-        if linked_entry.gateway_entry_identity() != &entrypoint.gateway_entry_identity {
+        if declared.gateway_entry_identity != entrypoint.gateway_entry_identity {
             anyhow::bail!(
                 "package-test entrypoint {} gateway entry identity does not match",
                 entrypoint.id
             );
         }
-        if linked_entry.owner() != &entrypoint.deployment {
+        let linked_entry = linked_entry(candidate, &entrypoint).ok_or_else(|| {
+            anyhow::anyhow!(
+                "package-test entrypoint {} gateway entry is missing from the linked candidate",
+                entrypoint.id
+            )
+        })?;
+        if linked_entry.handler().is_none() {
             anyhow::bail!(
-                "package-test entrypoint {} gateway entry owner does not match its deployment",
+                "package-test entrypoint {} has no linked gateway handler",
                 entrypoint.id
             );
         }
@@ -199,4 +183,34 @@ fn validate_entrypoints(
         anyhow::bail!("canonical package-test runtime requires at least one entrypoint");
     }
     Ok(validated)
+}
+
+fn linked_entry<'a>(
+    candidate: &'a LinkedBytecodeCandidate,
+    entrypoint: &PackageTestEntrypoint,
+) -> Option<&'a LinkedGatewayEntry> {
+    candidate.gateway_entries().iter().find(|entry| {
+        entry.gateway_entry_key() == &entrypoint.gateway_entry_key
+            && entry.gateway_entry_identity() == &entrypoint.gateway_entry_identity
+    })
+}
+
+fn package_test_link_limits() -> LinkLimits {
+    LinkLimits {
+        max_packages: 256,
+        max_root_specializations: 100_000,
+        max_specializations: 1_000_000,
+        max_code_words_per_function: 1_000_000,
+        max_total_code_words: 100_000_000,
+        max_relocations_per_function: 100_000,
+        max_total_relocations: 10_000_000,
+        max_image_table_entries: 1_000_000,
+        max_total_image_table_entries: 10_000_000,
+        max_total_function_table_entries: 10_000_000,
+        max_type_nesting_depth: 64,
+        max_expanded_type_nodes: 1_000_000,
+        max_expanded_type_bytes: 64 * 1024 * 1024,
+        max_constant_graph_nodes: 1_000_000,
+        max_constant_graph_edges: 1_000_000,
+    }
 }

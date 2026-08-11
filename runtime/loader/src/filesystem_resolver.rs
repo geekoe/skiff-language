@@ -1,187 +1,20 @@
 use std::{
     borrow::Borrow,
-    collections::HashMap,
     path::Path,
-    sync::{Arc, RwLock},
+    sync::Arc,
 };
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    BytecodeArtifactRef, FileIrRef, FileIrUnit, PackageArtifact, PackageArtifactRef,
-    PackageSchemaIndex, PackageSchemaIndexRef, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
-    PublicationResourceRef, RuntimeAssemblyRef, ServiceContract, ServiceContractRef,
+    BytecodeArtifactRef, PackageArtifact, PackageArtifactRef, ServiceContract, ServiceContractRef,
     ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 use crate::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeHydrationError, DeploymentBytecodeLoader,
-    DeploymentReleasePointerResolver, HydratedDeploymentBytecode, HydratedRuntimeAssembly,
-    RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, RuntimeAssemblyRecordResolver,
+    HydratedDeploymentBytecode,
 };
-
-pub(crate) fn trusted_test_source() -> bool {
-    std::env::var("SKIFF_TEST_TRUSTED_SOURCE_ROOT").is_ok_and(|value| value == "1")
-}
-
-/// Production filesystem resolver for the typed canonical artifact store.
-///
-/// Every path comes from an exact typed reference. Raw coordinates are checked
-/// before typed deserialization by the store; no legacy pointer/index or host
-/// admission hook participates in hydration.
-#[derive(Debug, Clone)]
-pub struct FilesystemRuntimeAssemblyContentResolver {
-    store: CanonicalArtifactStore,
-    cache: Arc<FilesystemRuntimeAssemblyContentCache>,
-}
-
-#[derive(Debug, Default)]
-struct FilesystemRuntimeAssemblyContentCache {
-    packages: RwLock<HashMap<PackageArtifactRef, Arc<PackageArtifact>>>,
-    file_ir: RwLock<HashMap<(PackageArtifactRef, FileIrRef), Arc<FileIrUnit>>>,
-}
-
-impl FilesystemRuntimeAssemblyContentResolver {
-    pub fn open(artifact_root: impl AsRef<Path>) -> anyhow::Result<Self> {
-        Ok(Self {
-            store: CanonicalArtifactStore::open(artifact_root)?,
-            cache: Arc::new(FilesystemRuntimeAssemblyContentCache::default()),
-        })
-    }
-
-    pub fn from_store(store: CanonicalArtifactStore) -> Self {
-        Self {
-            store,
-            cache: Arc::new(FilesystemRuntimeAssemblyContentCache::default()),
-        }
-    }
-
-    pub fn store(&self) -> &CanonicalArtifactStore {
-        &self.store
-    }
-
-    pub fn load_runtime_assembly(
-        &self,
-        reference: &RuntimeAssemblyRef,
-    ) -> anyhow::Result<HydratedRuntimeAssembly> {
-        RuntimeAssemblyLoader::new(self).load_ref(reference)
-    }
-}
-
-impl RuntimeAssemblyContentResolver for FilesystemRuntimeAssemblyContentResolver {
-    fn resolve_deployment(
-        &self,
-        reference: &ServiceDeploymentRef,
-    ) -> anyhow::Result<Arc<ServiceDeployment>> {
-        Ok(self.store.read_service_deployment(reference)?)
-    }
-
-    fn resolve_contract(
-        &self,
-        reference: &ServiceContractRef,
-    ) -> anyhow::Result<Arc<ServiceContract>> {
-        Ok(self.store.read_service_contract(reference)?)
-    }
-
-    fn resolve_package_schema_index(
-        &self,
-        reference: &PackageSchemaIndexRef,
-    ) -> anyhow::Result<Arc<PackageSchemaIndex>> {
-        if trusted_test_source() {
-            Ok(self.store.read_package_schema_index_unchecked(reference)?)
-        } else {
-            Ok(self.store.read_package_schema_index(reference)?)
-        }
-    }
-
-    fn resolve_package_schema_type(
-        &self,
-        reference: &PackageSchemaTypeRecordRef,
-    ) -> anyhow::Result<Arc<PackageSchemaTypeRecord>> {
-        Ok(self.store.read_package_schema_type_record(reference)?)
-    }
-
-    fn resolve_package(
-        &self,
-        reference: &PackageArtifactRef,
-    ) -> anyhow::Result<Arc<PackageArtifact>> {
-        if let Some(artifact) = self
-            .cache
-            .packages
-            .read()
-            .expect("package artifact cache poisoned")
-            .get(reference)
-        {
-            return Ok(artifact.clone());
-        }
-        let artifact = if trusted_test_source() {
-            self.store.read_package_artifact_unchecked(reference)?
-        } else {
-            self.store.read_package_artifact(reference)?
-        };
-        self.cache
-            .packages
-            .write()
-            .expect("package artifact cache poisoned")
-            .insert(reference.clone(), artifact.clone());
-        Ok(artifact)
-    }
-
-    fn resolve_file_ir(
-        &self,
-        package: &PackageArtifactRef,
-        reference: &FileIrRef,
-    ) -> anyhow::Result<Arc<FileIrUnit>> {
-        let key = (package.clone(), reference.clone());
-        if let Some(unit) = self
-            .cache
-            .file_ir
-            .read()
-            .expect("file IR cache poisoned")
-            .get(&key)
-        {
-            return Ok(unit.clone());
-        }
-        let unit = self.store.read_file_ir(package, reference)?;
-        self.cache
-            .file_ir
-            .write()
-            .expect("file IR cache poisoned")
-            .insert(key, unit.clone());
-        Ok(unit)
-    }
-
-    fn resolve_static_resource(
-        &self,
-        package: &PackageArtifactRef,
-        reference: &PublicationResourceRef,
-    ) -> anyhow::Result<Arc<[u8]>> {
-        Ok(self.store.read_static_resource(package, reference)?)
-    }
-}
-
-impl RuntimeAssemblyRecordResolver for FilesystemRuntimeAssemblyContentResolver {
-    fn resolve_runtime_assembly(
-        &self,
-        reference: &RuntimeAssemblyRef,
-    ) -> anyhow::Result<Arc<skiff_artifact_model::RuntimeAssembly>> {
-        Ok(self.store.read_runtime_assembly(reference)?)
-    }
-}
-
-impl DeploymentReleasePointerResolver for FilesystemRuntimeAssemblyContentResolver {
-    fn resolve_release_pointer(
-        &self,
-        profile: &str,
-        service_id: &str,
-        version: &str,
-    ) -> anyhow::Result<Option<ServiceDeploymentRef>> {
-        Ok(self
-            .store
-            .read_release_pointer(profile, service_id, version)?
-            .map(|pointer| pointer.deployment))
-    }
-}
 
 /// Production filesystem resolver for exact deployment bytecode hydration.
 ///

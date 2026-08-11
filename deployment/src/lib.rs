@@ -4,7 +4,6 @@
 //! The `projection` and `assembly` modules are intentionally independent shells
 //! until their respective checkpoint tasks implement them.
 
-pub mod assembly;
 pub mod error;
 pub mod fixtures;
 pub mod projection;
@@ -12,6 +11,3 @@ pub mod storage;
 pub mod validation;
 
 pub use error::{DeploymentError, Result};
-
-#[cfg(test)]
-mod tests;

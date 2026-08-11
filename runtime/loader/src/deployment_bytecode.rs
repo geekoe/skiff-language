@@ -19,7 +19,7 @@ use manifests::{validate_deployment_manifests, HydratedPackageManifests};
 /// Exact content boundary for consumer deployment bytecode hydration.
 ///
 /// Every method is intentionally repeated on this narrow capability instead
-/// of inheriting [`crate::RuntimeAssemblyContentResolver`]. The bytecode lane
+/// of inheriting [`crate::DeploymentBytecodeContentResolver`]. The bytecode lane
 /// cannot name, resolve or accidentally reopen File IR, schemas or resources.
 /// Raw `BytecodeArtifact` content is never accepted; package bytecode crosses
 /// the boundary only as its opaque C1-C9 admission token.

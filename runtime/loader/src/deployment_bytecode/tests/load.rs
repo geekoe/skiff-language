@@ -13,7 +13,6 @@ use skiff_artifact_model::{
     PackageSchemaTypeRecordRef, PublicationResourceRef, ServiceCallRef, ServiceRequirement,
 };
 
-use crate::RuntimeAssemblyContentResolver;
 
 use super::*;
 
@@ -25,66 +24,6 @@ struct InMemoryResolver {
     bytecodes: BTreeMap<(PackageArtifactRef, String), Arc<ValidatedBytecodeArtifact>>,
     deployment_calls: Cell<usize>,
     unexpected_deployment_calls: Cell<usize>,
-    file_ir_calls: Cell<usize>,
-}
-
-impl RuntimeAssemblyContentResolver for InMemoryResolver {
-    fn resolve_deployment(
-        &self,
-        reference: &ServiceDeploymentRef,
-    ) -> anyhow::Result<Arc<ServiceDeployment>> {
-        self.deployment_calls.set(self.deployment_calls.get() + 1);
-        if reference != &self.deployment_reference {
-            self.unexpected_deployment_calls
-                .set(self.unexpected_deployment_calls.get() + 1);
-            anyhow::bail!("provider deployment resolution is forbidden")
-        }
-        Ok(Arc::clone(&self.deployment))
-    }
-
-    fn resolve_contract(
-        &self,
-        reference: &ServiceContractRef,
-    ) -> anyhow::Result<Arc<ServiceContract>> {
-        self.contracts
-            .get(reference)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing contract {reference:?}"))
-    }
-
-    fn resolve_package_schema_type(
-        &self,
-        reference: &PackageSchemaTypeRecordRef,
-    ) -> anyhow::Result<Arc<PackageSchemaTypeRecord>> {
-        anyhow::bail!("unexpected package schema resolution for {reference:?}")
-    }
-
-    fn resolve_package(
-        &self,
-        reference: &PackageArtifactRef,
-    ) -> anyhow::Result<Arc<PackageArtifact>> {
-        self.packages
-            .get(reference)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("missing package {reference:?}"))
-    }
-
-    fn resolve_file_ir(
-        &self,
-        package: &PackageArtifactRef,
-        reference: &FileIrRef,
-    ) -> anyhow::Result<Arc<FileIrUnit>> {
-        self.file_ir_calls.set(self.file_ir_calls.get() + 1);
-        panic!("bytecode hydration must not resolve File IR for {package:?} {reference:?}")
-    }
-
-    fn resolve_static_resource(
-        &self,
-        package: &PackageArtifactRef,
-        reference: &PublicationResourceRef,
-    ) -> anyhow::Result<Arc<[u8]>> {
-        anyhow::bail!("unexpected resource resolution for {package:?} {reference:?}")
-    }
 }
 
 impl DeploymentBytecodeContentResolver for InMemoryResolver {
@@ -241,7 +180,6 @@ impl LoadFixture {
             bytecodes,
             deployment_calls: Cell::new(0),
             unexpected_deployment_calls: Cell::new(0),
-            file_ir_calls: Cell::new(0),
         };
         Self {
             resolver,
@@ -368,7 +306,6 @@ fn load_hydrates_exact_consumer_closure_and_symbolic_service_rows() {
         .contains(&fixture.dependency_operation));
     assert_eq!(fixture.resolver.deployment_calls.get(), 1);
     assert_eq!(fixture.resolver.unexpected_deployment_calls.get(), 0);
-    assert_eq!(fixture.resolver.file_ir_calls.get(), 0);
 }
 
 #[test]
@@ -464,7 +401,6 @@ fn load_never_resolves_a_provider_deployment() {
         .unwrap();
     assert_eq!(fixture.resolver.deployment_calls.get(), 1);
     assert_eq!(fixture.resolver.unexpected_deployment_calls.get(), 0);
-    assert_eq!(fixture.resolver.file_ir_calls.get(), 0);
 }
 
 #[test]

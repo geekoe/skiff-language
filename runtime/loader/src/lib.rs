@@ -1,13 +1,5 @@
-mod deployment;
 mod deployment_bytecode;
 mod filesystem_resolver;
-mod runtime_assembly;
-mod utils;
-
-pub use deployment::{
-    compose_dependency_closure_assembly, compose_deployment_assembly, DeploymentAssemblyLoader,
-    DeploymentReleasePointerResolver,
-};
 pub use deployment_bytecode::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeHydrationError, DeploymentBytecodeLoader,
     DeploymentBytecodeManifestKind, DeploymentBytecodeReference, HydratedBytecodePackage,
@@ -15,11 +7,4 @@ pub use deployment_bytecode::{
 };
 pub use filesystem_resolver::{
     load_deployment_bytecode_from_store, FilesystemDeploymentBytecodeContentResolver,
-    FilesystemRuntimeAssemblyContentResolver,
-};
-pub use runtime_assembly::{
-    HydratedGatewayCallable, HydratedGatewayEntry, HydratedPackageCodeSlot,
-    HydratedRuntimeAssembly, HydratedStaticResource, ResolvedServiceSchema,
-    RuntimeAssemblyContentResolver, RuntimeAssemblyLoader, RuntimeAssemblyRecordResolver,
-    ServiceContractStore,
-};
+    };

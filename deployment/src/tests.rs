@@ -1,25 +1,19 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_identity::{
-    assign_runtime_assembly_identity, assign_service_deployment_identity, gateway_entry_identity,
-    runtime_assembly_identity, runtime_assembly_identity_projection, service_deployment_identity,
-    service_deployment_identity_projection, validate_runtime_assembly_identity,
-    validate_runtime_assembly_surface, validate_service_deployment_identity,
+    assign_service_deployment_identity, gateway_entry_identity, service_deployment_identity,
+    service_deployment_identity_projection, validate_service_deployment_identity,
     validate_service_deployment_ref,
 };
 use skiff_artifact_model::{
     ContractOperationId, DeploymentIngressBinding, DeploymentOperationBinding, GatewayAdapterArg,
     GatewayAdapterSource, GatewayEntryIdentity, GatewayEntryKey, GatewayExternalSchema,
-    GatewayIngressBinding, GatewayProtocolSurface, IngressProtocol, IngressSelector,
-    PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
-    PackageRequirementKey, ResolvedServiceBinding, RuntimeAssembly, ServiceDeployment,
-    ServiceRequirementKey, ServiceSelectorBinding, GATEWAY_ENTRY_IDENTITY_PREFIX,
+    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifactRef, PackageBinding,
+    PackageBuildId, PackageCallableId, PackageLocalAbiIdentity, PackageRequirementKey,
+    ServiceDeployment, ServiceRequirementKey, ServiceSelectorBinding,
 };
 
-use crate::fixtures::{
-    empty_runtime_assembly_fixture, gateway_entry_fixture, runtime_assembly_fixture,
-    service_deployment_fixture,
-};
+use crate::fixtures::{gateway_entry_fixture, service_deployment_fixture};
 
 fn additional_package() -> PackageArtifactRef {
     PackageArtifactRef {
@@ -29,24 +23,6 @@ fn additional_package() -> PackageArtifactRef {
         package_local_abi_identity: PackageLocalAbiIdentity::new("dependency-abi"),
     }
 }
-
-fn runtime_assembly_ingress(assembly: &RuntimeAssembly) -> GatewayIngressBinding {
-    GatewayIngressBinding {
-        selector: IngressSelector {
-            protocol: IngressProtocol::Http,
-            method: Some("POST".to_string()),
-            path: "/echo".to_string(),
-        },
-        deployment: assembly.resolved_deployments[0].clone(),
-        gateway_entry_key: GatewayEntryKey::parse("echo").unwrap(),
-        gateway_entry_identity: GatewayEntryIdentity::parse(format!(
-            "{GATEWAY_ENTRY_IDENTITY_PREFIX}:{}",
-            "a".repeat(64)
-        ))
-        .unwrap(),
-    }
-}
-
 fn rich_deployment() -> ServiceDeployment {
     let mut deployment = service_deployment_fixture().expect("deployment fixture");
     let dependency = additional_package();
@@ -145,16 +121,7 @@ fn strict_wire_rejects_unknown_and_missing_semantic_fields() {
         "deploymentRevision".to_string(),
         serde_json::json!("forbidden"),
     );
-    assert!(serde_json::from_value::<ServiceSelectorBinding>(selector).is_err());
-
-    let assembly = runtime_assembly_fixture().expect("assembly fixture");
-    let mut assembly_value = serde_json::to_value(assembly).unwrap();
-    assembly_value
-        .as_object_mut()
-        .unwrap()
-        .insert("runtimeReplicaIds".to_string(), serde_json::json!([]));
-    assert!(serde_json::from_value::<RuntimeAssembly>(assembly_value).is_err());
-}
+    assert!(serde_json::from_value::<ServiceSelectorBinding>(selector).is_err());}
 
 #[test]
 fn deployment_identity_is_order_independent_and_excludes_diagnostics() {
@@ -358,27 +325,9 @@ fn human_version_labels_are_preserved_in_records_but_excluded_from_all_identity_
         deployment_identity,
         service_deployment_identity(&relabeled_deployment).unwrap()
     );
-
-    let assembly = runtime_assembly_fixture().unwrap();
-    let assembly_identity = runtime_assembly_identity(&assembly).unwrap();
-    let mut relabeled_assembly = serde_json::to_value(&assembly).unwrap();
-    relabel_human_versions(&mut relabeled_assembly);
-    let relabeled_assembly: RuntimeAssembly = serde_json::from_value(relabeled_assembly).unwrap();
-    assert_ne!(
-        assembly.resolved_packages[0].package_version,
-        relabeled_assembly.resolved_packages[0].package_version
-    );
-    assert_eq!(
-        assembly_identity,
-        runtime_assembly_identity(&relabeled_assembly).unwrap()
-    );
-
     assert_no_human_version_keys(
         &serde_json::to_value(service_deployment_identity_projection(&deployment).unwrap())
             .unwrap(),
-    );
-    assert_no_human_version_keys(
-        &serde_json::to_value(runtime_assembly_identity_projection(&assembly).unwrap()).unwrap(),
     );
 }
 
@@ -463,184 +412,4 @@ fn deployment_validation_rejects_duplicates_dangling_refs_and_tamper() {
     let mut wrong_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
     wrong_ref.contract_version = "9.9.9".to_string();
     assert!(validate_service_deployment_ref(&wrong_ref, &deployment).is_err());
-}
-
-#[test]
-fn empty_assembly_assign_validate_and_round_trip_are_stable() {
-    let assembly = empty_runtime_assembly_fixture().expect("empty assembly");
-    validate_runtime_assembly_identity(&assembly).expect("valid empty assembly");
-    let encoded = serde_json::to_vec(&assembly).expect("serialize empty assembly");
-    let decoded = serde_json::from_slice(&encoded).expect("deserialize empty assembly");
-    assert_eq!(assembly, decoded);
-    assert_eq!(
-        runtime_assembly_identity(&decoded).expect("round-trip identity"),
-        assembly.assembly_identity
-    );
-    assert_eq!(
-        assembly.assembly_identity.as_str(),
-        "skiff-runtime-assembly-v3:sha256:23c593adcf1df8a6b4ffc3fc13586b3023ed0bf2ba6d91b817f942dea02bf8ee"
-    );
-}
-
-#[test]
-fn assembly_identity_includes_graph_link_plan_and_templates() {
-    let assembly = runtime_assembly_fixture().expect("assembly fixture");
-    let expected = runtime_assembly_identity(&assembly).unwrap();
-
-    let mut graph = assembly.clone();
-    let dependency = additional_package();
-    graph.resolved_packages.push(dependency.clone());
-    graph
-        .package_link_plan
-        .code_slots
-        .push(skiff_artifact_model::PackageCodeSlot {
-            package: dependency,
-        });
-    assert_ne!(runtime_assembly_identity(&graph).unwrap(), expected);
-
-    let mut link_plan = graph.clone();
-    link_plan
-        .package_link_plan
-        .package_links
-        .push(PackageBinding {
-            key: PackageRequirementKey {
-                caller_package_build_id: assembly.resolved_packages[0].package_build_id.clone(),
-                package_requirement_alias: "dependency".to_string(),
-            },
-            package: link_plan.resolved_packages[1].clone(),
-        });
-    assert_ne!(
-        runtime_assembly_identity(&link_plan).unwrap(),
-        runtime_assembly_identity(&graph).unwrap()
-    );
-
-    let mut service_template = assembly.clone();
-    service_template.service_binding_templates[0]
-        .bindings
-        .push(ResolvedServiceBinding {
-            key: ServiceRequirementKey {
-                caller_package_build_id: assembly.resolved_packages[0].package_build_id.clone(),
-                service_requirement_slot: 0,
-            },
-            contract: assembly.resolved_contracts[0].clone(),
-            provider: assembly.resolved_deployments[0].clone(),
-            used_operations: vec![ContractOperationId::new("operation.echo")],
-        });
-    assert_ne!(
-        runtime_assembly_identity(&service_template).unwrap(),
-        expected
-    );
-
-    let mut ingress = assembly.clone();
-    ingress
-        .gateway_ingress
-        .push(runtime_assembly_ingress(&assembly));
-    assert_ne!(runtime_assembly_identity(&ingress).unwrap(), expected);
-}
-
-#[test]
-fn removed_collection_mapping_wire_is_rejected_by_assembly() {
-    let mut empty = runtime_assembly_fixture().expect("assembly fixture");
-    let dependency = additional_package();
-    empty.resolved_packages.push(dependency.clone());
-    empty
-        .package_link_plan
-        .code_slots
-        .push(skiff_artifact_model::PackageCodeSlot {
-            package: dependency.clone(),
-        });
-    empty.package_link_plan.package_links.push(PackageBinding {
-        key: PackageRequirementKey {
-            caller_package_build_id: empty.resolved_packages[0].package_build_id.clone(),
-            package_requirement_alias: "dependency".to_string(),
-        },
-        package: dependency,
-    });
-    let mut removed_wire = serde_json::to_value(&empty).unwrap();
-    removed_wire["packageLinkPlan"]["packageLinks"][0]["collectionNameMapping"] =
-        serde_json::json!({});
-    assert!(serde_json::from_value::<RuntimeAssembly>(removed_wire).is_err());
-}
-
-#[test]
-fn assembly_normalization_is_insertion_order_independent() {
-    let mut assembly = runtime_assembly_fixture().expect("assembly fixture");
-    let dependency = additional_package();
-    assembly.resolved_packages.push(dependency.clone());
-    assembly
-        .package_link_plan
-        .code_slots
-        .push(skiff_artifact_model::PackageCodeSlot {
-            package: dependency,
-        });
-    assign_runtime_assembly_identity(&mut assembly).unwrap();
-    let expected = assembly.assembly_identity.clone();
-    assembly.resolved_packages.reverse();
-    assembly.package_link_plan.code_slots.reverse();
-    assert_eq!(runtime_assembly_identity(&assembly).unwrap(), expected);
-}
-
-#[test]
-fn assembly_validation_rejects_dangling_collision_and_tamper() {
-    let assembly = runtime_assembly_fixture().expect("assembly fixture");
-
-    let mut dangling = assembly.clone();
-    dangling.package_link_plan.code_slots.clear();
-    assert!(validate_runtime_assembly_surface(&dangling).is_err());
-
-    let mut collision = assembly.clone();
-    let ingress = runtime_assembly_ingress(&assembly);
-    collision.gateway_ingress = vec![ingress.clone(), ingress];
-    assert!(validate_runtime_assembly_surface(&collision).is_err());
-
-    let mut dangling_gateway = assembly.clone();
-    let mut ingress = runtime_assembly_ingress(&assembly);
-    ingress.deployment.deployment_revision = "missing-revision".into();
-    dangling_gateway.gateway_ingress.push(ingress);
-    assert!(validate_runtime_assembly_surface(&dangling_gateway).is_err());
-
-    let mut duplicate_slot = assembly.clone();
-    let binding = ResolvedServiceBinding {
-        key: ServiceRequirementKey {
-            caller_package_build_id: assembly.resolved_packages[0].package_build_id.clone(),
-            service_requirement_slot: 0,
-        },
-        contract: assembly.resolved_contracts[0].clone(),
-        provider: assembly.resolved_deployments[0].clone(),
-        used_operations: vec![ContractOperationId::new("operation.echo")],
-    };
-    duplicate_slot.service_binding_templates[0].bindings = vec![binding.clone(), binding];
-    assert!(validate_runtime_assembly_surface(&duplicate_slot).is_err());
-
-    let mut tampered = assembly;
-    tampered.assembly_identity = "tampered".into();
-    assert!(validate_runtime_assembly_identity(&tampered).is_err());
-}
-
-#[test]
-fn service_requirement_slot_is_scoped_by_caller_package_build() {
-    let mut assembly = runtime_assembly_fixture().expect("assembly fixture");
-    let dependency = additional_package();
-    assembly.resolved_packages.push(dependency.clone());
-    assembly
-        .package_link_plan
-        .code_slots
-        .push(skiff_artifact_model::PackageCodeSlot {
-            package: dependency.clone(),
-        });
-    let common = |caller_package_build_id| ResolvedServiceBinding {
-        key: ServiceRequirementKey {
-            caller_package_build_id,
-            service_requirement_slot: 0,
-        },
-        contract: assembly.resolved_contracts[0].clone(),
-        provider: assembly.resolved_deployments[0].clone(),
-        used_operations: vec![ContractOperationId::new("operation.echo")],
-    };
-    assembly.service_binding_templates[0].bindings = vec![
-        common(assembly.resolved_packages[0].package_build_id.clone()),
-        common(dependency.package_build_id),
-    ];
-    validate_runtime_assembly_surface(&assembly)
-        .expect("slot zero for two distinct caller builds must not collide");
 }

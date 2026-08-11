@@ -5,13 +5,10 @@ use std::{
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use skiff_artifact_identity::{
-    PackageArtifactPointerPath, PackageArtifactRecordPath, ReleasePointerPath,
-    RuntimeAssemblyPointerPath, RuntimeAssemblyRecordPath, ServiceContractPointerPath,
+    PackageArtifactPointerPath, PackageArtifactRecordPath, ReleasePointerPath, ServiceContractPointerPath,
     ServiceContractRecordPath, ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
 };
-use skiff_artifact_model::{
-    PackageArtifactRef, RuntimeAssemblyRef, ServiceContractRef, ServiceDeploymentRef,
-};
+use skiff_artifact_model::{PackageArtifactRef, ServiceContractRef, ServiceDeploymentRef};
 
 use super::{
     error::{io_error, EcosystemStorageError, StorageResult},
@@ -23,7 +20,6 @@ use super::{
 const PACKAGE_POINTER_SCHEMA: &str = "skiff-package-artifact-pointer-v1";
 const CONTRACT_POINTER_SCHEMA: &str = "skiff-service-contract-pointer-v1";
 const DEPLOYMENT_POINTER_SCHEMA: &str = "skiff-service-deployment-pointer-v1";
-const ASSEMBLY_POINTER_SCHEMA: &str = "skiff-runtime-assembly-pointer-v1";
 const RELEASE_POINTER_SCHEMA: &str = "skiff-release-pointer-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,16 +45,6 @@ pub struct ServiceDeploymentPointer {
     pub deployment: ServiceDeploymentRef,
     pub record_path: String,
 }
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyPointer {
-    pub schema_version: String,
-    pub release: String,
-    pub assembly: RuntimeAssemblyRef,
-    pub record_path: String,
-}
-
 /// The release pointer table entry `(profile, serviceId, version) -> buildId`.
 ///
 /// The value carries the complete `ServiceDeploymentRef` (whose
@@ -132,31 +118,6 @@ impl ServiceDeploymentPointer {
         Ok(())
     }
 }
-
-impl RuntimeAssemblyPointer {
-    pub fn new(release: impl Into<String>, assembly: RuntimeAssemblyRef) -> StorageResult<Self> {
-        let release = release.into();
-        RuntimeAssemblyPointerPath::new(&release)?;
-        let record_path = RuntimeAssemblyRecordPath::new(&assembly)?.to_string();
-        Ok(Self {
-            schema_version: ASSEMBLY_POINTER_SCHEMA.to_string(),
-            release,
-            assembly,
-            record_path,
-        })
-    }
-
-    fn validate(&self, path: &Path) -> StorageResult<()> {
-        RuntimeAssemblyPointerPath::new(&self.release)?;
-        if self.schema_version != ASSEMBLY_POINTER_SCHEMA
-            || self.record_path != RuntimeAssemblyRecordPath::new(&self.assembly)?.as_str()
-        {
-            return invalid(path, "assembly pointer schema or recordPath mismatch");
-        }
-        Ok(())
-    }
-}
-
 impl ReleasePointer {
     pub fn new(
         profile: impl Into<String>,
@@ -301,39 +262,6 @@ impl CanonicalArtifactStore {
             expected,
             candidate,
             ServiceDeploymentPointer::validate,
-        )
-    }
-
-    pub fn read_runtime_assembly_pointer(
-        &self,
-        release: &str,
-    ) -> StorageResult<Option<RuntimeAssemblyPointer>> {
-        let path = RuntimeAssemblyPointerPath::new(release)?;
-        let pointer = read_pointer(
-            self,
-            path.as_relative_path(),
-            RuntimeAssemblyPointer::validate,
-        )?;
-        if let Some(pointer) = &pointer {
-            self.read_runtime_assembly(&pointer.assembly)?;
-        }
-        Ok(pointer)
-    }
-
-    pub fn compare_and_swap_runtime_assembly_pointer(
-        &self,
-        expected: Option<&RuntimeAssemblyPointer>,
-        candidate: &RuntimeAssemblyPointer,
-    ) -> StorageResult<()> {
-        candidate.validate(self.root())?;
-        self.read_runtime_assembly(&candidate.assembly)?;
-        let path = RuntimeAssemblyPointerPath::new(&candidate.release)?;
-        cas_pointer(
-            self,
-            path.as_relative_path(),
-            expected,
-            candidate,
-            RuntimeAssemblyPointer::validate,
         )
     }
 

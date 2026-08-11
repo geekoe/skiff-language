@@ -9,8 +9,7 @@ use serde_json::json;
 use skiff_artifact_identity::{
     assign_bytecode_identity, assign_file_ir_identity, assign_package_artifact_identities,
     assign_service_contract_identities, assign_service_deployment_identity, contract_operation_id,
-    package_artifact_ref, package_schema_index_identity, runtime_assembly_ref,
-    service_contract_ref, service_deployment_ref, PackageArtifactRecordPath,
+    package_artifact_ref, package_schema_index_identity, service_contract_ref, service_deployment_ref, PackageArtifactRecordPath,
     PackageBytecodeRecordPath, ReleasePointerPath, BYTECODE_IDENTITY_PREFIX,
     PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
 };
@@ -32,7 +31,7 @@ use skiff_artifact_model::{
 };
 
 use super::*;
-use crate::fixtures::{empty_runtime_assembly_fixture, service_deployment_fixture};
+use crate::fixtures::service_deployment_fixture;
 
 static TEST_ROOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -376,23 +375,18 @@ fn contract_fixture() -> ServiceContract {
 }
 
 #[test]
-fn four_typed_records_round_trip_as_identical_canonical_bytes_and_pointers_cas() {
+fn three_typed_records_round_trip_as_identical_canonical_bytes_and_pointers_cas() {
     let (_temp, store) = test_store();
     let package = package_fixture();
     let contract = contract_fixture();
     let deployment = service_deployment_fixture().expect("deployment");
-    let assembly = empty_runtime_assembly_fixture().expect("assembly");
-
     let package_path = store.write_package_artifact(&package).unwrap();
     let contract_path = store.write_service_contract(&contract).unwrap();
     let deployment_path = store.write_service_deployment(&deployment).unwrap();
-    let assembly_path = store.write_runtime_assembly(&assembly).unwrap();
 
     let package_ref = package_artifact_ref(&package).unwrap();
     let contract_ref = service_contract_ref(&contract).unwrap();
     let deployment_ref = service_deployment_ref(&deployment);
-    let assembly_ref = runtime_assembly_ref(&assembly).unwrap();
-
     let round_trips = [
         (
             package_path,
@@ -417,15 +411,7 @@ fn four_typed_records_round_trip_as_identical_canonical_bytes_and_pointers_cas()
                     .as_ref(),
             )
             .unwrap(),
-        ),
-        (
-            assembly_path,
-            skiff_canonical_json::canonical_json_bytes(
-                store.read_runtime_assembly(&assembly_ref).unwrap().as_ref(),
-            )
-            .unwrap(),
-        ),
-    ];
+        ),    ];
     for (path, round_trip) in round_trips {
         assert_eq!(fs::read(path).unwrap(), round_trip);
     }
@@ -451,12 +437,7 @@ fn four_typed_records_round_trip_as_identical_canonical_bytes_and_pointers_cas()
     let deployment_pointer = ServiceDeploymentPointer::new(deployment_ref).unwrap();
     store
         .compare_and_swap_service_deployment_pointer(None, &deployment_pointer)
-        .unwrap();
-    let assembly_pointer = RuntimeAssemblyPointer::new("stable", assembly_ref).unwrap();
-    store
-        .compare_and_swap_runtime_assembly_pointer(None, &assembly_pointer)
-        .unwrap();
-}
+        .unwrap();}
 
 #[test]
 fn coordinate_collision_pair_has_independent_records_and_cas() {
