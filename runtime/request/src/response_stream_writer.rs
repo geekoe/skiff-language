@@ -15,6 +15,7 @@ pub(crate) struct ResponseStreamWriter {
     next_seq: u64,
 }
 
+#[allow(dead_code)]
 impl ResponseStreamWriter {
     pub(crate) fn new(request_id: String, response_events: Arc<dyn ResponseEventSink>) -> Self {
         Self {
@@ -121,6 +122,7 @@ impl ResponseStreamWriter {
     }
 }
 
+#[allow(dead_code)]
 fn response_headers_from_boundary(headers: Vec<HttpBoundaryNameValue>) -> Vec<HttpNameValue> {
     headers
         .into_iter()

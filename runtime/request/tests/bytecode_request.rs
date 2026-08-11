@@ -5,7 +5,10 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
@@ -30,9 +33,10 @@ use skiff_runtime_linker::{link_deployment, LinkLimits};
 use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use skiff_runtime_request::{
-    execute_runtime_bytecode_request, BoundaryResponse, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, BytecodeRequestTarget, ExecutionBudget, RequestEnvelope,
-    ResponseEnd, ResponseEvent,
+    execute_runtime_bytecode_request, start_runtime_bytecode_request, BoundaryResponse,
+    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, BytecodeRequestRunOutcome,
+    BytecodeRequestTarget, ExecutionBudget, RequestEnvelope, ResponseEnd, ResponseEvent,
+    ResponseEventSink, ResponseStreamEvent,
 };
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
@@ -45,9 +49,11 @@ fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtif
         CompilerPlatformSources::new(&repository_root).expect("repository platform sources");
     let package_id =
         skiff_compiler_core::id::PublicationId::parse("example.com/vm-scalar").unwrap();
+    static NEXT_TEST_TEMP: AtomicU64 = AtomicU64::new(0);
     let temp = std::env::temp_dir().join(format!(
-        "skiff-request-vm-scalar-{}-{}",
+        "skiff-request-vm-scalar-{}-{}-{}",
         std::process::id(),
+        NEXT_TEST_TEMP.fetch_add(1, Ordering::Relaxed),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -367,5 +373,72 @@ mod tests {
             panic!("bytecode request returned a non-payload response: {response:?}");
         };
         assert_eq!(serde_json::from_slice::<f64>(&payload).unwrap(), 2.0);
+    }
+
+    #[test]
+    fn resumable_runtime_request_execution_returns_scalar_payload() {
+        let (package, bytecode) = compile_scalar_package();
+        let (contract, operation_id) = service_contract(package.package_id.as_str());
+        let (deployment, deployment_reference) =
+            service_deployment(&package, &contract, operation_id.clone());
+        let resolver = TestResolver {
+            deployment,
+            contract,
+            package,
+            bytecode,
+        };
+        let hydrated = DeploymentBytecodeLoader::new(&resolver)
+            .load(&deployment_reference)
+            .unwrap();
+        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
+        let verified =
+            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
+        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
+        let entry = verified.operation_entry(&operation_id).unwrap();
+        let target =
+            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let mut execution = start_runtime_bytecode_request(
+            BytecodeRequestExecutionInput {
+                target,
+                request: request_envelope(),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                cancellation: CancellationToken::new(),
+                execution_budget: Arc::new(ExecutionBudget::disabled()),
+                handles: BytecodeRequestExecutionHandles {
+                    request_heap_limits: RequestHeapLimits::default(),
+                },
+            },
+            sink,
+        )
+        .unwrap();
+
+        match execution.run().unwrap() {
+            BytecodeRequestRunOutcome::Complete(BoundaryResponse::Event(ResponseEvent::End(
+                ResponseEnd::Payload(payload),
+            ))) => {
+                assert_eq!(serde_json::from_slice::<f64>(&payload).unwrap(), 2.0);
+            }
+            BytecodeRequestRunOutcome::Complete(other) => {
+                panic!("resumable scalar request returned a stream response: {other:?}")
+            }
+            BytecodeRequestRunOutcome::Parked => panic!("scalar request must not park"),
+        }
+    }
+}
+
+#[derive(Default)]
+struct RecordingSink {
+    events: Mutex<Vec<ResponseStreamEvent>>,
+}
+
+impl ResponseEventSink for RecordingSink {
+    fn send_stream_event(
+        &self,
+        _request_id: &str,
+        event: ResponseStreamEvent,
+    ) -> skiff_runtime_request::RequestResult<()> {
+        self.events.lock().unwrap().push(event);
+        Ok(())
     }
 }

@@ -91,9 +91,7 @@ impl RequestError {
     }
 
     pub fn fixed_service_failure(&self) -> Option<&OpaqueServiceError> {
-        match self {
-            _ => None,
-        }
+        None
     }
 
     pub fn fixed_service_response_failure(&self) -> Option<FixedServiceResponseFailure> {

@@ -1,8 +1,9 @@
 use std::{
+    collections::VecDeque,
     num::{NonZeroU32, NonZeroUsize},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Instant,
 };
@@ -15,18 +16,31 @@ use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason}
 use skiff_runtime_deployment_image::{
     DeploymentImage, PinnedDeploymentEntry, PinnedDeploymentEntryError,
 };
-use skiff_runtime_model::{request_heap::RequestHeapLimits, vm_value::ValueSlot};
-use skiff_runtime_scheduler::{BytecodeScheduler, BytecodeSchedulerOutcome};
-use skiff_runtime_vm::{Vm, VmBudget, VmBudgetError, VmError, VmFiber, VmLimits, VmSemanticCharge};
+use skiff_runtime_model::{
+    request_heap::RequestHeapLimits,
+    vm_heap::VmHeap,
+    vm_root::VmRootSource,
+    vm_value::ValueSlot,
+};
+use skiff_runtime_scheduler::{
+    BytecodeScheduler, BytecodeSchedulerOutcome, StreamConsumer, StreamEvent, StreamPoll,
+    VmStreamSupervisor, VmStreamTerminal, WakeSignal,
+};
+use skiff_runtime_vm::{
+    ResumeOutcome, Vm, VmBudget, VmBudgetError, VmError, VmFiber, VmInternalTerminal, VmLimits,
+    VmOwnedValues, VmResumeToken, VmSemanticCharge,
+};
 
 use crate::{
-    vm_heap::RequestVmHeap, BoundaryResponse, ExecutionBudget, ExecutionControl, RequestEnvelope,
-    RequestError, RequestResult,
+    response_stream_writer::ResponseStreamWriter, vm_heap::RequestVmHeap, BoundaryResponse,
+    ExecutionBudget, ExecutionControl, RequestEnvelope, RequestError, RequestResult,
+    ResponseEventSink,
 };
 
 pub use skiff_runtime_scheduler::{
     BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff, BytecodeSchedulerError,
-    BytecodeSchedulerPorts, BytecodeStreamSupervisor, SuspendedTrampoline,
+    BytecodeSchedulerPorts, BytecodeStreamSupervisor, BytecodeUnit, PendingWake,
+    PendingWakeQueue, SuspendedTrampoline, VmPendingWake,
 };
 
 /// One verified deployment image and the exact operation entry selected from it.
@@ -112,6 +126,466 @@ pub type BytecodeRequestExecutionPorts = BytecodeSchedulerPorts<VmFiber>;
 /// One completed VM handoff plus the unique continuation that resumes its
 /// parent fiber.
 pub type BytecodeInvocationHandoff = BytecodeHandoff<VmFiber>;
+
+pub type BytecodeRequestSuspended = SuspendedTrampoline<VmFiber, VmResumeToken>;
+pub type BytecodeRequestPendingWake = VmPendingWake<BytecodeRequestSuspended>;
+pub type BytecodeRequestWakeQueue =
+    Arc<dyn PendingWakeQueue<VmResumeToken, BytecodeRequestSuspended, ResumeOutcome>>;
+
+/// Result of driving a resumable bytecode request once.
+#[derive(Debug, PartialEq)]
+pub enum BytecodeRequestRunOutcome {
+    Complete(BoundaryResponse),
+    Parked,
+}
+
+/// Resumable bytecode request execution state.
+///
+/// The legacy scalar entry point remains synchronous. This state keeps the VM
+/// budget, request heap, response stream and pending-wake queue alive so a
+/// real park can be resumed without rerunning the whole request from scratch.
+pub struct BytecodeRequestExecution {
+    driver: BytecodeRequestDriver<VmFiber>,
+    mode: String,
+    execution_budget: Arc<ExecutionBudget>,
+}
+
+impl BytecodeRequestExecution {
+    /// Drives the initial request segment.
+    pub fn run(&mut self) -> RequestResult<BytecodeRequestRunOutcome> {
+        let outcome = self.driver.run()?;
+        self.map_outcome(outcome)
+    }
+
+    /// Consumes exactly one claimed pending wake and resumes the parked VM.
+    pub fn resume(
+        &mut self,
+        wake: BytecodeRequestPendingWake,
+    ) -> RequestResult<BytecodeRequestRunOutcome> {
+        let outcome = self.driver.resume(wake)?;
+        self.map_outcome(outcome)
+    }
+
+    /// Returns one claimed wake if the response bridge already published it.
+    pub fn take_pending_wake(&mut self) -> Option<BytecodeRequestPendingWake> {
+        self.driver.take_pending_wake()
+    }
+
+    pub fn is_parked(&self) -> bool {
+        self.driver.state == BytecodeRequestDriverState::Parked
+    }
+
+    fn map_outcome(
+        &mut self,
+        outcome: BytecodeRequestDriverOutcome<VmFiber>,
+    ) -> RequestResult<BytecodeRequestRunOutcome> {
+        match outcome {
+            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+                if stream_sent {
+                    return Ok(BytecodeRequestRunOutcome::Complete(
+                        BoundaryResponse::StreamSent,
+                    ));
+                }
+                let values = result.map_err(|error| {
+                    vm_error_to_request_error(&self.execution_budget, error)
+                })?;
+                if self.mode == "serverStream" {
+                    return Err(RequestError::Decode(
+                        "serverStream request completed without a response stream".to_string(),
+                    ));
+                }
+                let payload = json_payload_from_value_slots(values.values())?;
+                Ok(BytecodeRequestRunOutcome::Complete(
+                    BoundaryResponse::payload(payload),
+                ))
+            }
+            BytecodeRequestDriverOutcome::Parked => Ok(BytecodeRequestRunOutcome::Parked),
+        }
+    }
+}
+
+/// Starts a bytecode request with a response event sink and a resumable
+/// pending-wake queue.
+pub fn start_runtime_bytecode_request(
+    input: BytecodeRequestExecutionInput,
+    response_events: Arc<dyn ResponseEventSink>,
+) -> RequestResult<BytecodeRequestExecution> {
+    start_runtime_bytecode_request_with_ports(
+        input,
+        response_events,
+        BytecodeRequestExecutionPorts::default(),
+    )
+}
+
+/// Starts a bytecode request with optional child/adapter ports.
+pub fn start_runtime_bytecode_request_with_ports(
+    input: BytecodeRequestExecutionInput,
+    response_events: Arc<dyn ResponseEventSink>,
+    ports: BytecodeRequestExecutionPorts,
+) -> RequestResult<BytecodeRequestExecution> {
+    let request_id = input.request.request_id.clone();
+    let mode = input.request.mode.clone();
+    validate_runtime_bytecode_request(&input.request)?;
+    let execution = ExecutionControl::new(input.cancellation.clone(), &input.execution_budget);
+    execution.check_cancelled().map_err(RequestError::from)?;
+
+    let BytecodeRequestExecutionInput {
+        target,
+        request: _,
+        cancelled,
+        cancellation,
+        execution_budget,
+        handles,
+    } = input;
+
+    let BytecodeRequestTarget {
+        image,
+        entry,
+        operation_id: _,
+    } = target;
+    let owner_pin = Arc::clone(&image);
+    let pinned = PinnedDeploymentEntry::try_new(image, entry)
+        .map_err(pinned_entry_error_to_request_error)?;
+    let fiber = Vm::start(pinned, Box::new([]), vm_limits())
+        .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
+
+    let queue = Arc::new(InMemoryWakeQueue::new());
+    let (supervisor, consumer) = VmStreamSupervisor::open(owner_pin, queue.clone());
+    let writer = ResponseStreamWriter::new(request_id, response_events);
+    let drain = RequestResponseStream {
+        consumer,
+        writer,
+        mode: mode.clone(),
+        execution_budget: Arc::clone(&execution_budget),
+    };
+    let supervisor = Arc::new(supervisor);
+    let stream_supervisor: Arc<dyn BytecodeStreamSupervisor<VmFiber>> = supervisor.clone();
+    let child_executor = ports.child_executor;
+    let scheduler = BytecodeScheduler::new(
+        fiber,
+        BytecodeSchedulerPorts {
+            child_executor: child_executor.clone(),
+            stream_supervisor: Some(stream_supervisor.clone()),
+        },
+    );
+
+    let heap: Box<dyn VmHeap + Send> = Box::new(RequestVmHeap::new(handles.request_heap_limits));
+    let budget: Box<dyn VmBudget + Send> =
+        Box::new(BytecodeVmBudget::new(execution_budget.clone(), cancelled, cancellation));
+    let driver = BytecodeRequestDriver::new(
+        scheduler,
+        child_executor,
+        Some(stream_supervisor),
+        Some(Box::new(drain)),
+        queue,
+        heap,
+        budget,
+        scheduler_error_map(execution_budget.clone()),
+    );
+
+    Ok(BytecodeRequestExecution {
+        driver,
+        mode,
+        execution_budget,
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BytecodeRequestDriverState {
+    Initial,
+    Parked,
+    Complete,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BytecodeRequestDrainState {
+    Empty,
+    Delivered,
+    Terminal,
+}
+
+trait BytecodeRequestStreamDrain<U: BytecodeUnit>: Send {
+    fn drain(&mut self) -> RequestResult<BytecodeRequestDrainState>;
+}
+
+struct NoopWake;
+
+impl WakeSignal for NoopWake {
+    fn wake(&self) {}
+}
+
+struct RequestResponseStream {
+    consumer: StreamConsumer<
+        Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
+        VmOwnedValues,
+        VmStreamTerminal,
+    >,
+    writer: ResponseStreamWriter,
+    mode: String,
+    execution_budget: Arc<ExecutionBudget>,
+}
+
+impl BytecodeRequestStreamDrain<VmFiber> for RequestResponseStream {
+    fn drain(&mut self) -> RequestResult<BytecodeRequestDrainState> {
+        let mut state = BytecodeRequestDrainState::Empty;
+        loop {
+            match self.consumer.poll_next(Arc::new(NoopWake)) {
+                StreamPoll::Pending => break,
+                StreamPoll::Rejected(reason) => {
+                    return Err(RequestError::Decode(format!(
+                        "bytecode response stream consumer rejected: {reason:?}"
+                    )))
+                }
+                StreamPoll::Ready(StreamEvent::Item(values)) => {
+                    if self.mode != "serverStream" {
+                        return Err(RequestError::Unsupported(
+                            "bytecode stream emission requires serverStream request.start mode"
+                                .to_string(),
+                        ));
+                    }
+                    self.writer.start_runtime_stream()?;
+                    let payload = json_payload_from_value_slots(values.values())?;
+                    self.writer.send_chunk(payload)?;
+                    state = BytecodeRequestDrainState::Delivered;
+                }
+                StreamPoll::Ready(StreamEvent::End) => {
+                    if self.mode != "serverStream" {
+                        return Err(RequestError::Unsupported(
+                            "bytecode stream end requires serverStream request.start mode"
+                                .to_string(),
+                        ));
+                    }
+                    self.writer.start_runtime_stream()?;
+                    self.writer.finish()?;
+                    return Ok(BytecodeRequestDrainState::Terminal);
+                }
+                StreamPoll::Ready(StreamEvent::Error(error)) => {
+                    let error = match error {
+                        VmStreamTerminal::Cancelled => RequestError::Cancelled,
+                        VmStreamTerminal::Error(error) => {
+                            vm_error_to_request_error(&self.execution_budget, error)
+                        }
+                        VmStreamTerminal::End => {
+                            unreachable!("End is delivered through StreamEvent::End")
+                        }
+                    };
+                    return Err(error);
+                }
+                StreamPoll::Ready(StreamEvent::Cancelled) => {
+                    return Err(RequestError::Cancelled);
+                }
+            }
+        }
+        Ok(state)
+    }
+}
+
+type DriverPendingWake<U> = PendingWake<
+    <U as BytecodeUnit>::ResumeToken,
+    SuspendedTrampoline<U, <U as BytecodeUnit>::ResumeToken>,
+    <U as BytecodeUnit>::ResumeOutcome,
+>;
+
+struct InMemoryWakeQueue<U: BytecodeUnit> {
+    wakes: Mutex<VecDeque<DriverPendingWake<U>>>,
+}
+
+impl<U: BytecodeUnit> InMemoryWakeQueue<U> {
+    fn new() -> Self {
+        Self {
+            wakes: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn take(&self) -> Option<DriverPendingWake<U>> {
+        self.wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+    }
+}
+
+impl<U> PendingWakeQueue<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>, U::ResumeOutcome>
+    for InMemoryWakeQueue<U>
+where
+    U: BytecodeUnit + Send + 'static,
+    U::ResumeToken: Send,
+    U::ResumeOutcome: Send,
+    SuspendedTrampoline<U, U::ResumeToken>: Send,
+{
+    fn enqueue(&self, wake: DriverPendingWake<U>) {
+        self.wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push_back(wake);
+    }
+}
+
+trait BytecodeRequestResume<U>
+where
+    U: BytecodeUnit + VmRootSource + 'static,
+{
+    fn into_scheduler(
+        self,
+        ports: BytecodeSchedulerPorts<U>,
+    ) -> Result<BytecodeScheduler<U>, BytecodeSchedulerError>;
+}
+
+impl<U> BytecodeRequestResume<U> for DriverPendingWake<U>
+where
+    U: BytecodeUnit + VmRootSource + 'static,
+{
+    fn into_scheduler(
+        self,
+        ports: BytecodeSchedulerPorts<U>,
+    ) -> Result<BytecodeScheduler<U>, BytecodeSchedulerError> {
+        BytecodeScheduler::resume_from_pending_wake(self, ports)
+    }
+}
+
+enum BytecodeRequestDriverOutcome<U: BytecodeUnit> {
+    Complete {
+        result: U::RootResult,
+        stream_sent: bool,
+    },
+    Parked,
+}
+
+struct BytecodeRequestDriver<U>
+where
+    U: BytecodeUnit + VmRootSource + 'static,
+{
+    scheduler: Option<BytecodeScheduler<U>>,
+    child_executor: Option<Arc<dyn BytecodeChildExecutor<U>>>,
+    stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor<U>>>,
+    stream_drain: Option<Box<dyn BytecodeRequestStreamDrain<U>>>,
+    queue: Arc<InMemoryWakeQueue<U>>,
+    heap: Box<dyn VmHeap + Send>,
+    budget: Box<dyn VmBudget + Send>,
+    error_map: Box<dyn Fn(BytecodeSchedulerError) -> RequestError + Send + Sync>,
+    state: BytecodeRequestDriverState,
+}
+
+impl<U> BytecodeRequestDriver<U>
+where
+    U: BytecodeUnit + VmRootSource + 'static,
+{
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        scheduler: BytecodeScheduler<U>,
+        child_executor: Option<Arc<dyn BytecodeChildExecutor<U>>>,
+        stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor<U>>>,
+        stream_drain: Option<Box<dyn BytecodeRequestStreamDrain<U>>>,
+        queue: Arc<InMemoryWakeQueue<U>>,
+        heap: Box<dyn VmHeap + Send>,
+        budget: Box<dyn VmBudget + Send>,
+        error_map: Box<dyn Fn(BytecodeSchedulerError) -> RequestError + Send + Sync>,
+    ) -> Self {
+        Self {
+            scheduler: Some(scheduler),
+            child_executor,
+            stream_supervisor,
+            stream_drain,
+            queue,
+            heap,
+            budget,
+            error_map,
+            state: BytecodeRequestDriverState::Initial,
+        }
+    }
+
+    fn ports(&self) -> BytecodeSchedulerPorts<U> {
+        BytecodeSchedulerPorts {
+            child_executor: self.child_executor.clone(),
+            stream_supervisor: self.stream_supervisor.clone(),
+        }
+    }
+
+    fn run(&mut self) -> RequestResult<BytecodeRequestDriverOutcome<U>> {
+        match self.state {
+            BytecodeRequestDriverState::Initial => {
+                let scheduler = self.scheduler.take().ok_or_else(|| {
+                    RequestError::Decode("bytecode request scheduler is missing".to_string())
+                })?;
+                self.advance(scheduler)
+            }
+            BytecodeRequestDriverState::Parked | BytecodeRequestDriverState::Complete => Err(
+                RequestError::Decode("bytecode request has already been driven".to_string()),
+            ),
+            BytecodeRequestDriverState::Failed => Err(RequestError::Decode(
+                "bytecode request failed closed".to_string(),
+            )),
+        }
+    }
+
+    fn resume<R>(&mut self, resume: R) -> RequestResult<BytecodeRequestDriverOutcome<U>>
+    where
+        R: BytecodeRequestResume<U>,
+    {
+        if self.state != BytecodeRequestDriverState::Parked {
+            return Err(RequestError::Decode(
+                "bytecode request is not parked".to_string(),
+            ));
+        }
+        let scheduler = resume
+            .into_scheduler(self.ports())
+            .map_err(|error| {
+                let error = (self.error_map)(error);
+                self.state = BytecodeRequestDriverState::Failed;
+                error
+            })?;
+        self.advance(scheduler)
+    }
+
+    fn take_pending_wake(&self) -> Option<DriverPendingWake<U>> {
+        self.queue.take()
+    }
+
+    fn advance(
+        &mut self,
+        scheduler: BytecodeScheduler<U>,
+    ) -> RequestResult<BytecodeRequestDriverOutcome<U>> {
+        let outcome = match scheduler.run(&mut *self.heap, &mut *self.budget) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let error = (self.error_map)(error);
+                self.state = BytecodeRequestDriverState::Failed;
+                return Err(error);
+            }
+        };
+        let drain_state = match self.stream_drain.as_mut() {
+            Some(drain) => match drain.drain() {
+                Ok(state) => state,
+                Err(error) => {
+                    self.state = BytecodeRequestDriverState::Failed;
+                    return Err(error);
+                }
+            },
+            None => BytecodeRequestDrainState::Empty,
+        };
+        match outcome {
+            BytecodeSchedulerOutcome::Complete(result) => {
+                self.state = BytecodeRequestDriverState::Complete;
+                Ok(BytecodeRequestDriverOutcome::Complete {
+                    result,
+                    stream_sent: drain_state == BytecodeRequestDrainState::Terminal,
+                })
+            }
+            BytecodeSchedulerOutcome::Parked => {
+                self.state = BytecodeRequestDriverState::Parked;
+                Ok(BytecodeRequestDriverOutcome::Parked)
+            }
+        }
+    }
+}
+
+fn scheduler_error_map(
+    execution_budget: Arc<ExecutionBudget>,
+) -> Box<dyn Fn(BytecodeSchedulerError) -> RequestError + Send + Sync> {
+    Box::new(move |error| scheduler_error_to_request_error(&execution_budget, error))
+}
+
 
 /// Executes one scalar bytecode request against a verified deployment image.
 pub fn execute_runtime_bytecode_request(
@@ -200,6 +674,20 @@ fn validate_bytecode_request(request: &RequestEnvelope) -> RequestResult<()> {
             request.mode
         )));
     }
+    validate_bytecode_request_metadata(request)
+}
+
+fn validate_runtime_bytecode_request(request: &RequestEnvelope) -> RequestResult<()> {
+    if !matches!(request.mode.as_str(), "unary" | "serverStream") {
+        return Err(RequestError::Unsupported(format!(
+            "bytecode request ingress only supports unary or serverStream request.start, got {}",
+            request.mode
+        )));
+    }
+    validate_bytecode_request_metadata(request)
+}
+
+fn validate_bytecode_request_metadata(request: &RequestEnvelope) -> RequestResult<()> {
     if request.ingress_selector.is_none() {
         return Err(RequestError::Unsupported(
             "bytecode scalar ingress requires request.start ingress_selector".to_string(),
@@ -331,7 +819,11 @@ fn execution_budget_reason_to_vm(reason: ExecutionBudgetReason) -> VmBudgetError
 fn vm_error_to_request_error(execution_budget: &ExecutionBudget, error: VmError) -> RequestError {
     match error {
         VmError::Budget(error) => vm_budget_error_to_request_error(execution_budget, error),
-        error => RequestError::Unsupported(format!("scalar bytecode VM execution failed: {error}")),
+        VmError::InternalTerminal(VmInternalTerminal::Budget(error)) => {
+            vm_budget_error_to_request_error(execution_budget, error)
+        }
+        VmError::InternalTerminal(VmInternalTerminal::OwnerStopped) => RequestError::Cancelled,
+        error => RequestError::Unsupported(format!("bytecode VM execution failed: {error}")),
     }
 }
 
@@ -382,11 +874,379 @@ mod tests {
     use skiff_artifact_model::{IngressProtocol, IngressSelector};
     use skiff_runtime_model::vm_value::ValueSlot;
 
+    use skiff_runtime_model::{
+        vm_heap::VmHeapError,
+        vm_root::VmRootVisitor,
+    };
+    use skiff_runtime_scheduler::{
+        BytecodeControl, BytecodeStreamHandoff, RootDisposition, RootEscrow, RootEscrowBacking,
+    };
+
     use super::*;
     use crate::{
         BinaryHttpRequest, BinaryHttpRequestMetadata, HttpAdapter, HttpAdapterCallable,
         HttpAdapterKind, RequestEnvelope,
     };
+
+
+    type TestControl = BytecodeControl<usize, usize, usize, usize, usize>;
+    type TestSuspended = SuspendedTrampoline<TestUnit, usize>;
+    const ERROR_OUTCOME: usize = usize::MAX;
+
+    #[derive(Debug)]
+    struct TestUnit {
+        control: Option<TestControl>,
+        resumed: Option<(usize, usize)>,
+        finish_after_resume: Option<usize>,
+    }
+
+    impl TestUnit {
+        fn parked(operation: usize) -> Self {
+            Self {
+                control: Some(TestControl::Park(operation)),
+                resumed: None,
+                finish_after_resume: None,
+            }
+        }
+
+        fn emit(item: usize, finish: usize) -> Self {
+            Self {
+                control: Some(TestControl::EmitStream(item)),
+                resumed: None,
+                finish_after_resume: Some(finish),
+            }
+        }
+    }
+
+    impl VmRootSource for TestUnit {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl BytecodeUnit for TestUnit {
+        type ResumeToken = usize;
+        type ResumeOutcome = usize;
+        type RootResult = usize;
+        type ChildInvocation = usize;
+        type AdapterInvocation = usize;
+        type StreamItem = usize;
+        type PendingOperation = usize;
+
+        fn run_segment(
+            &mut self,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> TestControl {
+            if let Some((_, outcome)) = self.resumed.take() {
+                TestControl::Complete(self.finish_after_resume.take().unwrap_or(outcome))
+            } else if let Some(control) = self.control.take() {
+                control
+            } else {
+                TestControl::Complete(0)
+            }
+        }
+
+        fn resume(
+            &mut self,
+            token: usize,
+            outcome: usize,
+        ) -> Result<(), BytecodeSchedulerError> {
+            if outcome == ERROR_OUTCOME {
+                return Err(BytecodeSchedulerError::UnsupportedPark);
+            }
+            self.resumed = Some((token, outcome));
+            Ok(())
+        }
+
+        fn child_completion_to_resume_outcome(completed: usize) -> usize {
+            completed
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum TestStreamMode {
+        Backpressure,
+        Ready,
+    }
+
+    struct FakeStream {
+        mode: TestStreamMode,
+        emitted: Mutex<Vec<usize>>,
+        parked: Mutex<Option<(usize, TestSuspended)>>,
+        delivered: Mutex<Vec<usize>>,
+        terminal: std::sync::atomic::AtomicBool,
+    }
+
+    impl FakeStream {
+        fn new(mode: TestStreamMode) -> Self {
+            Self {
+                mode,
+                emitted: Mutex::new(Vec::new()),
+                parked: Mutex::new(None),
+                delivered: Mutex::new(Vec::new()),
+                terminal: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl BytecodeStreamSupervisor<TestUnit> for FakeStream {
+        fn emit_stream_handoff(
+            &self,
+            item: usize,
+            _depth: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeStreamHandoff<TestUnit>, BytecodeSchedulerError> {
+            self.emitted.lock().unwrap().push(item);
+            match self.mode {
+                TestStreamMode::Backpressure => Ok(BytecodeStreamHandoff::Pending(item)),
+                TestStreamMode::Ready => Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                    resume: item,
+                    outcome: 0,
+                })),
+            }
+        }
+
+        fn park(
+            &self,
+            operation: usize,
+            suspended: TestSuspended,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<(), BytecodeSchedulerError> {
+            *self.parked.lock().unwrap() = Some((operation, suspended));
+            Ok(())
+        }
+
+        fn finish_stream(
+            &self,
+            _depth: usize,
+            _result: &usize,
+        ) -> Result<(), BytecodeSchedulerError> {
+            let emitted = !self.emitted.lock().unwrap().is_empty();
+            let delivered = !self.delivered.lock().unwrap().is_empty();
+            if emitted || delivered {
+                self.terminal.store(true, Ordering::Release);
+            }
+            Ok(())
+        }
+    }
+
+    struct TestDrain {
+        stream: Arc<FakeStream>,
+    }
+
+    impl BytecodeRequestStreamDrain<TestUnit> for TestDrain {
+        fn drain(&mut self) -> RequestResult<BytecodeRequestDrainState> {
+            let items: Vec<usize> = self.stream.emitted.lock().unwrap().drain(..).collect();
+            self.stream
+                .delivered
+                .lock()
+                .unwrap()
+                .extend(items.iter().copied());
+            if self.stream.terminal.load(Ordering::Acquire) {
+                Ok(BytecodeRequestDrainState::Terminal)
+            } else if !items.is_empty() {
+                Ok(BytecodeRequestDrainState::Delivered)
+            } else {
+                Ok(BytecodeRequestDrainState::Empty)
+            }
+        }
+    }
+
+    struct EmptyRoots;
+
+    impl VmRootSource for EmptyRoots {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl RootEscrowBacking for EmptyRoots {
+        fn root_count(&self) -> usize {
+            0
+        }
+
+        fn restore_roots(self: Box<Self>) {}
+
+        fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {}
+    }
+
+    struct TestResume {
+        resume: usize,
+        suspended: TestSuspended,
+        outcome: usize,
+        escrow: RootEscrow,
+    }
+
+    impl BytecodeRequestResume<TestUnit> for TestResume {
+        fn into_scheduler(
+            self,
+            ports: BytecodeSchedulerPorts<TestUnit>,
+        ) -> Result<BytecodeScheduler<TestUnit>, BytecodeSchedulerError> {
+            BytecodeScheduler::resume_from_suspended(
+                self.suspended,
+                self.resume,
+                self.outcome,
+                self.escrow,
+                ports,
+            )
+        }
+    }
+
+    struct NoopHeap;
+
+    impl VmHeap for NoopHeap {
+        fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+
+        fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn release_snapshot(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+
+        fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    struct NoopBudget;
+
+    impl VmBudget for NoopBudget {
+        fn replenish_raw_fuel(&mut self, maximum: NonZeroU32) -> Result<NonZeroU32, VmBudgetError> {
+            Ok(maximum)
+        }
+
+        fn poll_interrupt(&mut self) -> Result<(), VmBudgetError> {
+            Ok(())
+        }
+
+        fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetError> {
+            Ok(())
+        }
+    }
+
+    fn driver_for(
+        unit: TestUnit,
+        stream: Arc<FakeStream>,
+    ) -> BytecodeRequestDriver<TestUnit> {
+        let queue = Arc::new(InMemoryWakeQueue::new());
+        let supervisor: Arc<dyn BytecodeStreamSupervisor<TestUnit>> = stream.clone();
+        let scheduler = BytecodeScheduler::new(
+            unit,
+            BytecodeSchedulerPorts {
+                child_executor: None,
+                stream_supervisor: Some(supervisor.clone()),
+            },
+        );
+        let heap: Box<dyn VmHeap + Send> = Box::new(NoopHeap);
+        let budget: Box<dyn VmBudget + Send> = Box::new(NoopBudget);
+        let error_map: Box<dyn Fn(BytecodeSchedulerError) -> RequestError + Send + Sync> =
+            Box::new(|error| RequestError::Decode(error.to_string()));
+        let drain = Box::new(TestDrain {
+            stream: Arc::clone(&stream),
+        });
+        BytecodeRequestDriver::new(
+            scheduler,
+            None,
+            Some(supervisor),
+            Some(drain),
+            queue,
+            heap,
+            budget,
+            error_map,
+        )
+    }
+
+    fn resume_after_park(
+        driver: &mut BytecodeRequestDriver<TestUnit>,
+        stream: &FakeStream,
+        outcome: usize,
+    ) -> RequestResult<BytecodeRequestDriverOutcome<TestUnit>> {
+        let (operation, suspended) = stream.parked.lock().unwrap().take().expect("parked unit");
+        let resume = TestResume {
+            resume: operation,
+            suspended,
+            outcome,
+            escrow: RootEscrow::new(Box::new(EmptyRoots)),
+        };
+        driver.resume(resume)
+    }
+
+    #[test]
+    fn parked_request_can_resume() {
+        let stream = Arc::new(FakeStream::new(TestStreamMode::Ready));
+        let mut driver = driver_for(TestUnit::parked(7), Arc::clone(&stream));
+
+        assert!(matches!(driver.run().unwrap(), BytecodeRequestDriverOutcome::Parked));
+        match resume_after_park(&mut driver, &stream, 42).unwrap() {
+            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+                assert_eq!(result, 42);
+                assert!(!stream_sent);
+            }
+            BytecodeRequestDriverOutcome::Parked => panic!("resume must complete"),
+        }
+    }
+
+    #[test]
+    fn backpressure_item_delivery_resumes_with_zero_result() {
+        let stream = Arc::new(FakeStream::new(TestStreamMode::Backpressure));
+        let mut driver = driver_for(TestUnit::emit(7, 99), Arc::clone(&stream));
+
+        assert!(matches!(driver.run().unwrap(), BytecodeRequestDriverOutcome::Parked));
+        assert_eq!(*stream.delivered.lock().unwrap(), [7]);
+        match resume_after_park(&mut driver, &stream, 0).unwrap() {
+            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+                assert_eq!(result, 99);
+                assert!(stream_sent);
+            }
+            BytecodeRequestDriverOutcome::Parked => panic!("zero-result resume must complete"),
+        }
+        assert_eq!(*stream.delivered.lock().unwrap(), [7]);
+        assert!(stream.terminal.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn error_resume_fails_closed() {
+        let stream = Arc::new(FakeStream::new(TestStreamMode::Backpressure));
+        let mut driver = driver_for(TestUnit::emit(7, 99), Arc::clone(&stream));
+
+        assert!(matches!(driver.run().unwrap(), BytecodeRequestDriverOutcome::Parked));
+        let error = match resume_after_park(&mut driver, &stream, ERROR_OUTCOME) {
+            Err(error) => error,
+            Ok(_) => panic!("error resume must fail closed"),
+        };
+        assert!(error.to_string().contains("park"));
+        assert!(matches!(
+            driver.run(),
+            Err(RequestError::Decode(message)) if message.contains("failed closed")
+        ));
+    }
+
+    #[test]
+    fn natural_end_completes_response_stream() {
+        let stream = Arc::new(FakeStream::new(TestStreamMode::Ready));
+        let mut driver = driver_for(TestUnit::emit(7, 99), Arc::clone(&stream));
+
+        match driver.run().unwrap() {
+            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+                assert_eq!(result, 99);
+                assert!(stream_sent);
+            }
+            BytecodeRequestDriverOutcome::Parked => panic!("ready emission must not park"),
+        }
+        assert_eq!(*stream.delivered.lock().unwrap(), [7]);
+        assert!(stream.terminal.load(Ordering::Acquire));
+    }
 
     #[test]
     fn json_payload_encodes_scalar_immediates() {
