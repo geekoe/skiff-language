@@ -91,6 +91,7 @@ struct PendingResume {
     operand: usize,
     expected_stack_height_before_result: u32,
     result_ty: Option<TypeRefIr>,
+    end_block: Option<u32>,
 }
 
 struct PendingExceptionRegion {
@@ -295,7 +296,19 @@ impl<'a> FunctionEmitter<'a> {
                 endpoint_slot,
                 item_type,
             } => {
-                self.emit_stream_next(*endpoint_slot, item_type)?;
+                let end_block = self
+                    .function
+                    .blocks
+                    .get(self.current_block as usize)
+                    .and_then(|block| block.successors.first().copied())
+                    .ok_or_else(|| {
+                        unsupported(
+                            &self.key,
+                            "StreamNext",
+                            "statement has no natural end continuation",
+                        )
+                    })?;
+                self.emit_stream_next(*endpoint_slot, item_type, Some(end_block))?;
             }
             MirStmtKind::Expr { value } => {
                 let expression = self.function.expression(*value)?;
@@ -530,6 +543,7 @@ impl<'a> FunctionEmitter<'a> {
         expression: &MirExpression,
     ) -> Result<(), BytecodeEmissionError> {
         if self.try_emit_ordinary_call(expression)? {
+            self.map_all_expression_events(expression.index);
             return Ok(());
         }
         let ExprIr::Call { call } = &expression.expression else {
@@ -555,7 +569,7 @@ impl<'a> FunctionEmitter<'a> {
         for argument in &call.args {
             self.emit_expression(*argument)?;
         }
-        match &call.target {
+        let result = match &call.target {
             CallTargetIr::ServiceCall {
                 service_call_ref_index,
             } => {
@@ -633,7 +647,10 @@ impl<'a> FunctionEmitter<'a> {
                 "non-direct call target",
                 &format!("{other:?} is outside the emitted core"),
             )),
-        }
+        };
+        result?;
+        self.map_all_expression_events(expression.index);
+        Ok(())
     }
 
     fn emit_pending_call(
@@ -719,6 +736,7 @@ impl<'a> FunctionEmitter<'a> {
                 } else {
                     Some(expression.ty.clone())
                 },
+                end_block: None,
             });
         }
         self.map_call_event(expression.index);
@@ -863,6 +881,7 @@ impl<'a> FunctionEmitter<'a> {
             expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
                 .map_err(|_| arithmetic(&self.key, "EmitStream stack height conversion"))?,
             result_ty: None,
+            end_block: None,
         });
         Ok(())
     }
@@ -871,6 +890,7 @@ impl<'a> FunctionEmitter<'a> {
         &mut self,
         endpoint_slot: u32,
         item_type: &TypeRefIr,
+        end_block: Option<u32>,
     ) -> Result<(), BytecodeEmissionError> {
         let endpoint_type = self.slot_type(endpoint_slot)?;
         let TypeRefIr::Builtin { name, args } = endpoint_type else {
@@ -895,6 +915,7 @@ impl<'a> FunctionEmitter<'a> {
             expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
                 .map_err(|_| arithmetic(&self.key, "StreamNext stack height conversion"))?,
             result_ty: Some(item_type.clone()),
+            end_block,
         });
         Ok(())
     }
@@ -1587,7 +1608,7 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_op(Opcode::StoreSlot, vec![iterable_slot])?;
             }
             let header_instruction = self.instructions.len();
-            self.emit_stream_next(iterable_slot, &item_ty)?;
+            self.emit_stream_next(iterable_slot, &item_ty, Some(continuation))?;
             self.emit_op(Opcode::StoreSlot, vec![item_slot])?;
             self.emit_jump_to_block(body)?;
             self.loop_backedges.insert(
@@ -1751,6 +1772,22 @@ impl<'a> FunctionEmitter<'a> {
             cleanup_depth: region.cleanup_depth,
         });
         self.emit_expression(body)
+    }
+
+    fn generated_slot_plan(&self, ty: &TypeRefIr) -> skiff_artifact_model::ValueTransferPlan {
+        if is_never_type(ty) {
+            return skiff_artifact_model::ValueTransferPlan::SnapshotShare {
+                drop: skiff_artifact_model::ValueDropPlan::Trivial,
+            };
+        }
+        if is_package_symbol_type(ty) {
+            return skiff_artifact_model::ValueTransferPlan::SnapshotShare {
+                drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
+            };
+        }
+        skiff_artifact_model::ValueTransferPlan::FromType {
+            ty: super::constants::qualify_local_types(self.unit.module_path.as_str(), ty),
+        }
     }
 
     fn slot_type(&self, slot: u32) -> Result<&TypeRefIr, BytecodeEmissionError> {
@@ -2033,10 +2070,32 @@ impl<'a> FunctionEmitter<'a> {
                     ty: super::constants::qualify_local_types(self.unit.module_path.as_str(), ty),
                 })
                 .collect();
+            let end_resume_pc = if let Some(end_block) = pending.end_block {
+                let ordinal = usize::try_from(end_block)
+                    .map_err(|_| arithmetic(&self.key, "resume end block ordinal"))?;
+                let start = self
+                    .block_starts
+                    .get(ordinal)
+                    .copied()
+                    .flatten()
+                    .ok_or_else(|| {
+                        unsupported(
+                            &self.key,
+                            "resume end block",
+                            &format!("block {end_block} is absent"),
+                        )
+                    })?;
+                Some(*pcs.get(start).ok_or_else(|| {
+                    arithmetic(&self.key, "resume end pc lookup")
+                })?)
+            } else {
+                None
+            };
             let pool_index = self.image.add_resume_descriptor(ResumeDescriptor {
                 function_key: self.key.clone(),
                 site_pc,
                 resume_pc,
+                end_resume_pc,
                 expected_stack_height_before_result: pending.expected_stack_height_before_result,
                 result_type_refs,
                 result_plans,
@@ -2147,7 +2206,10 @@ impl<'a> FunctionEmitter<'a> {
                 unsupported(
                     &self.key,
                     "source event placement",
-                    &format!("event {event_index} was not anchored to emitted code"),
+                    &format!(
+                        "event {event_index} ({:?}) was not anchored to emitted code",
+                        self.events[event_index].anchor
+                    ),
                 )
             })?;
             let pc = *pcs
@@ -2243,9 +2305,7 @@ impl<'a> FunctionEmitter<'a> {
                     name = generated.name
                 ),
             )?);
-            slot_plans.push(skiff_artifact_model::ValueTransferPlan::FromType {
-                ty: super::constants::qualify_local_types(self.unit.module_path.as_str(), ty),
-            });
+            slot_plans.push(self.generated_slot_plan(ty));
         }
         let mut parameter_slots = Vec::new();
         for parameter in &self.function.params {
@@ -2266,7 +2326,12 @@ impl<'a> FunctionEmitter<'a> {
                 plan,
             });
         }
-        let result_count = usize::from(!is_void(&self.function.return_type));
+        let is_stream_producer = self.function.stream_result.is_some();
+        let result_count = if is_stream_producer {
+            0
+        } else {
+            usize::from(!is_void(&self.function.return_type))
+        };
         let result_type_refs = if result_count == 0 {
             Vec::new()
         } else {
@@ -2276,7 +2341,20 @@ impl<'a> FunctionEmitter<'a> {
                 &format!("function `{key}` return type", key = self.key),
             )?]
         };
-        let result_plans = self.plans.result_plans.clone();
+        let stream_result_type_ref = if is_stream_producer {
+            Some(self.image.type_index(
+                self.unit.module_path.as_str(),
+                &self.function.return_type,
+                &format!("function `{key}` stream authority type", key = self.key),
+            )?)
+        } else {
+            None
+        };
+        let result_plans = if is_stream_producer {
+            Vec::new()
+        } else {
+            self.plans.result_plans.clone()
+        };
         let writable_local_slots = self
             .function
             .slots
@@ -2294,6 +2372,7 @@ impl<'a> FunctionEmitter<'a> {
                 .map_err(|_| arithmetic(&self.key, "frame result count conversion"))?,
             result_type_refs,
             result_plans,
+            stream_result_type_ref,
             slot_plans,
         })
     }
@@ -2412,6 +2491,24 @@ fn stream_item_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
                 && expected_name == "number"
                 && actual_args.is_empty()
                 && expected_args.is_empty()
+        )
+}
+
+fn is_never_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty()
+    )
+}
+
+fn is_package_symbol_type(ty: &TypeRefIr) -> bool {
+    matches!(ty, TypeRefIr::PackageSymbol { .. })
+        || matches!(
+            ty,
+            TypeRefIr::AppliedNominal {
+                base: skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { .. },
+                ..
+            }
         )
 }
 

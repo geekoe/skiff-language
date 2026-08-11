@@ -303,7 +303,8 @@ fn validate_plan_counts(
             plan_count: plans.slot_plans.len(),
         });
     }
-    let result_count = usize::from(!is_void(&function.return_type));
+    let result_count =
+        usize::from(!is_void(&function.return_type) && function.stream_result.is_none());
     if plans.result_plans.len() != result_count {
         return Err(BytecodeEmissionError::ResultPlanCountMismatch {
             function_key: function_key.to_string(),

@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     native_value_lifecycle_registry, NativeResourceDropPlan, NativeValueDropPlan,
-    NativeValueEmbedding, NativeValueLifecycleConcrete, NativeValueLifecycleResolution,
-    ResourceDropPlan, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    NativeValueEmbedding, NativeValueLifecycleConcrete, NativeValueLifecycleLookupError,
+    NativeValueLifecycleResolution, NominalTypeRefBaseIr, ResourceDropPlan, TypeRefIr,
+    ValueDropPlan, ValueTransferPlan,
 };
 use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
@@ -41,7 +42,8 @@ pub fn derive_bytecode_value_transfer_plans(
                     ty,
                 )?);
             }
-            let result_plans = if is_void(&function.return_type) {
+            let result_plans =
+                if is_void(&function.return_type) || function.stream_result.is_some() {
                 Vec::new()
             } else {
                 vec![concrete_value_plan(
@@ -84,18 +86,51 @@ fn concrete_value_plan(
     ty: &skiff_artifact_model::TypeRefIr,
 ) -> Result<ValueTransferPlan, BytecodeEmissionError> {
     if is_record_aggregate(units, module_path, ty)? {
+        return Ok(snapshot_release_plan());
+    }
+    if is_never_type(ty) {
         return Ok(ValueTransferPlan::SnapshotShare {
-            drop: ValueDropPlan::SnapshotRelease,
+            drop: ValueDropPlan::Trivial,
         });
     }
-    let resolution = native_value_lifecycle_registry()
-        .lookup(ty)
-        .map_err(|error| BytecodeEmissionError::UnsupportedConstruct {
-            function_key: function_key.to_string(),
-            construct: "value lifecycle lookup",
-            location: format!(" {location}: {error}"),
-        })?;
+    let resolution = match native_value_lifecycle_registry().lookup(ty) {
+        Ok(resolution) => resolution,
+        Err(NativeValueLifecycleLookupError::Missing { .. }) if is_package_symbol_type(ty) => {
+            return Ok(snapshot_release_plan());
+        }
+        Err(error) => {
+            return Err(BytecodeEmissionError::UnsupportedConstruct {
+                function_key: function_key.to_string(),
+                construct: "value lifecycle lookup",
+                location: format!(" {location}: {error}"),
+            });
+        }
+    };
     concrete_lifecycle_plan(function_key, location, ty, resolution)
+}
+
+fn snapshot_release_plan() -> ValueTransferPlan {
+    ValueTransferPlan::SnapshotShare {
+        drop: ValueDropPlan::SnapshotRelease,
+    }
+}
+
+fn is_never_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty()
+    )
+}
+
+fn is_package_symbol_type(ty: &TypeRefIr) -> bool {
+    matches!(ty, TypeRefIr::PackageSymbol { .. })
+        || matches!(
+            ty,
+            TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol { .. },
+                ..
+            }
+        )
 }
 
 fn concrete_lifecycle_plan(
@@ -364,6 +399,37 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn never_and_unregistered_package_symbols_receive_ordinary_snapshot_plans() {
+        assert_eq!(
+            concrete_value_plan(&[], "m", "f", " slot `never`", &TypeRefIr::builtin("never"))
+                .unwrap(),
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
+            }
+        );
+        let symbol = skiff_artifact_model::PackageSymbolRef {
+            package: skiff_artifact_model::PackageRefIr::PackageId {
+                package_id: "skiff.run/std".to_string(),
+            },
+            symbol_path: "std.websocket.WebSocketConnectRequest".to_string(),
+            abi_expectation: Some("abi".to_string()),
+        };
+        assert_eq!(
+            concrete_value_plan(
+                &[],
+                "m",
+                "f",
+                " slot `request`",
+                &TypeRefIr::PackageSymbol { symbol },
+            )
+            .unwrap(),
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease,
+            }
+        );
     }
 
     #[test]
