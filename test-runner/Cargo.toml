@@ -51,3 +51,6 @@ skiff-syntax = { path = "../syntax" }
 skiff-runtime-model = { path = "../runtime/model" }
 skiff-runtime-loader = { path = "../runtime/loader" }
 skiff-runtime-linker = { path = "../runtime/linker" }
+
+[dev-dependencies]
+skiff-runtime-request-contract = { path = "../runtime/request-contract" }

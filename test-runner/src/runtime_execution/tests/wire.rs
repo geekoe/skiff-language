@@ -1,5 +1,6 @@
 use super::super::test_support::*;
 use super::*;
+use skiff_runtime_request_contract::{PlatformErrorProjectionPayload, StdFileFileErrorPayload};
 
 #[test]
 fn test_dispatch_response_requires_canonical_response_end_and_null_payload() {
@@ -110,6 +111,35 @@ fn test_dispatch_typed_fixed_error_is_a_business_failure() {
     assert_eq!(
         decode_test_dispatch_response(&response.to_string()).unwrap(),
         TestDispatchOutcome::Failed("Internal service error".to_string())
+    );
+}
+
+#[test]
+fn test_dispatch_typed_platform_error_reports_the_projection_key() {
+    let payload = PlatformErrorProjectionPayload::StdFileFileError(StdFileFileErrorPayload {
+        message: "provider detail must stay opaque".to_string(),
+    });
+    let projection_key = payload.key();
+    let error = OpaqueServiceError::platform_error(
+        &payload,
+        "trace-package-test-platform-error",
+        "error-package-test-platform-error",
+    )
+    .unwrap();
+    let response = serde_json::json!({
+        "ok": true,
+        "header": {
+            "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+            "type": "response.error",
+            "requestId": "package-test-request-platform-error",
+            "errorKind": "fixedService",
+        },
+        "payloadBase64": BASE64_STANDARD.encode(error.encoded_bytes()),
+    });
+
+    assert_eq!(
+        decode_test_dispatch_response(&response.to_string()).unwrap(),
+        TestDispatchOutcome::Failed(format!("fixed service error {projection_key}"))
     );
 }
 

@@ -2981,6 +2981,7 @@ dependencies = [
  "skiff-runtime-linker",
  "skiff-runtime-loader",
  "skiff-runtime-model",
+ "skiff-runtime-request-contract",
  "skiff-syntax",
  "thiserror 2.0.18",
 ]

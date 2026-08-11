@@ -206,10 +206,9 @@ fn decode_fixed_dispatch_failure(
             ..
         } => format!("fixed service error {package_id}::{stable_schema_key}"),
         ServiceErrorEnvelope::InternalError { payload } => payload.message.clone(),
-        ServiceErrorEnvelope::PlatformError {
-            builtin_error_identity,
-            ..
-        } => format!("fixed service error {}", builtin_error_identity.symbol()),
+        ServiceErrorEnvelope::PlatformError { projection_key, .. } => {
+            format!("fixed service error {projection_key}")
+        }
     };
     Ok(TestDispatchOutcome::Failed(message))
 }
