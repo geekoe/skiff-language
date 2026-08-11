@@ -2844,6 +2844,7 @@ dependencies = [
  "skiff-runtime-bytecode-verifier",
  "skiff-runtime-capability-context",
  "skiff-runtime-deployment-image",
+ "skiff-runtime-linker",
  "skiff-runtime-loader",
  "skiff-runtime-model",
  "skiff-runtime-request-contract",
