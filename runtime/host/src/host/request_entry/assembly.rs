@@ -3,10 +3,12 @@ use std::{
     time::Instant,
 };
 
+use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_capability_context::{ConnectionRequestSession, ExecutionBudgetReason};
 use skiff_runtime_eval::RuntimeWebSocketConnectResult;
 use skiff_runtime_request::{
-    self as request_runner, BoundaryResponse, RequestEnvelope, RequestError, ResponseEventSink,
+    self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, RequestEnvelope, RequestError, ResponseEventSink,
     ResponseStreamEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
@@ -14,7 +16,7 @@ use skiff_runtime_transport::{
         runtime_assembly_websocket_connect_response_into_frame, OrdinaryResponseEvent,
     },
     runtime_assembly_request::{
-        RuntimeAssemblyWebSocketConnectResponseFrameHeader,
+        RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyWebSocketConnectResponseFrameHeader,
         RuntimeAssemblyWebSocketConnectionPolicyFrameHeader,
         RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader,
     },
@@ -24,8 +26,8 @@ use tracing::error;
 
 use super::{
     assembly_wire::{
-        AdmittedHttpGatewayRequest, AdmittedTaskRequest, AdmittedWebSocketConnectRequest,
-        AdmittedWebSocketConnectionClosedRequest,
+        AdmittedBytecodeHttpRequest, AdmittedHttpGatewayRequest, AdmittedTaskRequest,
+        AdmittedWebSocketConnectRequest, AdmittedWebSocketConnectionClosedRequest,
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
@@ -37,7 +39,7 @@ use crate::{
         request_supervisor::{CompletionTrace, SupervisedRequest},
         RuntimeHost,
     },
-    loader::assembly_admission::ActiveAssemblyRoute,
+    loader::{assembly_admission::ActiveAssemblyRoute, bytecode_admission::BytecodeRoute},
     telemetry::RequestTelemetryContext,
 };
 
@@ -550,6 +552,60 @@ impl RuntimeHost {
             .await;
             // The route pins the complete generation through execution, cancellation, terminal
             // response mapping and supervision.
+            drop(route);
+        });
+    }
+
+    pub(super) async fn task_bytecode_http_request(
+        &self,
+        _router_session_id: String,
+        request: AdmittedBytecodeHttpRequest,
+        http_response_max_bytes: usize,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        let AdmittedBytecodeHttpRequest {
+            route,
+            header,
+            body,
+            target,
+        } = request;
+        let request_envelope = bytecode_http_request_envelope(&route, &header, body);
+        let telemetry = bytecode_http_telemetry_context(&self, &header, &route);
+        let supervised_request = self
+            .request_supervisor
+            .begin(&request_envelope, telemetry)
+            .await;
+        let cancelled = supervised_request.cancelled();
+        let cancellation = supervised_request.cancellation_token();
+        let execution_budget = supervised_request.execution_budget();
+        let handles = BytecodeRequestExecutionHandles {
+            request_heap_limits: self.request_heap_limits(),
+        };
+        let response_sink = Arc::new(HostHttpGatewayResponseSink::new(
+            sender.clone(),
+            http_response_max_bytes,
+        ));
+        let request_id = header.request_id.clone();
+        let host = self.clone();
+        tokio::spawn(async move {
+            let result =
+                request_runner::execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+                    target,
+                    request: request_envelope,
+                    cancelled,
+                    cancellation,
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                });
+            host.finish_http_gateway_request(
+                &supervised_request,
+                &request_id,
+                result,
+                http_response_max_bytes,
+                &response_sink,
+                &sender,
+            )
+            .await;
             drop(route);
         });
     }
@@ -1114,6 +1170,61 @@ fn websocket_connection_closed_supervisor_request(
         payload_bytes: Vec::new(),
         extra: Default::default(),
     }
+}
+
+fn bytecode_http_request_envelope(
+    route: &BytecodeRoute,
+    header: &RuntimeAssemblyRequestStartFrameHeader,
+    body: Vec<u8>,
+) -> RequestEnvelope {
+    let mut extra = serde_json::Map::new();
+    if let Some(deadline) = &header.deadline {
+        extra.insert(
+            "deadline".to_string(),
+            serde_json::to_value(deadline)
+                .expect("typed bytecode HTTP deadline remains serializable"),
+        );
+    }
+    RequestEnvelope {
+        request_id: header.request_id.clone(),
+        mode: header.mode.clone(),
+        target: route.operation_id().as_str().to_string(),
+        operation_abi_id: None,
+        selector: None,
+        service_id: Some(route.deployment().service_id.clone()),
+        build_id: route.build_id().to_string(),
+        service_protocol_identity: route.service_protocol_identity().to_string(),
+        contract_identity: None,
+        activation_identity: None,
+        ingress_selector: Some(IngressSelector {
+            protocol: IngressProtocol::Http,
+            method: Some(header.routing.ingress.method.clone()),
+            path: header.routing.ingress.path.clone(),
+        }),
+        binary_http: None,
+        http_adapter: None,
+        test_effects_enabled: header.test_effects_enabled,
+        test_effect_doubles: Default::default(),
+        payload_bytes: body,
+        extra,
+    }
+}
+
+fn bytecode_http_telemetry_context(
+    host: &RuntimeHost,
+    header: &RuntimeAssemblyRequestStartFrameHeader,
+    route: &BytecodeRoute,
+) -> RequestTelemetryContext {
+    let mut context = RequestTelemetryContext::new(host.telemetry.clone());
+    context.service_id = Some(route.deployment().service_id.clone());
+    context.build_id = Some(route.build_id().to_string());
+    context.runtime_id = Some(host.base_runtime_id.clone());
+    context.request_id = Some(header.request_id.clone());
+    context.target = Some(route.operation_id().as_str().to_string());
+    context.trace_id = Some(header.trace.trace_id.clone());
+    context.span_id = Some(header.trace.span_id.clone());
+    context.parent_span_id = header.trace.parent_span_id.clone();
+    context
 }
 
 fn websocket_connect_result_into_message(

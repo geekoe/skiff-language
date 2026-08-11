@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use crate::{
     config::{skiff_file_tmp_dir, RuntimeMemoryBudgets},
     loader::assembly_admission::AssemblyAdmissionController,
+    loader::bytecode_admission::BytecodeDeploymentRegistry,
 };
 
 use super::{
@@ -70,6 +71,7 @@ pub struct RuntimeHost {
     pub(super) http_runtime_options: HttpRuntimeOptions,
     pub(super) memory_budgets: RuntimeMemoryBudgets,
     pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
+    pub(crate) bytecode_deployments: Arc<BytecodeDeploymentRegistry>,
     pub(super) artifact_root: Arc<StdMutex<Option<String>>>,
     pub(super) blob_store: Arc<StdMutex<Option<Arc<dyn BlobStore>>>>,
     pub(super) request_supervisor: Arc<RequestSupervisor>,
@@ -197,6 +199,7 @@ impl RuntimeHost {
                 base_runtime_id.clone(),
                 db_provider,
             )),
+            bytecode_deployments: Arc::new(BytecodeDeploymentRegistry::new()),
             artifact_root: Arc::new(StdMutex::new(None)),
             blob_store: Arc::new(StdMutex::new(None)),
             request_supervisor: Arc::new(RequestSupervisor::new()),

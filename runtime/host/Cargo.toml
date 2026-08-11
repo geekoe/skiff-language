@@ -34,6 +34,8 @@ skiff-runtime-config-snapshot = { path = "../../runtime-config-snapshot" }
 skiff-runtime-activation = { path = "../activation" }
 skiff-runtime-boundary = { path = "../boundary" }
 skiff-runtime-capability-context = { path = "../capability-context" }
+skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
+skiff-runtime-deployment-image = { path = "../deployment-image" }
 skiff-runtime-eval = { path = "../eval" }
 skiff-runtime-linked-program = { path = "../linked-program" }
 skiff-runtime-linked-type-plan = { path = "../linked-type-plan" }
@@ -57,6 +59,9 @@ uuid = { version = "1.16", features = ["v4"] }
 [dev-dependencies]
 mongodb = "3.2"
 skiff-compiler = { path = "../../compiler" }
+skiff-compiler-core = { path = "../../compiler/core" }
+skiff-compiler-input = { path = "../../compiler/input" }
+skiff-compiler-source = { path = "../../compiler/source" }
 skiff-deployment = { path = "../../deployment" }
 skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
 skiff-runtime-capability-context = { path = "../capability-context", features = ["test-support"] }

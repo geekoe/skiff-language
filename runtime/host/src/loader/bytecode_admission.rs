@@ -1,0 +1,239 @@
+use std::{path::Path, sync::Arc};
+
+use skiff_artifact_model::{ContractOperationId, ServiceDeploymentRef};
+use skiff_runtime_bytecode_verifier::{verify, VerificationLimits, VerifiedLinkedBytecodeImage};
+use skiff_runtime_deployment_image::{
+    DeploymentImage, DeploymentImageCache, DeploymentImageError, DeploymentOwnerIdentity,
+};
+use skiff_runtime_linker::{link_deployment, BytecodeLinkError, LinkLimits};
+use skiff_runtime_loader::{
+    load_deployment_bytecode_from_store, DeploymentBytecodeContentResolver,
+    FilesystemDeploymentBytecodeContentResolver,
+};
+use skiff_runtime_request::{BytecodeRequestTarget, BytecodeRequestTargetError};
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum BytecodeDeploymentLoadError {
+    #[error("deployment bytecode resolver failed: {0}")]
+    Resolver(String),
+    #[error("deployment bytecode hydration failed: {0}")]
+    Hydration(#[from] skiff_runtime_loader::DeploymentBytecodeHydrationError),
+    #[error("deployment bytecode link failed: {0}")]
+    Link(#[from] BytecodeLinkError),
+    #[error("deployment bytecode verification failed: {0}")]
+    Verification(#[from] skiff_runtime_bytecode_verifier::VerificationError),
+    #[error("deployment image construction failed: {0}")]
+    Image(#[from] DeploymentImageError),
+}
+
+/// Host-owned verified bytecode deployment admission.
+///
+/// The cache is keyed by the exact deployment owner. A deployment whose
+/// implementation package still lacks a bytecode record is explicitly a
+/// legacy-assembly fallback rather than a cache miss.
+#[derive(Clone)]
+pub(crate) struct BytecodeDeploymentRegistry {
+    cache: DeploymentImageCache<VerifiedLinkedBytecodeImage, BytecodeDeploymentLoadError>,
+}
+
+impl BytecodeDeploymentRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            cache: DeploymentImageCache::new(),
+        }
+    }
+
+    pub(crate) async fn is_loaded_build_id(&self, build_id: &str) -> bool {
+        self.cache
+            .loaded_snapshot()
+            .await
+            .iter()
+            .any(|image| image.owner().build_id().as_str() == build_id)
+    }
+
+    pub(crate) async fn route(
+        &self,
+        deployment: &ServiceDeploymentRef,
+        artifact_root: &Path,
+    ) -> anyhow::Result<Option<BytecodeRoute>> {
+        let Some(image) = self.get_or_load(deployment, artifact_root).await? else {
+            return Ok(None);
+        };
+        Ok(Some(BytecodeRoute::new(image, deployment, artifact_root)?))
+    }
+
+    pub(crate) async fn get_or_load(
+        &self,
+        deployment: &ServiceDeploymentRef,
+        artifact_root: &Path,
+    ) -> anyhow::Result<Option<Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>>> {
+        let resolver = FilesystemDeploymentBytecodeContentResolver::open(artifact_root)?;
+        let deployment_record = resolver.resolve_deployment(deployment)?;
+        let implementation = resolver.resolve_package(&deployment_record.implementation)?;
+        if implementation.bytecode.is_none() {
+            return Ok(None);
+        }
+
+        let owner = DeploymentOwnerIdentity::new(deployment.clone());
+        let reference = deployment.clone();
+        let artifact_root = artifact_root.to_path_buf();
+        let image = self
+            .cache
+            .get_or_load(owner, move |_attempt_id, _owner| {
+                let reference = reference.clone();
+                let artifact_root = artifact_root.clone();
+                async move {
+                    let resolver = FilesystemDeploymentBytecodeContentResolver::open(
+                        &artifact_root,
+                    )
+                    .map_err(|error| BytecodeDeploymentLoadError::Resolver(error.to_string()))?;
+                    let hydrated =
+                        load_deployment_bytecode_from_store(resolver.store(), &reference)
+                            .map_err(BytecodeDeploymentLoadError::Hydration)?;
+                    let candidate = link_deployment(&hydrated, &production_link_limits())
+                        .map_err(BytecodeDeploymentLoadError::Link)?;
+                    let verified = Arc::new(
+                        verify(hydrated, candidate, &production_verification_limits())
+                            .map_err(BytecodeDeploymentLoadError::Verification)?,
+                    );
+                    let image = Arc::new(
+                        DeploymentImage::try_new(verified)
+                            .map_err(BytecodeDeploymentLoadError::Image)?,
+                    );
+                    Ok(image)
+                }
+            })
+            .await
+            .map_err(|error| anyhow::anyhow!("bytecode deployment load failed: {error}"))?;
+        Ok(Some(image))
+    }
+}
+
+impl Default for BytecodeDeploymentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Exact deployment image pinned to the first canonical operation binding.
+#[derive(Debug, Clone)]
+pub(crate) struct BytecodeRoute {
+    image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
+    deployment: ServiceDeploymentRef,
+    operation_id: ContractOperationId,
+    build_id: String,
+    service_protocol_identity: String,
+}
+
+impl BytecodeRoute {
+    fn new(
+        image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
+        deployment: &ServiceDeploymentRef,
+        artifact_root: &Path,
+    ) -> anyhow::Result<Self> {
+        if image.owner().deployment() != deployment {
+            anyhow::bail!(
+                "bytecode route deployment {} does not match loaded image owner {}",
+                deployment.deployment_artifact_identity,
+                image.owner().build_id()
+            );
+        }
+        let resolver = FilesystemDeploymentBytecodeContentResolver::open(artifact_root)?;
+        let deployment_record = resolver.resolve_deployment(deployment)?;
+        let operation_id = deployment_record
+            .operation_bindings
+            .first()
+            .map(|binding| binding.contract_operation_id.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "bytecode deployment {} has no operation binding",
+                    deployment.deployment_artifact_identity
+                )
+            })?;
+        let contract = resolver.resolve_contract(&deployment_record.contract)?;
+        Ok(Self {
+            image,
+            deployment: deployment.clone(),
+            operation_id,
+            build_id: deployment_record
+                .implementation
+                .package_build_id
+                .as_str()
+                .to_string(),
+            service_protocol_identity: contract.service_protocol_identity.as_str().to_string(),
+        })
+    }
+
+    pub(crate) fn deployment(&self) -> &ServiceDeploymentRef {
+        &self.deployment
+    }
+
+    pub(crate) fn operation_id(&self) -> &ContractOperationId {
+        &self.operation_id
+    }
+
+    pub(crate) fn build_id(&self) -> &str {
+        &self.build_id
+    }
+
+    pub(crate) fn service_protocol_identity(&self) -> &str {
+        &self.service_protocol_identity
+    }
+
+    pub(crate) fn request_target(&self) -> anyhow::Result<BytecodeRequestTarget> {
+        let program = Arc::clone(self.image.program());
+        let entry = program
+            .operation_entry(&self.operation_id)
+            .map_err(|error| anyhow::anyhow!("bytecode operation lookup failed: {error}"))?;
+        BytecodeRequestTarget::try_new(Arc::clone(&self.image), entry, self.operation_id.clone())
+            .map_err(bytecode_target_error)
+    }
+}
+
+fn bytecode_target_error(error: BytecodeRequestTargetError) -> anyhow::Error {
+    anyhow::anyhow!("bytecode request target failed closed: {error}")
+}
+
+fn production_link_limits() -> LinkLimits {
+    LinkLimits {
+        max_packages: 256,
+        max_root_specializations: 100_000,
+        max_specializations: 1_000_000,
+        max_code_words_per_function: 1_000_000,
+        max_total_code_words: 100_000_000,
+        max_relocations_per_function: 100_000,
+        max_total_relocations: 10_000_000,
+        max_image_table_entries: 1_000_000,
+        max_total_image_table_entries: 10_000_000,
+        max_total_function_table_entries: 10_000_000,
+        max_type_nesting_depth: 64,
+        max_expanded_type_nodes: 1_000_000,
+        max_expanded_type_bytes: 64 * 1024 * 1024,
+        max_constant_graph_nodes: 1_000_000,
+        max_constant_graph_edges: 1_000_000,
+    }
+}
+
+fn production_verification_limits() -> VerificationLimits {
+    VerificationLimits {
+        max_functions: 100_000,
+        max_total_instructions: 100_000_000,
+        max_instructions_per_function: 1_000_000,
+        max_frame_slots_per_function: 65_536,
+        max_operand_depth: 65_536,
+        max_control_flow_edges_per_function: 1_000_000,
+        max_exception_regions_per_function: 1_000_000,
+        max_switch_targets_per_function: 65_536,
+        max_statement_events_per_pc: 100_000,
+        max_statement_events_per_function: 1_000_000,
+        max_total_statement_events: 10_000_000,
+        max_source_map_entries_per_function: 1_000_000,
+        max_image_table_entries: 1_000_000,
+        max_arity: 256,
+        max_callback_captures_per_callback: 4_096,
+        max_type_nesting_depth: 64,
+        max_value_lifecycle_nodes: 1_000_000,
+        max_value_lifecycle_canonical_bytes: 64 * 1024 * 1024,
+        max_constant_graph_edges: 1_000_000,
+    }
+}

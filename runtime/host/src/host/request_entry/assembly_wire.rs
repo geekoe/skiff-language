@@ -9,10 +9,10 @@ use skiff_runtime_capability_context::{DbCapabilitySource, ExecutionBudgetReason
 use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
 use skiff_runtime_linked_program::AssemblyExecutionImage;
 use skiff_runtime_request::{
-    BinaryHttpRequestMetadata, HttpNameValue, RequestError, RouterWriterMessage,
-    RuntimeAssemblyTaskTarget, RuntimeAssemblyWebSocketJsonRpcTarget, RuntimeGatewayIngressPin,
-    RuntimeHttpGatewayRequest, RuntimeTaskRequest, RuntimeWebSocketConnectIngress,
-    RuntimeWebSocketConnectionClosedIngress,
+    BinaryHttpRequestMetadata, BytecodeRequestTarget, HttpNameValue, RequestError,
+    RouterWriterMessage, RuntimeAssemblyTaskTarget, RuntimeAssemblyWebSocketJsonRpcTarget,
+    RuntimeGatewayIngressPin, RuntimeHttpGatewayRequest, RuntimeTaskRequest,
+    RuntimeWebSocketConnectIngress, RuntimeWebSocketConnectionClosedIngress,
 };
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::runtime_assembly_request::{
@@ -32,13 +32,20 @@ use super::{request_error_into_runtime_error, response_event_into_transport_mess
 use crate::{
     error::{Result, RuntimeError},
     host::{router_session::ConnectionBootstrap, RuntimeHost},
-    loader::assembly_admission::ActiveAssemblyRoute,
+    loader::{assembly_admission::ActiveAssemblyRoute, bytecode_admission::BytecodeRoute},
 };
 
 pub(super) struct AdmittedHttpGatewayRequest {
     pub(super) route: ActiveAssemblyRoute,
     pub(super) header: RuntimeAssemblyRequestStartFrameHeader,
     pub(super) request: RuntimeHttpGatewayRequest,
+}
+
+pub(super) struct AdmittedBytecodeHttpRequest {
+    pub(super) route: BytecodeRoute,
+    pub(super) header: RuntimeAssemblyRequestStartFrameHeader,
+    pub(super) body: Vec<u8>,
+    pub(super) target: BytecodeRequestTarget,
 }
 
 pub(super) struct AdmittedWebSocketConnectRequest {
@@ -106,14 +113,17 @@ impl RuntimeHost {
         // A request whose build id was not loaded yet may trigger the lazy-load
         // path; refresh the router's capability view when that happens.
         let build_id = wire_routing_build_id(&header);
-        let was_loaded = build_id
-            .as_deref()
-            .is_some_and(|build_id| self.assembly_admission.is_loaded(build_id));
+        let was_loaded = if let Some(build_id) = build_id.as_deref() {
+            self.assembly_admission.is_loaded(build_id)
+                || self.bytecode_deployments.is_loaded_build_id(build_id).await
+        } else {
+            false
+        };
         let result = match header {
-            RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => self
-                .http_gateway_request_from_wire(header, body, bootstrap)
-                .await
-                .map(AdmittedRuntimeAssemblyRequest::Http),
+            RuntimeAssemblyRequestStartFrameWireHeader::Http(header) => {
+                self.http_gateway_request_from_wire(header, body, bootstrap)
+                    .await
+            }
             RuntimeAssemblyRequestStartFrameWireHeader::WebSocketConnect(header) => self
                 .websocket_connect_request_from_wire(header, body, bootstrap)
                 .await
@@ -137,6 +147,15 @@ impl RuntimeHost {
         match result {
             Ok(AdmittedRuntimeAssemblyRequest::Http(request)) => {
                 self.task_request_on_active_assembly_route(
+                    router_session_id.to_string(),
+                    request,
+                    bootstrap.max_response_bytes,
+                    sender,
+                )
+                .await
+            }
+            Ok(AdmittedRuntimeAssemblyRequest::BytecodeHttp(request)) => {
+                self.task_bytecode_http_request(
                     router_session_id.to_string(),
                     request,
                     bootstrap.max_response_bytes,
@@ -285,8 +304,43 @@ impl RuntimeHost {
         mut header: RuntimeAssemblyRequestStartFrameHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
-    ) -> Result<AdmittedHttpGatewayRequest> {
+    ) -> Result<AdmittedRuntimeAssemblyRequest> {
         validate_http_header(&header)?;
+        if let Some(bytecode_route) = self
+            .bytecode_deployments
+            .route(
+                &header.routing.deployment,
+                bootstrap.resolver.store().root(),
+            )
+            .await
+            .map_err(|error| RuntimeError::Decode(error.to_string()))?
+        {
+            if header.mode != "unary" {
+                return Err(RuntimeError::Unsupported(format!(
+                    "bytecode scalar ingress only supports unary request.start, got {}",
+                    header.mode
+                )));
+            }
+            let target = bytecode_route
+                .request_target()
+                .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+            header.deadline = effective_deadline(&header)?;
+            if header
+                .deadline
+                .as_ref()
+                .is_some_and(|deadline| deadline.timeout_ms == 0)
+            {
+                return Err(deadline_exceeded());
+            }
+            return Ok(AdmittedRuntimeAssemblyRequest::BytecodeHttp(
+                AdmittedBytecodeHttpRequest {
+                    route: bytecode_route,
+                    header,
+                    body,
+                    target,
+                },
+            ));
+        }
         let selector = ingress_selector(&header);
         let key = ServiceIngressKey {
             deployment: header.routing.deployment.clone(),
@@ -303,13 +357,14 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let request = http_gateway_request_from_admitted_wire(&route, &header, body)?;
-        Ok(AdmittedHttpGatewayRequest {
-            route,
-            header,
-            request,
-        })
+        Ok(AdmittedRuntimeAssemblyRequest::Http(
+            AdmittedHttpGatewayRequest {
+                route,
+                header,
+                request,
+            },
+        ))
     }
-
 
     async fn task_request_from_wire(
         &self,
@@ -505,6 +560,7 @@ impl RuntimeHost {
 
 enum AdmittedRuntimeAssemblyRequest {
     Http(AdmittedHttpGatewayRequest),
+    BytecodeHttp(AdmittedBytecodeHttpRequest),
     WebSocketConnect(AdmittedWebSocketConnectRequest),
     WebSocketConnectionClosed(AdmittedWebSocketConnectionClosedRequest),
     WebSocketJsonRpc(AdmittedWebSocketJsonRpcRequest),

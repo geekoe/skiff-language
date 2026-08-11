@@ -15,6 +15,8 @@ use super::RuntimeHost;
 
 mod assembly;
 mod assembly_wire;
+#[cfg(test)]
+mod bytecode_http_tests;
 mod websocket_jsonrpc;
 
 impl RuntimeHost {
