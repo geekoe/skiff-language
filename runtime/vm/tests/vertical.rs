@@ -2,7 +2,10 @@ use std::{
     collections::BTreeMap,
     num::{NonZeroU32, NonZeroU64, NonZeroUsize},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
@@ -26,7 +29,7 @@ use skiff_runtime_linker::{link_deployment, LinkLimits};
 use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
 use skiff_runtime_model::{
     vm_heap::{VmHeap, VmHeapError},
-    vm_value::ValueSlot,
+    vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle},
 };
 use skiff_runtime_vm::{
     ChildInvocation, ChildTarget, PendingTicket, ResumeOutcome, StreamItem, Vm, VmBudget,
@@ -58,6 +61,7 @@ fn compile_package_with_dependencies(
     dependencies: Vec<skiff_compiler_input::PackageDependency>,
     dependency_packages: &[Arc<PackageArtifact>],
 ) -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
     let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
@@ -66,9 +70,11 @@ fn compile_package_with_dependencies(
     let platform_sources =
         CompilerPlatformSources::new(&repository_root).expect("repository platform sources");
     let package_id = skiff_compiler_core::id::PublicationId::parse(package_id).unwrap();
+    let unique = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
     let temp = std::env::temp_dir().join(format!(
-        "{temp_prefix}-{}-{}",
+        "{temp_prefix}-{}-{}-{}",
         std::process::id(),
+        unique,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -140,7 +146,7 @@ fn compile_package_with_dependencies(
 fn compile_stream_package(
     package_id: &str,
 ) -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
-    let text = "function produce() -> Stream<number> {\n  emit(1)\n  emit(2)\n}\nfunction value() -> number { return 42 }\n";
+    let text = "function produce() -> Stream<number> {\n  emit(1)\n  emit(2)\n  return\n}\nfunction consume(values: Stream<number>) -> number {\n  return 0\n}\nfunction value() -> number { return 42 }\n";
     compile_package_text(package_id, text, "skiff-vm-stream")
 }
 
@@ -573,8 +579,9 @@ mod tests {
                 .unwrap()
             };
             let produce = callable("main.produce");
+            let consume = callable("main.consume");
             let value = callable("main.value");
-            for callable in [&produce, &value] {
+            for callable in [&produce, &consume, &value] {
                 assert!(
                     package.callable_links.contains_key(callable),
                     "stream package is missing callable {callable}"
@@ -582,6 +589,7 @@ mod tests {
             }
             let bindings = [
                 (operations.get("produce").unwrap().clone(), produce),
+                (operations.get("consume").unwrap().clone(), consume),
                 (operations.get("value").unwrap().clone(), value),
             ];
             let (deployment, deployment_reference) =
@@ -612,6 +620,10 @@ mod tests {
             let pinned = PinnedDeploymentEntry::try_new(Arc::clone(&self.image), entry).unwrap();
             Vm::start(pinned, arguments, vm_limits()).unwrap()
         }
+    }
+
+    fn stream_endpoint() -> ValueSlot {
+        ValueSlot::resource_ref(VmHandle::new(7), CompactTypeTag::new(0), ValueFlags::new(0))
     }
 
     fn next_emit(
@@ -699,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bytecode emitter does not yet emit source-level stream producer bodies"]
+    #[ignore = "source-level stream producer completion is not verified by the linked bytecode pipeline yet"]
     fn stream_producer_natural_end_resumes_and_clears_continuation() {
         let image = StreamTestImage::new("example.com/vm-stream");
         let mut heap = TestHeap;
@@ -749,7 +761,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bytecode emitter does not yet emit source-level stream producer bodies"]
+    #[ignore = "source-level stream producer completion is not verified by the linked bytecode pipeline yet"]
     fn stream_backpressure_handoff_parks_and_resumes_zero_result() {
         let image = StreamTestImage::new("example.com/vm-stream");
         let mut heap = TestHeap;
@@ -774,16 +786,17 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bytecode emitter does not yet emit source-level stream producer and consumer bodies"]
+    #[ignore = "source-level stream iteration is not emitted yet"]
     fn stream_next_hands_off_affine_endpoint_and_resumes_ordinary_item() {
         let image = StreamTestImage::new("example.com/vm-stream");
         let mut heap = TestHeap;
         let mut budget = TestBudget::new();
-        let mut consumer = image.start("consume", Box::new([]));
+        let mut consumer = image.start("consume", Box::new([stream_endpoint()]));
 
         let invocation = next_child(&mut consumer, &mut heap, &mut budget);
         assert_eq!(invocation.target(), ChildTarget::StreamNext);
         assert_eq!(invocation.arguments().len(), 1);
+        assert!(invocation.arguments().values()[0] == stream_endpoint());
         let (target, endpoint_escrow, resume) = invocation.into_parts();
         assert_eq!(target, ChildTarget::StreamNext);
         let _endpoint_escrow = endpoint_escrow;
@@ -802,7 +815,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "bytecode emitter does not yet emit source-level stream producer bodies"]
+    #[ignore = "source-level stream iteration is not emitted yet"]
     fn stream_resume_tokens_reject_authority_and_image_reuse() {
         let image_a = StreamTestImage::new("example.com/vm-stream");
         let image_b = StreamTestImage::new("example.com/vm-stream-other");
@@ -817,7 +830,7 @@ mod tests {
         let item_b = next_emit(&mut producer_b, &mut heap, &mut budget);
         let (_item_b_values, token_b) = item_b.into_parts();
 
-        let mut consumer = image_a.start("consume", Box::new([]));
+        let mut consumer = image_a.start("consume", Box::new([stream_endpoint()]));
         let invocation = next_child(&mut consumer, &mut heap, &mut budget);
         let (_target, endpoint_escrow, token_child) = invocation.into_parts();
         let _endpoint_escrow = endpoint_escrow;
