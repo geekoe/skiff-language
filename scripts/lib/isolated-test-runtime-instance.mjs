@@ -182,9 +182,9 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       });
     },
     spawnMongo: async ({ mongoBinary, mongoPort, mongoDataDir, cwd, env, logDir }) => {
-      const stdio = await logFileStdio(logDir, 'mongo');
+      const logFile = await logFileStdio(logDir, 'mongo');
       // child-process-owner: isolated-stack-child
-      return spawnIsolatedChild(
+      const child = spawnIsolatedChild(
         mongoBinary,
         [
           '--dbpath', mongoDataDir,
@@ -192,8 +192,10 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
           '--replSet', 'rs0',
           '--bind_ip', '127.0.0.1',
         ],
-        { cwd, env, stdio },
+        { cwd, env, stdio: logFile.stdio },
       );
+      await closeLogFileStdio(logFile);
+      return child;
     },
     waitMongoPrimary: async ({ mongoPort, child, signal }) => {
       const uri = `mongodb://127.0.0.1:${mongoPort}/admin?directConnection=true`;
@@ -230,22 +232,26 @@ export function isolatedInstanceOperations({ skiffRoot, baseEnv }) {
       );
     },
     spawnRouter: async ({ routerBinary, routerConfigPath, cwd, env, logDir }) => {
-      const stdio = await logFileStdio(logDir, 'router');
+      const logFile = await logFileStdio(logDir, 'router');
       // child-process-owner: isolated-stack-child
-      return spawnIsolatedChild(
+      const child = spawnIsolatedChild(
         routerBinary,
         [routerConfigPath],
-        { cwd, env, stdio },
+        { cwd, env, stdio: logFile.stdio },
       );
+      await closeLogFileStdio(logFile);
+      return child;
     },
     spawnRuntime: async ({ runtimeBinary, runtimeConfigPath, cwd, env, logDir }) => {
-      const stdio = await logFileStdio(logDir, 'runtime');
+      const logFile = await logFileStdio(logDir, 'runtime');
       // child-process-owner: isolated-stack-child
-      return spawnIsolatedChild(
+      const child = spawnIsolatedChild(
         runtimeBinary,
         [runtimeConfigPath],
-        { cwd, env, stdio },
+        { cwd, env, stdio: logFile.stdio },
       );
+      await closeLogFileStdio(logFile);
+      return child;
     },
     waitReady: waitForIsolatedRuntime,
     stopProcesses: stopIsolatedChildren,
@@ -331,9 +337,33 @@ function childExit(child) {
 
 async function logFileStdio(logDir, name) {
   await mkdir(logDir, { recursive: true });
-  const out = await open(join(logDir, `${name}.out.log`), 'a');
-  const err = await open(join(logDir, `${name}.err.log`), 'a');
-  return ['ignore', out.fd, err.fd];
+  const stdoutLog = await open(join(logDir, `${name}.out.log`), 'a');
+  let stderrLog;
+  try {
+    stderrLog = await open(join(logDir, `${name}.err.log`), 'a');
+  } catch (error) {
+    await stdoutLog.close().catch(() => {});
+    throw error;
+  }
+  return {
+    stdio: ['ignore', stdoutLog.fd, stderrLog.fd],
+    stdoutLog,
+    stderrLog,
+  };
+}
+
+async function closeLogFileStdio(logFile) {
+  const errors = [];
+  for (const handle of [logFile.stdoutLog, logFile.stderrLog]) {
+    try {
+      await handle.close();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'failed to close isolated log files');
+  }
 }
 
 function errorMessage(error) {

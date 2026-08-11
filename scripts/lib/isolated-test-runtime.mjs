@@ -235,7 +235,13 @@ async function startIsolatedTestRuntime({
       const stdoutLogPath = join(logsDir, `runtime-${replica + 1}.log`);
       const stderrLogPath = join(logsDir, `runtime-${replica + 1}.err.log`);
       const stdoutLog = await open(stdoutLogPath, 'w');
-      const stderrLog = await open(stderrLogPath, 'w');
+      let stderrLog;
+      try {
+        stderrLog = await open(stderrLogPath, 'w');
+      } catch (error) {
+        await stdoutLog.close().catch(() => {});
+        throw error;
+      }
       additionalRuntimeLogFiles.push({
         stdoutLogPath,
         stderrLogPath,

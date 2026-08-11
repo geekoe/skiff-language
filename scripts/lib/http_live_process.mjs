@@ -80,11 +80,13 @@ export function renderHttpLiveRouterConfig({
 
 export async function writeHttpLiveRouterConfig(configPath, configText) {
   await mkdir(join(configPath, '..'), { recursive: true });
-  await open(configPath, 'wx').then(async (handle) => {
+  const handle = await open(configPath, 'wx');
+  try {
     await handle.writeFile(configText, 'utf8');
     await handle.sync();
+  } finally {
     await handle.close();
-  });
+  }
 }
 
 export async function installHttpLiveRustBinary({
@@ -99,8 +101,9 @@ export async function installHttpLiveRustBinary({
   return installed;
 }
 
-export function writeHttpLiveRuntimeConfig(runtimeConfigPath, { relayPort, runtimeHome }) {
-  return open(runtimeConfigPath, 'wx').then(async (handle) => {
+export async function writeHttpLiveRuntimeConfig(runtimeConfigPath, { relayPort, runtimeHome }) {
+  const handle = await open(runtimeConfigPath, 'wx');
+  try {
     await handle.writeFile(
       renderRuntimeConfig({
         routerUrl: `ws://127.0.0.1:${relayPort}/runtime`,
@@ -109,8 +112,9 @@ export function writeHttpLiveRuntimeConfig(runtimeConfigPath, { relayPort, runti
       'utf8',
     );
     await handle.sync();
+  } finally {
     await handle.close();
-  });
+  }
 }
 
 export async function spawnLoggedProcess(command, args, {
@@ -119,14 +123,25 @@ export async function spawnLoggedProcess(command, args, {
   stderrPath,
 }) {
   const stdoutLog = await open(stdoutPath, 'w');
-  const stderrLog = await open(stderrPath, 'w');
-  // child-process-owner: http-live-process-spawn
-  const child = spawn(command, args, {
-    cwd,
-    stdio: ['ignore', stdoutLog.fd, stderrLog.fd],
-    env: process.env,
-  });
-  return { child, stdoutLog, stderrLog, command, args };
+  let stderrLog;
+  try {
+    stderrLog = await open(stderrPath, 'w');
+  } catch (error) {
+    await stdoutLog.close().catch(() => {});
+    throw error;
+  }
+  try {
+    // child-process-owner: http-live-process-spawn
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ['ignore', stdoutLog.fd, stderrLog.fd],
+      env: process.env,
+    });
+    return { child, stdoutLog, stderrLog, command, args };
+  } catch (error) {
+    await closeLogs({ stdoutLog, stderrLog }).catch(() => {});
+    throw error;
+  }
 }
 
 export async function waitForListeners({

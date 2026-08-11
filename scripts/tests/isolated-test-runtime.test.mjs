@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -50,6 +50,42 @@ test('bootstrap comes from current checkout and seeds only the canonical baselin
   ]);
   assert.equal(args.some((value) => value.includes('.skiff-instance')), false);
   assert.equal(args.some((value) => value.includes('reload')), false);
+});
+
+test('isolated child log handles survive spawn and are closed', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'skiff-isolated-log-handle-'));
+  try {
+    const fakeMongo = join(root, 'fake-mongo');
+    await writeFile(
+      fakeMongo,
+      '#!/bin/sh\necho fake-out\necho fake-err >&2\n',
+      { mode: 0o755 },
+    );
+    const logDir = join(root, 'logs');
+    const operations = isolatedInstanceOperations({
+      skiffRoot: root,
+      baseEnv: {},
+    });
+    const child = await operations.spawnMongo({
+      mongoBinary: fakeMongo,
+      mongoPort: 47001,
+      mongoDataDir: join(root, 'mongo-data'),
+      cwd: root,
+      env: { PATH: '/usr/bin:/bin' },
+      logDir,
+    });
+    const exitCode = await new Promise((resolvePromise, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolvePromise);
+    });
+    assert.equal(exitCode, 0);
+    assert.equal(await readFile(join(logDir, 'mongo.out.log'), 'utf8'), 'fake-out\n');
+    assert.equal(await readFile(join(logDir, 'mongo.err.log'), 'utf8'), 'fake-err\n');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('isolated instance initialization provisions runnable configs and dirs', async () => {

@@ -1,31 +1,36 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream as createPathReadStream } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { chmod, copyFile, mkdir, open, rename, rm, stat } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  rename,
+  rm,
+  stat as statPath,
+} from 'node:fs/promises';
 
 export async function binaryIdentity(path, options = {}) {
-  const handle = await open(path, 'r');
-  try {
-    const info = await handle.stat({ bigint: true });
-    if (!info.isFile()) {
-      throw new Error(`${path} must be a file`);
-    }
-    const file = fileIdentity(info);
-    if (fileIdentitiesEqual(options.knownIdentity?.file, file)) {
-      return options.knownIdentity;
-    }
-    const hash = createHash('sha256');
-    for await (const chunk of handle.createReadStream({ autoClose: false })) {
-      hash.update(chunk);
-    }
-    return {
-      algorithm: 'sha256',
-      digest: hash.digest('hex'),
-      size: Number(info.size),
-      file,
-    };
-  } finally {
-    await handle.close();
+  const stat = options.stat ?? statPath;
+  const createReadStream = options.createReadStream ?? createPathReadStream;
+  const info = await stat(path, { bigint: true });
+  if (!info.isFile()) {
+    throw new Error(`${path} must be a file`);
   }
+  const file = fileIdentity(info);
+  if (fileIdentitiesEqual(options.knownIdentity?.file, file)) {
+    return options.knownIdentity;
+  }
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk);
+  }
+  return {
+    algorithm: 'sha256',
+    digest: hash.digest('hex'),
+    size: Number(info.size),
+    file,
+  };
 }
 
 function fileIdentity(info) {
@@ -54,7 +59,7 @@ export function binaryIdentitiesEqual(left, right) {
 }
 
 export async function installManagedBinary(source, destination, options = {}) {
-  const sourceInfo = await stat(source);
+  const sourceInfo = await statPath(source);
   if (!sourceInfo.isFile()) {
     throw new Error(`${source} must be a file`);
   }
@@ -81,7 +86,7 @@ export async function installManagedBinary(source, destination, options = {}) {
       if (binaryIdentitiesEqual(candidateIdentity, installedIdentity)) {
         if (
           process.platform === 'win32'
-          || ((await stat(destination)).mode & 0o7777) === (options.mode ?? 0o755)
+          || ((await statPath(destination)).mode & 0o7777) === (options.mode ?? 0o755)
         ) {
           return installedIdentity;
         }
