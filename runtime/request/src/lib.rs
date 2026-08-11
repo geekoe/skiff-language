@@ -1,5 +1,4 @@
 #![allow(clippy::large_enum_variant)]
-#![allow(clippy::result_large_err)]
 
 mod bytecode_ingress;
 pub mod cancellation;
