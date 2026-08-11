@@ -43,7 +43,7 @@ pub use stream::{
     StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll, StreamProducer,
     StreamSupervisor, WakeSignal, STREAM_BUFFER_CAPACITY,
 };
-pub use stream_driver::{VmStreamSupervisor, VmStreamTerminal};
+pub use stream_driver::{VmStreamConsumerExecutor, VmStreamSupervisor, VmStreamTerminal};
 pub use trampoline::{
     BlockedUnit, FlatTrampoline, ParentResume, SuspendedTrampoline, TrampolineCompletion,
 };
