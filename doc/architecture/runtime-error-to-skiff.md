@@ -60,8 +60,11 @@ Rust typed error
 error，不产生 public error payload，不获得 catch identity，也不能因为经过 host、request 或
 transport 层就变成普通异常。
 
-Deadline / instruction budget 是否产生 `TimeoutError` 由 timeout contract 决定；底层用于停止未完成
-work item 的 cancellation carrier 仍是 internal terminal，不能与可捕获 timeout 混淆。
+Deadline 与 instruction budget 不能共用一个 generic timeout identity。只有词法 `timeout(...)` owner
+产生 `std.error.TimeoutError`；instruction limit 使用
+`std.error.InstructionLimitExceededError`；HTTP primitive、Actor method invocation 与 Actor activation
+分别使用自己的 public type。Request/root/inherited deadline以及用于停止未完成work item的cancellation carrier
+仍是internal/request terminal，不能注入即将结束的frame或与可捕获错误混淆。
 
 ### 3.2 Rust typed error
 
@@ -124,6 +127,11 @@ RuntimeDiagnostic {
 }
 ```
 
+这是统一的diagnostic capability/view，不是要求所有Rust error共享同一struct、enum字段或继承层次。
+Generated platform error唯一统一的public/wire外壳是`PlatformError` envelope；envelope内payload字段仍只来自
+对应exact `.skiff` type IR。Diagnostic message、Rust source chain与diagnostic attributes都不因此成为public
+schema。
+
 - `code` 是有限、低基数的机器标签。Rust 内优先使用 enum / constant，只有在日志或 wire
   DTO 投影时转成 string。
 - `message` 面向人阅读，可以包含不需要程序处理的上下文，但必须在进入 external/service
@@ -166,8 +174,8 @@ platform error projection catalog 中显式声明的 generated DTO，才具备�
 
 每个 projection declaration 必须固定：
 
-- projection key；
-- exact Skiff nominal type identity；
+- projection key；它必须逐字等于 exact canonical public symbol，禁止任何版本后缀；
+- 与该 key 相同的 exact Skiff nominal type identity；
 - Rust producer family 与生成式 projection DTO；
 - public message 与其它 schema-declared fields 的 sanitization policy；
 - service envelope kind 与 local/wire failure 的 fallback。
@@ -181,8 +189,9 @@ Skiff identity。
 ### 5.2 Compiler and codegen ownership
 
 Skiff `.skiff` type declaration及 `std/api.yml` public surface 是公开 symbol 与字段 schema 的唯一
-事实源。Compiler-owned projection catalog 只声明 projection key 到 exact public type 的关联，以及
-producer/message/wire/fallback policy；它不得复制 public 字段列表或字段类型。
+事实源。Compiler-owned projection catalog 只声明 canonical public symbol key及
+producer/message/wire/fallback policy；`projectionKey` 与该 symbol 必须逐字相等，它不得复制 public 字段列表
+或字段类型，也不得另造带版本后缀的 wire token。
 
 唯一 generator 必须先用 compiler 解析 public type 得到 canonical type IR，再把 type IR 与 catalog
 关联生成：
@@ -209,8 +218,41 @@ descriptor 当作 authoring input、CLI option 或 ambient config。
 
 ### 5.3 Registry identity and evolution
 
-Generator 必须计算 whole-registry fingerprint 和每个 entry fingerprint，输入至少包含 projection key、
-exact nominal identity、canonical public type IR 和 codec version。
+Generator 必须按 repository canonical JSON 与 lowercase SHA-256 精确计算每个 entry fingerprint。Entry
+preimage 没有可选字段，固定为：
+
+```text
+entryBytes = canonicalJson({
+  schema: "skiff-platform-error-projection-entry-v1",
+  projectionKey,
+  nominalIdentity,
+  canonicalPublicTypeIr,
+  codecVersion,
+  producerFamily,
+  semanticAdapterOwner,
+  publicMessagePolicy,
+  envelopeKind,
+  fallbackPolicy,
+})
+entryFingerprint = "sha256:" + lowercaseHex(SHA-256(entryBytes))
+```
+
+`canonicalPublicTypeIr` 是 compiler 解析 public symbol 后得到的 path/address-free、normalized 完整 IR，不能
+由 catalog 复制字段或由文件路径、源码地址补事实。Whole-registry preimage 固定为：
+
+```text
+registryBytes = canonicalJson({
+  schema: "skiff-platform-error-projection-registry-v1",
+  registryId: "skiff-platform-error-projections",
+  registryVersion: 1,
+  entries: [{ projectionKey, entryFingerprint }],
+})
+fingerprint = "sha256:" + lowercaseHex(SHA-256(registryBytes))
+```
+
+`entries` 必须按 `projectionKey` ASCII 严格升序且 key 唯一；一个registry中出现的每个key恰有一个active
+entry，不得重复。Schema、codec或上述policy输入变化时，key保持canonical public symbol不变，但必须产生新的
+`entryFingerprint`与whole-registry `fingerprint`。
 
 Canonical registry descriptor 固定为：
 
@@ -222,7 +264,8 @@ PlatformErrorProjectionRegistryRef {
 }
 ```
 
-`registryVersion` 表示 descriptor/fingerprint algorithm version；entry 增删只改变 fingerprint。所有 schema
+`registryVersion`表示descriptor/fingerprint algorithm version；entry集合或entry fingerprint变化只改变whole
+registry fingerprint，不提升registryVersion。所有schema
 中的 exact JSON field name 都是 `platformErrorProjectionRegistry`。M3 hard cut 把该 descriptor 作为 bytecode
 header 的第六个 semantic authority，并在每个 PackageArtifact v15 root保存同一 exact value。它进入 bytecode
 identity 与 Package build identity preimage，但不进入 Package Local ABI 或 ServiceProtocol identity。
@@ -239,21 +282,52 @@ identity 与 Package build identity preimage，但不进入 Package Local ABI �
 - Descriptor在同一Runtime WebSocket session内不可变化。Capabilities refresh可以重复同一 exact value；冲突
   refresh必须终止该session。更换fingerprint只能建立新的session incarnation，不能原地改写registration facts。
 - Service `PlatformError` carrier 替换 closed `builtinErrorIdentity`，exact shape 为
-  `{ projectionKey, entryFingerprint, encodedPayload, traceId, errorId }`。`projectionKey` 是 generated
-  ASCII token（`[A-Za-z0-9._-]`，1–128 bytes），entry fingerprint 必须是
+  `{ projectionKey, entryFingerprint, encodedPayload, traceId, errorId }`。`projectionKey` 必须逐字等于
+  generated entry 的 canonical public symbol，同时匹配 ASCII token grammar（`[A-Za-z0-9._-]`，1–128
+  bytes）；禁止任何版本后缀。entry fingerprint 必须是
   `sha256:<64 lowercase hex>`，encoded payload 必须非空且不超过 64 KiB；outer object strict
   deny-unknown-fields 并继续使用 canonical correlation validation。Request-contract owner验证outer字段、
   bounds、correlation和canonical bytes；只有raw bytes与该validated envelope的canonical re-encoding完全相同
-  才能固定为opaque carrier。Outer envelope合法但本地不知道该key/fingerprint时，runtime把它固定为opaque
-  service cause；它在本地不可匹配，但可原样继续转发。
-- 本地认识 key/fingerprint、payload 却不满足 generated codec 时，这是 protocol failure，不得把畸形
+  才能固定为opaque carrier。只有当前registry中存在exact `(projectionKey, entryFingerprint)` pair才是
+  known entry；同key不同fingerprint与完全未知key一样都是unknown-valid opaque cause，本地不可匹配但可原样
+  继续转发，禁止拿当前key的codec或JSON shape猜测其schema。
+- Exact known pair的payload不满足generated codec时，这是protocol failure，不得把畸形
   wire 伪造成 provider `InternalError`。Known entry的identity-specific payload validation由generated codec
   owner执行；provider/local encode在envelope固定前失败时才fallback为固定`InternalError`。
 
-同一个 projection key / nominal identity 的 public schema 不做原地变更；需要改变字段 contract 时新增
-identity/key，或执行显式的全栈 hard cut。Registry 的 additive rolling upgrade 依靠 unknown entry 的
-bounded opaque forwarding，而不是靠 string/JSON shape 猜测旧 schema。Skiff 尚未发布，首次迁移可以直接
-hard cut 当前手写 registry，不保留其兼容 reader。
+Projection key标识semantic family且永远等于canonical public symbol。Schema、codec、message、producer、
+semantic adapter、envelope或fallback policy不得通过带版本后缀的key来版本化；它们变化时保留key、生成新
+entry与whole-registry fingerprint，并对artifact/runtime执行显式全栈hard cut。Rolling coexistence依靠exact
+pair判定与unknown-valid bounded opaque forwarding，而不是靠key-only lookup或string/JSON shape猜测旧schema。
+Skiff 尚未发布，首次迁移可以直接hard cut当前手写registry，不保留其兼容reader。
+
+首次 catalog 固定为以下21个 canonical public symbol key（按ASCII升序）；
+`std.service.InternalError`是fixed fallback，`std.resource.ResourceError`是Package-owned public typed error，
+二者都不进入registry；尚未激活的`std.recoverable.BoundaryError`也不计入首次catalog：
+
+```text
+config.DecodeError
+std.actor.ActivationTimeoutError
+std.actor.MethodInvocationTimeoutError
+std.bytes.DecodeError
+std.collection.ArrayIndexOutOfBoundsError
+std.collection.JsonObjectPropertyNotFoundError
+std.collection.MapKeyNotFoundError
+std.db.ConflictError
+std.db.ConstraintError
+std.db.DecodeError
+std.error.InstructionLimitExceededError
+std.error.TimeoutError
+std.file.FileError
+std.http.HttpError
+std.http.RequestTimeoutError
+std.json.DecodeError
+std.number.DecodeError
+std.service.ProtocolError
+std.service.ProviderUnavailableError
+std.time.DecodeError
+std.websocket.WebSocketRequestError
+```
 
 首次 hard cut 的 version owner 同时升级：bytecode schema `skiff-bytecode-v6` →
 `skiff-bytecode-v7`；bytecode identity generation 4 → 5、marker `skiff-bytecode-artifact-v4` →
@@ -308,10 +382,32 @@ operation policy 决定。Runtime 只有在以下条件全部满足时才能创�
 
 `task.submit` 是显式特例：业务 continuation 无法继续持有同一 submission context / TaskId 完成
 ambiguous-acceptance 恢复，因此其 definite rejection 与 outcome unknown 按 durable task contract 都不可
-捕获。HTTP、service 或 WebSocket operation 若 reference contract 已定义可捕获的 timeout / transport
-failure，不因远端 effect 可能不确定而失去 catchability；重试仍服从各自 effect / idempotency contract。
+捕获。HTTP primitive与Actor method/activation timeout只在原caller continuation仍active时按closed admission
+投影；它们都表示outcome unknown且不触发自动重试。Service call与WebSocket没有独立primitive timeout type；
+词法scope deadline由`std.error.TimeoutError`表达，request/root/inherited deadline保持terminal。任何远端
+transport failure即使可捕获，也不因catchability获得rollback或safe-retry语义。
 
-### 5.5 Failure site matrix
+### 5.5 Timeout and instruction-limit ownership
+
+Public timeout/budget projection固定为：
+
+- `std.error.TimeoutError { timeoutMs: integer }`只属于词法`timeout(...)`scope；短名`TimeoutError`绑定该
+  canonical symbol。只有被终止scope之外仍active的continuation可catch。
+- `std.error.InstructionLimitExceededError { instructionCount: integer, limit: integer }`由hard instruction
+  budget owner产生。耗尽budget的同一frame不可catch或继续执行；错误到达request root后可以固定为typed
+  `PlatformError` carrier，供仍active的remote service caller在其call site按admission捕获。
+- `std.http.RequestTimeoutError { timeoutMs: integer }`只表示HTTP primitive operation timeout；
+  `std.actor.MethodInvocationTimeoutError { timeoutMs: integer }`与
+  `std.actor.ActivationTimeoutError { timeoutMs: integer }`分别只表示对应Actor primitive timeout。三者只在
+  caller continuation仍active时投影，effect/outcome均视为unknown，runtime不得自动retry。
+- 若current lexical scope deadline先到，必须选择`std.error.TimeoutError`，不能伪装成HTTP或Actor primitive
+  timeout。若request/root/inherited deadline先到，只形成request terminal，不向dying frame注入任何error。
+- WebSocket没有独立primitive timeout type：local lexical owner仍使用`std.error.TimeoutError`；继承或root
+  deadline只形成terminal。
+- Cancellation，以及task、lease、idle、handshake、drain、Router ingress、load/preload等control timeout都不
+  进入projection registry。
+
+### 5.6 Failure site matrix
 
 | Failure site | Skiff projection rule |
 | --- | --- |
@@ -448,15 +544,18 @@ Service channel 必须区分 producer/local failure 与已经收到的 fixed wir
 - Local projection/materialization 在形成 `UserException` 前失败，是本地 internal failure；若它需要越过
   service boundary，provider exporter 生成固定 `InternalError`。Provider 已有 `UserException`、但其
   payload encode 在 envelope 固定前失败时，同样生成固定 `InternalError`。
-- Outer envelope 非 canonical / 非法，或本地认识 projection key/fingerprint 但 payload codec 校验失败，
+- Outer envelope 非 canonical / 非法，或本地 registry 认识 exact `(projectionKey, entryFingerprint)` pair 但
+  payload codec 校验失败，
   是 inbound protocol failure。Active caller call site 按 service operation contract 投影
   `std.service.ProtocolError`；没有有效 continuation 时形成 protocol/request terminal。它不能改写成声称
   来自 provider 的 `InternalError`。
-- Outer envelope 合法、projection key/fingerprint 对本地 registry 未知时，保存 bounded canonical bytes
-  为 fixed opaque service cause。本地 catch 不匹配；未捕获时原样转发。
+- Outer envelope 合法、exact pair 对本地 registry 未知时，保存 bounded canonical bytes为fixed opaque
+  service cause。本地 catch 不匹配；未捕获时原样转发。同key不同fingerprint仍属unknown，不得调用当前key的
+  codec或按payload shape猜测。
 - Outer validator由request-contract拥有：它先严格检查variant、字段、长度、token/fingerprint grammar和
   correlation，再要求raw bytes与validated value的canonical re-encoding完全相同。Generated registry codec
-  只在outer validation成功后处理known key/fingerprint的payload；transport不得复制这两层语义。
+  只在outer validation成功后处理exact-known `(projectionKey, entryFingerprint)` pair的payload；transport不得
+  复制这两层语义。
 - Provider local fallback 使用当前 cause 的 canonical correlation；caller-side protocol failure 分配 caller
   本地 correlation；unknown opaque 保留已经验证的原 envelope correlation。未通过 outer validation 的
   metadata 不能进入可信 correlation 或业务日志。
@@ -480,6 +579,8 @@ client 不因此成为一个 Skiff caller，也不接收任意内部 error paylo
 - 大型 leaf error 应在 leaf type 内部装箱，而不是让每个上层 enum 各自重复 boxing 规则。
 - Diagnostic formatting 与 Skiff projection 是不同能力；实现一个不自动获得另一个。
 - `WirePayload.code == public symbol` 不能作为 catch projection 的证据。
+- 不为统一`PlatformError` envelope而统一各crate的Rust error字段；public payload只能由exact `.skiff` type
+  IR生成，不能从Rust `message`、`source`或diagnostic attributes反射。
 
 ## 10. Required invariants
 
@@ -487,8 +588,9 @@ client 不因此成为一个 Skiff caller，也不接收任意内部 error paylo
 
 1. Internal cancellation/scope terminal没有 ordinary payload或catch identity。
 2. Generic deep JSON/BSON/driver error不能因 source type 相同而自动投影。
-3. 每个 generated platform error 的 Rust DTO、catch identity 和 service codec 使用 catalog 指向的同一
-   canonical Skiff type IR；catalog 不复制字段 schema，字段增删会由 generator `--check` 拒绝漂移。
+3. 每个 generated platform error 的 Rust DTO、catch identity 和 service codec 使用 key所等同canonical
+   public symbol解析出的同一Skiff type IR；catalog不复制字段schema，字段增删会由generator `--check`拒绝
+   漂移并生成same-key/new-fingerprint hard cut。
 4. Artifact、runtime session 和 generated registry fingerprint 不匹配时不能执行该 artifact。
 5. 没有有效 continuation guard 时，即使已有 request heap/site 或 projectable DTO 也不能构造
    `UserException`。
@@ -498,7 +600,7 @@ client 不因此成为一个 Skiff caller，也不接收任意内部 error paylo
    safe-retry 语义。
 8. Public payload 不含 diagnostic-only 字段、原始 source message 或私有 stack；recoverable internal
    code 不成为 public string protocol。
-9. Local/provider encode failure、inbound malformed known payload 和 well-formed unknown projection
+9. Local/provider encode failure、inbound malformed exact-known-pair payload 和 well-formed unknown-pair projection
    分别走 internal、protocol、opaque 三条互斥路径。
 10. 跨 service 保留 exact identity/correlation；本地未知但合法的 projection 可 bounded opaque forward。
 11. Opcode/bytecode/VM 等 producer 与 Rust boundary producer 一样只能使用 generated projection key 和

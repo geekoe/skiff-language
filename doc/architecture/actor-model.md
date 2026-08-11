@@ -105,6 +105,13 @@ let hub = std.actor.get<DocHub>("room-1", 0)
 - 声明了 `create` 时，`get<T>(id, ...createArgs)` 的调用形态由声明中的 create 签名合成；编译器在所有调用点强制参数一致。
 - `replace`、`find`、`remove` 等注册控制操作不在第一版，出现真实需求后再定义；实例回收由 idle TTL 表达。
 
+`std.actor.get`的activation wait若由Actor primitive budget先终止，且原caller continuation仍active，则在caller
+call site投影`std.actor.ActivationTimeoutError { timeoutMs }`。它不注入create/activation frame，outcome视为
+unknown且runtime不自动retry。Current lexical`timeout(...)`scope deadline先到时由scope owner产生
+`std.error.TimeoutError { timeoutMs }`；request/root/inherited deadline先到时只结束request，不伪装成activation
+timeout。Owner claim lease、idle TTL、Router/Runtime handshake或discard ACK等control timeout不进入public
+projection registry。
+
 `create` 是初始化方法，不是外部成员：
 
 - 不能通过句柄调用；只在平台为新 incarnation 执行的 Actor 激活路径中执行。
@@ -182,8 +189,13 @@ registry entry 保存创建输入，不保存实例状态，也不是 deployment
 - `std.websocket.requestJsonToConnection` 通过内置JSON-RPC 2.0 text配置发送request并等待匹配response；
   平台拥有且隐藏transport `id`。等待尚未完成时会释放执行权，因此是潜在suspension point。它只保证
   同一connection/generation内的transport配对，不提供业务幂等、自动重试或exactly-once。Ancestor
-  cancellation终止该等待但不生成可捕获错误；deadline仍产生`TimeoutError`。
-- 调用是同步的：调用方挂起等待返回。调用方所在 runtime 不需要拥有实例；路由是位置透明的。
+  cancellation终止该等待但不生成可捕获错误。WebSocket没有独立primitive timeout；local lexical
+  deadline使用`std.error.TimeoutError`，request/root/inherited deadline只形成terminal。
+- 调用是同步的：调用方挂起等待返回。调用方所在 runtime 不需要拥有实例；路由是位置透明的。Actor method
+  invocation primitive budget先到、且caller continuation仍active时，在caller call site投影
+  `std.actor.MethodInvocationTimeoutError { timeoutMs }`；不向target method frame注入该错误。Method可能已执行
+  部分Actor写入或外部effect，因此outcome unknown且runtime不自动retry。Current lexical scope deadline先到时
+  改由scope owner产生`std.error.TimeoutError`，request/root/inherited deadline先到时只形成terminal。
 
 没有 suspension point 的同步片段天然不会与同实例的其他方法交替执行，因此适合短同步裁决。runtime 不提供同实例字段的多线程共享内存语义，也不要求业务使用 mutex 或 atomic。没有 suspension point 的长同步方法会阻塞该实例的所有其他方法，直到返回、失败或被连续执行预算/watchdog终止；失败只结束调用，不把本段已经完成的 Actor 写入回滚。runtime 不在任意指令之间自动抢占，也不提供显式 `yield`。
 
