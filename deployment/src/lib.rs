@@ -7,6 +7,7 @@
 pub mod error;
 pub mod fixtures;
 pub mod projection;
+pub mod routing_view;
 pub mod storage;
 pub mod validation;
 

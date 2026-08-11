@@ -7,22 +7,23 @@ use std::{
 use crate::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_RECORD_PATH,
 };
+use crate::routing_view::{validate_strict_deployment_routing_view, StrictDeploymentRoutingView};
 use serde_json::Value;
 use skiff_artifact_identity::{
     package_schema_type_id, service_contract_ref, service_deployment_ref,
     validate_bytecode_identity, validate_file_ir_identity, validate_package_artifact_identities,
     validate_package_schema_index, validate_package_schema_records,
-    validate_service_contract_identities,
-    validate_service_deployment_ref, ArtifactRelativePath, PackageArtifactRecordPath,
-    PackageBytecodeRecordPath, PackageFileIrRecordPath, PackageResourceRecordPath,
-    PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath, ServiceContractRecordPath, ServiceDeploymentRecordPath, ValidatedBytecodeArtifact,
+    validate_service_contract_identities, validate_service_deployment_ref, ArtifactRelativePath,
+    PackageArtifactRecordPath, PackageBytecodeRecordPath, PackageFileIrRecordPath,
+    PackageResourceRecordPath, PackageSchemaIndexRecordPath, PackageSchemaTypeRecordPath,
+    ServiceContractRecordPath, ServiceDeploymentRecordPath, ValidatedBytecodeArtifact,
 };
 use skiff_artifact_model::{
     package_schema_descriptor_refs, BytecodeArtifact, BytecodeArtifactRef, FileIrRef, FileIrUnit,
     PackageArtifact, PackageArtifactRef, PackageSchemaIndex, PackageSchemaIndexRef,
     PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRecordRef,
-    PublicationResourceRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    PublicationResourceRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef,
 };
 
 use super::{
@@ -350,6 +351,30 @@ impl CanonicalArtifactStore {
         validate_service_deployment_ref(reference, &deployment)?;
         ensure_canonical(&host_path, &bytes, &deployment)?;
         Ok(Arc::new(deployment))
+    }
+
+    /// Reads one exact deployment and every package record named by its
+    /// package bindings, then derives a process-local strict routing view.
+    pub fn read_strict_deployment_routing_view(
+        &self,
+        reference: &ServiceDeploymentRef,
+    ) -> StorageResult<Arc<StrictDeploymentRoutingView>> {
+        let deployment = self.read_service_deployment(reference)?;
+        let mut package_references = BTreeMap::from([(
+            deployment.implementation.package_build_id.clone(),
+            &deployment.implementation,
+        )]);
+        for binding in &deployment.package_bindings {
+            package_references
+                .entry(binding.package.package_build_id.clone())
+                .or_insert(&binding.package);
+        }
+        let packages = package_references
+            .into_values()
+            .map(|package| self.read_package_artifact(package))
+            .collect::<StorageResult<Vec<_>>>()?;
+        let view = validate_strict_deployment_routing_view(reference, deployment, &packages)?;
+        Ok(Arc::new(view))
     }
 
     /// Publishes the mutable "current" actor routing projection record.
@@ -804,6 +829,8 @@ mod package_schema_tests {
             package_id: index.package_id.clone(),
             package_version: package_version.to_string(),
             package_build_id: PackageBuildId::new("unassigned"),
+            platform_error_projection_registry:
+                skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
             files: Vec::new(),
             static_resources: Vec::new(),
             bytecode: None,

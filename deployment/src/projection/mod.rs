@@ -5,7 +5,7 @@
 
 mod error;
 mod operations;
-mod package_closure;
+pub(crate) mod package_closure;
 mod requirements;
 
 pub mod actor_routing;
@@ -19,7 +19,7 @@ use skiff_artifact_model::{
     ServiceDeploymentInput, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
-pub use error::{ProjectionError, ProjectionResult};
+pub use error::{ProjectionError, ProjectionResult, RoutingViewError};
 
 /// Project one deployment from exact, already-typed contract and package artifacts.
 pub fn project_service_deployment(

@@ -9,9 +9,9 @@ use serde_json::json;
 use skiff_artifact_identity::{
     assign_bytecode_identity, assign_file_ir_identity, assign_package_artifact_identities,
     assign_service_contract_identities, assign_service_deployment_identity, contract_operation_id,
-    package_artifact_ref, package_schema_index_identity, service_contract_ref, service_deployment_ref, PackageArtifactRecordPath,
-    PackageBytecodeRecordPath, ReleasePointerPath, BYTECODE_IDENTITY_PREFIX,
-    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+    package_artifact_ref, package_schema_index_identity, service_contract_ref,
+    service_deployment_ref, PackageArtifactRecordPath, PackageBytecodeRecordPath,
+    ReleasePointerPath, BYTECODE_IDENTITY_PREFIX, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
@@ -24,9 +24,9 @@ use skiff_artifact_model::{
     InstructionSourceSite, PackageArtifact, PackageBuildId, PackageCallableId,
     PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    RelocatableBytecodeFunction, ServiceContract, ServiceProtocolIdentity, SourceMapEntry,
-    StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason, TypeRefIr,
-    ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    RelocatableBytecodeFunction, ServiceContract, ServiceDeployment, ServiceProtocolIdentity,
+    SourceMapEntry, StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason,
+    TypeRefIr, ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
     BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
@@ -71,6 +71,8 @@ fn package_fixture() -> PackageArtifact {
         package_id: "example.com/checkpoint".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode: None,
@@ -130,6 +132,13 @@ fn declared_package_ref(artifact: &PackageArtifact) -> skiff_artifact_model::Pac
         package_build_id: artifact.package_build_id.clone(),
         package_local_abi_identity: artifact.package_local_abi.local_abi_identity.clone(),
     }
+}
+
+fn deployment_for_package(package: &PackageArtifact) -> ServiceDeployment {
+    let mut deployment = service_deployment_fixture().expect("deployment");
+    deployment.implementation = declared_package_ref(package);
+    assign_service_deployment_identity(&mut deployment).expect("deployment identity");
+    deployment
 }
 
 fn package_copy_fixture() -> (PackageArtifact, FileIrUnit, Vec<u8>) {
@@ -411,7 +420,8 @@ fn three_typed_records_round_trip_as_identical_canonical_bytes_and_pointers_cas(
                     .as_ref(),
             )
             .unwrap(),
-        ),    ];
+        ),
+    ];
     for (path, round_trip) in round_trips {
         assert_eq!(fs::read(path).unwrap(), round_trip);
     }
@@ -437,7 +447,76 @@ fn three_typed_records_round_trip_as_identical_canonical_bytes_and_pointers_cas(
     let deployment_pointer = ServiceDeploymentPointer::new(deployment_ref).unwrap();
     store
         .compare_and_swap_service_deployment_pointer(None, &deployment_pointer)
-        .unwrap();}
+        .unwrap();
+}
+
+#[test]
+fn strict_routing_view_store_reader_loads_exact_records_and_fails_when_package_is_missing() {
+    let (_temp, store) = test_store();
+    let package = package_fixture();
+    let deployment = deployment_for_package(&package);
+    let deployment_ref = service_deployment_ref(&deployment);
+    store.write_package_artifact(&package).unwrap();
+    store.write_service_deployment(&deployment).unwrap();
+
+    let view = store
+        .read_strict_deployment_routing_view(&deployment_ref)
+        .unwrap();
+    assert_eq!(view.reference(), &deployment_ref);
+    assert_eq!(
+        view.authority().build_id(),
+        &deployment.deployment_artifact_identity
+    );
+    assert_eq!(
+        view.authority().registry_descriptor(),
+        &package.platform_error_projection_registry
+    );
+
+    let (_missing_temp, missing_store) = test_store();
+    missing_store.write_service_deployment(&deployment).unwrap();
+    assert!(missing_store
+        .read_strict_deployment_routing_view(&deployment_ref)
+        .is_err());
+}
+
+#[test]
+fn strict_routing_view_store_reader_rejects_descriptor_decode_and_identity_tamper() {
+    let (_temp, store) = test_store();
+    let package = package_fixture();
+    let package_ref = package_artifact_ref(&package).unwrap();
+    let package_path = store.write_package_artifact(&package).unwrap();
+    let deployment = deployment_for_package(&package);
+    let deployment_ref = service_deployment_ref(&deployment);
+    store.write_service_deployment(&deployment).unwrap();
+
+    let mut malformed = serde_json::to_value(&package).unwrap();
+    malformed["platformErrorProjectionRegistry"]["fingerprint"] = json!("sha256:NOT-LOWERCASE-HEX");
+    fs::write(
+        &package_path,
+        skiff_canonical_json::canonical_json_bytes(&malformed).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.read_strict_deployment_routing_view(&deployment_ref),
+        Err(EcosystemStorageError::Json { .. })
+    ));
+
+    let mut stale_identity = serde_json::to_value(&package).unwrap();
+    stale_identity["platformErrorProjectionRegistry"]["fingerprint"] =
+        json!(format!("sha256:{}", "0".repeat(64)));
+    fs::write(
+        &package_path,
+        skiff_canonical_json::canonical_json_bytes(&stale_identity).unwrap(),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.read_strict_deployment_routing_view(&deployment_ref),
+        Err(EcosystemStorageError::Artifact(
+            skiff_artifact_identity::ArtifactIdentityError::PackageArtifactBuildIdentityMismatch { .. }
+        ))
+    ));
+    assert_eq!(package_ref, deployment.implementation);
+}
 
 #[test]
 fn coordinate_collision_pair_has_independent_records_and_cas() {
@@ -815,6 +894,8 @@ fn bytecode_fixture() -> BytecodeArtifact {
         value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
         host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
         intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         bytecode_identity: bytecode_identity_leaf('0'),
         image: BytecodeImage {
             functions,
