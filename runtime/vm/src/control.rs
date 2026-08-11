@@ -32,6 +32,18 @@ impl VmOwnedValues {
         Self { image, values }
     }
 
+    /// Creates an owned, zero-result resume envelope pinned to `image`.
+    ///
+    /// The only externally constructible `VmOwnedValues` is empty: it can
+    /// resume a verified zero-result site such as `EmitStream`, but cannot
+    /// attach a raw `ValueSlot` to an unrelated image pin.
+    pub fn empty(image: Arc<VerifiedLinkedBytecodeImage>) -> Self {
+        Self {
+            image,
+            values: Box::new([]),
+        }
+    }
+
     pub const fn image(&self) -> &Arc<VerifiedLinkedBytecodeImage> {
         &self.image
     }
@@ -379,6 +391,17 @@ impl StreamItem {
     pub fn into_parts(self) -> (VmOwnedValues, VmResumeToken) {
         (self.item, self.resume)
     }
+
+    /// Backpressure handoff: keeps the item supervisor-owned and creates the
+    /// pending authority that parks this exact stream resume.
+    ///
+    /// The item and pending operation must remain one logical handoff, so the
+    /// supervisor stores the item and publishes the operation without
+    /// exchanging either part with another stream emission.
+    pub fn into_pending(self, ticket: PendingTicket) -> (VmOwnedValues, PendingOperation) {
+        let (item, resume) = self.into_parts();
+        (item, resume.into_pending(ticket))
+    }
 }
 
 impl VmRootSource for StreamItem {
@@ -446,6 +469,8 @@ pub enum VmInternalTerminal {
 #[must_use = "a resume outcome may own VM roots"]
 pub enum ResumeOutcome {
     Values(VmOwnedValues),
+    /// Verified zero-result resume, used by `EmitStream` backpressure wakes.
+    Empty,
     Throw(VmOwnedValues),
     Failure(VmError),
     InternalTerminal(VmInternalTerminal),
@@ -455,7 +480,7 @@ impl VmRootSource for ResumeOutcome {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         match self {
             Self::Values(values) | Self::Throw(values) => values.visit_roots(visitor),
-            Self::Failure(_) | Self::InternalTerminal(_) => Ok(()),
+            Self::Empty | Self::Failure(_) | Self::InternalTerminal(_) => Ok(()),
         }
     }
 }

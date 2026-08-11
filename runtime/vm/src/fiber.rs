@@ -258,6 +258,10 @@ impl VmFiber {
 
         match outcome {
             ResumeOutcome::Values(values) => self.resume_values(pending, values),
+            ResumeOutcome::Empty => {
+                let image = Arc::clone(&pending.image);
+                self.resume_values(pending, VmOwnedValues::empty(image))
+            }
             ResumeOutcome::Throw(values) => self.resume_throw(pending, values),
             ResumeOutcome::Failure(error) => {
                 self.state = VmFiberState::Terminal;
