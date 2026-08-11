@@ -24,7 +24,7 @@ pub(super) async fn read_response_body(
             if body.len().saturating_add(chunk.len()) > max_bytes {
                 return Err(RuntimeError::Protocol {
                     target: context.target().to_string(),
-                    message: format!("response body exceeds max size of {} bytes", max_bytes),
+                    message: format!("response body exceeds max size of {max_bytes} bytes"),
                 });
             }
             body.extend_from_slice(&chunk);

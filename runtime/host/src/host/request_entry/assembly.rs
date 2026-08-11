@@ -230,7 +230,7 @@ impl RuntimeHost {
         _router_session_id: String,
         request: AdmittedBytecodeWebSocketConnectionClosedRequest,
         _http_response_max_bytes: usize,
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+        _sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let AdmittedBytecodeWebSocketConnectionClosedRequest {
             route,

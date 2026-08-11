@@ -19,8 +19,8 @@ use super::{
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
     telemetry::{
-        RuntimeTelemetryConfig, TelemetryConfig, TelemetryExporterHandle, TelemetryFileSink,
-        TelemetryFileSinkHandle, TelemetryProducer,
+        RuntimeTelemetryConfig, TelemetryConfig, TelemetryExporterHandle, TelemetryFileSinkHandle,
+        TelemetryProducer,
     },
     OutboundRequestRegistry,
 };
@@ -55,6 +55,7 @@ pub struct RuntimeProductionConfig {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct RuntimeHost {
     pub(super) router_url: String,
     pub(super) base_runtime_id: String,
@@ -105,7 +106,8 @@ impl RuntimeHost {
                 }
                 // endpoint missing/empty -> default JSONL file sink.
                 _ => {
-                    let sink = TelemetryFileSink::new(host.telemetry.clone()).start();
+                    let sink =
+                        super::telemetry::TelemetryFileSink::new(host.telemetry.clone()).start();
                     let mut slot = host.telemetry_file_sink.lock().await;
                     *slot = Some(sink);
                 }
@@ -128,6 +130,7 @@ impl RuntimeHost {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn new_inner(
         db_provider: DbProviderSource,
         router_url: String,
@@ -178,8 +181,7 @@ impl RuntimeHost {
             telemetry_file_max_bytes,
             telemetry_file_max_files,
         ));
-        #[cfg(not(test))]
-        let _ = db_provider;
+        let _ = &db_provider;
         Ok(Self {
             router_url,
             base_runtime_id: base_runtime_id.clone(),
@@ -252,6 +254,7 @@ impl RuntimeHost {
             .and_then(|store| store.as_ref().cloned())
     }
 
+    #[allow(dead_code)]
     pub(super) fn file_runtime(&self) -> Arc<FileRuntime> {
         Arc::new(FileRuntime::new(
             self.blob_store(),
@@ -260,9 +263,10 @@ impl RuntimeHost {
     }
 
     pub(crate) fn request_heap_limits(&self) -> RequestHeapLimits {
-        let mut limits = RequestHeapLimits::default();
-        limits.max_estimated_bytes = self.memory_budgets.request_heap_bytes;
-        limits
+        RequestHeapLimits {
+            max_estimated_bytes: self.memory_budgets.request_heap_bytes,
+            ..RequestHeapLimits::default()
+        }
     }
 }
 

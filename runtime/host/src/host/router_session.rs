@@ -1,6 +1,6 @@
-use std::{collections::HashSet, future::Future, panic::AssertUnwindSafe, pin::Pin};
+use std::collections::HashSet;
 
-use futures_util::{stream::FuturesUnordered, FutureExt, Sink, SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use skiff_runtime_capability_context::{ConnectionRequestSession, ConnectionRequestTerminal};
@@ -11,7 +11,8 @@ use skiff_runtime_transport::{
     connection_protocol::{decode_connection_response_frame, ConnectionResponseOutcome},
     control_mapper::encode_outbound_control_message,
     protocol::{
-        decode_router_bootstrap_frame_header, decode_typed_binary_frame,
+        decode_bytecode_request_start_frame, decode_router_bootstrap_frame_header,
+        decode_typed_binary_frame,
         ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader,
         ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
         ActorTaskRuntimeErrorFrameHeader, RequestCancelFrameHeader, RuntimeErrorFramePayload,
@@ -20,7 +21,6 @@ use skiff_runtime_transport::{
         TaskSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::request_cancel_from_frame_header,
-    protocol::decode_bytecode_request_start_frame,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -43,9 +43,8 @@ use task_submit::{encode_task_submit_wire_message, legacy_task_submit_rejected};
 
 fn handshake_terminal_error(terminal: ClientTerminalKind) -> RuntimeError {
     RuntimeError::Decode(format!(
-        "runtime handshake terminal {}: {}",
+        "runtime handshake terminal {}: {terminal:?}",
         terminal.description(),
-        format!("{terminal:?}")
     ))
 }
 
@@ -73,6 +72,7 @@ where
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(super) async fn run_connected_session_with_deadlines<S>(
     host: super::RuntimeHost,
     ws: WebSocketStream<S>,
@@ -184,7 +184,7 @@ where
                 _ = health_zero_transition_interval.tick(), if health_reporter.should_probe_zero_transition() => {
                     health_reporter.send_zero_transition_if_needed(&host, &sender).await?;
                 }
-                _ = tokio::time::sleep_until(handshake_deadline.unwrap_or_else(|| tokio::time::Instant::now())), if handshake_deadline.is_some() => {
+                _ = tokio::time::sleep_until(handshake_deadline.unwrap_or_else(tokio::time::Instant::now)), if handshake_deadline.is_some() => {
                     let kind = if handshake.phase() == ClientHandshakePhase::WaitingBootstrap {
                         ClientTimeoutKind::Bootstrap
                     } else {
@@ -205,6 +205,7 @@ where
     session_result.and(disconnect_result)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_router_session_message<S>(
     host: &super::RuntimeHost,
     ws: &mut WebSocketStream<S>,
@@ -343,6 +344,7 @@ fn test_bootstrap_activation(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 fn test_connection_bootstrap(name: &str) -> Result<ConnectionBootstrap> {
     let artifact_path = std::env::temp_dir().join(format!(
         "skiff-runtime-test-artifacts-{name}-{}",
@@ -452,6 +454,7 @@ impl RuntimeHealthReporter {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     async fn send_final(
         &mut self,
         host: &super::RuntimeHost,
@@ -529,6 +532,7 @@ async fn dispatch_router_binary_frame(
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 async fn dispatch_router_binary_frame_with_http_response_max(
     host: &super::RuntimeHost,
     bytes: &[u8],
@@ -585,7 +589,7 @@ async fn dispatch_router_binary_frame_inner(
     router_session_id: &str,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-    mut health_reporter: Option<&mut RuntimeHealthReporter>,
+    health_reporter: Option<&mut RuntimeHealthReporter>,
     bootstrap: &mut Option<ConnectionBootstrap>,
     handshake: &mut ClientHandshake,
 ) -> Result<()> {
@@ -634,7 +638,7 @@ async fn dispatch_router_binary_frame_inner(
                 .and_then(Value::as_str)
                 .expect("runtimeId should be set")
                 .to_string();
-            if let Some(health_reporter) = health_reporter.as_deref_mut() {
+            if let Some(health_reporter) = health_reporter {
                 health_reporter
                     .record_registered(host, sender, runtime_id)
                     .await?;

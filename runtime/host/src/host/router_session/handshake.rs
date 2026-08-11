@@ -28,6 +28,7 @@ pub enum ClientHandshakePhase {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum ClientTerminalKind {
     WrongOrder,
     IdentityChange,
@@ -105,6 +106,7 @@ impl ClientHandshake {
 
     /// Test shortcut: bootstrap received and the capabilities frame queued,
     /// waiting for the ACK (used by frame-level ACK tests).
+    #[allow(dead_code)]
     pub fn register_sent() -> Self {
         Self {
             phase: ClientHandshakePhase::RegistrationSent,
@@ -117,10 +119,12 @@ impl ClientHandshake {
         self.phase
     }
 
+    #[allow(dead_code)]
     pub fn terminal(&self) -> Option<ClientTerminalKind> {
         self.terminal
     }
 
+    #[allow(dead_code)]
     pub fn is_closed(&self) -> bool {
         self.phase == ClientHandshakePhase::Closed
     }
@@ -236,12 +240,14 @@ impl ClientHandshake {
         terminal
     }
 
+    #[allow(dead_code)]
     pub fn on_write_failed(&mut self) -> ClientTerminalKind {
         let terminal = ClientTerminalKind::WriteFailed;
         self.set_terminal(terminal);
         terminal
     }
 
+    #[allow(dead_code)]
     pub fn on_disconnect(&mut self) -> ClientTerminalKind {
         let terminal = ClientTerminalKind::Disconnect;
         self.set_terminal(terminal);

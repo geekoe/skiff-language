@@ -163,7 +163,7 @@ impl<'a> WebsocketCapabilityContext<'a> {
         {
             return ConnectionRequestTerminal::ProtocolError;
         }
-        if method.as_bytes().len()
+        if method.len()
             > skiff_runtime_transport::connection_protocol::CONNECTION_REQUEST_MAX_METHOD_BYTES
             || payload.len()
                 > skiff_runtime_transport::connection_protocol::CONNECTION_REQUEST_MAX_PAYLOAD_BYTES

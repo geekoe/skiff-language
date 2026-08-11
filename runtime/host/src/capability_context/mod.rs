@@ -18,7 +18,6 @@ mod test_effect_double;
 mod time;
 mod websocket;
 
-pub(crate) use skiff_runtime_capability_context::RouterWriterMessage;
 pub use skiff_runtime_capability_context::{
     DbCapabilityContext, DbCapabilityContextApi, DbCapabilityError, DbCapabilityFactory,
     DbCapabilityFuture, DbCapabilityLeaseHandle, DbCapabilityLeaseHold,

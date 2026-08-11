@@ -55,6 +55,7 @@ impl TelemetryCapabilityContext {
     /// Emits one payload-free Runtime exception record through the same
     /// business-log constructor and request-bound telemetry path used by
     /// `std.log.error`.
+    #[allow(dead_code)]
     pub(crate) fn emit_runtime_exception_log(&self, log: &RuntimeExceptionLog) -> bool {
         let Some(request) = self.request.as_ref() else {
             return false;
@@ -89,6 +90,7 @@ impl TelemetryCapabilityContext {
     ///
     /// The projection has a closed field set. In particular it never accepts a
     /// display string, heap value, source path, function name, or open attrs.
+    #[allow(dead_code)]
     pub(crate) fn emit_restricted_service_diagnostic(
         &self,
         diagnostic: &RestrictedServiceDiagnostic,
@@ -199,6 +201,7 @@ impl TelemetryCapabilityContext {
     }
 }
 
+#[allow(dead_code)]
 fn restricted_cause_kind(kind: RestrictedServiceDiagnosticCauseKind) -> &'static str {
     match kind {
         RestrictedServiceDiagnosticCauseKind::PublicTypedError => "publicTypedError",
@@ -207,6 +210,7 @@ fn restricted_cause_kind(kind: RestrictedServiceDiagnosticCauseKind) -> &'static
     }
 }
 
+#[allow(dead_code)]
 fn runtime_exception_log_reason(reason: RuntimeExceptionLogReason) -> &'static str {
     match reason {
         RuntimeExceptionLogReason::Throw => "throw",
@@ -216,6 +220,7 @@ fn runtime_exception_log_reason(reason: RuntimeExceptionLogReason) -> &'static s
     }
 }
 
+#[allow(dead_code)]
 fn exception_stack_frame_value(frame: &ExceptionStackFrame) -> Value {
     match frame {
         ExceptionStackFrame::Local { site } => serde_json::json!({
@@ -235,6 +240,7 @@ fn exception_stack_frame_value(frame: &ExceptionStackFrame) -> Value {
     }
 }
 
+#[allow(dead_code)]
 fn instruction_source_site_value(site: &InstructionSourceSite) -> Value {
     match site {
         InstructionSourceSite::Source { span } => serde_json::json!({
@@ -260,6 +266,7 @@ fn instruction_source_site_value(site: &InstructionSourceSite) -> Value {
     }
 }
 
+#[allow(dead_code)]
 fn synthetic_site_reason(reason: SyntheticInstructionSiteReason) -> &'static str {
     match reason {
         SyntheticInstructionSiteReason::CompilerDesugaring => "compilerDesugaring",

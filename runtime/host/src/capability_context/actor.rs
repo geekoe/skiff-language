@@ -56,6 +56,7 @@ impl<'a> ActorClient<'a> {
             .await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn get_or_create_in_scope(
         &self,
         request: ActorGetOrCreateControlRequest,
@@ -94,7 +95,7 @@ impl<'a> ActorClient<'a> {
             scope,
         )
         .await?;
-        Ok(actor_ref_from_metadata(response.actor_ref)?)
+        actor_ref_from_metadata(response.actor_ref)
     }
 
     pub async fn replace(
@@ -106,6 +107,7 @@ impl<'a> ActorClient<'a> {
             .await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn replace_in_scope(
         &self,
         request: ActorReplaceControlRequest,
@@ -135,13 +137,14 @@ impl<'a> ActorClient<'a> {
         let response: ActorReplaceResponseFrameHeader =
             send_control_request(&self.context, ACTOR_REPLACE_TARGET, &rpc_id, command, scope)
                 .await?;
-        Ok(actor_ref_from_metadata(response.actor_ref)?)
+        actor_ref_from_metadata(response.actor_ref)
     }
 
     pub async fn find(&self, request: ActorFindControlRequest) -> Result<Option<ActorRef>> {
         self.find_with_scope(request, None).await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn find_in_scope(
         &self,
         request: ActorFindControlRequest,
@@ -178,6 +181,7 @@ impl<'a> ActorClient<'a> {
         self.remove_with_scope(request, None).await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn remove_in_scope(
         &self,
         request: ActorRemoveControlRequest,
@@ -224,6 +228,7 @@ impl<'a> RequestClient<'a> {
             .await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn submit_task_in_scope(
         &self,
         request: TaskSubmitControlRequest,
@@ -307,6 +312,7 @@ impl<'a> RequestClient<'a> {
         self.status_task_with_scope(request, None).await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn status_task_in_scope(
         &self,
         request: TaskStatusControlRequest,
@@ -341,6 +347,7 @@ impl<'a> RequestClient<'a> {
         self.cancel_task_with_scope(request, None).await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn cancel_task_in_scope(
         &self,
         request: TaskCancelControlRequest,

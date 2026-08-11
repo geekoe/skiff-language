@@ -14,8 +14,8 @@ use skiff_artifact_model::{
     BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
     BoundaryValuePlan, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity, PackageArtifact,
-    ServiceContract, ServiceDeployment, WebSocketEntryId, SERVICE_CONTRACT_SCHEMA_VERSION,
+    DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity, ServiceContract,
+    ServiceDeployment, WebSocketEntryId, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
@@ -531,7 +531,7 @@ fn test_host_with_bytecode_only(bytecode_only: bool) -> RuntimeHost {
         base_runtime_id: "runtime-bytecode-http".to_string(),
         runtime_home: std::env::temp_dir().join("skiff-runtime-bytecode-http-home"),
         profile: "test".to_string(),
-        bytecode_only: bytecode_only,
+        bytecode_only,
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })
