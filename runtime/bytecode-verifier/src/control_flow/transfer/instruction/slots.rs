@@ -44,25 +44,53 @@ pub(super) fn apply(
                 write_slot(before, &mut slots, slot, value, context)?;
             }
             SlotAction::Mutate => {
-                if context.instruction.opcode() != Opcode::StreamNext
-                    || effect.value
-                        != (ValueSource::Slot {
-                            operand: effect.operand,
-                        })
+                if effect.value
+                    != (ValueSource::Slot {
+                        operand: effect.operand,
+                    })
                 {
                     return Err(unavailable(context.location));
                 }
-                let AbstractValue::Concrete(endpoint) =
+                let AbstractValue::Concrete(owner) =
                     values::live_slot(before, slot, context.location)?;
-                context
-                    .facts
-                    .stream_item_type(endpoint, context.location)
-                    .map_err(|_| {
-                        violation(
+                match context.instruction.opcode() {
+                    Opcode::StreamNext => {
+                        context
+                            .facts
+                            .stream_item_type(owner, context.location)
+                            .map_err(|_| {
+                                violation(
+                                    context.location,
+                                    "mutated endpoint is not an affine Stream<T> slot",
+                                )
+                            })?;
+                    }
+                    Opcode::ArrayPushOwned | Opcode::MapPutOwned => {
+                        let _ = owner;
+                    }
+                    Opcode::SetWritablePath => {
+                        let path = values::resolve_path(
+                            context,
+                            skiff_artifact_model::OperandRole::WritablePathRef,
+                        )?;
+                        let row = context
+                            .candidate
+                            .writable_paths()
+                            .get(path.get() as usize)
+                            .filter(|row| row.index() == path)
+                            .ok_or_else(|| {
+                                violation(context.location, "writable path is out of bounds")
+                            })?;
+                        values::require_same_type(
+                            AbstractValue::Concrete(owner),
+                            row.root_type(),
+                            context.facts,
                             context.location,
-                            "mutated endpoint is not an affine Stream<T> slot",
-                        )
-                    })?;
+                            "writable path root",
+                        )?;
+                    }
+                    _ => return Err(unavailable(context.location)),
+                }
             }
         }
     }

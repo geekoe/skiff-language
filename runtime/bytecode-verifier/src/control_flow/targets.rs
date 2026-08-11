@@ -2,8 +2,8 @@ mod authority;
 mod call_plan;
 mod facts;
 mod local;
+mod remote;
 
-use skiff_artifact_model::{contract_for_opcode, OperandRole};
 use skiff_runtime_linked_bytecode::LinkedBytecodeCandidate;
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
@@ -87,6 +87,12 @@ pub(super) fn prove_exact_targets_and_call_plans(
         }
     }
 
+    remote::prove_remote_targets_and_call_plans(
+        candidate,
+        concrete_values,
+        control_flow,
+        &mut dense,
+    )?;
     prove_unsupported_targets_remain_closed(candidate, &dense)?;
     ExactTargetAndCallFacts::try_from_dense(candidate, dense)
 }
@@ -97,20 +103,19 @@ fn prove_unsupported_targets_remain_closed(
 ) -> Result<(), VerificationError> {
     for (function_ordinal, function) in candidate.functions().iter().enumerate() {
         for (instruction_ordinal, instruction) in function.instructions().iter().enumerate() {
-            let contract = contract_for_opcode(instruction.opcode());
-            let has_callable_target = contract.operands.iter().any(|operand| {
-                matches!(
-                    operand.role,
-                    OperandRole::LocalTarget
-                        | OperandRole::ServiceTarget
-                        | OperandRole::ActorTarget
-                        | OperandRole::InterfaceTarget
-                        | OperandRole::CallbackTarget
-                        | OperandRole::HostTarget
-                        | OperandRole::IntrinsicTarget
-                )
-            });
-            if !has_callable_target
+            let requires_plan = matches!(
+                instruction.opcode(),
+                skiff_artifact_model::Opcode::CallLocal
+                    | skiff_artifact_model::Opcode::TailCallLocal
+                    | skiff_artifact_model::Opcode::CallLocalInOut
+                    | skiff_artifact_model::Opcode::CallService
+                    | skiff_artifact_model::Opcode::CallActor
+                    | skiff_artifact_model::Opcode::CallInterface
+                    | skiff_artifact_model::Opcode::InvokeCallback
+                    | skiff_artifact_model::Opcode::InvokeHost
+                    | skiff_artifact_model::Opcode::InvokeIntrinsic
+            );
+            if !requires_plan
                 || dense
                     .get(function_ordinal)
                     .and_then(|row| row.get(instruction_ordinal))

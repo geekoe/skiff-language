@@ -121,4 +121,10 @@ pub enum VerifiedResumeKind {
         endpoint_slot: FrameSlotIndex,
         item_type: TypeIndex,
     },
+    StreamBackpressure,
+    ServiceBoundary,
+    ActorBoundary,
+    InterfaceBoundary,
+    CallbackBoundary,
+    HostEffect,
 }

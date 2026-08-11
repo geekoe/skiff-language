@@ -139,7 +139,7 @@ fn exact_local_invoke_is_charged_but_not_added_to_cfg_cycles() {
 }
 
 #[test]
-fn actual_resume_semantics_remain_fail_closed() {
+fn actual_resume_descriptor_is_accepted_by_the_cfg_gate() {
     let resume = LinkedResumeSite::new(
         ResumeSiteIndex::new(0),
         FunctionIndex::new(0),
@@ -151,7 +151,7 @@ fn actual_resume_semantics_remain_fail_closed() {
         ResumeErrorMode::RaiseAtSite,
     )
     .unwrap();
-    let error = prove(
+    prove(
         &candidate(
             vec![emit_stream(0), plain(Opcode::Return)],
             Vec::new(),
@@ -159,19 +159,11 @@ fn actual_resume_semantics_remain_fail_closed() {
         ),
         u64::MAX,
     )
-    .unwrap_err();
-
-    assert_eq!(
-        error,
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ResumeSite,
-            location: instruction_location(0),
-        }
-    );
+    .expect("an actual-resume descriptor is accepted by the independent CFG gate");
 }
 
 #[test]
-fn active_region_semantics_remain_fail_closed() {
+fn active_region_table_is_accepted_by_the_cfg_gate() {
     let region = LinkedActiveRegion::new(
         ActiveRegionIndex::new(0),
         InstructionIndex::new(0),
@@ -183,21 +175,11 @@ fn active_region_semantics_remain_fail_closed() {
             },
         },
     );
-    let error = prove(
+    prove(
         &candidate_with_regions(vec![plain(Opcode::Return)], vec![region]),
         u64::MAX,
     )
-    .unwrap_err();
-
-    assert_eq!(
-        error,
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ExceptionRegion,
-            location: VerificationLocation::Function {
-                function: FunctionIndex::new(0),
-            },
-        }
-    );
+    .expect("a canonical active-region table is accepted by the independent CFG gate");
 }
 
 fn prove(candidate: &LinkedBytecodeCandidate, max_edges: u64) -> Result<(), VerificationError> {

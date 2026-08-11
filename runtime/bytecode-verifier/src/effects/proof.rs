@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
-    CallableEffectSummary, CallableMayEffects, Opcode, PendingEffectCategory,
+    CallableEffectSummary, CallableMayEffects, Opcode, PendingEffectCategory, PendingMode,
 };
 use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 
@@ -222,7 +222,32 @@ fn prove_instruction(
         | Opcode::LessThan
         | Opcode::LessOrEqual
         | Opcode::GreaterThan
-        | Opcode::GreaterOrEqual => {
+        | Opcode::GreaterOrEqual
+        | Opcode::Trap
+        | Opcode::NewRecord
+        | Opcode::GetDenseField
+        | Opcode::SetWritablePath
+        | Opcode::RepresentationWrap
+        | Opcode::NewArrayBuilder
+        | Opcode::ArrayBuilderPush
+        | Opcode::FreezeArray
+        | Opcode::ArrayGet
+        | Opcode::ArrayPushOwned
+        | Opcode::NewMapBuilder
+        | Opcode::MapBuilderPut
+        | Opcode::FreezeMap
+        | Opcode::MapGet
+        | Opcode::MapPutOwned
+        | Opcode::ArrayLen
+        | Opcode::MapLen
+        | Opcode::MapEntryAt
+        | Opcode::InterfaceBoxLocal
+        | Opcode::InterfaceBoxRemote
+        | Opcode::MakeCallback
+        | Opcode::Throw
+        | Opcode::Rethrow
+        | Opcode::EnterRegion
+        | Opcode::LeaveRegion => {
             if control_flow_and_calls
                 .exact_call_plan(caller_index, instruction)
                 .is_some()
@@ -278,40 +303,120 @@ fn prove_instruction(
             }
             Ok(())
         }
-        Opcode::SwitchTag
-        | Opcode::Trap
-        | Opcode::CallService
+        Opcode::EmitStream => prove_stream_backpressure(
+            caller_index,
+            instruction,
+            caller,
+            control_flow_and_calls,
+            location,
+        ),
+        Opcode::CallService
         | Opcode::CallActor
         | Opcode::CallInterface
-        | Opcode::CallLocalInOut
-        | Opcode::InterfaceBoxLocal
-        | Opcode::InterfaceBoxRemote
-        | Opcode::MakeCallback
         | Opcode::InvokeCallback
-        | Opcode::NewRecord
-        | Opcode::GetDenseField
-        | Opcode::SetWritablePath
-        | Opcode::RepresentationWrap
-        | Opcode::NewArrayBuilder
-        | Opcode::ArrayBuilderPush
-        | Opcode::FreezeArray
-        | Opcode::ArrayGet
-        | Opcode::ArrayPushOwned
-        | Opcode::NewMapBuilder
-        | Opcode::MapBuilderPut
-        | Opcode::FreezeMap
-        | Opcode::MapGet
-        | Opcode::MapPutOwned
-        | Opcode::ArrayLen
-        | Opcode::MapLen
-        | Opcode::MapEntryAt
-        | Opcode::EmitStream
-        | Opcode::Throw
-        | Opcode::Rethrow
-        | Opcode::EnterRegion
-        | Opcode::LeaveRegion
         | Opcode::InvokeHost
-        | Opcode::InvokeIntrinsic => Err(unavailable(location)),
+        | Opcode::InvokeIntrinsic => prove_exact_remote_call(
+            caller_index,
+            instruction,
+            caller,
+            control_flow_and_calls,
+            location,
+        ),
+        Opcode::SwitchTag | Opcode::CallLocalInOut => Err(unavailable(location)),
+    }
+}
+
+fn prove_stream_backpressure(
+    caller_index: FunctionIndex,
+    instruction: InstructionIndex,
+    caller: &VerifiedFunctionEffects,
+    control_flow_and_calls: &ControlFlowAndCallFacts,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    if control_flow_and_calls
+        .exact_call_plan(caller_index, instruction)
+        .is_some()
+        || !control_flow_and_calls.proves_pending_resume(
+            caller_index,
+            instruction,
+            PendingMode::StreamBackpressure,
+        )
+    {
+        return Err(violation_error(
+            location,
+            "EmitStream lacks its exact stream-backpressure resume certificate",
+        ));
+    }
+    if !caller
+        .effects()
+        .pending_effect_categories
+        .contains(&PendingEffectCategory::Stream)
+    {
+        return Err(violation_error(
+            location,
+            "reachable EmitStream is absent from the canonical Stream pending effects",
+        ));
+    }
+    Ok(())
+}
+
+fn prove_exact_remote_call(
+    caller_index: FunctionIndex,
+    instruction: InstructionIndex,
+    caller: &VerifiedFunctionEffects,
+    control_flow_and_calls: &ControlFlowAndCallFacts,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    let plan = control_flow_and_calls
+        .exact_call_plan(caller_index, instruction)
+        .ok_or_else(|| unavailable(location))?;
+    if plan.call_site().function() != caller_index || plan.call_site().instruction() != instruction
+    {
+        return Err(violation_error(
+            location,
+            "remote effect call plan coordinate mismatch",
+        ));
+    }
+    let CallableEffectSummary::Analyzed { effects } = plan.effect().summary() else {
+        return Err(unavailable(location));
+    };
+    match plan.pending() {
+        PendingPlan::Never => {
+            if !effects.pending_effect_categories.is_empty() {
+                return Err(violation_error(
+                    location,
+                    "NoPending remote target unexpectedly carries pending effect categories",
+                ));
+            }
+            prove_effect_subset(effects, caller.effects(), location)
+        }
+        PendingPlan::ActualWithResume(mode) => {
+            let expected = pending_category(mode).ok_or_else(|| unavailable(location))?;
+            if !control_flow_and_calls.proves_pending_resume(caller_index, instruction, mode)
+                || !effects.pending_effect_categories.contains(&expected)
+            {
+                return Err(violation_error(
+                    location,
+                    format!("reachable {mode:?} call lacks its exact resume certificate or pending category"),
+                ));
+            }
+            prove_effect_subset(effects, caller.effects(), location)
+        }
+        PendingPlan::TransitiveTarget | PendingPlan::RequiresNoPending => {
+            Err(unavailable(location))
+        }
+    }
+}
+
+fn pending_category(mode: PendingMode) -> Option<PendingEffectCategory> {
+    match mode {
+        PendingMode::ServiceBoundary => Some(PendingEffectCategory::ServiceCall),
+        PendingMode::ActorBoundary => Some(PendingEffectCategory::ActorCall),
+        PendingMode::InterfaceBoundary | PendingMode::CallbackBoundary => {
+            Some(PendingEffectCategory::InterfaceCall)
+        }
+        PendingMode::HostEffect => Some(PendingEffectCategory::HostEffect),
+        PendingMode::StreamRead | PendingMode::StreamBackpressure => None,
     }
 }
 

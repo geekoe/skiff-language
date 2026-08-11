@@ -1,13 +1,16 @@
 use skiff_artifact_model::{
-    CallableEffectSummary, Opcode, PackageCallableId, ParamModeIr, TypeRefIr,
+    CallableEffectSummary, Opcode, PackageCallableId, ParamModeIr, ShapeDeclaration, TypeRefIr,
+    ValueTransferPlan,
 };
 use skiff_runtime_linked_bytecode::{
-    ArtifactFunctionKey, ArtifactTypeIndex, FrameSlotIndex, FunctionIndex, InstructionIndex,
-    LinkedArtifactPoolOrigin, LinkedBytecodeCandidate, LinkedCallableEffectDeclaration,
+    ArtifactFunctionKey, ArtifactShapeIndex, ArtifactTypeIndex, FrameSlotIndex, FunctionIndex,
+    InstructionIndex, LinkedArtifactPoolOrigin, LinkedBytecodeCandidate,
+    LinkedCallableEffectDeclaration, LinkedContainerLayout, LinkedContainerPosition,
     LinkedFrameLayout, LinkedFunction, LinkedFunctionTables, LinkedInstruction,
     LinkedInstructionTarget, LinkedParameterSlot, LinkedProgramPointState, LinkedResolvedOperand,
-    LinkedSlotState, LinkedStackMapCandidate, LinkedStackValue, LinkedTypeEntry,
-    LinkedValueDropPlan, LinkedValueTransferPlan, SpecializationKey, TypeIndex,
+    LinkedShapeEntry, LinkedShapeField, LinkedSlotState, LinkedStackMapCandidate, LinkedStackValue,
+    LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex, SpecializationKey,
+    TypeIndex,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
@@ -74,6 +77,138 @@ pub(crate) fn fixture(types: Vec<TypeRefIr>, spec: FunctionSpec) -> StackFixture
         hydrated,
         candidate: LinkedBytecodeCandidate::try_from_parts(parts)
             .expect("stack fixture passes candidate-local validation"),
+    }
+}
+
+pub(crate) fn rich_fixture(
+    types: Vec<TypeRefIr>,
+    shapes: Vec<ShapeDeclaration>,
+    spec: FunctionSpec,
+) -> StackFixture {
+    let hydrated = super::exact_hydration_with_types_and_shapes(types.clone(), shapes.clone());
+    let mut parts = super::candidate_parts(&hydrated, None, None);
+    let build = hydrated
+        .packages()
+        .values()
+        .next()
+        .expect("rich stack fixture package is hydrated")
+        .reference()
+        .package_build_id
+        .clone();
+    parts.types = linked_types_with_layouts(&build, &types);
+    parts.shapes = linked_shapes(&build, &shapes, &types);
+    parts.functions = vec![linked_function(
+        FunctionIndex::new(0),
+        ordinary_key(&build, 0),
+        PackageCallableId::new("fixture:rich:0"),
+        CallableEffectSummary::analysis_pending(),
+        spec,
+        &types,
+    )];
+    StackFixture {
+        hydrated,
+        candidate: LinkedBytecodeCandidate::try_from_parts(parts)
+            .expect("rich stack fixture passes candidate-local validation"),
+    }
+}
+
+fn linked_types_with_layouts(
+    build: &skiff_artifact_model::PackageBuildId,
+    types: &[TypeRefIr],
+) -> Vec<LinkedTypeEntry> {
+    types
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(ordinal, ty)| {
+            let index = u32::try_from(ordinal).expect("rich test type ordinal fits u32");
+            LinkedTypeEntry::new(
+                TypeIndex::new(index),
+                LinkedArtifactPoolOrigin::new(build.clone(), ArtifactTypeIndex::new(index), None)
+                    .expect("rich test type origin is valid"),
+                ty.clone(),
+                container_layout_for(&ty, types),
+            )
+        })
+        .collect()
+}
+
+fn container_layout_for(ty: &TypeRefIr, types: &[TypeRefIr]) -> Option<LinkedContainerLayout> {
+    let TypeRefIr::Builtin { name, args } = ty else {
+        return None;
+    };
+    match (name.as_str(), args.as_slice()) {
+        ("Array", [element]) => Some(LinkedContainerLayout::array(LinkedContainerPosition::new(
+            type_index(types, element),
+            plan_for(element),
+        ))),
+        ("Map", [key, value]) => Some(LinkedContainerLayout::map(
+            LinkedContainerPosition::new(type_index(types, key), plan_for(key)),
+            LinkedContainerPosition::new(type_index(types, value), plan_for(value)),
+        )),
+        _ => None,
+    }
+}
+
+fn linked_shapes(
+    build: &skiff_artifact_model::PackageBuildId,
+    shapes: &[ShapeDeclaration],
+    types: &[TypeRefIr],
+) -> Vec<LinkedShapeEntry> {
+    shapes
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(ordinal, shape)| {
+            let index = u32::try_from(ordinal).expect("rich test shape ordinal fits u32");
+            let fields = shape
+                .fields
+                .into_iter()
+                .map(|field| {
+                    LinkedShapeField::new(
+                        field.name,
+                        TypeIndex::new(field.type_ref),
+                        plan_for(&types[field.type_ref as usize]),
+                    )
+                    .expect("rich shape field is valid")
+                })
+                .collect::<Vec<_>>();
+            LinkedShapeEntry::new(
+                ShapeIndex::new(index),
+                LinkedArtifactPoolOrigin::new(build.clone(), ArtifactShapeIndex::new(index), None)
+                    .expect("rich test shape origin is valid"),
+                TypeIndex::new(shape.type_ref),
+                fields.into_boxed_slice(),
+            )
+            .expect("rich shape entry is valid")
+        })
+        .collect()
+}
+
+fn type_index(types: &[TypeRefIr], ty: &TypeRefIr) -> TypeIndex {
+    let index = types
+        .iter()
+        .position(|candidate| candidate == ty)
+        .expect("rich container child type is in the type pool");
+    TypeIndex::new(u32::try_from(index).expect("rich container child index fits u32"))
+}
+
+pub(crate) fn rich_shape_decl(
+    nominal_type_ref: u32,
+    fields: Vec<(&'static str, u32, ValueTransferPlan)>,
+) -> ShapeDeclaration {
+    ShapeDeclaration {
+        type_ref: nominal_type_ref,
+        fields: fields
+            .into_iter()
+            .map(
+                |(name, type_ref, plan)| skiff_artifact_model::ShapeFieldDeclaration {
+                    name: name.to_string(),
+                    type_ref,
+                    plan,
+                },
+            )
+            .collect(),
     }
 }
 
@@ -322,8 +457,13 @@ fn ordinary_key(build: &skiff_artifact_model::PackageBuildId, ordinal: u32) -> S
 }
 
 fn plan_for(ty: &TypeRefIr) -> LinkedValueTransferPlan {
+    if !matches!(ty, TypeRefIr::Builtin { .. }) {
+        return LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        };
+    }
     let TypeRefIr::Builtin { name, .. } = ty else {
-        panic!("stack fixture supports only builtin types")
+        unreachable!()
     };
     match name.as_str() {
         "null" | "bool" | "number" | "integer" | "Date" => LinkedValueTransferPlan::SnapshotShare {

@@ -3,13 +3,15 @@ use skiff_artifact_model::{
     SlotContract, ValueSource,
 };
 use skiff_runtime_linked_bytecode::{
-    FunctionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedFrameLayout, TypeIndex,
+    FunctionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedCallableSignature,
+    LinkedFrameLayout, TypeIndex,
 };
 
 use super::{
     facts::{
         CallSiteCoordinate, ExactCallPlan, ExactEffectFacts, ExactParameterPosition,
         ExactResultPosition, ExactTargetCoordinate, PendingPlan, ReceiverProjection,
+        ResumeCoordinate,
     },
     ControlFlowFacts,
 };
@@ -110,6 +112,125 @@ pub(super) fn prove_call_plan(
         None,
         None,
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prove_remote_call_plan(
+    candidate: &LinkedBytecodeCandidate,
+    concrete_values: &ConcreteValueFacts,
+    caller: FunctionIndex,
+    site: InstructionIndex,
+    target: ExactTargetCoordinate,
+    effect: ExactEffectFacts,
+    signature: &LinkedCallableSignature,
+    pending: PendingPlan,
+    resume: Option<ResumeCoordinate>,
+) -> Result<ExactCallPlan, VerificationError> {
+    let location = VerificationLocation::Instruction {
+        function: caller,
+        instruction: site,
+    };
+    let caller_function = function(candidate, caller, location)?;
+    let instruction = caller_function
+        .instructions()
+        .get(site.get() as usize)
+        .ok_or_else(|| violation(location, "call site is out of bounds"))?;
+    let contract = contract_for_opcode(instruction.opcode());
+    let parameters = exact_signature_parameters(signature, concrete_values, location)?;
+    let results = exact_signature_results(signature, concrete_values, location)?;
+
+    match contract.control {
+        ControlContract::Fallthrough => {
+            prove_remote_fallthrough_contract(contract.typed, location)?;
+            prove_declared_count(
+                contract.operand_word(OperandRole::ArgCount, instruction.operands()),
+                parameters.len(),
+                "ArgCount",
+                location,
+            )?;
+            prove_declared_count(
+                contract.operand_word(OperandRole::ResultCount, instruction.operands()),
+                results.len(),
+                "ResultCount",
+                location,
+            )?;
+        }
+        _ => return Err(unavailable(location)),
+    }
+
+    Ok(ExactCallPlan::new(
+        CallSiteCoordinate::new(caller, site),
+        target,
+        effect,
+        ReceiverProjection::None,
+        parameters.into_boxed_slice(),
+        results.into_boxed_slice(),
+        pending,
+        resume,
+        None,
+    ))
+}
+
+fn exact_signature_parameters(
+    signature: &LinkedCallableSignature,
+    facts: &ConcreteValueFacts,
+    location: VerificationLocation,
+) -> Result<Vec<ExactParameterPosition>, VerificationError> {
+    signature
+        .parameter_types()
+        .iter()
+        .copied()
+        .zip(signature.parameter_modes())
+        .enumerate()
+        .map(|(ordinal, (ty, mode))| {
+            require_fact(facts, ty, location, format!("target parameter {ordinal}"))?;
+            Ok(ExactParameterPosition::new(ty, *mode))
+        })
+        .collect()
+}
+
+fn exact_signature_results(
+    signature: &LinkedCallableSignature,
+    facts: &ConcreteValueFacts,
+    location: VerificationLocation,
+) -> Result<Vec<ExactResultPosition>, VerificationError> {
+    signature
+        .result_types()
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(ordinal, ty)| {
+            require_fact(facts, ty, location, format!("target result {ordinal}"))?;
+            Ok(ExactResultPosition::new(ty))
+        })
+        .collect()
+}
+
+fn prove_remote_fallthrough_contract(
+    typed: skiff_artifact_model::TypedTransition,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    let has_parameters = typed.stack_in.iter().any(|group| {
+        group.arity == Arity::Declared(OperandRole::ArgCount)
+            && matches!(group.value, ValueSource::TargetParameters { .. })
+    });
+    let has_carrier = typed.stack_in.iter().any(|group| {
+        group.arity == Arity::Fixed(1)
+            && matches!(group.value, ValueSource::InterfaceCarrier { .. })
+    });
+    let exact_output = matches!(
+        typed.stack_out,
+        [group]
+            if group.arity == Arity::Declared(OperandRole::ResultCount)
+                && matches!(group.value, ValueSource::TargetResults { .. })
+    );
+    if !has_parameters || !exact_output || typed.slots != SlotContract::None {
+        return Err(unavailable(location));
+    }
+    if typed.stack_in.len() != 1 + usize::from(has_carrier) {
+        return Err(unavailable(location));
+    }
+    Ok(())
 }
 
 fn exact_parameters(

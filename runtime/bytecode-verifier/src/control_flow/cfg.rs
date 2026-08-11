@@ -1,8 +1,8 @@
 mod checkpoint;
 
 use skiff_artifact_model::{
-    contract_for_opcode, CheckpointContract, ControlContract, Opcode, OperandRole, PendingContract,
-    PendingMode,
+    contract_for_opcode, CheckpointContract, ControlContract, ExceptionBehavior, ExceptionContract,
+    OperandRole, PendingContract,
 };
 use skiff_runtime_linked_bytecode::{
     FunctionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedFunction, LinkedInstruction,
@@ -49,9 +49,11 @@ fn prove_function(
             "function has no entry instruction",
         ));
     }
-    if !function.exception_regions().is_empty() || !function.active_regions().is_empty() {
-        return Err(VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ExceptionRegion,
+    if function.exception_regions().len() as u64 > limits.max_exception_regions_per_function {
+        return Err(VerificationError::LimitExceeded {
+            limit: VerificationLimit::ExceptionRegionsPerFunction,
+            actual: function.exception_regions().len() as u64,
+            max: limits.max_exception_regions_per_function,
             location: function_location,
         });
     }
@@ -65,23 +67,31 @@ fn prove_function(
         let instruction_index = instruction_index(function, ordinal)?;
         let location = instruction_location(function, instruction_index);
         let contract = contract_for_opcode(instruction.opcode());
-        let targets = normal_targets(function, instruction_index, instruction, contract.control)?;
+        let normal_targets =
+            normal_targets(function, instruction_index, instruction, contract.control)?;
+        let exception_targets = exception_targets(function, instruction_index, contract.exception)?;
+        let mut targets = normal_targets
+            .into_iter()
+            .map(|target| ControlFlowEdge {
+                target,
+                kind: ControlFlowEdgeKind::Ordinary,
+            })
+            .collect::<Vec<_>>();
+        targets.extend(
+            exception_targets
+                .into_iter()
+                .map(|(target, region)| ControlFlowEdge {
+                    target,
+                    kind: ControlFlowEdgeKind::Exceptional { region },
+                }),
+        );
         record_count = charge_records(
             record_count,
             targets.len(),
             limits.max_control_flow_edges_per_function,
             location,
         )?;
-        successors.push(
-            targets
-                .into_iter()
-                .map(|target| ControlFlowEdge {
-                    target,
-                    kind: ControlFlowEdgeKind::Ordinary,
-                })
-                .collect::<Vec<_>>()
-                .into_boxed_slice(),
-        );
+        successors.push(targets.into_boxed_slice());
 
         if let Some(target) = exact_local_target(instruction, contract.pending, location)? {
             record_count = charge_records(
@@ -131,6 +141,36 @@ fn prove_function(
         exact_local_invocations: exact_local_invocations.into_boxed_slice(),
         computed_max_operand_depth: 0,
     })
+}
+
+fn exception_targets(
+    function: &LinkedFunction,
+    instruction_index: InstructionIndex,
+    exception: ExceptionContract,
+) -> Result<Vec<(InstructionIndex, usize)>, VerificationError> {
+    if matches!(exception.behavior, ExceptionBehavior::None) {
+        return Ok(Vec::new());
+    }
+    let Some((region, index)) = innermost_exception_region(function, instruction_index) else {
+        return Ok(Vec::new());
+    };
+    Ok(vec![(region.handler(), index)])
+}
+
+fn innermost_exception_region(
+    function: &LinkedFunction,
+    instruction_index: InstructionIndex,
+) -> Option<(&skiff_runtime_linked_bytecode::LinkedExceptionRegion, usize)> {
+    function
+        .exception_regions()
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, region)| {
+            region.start().get() <= instruction_index.get()
+                && instruction_index.get() < region.end().get()
+        })
+        .map(|(index, region)| (region, index))
 }
 
 fn normal_targets(
@@ -193,17 +233,7 @@ fn exact_local_target(
         PendingContract::Never => return Ok(None),
         PendingContract::TransitiveTarget { target }
         | PendingContract::NoPendingTarget { target, .. } => target,
-        PendingContract::ActualWithResume { mode, .. }
-            if instruction.opcode() == Opcode::StreamNext && mode == PendingMode::StreamRead =>
-        {
-            return Ok(None);
-        }
-        PendingContract::ActualWithResume { .. } => {
-            return Err(VerificationError::ProofUnavailable {
-                obligation: VerificationObligation::ResumeSite,
-                location,
-            });
-        }
+        PendingContract::ActualWithResume { .. } => return Ok(None),
     };
     match resolved_target(instruction, role, location)? {
         LinkedInstructionTarget::Function(target) => Ok(Some(target)),
@@ -394,5 +424,118 @@ fn semantic_violation(
         obligation,
         location,
         detail: detail.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_artifact_model::{Opcode, PackageCallableId};
+    use skiff_runtime_linked_bytecode::{
+        ArtifactFunctionKey, FrameSlotIndex, LinkedCallableEffectDeclaration, LinkedCatchMatcher,
+        LinkedExceptionRegion, LinkedFrameLayout, LinkedFunctionTables, LinkedProgramPointState,
+        LinkedSlotState, LinkedStackMapCandidate, LinkedValueDropPlan, LinkedValueTransferPlan,
+        SpecializationKey, TypeIndex,
+    };
+
+    use super::*;
+
+    #[test]
+    fn throw_and_rethrow_get_their_innermost_handler_edge() {
+        let function = function_with_region();
+        let throw_contract = contract_for_opcode(Opcode::Throw);
+        let edges = exception_targets(
+            &function,
+            InstructionIndex::new(0),
+            throw_contract.exception,
+        )
+        .unwrap();
+        assert_eq!(edges, vec![(InstructionIndex::new(1), 0)]);
+
+        let rethrow_contract = contract_for_opcode(Opcode::Rethrow);
+        let edges = exception_targets(
+            &function,
+            InstructionIndex::new(0),
+            rethrow_contract.exception,
+        )
+        .unwrap();
+        assert_eq!(edges, vec![(InstructionIndex::new(1), 0)]);
+    }
+
+    fn function_with_region() -> LinkedFunction {
+        let slot_types = Box::new([TypeIndex::new(0)]);
+        let slot_plans = Box::new([LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        }]);
+        let frame = LinkedFrameLayout::new(
+            slot_types,
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            slot_plans,
+            Box::new([]),
+        )
+        .unwrap();
+        let region = LinkedExceptionRegion::new(
+            InstructionIndex::new(0),
+            skiff_runtime_linked_bytecode::InstructionBoundaryIndex::new(2),
+            InstructionIndex::new(1),
+            0,
+            Box::new([LinkedCatchMatcher::CatchAll]),
+            FrameSlotIndex::new(0),
+            TypeIndex::new(0),
+            0,
+        );
+        let tables = LinkedFunctionTables::new(
+            Box::new([region]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+        );
+        let states = (0..2)
+            .map(|index| {
+                LinkedProgramPointState::new(
+                    InstructionIndex::new(index),
+                    Box::new([]),
+                    Box::new([LinkedSlotState::Uninitialized]),
+                    Box::new([]),
+                    Box::new([]),
+                )
+            })
+            .collect::<Vec<_>>();
+        let stack_map =
+            LinkedStackMapCandidate::try_new(states.into_boxed_slice(), 2, 1, 0).unwrap();
+        LinkedFunction::new(
+            FunctionIndex::new(0),
+            SpecializationKey::new(
+                skiff_artifact_model::PackageBuildId::new("cfg-test"),
+                ArtifactFunctionKey::parse("module::cfg").unwrap(),
+                PackageCallableId::new("cfg"),
+                Box::new([]),
+                None,
+            ),
+            Box::new([
+                LinkedInstruction::new(
+                    Opcode::Throw,
+                    Box::new([0]),
+                    Box::new([skiff_runtime_linked_bytecode::LinkedResolvedOperand::new(
+                        0,
+                        LinkedInstructionTarget::Type(TypeIndex::new(0)),
+                    )]),
+                    0,
+                )
+                .unwrap(),
+                LinkedInstruction::new(Opcode::Return, Box::new([]), Box::new([]), 1).unwrap(),
+            ]),
+            frame,
+            0,
+            LinkedCallableEffectDeclaration::new(
+                PackageCallableId::new("cfg"),
+                skiff_artifact_model::CallableEffectSummary::analysis_pending(),
+            ),
+            tables,
+            stack_map,
+        )
     }
 }

@@ -3,14 +3,17 @@ mod tail;
 mod values;
 
 use skiff_artifact_model::{
-    contract_for_opcode, Arity, ControlContract, Opcode, OpcodeContract, ParamModeIr,
+    contract_for_opcode, Arity, ControlContract, Opcode, OpcodeContract, OperandRole, ParamModeIr,
     TypedStackGroup, ValueSource,
 };
 use skiff_runtime_linked_bytecode::{
-    InstructionIndex, LinkedBytecodeCandidate, LinkedFunction, LinkedInstruction, TypeIndex,
+    ActiveRegionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind,
+    LinkedFunction, LinkedInstruction, LinkedInstructionTarget, TypeIndex,
 };
 
-use super::super::{tail::VerifiedTailCallProof, AbstractValue, ProgramPointState};
+use super::super::{
+    tail::VerifiedTailCallProof, AbstractValue, AbstractWritableLoan, ProgramPointState,
+};
 use super::ExactTargetAndCallFacts;
 use crate::{
     concrete_values::{ConcreteValueFacts, ImplicitBuiltin},
@@ -94,12 +97,83 @@ pub(super) fn apply(
     let (mut stack, inputs) = consume_inputs(before, &context)?;
     let next_slots = slots::apply(before, &inputs, &context)?;
     produce_outputs(&mut stack, before, &inputs, &context)?;
+    let mut active_regions = before.active_regions.to_vec();
+    let mut writable_loans = before.writable_loans.to_vec();
+    apply_region_and_loan_effects(&context, &mut active_regions, &mut writable_loans)?;
     Ok(InstructionTransfer::Continue(ProgramPointState {
         stack: stack.into_boxed_slice(),
         slots: next_slots.into_boxed_slice(),
-        active_regions: before.active_regions.clone(),
-        writable_loans: before.writable_loans.clone(),
+        active_regions: active_regions.into_boxed_slice(),
+        writable_loans: writable_loans.into_boxed_slice(),
     }))
+}
+
+fn apply_region_and_loan_effects(
+    context: &Context<'_>,
+    active_regions: &mut Vec<ActiveRegionIndex>,
+    writable_loans: &mut Vec<AbstractWritableLoan>,
+) -> Result<(), VerificationError> {
+    match context.instruction.opcode() {
+        Opcode::EnterRegion => {
+            let region = region_target(context, OperandRole::ActiveRegion)?;
+            if active_regions.contains(&region) {
+                return Err(violation(
+                    context.location,
+                    format!("active region {} is already entered", region.get()),
+                ));
+            }
+            active_regions.push(region);
+        }
+        Opcode::LeaveRegion => {
+            let region = region_target(context, OperandRole::ActiveRegion)?;
+            if active_regions.last().copied() != Some(region) {
+                return Err(violation(
+                    context.location,
+                    format!(
+                        "leave region {} is not the innermost active region",
+                        region.get()
+                    ),
+                ));
+            }
+            active_regions.pop();
+        }
+        Opcode::SetWritablePath => {
+            let root_slot = values::resolve_slot(context, OperandRole::Slot)?;
+            let path = values::resolve_path(context, OperandRole::WritablePathRef)?;
+            let loan = AbstractWritableLoan { root_slot, path };
+            if !writable_loans.contains(&loan) {
+                writable_loans.push(loan);
+                writable_loans.sort_unstable();
+                writable_loans.dedup();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn region_target(
+    context: &Context<'_>,
+    role: OperandRole,
+) -> Result<ActiveRegionIndex, VerificationError> {
+    let ordinal = context
+        .contract
+        .operand_position(role)
+        .and_then(|ordinal| u32::try_from(ordinal).ok())
+        .ok_or_else(|| violation(context.location, "canonical active-region role is absent"))?;
+    match context
+        .instruction
+        .resolved_operands()
+        .iter()
+        .find(|operand| operand.operand_ordinal() == ordinal)
+        .map(|operand| operand.target())
+    {
+        Some(LinkedInstructionTarget::ActiveRegion(region)) => Ok(region),
+        _ => Err(violation(
+            context.location,
+            "active-region role has a non-region typed target",
+        )),
+    }
 }
 
 fn require_supported(
@@ -134,7 +208,39 @@ fn require_supported(
         | Opcode::LessOrEqual
         | Opcode::GreaterThan
         | Opcode::GreaterOrEqual
-        | Opcode::StreamNext => Ok(()),
+        | Opcode::StreamNext
+        | Opcode::Trap
+        | Opcode::CallService
+        | Opcode::CallActor
+        | Opcode::CallInterface
+        | Opcode::InterfaceBoxLocal
+        | Opcode::InterfaceBoxRemote
+        | Opcode::MakeCallback
+        | Opcode::InvokeCallback
+        | Opcode::NewRecord
+        | Opcode::GetDenseField
+        | Opcode::SetWritablePath
+        | Opcode::RepresentationWrap
+        | Opcode::NewArrayBuilder
+        | Opcode::ArrayBuilderPush
+        | Opcode::FreezeArray
+        | Opcode::ArrayGet
+        | Opcode::ArrayPushOwned
+        | Opcode::NewMapBuilder
+        | Opcode::MapBuilderPut
+        | Opcode::FreezeMap
+        | Opcode::MapGet
+        | Opcode::MapPutOwned
+        | Opcode::ArrayLen
+        | Opcode::MapLen
+        | Opcode::MapEntryAt
+        | Opcode::EmitStream
+        | Opcode::Throw
+        | Opcode::Rethrow
+        | Opcode::EnterRegion
+        | Opcode::LeaveRegion
+        | Opcode::InvokeHost
+        | Opcode::InvokeIntrinsic => Ok(()),
         _ => Err(unavailable(location)),
     }
 }
@@ -191,16 +297,19 @@ fn consume_inputs(
                 "operand-stack input group is out of bounds",
             )
         })?;
-        validate_input_source(group.value, values, context)?;
+        validate_input_source(group.value, values, before, &inputs, context)?;
         inputs.push(values.to_vec());
         offset = end;
     }
     Ok((before.stack[..prefix_len].to_vec(), inputs))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn validate_input_source(
     source: ValueSource,
     input: &[AbstractValue],
+    before: &ProgramPointState,
+    prior_inputs: &[Vec<AbstractValue>],
     context: &Context<'_>,
 ) -> Result<(), VerificationError> {
     match source {
@@ -219,6 +328,10 @@ fn validate_input_source(
             ImplicitBuiltin::Number,
             context.location,
         ),
+        ValueSource::CollectionIndex => {
+            require_one(input, context)?;
+            values::require_integer_or_number(input[0], context.facts, context.location)
+        }
         ValueSource::ComparablePair => {
             if input.len() != 2 {
                 return Err(violation(
@@ -281,8 +394,295 @@ fn validate_input_source(
             }
             Ok(())
         }
+        ValueSource::InterfaceReceiver { interface }
+        | ValueSource::InterfaceCarrier { interface } => {
+            require_one(input, context)?;
+            let expected = values::interface_carrier_type(context, interface, context.location)?;
+            values::require_same_type(
+                input[0],
+                expected,
+                context.facts,
+                context.location,
+                "interface carrier",
+            )
+        }
+        ValueSource::CallbackCaptures { layout } => {
+            let layout_index = values::resolve_capture_layout(context, layout)?;
+            let row = context
+                .candidate
+                .callback_capture_layouts()
+                .get(layout_index.get() as usize)
+                .filter(|row| row.index() == layout_index)
+                .ok_or_else(|| {
+                    violation(context.location, "callback capture layout is out of bounds")
+                })?;
+            if input.len() != row.captures().len() {
+                return Err(violation(
+                    context.location,
+                    "callback capture arity is not exact",
+                ));
+            }
+            for (ordinal, (value, capture)) in input.iter().zip(row.captures()).enumerate() {
+                values::require_same_type(
+                    *value,
+                    capture.ty(),
+                    context.facts,
+                    context.location,
+                    format!("callback capture {ordinal}"),
+                )?;
+            }
+            Ok(())
+        }
+        ValueSource::ShapeFields { shape } => {
+            let shape_index = values::resolve_shape(context, shape)?;
+            let row = context
+                .candidate
+                .shapes()
+                .get(shape_index.get() as usize)
+                .filter(|row| row.index() == shape_index)
+                .ok_or_else(|| violation(context.location, "shape target is out of bounds"))?;
+            if input.len() != row.fields().len() {
+                return Err(violation(
+                    context.location,
+                    "record field arity is not exact",
+                ));
+            }
+            for (ordinal, (value, field)) in input.iter().zip(row.fields()).enumerate() {
+                values::require_same_type(
+                    *value,
+                    field.ty(),
+                    context.facts,
+                    context.location,
+                    format!("record field {ordinal}"),
+                )?;
+            }
+            Ok(())
+        }
+        ValueSource::ShapeValue { shape } => {
+            require_one(input, context)?;
+            let expected = values::shape_value_type(context, shape, context.location)?;
+            values::require_same_type(
+                input[0],
+                expected,
+                context.facts,
+                context.location,
+                "shape value",
+            )
+        }
+        ValueSource::ShapeField { shape, ordinal } => {
+            require_one(input, context)?;
+            let expected = values::shape_field_type(context, shape, ordinal, context.location)?;
+            values::require_same_type(
+                input[0],
+                expected,
+                context.facts,
+                context.location,
+                "shape field",
+            )
+        }
+        ValueSource::WritablePathSelectors { path } => {
+            let expected = values::writable_path_selectors(context, path, context.location)?;
+            if input.len() != expected.len() {
+                return Err(violation(
+                    context.location,
+                    "writable path selector arity is not exact",
+                ));
+            }
+            for (ordinal, (value, expected)) in input.iter().zip(expected).enumerate() {
+                values::require_same_type(
+                    *value,
+                    expected,
+                    context.facts,
+                    context.location,
+                    format!("writable path selector {ordinal}"),
+                )?;
+            }
+            Ok(())
+        }
+        ValueSource::WritablePathLeaf { path } => {
+            require_one(input, context)?;
+            let expected = values::writable_path_leaf_type(context, path, context.location)?;
+            values::require_same_type(
+                input[0],
+                expected,
+                context.facts,
+                context.location,
+                "writable path leaf",
+            )
+        }
+        ValueSource::RepresentationPayload { ty } => {
+            require_one(input, context)?;
+            let expected = values::resolve_type(context, ty)?;
+            values::require_same_type(
+                input[0],
+                expected,
+                context.facts,
+                context.location,
+                "representation payload",
+            )
+        }
+        ValueSource::ArrayBuilder { .. } | ValueSource::ArrayValue => {
+            require_one(input, context)?;
+            values::require_container(
+                input[0],
+                context,
+                LinkedContainerLayoutKind::Array,
+                context.location,
+            )?;
+            Ok(())
+        }
+        ValueSource::ArrayElement { array_input } => {
+            let input_group = prior_inputs.get(array_input as usize).ok_or_else(|| {
+                violation(
+                    context.location,
+                    "array element names an absent input group",
+                )
+            })?;
+            let map = input_group
+                .first()
+                .copied()
+                .ok_or_else(|| violation(context.location, "array element has no array operand"))?;
+            require_one(input, context)?;
+            let element = values::require_container(
+                map,
+                context,
+                LinkedContainerLayoutKind::Array,
+                context.location,
+            )?;
+            values::require_same_type(
+                input[0],
+                element,
+                context.facts,
+                context.location,
+                "array element",
+            )
+        }
+        ValueSource::ArrayElementFromSlot { slot } => {
+            require_one(input, context)?;
+            let slot_value = values::live_slot(
+                before,
+                values::resolve_slot(context, slot)?,
+                context.location,
+            )?;
+            let element = values::require_container(
+                slot_value,
+                context,
+                LinkedContainerLayoutKind::Array,
+                context.location,
+            )?;
+            values::require_same_type(
+                input[0],
+                element,
+                context.facts,
+                context.location,
+                "owned array element",
+            )
+        }
+        ValueSource::MapBuilder { .. } | ValueSource::MapValue => {
+            require_one(input, context)?;
+            values::require_container(
+                input[0],
+                context,
+                LinkedContainerLayoutKind::Map,
+                context.location,
+            )?;
+            Ok(())
+        }
+        ValueSource::MapKey { map_input } => {
+            let input_group = prior_inputs.get(map_input as usize).ok_or_else(|| {
+                violation(context.location, "map key names an absent input group")
+            })?;
+            let map = input_group
+                .first()
+                .copied()
+                .ok_or_else(|| violation(context.location, "map key has no map operand"))?;
+            require_one(input, context)?;
+            values::require_map_key(input[0], context, map, context.location)?;
+            Ok(())
+        }
+        ValueSource::MapElement { map_input } => {
+            let input_group = prior_inputs.get(map_input as usize).ok_or_else(|| {
+                violation(context.location, "map element names an absent input group")
+            })?;
+            let map = input_group
+                .first()
+                .copied()
+                .ok_or_else(|| violation(context.location, "map element has no map operand"))?;
+            require_one(input, context)?;
+            values::require_map_element(input[0], context, map, context.location)?;
+            Ok(())
+        }
+        ValueSource::MapKeyFromSlot { slot } => {
+            require_one(input, context)?;
+            let slot_value = values::live_slot(
+                before,
+                values::resolve_slot(context, slot)?,
+                context.location,
+            )?;
+            let key = values::map_key_type(context, slot_value, context.location)?;
+            values::require_same_type(
+                input[0],
+                key,
+                context.facts,
+                context.location,
+                "owned map key",
+            )
+        }
+        ValueSource::MapElementFromSlot { slot } => {
+            require_one(input, context)?;
+            let slot_value = values::live_slot(
+                before,
+                values::resolve_slot(context, slot)?,
+                context.location,
+            )?;
+            let value = values::map_value_type(context, slot_value, context.location)?;
+            values::require_same_type(
+                input[0],
+                value,
+                context.facts,
+                context.location,
+                "owned map value",
+            )
+        }
+        ValueSource::ExceptionPayload { type_ref } => {
+            require_one(input, context)?;
+            let expected = values::exception_payload_type(context, type_ref, context.location)?;
+            values::require_same_type(
+                input[0],
+                expected,
+                context.facts,
+                context.location,
+                "throw payload",
+            )
+        }
+        ValueSource::ExceptionEnvelope { source_slot } => {
+            require_one(input, context)?;
+            let slot_value = values::live_slot(
+                before,
+                values::resolve_slot(context, source_slot)?,
+                context.location,
+            )?;
+            values::require_exception_envelope(slot_value, context, context.location)
+        }
+        ValueSource::FunctionStreamItem
+        | ValueSource::InOutCallInputs { .. }
+        | ValueSource::TaggedValue
+        | ValueSource::Constant { .. }
+        | ValueSource::Slot { .. }
+        | ValueSource::StackInput { .. }
+        | ValueSource::CallbackClosure { .. } => Err(unavailable(context.location)),
         _ => Err(unavailable(context.location)),
     }
+}
+
+fn require_one(input: &[AbstractValue], context: &Context<'_>) -> Result<(), VerificationError> {
+    if input.len() != 1 {
+        return Err(violation(
+            context.location,
+            "instruction input group must have exactly one value",
+        ));
+    }
+    Ok(())
 }
 
 fn produce_outputs(
@@ -388,6 +788,125 @@ fn output_values(
                     )
                 })?;
             Ok(vec![AbstractValue::Concrete(item)])
+        }
+        ValueSource::ShapeValue { shape } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let ty = values::shape_value_type(context, shape, context.location)?;
+            Ok(vec![AbstractValue::Concrete(ty)])
+        }
+        ValueSource::ShapeField { shape, ordinal } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let ty = values::shape_field_type(context, shape, ordinal, context.location)?;
+            Ok(vec![AbstractValue::Concrete(ty)])
+        }
+        ValueSource::RepresentationValue { ty } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let ty = values::resolve_type(context, ty)?;
+            values::require_type_fact(ty, context.facts, context.location)?;
+            Ok(vec![AbstractValue::Concrete(ty)])
+        }
+        ValueSource::ArrayBuilder { element_type } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let element = values::resolve_type(context, element_type)?;
+            let ty = values::array_type_for_element(context, element, context.location)?;
+            Ok(vec![AbstractValue::Concrete(ty)])
+        }
+        ValueSource::ArrayFromBuilder { builder_input }
+        | ValueSource::MapFromBuilder { builder_input } => {
+            let input = inputs.get(builder_input as usize).ok_or_else(|| {
+                violation(
+                    context.location,
+                    "builder output names an absent input group",
+                )
+            })?;
+            if input.len() != 1 {
+                return Err(unavailable(context.location));
+            }
+            Ok(input.clone())
+        }
+        ValueSource::ArrayElement { array_input } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let input = inputs.get(array_input as usize).ok_or_else(|| {
+                violation(
+                    context.location,
+                    "array element names an absent input group",
+                )
+            })?;
+            let map = input
+                .first()
+                .copied()
+                .ok_or_else(|| violation(context.location, "array element has no array operand"))?;
+            let ty = values::require_container(
+                map,
+                context,
+                LinkedContainerLayoutKind::Array,
+                context.location,
+            )?;
+            Ok(vec![AbstractValue::Concrete(ty)])
+        }
+        ValueSource::MapBuilder {
+            key_type,
+            value_type,
+        } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let key = values::resolve_type(context, key_type)?;
+            let value = values::resolve_type(context, value_type)?;
+            let ty = values::map_type_for_key_value(context, key, value, context.location)?;
+            Ok(vec![AbstractValue::Concrete(ty)])
+        }
+        ValueSource::MapKey { map_input } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let input = inputs.get(map_input as usize).ok_or_else(|| {
+                violation(context.location, "map key names an absent input group")
+            })?;
+            let map = input
+                .first()
+                .copied()
+                .ok_or_else(|| violation(context.location, "map key has no map operand"))?;
+            let ty = values::map_key_type(context, map, context.location)?;
+            Ok(vec![AbstractValue::Concrete(ty)])
+        }
+        ValueSource::MapElement { map_input } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let input = inputs.get(map_input as usize).ok_or_else(|| {
+                violation(context.location, "map element names an absent input group")
+            })?;
+            let map = input
+                .first()
+                .copied()
+                .ok_or_else(|| violation(context.location, "map element has no map operand"))?;
+            let ty = values::map_value_type(context, map, context.location)?;
+            Ok(vec![AbstractValue::Concrete(ty)])
+        }
+        ValueSource::InterfaceCarrier { interface } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let ty = values::interface_carrier_type(context, interface, context.location)?;
+            Ok(vec![AbstractValue::Concrete(ty)])
+        }
+        ValueSource::CallbackClosure { target } => {
+            if count != 1 {
+                return Err(unavailable(context.location));
+            }
+            let ty = values::callback_closure_type(context, target, context.location)?;
+            Ok(vec![AbstractValue::Concrete(ty)])
         }
         _ => Err(unavailable(context.location)),
     }

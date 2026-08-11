@@ -125,12 +125,12 @@ fn prove_function(
             instruction::InstructionTransfer::Continue(after) => {
                 computed_max = record_depth(computed_max, &after, limits, location)?;
                 for edge in &flow.successors[ordinal] {
-                    if edge.kind != ControlFlowEdgeKind::Ordinary {
-                        return Err(VerificationError::ProofUnavailable {
-                            obligation: VerificationObligation::ExceptionRegion,
-                            location,
-                        });
-                    }
+                    let propagated = match edge.kind {
+                        ControlFlowEdgeKind::Ordinary => after.clone(),
+                        ControlFlowEdgeKind::Exceptional { region } => {
+                            exception_state(function, &before, region, concrete_values, location)?
+                        }
+                    };
                     let target = edge.target.get() as usize;
                     let target_location = instruction_location(function, edge.target);
                     let Some(target_state) = states.get_mut(target) else {
@@ -138,11 +138,12 @@ fn prove_function(
                     };
                     match target_state {
                         None => {
-                            *target_state = Some(after.clone());
+                            *target_state = Some(propagated);
                             worklist.push_back(target);
                         }
                         Some(current) => {
-                            if state::merge(current, &after, concrete_values, target_location)? {
+                            if state::merge(current, &propagated, concrete_values, target_location)?
+                            {
                                 worklist.push_back(target);
                             }
                         }
@@ -178,6 +179,65 @@ fn prove_function(
     flow.states_before = completed_states.into_boxed_slice();
     flow.computed_max_operand_depth = computed_max;
     Ok(tail_proofs)
+}
+
+fn exception_state(
+    function: &LinkedFunction,
+    before: &ProgramPointState,
+    region_index: usize,
+    concrete_values: &ConcreteValueFacts,
+    location: VerificationLocation,
+) -> Result<ProgramPointState, VerificationError> {
+    let region = function
+        .exception_regions()
+        .get(region_index)
+        .ok_or_else(|| violation(location, "exception successor region is out of bounds"))?;
+    let height = region.handler_stack_height() as usize;
+    if height > before.stack.len() {
+        return Err(violation(
+            location,
+            format!(
+                "exception handler stack height {height} exceeds source stack {}",
+                before.stack.len()
+            ),
+        ));
+    }
+    let mut slots = before.slots.to_vec();
+    let catch_slot = region.catch_slot().get() as usize;
+    if catch_slot >= slots.len() {
+        return Err(violation(location, "exception catch slot is out of bounds"));
+    }
+    if concrete_values
+        .type_fact(region.catch_slot_type())
+        .is_none()
+    {
+        return Err(violation(
+            location,
+            "exception catch slot type has no concrete fact",
+        ));
+    }
+    slots[catch_slot] = super::AbstractSlotState::Live(region.catch_slot_type());
+    Ok(ProgramPointState {
+        stack: before.stack[..height].to_vec().into_boxed_slice(),
+        slots: slots.into_boxed_slice(),
+        active_regions: active_regions_at(function, region.handler()).into_boxed_slice(),
+        writable_loans: Box::new([]),
+    })
+}
+
+fn active_regions_at(
+    function: &LinkedFunction,
+    instruction: InstructionIndex,
+) -> Vec<skiff_runtime_linked_bytecode::ActiveRegionIndex> {
+    function
+        .active_regions()
+        .iter()
+        .enumerate()
+        .filter(|(_, region)| {
+            region.start().get() <= instruction.get() && instruction.get() < region.end().get()
+        })
+        .map(|(ordinal, _)| skiff_runtime_linked_bytecode::ActiveRegionIndex::new(ordinal as u32))
+        .collect()
 }
 
 fn record_depth(

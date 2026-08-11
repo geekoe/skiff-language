@@ -49,7 +49,7 @@ struct ExactResolver {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum AuthorityPinCorruption {
+pub(crate) enum AuthorityPinCorruption {
     NativeValueLifecycleRegistry,
     ValueLifecyclePolicy,
     HostEffectRegistry,
@@ -98,7 +98,7 @@ impl DeploymentBytecodeContentResolver for ExactResolver {
     }
 }
 
-pub(super) fn exact_hydration() -> HydratedDeploymentBytecode {
+pub(crate) fn exact_hydration() -> HydratedDeploymentBytecode {
     exact_hydration_with_types(Vec::new())
 }
 
@@ -307,7 +307,7 @@ pub(super) fn candidate_for_concrete_types(
     LinkedBytecodeCandidate::try_from_parts(parts)
 }
 
-fn candidate_parts(
+pub(crate) fn candidate_parts(
     hydrated: &HydratedDeploymentBytecode,
     schema_override: Option<&str>,
     authority_corruption: Option<AuthorityPinCorruption>,

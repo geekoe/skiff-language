@@ -265,21 +265,23 @@ fn tail_self_and_mutual_recursion_use_iterative_post_fixed_edges() {
 }
 
 #[test]
-fn actual_with_resume_still_fails_at_the_earlier_resume_gate() {
+fn emit_stream_requires_a_concrete_stack_item_before_its_resume_certificate() {
     let mut function = function(bottom(), None);
     function.call_kind = EffectGraphCallKind::Resume;
     let error = verify_graph(vec![function])
-        .expect_err("ActualWithResume remains outside the resume slice");
-    assert_eq!(
+        .expect_err("EmitStream must consume a concrete FunctionStreamItem");
+    assert!(matches!(
         error,
-        VerificationError::ProofUnavailable {
-            obligation: VerificationObligation::ResumeSite,
-            location: VerificationLocation::Instruction {
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::StackAndSlotState,
+            location,
+            detail,
+        } if location == VerificationLocation::Instruction {
                 function: FunctionIndex::new(0),
                 instruction: InstructionIndex::new(0),
-            },
-        }
-    );
+            }
+            && detail.contains("operand-stack underflow")
+    ));
 }
 
 #[test]

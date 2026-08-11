@@ -77,6 +77,43 @@ impl ControlFlowAndCallFacts {
             .is_ok()
     }
 
+    pub(crate) fn proves_pending_resume(
+        &self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        mode: skiff_artifact_model::PendingMode,
+    ) -> bool {
+        self.resume_sites.rows().iter().any(|row| {
+            row.function() == function
+                && row.site() == instruction
+                && matches!(
+                    (mode, row.kind()),
+                    (
+                        skiff_artifact_model::PendingMode::StreamRead,
+                        crate::resume::VerifiedResumeKind::StreamRead { .. }
+                    ) | (
+                        skiff_artifact_model::PendingMode::StreamBackpressure,
+                        crate::resume::VerifiedResumeKind::StreamBackpressure
+                    ) | (
+                        skiff_artifact_model::PendingMode::ServiceBoundary,
+                        crate::resume::VerifiedResumeKind::ServiceBoundary
+                    ) | (
+                        skiff_artifact_model::PendingMode::ActorBoundary,
+                        crate::resume::VerifiedResumeKind::ActorBoundary
+                    ) | (
+                        skiff_artifact_model::PendingMode::InterfaceBoundary,
+                        crate::resume::VerifiedResumeKind::InterfaceBoundary
+                    ) | (
+                        skiff_artifact_model::PendingMode::CallbackBoundary,
+                        crate::resume::VerifiedResumeKind::CallbackBoundary
+                    ) | (
+                        skiff_artifact_model::PendingMode::HostEffect,
+                        crate::resume::VerifiedResumeKind::HostEffect
+                    )
+                )
+        })
+    }
+
     pub(crate) fn into_resume_sites(self) -> VerifiedResumeSites {
         self.resume_sites
     }
@@ -296,7 +333,7 @@ struct ControlFlowEdge {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ControlFlowEdgeKind {
     Ordinary,
-    Exceptional,
+    Exceptional { region: usize },
 }
 
 /// P3 orchestration seam. Opcode semantics will be read only from the
@@ -331,6 +368,7 @@ pub(crate) fn prove_control_flow_and_stack(
         &resume_preflight,
         concrete_values,
         &facts,
+        &targets,
         source,
     )?;
     let mut stream_read_sites = resume_sites

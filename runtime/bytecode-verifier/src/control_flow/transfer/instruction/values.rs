@@ -1,6 +1,10 @@
-use skiff_artifact_model::{NativeValueEmbedding, NativeValueLifecycleConcrete, OperandRole};
+use skiff_artifact_model::{
+    NativeValueEmbedding, NativeValueLifecycleConcrete, OperandRole, TypeRefIr,
+};
 use skiff_runtime_linked_bytecode::{
-    ConstantIndex, FrameSlotIndex, LinkedInstructionTarget, TypeIndex,
+    CallbackCaptureLayoutIndex, ConstantIndex, FrameSlotIndex, InterfaceTableIndex,
+    LinkedContainerLayoutKind, LinkedInstructionTarget, LinkedInterfaceTableKind,
+    LinkedWritablePathSegment, ShapeIndex, SyntheticCallbackIndex, TypeIndex, WritablePathIndex,
 };
 
 use super::{unavailable, violation, Context};
@@ -89,6 +93,162 @@ pub(super) fn require_concrete_fact(
 ) -> Result<(), VerificationError> {
     let AbstractValue::Concrete(ty) = value;
     require_type_fact(ty, facts, location)
+}
+
+pub(super) fn require_integer_or_number(
+    value: AbstractValue,
+    facts: &ConcreteValueFacts,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    let AbstractValue::Concrete(ty) = value;
+    let fact = facts
+        .type_fact(ty)
+        .ok_or_else(|| violation(location, "collection index has no concrete fact"))?;
+    let valid = matches!(
+        fact.normalized_type(),
+        TypeRefIr::Builtin { name, args }
+            if (name == "integer" || name == "number") && args.is_empty()
+    );
+    if !valid {
+        return Err(violation(
+            location,
+            format!("type {} is not a collection index", ty.get()),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn require_container(
+    value: AbstractValue,
+    context: &Context<'_>,
+    kind: LinkedContainerLayoutKind,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let AbstractValue::Concrete(ty) = value;
+    let row = context
+        .candidate
+        .types()
+        .get(ty.get() as usize)
+        .filter(|row| row.index() == ty)
+        .ok_or_else(|| {
+            violation(
+                location,
+                format!("container type {} has no linked row", ty.get()),
+            )
+        })?;
+    let layout = row
+        .container_layout()
+        .filter(|layout| layout.kind() == kind)
+        .ok_or_else(|| violation(location, "value is not the exact container layout"))?;
+    let child = match kind {
+        LinkedContainerLayoutKind::Array => layout.element(),
+        LinkedContainerLayoutKind::Map => layout.value(),
+        LinkedContainerLayoutKind::Json | LinkedContainerLayoutKind::JsonObject => {
+            return Err(unavailable(location));
+        }
+    }
+    .ok_or_else(|| violation(location, "container layout is missing its child position"))?;
+    require_type_fact(child.ty(), context.facts, location)?;
+    Ok(child.ty())
+}
+
+pub(super) fn require_map_key(
+    value: AbstractValue,
+    context: &Context<'_>,
+    map: AbstractValue,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let AbstractValue::Concrete(map_ty) = map;
+    let row = context
+        .candidate
+        .types()
+        .get(map_ty.get() as usize)
+        .filter(|row| row.index() == map_ty)
+        .ok_or_else(|| violation(location, "map value has no linked row"))?;
+    let layout = row
+        .container_layout()
+        .filter(|layout| layout.kind() == LinkedContainerLayoutKind::Map)
+        .ok_or_else(|| violation(location, "map value has the wrong container layout"))?;
+    let key = layout
+        .key()
+        .ok_or_else(|| violation(location, "map layout has no key position"))?;
+    require_same_type(value, key.ty(), context.facts, location, "map key")?;
+    Ok(key.ty())
+}
+
+pub(super) fn map_key_type(
+    context: &Context<'_>,
+    map: AbstractValue,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let AbstractValue::Concrete(map_ty) = map;
+    let row = context
+        .candidate
+        .types()
+        .get(map_ty.get() as usize)
+        .filter(|row| row.index() == map_ty)
+        .ok_or_else(|| violation(location, "map value has no linked row"))?;
+    let layout = row
+        .container_layout()
+        .filter(|layout| layout.kind() == LinkedContainerLayoutKind::Map)
+        .ok_or_else(|| violation(location, "map value has the wrong container layout"))?;
+    let key = layout
+        .key()
+        .ok_or_else(|| violation(location, "map layout has no key position"))?;
+    require_type_fact(key.ty(), context.facts, location)?;
+    Ok(key.ty())
+}
+
+pub(super) fn map_value_type(
+    context: &Context<'_>,
+    map: AbstractValue,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let AbstractValue::Concrete(map_ty) = map;
+    let row = context
+        .candidate
+        .types()
+        .get(map_ty.get() as usize)
+        .filter(|row| row.index() == map_ty)
+        .ok_or_else(|| violation(location, "map value has no linked row"))?;
+    let layout = row
+        .container_layout()
+        .filter(|layout| layout.kind() == LinkedContainerLayoutKind::Map)
+        .ok_or_else(|| violation(location, "map value has the wrong container layout"))?;
+    let value = layout
+        .value()
+        .ok_or_else(|| violation(location, "map layout has no value position"))?;
+    require_type_fact(value.ty(), context.facts, location)?;
+    Ok(value.ty())
+}
+pub(super) fn require_map_element(
+    value: AbstractValue,
+    context: &Context<'_>,
+    map: AbstractValue,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let AbstractValue::Concrete(map_ty) = map;
+    let row = context
+        .candidate
+        .types()
+        .get(map_ty.get() as usize)
+        .filter(|row| row.index() == map_ty)
+        .ok_or_else(|| violation(location, "map value has no linked row"))?;
+    let layout = row
+        .container_layout()
+        .filter(|layout| layout.kind() == LinkedContainerLayoutKind::Map)
+        .ok_or_else(|| violation(location, "map value has the wrong container layout"))?;
+    let value_position = layout
+        .value()
+        .ok_or_else(|| violation(location, "map layout has no value position"))?;
+    require_same_type(
+        value,
+        value_position.ty(),
+        context.facts,
+        location,
+        "map value",
+    )?;
+    Ok(value_position.ty())
 }
 
 pub(super) fn require_type_fact(
@@ -181,6 +341,357 @@ pub(super) fn resolve_constant(
         _ => Err(violation(
             context.location,
             "constant role has a non-constant typed target",
+        )),
+    }
+}
+
+pub(super) fn shape_value_type(
+    context: &Context<'_>,
+    role: OperandRole,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let shape = resolve_shape(context, role)?;
+    let row = context
+        .candidate
+        .shapes()
+        .get(shape.get() as usize)
+        .filter(|row| row.index() == shape)
+        .ok_or_else(|| violation(location, "shape target is out of bounds"))?;
+    require_type_fact(row.nominal_type(), context.facts, location)?;
+    Ok(row.nominal_type())
+}
+
+pub(super) fn shape_field_type(
+    context: &Context<'_>,
+    shape_role: OperandRole,
+    ordinal_role: OperandRole,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let shape = resolve_shape(context, shape_role)?;
+    let ordinal = context
+        .contract
+        .operand_word(ordinal_role, context.instruction.operands())
+        .ok_or_else(|| violation(location, "shape field ordinal is absent"))?;
+    let row = context
+        .candidate
+        .shapes()
+        .get(shape.get() as usize)
+        .filter(|row| row.index() == shape)
+        .ok_or_else(|| violation(location, "shape target is out of bounds"))?;
+    let field = row
+        .fields()
+        .get(ordinal as usize)
+        .ok_or_else(|| violation(location, "shape field ordinal is out of bounds"))?;
+    require_type_fact(field.ty(), context.facts, location)?;
+    Ok(field.ty())
+}
+
+pub(super) fn interface_carrier_type(
+    context: &Context<'_>,
+    interface_role: OperandRole,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let table_index = resolve_interface(context, interface_role)?;
+    let table = context
+        .candidate
+        .interface_tables()
+        .get(table_index.get() as usize)
+        .filter(|table| table.index() == table_index)
+        .ok_or_else(|| violation(location, "interface table is out of bounds"))?;
+    if let LinkedInterfaceTableKind::Local(local) = table.kind() {
+        require_type_fact(local.concrete_type(), context.facts, location)?;
+        return Ok(local.concrete_type());
+    }
+    let target = table.interface().artifact();
+    context
+        .candidate
+        .types()
+        .iter()
+        .find(|row| {
+            matches!(
+                row.type_ref(),
+                TypeRefIr::AnyInterface { interface } if interface == target
+            )
+        })
+        .map(|row| row.index())
+        .ok_or_else(|| unavailable(location))
+}
+
+pub(super) fn writable_path_selectors(
+    context: &Context<'_>,
+    path_role: OperandRole,
+    location: VerificationLocation,
+) -> Result<Vec<TypeIndex>, VerificationError> {
+    let path = resolve_path(context, path_role)?;
+    let row = context
+        .candidate
+        .writable_paths()
+        .get(path.get() as usize)
+        .filter(|row| row.index() == path)
+        .ok_or_else(|| violation(location, "writable path is out of bounds"))?;
+    let mut selectors = Vec::new();
+    for segment in row.segments() {
+        match segment {
+            LinkedWritablePathSegment::DenseField { .. } => {}
+            LinkedWritablePathSegment::ArrayIndex {
+                selector_ordinal, ..
+            } => {
+                require_selector_ordinal(*selector_ordinal, selectors.len(), location)?;
+                let integer = context
+                    .facts
+                    .implicit_representative(ImplicitBuiltin::Integer)
+                    .ok_or_else(|| violation(location, "integer selector has no concrete class"))?;
+                selectors.push(integer);
+            }
+            LinkedWritablePathSegment::MapKey {
+                selector_ordinal,
+                key_type,
+                ..
+            } => {
+                require_selector_ordinal(*selector_ordinal, selectors.len(), location)?;
+                require_type_fact(*key_type, context.facts, location)?;
+                selectors.push(*key_type);
+            }
+        }
+    }
+    Ok(selectors)
+}
+
+pub(super) fn writable_path_leaf_type(
+    context: &Context<'_>,
+    path_role: OperandRole,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let path = resolve_path(context, path_role)?;
+    let row = context
+        .candidate
+        .writable_paths()
+        .get(path.get() as usize)
+        .filter(|row| row.index() == path)
+        .ok_or_else(|| violation(location, "writable path is out of bounds"))?;
+    require_type_fact(row.leaf_type(), context.facts, location)?;
+    Ok(row.leaf_type())
+}
+
+pub(super) fn exception_payload_type(
+    context: &Context<'_>,
+    role: OperandRole,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let ty = resolve_type(context, role)?;
+    require_type_fact(ty, context.facts, location)?;
+    Ok(ty)
+}
+
+pub(super) fn require_exception_envelope(
+    value: AbstractValue,
+    context: &Context<'_>,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    let AbstractValue::Concrete(ty) = value;
+    let fact = context
+        .facts
+        .type_fact(ty)
+        .ok_or_else(|| violation(location, "exception envelope has no concrete fact"))?;
+    let is_envelope = matches!(
+        fact.normalized_type(),
+        TypeRefIr::Builtin { name, args }
+            if name == "Exception" && args.len() == 1
+    );
+    if !is_envelope {
+        return Err(violation(
+            location,
+            "rethrow source is not an Exception envelope",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn resolve_type(
+    context: &Context<'_>,
+    role: OperandRole,
+) -> Result<TypeIndex, VerificationError> {
+    match resolved_target(context, role)? {
+        LinkedInstructionTarget::Type(ty) => Ok(ty),
+        _ => Err(violation(
+            context.location,
+            "type role has a non-type typed target",
+        )),
+    }
+}
+
+pub(super) fn resolve_shape(
+    context: &Context<'_>,
+    role: OperandRole,
+) -> Result<ShapeIndex, VerificationError> {
+    match resolved_target(context, role)? {
+        LinkedInstructionTarget::Shape(shape) => Ok(shape),
+        _ => Err(violation(
+            context.location,
+            "shape role has a non-shape typed target",
+        )),
+    }
+}
+
+pub(super) fn resolve_path(
+    context: &Context<'_>,
+    role: OperandRole,
+) -> Result<WritablePathIndex, VerificationError> {
+    match resolved_target(context, role)? {
+        LinkedInstructionTarget::WritablePath(path) => Ok(path),
+        _ => Err(violation(
+            context.location,
+            "writable-path role has a non-path typed target",
+        )),
+    }
+}
+
+fn resolve_interface(
+    context: &Context<'_>,
+    role: OperandRole,
+) -> Result<InterfaceTableIndex, VerificationError> {
+    match resolved_target(context, role)? {
+        LinkedInstructionTarget::InterfaceTable(table) => Ok(table),
+        _ => Err(violation(
+            context.location,
+            "interface role has a non-interface typed target",
+        )),
+    }
+}
+
+fn require_selector_ordinal(
+    actual: u32,
+    expected: usize,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    let expected_u32 = u32::try_from(expected)
+        .map_err(|_| violation(location, "writable selector ordinal overflows u32"))?;
+    if actual != expected_u32 {
+        return Err(violation(
+            location,
+            format!("writable selector ordinal {actual} is not dense {expected_u32}"),
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn array_type_for_element(
+    context: &Context<'_>,
+    element: TypeIndex,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    context
+        .candidate
+        .types()
+        .iter()
+        .find(|row| {
+            row.container_layout()
+                .and_then(|layout| layout.element())
+                .is_some_and(|position| {
+                    context.facts.semantically_equal(position.ty(), element) == Some(true)
+                })
+        })
+        .map(|row| row.index())
+        .ok_or_else(|| unavailable(location))
+}
+
+pub(super) fn map_type_for_key_value(
+    context: &Context<'_>,
+    key: TypeIndex,
+    value: TypeIndex,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    context
+        .candidate
+        .types()
+        .iter()
+        .find(|row| {
+            row.container_layout()
+                .filter(|layout| layout.kind() == LinkedContainerLayoutKind::Map)
+                .is_some_and(|layout| {
+                    layout
+                        .key()
+                        .zip(layout.value())
+                        .is_some_and(|(left, right)| {
+                            context.facts.semantically_equal(left.ty(), key) == Some(true)
+                                && context.facts.semantically_equal(right.ty(), value) == Some(true)
+                        })
+                })
+        })
+        .map(|row| row.index())
+        .ok_or_else(|| unavailable(location))
+}
+
+pub(super) fn resolve_capture_layout(
+    context: &Context<'_>,
+    role: OperandRole,
+) -> Result<CallbackCaptureLayoutIndex, VerificationError> {
+    match resolved_target(context, role)? {
+        LinkedInstructionTarget::CallbackCaptureLayout(layout) => Ok(layout),
+        _ => Err(violation(
+            context.location,
+            "capture-layout role has a non-layout typed target",
+        )),
+    }
+}
+
+pub(super) fn callback_closure_type(
+    context: &Context<'_>,
+    callback_role: OperandRole,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let callback = resolve_callback(context, callback_role)?;
+    let target = context
+        .candidate
+        .synthetic_callbacks()
+        .get(callback.get() as usize)
+        .filter(|target| target.index() == callback)
+        .ok_or_else(|| violation(location, "callback target is out of bounds"))?;
+    let interface = target
+        .interface_method()
+        .ok_or_else(|| unavailable(location))?;
+    interface_carrier_type_for_table(context, interface.interface_table(), location)
+}
+
+pub(super) fn interface_carrier_type_for_table(
+    context: &Context<'_>,
+    table_index: InterfaceTableIndex,
+    location: VerificationLocation,
+) -> Result<TypeIndex, VerificationError> {
+    let table = context
+        .candidate
+        .interface_tables()
+        .get(table_index.get() as usize)
+        .filter(|table| table.index() == table_index)
+        .ok_or_else(|| violation(location, "interface table is out of bounds"))?;
+    if let LinkedInterfaceTableKind::Local(local) = table.kind() {
+        require_type_fact(local.concrete_type(), context.facts, location)?;
+        return Ok(local.concrete_type());
+    }
+    let target = table.interface().artifact();
+    context
+        .candidate
+        .types()
+        .iter()
+        .find(|row| {
+            matches!(
+                row.type_ref(),
+                TypeRefIr::AnyInterface { interface } if interface == target
+            )
+        })
+        .map(|row| row.index())
+        .ok_or_else(|| unavailable(location))
+}
+
+fn resolve_callback(
+    context: &Context<'_>,
+    role: OperandRole,
+) -> Result<SyntheticCallbackIndex, VerificationError> {
+    match resolved_target(context, role)? {
+        LinkedInstructionTarget::SyntheticCallback(callback) => Ok(callback),
+        _ => Err(violation(
+            context.location,
+            "callback role has a non-callback typed target",
         )),
     }
 }
