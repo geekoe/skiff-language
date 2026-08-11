@@ -68,7 +68,10 @@ runtime 收到一个待执行的 buildId：
 2. 没有 → 进入该 buildId 的临界区（per-buildId 锁）：同 buildId 的并发请求在锁外等待；
    持锁者按内容寻址从配置的 artifact 目录读取 deployment 记录、package 闭包与 file-ir，先做
    pre-link structural validation，再 link relocation/constant heap，最后做 post-link semantic verification
-   并构建 image。完整 VM 契约见 [`bytecode-vm.md`](bytecode-vm.md)。
+   并构建 image。PackageArtifact closure中的`platformErrorProjectionRegistry`必须唯一一致，每个
+   PackageArtifact又必须与自己的bytecode header以及Runtime binary的generated singleton exact-match；任一
+   缺失、mixed fingerprint或mismatch都fail closed。完整 VM 契约见
+   [`bytecode-vm.md`](bytecode-vm.md)。
 3. 加载成功 → 注册进"已加载集合"，放行等待的请求。
 4. 加载失败或超时（记录缺失、目录不可达、超时阈值）→ 等待的请求快速失败。
 
@@ -83,16 +86,23 @@ buildId并加载/进入另一个image。一次invocation及其stream/callback pi
 runtime 的注册与能力通告：
 
 - 注册内容 = 已加载 buildId 集合；
-- 能力通告（复用 `runtime.capabilities` 帧）携带 artifact root 与 lazy-load 能力标记，
-  供 router 判定"可加载但尚未加载"的候选。
+- 能力通告使用runtime-frame-v5的`runtime.capabilities`，其strict metadata除artifact root与lazy-load能力外，
+  必须携带`capabilities.platformErrorProjectionRegistry` exact descriptor，供router判定“已加载”与“可加载但
+  尚未加载”的候选；缺失descriptor或旧frame直接拒绝。
+- Registry descriptor是Runtime binary/session incarnation authority。同一WebSocket session内的capabilities
+  refresh可以重复相同exact descriptor，但冲突值必须终止session；更换fingerprint只能建立新的session
+  incarnation，不能原地改写registration facts。
 
 ## Router 派发
 
-请求解析：`(serviceId, version)` → 指针表 → buildId。
+请求解析：`(serviceId, version)` → 指针表 → strict routing view
+`{ buildId, registryDescriptor }`。该typed authority来自exact deployment PackageArtifact closure；Router只读取
+validated routing metadata，不解析Package executable。Closure内descriptor不唯一时不能生成routing view。
 
-候选集：已注册该 buildId 的 runtime ∪ 具备懒加载能力且共享同一 artifact store 的 runtime。
-无任何候选 → fail closed（`no eligible runtime`）。派发后 runtime 按懒加载语义执行，
-加载不到即错误。
+候选集：注册了该buildId且registry descriptor exact-match的runtime ∪ descriptor exact-match、具备懒加载能力
+且共享同一artifact store的runtime。HTTP、WebSocket、Actor与task等每条Runtime execution route都使用这项
+session admission，不能由各route owner另建fingerprint truth。无任何候选 → fail closed
+（`no eligible runtime`）。派发后runtime按懒加载语义执行并最终复验三方authority，加载不到或mismatch即错误。
 
 新版本上线路径：发布新 buildId → 更新指针（单键原子）→ 后续请求自然解析到新 buildId。
 窗口期语义：新 buildId 尚未被任何 runtime 加载时，请求快速失败；可选地，router 可向能力者
@@ -113,6 +123,11 @@ runtime 的注册与能力通告：
 互不通知，零协调成本。新版本通过"收敛"而非"切换"扩散到全部实例。单 runtime 与多 runtime
 没有任何语义差异——多 runtime 只是同一模型的水平复制。
 
+Rolling registry upgrade允许不同whole-registry fingerprint的session并存，它们只处理descriptor匹配的build。
+只要任一可路由release/artifact仍引用旧fingerprint，operator不得清退最后一个matching session；回收条件是已无
+可路由build引用该descriptor，而不是新binary已经连接。跨fingerprint service call仍按service error channel的
+unknown-entry opaque forwarding规则传播，不能因此放宽artifact/session admission。
+
 ## Artifact store 与 Runtime bootstrap
 
 Router配置唯一规范化`artifactsPath`与`serviceDb.mongoUrl`。Runtime主动连接后，Router在dispatch前发送
@@ -120,8 +135,9 @@ Router配置唯一规范化`artifactsPath`与`serviceDb.mongoUrl`。Runtime主�
 变更都fail closed。Router与Runtime可以位于不同机器，但`artifactsPath`必须指向内容一致的共享immutable
 store。它们不从源码、registry service、ambient environment或Runtime本地默认值重建这些事实。
 
-Router只读取release pointer和routing metadata，不解析Package executable。Runtime按buildId读取deployment
-闭包、protected config payload、PackageArtifact与bytecode并构造image。`artifactsPath`、Mongo URL和HTTP
+Router只读取release pointer以及包含`{ buildId, registryDescriptor }`的strict routing metadata，不解析Package
+executable。Runtime按buildId读取deployment闭包、protected config payload、PackageArtifact与bytecode并构造
+image。`artifactsPath`、Mongo URL和HTTP
 limit是operator topology，不进入PackageArtifact、ServiceContract、ServiceDeployment或build identity；
 service代码也不能读取provider URL或物理database name。
 

@@ -202,6 +202,11 @@ Compiler 无法隐式反射任意 Rust struct。需要脱敏或归并的 produce
 generator 同时更新 compiler/runtime 共享 descriptor 与 Rust DTO，并提供 `--check` gate；各 Cargo crate
 不得在 `OUT_DIR` 中各自解析 catalog 或生成另一份 registry。
 
+Generator 输出的 `PlatformErrorProjectionRegistryRef` 是 compiler-owned generated singleton。Compiler
+public API、emitter 和 package projection 只能消费该 typed authority或由它产生的 validated handoff，不能让
+调用方任选 `registryId`、version 或 fingerprint。测试可以构造私有 fixture，但 production compile path不得把
+descriptor 当作 authoring input、CLI option 或 ambient config。
+
 ### 5.3 Registry identity and evolution
 
 Generator 必须计算 whole-registry fingerprint 和每个 entry fingerprint，输入至少包含 projection key、
@@ -217,23 +222,33 @@ PlatformErrorProjectionRegistryRef {
 }
 ```
 
-`registryVersion` 表示 descriptor/fingerprint algorithm version；entry 增删只改变 fingerprint。M3 首次
-cutover 必须把该 descriptor 作为 bytecode header 的第六个 semantic authority，并在 PackageArtifact root
-保存同一 exact value。它进入 bytecode identity 与 Package build identity preimage，但不进入 Package Local
-ABI 或 ServiceProtocol identity。
+`registryVersion` 表示 descriptor/fingerprint algorithm version；entry 增删只改变 fingerprint。所有 schema
+中的 exact JSON field name 都是 `platformErrorProjectionRegistry`。M3 hard cut 把该 descriptor 作为 bytecode
+header 的第六个 semantic authority，并在每个 PackageArtifact v15 root保存同一 exact value。它进入 bytecode
+identity 与 Package build identity preimage，但不进入 Package Local ABI 或 ServiceProtocol identity。
 
-- Compiler 把 whole-registry fingerprint 固定进可包含 platform projection 的 PackageArtifact / bytecode
-  header。
-- Runtime binary 只加载 fingerprint 与自身 generated registry 一致的 artifact，并在 runtime session
-  registration 中声明该 fingerprint；Router 只能把 build 路由给匹配的 runtime session。
+- Compiler 把 whole-registry descriptor 固定进每个 PackageArtifact / bytecode header；这不是“只有实际引用
+  platform error 的 artifact 才携带”的可选 pin。
+- 一个 deployment exact PackageArtifact closure 中的 descriptor 必须唯一一致；mixed-fingerprint closure在
+  routing view构造或Runtime load时fail closed。Strict routing view向Router提供等价于
+  `{ buildId, registryDescriptor }` 的typed authority，Router不因此解析Package executable。
+- Runtime binary 只加载 descriptor 与自身 generated singleton一致的 artifact，并在
+  `runtime.capabilities.capabilities.platformErrorProjectionRegistry` 声明该 exact descriptor；Router保存它，
+  且所有HTTP、WebSocket、Actor和task runtime dispatch都只能选择descriptor与build routing authority
+  exact-match的session。Runtime loader仍对PackageArtifact、bytecode和binary做最终三方验证。
+- Descriptor在同一Runtime WebSocket session内不可变化。Capabilities refresh可以重复同一 exact value；冲突
+  refresh必须终止该session。更换fingerprint只能建立新的session incarnation，不能原地改写registration facts。
 - Service `PlatformError` carrier 替换 closed `builtinErrorIdentity`，exact shape 为
   `{ projectionKey, entryFingerprint, encodedPayload, traceId, errorId }`。`projectionKey` 是 generated
   ASCII token（`[A-Za-z0-9._-]`，1–128 bytes），entry fingerprint 必须是
   `sha256:<64 lowercase hex>`，encoded payload 必须非空且不超过 64 KiB；outer object strict
-  deny-unknown-fields 并继续使用 canonical correlation validation。Outer envelope 合法但本地不知道该
-  key/fingerprint 时，runtime把它固定为 opaque service cause；它在本地不可匹配，但可原样继续转发。
+  deny-unknown-fields 并继续使用 canonical correlation validation。Request-contract owner验证outer字段、
+  bounds、correlation和canonical bytes；只有raw bytes与该validated envelope的canonical re-encoding完全相同
+  才能固定为opaque carrier。Outer envelope合法但本地不知道该key/fingerprint时，runtime把它固定为opaque
+  service cause；它在本地不可匹配，但可原样继续转发。
 - 本地认识 key/fingerprint、payload 却不满足 generated codec 时，这是 protocol failure，不得把畸形
-  wire 伪造成 provider `InternalError`。
+  wire 伪造成 provider `InternalError`。Known entry的identity-specific payload validation由generated codec
+  owner执行；provider/local encode在envelope固定前失败时才fallback为固定`InternalError`。
 
 同一个 projection key / nominal identity 的 public schema 不做原地变更；需要改变字段 contract 时新增
 identity/key，或执行显式的全栈 hard cut。Registry 的 additive rolling upgrade 依靠 unknown entry 的
@@ -244,20 +259,27 @@ hard cut 当前手写 registry，不保留其兼容 reader。
 `skiff-bytecode-v7`；bytecode identity generation 4 → 5、marker `skiff-bytecode-artifact-v4` →
 `skiff-bytecode-artifact-v5`、prefix `skiff-bytecode-image-v4:sha256` →
 `skiff-bytecode-image-v5:sha256`；PackageArtifact schema `skiff-package-artifact-v14` →
-`skiff-package-artifact-v15`；Package build prefix `skiff-package-build-v13:sha256` →
-`skiff-package-build-v14:sha256`；runtime frame `skiff-runtime-frame-v4` →
+`skiff-package-artifact-v15`；Package build preimage marker
+`skiff-package-artifact-build-identity-v12` → `skiff-package-artifact-build-identity-v13`，Package build prefix
+`skiff-package-build-v13:sha256` → `skiff-package-build-v14:sha256`；runtime frame `skiff-runtime-frame-v4` →
 `skiff-runtime-frame-v5`。`runtime.capabilities` 在 v5 metadata 中携带上述 registry descriptor；Router 保存
 它并与 build 的 PackageArtifact descriptor exact-match 后才可 dispatch。旧 frame、缺失 descriptor、
 PackageArtifact/bytecode descriptor不一致都 strict reject，不提供 dual reader。
 
-这些 carrier/version 变化不能只由本文单独落地。M3 的第一个提交必须同步更新
-[`bytecode-vm.md`](bytecode-vm.md) §3.1 与
-[`package-service-contract-deployment.md`](package-service-contract-deployment.md) §6.3，再修改 schema/code；
-三份 canonical contract 与 generated schema必须在同一提交一致，M8不能补写这一决定。
+Bytecode ISA仍是`skiff-bytecode-isa-v4`；新增required header authority不改变opcode number、operand layout或
+operand-stack semantics。Package Local ABI和ServiceProtocol的schema/identity generation同样不因本次registry
+pin而升级。
 
-在该原子 M3 contract commit 合入前，当前有效 carrier 仍是 service contract 的 closed
-`builtinErrorIdentity`、bytecode v6 的五个 authority 和 runtime-frame-v4；不得提前写出本文目标 wire，
-也不得出现新旧字段混用。本文 §5.3 冻结的是 cutover target 与原子性要求，不是 dual-format 过渡期。
+这些 carrier/version 变化不能只由本文单独落地。M3 canonical docs cutover必须同步更新
+[`bytecode-vm.md`](bytecode-vm.md) §3.1 与
+[`package-service-contract-deployment.md`](package-service-contract-deployment.md) §3/§5.1/§6.3，以及
+[`runtime-lazy-load-deployment.md`](runtime-lazy-load-deployment.md)和[`router-rust.md`](router-rust.md)的
+session/routing contract，再修改schema/code；canonical contracts与随后生成的schema必须持续一致，M8不能
+补写这一决定。
+
+本文所处的canonical docs checkpoint先于production schema/code hard cut；在后者合入前，仓库实现仍可能是
+closed `builtinErrorIdentity`、bytecode v6五authority和runtime-frame-v4。那是明确的待迁移implementation
+lag，不是dual-format协议：任何M3 production commit都必须整体切到上述target，不得出现新旧字段混用。
 
 Rolling runtime upgrade 期间，不同 registry fingerprint 的 runtime session 可以并存；release pointer仍
 引用旧 fingerprint artifact 时，operator不得先清退最后一个 matching runtime。旧 registry/runtime 的回收
@@ -432,6 +454,9 @@ Service channel 必须区分 producer/local failure 与已经收到的 fixed wir
   来自 provider 的 `InternalError`。
 - Outer envelope 合法、projection key/fingerprint 对本地 registry 未知时，保存 bounded canonical bytes
   为 fixed opaque service cause。本地 catch 不匹配；未捕获时原样转发。
+- Outer validator由request-contract拥有：它先严格检查variant、字段、长度、token/fingerprint grammar和
+  correlation，再要求raw bytes与validated value的canonical re-encoding完全相同。Generated registry codec
+  只在outer validation成功后处理known key/fingerprint的payload；transport不得复制这两层语义。
 - Provider local fallback 使用当前 cause 的 canonical correlation；caller-side protocol failure 分配 caller
   本地 correlation；unknown opaque 保留已经验证的原 envelope correlation。未通过 outer validation 的
   metadata 不能进入可信 correlation 或业务日志。

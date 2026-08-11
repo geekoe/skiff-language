@@ -153,17 +153,27 @@ ISA（Instruction Set Architecture）是持久化 bytecode 的语义契约，包
 ISA 不包括 runtime 内存地址、decoded Rust enum 大小、dispatch optimization、superinstruction 或 JIT machine
 code。
 
-当前持久化 envelope 是 bytecode schema `skiff-bytecode-v6`、ISA
-`skiff-bytecode-isa-v4` 与 bytecode identity generation v4（schema marker
-`skiff-bytecode-artifact-v4`，identity prefix `skiff-bytecode-image-v4:sha256`）。v6 header 除
-magic/schema/ISA/declared identity 外，必须携带并精确钉住以下五个 semantic authority：
+M3 hard-cut后的持久化 envelope 是 bytecode schema `skiff-bytecode-v7`、ISA
+`skiff-bytecode-isa-v4` 与 bytecode identity generation v5（schema marker
+`skiff-bytecode-artifact-v5`，identity prefix `skiff-bytecode-image-v5:sha256`）。v7 header 除
+magic/schema/ISA/declared identity 外，必须携带并精确钉住以下六个 semantic authority：
 
 - opcode contract：`opcodeTableFingerprint`，覆盖 numeric/semantic opcode identity、operand role、stack
   effect、允许的 relocation kind，以及default/frame-entry/per-opcode statement charging rule；
 - native lifecycle registry：`nativeValueLifecycleRegistry` 的 exact registry id、version 与 fingerprint；
 - value lifecycle policy：`valueLifecyclePolicy` 的 exact version 与 fingerprint；
 - host effect registry：`hostEffectRegistry` 的 exact registry id、version 与 fingerprint；
-- intrinsic registry：`intrinsicRegistry` 的 exact registry id、version 与 fingerprint。
+- intrinsic registry：`intrinsicRegistry` 的 exact registry id、version 与 fingerprint；
+- platform error projection registry：`platformErrorProjectionRegistry` 的 exact
+  `PlatformErrorProjectionRegistryRef`：
+
+  ```text
+  {
+    registryId: "skiff-platform-error-projections",
+    registryVersion: 1,
+    fingerprint: "sha256:<64 lowercase hex>",
+  }
+  ```
 
 这些字段是必填 pin，不是可选的 provenance note。Structural admission 必须把每个 pin 与当前 reader 的
 compile-time authority 做 exact equality；缺失、未知或任何 identity/fingerprint mismatch 都在 link 前拒绝，
@@ -171,17 +181,22 @@ compile-time authority 做 exact equality；缺失、未知或任何 identity/fi
 linked candidate 与 verifier 必须成组保留这些 pin，后续层不得从 ambient registry 重建、替换或只比较
 display id/version。
 
-v6 在 v5 的 required authority header 上，把 source-event attribution 改成 typed、placement-bearing rows，并把
-default attribution charge、rowless function-entry charge 和 per-opcode reclassification rule 纳入同一个
-`opcodeTableFingerprint`。它没有改变 opcode number、operand layout 或 operand-stack semantics，因此 ISA 保持
-v4；persisted rows、fingerprint preimage 与完整 image 都改变，所以 bytecode identity 升级到 generation v4。
-同一 wordcode 若带不同 authority pin、source-event placement 或 statement charge contract，不是同一个
-executable artifact，并必须产生不同 bytecode identity 与上层 build identity。
+`platformErrorProjectionRegistry`只能来自compiler-owned checked-in generator输出的singleton或其validated typed
+handoff；public emitter不得接受调用方任选的descriptor。Structural admission必须将它与Runtime binary的
+generated singleton exact-match。PackageArtifact root还要保存同一exact descriptor；PackageArtifact、bytecode与
+Runtime三方任一不一致都在执行前拒绝。
 
-承载 bytecode ref 的 PackageArtifact 当前 schema 是 `skiff-package-artifact-v14`，Package build identity prefix
-是 `skiff-package-build-v13:sha256`。必填的 package-owned statement manifest identity 进入 build preimage，但
-不进入 Package Local ABI preimage；因此 attribution、placement 或 bytecode 内容变化必须产生新 Package build，
-同时不能无意改变 Package Local ABI identity。
+v7 在 v6 的五个required authority基础上增加该第六pin。它没有改变opcode number、operand layout或
+operand-stack semantics，因此ISA保持v4；required header、identity preimage与完整image改变，所以bytecode
+identity升级到generation v5。同一wordcode若带不同authority pin、source-event placement或statement charge
+contract，不是同一个executable artifact，并必须产生不同bytecode identity与上层build identity。
+
+承载bytecode ref的PackageArtifact hard cut到`skiff-package-artifact-v15`，其root
+`platformErrorProjectionRegistry`为必填字段。Package build identity projection同时加入该exact descriptor，
+preimage marker为`skiff-package-artifact-build-identity-v13`，identity prefix为
+`skiff-package-build-v14:sha256`。必填的package-owned statement manifest identity与registry descriptor都进入
+build preimage，但不进入Package Local ABI preimage；Package Local ABI与ServiceProtocol identity generation
+保持不变。
 
 ### 3.2 Wordcode
 
@@ -408,7 +423,8 @@ statement profiling、safepoint 或 source attribution；内部含无界循环�
 Bounded decoder 和 structural validator 在 linker 读取任何 artifact-controlled index 前执行。至少验证：
 
 - magic/schema/ISA version 已知，且 opcode contract、native lifecycle registry、value lifecycle policy、host
-  effect registry 与 intrinsic registry 五个 required header pin 都与 reader 的 compile-time authority 精确一致；
+  effect registry、intrinsic registry与platform error projection registry六个required header pin都与reader的
+  compile-time authority精确一致；
 - artifact、function、word、table、string、constant graph、nesting depth 和单对象大小在配置上限内，所有
   count/offset arithmetic 无溢出；
 - instruction word 边界完整，opcode operand 数正确；
