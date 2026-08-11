@@ -6,7 +6,8 @@ mod tests {
         },
         liveness::compute_liveness,
         MirBuildError, MirCallArgument, MirCallWritableFacts, MirConst, MirContractError,
-        MirDirectCallFacts, MirExpression, MirForInBinding, MirForInFacts, MirForInItemKind,
+        MirDirectCallFacts, MirExpression, MirExpressionBlockFact, MirForInBinding, MirForInFacts,
+        MirForInItemKind,
         MirFunction, MirInOutLoan, MirInOutPathSegment, MirIndexAccessFacts, MirIndexPolicy,
         MirIndexReceiverKind, MirLiveness, MirReceiverFacts, MirRemoteInterfaceFacts,
         MirRemoteInterfaceMethodFacts, MirSourceFacts, MirStreamResultFacts, MirUnit,
@@ -48,6 +49,7 @@ mod tests {
         assert_public_type::<MirInOutLoan>();
         assert_public_type::<MirInOutPathSegment>();
         assert_public_type::<MirDirectCallFacts>();
+        assert_public_type::<MirExpressionBlockFact>();
         assert_public_type::<MirCallArgument>();
         assert_public_type::<MirReceiverFacts>();
         assert_public_type::<MirIndexAccessFacts>();

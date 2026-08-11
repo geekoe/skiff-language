@@ -7,7 +7,8 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_source::{
     package_type_ref_from_contract_type,
-    prelude_registry::{prelude_registry, shared_native_alias_target},
+    prelude_registry::{prelude_registry, shared_native_alias_target, shared_native_binding_key},
+    ConfigIntrinsic,
     semantic::{executable_symbol, impl_method_declaration_name, InterfaceSemantics},
     ConstructorFieldValueSource, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
     LocalDbObjectIndex, PackageInterfaceMethodIndex, PublicationDbMetadataIndex,
@@ -60,6 +61,25 @@ mod execution;
 mod object_literal;
 
 const TASK_FUNCTION_TARGET_PREFIX: &str = "function:";
+
+fn config_intrinsic_native_target(intrinsic: ConfigIntrinsic) -> NativeTarget {
+    let symbol = match intrinsic {
+        ConfigIntrinsic::Require => "require",
+        ConfigIntrinsic::Optional => "optional",
+        ConfigIntrinsic::Has => "has",
+    };
+    let canonical = format!("config.{symbol}");
+    let binding_key = prelude_registry()
+        .native_binding_key(&canonical)
+        .or_else(|| shared_native_binding_key(&canonical))
+        .map(ToString::to_string);
+    NativeTarget {
+        namespace: "config".to_string(),
+        symbol: symbol.to_string(),
+        binding_key,
+        metadata: BTreeMap::new(),
+    }
+}
 
 pub(super) fn native_target_from_symbol(symbol: &str) -> NativeTarget {
     let binding_key = prelude_registry()
@@ -2355,6 +2375,12 @@ impl<'a> FunctionLowerer<'a> {
     ) -> Result<Option<CallTargetIr>> {
         let path = expr_path(callee);
         let target = expression_key.and_then(|key| self.resolved_call_targets.target(key));
+
+        if let Some(ResolvedCallTarget::ConfigIntrinsic { intrinsic }) = target {
+            return Ok(Some(CallTargetIr::Native {
+                target: config_intrinsic_native_target(*intrinsic),
+            }));
+        }
 
         if let Some(ResolvedCallTarget::DependencyPackageFunction {
             package_requirement_alias,

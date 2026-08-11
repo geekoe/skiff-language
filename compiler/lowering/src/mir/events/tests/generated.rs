@@ -1,5 +1,5 @@
 use skiff_artifact_model::{
-    InstructionSourceSite, StatementAttributionId, SyntheticInstructionSiteReason,
+    ExprIr, InstructionSourceSite, StatementAttributionId, SyntheticInstructionSiteReason,
 };
 
 use super::{function, lower_sources, lower_sources_for_package};
@@ -50,6 +50,28 @@ fn ternary_desugaring_has_exact_generated_statement_coverage() {
             .iter()
             .any(|statement| statement.statement_index == statement_index));
     }
+
+    let value_blocks = choose
+        .expressions
+        .iter()
+        .filter_map(|expression| match &expression.expression {
+            ExprIr::ValueBlock { block, result } => Some((expression.index, block.clone(), *result)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(value_blocks.len(), 1);
+    let (index, block_label, result) = value_blocks[0].clone();
+    let fact = choose
+        .expression_blocks
+        .get(&index)
+        .expect("ternary ValueBlock has an exact completion fact");
+    assert_eq!(fact.result, result);
+    assert_eq!(choose.block(fact.body_block).expect("body block").label, block_label);
+    assert_eq!(fact.completion_targets.len(), 1);
+    choose.block(fact.completion_targets[0]).expect("completion target block");
+    choose
+        .validate_expression_block_facts()
+        .expect("ternary expression block facts stay contract-valid");
 }
 
 #[test]

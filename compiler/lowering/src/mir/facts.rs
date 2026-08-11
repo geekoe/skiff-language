@@ -21,6 +21,18 @@ pub struct MirStreamResultFacts {
     pub item_type: TypeRefIr,
 }
 
+/// Exact completion facts for one function-owned `ExprIr::ValueBlock`.
+///
+/// `completion_targets` are the CFG blocks that currently complete into the
+/// expression's statement continuation. An emitter linearizing the block can
+/// redirect exactly those targets to the resume PC and then evaluate `result`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirExpressionBlockFact {
+    pub body_block: u32,
+    pub result: ExprRefIr,
+    pub completion_targets: Vec<u32>,
+}
+
 /// Consumer-owned remote interface table facts retained by MIR.
 ///
 /// The service requirement slot is not reconstructed from a public instance

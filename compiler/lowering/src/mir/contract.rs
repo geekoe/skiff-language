@@ -191,6 +191,60 @@ impl MirFunction {
         Ok(())
     }
 
+    /// Validates all-and-only `ValueBlock` completion facts retained by this
+    /// function. Every `ExprIr::ValueBlock` owns a fact, and every fact key
+    /// points at a `ValueBlock` expression with matching body/result facts.
+    pub fn validate_expression_block_facts(&self) -> Result<(), MirContractError> {
+        self.validate_expression_indices()?;
+        for expression in &self.expressions {
+            let ExprIr::ValueBlock { result, .. } = &expression.expression else {
+                continue;
+            };
+            let fact = self
+                .expression_blocks
+                .get(&expression.index)
+                .ok_or_else(|| MirContractError::MissingExpressionBlockFact {
+                    function: self.symbol.clone(),
+                    expression: expression.index,
+                })?;
+            if &fact.result != result {
+                return Err(MirContractError::InvalidExpressionBlockFact {
+                    function: self.symbol.clone(),
+                    expression: expression.index,
+                    message: "result reference disagrees with owned ValueBlock expression"
+                        .to_string(),
+                });
+            }
+            self.block(fact.body_block)?;
+            let mut previous = None;
+            for target in &fact.completion_targets {
+                self.block(*target)?;
+                if let Some(previous) = previous {
+                    if previous >= *target {
+                        return Err(MirContractError::InvalidExpressionBlockFact {
+                            function: self.symbol.clone(),
+                            expression: expression.index,
+                            message: "completion targets must be sorted and unique".to_string(),
+                        });
+                    }
+                }
+                previous = Some(*target);
+            }
+        }
+        for expression in self.expression_blocks.keys() {
+            let entry = self.expression(ExprRefIr {
+                expression: *expression,
+            })?;
+            if !matches!(&entry.expression, ExprIr::ValueBlock { .. }) {
+                return Err(MirContractError::ExpressionBlockFactOwnerMismatch {
+                    function: self.symbol.clone(),
+                    expression: *expression,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Resolves one source-owned bracket segment by its function-owned,
     /// single-evaluation selector expression.
     pub fn index_access(
@@ -846,6 +900,22 @@ pub enum MirContractError {
     },
     #[error("MIR function `{function}` has more than u32::MAX expressions")]
     ExpressionIndexOverflow { function: String },
+    #[error(
+        "MIR function `{function}` has no expression-block fact for ValueBlock expression {expression}"
+    )]
+    MissingExpressionBlockFact { function: String, expression: u32 },
+    #[error(
+        "MIR function `{function}` retains expression-block facts for non-ValueBlock expression {expression}"
+    )]
+    ExpressionBlockFactOwnerMismatch { function: String, expression: u32 },
+    #[error(
+        "MIR function `{function}` expression-block fact {expression} is invalid: {message}"
+    )]
+    InvalidExpressionBlockFact {
+        function: String,
+        expression: u32,
+        message: String,
+    },
     #[error(
         "MIR function `{function}` index selector {selector} has no exact source-owned access facts"
     )]

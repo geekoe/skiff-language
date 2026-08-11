@@ -31,7 +31,9 @@
 //! - `Break`/`Continue` resolve to the nearest enclosing loop's exit /
 //!   header block. Expression-referenced blocks (`ValueBlock`, `DbTransaction`,
 //!   `DbLeaseClaim`, `ConcurrentValue` lanes) complete into the enclosing
-//!   statement's continuation.
+//!   statement's continuation. `ValueBlock` additionally retains exact
+//!   completion facts so the emitter can redirect those CFG completions to a
+//!   resume PC and then evaluate the block result expression.
 //! - Exception regions: every `ExprIr::Catch` produces one [`MirRegion`].
 //!   `catch_expr` is the function-local [`MirExpression`] index of the `Catch`
 //!   node (kept exactly aligned while cloning File IR); `cleanup_depth` is the
@@ -51,11 +53,12 @@
 //!   model; MIR validates all-and-only coverage and never guesses them from a
 //!   `TypeRefIr` or CFG shape.
 //! - Timeout/concurrent statements retain their continuation/join block and a
-//!   concurrent plan retains its plan-level [`InstructionSourceSite`]. File IR
-//!   block labels referenced by inline `ValueBlock`/DB/concurrent expressions
-//!   do not identify an exact instruction-level return point, so MIR does not
-//!   expose those as an exact continuation fact. No per-region cleanup or
-//!   pending fact exists upstream, so MIR does not invent one.
+//!   concurrent plan retains its plan-level [`InstructionSourceSite`].
+//!   `ValueBlock` exposes exact completion targets through
+//!   [`MirFunction::expression_blocks`]. DB/concurrent expression labels still
+//!   do not identify an exact instruction-level return point in this revision.
+//!   No per-region cleanup or pending fact exists upstream, so MIR does not
+//!   invent one.
 //! - Recursive `PatternIr::Record` trees and binding slots are validated
 //!   exactly. Source nominal-pattern fields are not present in File IR
 //!   (`PatternIr::Type` retains only the nominal type), so no nested nominal
@@ -104,9 +107,10 @@ pub use events::{
     MirSourceEventPlanError, MirSourceEventUnavailableReason, MirStatementPlacement,
 };
 pub use facts::{
-    MirCallWritableFacts, MirForInBinding, MirForInFacts, MirForInItemKind, MirInOutLoan,
-    MirInOutPathSegment, MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts,
-    MirStreamResultFacts, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
+    MirCallWritableFacts, MirExpressionBlockFact, MirForInBinding, MirForInFacts,
+    MirForInItemKind, MirInOutLoan, MirInOutPathSegment, MirRemoteInterfaceFacts,
+    MirRemoteInterfaceMethodFacts, MirStreamResultFacts, MirWritablePathSegment, MirWritablePlace,
+    MirWritableRoot,
 };
 pub use index::{MirIndexAccessFacts, MirIndexPolicy, MirIndexReceiverKind, MirSourceFacts};
 
@@ -166,6 +170,11 @@ pub struct MirFunction {
     /// expression index. Every bracket access in expressions/places/loans is
     /// covered exactly once.
     pub index_accesses: BTreeMap<u32, MirIndexAccessFacts>,
+    /// Exact completion facts for function-owned `ExprIr::ValueBlock`
+    /// expressions, keyed by expression index. The emitter uses these facts
+    /// to redirect completion blocks to the resume PC before evaluating the
+    /// block result.
+    pub expression_blocks: BTreeMap<u32, MirExpressionBlockFact>,
     /// Function-owned expression DAG. Every entry's `index` is exactly its
     /// position and its `ty` is the source-owned type at that index.
     pub expressions: Vec<MirExpression>,

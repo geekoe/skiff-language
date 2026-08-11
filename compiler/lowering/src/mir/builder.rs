@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     AssignTargetIr, BoxSourceIr, CallableEffectSummary, ConcurrentLaneIr, ConcurrentPlanIr,
     ContractOperationId, DbBodyIr, DbChangeOpIr, DbPredicateIr, DbSelectorIr, ExecutableIr, ExprIr,
-    FileIrUnit, PackageExecutableCoordinate, ParamModeIr, ServiceCallRef, SourceSpanRef, StmtIr,
+    ExprRefIr, FileIrUnit, PackageExecutableCoordinate, ParamModeIr, ServiceCallRef, SourceSpanRef,
+    StmtIr,
 };
 use skiff_compiler_core::{implementation_package_callable_id, ImplementationCallableKind};
 use skiff_compiler_source::{ResolvedCallTargetFacts, SourceCallableEffectFacts, SourceSymbolKey};
@@ -19,7 +20,8 @@ use super::{
     },
     liveness::compute_liveness,
     MirBlock, MirBuildError, MirConcurrentLaneIr, MirConcurrentPlanIr, MirConst, MirExecutableKind,
-    MirExpression, MirFunction, MirIndexAccessFacts, MirLiveness, MirMatchArmIr, MirParam,
+    MirExpression, MirExpressionBlockFact, MirFunction, MirIndexAccessFacts, MirLiveness,
+    MirMatchArmIr, MirParam,
     MirParamMode, MirRegion, MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts, MirSlot,
     MirSlotKind, MirSourceEventPlan, MirSourceEventUnavailableReason, MirSourceFacts,
     MirStatementEntry, MirStmt, MirStmtKind, MirStreamResultFacts, MirUnit,
@@ -346,7 +348,13 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
             symbol: executable.symbol.clone(),
             message,
         })?;
-    let (blocks, regions, statements) = cfg.finish();
+    let (blocks, regions, statements, expression_blocks) = cfg
+        .finish()
+        .map_err(|message| MirBuildError::InvalidControlFlow {
+            module_path: unit.module_path.clone(),
+            symbol: executable.symbol.clone(),
+            message,
+        })?;
     let source_event_plan = source_facts
         .source_event_plan(&unit.module_path, executable_index)
         .cloned()
@@ -377,6 +385,7 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
         receiver,
         slots,
         index_accesses,
+        expression_blocks,
         expressions,
         blocks,
         regions,
@@ -404,6 +413,13 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
         })?;
     function
         .validate_remote_interface_facts()
+        .map_err(|source| MirBuildError::InvalidFunctionContract {
+            module_path: unit.module_path.clone(),
+            symbol: executable.symbol.clone(),
+            source: Box::new(source),
+        })?;
+    function
+        .validate_expression_block_facts()
         .map_err(|source| MirBuildError::InvalidFunctionContract {
             module_path: unit.module_path.clone(),
             symbol: executable.symbol.clone(),
@@ -746,6 +762,13 @@ fn clone_constant_facts(unit: &FileIrUnit) -> Result<Vec<MirConst>, MirBuildErro
 ///   are not resolved here: their fragments may not exist yet.
 /// - Pass B converts every statement's branch targets from labels to block
 ///   ids (all fragments now exist) and computes the complete successor edges.
+type FunctionCfgOutput = (
+    Vec<MirBlock>,
+    Vec<MirRegion>,
+    Vec<MirStatementEntry>,
+    BTreeMap<u32, MirExpressionBlockFact>,
+);
+
 struct FunctionCfg<'a> {
     unit: &'a FileIrUnit,
     executable: &'a ExecutableIr,
@@ -764,6 +787,8 @@ struct FunctionCfg<'a> {
     loop_backs: BTreeMap<String, u32>,
     /// MirBlock id -> raw statements collected in pass A, converted in pass B.
     pending_statements: BTreeMap<u32, Vec<(u32, Option<SourceSpanRef>, StmtIr)>>,
+    /// ValueBlock expression facts waiting for CFG successors to resolve.
+    pending_expression_blocks: Vec<(u32, String, ExprRefIr)>,
     statement_entries: Vec<MirStatementEntry>,
     regions: Vec<MirRegion>,
     next_block_id: u32,
@@ -790,6 +815,7 @@ impl<'a> FunctionCfg<'a> {
             loop_contexts: BTreeMap::new(),
             loop_backs: BTreeMap::new(),
             pending_statements: BTreeMap::new(),
+            pending_expression_blocks: Vec::new(),
             statement_entries: Vec::new(),
             regions: Vec::new(),
             next_block_id: 0,
@@ -809,8 +835,14 @@ impl<'a> FunctionCfg<'a> {
         id
     }
 
-    fn finish(self) -> (Vec<MirBlock>, Vec<MirRegion>, Vec<MirStatementEntry>) {
-        (self.blocks, self.regions, self.statement_entries)
+    fn finish(mut self) -> Result<FunctionCfgOutput, String> {
+        let expression_blocks = self.materialize_expression_blocks()?;
+        Ok((
+            self.blocks,
+            self.regions,
+            self.statement_entries,
+            expression_blocks,
+        ))
     }
 
     fn build_blocks(&mut self) -> Result<(), String> {
@@ -1712,6 +1744,8 @@ impl<'a> FunctionCfg<'a> {
             ExprIr::Timeout { value, .. } => visit(self, value.expression)?,
             ExprIr::ValueBlock { block, result } => {
                 self.record_expression_block(&block, loop_context, statement_continuation)?;
+                self.pending_expression_blocks
+                    .push((expression, block, result));
                 visit(self, result.expression)?;
             }
             ExprIr::ConcurrentValue { plan } => {
@@ -1796,5 +1830,61 @@ impl<'a> FunctionCfg<'a> {
             }
         }
         Ok(())
+    }
+
+    fn materialize_expression_blocks(
+        &mut self,
+    ) -> Result<BTreeMap<u32, MirExpressionBlockFact>, String> {
+        let mut expression_blocks = BTreeMap::new();
+        for (expression, label, result) in std::mem::take(&mut self.pending_expression_blocks) {
+            let body_block = self.first_fragment_of(&label)?;
+            let continuation = self.continuations.get(&label).copied().ok_or_else(|| {
+                format!("MIR build: expression block `{label}` has no continuation")
+            })?;
+            let completion_targets = self.completion_targets(body_block, continuation)?;
+            let fact = MirExpressionBlockFact {
+                body_block,
+                result,
+                completion_targets,
+            };
+            if expression_blocks.insert(expression, fact).is_some() {
+                return Err(format!(
+                    "MIR build: expression block fact {expression} recorded more than once"
+                ));
+            }
+        }
+        Ok(expression_blocks)
+    }
+
+    fn completion_targets(
+        &self,
+        body_block: u32,
+        continuation: u32,
+    ) -> Result<Vec<u32>, String> {
+        let mut pending = vec![body_block];
+        let mut seen = BTreeSet::new();
+        let mut targets = BTreeSet::new();
+        while let Some(block_id) = pending.pop() {
+            if !seen.insert(block_id) {
+                continue;
+            }
+            let block = self.blocks.get(block_id as usize).ok_or_else(|| {
+                format!("MIR build: expression body references missing block {block_id}")
+            })?;
+            if block.id != block_id {
+                return Err(format!(
+                    "MIR build: expression body references non-canonical block {block_id}"
+                ));
+            }
+            if block.successors.contains(&continuation) {
+                targets.insert(block_id);
+            }
+            for successor in &block.successors {
+                if *successor != continuation && !seen.contains(successor) {
+                    pending.push(*successor);
+                }
+            }
+        }
+        Ok(targets.into_iter().collect())
     }
 }

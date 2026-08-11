@@ -27,6 +27,7 @@ type BlockSlotSets = BTreeMap<u32, BTreeSet<u32>>;
 /// May-liveness for one function, backed only by its owned MIR expressions.
 pub fn compute_liveness(function: &MirFunction) -> Result<MirLiveness, MirContractError> {
     function.validate_expression_indices()?;
+    function.validate_expression_block_facts()?;
     validate_cfg(function)?;
     let (uses, defs) = block_use_def_sets(function)?;
     let mut live_in: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();

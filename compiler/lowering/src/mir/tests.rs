@@ -804,6 +804,7 @@ fn liveness_hand_computed_small_fixture() {
             },
         ],
         index_accesses: BTreeMap::new(),
+        expression_blocks: BTreeMap::new(),
         expressions,
         blocks: vec![
             MirBlock {
@@ -885,6 +886,135 @@ fn liveness_hand_computed_small_fixture() {
         reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerDesugaring,
     };
     let _: StmtIr = StmtIr::Break;
+}
+
+#[test]
+fn value_block_expression_facts_freeze_ternary_and_user_value_blocks() {
+    let model = build_model(
+        MODULE,
+        r#"
+          function pick(flag: boolean) -> number {
+            return flag ? 1 : 2
+          }
+
+          function blockish() -> number {
+            return value {
+              final local = 1
+              local
+            }
+          }
+        "#,
+    );
+    let lowered = lower(&model).expect("value block fixture should lower");
+    let unit = &lowered.mir_units()[0];
+
+    for declaration in ["pick", "blockish"] {
+        let function = unit
+            .functions
+            .iter()
+            .find(|function| function.symbol == format!("{MODULE}.{declaration}"))
+            .unwrap_or_else(|| panic!("{declaration} MirFunction"));
+        let facts = function
+            .expressions
+            .iter()
+            .filter_map(|expression| match &expression.expression {
+                ExprIr::ValueBlock { block, result } => {
+                    Some((expression.index, block.clone(), *result))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(!facts.is_empty(), "{declaration} has a ValueBlock fact");
+        for (index, block_label, result) in facts {
+            let fact = function
+                .expression_blocks
+                .get(&index)
+                .unwrap_or_else(|| panic!("{declaration} ValueBlock {index} has no fact"));
+            assert_eq!(fact.result, result);
+            assert_eq!(function.block(fact.body_block).expect("body block").label, block_label);
+            assert!(!fact.completion_targets.is_empty());
+            assert!(fact
+                .completion_targets
+                .windows(2)
+                .all(|pair| pair[0] < pair[1]));
+            for target in &fact.completion_targets {
+                function.block(*target).expect("completion target block");
+            }
+        }
+        function
+            .validate_expression_block_facts()
+            .expect("expression block facts remain contract-valid");
+    }
+
+    let pick = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.pick"))
+        .expect("pick MirFunction");
+    let pick_facts = pick
+        .expression_blocks
+        .values()
+        .collect::<Vec<_>>();
+    assert_eq!(pick_facts.len(), 1);
+    let pick_body = pick.block(pick_facts[0].body_block).expect("ternary body block");
+    assert!(matches!(
+        pick_body.statements.last().map(|statement| &statement.kind),
+        Some(MirStmtKind::If { .. })
+    ));
+    assert_eq!(pick_facts[0].completion_targets.len(), 1);
+}
+
+#[test]
+fn config_intrinsics_route_to_native_call_targets() {
+    let model = build_model(
+        MODULE,
+        r#"
+          function configured() -> string {
+            final required = config.require<string>("app.token")
+            final optional = config.optional<string>("app.region")
+            final present = config.has("app.enabled")
+            return required
+          }
+        "#,
+    );
+    let lowered = lower(&model).expect("config fixture should lower");
+    let function = lowered.mir_units()[0]
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.configured"))
+        .expect("configured MirFunction");
+    let mut targets = function
+        .expressions
+        .iter()
+        .filter_map(|expression| match &expression.expression {
+            ExprIr::Call { call } => match &call.target {
+                CallTargetIr::Native { target } => Some((
+                    format!("{}.{}", target.namespace, target.symbol),
+                    target.binding_key.clone(),
+                )),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    targets.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        targets,
+        vec![
+            (
+                "config.has".to_string(),
+                Some("std.config.has".to_string())
+            ),
+            (
+                "config.optional".to_string(),
+                Some("std.config.optional".to_string())
+            ),
+            (
+                "config.require".to_string(),
+                Some("std.config.require".to_string())
+            ),
+        ]
+    );
 }
 
 #[test]
