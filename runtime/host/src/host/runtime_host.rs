@@ -15,9 +15,10 @@ use tokio::sync::Mutex;
 
 use crate::{
     config::{skiff_file_tmp_dir, RuntimeMemoryBudgets},
-    loader::assembly_admission::AssemblyAdmissionController,
     loader::bytecode_admission::BytecodeDeploymentRegistry,
 };
+#[cfg(test)]
+use crate::loader::assembly_admission::AssemblyAdmissionController;
 
 use super::{
     actor_owner_invocations::ActorOwnerInvocationRegistry,
@@ -72,6 +73,7 @@ pub struct RuntimeHost {
     pub(super) http_runtime_options: HttpRuntimeOptions,
     pub(super) memory_budgets: RuntimeMemoryBudgets,
     pub(super) bytecode_only: bool,
+    #[cfg(test)]
     pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
     pub(crate) bytecode_deployments: Arc<BytecodeDeploymentRegistry>,
     pub(super) artifact_root: Arc<StdMutex<Option<String>>>,
@@ -191,6 +193,8 @@ impl RuntimeHost {
             telemetry_file_max_bytes,
             telemetry_file_max_files,
         ));
+        #[cfg(not(test))]
+        let _ = db_provider;
         let actor_instance_store = Arc::new(ActorInstanceStore::new());
         Ok(Self {
             router_url,
@@ -201,6 +205,7 @@ impl RuntimeHost {
             http_runtime_options,
             memory_budgets: RuntimeMemoryBudgets::default(),
             bytecode_only,
+            #[cfg(test)]
             assembly_admission: Arc::new(AssemblyAdmissionController::new(
                 base_runtime_id.clone(),
                 db_provider,

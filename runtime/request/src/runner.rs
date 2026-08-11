@@ -1,22 +1,31 @@
-use std::sync::{atomic::AtomicBool, Arc};
-
 use serde_json::Value;
-use skiff_runtime_capability_context::CancellationToken;
-use skiff_runtime_model::request_heap::RequestHeapLimits;
 
+#[cfg(test)]
+use std::sync::{atomic::AtomicBool, Arc};
+#[cfg(test)]
+use skiff_runtime_capability_context::CancellationToken;
+#[cfg(test)]
+use skiff_runtime_model::request_heap::RequestHeapLimits;
+#[cfg(test)]
 use crate::{
-    execution_budget::ExecutionStats, BoundaryResponse, ExecutionBudget, RequestEnvelope,
-    RequestError, RequestEvalAdapter, RequestOperationContext, ResponseError, ResponseEventSink,
+    BoundaryResponse, RequestEnvelope, RequestError, RequestEvalAdapter, RequestOperationContext,
+    ResponseEventSink,
 };
 
+use crate::{execution_budget::ExecutionStats, ExecutionBudget, ResponseError};
+
+#[cfg(test)]
 pub type RuntimeResponse = BoundaryResponse;
+#[cfg(test)]
 pub type RequestExecutionResult = std::result::Result<BoundaryResponse, RequestExecutionError>;
 
+#[cfg(test)]
 pub struct RequestExecutionError {
     error: RequestError,
     attach_request_diagnostic: bool,
 }
 
+#[cfg(test)]
 impl RequestExecutionError {
     #[cfg(test)]
     fn with_request_diagnostic(error: RequestError) -> Self {
@@ -35,6 +44,7 @@ impl RequestExecutionError {
     }
 }
 
+#[cfg(test)]
 impl From<RequestError> for RequestExecutionError {
     fn from(error: RequestError) -> Self {
         Self {
@@ -44,6 +54,7 @@ impl From<RequestError> for RequestExecutionError {
     }
 }
 
+#[cfg(test)]
 pub struct RequestExecutionInput {
     pub operation_context: RequestOperationContext,
     pub request: RequestEnvelope,
@@ -54,6 +65,7 @@ pub struct RequestExecutionInput {
 }
 
 #[derive(Clone)]
+#[cfg(test)]
 pub struct RequestExecutionHandles {
     pub request_heap_limits: RequestHeapLimits,
     pub streaming_available: bool,
@@ -61,6 +73,7 @@ pub struct RequestExecutionHandles {
     pub eval_adapter: Arc<dyn RequestEvalAdapter>,
 }
 
+#[cfg(test)]
 pub async fn execute_runtime_request(input: RequestExecutionInput) -> RequestExecutionResult {
     #[cfg(test)]
     {
@@ -97,13 +110,6 @@ pub async fn execute_runtime_request(input: RequestExecutionInput) -> RequestExe
         .dispatch()
         .await
         .map_err(RequestExecutionError::with_request_diagnostic)
-    }
-    #[cfg(not(test))]
-    {
-        let _ = input;
-        Err(RequestExecutionError::from(RequestError::Unsupported(
-            "legacy tree-evaluator request execution is disabled".to_string(),
-        )))
     }
 }
 

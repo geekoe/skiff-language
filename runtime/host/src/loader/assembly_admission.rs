@@ -23,8 +23,10 @@ use skiff_runtime_activation::RequestActivationContext;
 #[cfg(test)]
 use skiff_runtime_eval::{RuntimeAssemblyEvalResolver, RuntimeAssemblyEvalTarget};
 use skiff_runtime_linker::{
-    link_runtime_assembly, AssemblyLinkedCandidate, LinkedActivationTemplate, LinkedGatewayEntry,
+    AssemblyLinkedCandidate, LinkedActivationTemplate, LinkedGatewayEntry,
 };
+#[cfg(test)]
+use skiff_runtime_linker::link_runtime_assembly;
 use skiff_runtime_loader::ServiceContractStore;
 #[cfg(test)]
 use skiff_runtime_loader::{DeploymentReleasePointerResolver, RuntimeAssemblyRecordResolver};
@@ -40,16 +42,20 @@ use skiff_runtime_transport::actor_owner::ActorOwnerRouteAuthorityFrameHeader;
 use time::OffsetDateTime;
 #[cfg(test)]
 use tokio::sync::Mutex;
+#[cfg(test)]
 use tracing::info;
 #[cfg(test)]
 use tracing::warn;
 
 use super::active_assembly_context::{admitted_websocket_entry, ActiveAssemblyContextSet};
+#[cfg(test)]
 use crate::capability_context::DbProviderSource;
 use crate::host::RuntimeHost;
 
+#[cfg(test)]
 mod loaded_deployments;
 
+#[cfg(test)]
 use loaded_deployments::LoadedDeploymentRegistry;
 
 /// Host-owned immutable assembly published after the complete candidate passes admission.
@@ -465,6 +471,7 @@ struct AssemblyAdmissionState {
 /// The sole owner of candidate build serialization and the loaded buildId
 /// registry. There is no whole-assembly committed tuple: requests route by
 /// buildId through the lazy-load registry.
+#[cfg(test)]
 #[derive(Debug)]
 pub(crate) struct AssemblyAdmissionController {
     runtime_replica_id: String,
@@ -479,12 +486,14 @@ pub(crate) struct AssemblyAdmissionController {
     loaded: Arc<LoadedDeploymentRegistry>,
 }
 
+#[cfg(test)]
 impl Default for AssemblyAdmissionController {
     fn default() -> Self {
         Self::new("runtime-replica", DbProviderSource::unavailable())
     }
 }
 
+#[cfg(test)]
 impl AssemblyAdmissionController {
     pub(crate) fn new(
         runtime_replica_id: impl Into<String>,
@@ -681,6 +690,7 @@ impl AssemblyAdmissionController {
     }
 
     /// Ordered snapshot of every loaded buildId (capability advertisement).
+    #[cfg(test)]
     pub(crate) fn loaded_build_ids(&self) -> Vec<String> {
         self.loaded.loaded_build_ids()
     }
@@ -694,11 +704,13 @@ impl AssemblyAdmissionController {
     /// Exact loaded image for one buildId, without entering any critical
     /// section. This is the fallback routing source for Actor route authority
     /// resolution before live work pins a route hold.
+    #[cfg(test)]
     pub(crate) fn loaded_image(&self, build_id: &str) -> Option<Arc<ActiveAssembly>> {
         self.loaded.lookup(build_id)
     }
 
     /// Gateway surfaces of every loaded deployment (dispatch-mode capability).
+    #[cfg(test)]
     pub(crate) fn loaded_gateway_surfaces(
         &self,
     ) -> Vec<skiff_artifact_model::GatewayEntryProtocolSurface> {
@@ -1015,6 +1027,7 @@ impl RuntimeHost {
         self.assembly_admission.route(key)
     }
 
+    #[cfg(test)]
     pub(crate) fn actor_execution_route(
         &self,
         authority: &ActorOwnerRouteAuthorityFrameHeader,
@@ -1038,6 +1051,15 @@ impl RuntimeHost {
                 })?,
         };
         actor_route_from_active(active, service_id)
+    }
+
+    #[cfg(not(test))]
+    pub(crate) fn actor_execution_route(
+        &self,
+        _authority: &ActorOwnerRouteAuthorityFrameHeader,
+        _service_id: &str,
+    ) -> anyhow::Result<Option<ActiveActorExecutionRoute>> {
+        Ok(None)
     }
 }
 
@@ -1092,6 +1114,7 @@ fn ensure_current_candidate(
 /// The test-only admission publication primitive. Callers hold the admission
 /// state write lock, so the active pointer becomes visible atomically with the
 /// candidate/outcome transition.
+#[cfg(test)]
 fn actor_route_from_active(
     active: Arc<ActiveAssembly>,
     service_id: &str,
@@ -1119,6 +1142,7 @@ fn actor_route_from_active(
     Ok(Some(ActiveActorExecutionRoute { active, activation }))
 }
 
+#[cfg(test)]
 fn validate_candidate(candidate: &AssemblyLinkedCandidate) -> anyhow::Result<()> {
     let assembly = candidate.assembly();
     if candidate.shared_image().assembly_identity() != &assembly.assembly_identity {

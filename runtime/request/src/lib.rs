@@ -100,10 +100,11 @@ pub use response_event::{
     ResponseError, ResponseEvent, ResponseStreamEvent,
 };
 pub use response_writer::ResponseEventSink;
+pub use runner::{execution_budget_trace_attrs, response_error_to_telemetry_map};
+#[cfg(test)]
 pub use runner::{
-    execute_runtime_request, execution_budget_trace_attrs, response_error_to_telemetry_map,
-    RequestExecutionError, RequestExecutionHandles, RequestExecutionInput, RequestExecutionResult,
-    RuntimeResponse,
+    execute_runtime_request, RequestExecutionError, RequestExecutionHandles,
+    RequestExecutionInput, RequestExecutionResult, RuntimeResponse,
 };
 pub use skiff_runtime_eval::{
     RuntimeWebSocketJsonRpcExecutionOutcome, RuntimeWebSocketJsonRpcExecutionTerminal,

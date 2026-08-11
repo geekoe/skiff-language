@@ -121,9 +121,11 @@ impl RuntimeHost {
         // otherwise exclude every cold-start runtime and every request would
         // fail with no eligible runtime (the deployment's own surface decides
         // the request shape after lazy loading).
-        let _ = self.assembly_admission.loaded_gateway_surfaces();
         let dispatch_modes = engine_dispatch_modes();
+        #[cfg(test)]
         let loaded_build_ids = self.assembly_admission.loaded_build_ids();
+        #[cfg(not(test))]
+        let loaded_build_ids = Vec::new();
         let artifact_root = self.bootstrap_artifact_root();
         let header = RuntimeCapabilitiesFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
