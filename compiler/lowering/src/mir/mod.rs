@@ -105,7 +105,8 @@ pub use events::{
 };
 pub use facts::{
     MirCallWritableFacts, MirForInBinding, MirForInFacts, MirForInItemKind, MirInOutLoan,
-    MirInOutPathSegment, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
+    MirInOutPathSegment, MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts,
+    MirStreamResultFacts, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
 };
 pub use index::{MirIndexAccessFacts, MirIndexPolicy, MirIndexReceiverKind, MirSourceFacts};
 
@@ -177,6 +178,9 @@ pub struct MirFunction {
     /// why this executable cannot yet be emitted. Unavailable is never an
     /// alias for an available zero-event plan.
     pub source_event_plan: MirSourceEventPlan,
+    /// Exact `Stream<T>` producer item authority. Present only when the
+    /// function's File IR return type is `Stream<T>`.
+    pub stream_result: Option<MirStreamResultFacts>,
     pub liveness: MirLiveness,
     pub effect_summary_ref: PackageCallableId,
     pub effect_summary: CallableEffectSummary,
@@ -194,6 +198,12 @@ pub struct MirExpression {
     pub writable: Option<MirCallWritableFacts>,
     /// Dense exact ABI facts for Local/Publication/Package direct calls.
     pub direct_call: Option<MirDirectCallFacts>,
+    /// Exact `Stream<T>` item facts when this expression carries a stream
+    /// value, including stream-producing call results.
+    pub stream_result: Option<MirStreamResultFacts>,
+    /// Consumer-owned remote interface table facts for a remote
+    /// [`ExprIr::InterfaceBox`].
+    pub remote_interface: Option<MirRemoteInterfaceFacts>,
 }
 
 /// Emitter-facing metadata for one compile-time-evaluated local constant.
@@ -289,6 +299,13 @@ pub enum MirStmtKind {
     Emit {
         operation: String,
         value: ExprRefIr,
+    },
+    /// One exact stream read. This is a compiler-owned MIR contract: it
+    /// carries the endpoint slot and the exact item type T. Natural stream end
+    /// remains an unavailable contract in this revision.
+    StreamNext {
+        endpoint_slot: u32,
+        item_type: TypeRefIr,
     },
     TestEffectRegister {
         target: skiff_artifact_model::TestEffectRegisterTargetIr,

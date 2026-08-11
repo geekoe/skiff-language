@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    CallIr, CallTargetIr, ExecutableIr, FileIrUnit, PackageCallableId, ParamModeIr,
-    ReceiverCallAbi, SlotKind,
+    CallIr, CallTargetIr, ContractOperationId, ExecutableIr, FileIrUnit, PackageCallableId,
+    ParamModeIr, ReceiverCallAbi, ServiceProtocolIdentity, SlotKind,
 };
 use skiff_compiler_source::{ResolvedCallTarget, ResolvedCallTargetFacts};
 
@@ -18,9 +18,17 @@ struct PackageDirectAbi {
     has_leading_self: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MirServiceRequirementFacts {
+    pub slot: u32,
+    pub expected_protocol_identity: ServiceProtocolIdentity,
+    pub used_operations: BTreeSet<ContractOperationId>,
+}
+
 pub(super) struct MirPackageCatalog<'a> {
     units_by_module: BTreeMap<&'a str, &'a FileIrUnit>,
     package_direct_abis: BTreeMap<PackageCallableId, PackageDirectAbi>,
+    service_requirements: BTreeMap<String, MirServiceRequirementFacts>,
 }
 
 impl<'a> MirPackageCatalog<'a> {
@@ -118,10 +126,69 @@ impl<'a> MirPackageCatalog<'a> {
                 }
             }
         }
+        let mut service_requirements = BTreeMap::new();
+        for (_, target) in resolved_call_targets.iter() {
+            let ResolvedCallTarget::ContractOperation {
+                contract_requirement,
+                contract_operation_id,
+                ..
+            } = target
+            else {
+                continue;
+            };
+            let entry = service_requirements
+                .entry(contract_requirement.alias.clone())
+                .or_insert_with(|| {
+                    (
+                        contract_requirement.clone(),
+                        BTreeSet::<ContractOperationId>::new(),
+                    )
+                });
+            if entry.0 != *contract_requirement {
+                return Err(MirBuildError::InvalidServiceRequirementFacts {
+                    alias: contract_requirement.alias.clone(),
+                    message: "same dependency alias resolves to conflicting contract requirements"
+                        .to_string(),
+                });
+            }
+            entry.1.insert(contract_operation_id.clone());
+        }
+        let service_requirement_slots = service_requirements
+            .into_iter()
+            .enumerate()
+            .map(
+                |(slot_index, (alias, (contract_requirement, used_operations)))| {
+                    let slot = u32::try_from(slot_index).map_err(|_| {
+                        MirBuildError::InvalidServiceRequirementFacts {
+                            alias: alias.clone(),
+                            message: "service requirement slot exceeds u32::MAX".to_string(),
+                        }
+                    })?;
+                    Ok((
+                        alias,
+                        MirServiceRequirementFacts {
+                            slot,
+                            expected_protocol_identity: contract_requirement
+                                .expected_protocol_identity
+                                .clone(),
+                            used_operations,
+                        },
+                    ))
+                },
+            )
+            .collect::<Result<BTreeMap<_, _>, MirBuildError>>()?;
         Ok(Self {
             units_by_module,
             package_direct_abis,
+            service_requirements: service_requirement_slots,
         })
+    }
+
+    pub(super) fn service_requirement(
+        &self,
+        dependency_ref: &str,
+    ) -> Option<&MirServiceRequirementFacts> {
+        self.service_requirements.get(dependency_ref)
     }
 
     fn unit(&self, module_path: &str) -> Option<&'a FileIrUnit> {

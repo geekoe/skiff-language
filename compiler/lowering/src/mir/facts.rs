@@ -7,11 +7,45 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    validate_supported_receiver_builtin_op, AssignTargetIr, ExprIr, ExprRefIr, InOutPathSegmentIr,
-    PatternIr, TypeRefIr,
+    validate_supported_receiver_builtin_op, AssignTargetIr, ContractOperationId, ExprIr, ExprRefIr,
+    InOutPathSegmentIr, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, PatternIr,
+    ServiceProtocolIdentity, TypeRefIr,
 };
 
 use super::{MirExpression, MirIndexAccessFacts, MirSlot, MirSlotKind};
+
+/// Exact compiler-owned stream facts for one function or stream-typed
+/// expression. `item_type` is the source-owned `T` in `Stream<T>`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirStreamResultFacts {
+    pub item_type: TypeRefIr,
+}
+
+/// Consumer-owned remote interface table facts retained by MIR.
+///
+/// The service requirement slot is not reconstructed from a public instance
+/// key or provider identity; it is copied from the exact consumer
+/// service-requirement authority. Emission fails closed when those facts are
+/// absent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirRemoteInterfaceFacts {
+    pub service_requirement_slot: u32,
+    pub public_instance_key: String,
+    pub interface: InterfaceInstantiationRef,
+    pub methods: Vec<MirRemoteInterfaceMethodFacts>,
+    pub callee_protocol_identity: ServiceProtocolIdentity,
+}
+
+/// One exact remote interface method row. The contract operation id is the
+/// canonical service-requirement operation authority, not a provider-local
+/// executable identity.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirRemoteInterfaceMethodFacts {
+    pub slot: u32,
+    pub method_abi_id: String,
+    pub signature: InterfaceMethodSlotSignatureIr,
+    pub contract_operation_id: ContractOperationId,
+}
 
 /// Exact writable root retained by MIR.
 #[derive(Debug, Clone, PartialEq)]

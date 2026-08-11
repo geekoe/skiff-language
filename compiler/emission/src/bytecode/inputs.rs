@@ -127,6 +127,8 @@ impl<'a> ValidatedEmissionInputs<'a> {
             for function in &unit.functions {
                 function.validate_expression_indices()?;
                 function.validate_slot_types()?;
+                function.validate_stream_facts()?;
+                function.validate_remote_interface_facts()?;
                 let function_key = canonical_function_key(module_path, &function.symbol)?;
                 validate_mir_function(&function_key, function)?;
 

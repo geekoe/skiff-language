@@ -174,6 +174,9 @@ fn statement_use_def(
         }
         MirStmtKind::Dispatch { call } => visit(call.expression, uses, defs, function)?,
         MirStmtKind::Emit { value, .. } => visit(value.expression, uses, defs, function)?,
+        MirStmtKind::StreamNext { endpoint_slot, .. } => {
+            uses.insert(*endpoint_slot);
+        }
         MirStmtKind::Expr { value } => visit(value.expression, uses, defs, function)?,
         MirStmtKind::Return { value } => {
             if let Some(value) = value {

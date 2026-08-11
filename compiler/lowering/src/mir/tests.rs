@@ -21,8 +21,8 @@ use crate::mir::builder::build_mir_units;
 use crate::mir::liveness::compute_liveness;
 use crate::mir::{
     MirBlock, MirBuildError, MirContractError, MirExecutableKind, MirExpression, MirForInBinding,
-    MirForInItemKind, MirFunction, MirLiveness, MirParamMode, MirSlotKind, MirStmtKind, MirUnit,
-    MirWritablePlace, MirWritableRoot,
+    MirForInItemKind, MirFunction, MirLiveness, MirParamMode, MirSlotKind, MirStmtKind,
+    MirStreamResultFacts, MirUnit, MirWritablePlace, MirWritableRoot,
 };
 
 mod semantic_facts;
@@ -220,6 +220,13 @@ fn mir_units_carried_by_lowered_package_with_effect_facts() {
     assert!(
         pendingish.may_pending(),
         "stream fixture must be may_pending from source effects"
+    );
+    assert_eq!(
+        pendingish.stream_result,
+        Some(MirStreamResultFacts {
+            item_type: TypeRefIr::builtin("number"),
+        }),
+        "Stream<T> item type survives into MirFunction"
     );
     assert_eq!(
         mirror.params[0],
@@ -739,6 +746,8 @@ fn liveness_hand_computed_small_fixture() {
             ty: TypeRefIr::builtin("number"),
             writable: None,
             direct_call: None,
+            stream_result: None,
+            remote_interface: None,
         },
         MirExpression {
             index: 1,
@@ -746,6 +755,8 @@ fn liveness_hand_computed_small_fixture() {
             ty: TypeRefIr::builtin("number"),
             writable: None,
             direct_call: None,
+            stream_result: None,
+            remote_interface: None,
         },
         MirExpression {
             index: 2,
@@ -753,6 +764,8 @@ fn liveness_hand_computed_small_fixture() {
             ty: TypeRefIr::builtin("number"),
             writable: None,
             direct_call: None,
+            stream_result: None,
+            remote_interface: None,
         },
     ];
     let mut function = MirFunction {
@@ -841,6 +854,7 @@ fn liveness_hand_computed_small_fixture() {
         source_event_plan: crate::mir::MirSourceEventPlan::unavailable(
             crate::mir::MirSourceEventUnavailableReason::SourceFactsNotProvided,
         ),
+        stream_result: None,
         liveness: MirLiveness::default(),
         effect_summary_ref: PackageCallableId::new("pkg-callable:test:top-level:m.f"),
         effect_summary: CallableEffectSummary::analysis_pending(),

@@ -4,9 +4,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    AssignTargetIr, CallableEffectSummary, ConcurrentLaneIr, ConcurrentPlanIr, DbBodyIr,
-    DbChangeOpIr, DbPredicateIr, DbSelectorIr, ExecutableIr, ExprIr, FileIrUnit,
-    PackageExecutableCoordinate, ParamModeIr, SourceSpanRef, StmtIr,
+    AssignTargetIr, BoxSourceIr, CallableEffectSummary, ConcurrentLaneIr, ConcurrentPlanIr,
+    ContractOperationId, DbBodyIr, DbChangeOpIr, DbPredicateIr, DbSelectorIr, ExecutableIr, ExprIr,
+    FileIrUnit, PackageExecutableCoordinate, ParamModeIr, ServiceCallRef, SourceSpanRef, StmtIr,
 };
 use skiff_compiler_core::{implementation_package_callable_id, ImplementationCallableKind};
 use skiff_compiler_source::{ResolvedCallTargetFacts, SourceCallableEffectFacts, SourceSymbolKey};
@@ -20,9 +20,9 @@ use super::{
     liveness::compute_liveness,
     MirBlock, MirBuildError, MirConcurrentLaneIr, MirConcurrentPlanIr, MirConst, MirExecutableKind,
     MirExpression, MirFunction, MirIndexAccessFacts, MirLiveness, MirMatchArmIr, MirParam,
-    MirParamMode, MirRegion, MirSlot, MirSlotKind, MirSourceEventPlan,
-    MirSourceEventUnavailableReason, MirSourceFacts, MirStatementEntry, MirStmt, MirStmtKind,
-    MirUnit,
+    MirParamMode, MirRegion, MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts, MirSlot,
+    MirSlotKind, MirSourceEventPlan, MirSourceEventUnavailableReason, MirSourceFacts,
+    MirStatementEntry, MirStmt, MirStmtKind, MirStreamResultFacts, MirUnit,
 };
 
 mod actor_authority;
@@ -382,6 +382,7 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
         regions,
         statements,
         source_event_plan,
+        stream_result: stream_result_facts(&executable.return_type),
         liveness: MirLiveness::default(),
         effect_summary_ref,
         effect_summary,
@@ -394,6 +395,20 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
             source: Box::new(source),
         }
     })?;
+    function
+        .validate_stream_facts()
+        .map_err(|source| MirBuildError::InvalidFunctionContract {
+            module_path: unit.module_path.clone(),
+            symbol: executable.symbol.clone(),
+            source: Box::new(source),
+        })?;
+    function
+        .validate_remote_interface_facts()
+        .map_err(|source| MirBuildError::InvalidFunctionContract {
+            module_path: unit.module_path.clone(),
+            symbol: executable.symbol.clone(),
+            source: Box::new(source),
+        })?;
     function.liveness = compute_liveness(&function).map_err(|source| MirBuildError::Liveness {
         module_path: unit.module_path.clone(),
         symbol: executable.symbol.clone(),
@@ -439,12 +454,16 @@ fn clone_typed_expressions(
                     module_path: unit.module_path.clone(),
                     symbol: executable.symbol.clone(),
                 })?;
+            let stream_result = stream_result_facts(&ty);
+            let remote_interface = remote_interface_facts(unit, &expression, catalog);
             Ok(MirExpression {
                 index,
                 expression,
                 ty,
                 writable: None,
                 direct_call: None,
+                stream_result,
+                remote_interface,
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -503,6 +522,127 @@ fn clone_typed_expressions(
         expression.direct_call = direct_call;
     }
     Ok(expressions)
+}
+
+fn stream_result_facts(ty: &skiff_artifact_model::TypeRefIr) -> Option<MirStreamResultFacts> {
+    let skiff_artifact_model::TypeRefIr::Builtin { name, args } = ty else {
+        return None;
+    };
+    if name != "Stream" || args.len() != 1 {
+        return None;
+    }
+    Some(MirStreamResultFacts {
+        item_type: args[0].clone(),
+    })
+}
+
+fn remote_interface_facts(
+    unit: &FileIrUnit,
+    expression: &ExprIr,
+    catalog: &MirPackageCatalog<'_>,
+) -> Option<MirRemoteInterfaceFacts> {
+    let ExprIr::InterfaceBox {
+        interface,
+        source:
+            BoxSourceIr::Remote {
+                dependency_ref,
+                public_instance_key,
+                operations,
+                callee_protocol_identity,
+            },
+        ..
+    } = expression
+    else {
+        return None;
+    };
+    let callee_protocol_identity =
+        skiff_artifact_model::ServiceProtocolIdentity::new(callee_protocol_identity.clone());
+    let service_requirement_slot = catalog
+        .service_requirement(dependency_ref)
+        .filter(|requirement| {
+            requirement.expected_protocol_identity == callee_protocol_identity
+                && operations.slots.iter().all(|slot| {
+                    requirement
+                        .used_operations
+                        .contains(&ContractOperationId::new(slot.operation_abi_id.clone()))
+                })
+        })
+        .map(|requirement| requirement.slot)
+        .or_else(|| {
+            infer_remote_interface_slot(unit, operations, callee_protocol_identity.as_str())
+        })?;
+    let mut methods = operations
+        .slots
+        .iter()
+        .map(|slot| MirRemoteInterfaceMethodFacts {
+            slot: slot.slot,
+            method_abi_id: slot.method_abi_id.clone(),
+            signature: slot.signature.clone(),
+            contract_operation_id: ContractOperationId::new(slot.operation_abi_id.clone()),
+        })
+        .collect::<Vec<_>>();
+    methods.sort_by_key(|method| method.slot);
+    if methods
+        .windows(2)
+        .any(|window| window[0].slot >= window[1].slot)
+        || methods
+            .iter()
+            .enumerate()
+            .any(|(ordinal, method)| method.slot != ordinal as u32)
+    {
+        return None;
+    }
+    Some(MirRemoteInterfaceFacts {
+        service_requirement_slot,
+        public_instance_key: public_instance_key.clone(),
+        interface: interface.clone(),
+        methods,
+        callee_protocol_identity,
+    })
+}
+
+fn infer_remote_interface_slot(
+    unit: &FileIrUnit,
+    operations: &skiff_artifact_model::RemoteOperationTablePlanIr,
+    callee_protocol_identity: &str,
+) -> Option<u32> {
+    let mut candidates: Option<BTreeSet<u32>> = None;
+    for operation in &operations.slots {
+        let matches = unit
+            .external_refs
+            .service_call_refs
+            .iter()
+            .filter(|reference: &&ServiceCallRef| {
+                reference.expected_protocol_identity.as_str() == callee_protocol_identity
+                    && reference.contract_operation_id.as_str() == operation.operation_abi_id
+            })
+            .map(|reference| reference.service_requirement_slot)
+            .collect::<BTreeSet<_>>();
+        if matches.is_empty() {
+            return None;
+        }
+        candidates = Some(match candidates {
+            None => matches,
+            Some(previous) => previous.intersection(&matches).copied().collect(),
+        });
+        if candidates.as_ref().is_some_and(BTreeSet::is_empty) {
+            return None;
+        }
+    }
+    let slots = candidates.unwrap_or_else(|| {
+        unit.external_refs
+            .service_call_refs
+            .iter()
+            .filter(|reference| {
+                reference.expected_protocol_identity.as_str() == callee_protocol_identity
+            })
+            .map(|reference| reference.service_requirement_slot)
+            .collect()
+    });
+    if slots.len() != 1 {
+        return None;
+    }
+    slots.into_iter().next()
 }
 
 fn clone_constant_facts(unit: &FileIrUnit) -> Result<Vec<MirConst>, MirBuildError> {
@@ -1219,6 +1359,7 @@ impl<'a> FunctionCfg<'a> {
                         | MirStmtKind::Assert { .. }
                         | MirStmtKind::Dispatch { .. }
                         | MirStmtKind::Emit { .. }
+                        | MirStmtKind::StreamNext { .. }
                         | MirStmtKind::Expr { .. }
                         | MirStmtKind::TestEffectRegister { .. },
                     )

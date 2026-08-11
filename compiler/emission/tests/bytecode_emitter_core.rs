@@ -3,12 +3,14 @@ mod tests {
     use std::collections::BTreeMap;
 
     use skiff_artifact_model::{
-        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, BytecodePoolEntry,
-        BytecodeRelocation, CallIr, CallTargetIr, CallableEffectSummary, ContractOperationId,
-        ExprIr, ExprRefIr, ExternalRefTable, FileIrUnit, InstructionSourceSite, LiteralIr,
-        NativeTarget, PackageCallableId, PatternIr, ServiceCallRef, ServiceProtocolIdentity,
-        ServiceSymbolRef, SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason,
-        TypeDeclIr, TypeDescriptorIr, TypeRefIr, ValueTransferPlan,
+        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, BoxSourceIr,
+        BytecodePoolEntry, BytecodeRelocation, CallIr, CallTargetIr, CallableEffectSummary,
+        ContractOperationId, ExprIr, ExprRefIr, ExternalRefTable, FileIrUnit, FunctionTypeParamIr,
+        InstructionSourceSite, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
+        LiteralIr, NativeTarget, PackageCallableId, PatternIr, RemoteOperationSlotPlanIr,
+        RemoteOperationTablePlanIr, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
+        SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
+        TypeDescriptorIr, TypeRefIr, ValueTransferPlan,
     };
     use skiff_compiler_emission::{
         emit_bytecode_artifact, BytecodeValueTransferPlans, FunctionValueTransferPlans,
@@ -17,9 +19,10 @@ mod tests {
         mir::{
             liveness::compute_liveness, MirBlock, MirExecutableKind, MirExpression,
             MirForInBinding, MirForInFacts, MirForInItemKind, MirFunction, MirIndexAccessFacts,
-            MirIndexPolicy, MirIndexReceiverKind, MirLiveness, MirMatchArmIr, MirSlot, MirSlotKind,
+            MirIndexPolicy, MirIndexReceiverKind, MirLiveness, MirMatchArmIr,
+            MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind,
             MirSourceEventPlan, MirSourceEventUnavailableReason, MirStatementEntry, MirStmt,
-            MirStmtKind, MirUnit,
+            MirStmtKind, MirStreamResultFacts, MirUnit,
         },
         Bounds, ConstEvaluator, FrozenConstantBundle,
     };
@@ -107,6 +110,7 @@ mod tests {
             blocks,
             regions,
             statements,
+            stream_result: None,
             liveness: MirLiveness::default(),
             effect_summary_ref: PackageCallableId::new(format!(
                 "callable:{module_path}:{declaration}"
@@ -198,6 +202,8 @@ mod tests {
                 ty: TypeRefIr::builtin("string"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 1,
@@ -208,6 +214,8 @@ mod tests {
                 ty: record.clone(),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 2,
@@ -218,6 +226,8 @@ mod tests {
                 ty: TypeRefIr::builtin("string"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
         ];
         let function = function(
@@ -270,6 +280,8 @@ mod tests {
                 ty: TypeRefIr::builtin("number"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 1,
@@ -281,6 +293,8 @@ mod tests {
                 ty: TypeRefIr::builtin("number"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 2,
@@ -290,6 +304,8 @@ mod tests {
                 ty: array_ty.clone(),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 3,
@@ -301,6 +317,8 @@ mod tests {
                 ty: TypeRefIr::builtin("number"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 4,
@@ -311,6 +329,8 @@ mod tests {
                 ty: TypeRefIr::builtin("number"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
         ];
         let index_accesses = BTreeMap::from([(
@@ -368,6 +388,8 @@ mod tests {
                 ty: TypeRefIr::builtin("number"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 1,
@@ -377,6 +399,8 @@ mod tests {
                 ty: map_ty.clone(),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 2,
@@ -388,6 +412,8 @@ mod tests {
                 ty: TypeRefIr::builtin("string"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 3,
@@ -398,6 +424,8 @@ mod tests {
                 ty: TypeRefIr::builtin("number"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
         ];
         let index_accesses = BTreeMap::from([(
@@ -455,6 +483,8 @@ mod tests {
                 ty: TypeRefIr::builtin("string"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             }],
             vec![MirBlock {
                 id: 0,
@@ -500,6 +530,8 @@ mod tests {
                 ty: TypeRefIr::builtin("bool"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             }],
             vec![MirBlock {
                 id: 0,
@@ -610,6 +642,8 @@ mod tests {
                 ty: TypeRefIr::builtin("string"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 1,
@@ -617,6 +651,8 @@ mod tests {
                 ty: TypeRefIr::builtin("string"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 2,
@@ -624,6 +660,8 @@ mod tests {
                 ty: TypeRefIr::builtin("string"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 3,
@@ -631,6 +669,8 @@ mod tests {
                 ty: TypeRefIr::builtin("string"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
         ];
         let function = function(
@@ -724,6 +764,8 @@ mod tests {
                 ty: array_ty.clone(),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 1,
@@ -735,6 +777,8 @@ mod tests {
                 ty: TypeRefIr::builtin("number"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
             MirExpression {
                 index: 2,
@@ -742,6 +786,8 @@ mod tests {
                 ty: TypeRefIr::builtin("number"),
                 writable: None,
                 direct_call: None,
+                stream_result: None,
+                remote_interface: None,
             },
         ];
         let facts = MirForInFacts {
@@ -846,6 +892,8 @@ mod tests {
             ty: TypeRefIr::builtin("number"),
             writable: None,
             direct_call: None,
+            stream_result: None,
+            remote_interface: None,
         }];
         let function = function(
             "matches",
@@ -928,5 +976,249 @@ mod tests {
             &plans("matches::classify", &[], &TypeRefIr::builtin("number")),
         )
         .expect("match body emits");
+    }
+
+    #[test]
+    fn stream_emit_and_stream_next_emit_exact_resume_descriptors() {
+        let item_type = TypeRefIr::builtin("number");
+        let stream_type = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![item_type.clone()],
+        };
+        let expressions = vec![MirExpression {
+            index: 0,
+            expression: ExprIr::Literal {
+                value: LiteralIr::Number {
+                    value: serde_json::Number::from(7),
+                },
+            },
+            ty: item_type.clone(),
+            writable: None,
+            direct_call: None,
+            stream_result: None,
+            remote_interface: None,
+        }];
+        let mut function = function(
+            "streams",
+            "run",
+            stream_type.clone(),
+            vec![MirSlot {
+                slot: 0,
+                name: "endpoint".to_string(),
+                kind: MirSlotKind::Local,
+                writable_local: false,
+                ty: Some(stream_type.clone()),
+            }],
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![
+                    MirStmt {
+                        statement_index: 0,
+                        span: None,
+                        kind: MirStmtKind::Emit {
+                            operation: String::new(),
+                            value: expression(0),
+                        },
+                    },
+                    MirStmt {
+                        statement_index: 1,
+                        span: None,
+                        kind: MirStmtKind::StreamNext {
+                            endpoint_slot: 0,
+                            item_type: item_type.clone(),
+                        },
+                    },
+                    MirStmt {
+                        statement_index: 2,
+                        span: None,
+                        kind: MirStmtKind::Return { value: None },
+                    },
+                ],
+                successors: Vec::new(),
+            }],
+            vec![
+                MirStatementEntry {
+                    statement_index: 0,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 1,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 2,
+                    span: None,
+                },
+            ],
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        function.stream_result = Some(MirStreamResultFacts {
+            item_type: item_type.clone(),
+        });
+        let (unit, bundle) =
+            mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
+        let artifact = emit_bytecode_artifact(
+            &[unit],
+            &[bundle],
+            &plans("streams::run", &[stream_type.clone()], &stream_type),
+        )
+        .expect("stream body emits");
+        assert_eq!(artifact.image.pools.resume.len(), 2);
+        let mut saw_item_resume = false;
+        let mut saw_emit_resume = false;
+        for entry in &artifact.image.pools.resume {
+            let BytecodePoolEntry::ResumeDescriptor(descriptor) = entry else {
+                panic!("resume pool is homogeneous");
+            };
+            match descriptor.result_type_refs.as_slice() {
+                [type_ref] => {
+                    let BytecodePoolEntry::TypeRef { ty } =
+                        &artifact.image.pools.types[*type_ref as usize]
+                    else {
+                        panic!("resume result type refs resolve to the types pool");
+                    };
+                    assert_eq!(ty, &item_type);
+                    saw_item_resume = true;
+                }
+                [] => saw_emit_resume = true,
+                other => panic!("unexpected stream resume arity {other:?}"),
+            }
+        }
+        assert!(
+            saw_item_resume,
+            "StreamNext descriptor must carry item type T"
+        );
+        assert!(
+            saw_emit_resume,
+            "EmitStream descriptor must carry zero results"
+        );
+    }
+
+    #[test]
+    fn remote_interface_box_emits_remote_ref_and_method_rows() {
+        let interface = InterfaceInstantiationRef {
+            interface_abi_id: "iface:reader".to_string(),
+            canonical_type_args: Vec::new(),
+        };
+        let operation_abi_id = "operation:reader:read".to_string();
+        let method_abi_id = "method:interface:pkg.Reader:read".to_string();
+        let signature = InterfaceMethodSlotSignatureIr {
+            params: vec![FunctionTypeParamIr {
+                name: "input".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            }],
+            return_type: TypeRefIr::builtin("string"),
+        };
+        let source = BoxSourceIr::Remote {
+            dependency_ref: "readerService".to_string(),
+            public_instance_key: "readers/default".to_string(),
+            operations: RemoteOperationTablePlanIr {
+                interface: interface.clone(),
+                slots: vec![RemoteOperationSlotPlanIr {
+                    slot: 0,
+                    method_abi_id: method_abi_id.clone(),
+                    signature: signature.clone(),
+                    operation_abi_id: operation_abi_id.clone(),
+                }],
+            },
+            callee_protocol_identity: "protocol:reader".to_string(),
+        };
+        let box_type = TypeRefIr::AnyInterface {
+            interface: interface.clone(),
+        };
+        let expressions = vec![
+            MirExpression {
+                index: 0,
+                expression: ExprIr::InterfaceBox {
+                    value: expression(1),
+                    interface: interface.clone(),
+                    source,
+                },
+                ty: box_type.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: Some(MirRemoteInterfaceFacts {
+                    service_requirement_slot: 3,
+                    public_instance_key: "readers/default".to_string(),
+                    interface: interface.clone(),
+                    methods: vec![MirRemoteInterfaceMethodFacts {
+                        slot: 0,
+                        method_abi_id: method_abi_id.clone(),
+                        signature: signature.clone(),
+                        contract_operation_id: ContractOperationId::new(operation_abi_id.clone()),
+                    }],
+                    callee_protocol_identity: ServiceProtocolIdentity::new("protocol:reader"),
+                }),
+            },
+            MirExpression {
+                index: 1,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::Null,
+                },
+                ty: TypeRefIr::builtin("null"),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+        ];
+        let function = function(
+            "remote",
+            "boxReader",
+            box_type.clone(),
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: one_return(expression(0)),
+                successors: Vec::new(),
+            }],
+            return_statements(0),
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let external_refs = ExternalRefTable {
+            service_call_refs: vec![ServiceCallRef {
+                service_requirement_slot: 3,
+                contract_operation_id: ContractOperationId::new(operation_abi_id.clone()),
+                expected_protocol_identity: ServiceProtocolIdentity::new("protocol:reader"),
+            }],
+            ..ExternalRefTable::default()
+        };
+        let (unit, bundle) = mir_and_bundle("remote", Vec::new(), external_refs, function);
+        let artifact = emit_bytecode_artifact(
+            &[unit],
+            &[bundle],
+            &plans("remote::boxReader", &[], &box_type),
+        )
+        .expect("remote interface box emits");
+        let relocation = artifact.image.functions["remote::boxReader"]
+            .relocations
+            .iter()
+            .find_map(|relocation| match relocation {
+                BytecodeRelocation::RemoteInterfaceRef { interface } => Some(interface),
+                _ => None,
+            })
+            .expect("remote interface box emits a RemoteInterfaceRef");
+        assert_eq!(relocation.service_requirement_slot, 3);
+        assert_eq!(relocation.public_instance_key, "readers/default");
+        assert_eq!(relocation.interface, interface);
+        assert_eq!(
+            relocation.callee_protocol_identity.as_str(),
+            "protocol:reader"
+        );
+        assert_eq!(relocation.methods.len(), 1);
+        assert_eq!(relocation.methods[0].slot, 0);
+        assert_eq!(relocation.methods[0].method_abi_id, method_abi_id);
+        assert_eq!(relocation.methods[0].signature, signature);
+        assert_eq!(
+            relocation.methods[0].contract_operation_id.as_str(),
+            operation_abi_id
+        );
     }
 }

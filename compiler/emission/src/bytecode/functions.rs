@@ -6,9 +6,9 @@ use skiff_artifact_model::{
     BytecodeSpecialization, CallTargetIr, CatchMatcher, ExceptionRegion, ExprIr, ExprRefIr,
     FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
     IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, Opcode, ParamModeIr,
-    ParameterSlotDecl, PatternIr, RelocatableBytecodeFunction, ResumeDescriptor, ResumeErrorMode,
-    SourceMapEntry, StatementEntry, SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr,
-    WritablePathSegment,
+    ParameterSlotDecl, PatternIr, RelocatableBytecodeFunction, RemoteInterfaceMethod,
+    RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, SourceMapEntry, StatementEntry,
+    SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
@@ -270,6 +270,22 @@ impl<'a> FunctionEmitter<'a> {
             MirStmtKind::Assert { condition, .. } => {
                 self.emit_expression(*condition)?;
                 self.emit_op(Opcode::Trap, vec![TrapFailureKind::Assertion as u32])?;
+            }
+            MirStmtKind::Emit { operation, value } => {
+                if !operation.is_empty() {
+                    return Err(unsupported(
+                        &self.key,
+                        "EmitStream",
+                        "non-stream emit operations are outside the emitted core",
+                    ));
+                }
+                self.emit_stream(*value)?;
+            }
+            MirStmtKind::StreamNext {
+                endpoint_slot,
+                item_type,
+            } => {
+                self.emit_stream_next(*endpoint_slot, item_type)?;
             }
             MirStmtKind::Expr { value } => {
                 let expression = self.function.expression(*value)?;
@@ -806,6 +822,73 @@ impl<'a> FunctionEmitter<'a> {
         })
     }
 
+    fn emit_stream(&mut self, value: ExprRefIr) -> Result<(), BytecodeEmissionError> {
+        let stream = self.function.stream_result.as_ref().ok_or_else(|| {
+            unsupported(
+                &self.key,
+                "EmitStream",
+                "function has no exact Stream<T> result facts",
+            )
+        })?;
+        let value_expression = self.function.expression(value)?;
+        if value_expression.ty != stream.item_type {
+            return Err(unsupported(
+                &self.key,
+                "EmitStream",
+                &format!(
+                    "emitted value type `{:?}` does not match stream item type `{:?}`",
+                    value_expression.ty, stream.item_type
+                ),
+            ));
+        }
+        self.emit_expression(value)?;
+        let expected_stack_height_before_result = self
+            .operand_depth
+            .checked_sub(1)
+            .ok_or_else(|| unsupported(&self.key, "EmitStream", "stream item operand is absent"))?;
+        let instruction = self.emit_op(Opcode::EmitStream, vec![0])?;
+        self.pending_resumes.push(PendingResume {
+            instruction,
+            operand: 0,
+            expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
+                .map_err(|_| arithmetic(&self.key, "EmitStream stack height conversion"))?,
+            result_ty: None,
+        });
+        Ok(())
+    }
+
+    fn emit_stream_next(
+        &mut self,
+        endpoint_slot: u32,
+        item_type: &TypeRefIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        let endpoint_type = self.function.slot_type(endpoint_slot)?;
+        let TypeRefIr::Builtin { name, args } = endpoint_type else {
+            return Err(unsupported(
+                &self.key,
+                "StreamNext",
+                "endpoint slot is not Stream<T>",
+            ));
+        };
+        if name != "Stream" || args.as_slice() != [item_type.clone()] {
+            return Err(unsupported(
+                &self.key,
+                "StreamNext",
+                "endpoint slot is not the exact Stream<T> authority",
+            ));
+        }
+        let expected_stack_height_before_result = self.operand_depth;
+        let instruction = self.emit_op(Opcode::StreamNext, vec![endpoint_slot, 0])?;
+        self.pending_resumes.push(PendingResume {
+            instruction,
+            operand: 1,
+            expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
+                .map_err(|_| arithmetic(&self.key, "StreamNext stack height conversion"))?,
+            result_ty: Some(item_type.clone()),
+        });
+        Ok(())
+    }
+
     fn emit_receiver_builtin(
         &mut self,
         call: &skiff_artifact_model::CallIr,
@@ -1271,6 +1354,40 @@ impl<'a> FunctionEmitter<'a> {
         value: ExprRefIr,
         source: &BoxSourceIr,
     ) -> Result<(), BytecodeEmissionError> {
+        if let BoxSourceIr::Remote { .. } = source {
+            let facts = expression.remote_interface.as_ref().ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "interface box",
+                    "remote interface boxing lacks an exact service requirement slot in MIR",
+                )
+            })?;
+            let methods = facts
+                .methods
+                .iter()
+                .map(|method| RemoteInterfaceMethod {
+                    slot: method.slot,
+                    method_abi_id: method.method_abi_id.clone(),
+                    signature: method.signature.clone(),
+                    contract_operation_id: method.contract_operation_id.clone(),
+                })
+                .collect::<Vec<_>>();
+            let relocation = BytecodeRelocation::RemoteInterfaceRef {
+                interface: RemoteInterfaceRef {
+                    service_requirement_slot: facts.service_requirement_slot,
+                    public_instance_key: facts.public_instance_key.clone(),
+                    interface: facts.interface.clone(),
+                    methods,
+                    callee_protocol_identity: facts.callee_protocol_identity.clone(),
+                },
+            };
+            let relocation_index = u32::try_from(self.relocations.len()).map_err(|_| {
+                arithmetic(&self.key, "remote interface relocation index conversion")
+            })?;
+            self.relocations.push(relocation);
+            self.emit_op(Opcode::InterfaceBoxRemote, vec![relocation_index])?;
+            return Ok(());
+        }
         let BoxSourceIr::Local {
             concrete_type,
             method_table,
@@ -2186,6 +2303,8 @@ fn stack_effect(
         Opcode::MapEntryAt => (2, 2),
         Opcode::InterfaceBoxLocal => (1, 1),
         Opcode::InterfaceBoxRemote => (0, 1),
+        Opcode::StreamNext => (0, 1),
+        Opcode::EmitStream => (1, 0),
         _ => {
             return Err(unsupported(
                 "scalar emitter",

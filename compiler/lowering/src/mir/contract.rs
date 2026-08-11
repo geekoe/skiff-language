@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
-    CallableEffectSummary, ExprIr, ExprRefIr, PackageExecutableCoordinate, ReceiverCallAbi,
-    TypeRefIr,
+    BoxSourceIr, CallableEffectSummary, ContractOperationId, ExprIr, ExprRefIr,
+    PackageExecutableCoordinate, ReceiverCallAbi, TypeRefIr,
 };
 use skiff_compiler_core::PackageCallableIdentityError;
 
@@ -616,6 +616,153 @@ impl MirFunction {
         Ok(writable)
     }
 
+    /// Validates the exact `Stream<T>` facts retained by a function and its
+    /// stream-typed expressions.
+    pub fn validate_stream_facts(&self) -> Result<(), MirContractError> {
+        if let Some(item_type) = stream_item_type(&self.return_type) {
+            if self
+                .stream_result
+                .as_ref()
+                .is_none_or(|facts| &facts.item_type != item_type)
+            {
+                return Err(MirContractError::InvalidStreamResultFacts {
+                    function: self.symbol.clone(),
+                    expression: u32::MAX,
+                    message: "function return_type Stream<T> has no exact MIR stream result"
+                        .to_string(),
+                });
+            }
+        } else if self.stream_result.is_some() {
+            return Err(MirContractError::InvalidStreamResultFacts {
+                function: self.symbol.clone(),
+                expression: u32::MAX,
+                message: "function stream result exists without return_type Stream<T>".to_string(),
+            });
+        }
+        for expression in &self.expressions {
+            if let Some(item_type) = stream_item_type(&expression.ty) {
+                if expression
+                    .stream_result
+                    .as_ref()
+                    .is_none_or(|facts| &facts.item_type != item_type)
+                {
+                    return Err(MirContractError::InvalidStreamResultFacts {
+                        function: self.symbol.clone(),
+                        expression: expression.index,
+                        message: "expression type Stream<T> has no exact MIR stream result"
+                            .to_string(),
+                    });
+                }
+            } else if expression.stream_result.is_some() {
+                return Err(MirContractError::InvalidStreamResultFacts {
+                    function: self.symbol.clone(),
+                    expression: expression.index,
+                    message: "expression stream result exists without expression type Stream<T>"
+                        .to_string(),
+                });
+            }
+        }
+        for block in &self.blocks {
+            for statement in &block.statements {
+                if let MirStmtKind::StreamNext {
+                    endpoint_slot,
+                    item_type,
+                } = &statement.kind
+                {
+                    let slot_type = self.slot_type(*endpoint_slot)?;
+                    if stream_item_type(slot_type) != Some(item_type) {
+                        return Err(MirContractError::InvalidStreamResultFacts {
+                            function: self.symbol.clone(),
+                            expression: u32::MAX,
+                            message: "StreamNext endpoint slot is not Stream<T> for item T"
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates retained remote interface facts against their owning
+    /// `ExprIr::InterfaceBox` source. Absent facts remain an emission-time
+    /// fail-closed condition so an unresolved service slot does not turn into
+    /// a guessed local table.
+    pub fn validate_remote_interface_facts(&self) -> Result<(), MirContractError> {
+        for expression in &self.expressions {
+            let Some(facts) = &expression.remote_interface else {
+                continue;
+            };
+            let ExprIr::InterfaceBox {
+                interface, source, ..
+            } = &expression.expression
+            else {
+                return Err(MirContractError::InvalidRemoteInterfaceFacts {
+                    function: self.symbol.clone(),
+                    expression: expression.index,
+                    message: "remote interface facts are owned by a non-InterfaceBox expression"
+                        .to_string(),
+                });
+            };
+            let BoxSourceIr::Remote {
+                public_instance_key,
+                operations,
+                callee_protocol_identity,
+                ..
+            } = source
+            else {
+                return Err(MirContractError::InvalidRemoteInterfaceFacts {
+                    function: self.symbol.clone(),
+                    expression: expression.index,
+                    message: "remote interface facts are owned by a local InterfaceBox".to_string(),
+                });
+            };
+            if interface != &facts.interface
+                || public_instance_key != &facts.public_instance_key
+                || callee_protocol_identity.as_str() != facts.callee_protocol_identity.as_str()
+                || operations.slots.len() != facts.methods.len()
+            {
+                return Err(MirContractError::InvalidRemoteInterfaceFacts {
+                    function: self.symbol.clone(),
+                    expression: expression.index,
+                    message: "remote interface source disagrees with retained MIR facts"
+                        .to_string(),
+                });
+            }
+            for (index, method) in facts.methods.iter().enumerate() {
+                if method.slot != index as u32 {
+                    return Err(MirContractError::InvalidRemoteInterfaceFacts {
+                        function: self.symbol.clone(),
+                        expression: expression.index,
+                        message: "remote interface method rows are not dense from slot zero"
+                            .to_string(),
+                    });
+                }
+                let slot = operations.slots.get(index).ok_or_else(|| {
+                    MirContractError::InvalidRemoteInterfaceFacts {
+                        function: self.symbol.clone(),
+                        expression: expression.index,
+                        message: "remote interface method rows are not source-aligned".to_string(),
+                    }
+                })?;
+                if method.slot != slot.slot
+                    || method.method_abi_id != slot.method_abi_id
+                    || method.signature != slot.signature
+                    || method.contract_operation_id
+                        != ContractOperationId::new(slot.operation_abi_id.clone())
+                {
+                    return Err(MirContractError::InvalidRemoteInterfaceFacts {
+                        function: self.symbol.clone(),
+                        expression: expression.index,
+                        message: "remote interface method row disagrees with source row"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Conservative pending fact derived from the single owned effect
     /// summary. Unknown analysis can never grant a synchronous optimization.
     pub fn may_pending(&self) -> bool {
@@ -623,6 +770,13 @@ impl MirFunction {
             CallableEffectSummary::Analyzed { effects } => effects.may_pending(),
             CallableEffectSummary::Unknown { .. } => true,
         }
+    }
+}
+
+fn stream_item_type(ty: &TypeRefIr) -> Option<&TypeRefIr> {
+    match ty {
+        TypeRefIr::Builtin { name, args } if name == "Stream" && args.len() == 1 => args.first(),
+        _ => None,
     }
 }
 
@@ -792,6 +946,22 @@ pub enum MirContractError {
         block: u32,
         successor: u32,
     },
+    #[error(
+        "MIR function `{function}` stream facts are invalid at expression {expression}: {message}"
+    )]
+    InvalidStreamResultFacts {
+        function: String,
+        expression: u32,
+        message: String,
+    },
+    #[error(
+        "MIR function `{function}` remote interface facts are invalid at expression {expression}: {message}"
+    )]
+    InvalidRemoteInterfaceFacts {
+        function: String,
+        expression: u32,
+        message: String,
+    },
 }
 
 /// A structured failure while converting File IR plus source facts into MIR.
@@ -826,6 +996,8 @@ pub enum MirBuildError {
     ConflictingPackageCallableAbi {
         package_callable_id: skiff_artifact_model::PackageCallableId,
     },
+    #[error("service requirement alias `{alias}` has invalid facts: {message}")]
+    InvalidServiceRequirementFacts { alias: String, message: String },
     #[error(
         "MIR unit `{module_path}` has {declaration_count} executable declarations but {executable_count} executable bodies"
     )]

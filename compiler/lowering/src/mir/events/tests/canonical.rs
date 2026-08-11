@@ -82,6 +82,8 @@ fn direct_call_expression(site: InstructionSourceSite) -> MirExpression {
         ty: TypeRefIr::builtin("void"),
         writable: None,
         direct_call: None,
+        stream_result: None,
+        remote_interface: None,
     }
 }
 

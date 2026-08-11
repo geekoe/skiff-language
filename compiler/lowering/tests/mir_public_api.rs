@@ -8,7 +8,8 @@ mod tests {
         MirBuildError, MirCallArgument, MirCallWritableFacts, MirConst, MirContractError,
         MirDirectCallFacts, MirExpression, MirForInBinding, MirForInFacts, MirForInItemKind,
         MirFunction, MirInOutLoan, MirInOutPathSegment, MirIndexAccessFacts, MirIndexPolicy,
-        MirIndexReceiverKind, MirLiveness, MirReceiverFacts, MirSourceFacts, MirUnit,
+        MirIndexReceiverKind, MirLiveness, MirReceiverFacts, MirRemoteInterfaceFacts,
+        MirRemoteInterfaceMethodFacts, MirSourceFacts, MirStreamResultFacts, MirUnit,
         MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
     };
 
@@ -56,6 +57,9 @@ mod tests {
         assert_public_type::<MirForInFacts>();
         assert_public_type::<MirForInBinding>();
         assert_public_type::<MirForInItemKind>();
+        assert_public_type::<MirStreamResultFacts>();
+        assert_public_type::<MirRemoteInterfaceFacts>();
+        assert_public_type::<MirRemoteInterfaceMethodFacts>();
         assert_public_type::<MirBuildError>();
         assert_public_type::<MirContractError>();
 

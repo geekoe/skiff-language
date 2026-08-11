@@ -115,6 +115,7 @@ mod tests {
             blocks: Vec::new(),
             regions: Vec::new(),
             statements: Vec::new(),
+            stream_result: None,
             liveness: MirLiveness::default(),
             effect_summary_ref: PackageCallableId::new(format!(
                 "callable:{module_path}:{declaration}"
