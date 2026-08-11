@@ -455,8 +455,9 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_function_cannot_bypass_the_fail_closed_body_gate() {
-        let file_ir = FileIrUnit::empty("gated", "source-hash");
+    fn an_empty_function_emits_an_empty_admissible_body() {
+        let mut file_ir = FileIrUnit::empty("gated", "source-hash");
+        file_ir.file_ir_identity = format!("file:{}", "a".repeat(64));
         let (mut mir, bundle) = mir_and_bundle(&file_ir);
         mir.functions
             .push(empty_function(&file_ir.file_ir_identity, "gated", "run"));
@@ -471,12 +472,11 @@ mod tests {
             BTreeMap::new(),
         );
 
-        let error = emit_bytecode_artifact(&[mir], &[bundle], &transfer_plans)
-            .expect_err("no MIR function is silently omitted");
-        assert!(matches!(
-            error,
-            BytecodeEmissionError::UnsupportedConstruct { function_key, .. }
-                if function_key == "gated::run"
-        ));
+        let artifact = emit_bytecode_artifact(&[mir], &[bundle], &transfer_plans)
+            .expect("empty function emits an empty body");
+        assert!(artifact.image.functions["gated::run"].words.is_empty());
+        assert!(artifact.image.functions["gated::run"].source_map.is_empty());
+        skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("empty function body must validate");
     }
 }
