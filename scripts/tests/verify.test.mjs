@@ -159,102 +159,6 @@ test('compiler boundary selector is canonical and deduplicated across checks com
   assert.equal(compiler.tasks.filter((task) => task.command === 'cargo').length, 1);
 });
 
-test('runtime artifact boundary checker belongs to the runtime subject without duplicating Cargo', async () => {
-  const plan = await buildVerifyPlan({ root, selectors: ['runtime'] });
-  const boundaryTasks = plan.tasks.filter((task) =>
-    task.args.includes('scripts/check-runtime-artifact-boundaries.mjs'));
-
-  assert.deepEqual(
-    boundaryTasks.map(({ id, command, args, kind }) => ({ id, command, args, kind })),
-    [
-      {
-        id: 'implementation:runtime:artifact-boundaries:self-test',
-        command: 'node',
-        args: ['scripts/check-runtime-artifact-boundaries.mjs', '--self-test'],
-        kind: 'implementation:runtime',
-      },
-      {
-        id: 'implementation:runtime:artifact-boundaries',
-        command: 'node',
-        args: ['scripts/check-runtime-artifact-boundaries.mjs'],
-        kind: 'implementation:runtime',
-      },
-    ],
-  );
-  assert.equal(plan.tasks.filter((task) => task.command === 'cargo').length, 1);
-});
-
-test('runtime execution and eval error boundary checkers belong to runtime and deduplicate with checks', async () => {
-  const checks = await buildVerifyPlan({ root, selectors: ['checks'] });
-  const executionTasks = checks.tasks.filter((task) =>
-    task.args.includes('scripts/check-runtime-execution-boundaries.mjs'));
-  assert.deepEqual(
-    executionTasks.map(({ id, command, args, kind }) => ({ id, command, args, kind })),
-    [
-      {
-        id: 'implementation:runtime:execution-boundaries:self-test',
-        command: 'node',
-        args: ['scripts/check-runtime-execution-boundaries.mjs', '--self-test'],
-        kind: 'implementation:runtime',
-      },
-      {
-        id: 'implementation:runtime:execution-boundaries',
-        command: 'node',
-        args: ['scripts/check-runtime-execution-boundaries.mjs'],
-        kind: 'implementation:runtime',
-      },
-    ],
-  );
-
-  const runtime = await buildVerifyPlan({ root, selectors: ['runtime'] });
-  assert.deepEqual(
-    runtime.tasks
-      .filter((task) =>
-        task.args.includes('scripts/check-runtime-execution-boundaries.mjs')
-        || task.args.includes('scripts/check-runtime-eval-error-boundary.mjs'))
-      .map(({ id, kind, args }) => ({ id, kind, args })),
-    [
-      {
-        id: 'implementation:runtime:execution-boundaries:self-test',
-        kind: 'implementation:runtime',
-        args: ['scripts/check-runtime-execution-boundaries.mjs', '--self-test'],
-      },
-      {
-        id: 'implementation:runtime:execution-boundaries',
-        kind: 'implementation:runtime',
-        args: ['scripts/check-runtime-execution-boundaries.mjs'],
-      },
-      {
-        id: 'implementation:runtime:eval-error-boundary:self-test',
-        kind: 'implementation:runtime',
-        args: ['scripts/check-runtime-eval-error-boundary.mjs', '--self-test'],
-      },
-      {
-        id: 'implementation:runtime:eval-error-boundary',
-        kind: 'implementation:runtime',
-        args: ['scripts/check-runtime-eval-error-boundary.mjs'],
-      },
-    ],
-  );
-  assert.equal(
-    runtime.tasks.filter((task) =>
-      task.args.includes('scripts/check-runtime-artifact-boundaries.mjs')).length,
-    2,
-  );
-
-  const combined = await buildVerifyPlan({ root, selectors: ['checks', 'runtime'] });
-  assert.equal(
-    combined.tasks.filter((task) =>
-      task.args.includes('scripts/check-runtime-execution-boundaries.mjs')).length,
-    2,
-  );
-  assert.equal(
-    combined.tasks.filter((task) =>
-      task.args.includes('scripts/check-runtime-eval-error-boundary.mjs')).length,
-    2,
-  );
-});
-
 test('verify list shows compiler boundaries once without known-red wording', async () => {
   const result = await runProcess(
     process.execPath,
@@ -267,23 +171,6 @@ test('verify list shows compiler boundaries once without known-red wording', asy
     1,
   );
   assert.doesNotMatch(result.stdout, /known-red|13 violations/);
-});
-
-test('verify checks list expands runtime execution boundary checker and self-test once', async () => {
-  const result = await runProcess(
-    process.execPath,
-    [verifyPath, '--only', 'checks', '--list'],
-    { cwd: root },
-  );
-  assert.equal(result.code, 0, result.stderr);
-  assert.equal(
-    (result.stdout.match(/scripts\/check-runtime-execution-boundaries\.mjs/g) ?? []).length,
-    2,
-  );
-  assert.equal(
-    (result.stdout.match(/scripts\/check-runtime-artifact-boundaries\.mjs/g) ?? []).length,
-    0,
-  );
 });
 
 test('canonical runtime-live plan aggregates every missing explicit input', async () => {

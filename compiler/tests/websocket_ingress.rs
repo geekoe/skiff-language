@@ -17,7 +17,6 @@ use skiff_compiler::{
     ServiceApiProjection,
 };
 use skiff_compiler_input::read_service_package_root;
-use skiff_deployment::assembly::resolve_runtime_assembly;
 
 const PACKAGE_ID: &str = "example.com/websocket-provider";
 const SERVICE_ID: &str = "example.com/websocket";
@@ -366,27 +365,18 @@ mod tests {
         assert_eq!(entry.handler.as_ref(), Some(implementation_callable));
 
         let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
-        let mut packages = fixture.closure();
-        packages.push(fixture.project.package.artifact.clone());
-        let assembly = resolve_runtime_assembly(
-            std::slice::from_ref(&deployment_ref),
-            std::slice::from_ref(&deployment),
-            std::slice::from_ref(&fixture.api.contract),
-            &packages,
-        )
-        .expect("WebSocket deployment must resolve into RuntimeAssembly");
-        assert_eq!(assembly.gateway_ingress.len(), 1);
+        assert_eq!(deployment.ingress.len(), 1);
+        assert_eq!(deployment.ingress[0].gateway_entry_key, key);
+        assert_eq!(deployment.ingress[0].selector.protocol, IngressProtocol::WebSocket);
+        assert_eq!(deployment.ingress[0].selector.path, "/chat");
         assert_eq!(
-            assembly.gateway_ingress[0].selector,
-            deployment.ingress[0].selector
-        );
-        assert_eq!(assembly.gateway_ingress[0].gateway_entry_key, key);
-        assert_eq!(
-            assembly.gateway_ingress[0].gateway_entry_identity,
+            deployment.gateway_entries[&key].gateway_entry_identity,
             entry.gateway_entry_identity
         );
-        assert_eq!(assembly.gateway_ingress[0].deployment, deployment_ref);
-        skiff_artifact_identity::validate_runtime_assembly_identity(&assembly).unwrap();
+        assert_eq!(
+            deployment_ref,
+            skiff_artifact_identity::service_deployment_ref(&deployment)
+        );
     }
 
     #[test]

@@ -175,26 +175,6 @@ const ownerRequirements = [
     regexp: /\bpub\s+fn\s+validate_service_deployment_identity\s*\(/,
   },
   {
-    name: 'AssemblyIdentityProjection',
-    relPath: 'artifact-identity/src/runtime_assembly.rs',
-    regexp: /\bpub\s+struct\s+AssemblyIdentityProjection\b/,
-  },
-  {
-    name: 'runtime_assembly_identity',
-    relPath: 'artifact-identity/src/runtime_assembly.rs',
-    regexp: /\bpub\s+fn\s+runtime_assembly_identity\s*\(/,
-  },
-  {
-    name: 'assign_runtime_assembly_identity',
-    relPath: 'artifact-identity/src/runtime_assembly.rs',
-    regexp: /\bpub\s+fn\s+assign_runtime_assembly_identity\s*\(/,
-  },
-  {
-    name: 'validate_runtime_assembly_identity',
-    relPath: 'artifact-identity/src/runtime_assembly.rs',
-    regexp: /\bpub\s+fn\s+validate_runtime_assembly_identity\s*\(/,
-  },
-  {
     name: 'DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX',
     relPath: 'artifact-identity/src/constants.rs',
     regexp: /\bpub\s+const\s+DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX\b/,
@@ -296,12 +276,12 @@ const ownerRequirements = [
   },
   {
     name: 'PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX',
-    relPath: 'artifact-identity/src/constants.rs',
+    relPath: 'artifact-model/src/package_artifact/schema_records/mod.rs',
     regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX\b/,
   },
   {
     name: 'PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER',
-    relPath: 'artifact-identity/src/constants.rs',
+    relPath: 'artifact-model/src/package_artifact/schema_records/mod.rs',
     regexp: /\bpub\s+const\s+PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER\b/,
   },
   {
@@ -406,9 +386,6 @@ const exclusiveDefinitionNames = new Set([
   'service_deployment_identity',
   'assign_service_deployment_identity',
   'validate_service_deployment_identity',
-  'AssemblyIdentityProjection',
-  'runtime_assembly_identity',
-  'assign_runtime_assembly_identity',
   'DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX',
   'ASSEMBLY_IDENTITY_PREFIX',
   'package_schema_index_identity',
@@ -469,7 +446,6 @@ const facadeModules = [
   'file_ir',
   'framing',
   'package_artifact',
-  'runtime_assembly',
   'semantic',
 ];
 
@@ -484,11 +460,6 @@ const canonicalDelegationRequirements = [
     relPath: 'compiler/core/src/json_utils.rs',
     helper: 'compiler canonical JSON API',
     regexp: /\bpub\s+use\s+skiff_canonical_json\s*::/,
-  },
-  {
-    relPath: 'runtime/linked-type-plan/src/type_plan/recoverable.rs',
-    helper: 'sort-only linked type key helper',
-    regexp: /\bfn\s+sort_json_value\s*\(/,
   },
 ];
 
@@ -638,60 +609,6 @@ const canonicalDeploymentAssemblyModels = Object.freeze([
       'gateway_entries',
       'ingress',
       'diagnostic_text',
-    ]),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/runtime_assembly.rs',
-    typeName: 'PackageCodeSlot',
-    requiredFields: Object.freeze(['package']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/runtime_assembly.rs',
-    typeName: 'CanonicalPackageLinkPlan',
-    requiredFields: Object.freeze(['code_slots', 'package_links']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/runtime_assembly.rs',
-    typeName: 'ResolvedServiceBinding',
-    requiredFields: Object.freeze(['key', 'contract', 'provider', 'used_operations']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/runtime_assembly.rs',
-    typeName: 'ServiceBindingTemplate',
-    requiredFields: Object.freeze(['activation', 'bindings']),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/runtime_assembly.rs',
-    typeName: 'ActivationTemplate',
-    requiredFields: Object.freeze([
-      'deployment',
-      'implementation_package_build_id',
-    ]),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/runtime_assembly.rs',
-    typeName: 'GatewayIngressBinding',
-    requiredFields: Object.freeze([
-      'selector',
-      'deployment',
-      'gateway_entry_key',
-      'gateway_entry_identity',
-    ]),
-  }),
-  Object.freeze({
-    relPath: 'artifact-model/src/runtime_assembly.rs',
-    typeName: 'RuntimeAssembly',
-    requiredFields: Object.freeze([
-      'schema_version',
-      'assembly_identity',
-      'roots',
-      'resolved_deployments',
-      'resolved_contracts',
-      'resolved_packages',
-      'package_link_plan',
-      'service_binding_templates',
-      'activation_templates',
-      'gateway_ingress',
     ]),
   }),
 ]);
@@ -897,7 +814,7 @@ function collectOwnedDefinitionViolations(files) {
     for (const match of text.matchAll(ownedDefinitionRegexp)) {
       const name = match[1];
       const owner = definitionOwnerByName.get(name);
-      if (owner === file.relPath) {
+      if (isSelfMethodDefinition(text, match.index ?? 0) || owner === file.relPath) {
         continue;
       }
       violations.push({
@@ -910,6 +827,11 @@ function collectOwnedDefinitionViolations(files) {
   }
 
   return violations;
+}
+
+function isSelfMethodDefinition(text, matchIndex) {
+  const snippet = text.slice(matchIndex, matchIndex + 160);
+  return /\bfn\s+[A-Za-z0-9_]+\s*\(\s*(?:&(?:mut\s+)?self|self)\s*[,)]/.test(snippet);
 }
 
 function collectTerminalLegacyArtifactSymbolFailures(files) {
@@ -1560,61 +1482,14 @@ pub struct ServiceDeployment {
   pub diagnostic_text: Text,
 }
 `;
-  const canonicalAssemblyText = `
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PackageCodeSlot { pub package: PackageArtifactRef }
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CanonicalPackageLinkPlan { pub code_slots: Vec<PackageCodeSlot>, pub package_links: Vec<PackageBinding> }
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ResolvedServiceBinding {
-  pub key: ServiceRequirementKey, pub contract: ServiceContractRef,
-  pub provider: ServiceDeploymentRef, pub used_operations: Vec<OperationId>,
-}
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServiceBindingTemplate {
-  pub activation: ServiceDeploymentRef, pub bindings: Vec<ResolvedServiceBinding>,
-}
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivationTemplate {
-  pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,
-}
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct GatewayIngressBinding {
-  pub selector: IngressSelector, pub deployment: ServiceDeploymentRef,
-  pub gateway_entry_key: GatewayEntryKey, pub gateway_entry_identity: GatewayEntryIdentity,
-}
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssembly {
-  pub schema_version: String, pub assembly_identity: Identity, pub roots: Vec<Ref>,
-  pub resolved_deployments: Vec<Ref>, pub resolved_contracts: Vec<Ref>,
-  pub resolved_packages: Vec<Ref>, pub package_link_plan: Plan,
-  pub service_binding_templates: Vec<ServiceTemplate>,
-  pub activation_templates: Vec<ActivationTemplate>, pub gateway_ingress: Vec<Ingress>,
-}
-`;
-  const canonicalLinkPlanText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct CanonicalPackageLinkPlan { pub code_slots: Vec<PackageCodeSlot>, pub package_links: Vec<PackageBinding> }
-`;
-  const canonicalServiceTemplateText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ServiceBindingTemplate {
-  pub activation: ServiceDeploymentRef, pub bindings: Vec<ResolvedServiceBinding>,
-}
-`;
-  const canonicalActivationTemplateText = `#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ActivationTemplate {
-  pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,
-}
-`;
   const canonicalIdentityText = canonicalDeploymentAssemblyIdentityNewtypes
     .map((name) => `string_identity!(${name});`)
     .join('\n');
   const canonicalDeploymentAssemblyFiles = ({
     deployment = canonicalDeploymentText,
-    assembly = canonicalAssemblyText,
     extra = [],
   } = {}) => [
     { relPath: 'artifact-model/src/deployment.rs', text: deployment },
-    { relPath: 'artifact-model/src/runtime_assembly.rs', text: assembly },
     { relPath: 'artifact-model/src/compile_identity.rs', text: canonicalIdentityText },
     ...extra,
   ];
@@ -1655,33 +1530,6 @@ pub struct RuntimeCapabilityBinding {}
       expectedFailures: 2,
     },
     {
-      name: 'rejects retired activation template policy field',
-      files: canonicalDeploymentAssemblyFiles({
-        assembly: canonicalAssemblyText.replace(
-          'pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,',
-          'pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build, pub policy: Policy,',
-        ),
-      }),
-      expectedFailures: 1,
-    },
-    {
-      name: 'rejects retired activation template resource field',
-      files: canonicalDeploymentAssemblyFiles({
-        assembly: canonicalAssemblyText.replace(
-          'pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build,',
-          'pub deployment: ServiceDeploymentRef, pub implementation_package_build_id: Build, pub resource_bindings: Vec<Resource>,',
-        ),
-      }),
-      expectedFailures: 1,
-    },
-    {
-      name: 'rejects renamed canonical assembly field',
-      files: canonicalDeploymentAssemblyFiles({
-        assembly: canonicalAssemblyText.replace('pub package_link_plan:', 'pub linked_plan:'),
-      }),
-      expectedFailures: 2,
-    },
-    {
       name: 'rejects host regression in deployment ingress selector',
       files: canonicalDeploymentAssemblyFiles({
         deployment: canonicalDeploymentText.replace(
@@ -1701,76 +1549,6 @@ pub struct RuntimeCapabilityBinding {}
       }),
       expectedFailures: 1,
     })),
-    {
-      name: 'rejects renamed canonical package link-plan leaf',
-      files: canonicalDeploymentAssemblyFiles({
-        assembly: canonicalAssemblyText.replace('pub code_slots:', 'pub linked_code_slots:'),
-      }),
-      expectedFailures: 2,
-    },
-    {
-      name: 'rejects duplicate canonical package link-plan owner',
-      files: canonicalDeploymentAssemblyFiles({
-        extra: [{
-          relPath: 'runtime/model/src/package_link_plan.rs',
-          text: canonicalLinkPlanText,
-        }],
-      }),
-      expectedFailures: 1,
-    },
-    {
-      name: 'rejects moved canonical package link-plan owner',
-      files: canonicalDeploymentAssemblyFiles({
-        assembly: canonicalAssemblyText.replace(canonicalLinkPlanText, ''),
-        extra: [{
-          relPath: 'runtime/model/src/package_link_plan.rs',
-          text: canonicalLinkPlanText,
-        }],
-      }),
-      expectedFailures: 2,
-    },
-    {
-      name: 'rejects legacy aggregate embedded in package link plan',
-      files: canonicalDeploymentAssemblyFiles({
-        assembly: canonicalAssemblyText.replace(
-          'pub package_links: Vec<PackageBinding>',
-          'pub package_links: Vec<PackageBinding>, pub legacy: PackageUnit',
-        ),
-      }),
-      expectedFailures: 2,
-    },
-    {
-      name: 'rejects renamed service and activation template leaves',
-      files: canonicalDeploymentAssemblyFiles({
-        assembly: canonicalAssemblyText
-          .replace('pub bindings:', 'pub resolved_bindings:')
-          .replace('pub implementation_package_build_id:', 'pub implementation_build:'),
-      }),
-      expectedFailures: 4,
-    },
-    {
-      name: 'rejects duplicate service and activation template owners',
-      files: canonicalDeploymentAssemblyFiles({
-        extra: [{
-          relPath: 'runtime/model/src/templates.rs',
-          text: canonicalServiceTemplateText + canonicalActivationTemplateText,
-        }],
-      }),
-      expectedFailures: 2,
-    },
-    {
-      name: 'rejects moved service and activation template owners',
-      files: canonicalDeploymentAssemblyFiles({
-        assembly: canonicalAssemblyText
-          .replace(canonicalServiceTemplateText, '')
-          .replace(canonicalActivationTemplateText, ''),
-        extra: [{
-          relPath: 'runtime/model/src/templates.rs',
-          text: canonicalServiceTemplateText + canonicalActivationTemplateText,
-        }],
-      }),
-      expectedFailures: 4,
-    },
     {
       name: 'rejects legacy package public path deployment input',
       files: canonicalDeploymentAssemblyFiles({
@@ -1811,16 +1589,6 @@ pub struct ServiceDeploymentOperationInput {
         extra: [{
           relPath: 'runtime/model/src/deployment.rs',
           text: 'pub struct ServiceDeployment {}\n',
-        }],
-      }),
-      expectedFailures: 1,
-    },
-    {
-      name: 'rejects second assembly identity owner',
-      files: canonicalDeploymentAssemblyFiles({
-        extra: [{
-          relPath: 'runtime/model/src/identity.rs',
-          text: 'pub struct AssemblyIdentity(String);\n',
         }],
       }),
       expectedFailures: 1,

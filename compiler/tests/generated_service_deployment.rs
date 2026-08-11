@@ -11,7 +11,6 @@ use skiff_compiler::{
     GeneratedServicePackageAdmissions, ServiceApiProjection,
 };
 use skiff_compiler_core::id::PublicationId;
-use skiff_deployment::assembly::resolve_runtime_assembly;
 
 fn generate(
     artifact: &skiff_artifact_model::PackageArtifact,
@@ -321,18 +320,11 @@ db object PackageSecret {
             package_schema_records: &project.package.resolved_package_schema_type_records,
         })
         .unwrap();
-        let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
-        let mut packages = closure;
-        packages.push(project.package.artifact.clone());
-        let assembly = resolve_runtime_assembly(
-            std::slice::from_ref(&deployment_ref),
-            std::slice::from_ref(&deployment),
-            std::slice::from_ref(&service_api.contract),
-            &packages,
-        )
-        .unwrap();
-        assert_eq!(assembly.package_link_plan.package_links.len(), 2);
-        skiff_artifact_identity::validate_runtime_assembly_identity(&assembly).unwrap();
+        assert_eq!(deployment.package_bindings.len(), 2);
+        assert!(deployment
+            .package_bindings
+            .iter()
+            .all(|binding| binding.package.package_id != "example.com/mapping-service-package"));
     }
 
     #[test]

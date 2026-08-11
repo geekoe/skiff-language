@@ -2,7 +2,7 @@ mod common;
 use common::{artifacts::module_artifact, package_project::compile_package_project, TestDir};
 use skiff_artifact_model::{
     ExprIr, InstructionSourceSite, StmtIr, FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION,
-    FILE_IR_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    FILE_IR_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
     SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
@@ -160,7 +160,6 @@ function sequentialValue() -> string {
             "skiff-package-artifact-v14"
         );
         assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v6");
-        assert_eq!(RUNTIME_ASSEMBLY_SCHEMA_VERSION, "skiff-runtime-assembly-v3");
     }
 
     #[test]

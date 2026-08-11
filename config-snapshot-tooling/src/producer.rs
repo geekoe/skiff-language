@@ -6,7 +6,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 use skiff_artifact_model::{
     validate_activation_profile, PackageArtifact, PackageArtifactRef, PackageBuildId,
-    RuntimeAssembly, RuntimeConfigSnapshotRef, ServiceDeploymentRef,
+    RuntimeConfigSnapshotRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_runtime_config_snapshot::{new_runtime_config_snapshot_ref, RuntimeConfigSnapshotStore};
 
@@ -26,7 +26,7 @@ pub struct ServiceConfigSource {
 #[derive(Debug, Clone)]
 pub struct ConfigSnapshotProductionInput {
     pub profile: String,
-    pub assembly: RuntimeAssembly,
+    pub deployments: BTreeMap<ServiceDeploymentRef, ServiceDeployment>,
     pub package_artifacts: BTreeMap<PackageArtifactRef, PackageArtifact>,
     pub sources: Vec<ServiceConfigSource>,
 }
@@ -85,12 +85,7 @@ fn projection_inputs(
             ));
         }
     }
-    let expected_deployments = input
-        .assembly
-        .activation_templates
-        .iter()
-        .map(|template| template.deployment.clone())
-        .collect::<BTreeSet<_>>();
+    let expected_deployments = input.deployments.keys().cloned().collect::<BTreeSet<_>>();
     let actual_deployments = source_by_deployment
         .keys()
         .cloned()
@@ -107,7 +102,7 @@ fn projection_inputs(
         return Err(invalid(
             "<sources>",
             format!(
-                "config sources must exactly match assembly deployments; missing [{}], extra [{}]",
+                "config sources must exactly match supplied ServiceDeployment records; missing [{}], extra [{}]",
                 missing.join(", "),
                 extra.join(", ")
             ),
@@ -115,9 +110,16 @@ fn projection_inputs(
     }
 
     let resolved_refs = input
-        .assembly
-        .resolved_packages
-        .iter()
+        .deployments
+        .values()
+        .flat_map(|deployment| {
+            std::iter::once(&deployment.implementation).chain(
+                deployment
+                    .package_bindings
+                    .iter()
+                    .map(|binding| &binding.package),
+            )
+        })
         .cloned()
         .collect::<BTreeSet<_>>();
     let supplied_refs = input
@@ -128,7 +130,7 @@ fn projection_inputs(
     if supplied_refs != resolved_refs {
         return Err(invalid(
             "<packages>",
-            "supplied PackageArtifact records must exactly match RuntimeAssembly.resolvedPackages",
+            "supplied PackageArtifact records must exactly match the ServiceDeployment package closure",
         ));
     }
     for (reference, artifact) in &input.package_artifacts {
@@ -136,7 +138,7 @@ fn projection_inputs(
             return Err(invalid(
                 "<packages>",
                 format!(
-                    "PackageArtifact {} does not match its exact assembly reference",
+                    "PackageArtifact {} does not match its exact deployment reference",
                     reference.package_id
                 ),
             ));
@@ -149,29 +151,30 @@ fn projection_inputs(
         .collect::<BTreeMap<_, _>>();
     if reference_by_build.len() != resolved_refs.len() {
         return Err(invalid(
-            "<assembly>",
-            "RuntimeAssembly resolves one PackageBuildId to more than one PackageArtifact",
+            "<deployments>",
+            "ServiceDeployment records resolve one PackageBuildId to more than one PackageArtifact",
         ));
     }
     let mut links_by_caller = BTreeMap::<PackageBuildId, Vec<PackageArtifactRef>>::new();
-    for binding in &input.assembly.package_link_plan.package_links {
-        links_by_caller
-            .entry(binding.key.caller_package_build_id.clone())
-            .or_default()
-            .push(binding.package.clone());
+    for deployment in input.deployments.values() {
+        for binding in &deployment.package_bindings {
+            links_by_caller
+                .entry(binding.key.caller_package_build_id.clone())
+                .or_default()
+                .push(binding.package.clone());
+        }
     }
 
     input
-        .assembly
-        .activation_templates
+        .deployments
         .iter()
-        .map(|template| {
+        .map(|(deployment_ref, deployment)| {
             let source_root = source_by_deployment
-                .get(&template.deployment)
+                .get(deployment_ref)
                 .expect("exact source set was validated");
             let config = load_service_config(source_root, &input.profile)?;
             let package_refs = deployment_package_closure(
-                &template.implementation_package_build_id,
+                &deployment.implementation.package_build_id,
                 &reference_by_build,
                 &links_by_caller,
             )?;
@@ -190,7 +193,7 @@ fn projection_inputs(
                 })
                 .collect::<ConfigSnapshotToolingResult<Vec<_>>>()?;
             Ok(ConfigSnapshotDeploymentInput {
-                deployment: template.deployment.clone(),
+                deployment: deployment_ref.clone(),
                 source_path: source_root.clone(),
                 config,
                 packages,
@@ -206,8 +209,8 @@ fn deployment_package_closure(
 ) -> ConfigSnapshotToolingResult<Vec<PackageArtifactRef>> {
     if !reference_by_build.contains_key(implementation) {
         return Err(invalid(
-            "<assembly>",
-            format!("activation implementation Package build {implementation:?} is unresolved"),
+            "<deployment>",
+            format!("deployment implementation Package build {implementation:?} is unresolved"),
         ));
     }
     let mut queue = VecDeque::from([implementation.clone()]);
@@ -219,7 +222,7 @@ fn deployment_package_closure(
         for dependency in links_by_caller.get(&build).into_iter().flatten() {
             if !reference_by_build.contains_key(&dependency.package_build_id) {
                 return Err(invalid(
-                    "<assembly>",
+                    "<deployment>",
                     format!(
                         "Package link from {build:?} targets an unresolved Package build {:?}",
                         dependency.package_build_id

@@ -2768,16 +2768,11 @@ name = "skiff-runtime-loader"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "hex",
- "serde",
  "serde_json",
- "serde_yaml",
- "sha2",
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
  "skiff-deployment",
- "skiff-runtime-model",
 ]
 
 [[package]]
@@ -2826,9 +2821,8 @@ name = "skiff-runtime-package-test"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "skiff-artifact-identity",
  "skiff-artifact-model",
- "skiff-deployment",
+ "skiff-runtime-linked-bytecode",
  "skiff-runtime-linker",
  "skiff-runtime-loader",
 ]

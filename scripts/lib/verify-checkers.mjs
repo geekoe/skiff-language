@@ -55,40 +55,6 @@ export const CHECKER_REGISTRY = Object.freeze([
       invocation('checks:runtime-crate-dag', 'checks'),
     ],
   }),
-  checker('scripts/check-runtime-artifact-boundaries.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
-    invocations: [
-      invocation('implementation:runtime:artifact-boundaries:self-test', 'runtime', [
-        '--self-test',
-      ]),
-      invocation('implementation:runtime:artifact-boundaries', 'runtime'),
-    ],
-  }),
-  checker('scripts/check-runtime-execution-boundaries.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
-    invocations: [
-      invocation(
-        'implementation:runtime:execution-boundaries:self-test',
-        'runtime-execution-boundaries',
-        ['--self-test'],
-      ),
-      invocation(
-        'implementation:runtime:execution-boundaries',
-        'runtime-execution-boundaries',
-      ),
-    ],
-  }),
-  checker('scripts/check-runtime-eval-error-boundary.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
-    invocations: [
-      invocation(
-        'implementation:runtime:eval-error-boundary:self-test',
-        'runtime-eval-error-boundary',
-        ['--self-test'],
-      ),
-      invocation(
-        'implementation:runtime:eval-error-boundary',
-        'runtime-eval-error-boundary',
-      ),
-    ],
-  }),
   checker('scripts/check-skiff-source-layout.mjs', CHECKER_CLASSIFICATIONS.DEFAULT, {
     invocations: [invocation('checks:skiff-source-layout', 'checks')],
   }),

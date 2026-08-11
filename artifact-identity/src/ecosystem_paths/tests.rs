@@ -1,8 +1,8 @@
 use super::*;
-use crate::{ASSEMBLY_IDENTITY_PREFIX, BYTECODE_IDENTITY_PREFIX};
+use crate::BYTECODE_IDENTITY_PREFIX;
 use skiff_artifact_model::{
-    AssemblyIdentity, BytecodeArtifactRef, DeploymentArtifactIdentity, DeploymentRevision,
-    PackageBuildId, PackageLocalAbiIdentity, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+    BytecodeArtifactRef, DeploymentArtifactIdentity, DeploymentRevision, PackageBuildId,
+    PackageLocalAbiIdentity, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
     PackageSchemaTypeId, PackageSchemaTypeRecordRef, ServiceProtocolIdentity,
 };
 
@@ -56,16 +56,6 @@ fn typed_paths_are_canonical_and_identity_addressed() {
         .unwrap()
         .as_str()
         .contains("/revision-1/"));
-    let assembly = RuntimeAssemblyRef {
-        assembly_identity: AssemblyIdentity::new(format!(
-            "{ASSEMBLY_IDENTITY_PREFIX}:{}",
-            hash('e')
-        )),
-    };
-    assert_eq!(
-        RuntimeAssemblyRecordPath::new(&assembly).unwrap().as_str(),
-        format!("records/runtime-assemblies/{}.json", hash('e'))
-    );
 }
 
 #[test]
@@ -196,28 +186,6 @@ fn wrong_identity_domains_and_noncanonical_declared_paths_fail() {
         )),
     };
     assert!(PackageArtifactRecordPath::new(&package).is_err());
-}
-
-#[test]
-fn runtime_assembly_path_consumes_model_identity_leaf() {
-    let valid = RuntimeAssemblyRef {
-        assembly_identity: AssemblyIdentity::new(format!(
-            "{ASSEMBLY_IDENTITY_PREFIX}:{}",
-            hash('a')
-        )),
-    };
-    assert!(RuntimeAssemblyRecordPath::new(&valid).is_ok());
-
-    for invalid in [
-        format!("{ASSEMBLY_IDENTITY_PREFIX}:{}", hash('A')),
-        format!("{ASSEMBLY_IDENTITY_PREFIX}:short"),
-        format!("skiff-service-protocol-v2:sha256:{}", hash('a')),
-    ] {
-        let reference = RuntimeAssemblyRef {
-            assembly_identity: AssemblyIdentity::new(invalid),
-        };
-        assert!(RuntimeAssemblyRecordPath::new(&reference).is_err());
-    }
 }
 
 #[test]

@@ -1,39 +1,24 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use skiff_artifact_model::{
-    AssemblyIdentity, CanonicalPackageLinkPlan, RuntimeAssembly, RUNTIME_ASSEMBLY_SCHEMA_VERSION,
+    DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef,
 };
 use skiff_runtime_config_snapshot::{
     RuntimeConfigSnapshotStore, RUNTIME_CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION,
 };
 use tempfile::tempdir;
 
-use super::{produce_runtime_config_snapshot, ConfigSnapshotProductionInput};
+use super::{
+    produce_runtime_config_snapshot, ConfigSnapshotProductionInput, ServiceConfigSource,
+};
 
 #[test]
-fn empty_assembly_produces_and_securely_publishes_an_empty_snapshot() {
+fn empty_deployments_produce_and_securely_publish_an_empty_snapshot() {
     let artifact_root = tempdir().unwrap();
-    let assembly = RuntimeAssembly {
-            schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
-            assembly_identity: AssemblyIdentity::new(
-                "skiff-runtime-assembly-v3:sha256:23c593adcf1df8a6b4ffc3fc13586b3023ed0bf2ba6d91b817f942dea02bf8ee",
-            ),
-            roots: Vec::new(),
-            resolved_deployments: Vec::new(),
-            resolved_contracts: Vec::new(),
-            resolved_packages: Vec::new(),
-            package_link_plan: CanonicalPackageLinkPlan {
-                code_slots: Vec::new(),
-                package_links: Vec::new(),
-            },
-            service_binding_templates: Vec::new(),
-            activation_templates: Vec::new(),
-            gateway_ingress: Vec::new(),
-        };
     let receipt = produce_runtime_config_snapshot(
         ConfigSnapshotProductionInput {
             profile: "dev".to_string(),
-            assembly,
+            deployments: BTreeMap::new(),
             package_artifacts: BTreeMap::new(),
             sources: Vec::new(),
         },
@@ -73,5 +58,40 @@ fn empty_assembly_produces_and_securely_publishes_an_empty_snapshot() {
                 & 0o777,
             0o600
         );
+    }
+}
+
+#[test]
+fn source_set_must_match_supplied_deployments() {
+    let artifact_root = tempdir().unwrap();
+    let error = produce_runtime_config_snapshot(
+        ConfigSnapshotProductionInput {
+            profile: "dev".to_string(),
+            deployments: BTreeMap::new(),
+            package_artifacts: BTreeMap::new(),
+            sources: vec![ServiceConfigSource {
+                deployment: deployment_ref(),
+                root: PathBuf::from("/tmp/service"),
+            }],
+        },
+        artifact_root.path(),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("exactly match supplied ServiceDeployment records"),
+        "{error}"
+    );
+}
+
+fn deployment_ref() -> ServiceDeploymentRef {
+    ServiceDeploymentRef {
+        service_id: "example.com/service".to_string(),
+        contract_version: "1.0.0".to_string(),
+        deployment_revision: DeploymentRevision::new("dev"),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new(
+            "skiff-service-deployment-v4:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
     }
 }

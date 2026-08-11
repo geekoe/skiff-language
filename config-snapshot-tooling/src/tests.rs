@@ -5,8 +5,6 @@ fn cli_accepts_one_profile_and_requires_it() {
     let base = [
         "--artifact-root",
         "/tmp/artifacts",
-        "--assembly-record",
-        "records/runtime-assembly.json",
         "--source",
         r#"{"deployment":{"serviceId":"example.com/service","contractVersion":"1.0.0","deploymentRevision":"dev","deploymentArtifactIdentity":"skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"root":"/tmp/service"}"#,
     ];
@@ -24,8 +22,6 @@ fn cli_accepts_one_profile_and_requires_it() {
         [
             "--artifact-root",
             "/tmp/artifacts",
-            "--assembly-record",
-            "records/runtime-assembly.json",
             "--profile",
             "staging",
             "--profile",
@@ -47,8 +43,6 @@ fn cli_rejects_retired_environment_flag() {
         [
             "--artifact-root",
             "/tmp/artifacts",
-            "--assembly-record",
-            "records/runtime-assembly.json",
             "--profile",
             "dev",
             "--environment",
@@ -67,8 +61,6 @@ fn cli_accepts_an_explicit_empty_service_source_set() {
         [
             "--artifact-root",
             "/tmp/artifacts",
-            "--assembly-record",
-            "records/runtime-assembly.json",
             "--profile",
             "dev",
         ]
@@ -77,4 +69,22 @@ fn cli_accepts_an_explicit_empty_service_source_set() {
     )
     .unwrap();
     assert!(arguments.sources.is_empty());
+}
+
+#[test]
+fn cli_rejects_retired_assembly_record_flag() {
+    let error = Arguments::parse(
+        [
+            "--artifact-root",
+            "/tmp/artifacts",
+            "--assembly-record",
+            "records/runtime-assembly.json",
+            "--profile",
+            "dev",
+        ]
+        .into_iter()
+        .map(str::to_string),
+    )
+    .unwrap_err();
+    assert!(error.contains("unknown option --assembly-record"), "{error}");
 }

@@ -48,14 +48,10 @@ const selectorGraph = {
     ...rustSubjectExpansions,
     compiler: ['compiler-boundaries', 'compiler-rust-tests'],
     runtime: [
-      'runtime-execution-boundaries',
-      'runtime-eval-error-boundary',
       'runtime-rust-tests',
     ],
     checks: [
       'compiler-boundaries',
-      'runtime-execution-boundaries',
-      'runtime-eval-error-boundary',
       'checks-default',
     ],
     router: [

@@ -1,12 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
-use serde::Serialize;
 use serde_json::json;
-use skiff_artifact_model::{PackageArtifact, PackageArtifactRef, RuntimeAssembly};
+use skiff_artifact_model::{
+    PackageArtifact, PackageArtifactRef, ServiceDeployment, ServiceDeploymentRef,
+};
 use skiff_config_snapshot_tooling::{
     produce_runtime_config_snapshot, ConfigSnapshotProductionInput, ServiceConfigSource,
 };
@@ -20,13 +21,19 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = Arguments::parse(env::args().skip(1))?;
-    let assembly_path = resolve_record(&arguments.artifact_root, &arguments.assembly_record)?;
-    let assembly = read_json::<RuntimeAssembly>(&assembly_path)?;
-    let packages = discover_exact_packages(&arguments.artifact_root, &assembly)?;
+    let expected_deployments = arguments
+        .sources
+        .iter()
+        .map(|source| source.deployment.clone())
+        .collect::<BTreeSet<_>>();
+    let deployments =
+        discover_exact_deployments(&arguments.artifact_root, &expected_deployments)?;
+    let package_refs = required_package_refs(&deployments);
+    let packages = discover_exact_packages(&arguments.artifact_root, &package_refs)?;
     let receipt = produce_runtime_config_snapshot(
         ConfigSnapshotProductionInput {
             profile: arguments.profile,
-            assembly,
+            deployments,
             package_artifacts: packages,
             sources: arguments.sources,
         },
@@ -42,7 +49,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[derive(Debug)]
 struct Arguments {
     artifact_root: PathBuf,
-    assembly_record: PathBuf,
     profile: String,
     sources: Vec<ServiceConfigSource>,
 }
@@ -50,7 +56,6 @@ struct Arguments {
 impl Arguments {
     fn parse(arguments: impl Iterator<Item = String>) -> Result<Self, String> {
         let mut artifact_root = None;
-        let mut assembly_record = None;
         let mut profile = None;
         let mut sources = Vec::new();
         let mut arguments = arguments.peekable();
@@ -62,16 +67,13 @@ impl Arguments {
                 "--artifact-root" if artifact_root.is_none() => {
                     artifact_root = Some(PathBuf::from(value));
                 }
-                "--assembly-record" if assembly_record.is_none() => {
-                    assembly_record = Some(PathBuf::from(value));
-                }
                 "--profile" if profile.is_none() => profile = Some(value),
                 "--source" => {
                     let source = serde_json::from_str::<ServiceConfigSource>(&value)
                         .map_err(|error| format!("--source must be strict JSON: {error}"))?;
                     sources.push(source);
                 }
-                "--artifact-root" | "--assembly-record" | "--profile" => {
+                "--artifact-root" | "--profile" => {
                     return Err(format!("{argument} was provided more than once"));
                 }
                 _ => return Err(format!("unknown option {argument}")),
@@ -83,44 +85,88 @@ impl Arguments {
         }
         Ok(Self {
             artifact_root,
-            assembly_record: assembly_record.ok_or("--assembly-record is required")?,
             profile: profile.ok_or("--profile is required")?,
             sources,
         })
     }
 }
 
-fn resolve_record(root: &Path, relative: &Path) -> Result<PathBuf, String> {
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err("--assembly-record must be a normal relative artifact path".to_string());
+fn discover_exact_deployments(
+    artifact_root: &Path,
+    expected: &BTreeSet<ServiceDeploymentRef>,
+) -> Result<BTreeMap<ServiceDeploymentRef, ServiceDeployment>, Box<dyn std::error::Error>> {
+    if expected.is_empty() {
+        return Ok(BTreeMap::new());
     }
-    let path = root.join(relative);
-    let metadata = fs::symlink_metadata(&path)
-        .map_err(|error| format!("inspect assembly record {}: {error}", path.display()))?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
+    let mut files = Vec::new();
+    collect_deployment_records(
+        &artifact_root.join("records").join("service-deployments"),
+        &mut files,
+    )?;
+    let mut found = BTreeMap::new();
+    for path in files {
+        let bytes = fs::read(&path)?;
+        let deployment = match serde_json::from_slice::<ServiceDeployment>(&bytes) {
+            Ok(deployment) => deployment,
+            Err(_) => continue,
+        };
+        let reference = deployment_reference(&deployment);
+        if !expected.contains(&reference) {
+            continue;
+        }
+        if found.insert(reference, deployment).is_some() {
+            return Err(format!(
+                "duplicate exact ServiceDeployment record at {}",
+                path.display()
+            )
+            .into());
+        }
+    }
+    let missing = expected
+        .iter()
+        .filter(|reference| !found.contains_key(reference))
+        .map(|reference| reference.service_id.as_str())
+        .collect::<BTreeSet<_>>();
+    if !missing.is_empty() {
         return Err(format!(
-            "assembly record {} must be a regular file",
-            path.display()
-        ));
+            "artifact root is missing exact ServiceDeployment record(s): {}",
+            missing.into_iter().collect::<Vec<_>>().join(", ")
+        )
+        .into());
     }
-    Ok(path)
+    Ok(found)
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Box<dyn std::error::Error>> {
-    let bytes = fs::read(path)?;
-    Ok(serde_json::from_slice(&bytes)?)
+fn deployment_reference(deployment: &ServiceDeployment) -> ServiceDeploymentRef {
+    ServiceDeploymentRef {
+        service_id: deployment.contract.service_id.clone(),
+        contract_version: deployment.contract.contract_version.clone(),
+        deployment_revision: deployment.deployment_revision.clone(),
+        deployment_artifact_identity: deployment.deployment_artifact_identity.clone(),
+    }
+}
+
+fn required_package_refs(
+    deployments: &BTreeMap<ServiceDeploymentRef, ServiceDeployment>,
+) -> Vec<PackageArtifactRef> {
+    let mut references = Vec::new();
+    for deployment in deployments.values() {
+        references.push(deployment.implementation.clone());
+        references.extend(
+            deployment
+                .package_bindings
+                .iter()
+                .map(|binding| binding.package.clone()),
+        );
+    }
+    references
 }
 
 fn discover_exact_packages(
     artifact_root: &Path,
-    assembly: &RuntimeAssembly,
+    expected: &[PackageArtifactRef],
 ) -> Result<BTreeMap<PackageArtifactRef, PackageArtifact>, Box<dyn std::error::Error>> {
-    let expected = assembly
-        .resolved_packages
+    let expected_by_build = expected
         .iter()
         .map(|reference| {
             (
@@ -129,8 +175,8 @@ fn discover_exact_packages(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    if expected.len() != assembly.resolved_packages.len() {
-        return Err("assembly contains duplicate PackageBuildId references".into());
+    if expected_by_build.len() != expected.len() {
+        return Err("deployment package closure contains duplicate PackageBuildId references".into());
     }
     if expected.is_empty() {
         return Ok(BTreeMap::new());
@@ -153,7 +199,7 @@ fn discover_exact_packages(
         else {
             continue;
         };
-        let Some(expected_ref) = expected.get(build) else {
+        let Some(expected_ref) = expected_by_build.get(build) else {
             continue;
         };
         let artifact = serde_json::from_value::<PackageArtifact>(raw)?;
@@ -165,7 +211,7 @@ fn discover_exact_packages(
         };
         if &actual_ref != expected_ref {
             return Err(format!(
-                "package record {} does not match assembly reference for {}",
+                "package record {} does not match deployment reference for {}",
                 path.display(),
                 expected_ref.package_id
             )
@@ -179,10 +225,9 @@ fn discover_exact_packages(
             .into());
         }
     }
-    let missing = assembly
-        .resolved_packages
+    let missing = expected
         .iter()
-        .filter(|reference| !found.contains_key(*reference))
+        .filter(|reference| !found.contains_key(reference))
         .map(|reference| reference.package_id.as_str())
         .collect::<BTreeSet<_>>();
     if !missing.is_empty() {
@@ -193,6 +238,29 @@ fn discover_exact_packages(
         .into());
     }
     Ok(found)
+}
+
+fn collect_deployment_records(
+    directory: &Path,
+    output: &mut Vec<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "service deployment record tree contains symlink {}",
+                entry.path().display()
+            )
+            .into());
+        }
+        if file_type.is_dir() {
+            collect_deployment_records(&entry.path(), output)?;
+        } else if file_type.is_file() && entry.file_name().to_string_lossy().ends_with(".json") {
+            output.push(entry.path());
+        }
+    }
+    Ok(())
 }
 
 fn collect_package_records(
@@ -217,9 +285,6 @@ fn collect_package_records(
     }
     Ok(())
 }
-
-#[allow(dead_code)]
-fn _assert_receipt_is_serializable<T: Serialize>(_: &T) {}
 
 #[cfg(test)]
 mod tests;

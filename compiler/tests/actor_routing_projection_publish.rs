@@ -4,9 +4,9 @@
 //! the A2 TS loader consume.
 //!
 //! The test drives the same public authoring entrypoints as the CLI
-//! (`build_authoring_object` for packages, `project_runtime_assembly` for
-//! assemblies), publishes the real compiler-owned std artifact, and verifies
-//! each produced record with the A3-equivalent strict consumption chain:
+//! (`build_authoring_object` for packages), publishes the real compiler-owned
+//! std artifact, and verifies each produced record with the A3-equivalent
+//! strict consumption chain:
 //! canonical bytes equality + typed decode through the frozen
 //! `deny_unknown_fields` surface.
 
@@ -25,7 +25,7 @@ use skiff_artifact_model::{
 };
 use skiff_compiler::{
     authoring::{
-        author_official_std_package, build_authoring_object_legacy, project_runtime_assembly,
+        author_official_std_package, build_authoring_object_legacy,
         publish_package_artifact_records, AuthoringObject,
     },
     CompilerPlatformSources,
@@ -328,55 +328,6 @@ mod tests {
             "a later package publish must replace the current projection with its own deployment facts"
         );
 
-        let assembly_receipt = project_runtime_assembly(
-            &artifact_root,
-            "dev",
-            &[alpha_deployment.clone(), beta_deployment.clone()],
-            false,
-        )
-        .expect("assembly publish");
-        assert!(assembly_receipt
-            .get("runtimeAssemblyReceipt")
-            .and_then(|receipt| receipt.get("assembly"))
-            .is_some());
-
-        let merged = load_projection(&artifact_root);
-        let merged_expected = alpha_expected
-            .iter()
-            .chain(beta_expected.iter())
-            .cloned()
-            .collect::<BTreeSet<_>>();
-        assert_eq!(
-            method_keys(&merged),
-            merged_expected,
-            "assembly publish must merge every root deployment's public actor methods"
-        );
-        for entry in &merged.methods {
-            if entry.actor.service_id == alpha_deployment.service_id {
-                assert_eq!(entry.deployment, alpha_deployment);
-                assert_eq!(entry.package, alpha_package);
-            } else {
-                assert_eq!(entry.actor.service_id, beta_deployment.service_id);
-                assert_eq!(entry.deployment, beta_deployment);
-                assert_eq!(entry.package, beta_package);
-            }
-        }
-
-        fs::remove_dir_all(temp).unwrap();
-    }
-
-    #[test]
-    fn compiler_assembly_publish_writes_the_legal_empty_projection_for_empty_assemblies() {
-        let temp = unique_root("actor-routing-empty-assembly");
-        let artifact_root = temp.join("artifacts");
-        project_runtime_assembly(&artifact_root, "dev", &[], false)
-            .expect("empty assembly publish");
-
-        let projection = load_projection(&artifact_root);
-        assert!(
-            projection.methods.is_empty(),
-            "an assembly without root deployments must publish the empty projection"
-        );
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -463,17 +414,6 @@ mod tests {
                 "exact owning package binding"
             );
         }
-
-        project_runtime_assembly(&artifact_root, "dev", &[service_deployment.clone()], false)
-            .expect(
-                "assembly publish must project the deployment closure without duplicate methods",
-            );
-        let merged = load_projection(&artifact_root);
-        assert_eq!(
-            method_keys(&merged),
-            shared_expected,
-            "assembly projection must also deduplicate per-deployment bindings"
-        );
 
         fs::remove_dir_all(temp).unwrap();
     }

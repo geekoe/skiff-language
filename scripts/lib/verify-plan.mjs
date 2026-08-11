@@ -305,14 +305,6 @@ function taskBuilders({
     ],
     'checks-default': async () => checkerTasks(root, 'checks'),
     'compiler-boundaries': async () => checkerTasks(root, 'compiler-boundaries'),
-    'runtime-execution-boundaries': async () =>
-      checkerTasks(root, 'runtime-execution-boundaries', {
-        kind: 'implementation:runtime',
-      }),
-    'runtime-eval-error-boundary': async () =>
-      checkerTasks(root, 'runtime-eval-error-boundary', {
-        kind: 'implementation:runtime',
-      }),
   };
   assertOrdinaryTaskBuilderCoverage(builders);
   const ordinaryLeaves = new Set(ORDINARY_LEAF_SELECTORS);

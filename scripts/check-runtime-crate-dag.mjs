@@ -17,11 +17,10 @@ const runtimeDag = new Map([
       'skiff-runtime-package-test',
       'skiff-runtime-loader',
       'skiff-runtime-linker',
-      'skiff-runtime-linked-program',
-      'skiff-runtime-linked-type-plan',
+      'skiff-runtime-bytecode-verifier',
+      'skiff-runtime-deployment-image',
       'skiff-runtime-activation',
       'skiff-runtime-capability-context',
-      'skiff-runtime-eval',
       'skiff-runtime-native',
       'skiff-runtime-native-contract',
       'skiff-runtime-boundary',
@@ -65,44 +64,25 @@ const runtimeDag = new Map([
   ['skiff-runtime-config-snapshot', []],
   ['skiff-runtime-deployment-image', []],
   ['skiff-runtime-linked-bytecode', []],
-  [
-    'skiff-runtime-transport',
-    ['skiff-runtime-request-contract', 'skiff-runtime-model'],
-  ],
+  ['skiff-runtime-transport', ['skiff-runtime-request-contract']],
   [
     'skiff-runtime-package-test',
     [
       'skiff-runtime-loader',
-      'skiff-runtime-linked-program',
       'skiff-runtime-linker',
-      'skiff-runtime-activation',
-      'skiff-runtime-model',
     ],
   ],
   [
     'skiff-runtime-request',
     [
-      'skiff-runtime-eval',
+      'skiff-runtime-boundary',
+      'skiff-runtime-bytecode-verifier',
+      'skiff-runtime-capability-context',
+      'skiff-runtime-deployment-image',
+      'skiff-runtime-model',
       'skiff-runtime-request-contract',
-      'skiff-runtime-boundary',
-      'skiff-runtime-capability-context',
-      'skiff-runtime-linked-program',
-      'skiff-runtime-linker',
-      'skiff-runtime-activation',
-      'skiff-runtime-model',
-    ],
-  ],
-  [
-    'skiff-runtime-eval',
-    [
-      'skiff-runtime-native',
-      'skiff-runtime-native-contract',
-      'skiff-runtime-boundary',
-      'skiff-runtime-linked-type-plan',
-      'skiff-runtime-linked-program',
-      'skiff-runtime-capability-context',
-      'skiff-runtime-activation',
-      'skiff-runtime-model',
+      'skiff-runtime-scheduler',
+      'skiff-runtime-vm',
     ],
   ],
   [
@@ -123,37 +103,23 @@ const runtimeDag = new Map([
       'skiff-runtime-request-contract',
     ],
   ],
-  [
-    'skiff-runtime-activation',
-    [
-      'skiff-runtime-linked-program',
-      'skiff-runtime-linker',
-      'skiff-runtime-boundary',
-      'skiff-runtime-model',
-    ],
-  ],
+  ['skiff-runtime-activation', ['skiff-runtime-model']],
   [
     'skiff-runtime-linked-type-plan',
     [
-      'skiff-runtime-linked-program',
       'skiff-runtime-boundary',
-      'skiff-runtime-native-contract',
       'skiff-runtime-model',
+      'skiff-runtime-native-contract',
     ],
   ],
   [
     'skiff-runtime-linker',
     [
-      'skiff-runtime-loader',
       'skiff-runtime-linked-bytecode',
-      'skiff-runtime-linked-program',
-      'skiff-runtime-linked-type-plan',
+      'skiff-runtime-loader',
       'skiff-runtime-native-contract',
-      'skiff-runtime-boundary',
-      'skiff-runtime-model',
     ],
   ],
-  ['skiff-runtime-linked-program', ['skiff-runtime-model']],
   ['skiff-runtime-request-contract', []],
   ['skiff-runtime-native-contract', ['skiff-runtime-model']],
   ['skiff-runtime-loader', ['skiff-runtime-model']],
@@ -168,10 +134,8 @@ const expectedPromotedRuntimePackages = new Set([
   'skiff-runtime-capability-context',
   'skiff-runtime-config-snapshot',
   'skiff-runtime-deployment-image',
-  'skiff-runtime-eval',
   'skiff-runtime-host',
   'skiff-runtime-linked-bytecode',
-  'skiff-runtime-linked-program',
   'skiff-runtime-linked-type-plan',
   'skiff-runtime-linker',
   'skiff-runtime-loader',
@@ -199,7 +163,8 @@ const hostBoundaryTarget = {
     'skiff-runtime-package-test',
     'skiff-runtime-loader',
     'skiff-runtime-linker',
-    'skiff-runtime-linked-program',
+    'skiff-runtime-bytecode-verifier',
+    'skiff-runtime-deployment-image',
     'skiff-runtime-activation',
     'skiff-runtime-capability-context',
     'skiff-runtime-model',
@@ -211,10 +176,6 @@ const hostBoundaryTarget = {
       'host still calls other boundary utilities/conversions after request_mapper, control_mapper, and control_response_mapper moved router-session request/control/control-response frame mappings to transport',
     ],
     [
-      'skiff-runtime-eval',
-      'host still wires eval-facing request execution while request/eval adapters are being narrowed',
-    ],
-    [
       'skiff-runtime-native',
       'host still reaches native dispatch wiring that should be hidden behind eval/request composition',
     ],
@@ -222,19 +183,13 @@ const hostBoundaryTarget = {
       'skiff-runtime-native-contract',
       'host still consumes native contract metadata during current request and test-service assembly',
     ],
-    [
-      'skiff-runtime-linked-type-plan',
-      'host still reads linked type plans at register/type-plan boundaries before those projections move down',
-    ],
   ]),
 };
 
 const expectedHostBoundaryTargetDebts = [
   'skiff-runtime-boundary',
-  'skiff-runtime-eval',
   'skiff-runtime-native',
   'skiff-runtime-native-contract',
-  'skiff-runtime-linked-type-plan',
 ];
 
 try {
@@ -733,19 +688,19 @@ function runSelfTests() {
       },
     },
     {
-      name: 'native cannot depend on linked-program execution internals',
+      name: 'native cannot depend on request execution internals',
       run: () => {
         const metadata = metadataFromRuntimeDag();
         const nativePackage = metadata.packages.find((pkg) => pkg.name === 'skiff-runtime-native');
-        nativePackage.dependencies.push(runtimeDependency('skiff-runtime-linked-program'));
+        nativePackage.dependencies.push(runtimeDependency('skiff-runtime-request'));
         const result = checkRuntimeDag(metadata);
         assert(
           result.violations.some(
             (violation) =>
               violation.packageName === 'skiff-runtime-native'
-              && violation.message.includes('skiff-runtime-linked-program is not allowed'),
+              && violation.message.includes('skiff-runtime-request is not allowed'),
           ),
-          'expected skiff-runtime-native -> skiff-runtime-linked-program to be rejected',
+          'expected skiff-runtime-native -> skiff-runtime-request to be rejected',
         );
       },
     },

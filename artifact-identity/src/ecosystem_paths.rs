@@ -1,7 +1,6 @@
 use skiff_artifact_model::{
-    runtime_assembly_identity_hash, BytecodeArtifactRef, FileIrRef, PackageArtifactRef,
-    PackageSchemaIndexRef, PackageSchemaTypeRecordRef, PublicationResourceRef, RuntimeAssemblyRef,
-    ServiceContractRef, ServiceDeploymentRef,
+    BytecodeArtifactRef, FileIrRef, PackageArtifactRef, PackageSchemaIndexRef,
+    PackageSchemaTypeRecordRef, PublicationResourceRef, ServiceContractRef, ServiceDeploymentRef,
 };
 
 use crate::{
@@ -40,14 +39,12 @@ typed_path!(PackageSchemaIndexRecordPath);
 typed_path!(PackageSchemaTypeRecordPath);
 typed_path!(ServiceContractRecordPath);
 typed_path!(ServiceDeploymentRecordPath);
-typed_path!(RuntimeAssemblyRecordPath);
 typed_path!(PackageFileIrRecordPath);
 typed_path!(PackageBytecodeRecordPath);
 typed_path!(PackageResourceRecordPath);
 typed_path!(PackageArtifactPointerPath);
 typed_path!(ServiceContractPointerPath);
 typed_path!(ServiceDeploymentPointerPath);
-typed_path!(RuntimeAssemblyPointerPath);
 typed_path!(ReleasePointerPath);
 
 impl PackageArtifactRecordPath {
@@ -191,17 +188,6 @@ impl ServiceDeploymentRecordPath {
     }
 }
 
-impl RuntimeAssemblyRecordPath {
-    pub fn new(reference: &RuntimeAssemblyRef) -> Result<Self> {
-        let identity = runtime_assembly_identity_hash(reference.assembly_identity.as_str())
-            .map_err(|_| ArtifactIdentityError::InvalidArtifactSegment {
-                label: "assemblyIdentity".to_string(),
-                value: reference.assembly_identity.to_string(),
-            })?;
-        relative(format!("records/runtime-assemblies/{identity}.json")).map(Self)
-    }
-}
-
 impl PackageArtifactPointerPath {
     pub fn new(package_id: &str, package_version: &str) -> Result<Self> {
         let package = coordinate_segment(package_id, "packageId")?;
@@ -232,13 +218,6 @@ impl ServiceDeploymentPointerPath {
             "pointers/service-deployments/{service}/{version}.json"
         ))
         .map(Self)
-    }
-}
-
-impl RuntimeAssemblyPointerPath {
-    pub fn new(release: &str) -> Result<Self> {
-        let release = safe_segment(release, "assembly release")?;
-        relative(format!("pointers/runtime-assemblies/{release}.json")).map(Self)
     }
 }
 
