@@ -85,6 +85,7 @@ fn frame(mode: ParamModeIr, plan: LinkedValueTransferPlan) -> LinkedFrameLayout 
         Box::new([]),
         Box::new([plan]),
         Box::new([]),
+        None,
     )
     .expect("test frame is locally well-shaped")
 }

@@ -94,6 +94,7 @@ struct PendingResume {
     function: FunctionIndex,
     instruction: InstructionIndex,
     resume_instruction: InstructionIndex,
+    end_resume_pc: Option<InstructionIndex>,
     resume_site: ResumeSiteIndex,
     expected_stack_height: u32,
     expected_result_count: u32,
@@ -263,10 +264,7 @@ impl VmFiber {
                 let image = Arc::clone(&pending.image);
                 self.resume_values(pending, VmOwnedValues::empty(image))
             }
-            ResumeOutcome::StreamEnd => {
-                self.state = VmFiberState::Terminal;
-                Err(VmError::StreamEndResumeUnavailable)
-            }
+            ResumeOutcome::StreamEnd => self.resume_stream_end(pending),
             ResumeOutcome::Throw(values) => self.resume_throw(pending, values),
             ResumeOutcome::Failure(error) => {
                 self.state = VmFiberState::Terminal;
@@ -316,6 +314,26 @@ impl VmFiber {
         }
         self.current_frame_mut()?
             .resume_to(pending.resume_instruction);
+        self.state = VmFiberState::Runnable;
+        Ok(())
+    }
+
+    fn resume_stream_end(&mut self, pending: PendingResume) -> Result<(), VmError> {
+        let end_resume_pc = pending.end_resume_pc.ok_or_else(|| {
+            self.state = VmFiberState::Terminal;
+            VmError::StreamEndResumeUnavailable
+        })?;
+        let frame = self.current_frame()?.clone();
+        if frame.function() != pending.function
+            || frame.instruction() != pending.instruction
+            || frame.operand_height()
+                != usize::try_from(pending.expected_stack_height)
+                    .map_err(|_| VmError::ResumeTokenMismatch)?
+        {
+            self.state = VmFiberState::Terminal;
+            return Err(VmError::ResumeTokenMismatch);
+        }
+        self.current_frame_mut()?.resume_to(end_resume_pc);
         self.state = VmFiberState::Runnable;
         Ok(())
     }
@@ -1825,6 +1843,7 @@ impl VmFiber {
             VmResumeAuthority::Child(target),
             resume_site,
             resume.resume(),
+            None,
             expected_stack_height,
             result_count as u32,
         )?;
@@ -1907,6 +1926,7 @@ impl VmFiber {
             VmResumeAuthority::Child(target),
             resume_site,
             resume.resume(),
+            None,
             expected_stack_height,
             result_count as u32,
         )?;
@@ -2037,6 +2057,7 @@ impl VmFiber {
             VmResumeAuthority::Child(target),
             resume_site,
             resume.resume(),
+            None,
             expected_stack_height,
             result_count as u32,
         )?;
@@ -2118,6 +2139,7 @@ impl VmFiber {
             VmResumeAuthority::Adapter(adapter_index),
             resume_site,
             resume.resume(),
+            None,
             expected_stack_height,
             result_count as u32,
         )?;
@@ -2255,6 +2277,7 @@ impl VmFiber {
                 opcode: Opcode::StreamNext,
             });
         }
+        let end_resume_pc = resume.end_resume().ok_or(VmError::StreamEndResumeUnavailable)?;
         let arguments = VmOwnedValues::new(
             Arc::clone(self.entry.image().program()),
             Box::new([endpoint]),
@@ -2277,6 +2300,7 @@ impl VmFiber {
             VmResumeAuthority::Child(ChildTarget::StreamNext),
             resume_site,
             resume.resume(),
+            Some(end_resume_pc),
             expected_stack_height,
             1,
         )?;
@@ -2326,6 +2350,7 @@ impl VmFiber {
             VmResumeAuthority::StreamItem,
             resume_site,
             resume.resume(),
+            None,
             expected_stack_height,
             0,
         )?;
@@ -2505,6 +2530,13 @@ impl VmFiber {
                 opcode,
             });
         }
+        if row.end_resume().is_some_and(|end_resume| end_resume.get() as usize >= function_len) {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode,
+            });
+        }
         Ok(row)
     }
 
@@ -2516,6 +2548,7 @@ impl VmFiber {
         authority: VmResumeAuthority,
         resume_site: ResumeSiteIndex,
         resume_instruction: InstructionIndex,
+        end_resume_pc: Option<InstructionIndex>,
         expected_stack_height: u32,
         expected_result_count: u32,
     ) -> Result<VmResumeToken, VmError> {
@@ -2531,6 +2564,7 @@ impl VmFiber {
             function,
             instruction,
             resume_instruction,
+            end_resume_pc,
             resume_site,
             expected_stack_height,
             expected_result_count,
@@ -2542,6 +2576,7 @@ impl VmFiber {
             function,
             instruction,
             resume_instruction,
+            end_resume_pc,
             resume_site,
             expected_stack_height,
             expected_result_count,
@@ -2911,6 +2946,7 @@ fn pending_matches(pending: &PendingResume, token: &VmResumeToken) -> bool {
         && pending.function == token.function()
         && pending.instruction == token.instruction()
         && pending.resume_instruction == token.resume_instruction()
+        && pending.end_resume_pc == token.end_resume_pc()
         && pending.resume_site == token.resume_site()
         && pending.expected_stack_height == token.expected_stack_height()
         && pending.expected_result_count == token.expected_result_count()

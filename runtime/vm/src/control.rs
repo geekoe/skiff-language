@@ -84,6 +84,7 @@ pub struct VmResumeToken {
     function: FunctionIndex,
     instruction: InstructionIndex,
     resume_instruction: InstructionIndex,
+    end_resume_pc: Option<InstructionIndex>,
     resume_site: ResumeSiteIndex,
     expected_stack_height: u32,
     expected_result_count: u32,
@@ -101,6 +102,7 @@ impl VmResumeToken {
         function: FunctionIndex,
         instruction: InstructionIndex,
         resume_instruction: InstructionIndex,
+        end_resume_pc: Option<InstructionIndex>,
         resume_site: ResumeSiteIndex,
         expected_stack_height: u32,
         expected_result_count: u32,
@@ -112,6 +114,7 @@ impl VmResumeToken {
             function,
             instruction,
             resume_instruction,
+            end_resume_pc,
             resume_site,
             expected_stack_height,
             expected_result_count,
@@ -137,6 +140,10 @@ impl VmResumeToken {
 
     pub const fn resume_instruction(&self) -> InstructionIndex {
         self.resume_instruction
+    }
+
+    pub const fn end_resume_pc(&self) -> Option<InstructionIndex> {
+        self.end_resume_pc
     }
 
     pub const fn resume_site(&self) -> ResumeSiteIndex {
@@ -593,7 +600,7 @@ mod tests {
 
     #[test]
     fn continuation_and_ticket_remain_compact_value_envelopes() {
-        assert!(size_of::<VmResumeToken>() <= 80);
+        assert!(size_of::<VmResumeToken>() <= 96);
         assert_eq!(size_of::<PendingTicket>(), 8);
     }
 
