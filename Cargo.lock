@@ -2912,6 +2912,7 @@ dependencies = [
  "skiff-runtime-loader",
  "skiff-runtime-model",
  "skiff-runtime-request-contract",
+ "skiff-runtime-scheduler",
  "skiff-runtime-vm",
  "thiserror 2.0.18",
  "time",
