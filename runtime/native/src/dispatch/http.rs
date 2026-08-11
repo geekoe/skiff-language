@@ -382,7 +382,7 @@ impl HttpNativeDispatch {
             }
             _ => return Err(unsupported_native_target(binding_key)),
         };
-        invocation.native_boundary()?.from_wire_return(
+        invocation.native_boundary()?.decode_wire_return(
             &value,
             &format!("{diagnostic_target} response"),
             heap,
@@ -401,7 +401,7 @@ impl HttpNativeDispatch {
         let native_boundary = invocation.native_boundary()?;
         if binding_key == HTTP_RESPONSE_NO_CONTENT_KEY {
             let response = http_response_wire(204, Value::Array(vec![]), Vec::new());
-            return native_boundary.from_wire_return(
+            return native_boundary.decode_wire_return(
                 &response,
                 &format!("{diagnostic_target} response"),
                 heap,
@@ -413,7 +413,7 @@ impl HttpNativeDispatch {
             })?;
             let allow = runtime_string_arg(allow, &format!("{diagnostic_target} allow"))?;
             let response = http_method_not_allowed_wire(allow);
-            return native_boundary.from_wire_return(
+            return native_boundary.decode_wire_return(
                 &response,
                 &format!("{diagnostic_target} response"),
                 heap,
@@ -447,7 +447,7 @@ impl HttpNativeDispatch {
                 RuntimeError::Decode(format!("{diagnostic_target} body encode failed: {error}"))
             })?;
             let response = http_response_wire(status, json_headers(), body);
-            return native_boundary.from_wire_return(
+            return native_boundary.decode_wire_return(
                 &response,
                 &format!("{diagnostic_target} response"),
                 heap,
@@ -480,7 +480,11 @@ impl HttpNativeDispatch {
             json_headers()
         };
         let response = http_response_wire(status, headers, encoded.into_bytes());
-        native_boundary.from_wire_return(&response, &format!("{diagnostic_target} response"), heap)
+        native_boundary.decode_wire_return(
+            &response,
+            &format!("{diagnostic_target} response"),
+            heap,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -510,7 +514,7 @@ impl HttpNativeDispatch {
             HTTP_HEADERS_SSE_KEY => sse_headers(),
             _ => return Err(unsupported_native_target(binding_key)),
         };
-        invocation.native_boundary()?.from_wire_return(
+        invocation.native_boundary()?.decode_wire_return(
             &value,
             &format!("{diagnostic_target} response"),
             heap,
@@ -598,7 +602,7 @@ impl HttpNativeDispatch {
             HTTP_STREAM_END_KEY => serde_json::json!({ "tag": "end" }),
             _ => return Err(unsupported_native_target(binding_key)),
         };
-        native_boundary.from_wire_return(&value, &format!("{diagnostic_target} response"), heap)
+        native_boundary.decode_wire_return(&value, &format!("{diagnostic_target} response"), heap)
     }
 }
 
@@ -612,13 +616,13 @@ fn external_http_wire_operation<'a>(
         if internal_handle {
             invocation
                 .native_boundary()?
-                .from_wire_internal_handle_return(
+                .decode_wire_internal_handle_return(
                     &value,
                     &format!("{diagnostic_target} response"),
                     heap,
                 )
         } else {
-            invocation.native_boundary()?.from_wire_return(
+            invocation.native_boundary()?.decode_wire_return(
                 &value,
                 &format!("{diagnostic_target} response"),
                 heap,

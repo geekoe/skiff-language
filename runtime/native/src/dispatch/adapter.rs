@@ -17,6 +17,12 @@ use skiff_runtime_model::addr::ExecutableAddr;
 
 pub struct NativeDispatch;
 
+impl Default for NativeDispatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NativeDispatch {
     pub fn new() -> Self {
         Self

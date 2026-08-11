@@ -95,7 +95,7 @@ impl WebsocketNativeDispatch {
             }
             _ => unreachable!("websocket native target checked by caller"),
         }
-        let value = invocation.native_boundary()?.from_wire_return(
+        let value = invocation.native_boundary()?.decode_wire_return(
             &Value::Null,
             &format!("{diagnostic_target} response"),
             heap,
@@ -153,7 +153,7 @@ impl WebsocketNativeDispatch {
                 move |value, heap| {
                     invocation
                         .native_boundary()?
-                        .from_wire_return(&value, &format!("{diagnostic_target} response"), heap)
+                        .decode_wire_return(&value, &format!("{diagnostic_target} response"), heap)
                         .map_err(|error| {
                             RuntimeError::decode_target("std.json.decode", error.to_string())
                         })

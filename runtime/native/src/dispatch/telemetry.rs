@@ -60,7 +60,7 @@ impl TelemetryNativeDispatch {
             })
             .collect::<Result<Vec<_>>>()?;
         let value = telemetry_context.emit_native(binding_key, &wire_args)?;
-        native_boundary.from_wire_return(&value, &format!("{diagnostic_target} response"), heap)
+        native_boundary.decode_wire_return(&value, &format!("{diagnostic_target} response"), heap)
     }
 }
 
