@@ -284,16 +284,16 @@ mod tests {
         assert_eq!(path[0]["name"], "value");
     }
 
-    // --- Negatives: let immutability ---------------------------------------------
+    // --- Negatives: final immutability ---------------------------------------------
 
     #[test]
-    fn let_direct_and_member_assignment_are_rejected() {
+    fn final_direct_and_member_assignment_are_rejected() {
         for (label, source, expected) in [
             (
-                "direct let assignment",
+                "direct final assignment",
                 r#"
                 function run() -> number {
-                  let x = 1
+                  final x = 1
                   x = 2
                   return x
                 }
@@ -301,12 +301,12 @@ mod tests {
                 "assignment target derives from immutable binding `x`",
             ),
             (
-                "member assignment through a let binding",
+                "member assignment through a final binding",
                 r#"
                 type Doc { title: string }
 
                 function run() -> string {
-                  let doc = Doc { title: "x" }
+                  final doc = Doc { title: "x" }
                   doc.title = "y"
                   return doc.title
                 }
@@ -338,10 +338,10 @@ mod tests {
     fn mutating_receiver_calls_on_immutable_roots_are_rejected() {
         for (label, source, expected) in [
             (
-                "push on a let array",
+                "push on a final array",
                 r#"
                 function run() -> number {
-                  let items = Array.empty<number>()
+                  final items = Array.empty<number>()
                   items.push(1)
                   return items.length()
                 }
@@ -349,10 +349,10 @@ mod tests {
                 "cannot mutate through immutable binding `items`",
             ),
             (
-                "set on a let map",
+                "set on a final map",
                 r#"
                 function run() -> number {
-                  let items = Map.empty<string, number>()
+                  final items = Map.empty<string, number>()
                   items.set("k", 1)
                   return items.length()
                 }
@@ -407,17 +407,29 @@ mod tests {
     }
 
     #[test]
-    fn top_level_let_and_var_are_rejected() {
+    fn top_level_final_and_var_are_rejected() {
         for (label, source) in [
-            ("top-level let", "let x = 1\n"),
+            ("top-level final", "final x = 1\n"),
             ("top-level var", "var x = 1\n"),
         ] {
             let error = compile_error(source, "internal/binding_inout.skiff");
             assert!(
-                error.contains("let/var are only allowed inside blocks"),
+                error.contains("final/var are only allowed inside blocks"),
                 "{label} produced unexpected diagnostic:\n{error}"
             );
         }
+    }
+
+    #[test]
+    fn removed_let_keyword_is_rejected() {
+        let error = compile_error(
+            "function run() -> void {\n  let x = 1\n}\n",
+            "internal/binding_inout.skiff",
+        );
+        assert!(
+            error.contains("`let` has been removed; use `final`"),
+            "unexpected diagnostic:\n{error}"
+        );
     }
 
     // --- Negatives: const purity -------------------------------------------------

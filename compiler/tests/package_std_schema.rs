@@ -313,7 +313,7 @@ function eventStatus(event: std.http.HttpSseEvent) -> integer? {
     return event.status
   }
   if event.tag == "event" {
-    let data = event.data
+    final data = event.data
     if data == "" {
       return null
     }

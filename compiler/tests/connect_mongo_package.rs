@@ -71,8 +71,8 @@ function findUser(repo: Repo, id: string) -> User? {
                 r#"
 type User { id: string, name: string }
 function findUser(id: string) -> User? {
-  let db = connect.mongo.Target("cluster-a", "app")
-  let users = db.Collection<User>("user")
+  final db = connect.mongo.Target("cluster-a", "app")
+  final users = db.Collection<User>("user")
   return users.findOne({ id: id })
 }
 "#,
@@ -84,8 +84,8 @@ function findUser(id: string) -> User? {
 import connect
 type User { id: string, name: string }
 function findUser(id: string) -> User? {
-  let db = connect.mongo.Target("cluster-a", "app")
-  let users = db.Collection<User>("user")
+  final db = connect.mongo.Target("cluster-a", "app")
+  final users = db.Collection<User>("user")
   return users.findOne({ id: id })
 }
 "#,
@@ -95,7 +95,7 @@ function findUser(id: string) -> User? {
                 "std-mongo-root",
                 r#"
 function rejected() -> number {
-  let target = std.mongo.Target("cluster-a", "app")
+  final target = std.mongo.Target("cluster-a", "app")
   return 1
 }
 "#,
@@ -105,7 +105,7 @@ function rejected() -> number {
                 "unknown-root",
                 r#"
 function rejected() -> number {
-  let helper = missing.helper
+  final helper = missing.helper
   return 1
 }
 "#,

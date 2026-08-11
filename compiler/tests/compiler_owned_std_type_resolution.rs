@@ -224,7 +224,7 @@ function run(input: string) -> std.websocket.WebSocketConnectResult {
             r#"import std
 
 function run(input: std.http.HttpClientRequest) -> integer {
-  let response = std.http.stream(input)
+  final response = std.http.stream(input)
   return response.status
 }
 "#,

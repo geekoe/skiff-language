@@ -39,8 +39,8 @@ mod tests {
 
             function start(input: string, instant: Instant) -> std.task.TaskRef {
               dispatch run(input)
-              let ref = dispatch run(input) after(200ms)
-              let scheduled = dispatch run(input) at(instant)
+              final ref = dispatch run(input) after(200ms)
+              final scheduled = dispatch run(input) at(instant)
               consume(dispatch run(input) after(0ms))
               return ref
             }
@@ -93,7 +93,7 @@ mod tests {
                 "reserved-local-binding",
                 r#"
                 function start() -> void {
-                  let dispatch = 1
+                  final dispatch = 1
                 }
             "#,
             ),
@@ -128,12 +128,12 @@ mod tests {
             }
 
             function start() -> std.task.TaskStatus {
-              let ref = dispatch run()
+              final ref = dispatch run()
               return std.task.status(ref)
             }
 
             function stop() -> std.task.TaskCancelResult {
-              let ref = dispatch run()
+              final ref = dispatch run()
               return std.task.cancel(ref)
             }
 
@@ -267,7 +267,7 @@ mod tests {
                 }
 
                 function start() -> std.task.TaskStatus {
-                  let ref = dispatch run()
+                  final ref = dispatch run()
                   return std.task.status(ref, ref)
                 }
             "#,

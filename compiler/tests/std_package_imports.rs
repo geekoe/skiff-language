@@ -365,8 +365,8 @@ function headerValues(request: std.http.HttpRequest) -> Array<string> {
 }
 
 function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let values = headerValues(request)
-  let session = cookieValue(request)
+  final values = headerValues(request)
+  final session = cookieValue(request)
   return std.http.HttpResponse {
     status: 200,
     headers: Array.empty<std.http.HttpHeader>(),
@@ -580,12 +580,12 @@ type Marker { request: std.http.HttpRequest }
             r#"import std
 
 function check() -> bool {
-  let jsonResult = catch<std.json.DecodeError>(std.json.decode<string>("{}"))
-  let numberResult = catch<std.number.DecodeError>(number.assertSafeInteger(1.5))
-  let exactNumber = std.number.assertSafeInteger(1)
-  let timeResult = catch<std.time.DecodeError>(null)
-  let dbResult = catch<std.db.ConflictError>(null)
-  let constraintResult = catch<std.db.ConstraintError>(null)
+  final jsonResult = catch<std.json.DecodeError>(std.json.decode<string>("{}"))
+  final numberResult = catch<std.number.DecodeError>(number.assertSafeInteger(1.5))
+  final exactNumber = std.number.assertSafeInteger(1)
+  final timeResult = catch<std.time.DecodeError>(null)
+  final dbResult = catch<std.db.ConflictError>(null)
+  final constraintResult = catch<std.db.ConstraintError>(null)
   return exactNumber == 1
 }
 "#,
