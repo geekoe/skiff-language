@@ -39,7 +39,7 @@ use bytes::Bytes;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use serde_json::Value;
 use skiff_artifact_model::{
-    GatewayEntryIdentity, IngressProtocol, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
+    GatewayEntryIdentity, IngressProtocol, RuntimeConfigSnapshotRef,
 };
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_deployment::projection::actor_routing::{
@@ -88,7 +88,6 @@ struct LiveProfile {
     database: String,
     artifact_root: PathBuf,
     profile: String,
-    assembly_identity: String,
     config_snapshot_id: String,
     generation: u64,
     http_port: u16,
@@ -125,7 +124,6 @@ impl LiveProfile {
             database: required("SKIFF_ROUTER_DISPATCH_LIVE_DB"),
             artifact_root: PathBuf::from(required("SKIFF_ROUTER_DISPATCH_LIVE_ARTIFACT_ROOT")),
             profile: required("SKIFF_ROUTER_DISPATCH_LIVE_PROFILE"),
-            assembly_identity: required("SKIFF_ROUTER_DISPATCH_LIVE_ASSEMBLY_IDENTITY"),
             config_snapshot_id: required("SKIFF_ROUTER_DISPATCH_LIVE_CONFIG_SNAPSHOT_ID"),
             generation,
             http_port,
@@ -135,14 +133,6 @@ impl LiveProfile {
             runtime_home_a: PathBuf::from(required("SKIFF_ROUTER_DISPATCH_LIVE_RUNTIME_HOME_A")),
             runtime_home_b: PathBuf::from(required("SKIFF_ROUTER_DISPATCH_LIVE_RUNTIME_HOME_B")),
             temp_dir,
-        }
-    }
-
-    fn assembly_ref(&self) -> RuntimeAssemblyRef {
-        RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                self.assembly_identity.clone(),
-            ),
         }
     }
 
