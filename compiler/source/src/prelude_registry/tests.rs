@@ -350,6 +350,10 @@ fn canonical_declared_native_binding<'a>(
         }
     }
 
+    if let Some(binding) = registry.declared_native_bindings.get(signature.target) {
+        return binding;
+    }
+
     panic!(
         "shared canonical target {} is neither declared directly nor via an allowed prelude impl alias",
         signature.target

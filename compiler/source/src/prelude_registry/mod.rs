@@ -99,6 +99,7 @@ impl PreludeRegistry {
         registry.load_std_registry(platform_sources)?;
         registry.install_compiler_builtin_types();
         registry.load_split_sources(source_snapshot)?;
+        registry.install_shared_native_contract_bindings();
         registry.validate_shared_native_signature_types()?;
         registry.derive_prelude_types();
         registry.canonicalize_prelude_type_symbols();
@@ -240,6 +241,40 @@ impl PreludeRegistry {
                 .insert(builtin.name.to_string(), builtin.symbol.to_string());
             self.type_symbols
                 .insert(builtin.symbol.to_string(), builtin.symbol.to_string());
+        }
+    }
+
+    fn install_shared_native_contract_bindings(&mut self) {
+        for signature in STD_NATIVE_SIGNATURES {
+            if self.declared_native_bindings.contains_key(signature.target) {
+                continue;
+            }
+            if signature
+                .aliases
+                .iter()
+                .any(|alias| self.raw_declared_native_bindings.contains_key(*alias))
+            {
+                continue;
+            }
+
+            let shape = shared_native_binding_shape(signature);
+            let type_params = if shape.type_params.is_empty() {
+                String::new()
+            } else {
+                format!("<{}>", shape.type_params.join(", "))
+            };
+            let binding = NativeBinding {
+                signature: format!(
+                    "native function {}{}({}) -> {}",
+                    signature.target,
+                    type_params,
+                    shape.params.join(", "),
+                    shape.return_type
+                ),
+                shape,
+            };
+            self.declared_native_bindings
+                .insert(signature.target.to_string(), binding);
         }
     }
 
@@ -495,7 +530,6 @@ fn is_legacy_http_root_alias(alias: &str) -> bool {
     })
 }
 
-#[cfg(test)]
 fn native_type_expr_def_name(expr: &skiff_artifact_model::NativeSignatureTypeExpr) -> String {
     use skiff_artifact_model::NativeSignatureTypeExpr;
 
@@ -517,6 +551,22 @@ fn native_type_expr_def_name(expr: &skiff_artifact_model::NativeSignatureTypeExp
         NativeSignatureTypeExpr::Stream(item) => {
             format!("Stream<{}>", native_type_expr_def_name(item))
         }
+    }
+}
+
+fn shared_native_binding_shape(
+    signature: &skiff_artifact_model::NativeSignatureDef,
+) -> NativeBindingShape {
+    NativeBindingShape {
+        type_params: (0..signature.type_param_count)
+            .map(|index| format!("T{index}"))
+            .collect(),
+        params: signature
+            .params
+            .iter()
+            .map(native_type_expr_def_name)
+            .collect(),
+        return_type: native_type_expr_def_name(&signature.return_type),
     }
 }
 
