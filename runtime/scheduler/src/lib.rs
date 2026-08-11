@@ -19,11 +19,17 @@
 
 #![forbid(unsafe_code)]
 
+mod bytecode;
 mod pending;
 mod root_escrow;
 mod stream;
 mod trampoline;
 
+pub use bytecode::{
+    BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeHandoff, BytecodeScheduler,
+    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
+    BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
+};
 pub use pending::{
     BeginPendingError, CompletionHandle, PendingCellState, PendingOwner, PendingOwnerDraft,
     PendingPublication, PendingPublicationError, PendingPublicationFailure, PendingRegistry,

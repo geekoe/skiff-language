@@ -1,0 +1,594 @@
+//! Flat scheduler driver over one or more bytecode execution units.
+
+use std::{fmt, sync::Arc};
+
+use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError};
+use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
+use skiff_runtime_vm::{
+    AdapterInvocation as VmAdapterInvocation, ChildInvocation as VmChildInvocation,
+    PendingOperation as VmPendingOperation, ResumeOutcome, StreamItem as VmStreamItem, VmBudget,
+    VmControl, VmError, VmFiber, VmResult, VmResumeToken,
+};
+
+use crate::{FlatTrampoline, PendingWake, RootEscrow, SuspendedTrampoline, TrampolineCompletion};
+
+/// Failure modes owned by the bytecode scheduler.
+#[derive(Debug)]
+pub enum BytecodeSchedulerError {
+    UnsupportedChild,
+    UnsupportedAdapter,
+    UnsupportedStream,
+    UnsupportedPark,
+    Vm(VmError),
+    Port(String),
+}
+
+impl fmt::Display for BytecodeSchedulerError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsupportedChild => formatter.write_str("bytecode child executor port is absent"),
+            Self::UnsupportedAdapter => {
+                formatter.write_str("bytecode adapter executor port is absent")
+            }
+            Self::UnsupportedStream => {
+                formatter.write_str("bytecode stream supervisor port is absent")
+            }
+            Self::UnsupportedPark => formatter.write_str("bytecode park supervisor port is absent"),
+            Self::Vm(error) => write!(formatter, "bytecode VM unit failed: {error}"),
+            Self::Port(message) => write!(formatter, "bytecode scheduler port failed: {message}"),
+        }
+    }
+}
+
+impl std::error::Error for BytecodeSchedulerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Vm(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<VmError> for BytecodeSchedulerError {
+    fn from(error: VmError) -> Self {
+        Self::Vm(error)
+    }
+}
+
+impl From<String> for BytecodeSchedulerError {
+    fn from(message: String) -> Self {
+        Self::Port(message)
+    }
+}
+
+/// One control result returned by a bytecode execution unit.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BytecodeControl<R, C, A, S, P> {
+    Continue,
+    Complete(R),
+    EnterChild(C),
+    EnterAdapter(A),
+    EmitStream(S),
+    Park(P),
+}
+
+/// Runtime-neutral unit contract implemented by `VmFiber` and by scheduler
+/// fixtures. The unit controls remain typed so adapters can later implement
+/// the same scheduler without introducing a second loop.
+pub trait BytecodeUnit: VmRootSource {
+    type ResumeToken;
+    type ResumeOutcome;
+    type RootResult;
+    type ChildInvocation;
+    type AdapterInvocation;
+    type StreamItem;
+    type PendingOperation;
+
+    fn run_segment(
+        &mut self,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> BytecodeUnitControl<Self>;
+
+    fn resume(
+        &mut self,
+        token: Self::ResumeToken,
+        outcome: Self::ResumeOutcome,
+    ) -> Result<(), BytecodeSchedulerError>;
+
+    fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome;
+}
+
+/// Typed control returned by one bytecode execution unit.
+pub type BytecodeUnitControl<U> = BytecodeControl<
+    <U as BytecodeUnit>::RootResult,
+    <U as BytecodeUnit>::ChildInvocation,
+    <U as BytecodeUnit>::AdapterInvocation,
+    <U as BytecodeUnit>::StreamItem,
+    <U as BytecodeUnit>::PendingOperation,
+>;
+
+/// A child unit and the unique continuation that restores its parent.
+#[derive(Debug)]
+pub struct BytecodeChildStart<U: BytecodeUnit> {
+    pub unit: U,
+    pub resume: U::ResumeToken,
+}
+
+/// One completed handoff plus the continuation that resumes the active unit.
+#[derive(Debug)]
+pub struct BytecodeHandoff<U: BytecodeUnit> {
+    pub resume: U::ResumeToken,
+    pub outcome: U::ResumeOutcome,
+}
+
+/// Port used to start child fibers and run host adapters once.
+pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
+    fn execute_child(
+        &self,
+        invocation: U::ChildInvocation,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeChildStart<U>, BytecodeSchedulerError>;
+
+    fn execute_adapter(
+        &self,
+        invocation: U::AdapterInvocation,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeHandoff<U>, BytecodeSchedulerError>;
+}
+
+/// Port used for stream emission and actual-Pending parking.
+pub trait BytecodeStreamSupervisor<U: BytecodeUnit>: Send + Sync + 'static {
+    fn emit_stream(
+        &self,
+        item: U::StreamItem,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeHandoff<U>, BytecodeSchedulerError>;
+
+    fn park(
+        &self,
+        operation: U::PendingOperation,
+        suspended: SuspendedTrampoline<U, U::ResumeToken>,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<(), BytecodeSchedulerError>;
+}
+
+/// Execution ports supplied to a [`BytecodeScheduler`].
+///
+/// An absent port fails closed before any child, adapter, stream or park
+/// invocation can run.
+pub struct BytecodeSchedulerPorts<U: BytecodeUnit> {
+    pub child_executor: Option<Arc<dyn BytecodeChildExecutor<U>>>,
+    pub stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor<U>>>,
+}
+
+impl<U: BytecodeUnit> Default for BytecodeSchedulerPorts<U> {
+    fn default() -> Self {
+        Self {
+            child_executor: None,
+            stream_supervisor: None,
+        }
+    }
+}
+
+/// Terminal result of a scheduler drive.
+pub enum BytecodeSchedulerOutcome<U: BytecodeUnit> {
+    Complete(U::RootResult),
+    Parked,
+}
+
+impl<U: BytecodeUnit> fmt::Debug for BytecodeSchedulerOutcome<U> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Complete(_) => formatter.write_str("Complete(..)"),
+            Self::Parked => formatter.write_str("Parked"),
+        }
+    }
+}
+
+/// Flat bytecode scheduler over a `FlatTrampoline` of execution units.
+pub struct BytecodeScheduler<U: BytecodeUnit> {
+    trampoline: FlatTrampoline<U, U::ResumeToken>,
+    ports: BytecodeSchedulerPorts<U>,
+}
+
+impl<U> BytecodeScheduler<U>
+where
+    U: BytecodeUnit + VmRootSource + 'static,
+{
+    pub fn new(root: U, ports: BytecodeSchedulerPorts<U>) -> Self {
+        Self {
+            trampoline: FlatTrampoline::new(root),
+            ports,
+        }
+    }
+
+    pub fn blocked_depth(&self) -> usize {
+        self.trampoline.blocked_depth()
+    }
+
+    pub fn active(&self) -> &U {
+        self.trampoline.active()
+    }
+
+    pub fn active_mut(&mut self) -> &mut U {
+        self.trampoline.active_mut()
+    }
+
+    pub fn into_trampoline(self) -> FlatTrampoline<U, U::ResumeToken> {
+        self.trampoline
+    }
+
+    /// Drives the active unit until a root completion or a real park.
+    ///
+    /// Child completion restores exactly one parent. The scheduler never calls
+    /// `run_segment` or `resume` recursively.
+    pub fn run(
+        mut self,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerError> {
+        loop {
+            let control = self.trampoline.active_mut().run_segment(heap, budget);
+            match control {
+                BytecodeControl::Continue => {}
+                BytecodeControl::Complete(result) => {
+                    if self.trampoline.blocked_depth() == 0 {
+                        return Ok(BytecodeSchedulerOutcome::Complete(result));
+                    }
+                    let outcome = U::child_completion_to_resume_outcome(result);
+                    let completion = self.trampoline.complete_active(outcome);
+                    let TrampolineCompletion::ResumeParent(parent) = completion else {
+                        unreachable!("depth check guarantees a parent unit exists");
+                    };
+                    let (mut trampoline, resume, outcome) = parent.into_parts();
+                    trampoline.active_mut().resume(resume, outcome)?;
+                    self.trampoline = trampoline;
+                }
+                BytecodeControl::EnterChild(invocation) => {
+                    let executor = self
+                        .ports
+                        .child_executor
+                        .as_ref()
+                        .ok_or(BytecodeSchedulerError::UnsupportedChild)?;
+                    let start = executor.execute_child(invocation, heap, budget)?;
+                    self.trampoline.enter_child(start.unit, start.resume);
+                }
+                BytecodeControl::EnterAdapter(invocation) => {
+                    let executor = self
+                        .ports
+                        .child_executor
+                        .as_ref()
+                        .ok_or(BytecodeSchedulerError::UnsupportedAdapter)?;
+                    let handoff = executor.execute_adapter(invocation, heap, budget)?;
+                    self.trampoline
+                        .active_mut()
+                        .resume(handoff.resume, handoff.outcome)?;
+                }
+                BytecodeControl::EmitStream(item) => {
+                    let supervisor = self
+                        .ports
+                        .stream_supervisor
+                        .as_ref()
+                        .ok_or(BytecodeSchedulerError::UnsupportedStream)?;
+                    let handoff = supervisor.emit_stream(item, heap, budget)?;
+                    self.trampoline
+                        .active_mut()
+                        .resume(handoff.resume, handoff.outcome)?;
+                }
+                BytecodeControl::Park(operation) => {
+                    let supervisor = self
+                        .ports
+                        .stream_supervisor
+                        .as_ref()
+                        .ok_or(BytecodeSchedulerError::UnsupportedPark)?;
+                    let suspended = self.trampoline.suspend();
+                    supervisor.park(operation, suspended, heap, budget)?;
+                    return Ok(BytecodeSchedulerOutcome::Parked);
+                }
+            }
+        }
+    }
+
+    /// Restores a scheduler from a completed `PendingWake`.
+    ///
+    /// This consumes the wake and restores its escrowed roots exactly once
+    /// before resuming the leaf unit with the winning settlement.
+    pub fn resume_from_pending_wake(
+        wake: PendingWake<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>, U::ResumeOutcome>,
+        ports: BytecodeSchedulerPorts<U>,
+    ) -> Result<Self, BytecodeSchedulerError> {
+        let (owner, settlement) = wake.into_parts();
+        let (resume, suspended, escrow) = owner.into_parts();
+        Self::resume_from_suspended(suspended, resume, settlement.into_outcome(), escrow, ports)
+    }
+
+    /// Restores a scheduler from a suspended chain and its resume envelope.
+    pub fn resume_from_suspended(
+        suspended: SuspendedTrampoline<U, U::ResumeToken>,
+        resume: U::ResumeToken,
+        outcome: U::ResumeOutcome,
+        escrow: RootEscrow,
+        ports: BytecodeSchedulerPorts<U>,
+    ) -> Result<Self, BytecodeSchedulerError> {
+        escrow.restore();
+        let mut trampoline = suspended.resume();
+        trampoline.active_mut().resume(resume, outcome)?;
+        Ok(Self { trampoline, ports })
+    }
+}
+
+impl<U> VmRootSource for BytecodeScheduler<U>
+where
+    U: BytecodeUnit + VmRootSource,
+{
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.trampoline.visit_roots(visitor)
+    }
+}
+
+impl BytecodeUnit for VmFiber {
+    type ResumeToken = VmResumeToken;
+    type ResumeOutcome = ResumeOutcome;
+    type RootResult = VmResult;
+    type ChildInvocation = VmChildInvocation;
+    type AdapterInvocation = VmAdapterInvocation;
+    type StreamItem = VmStreamItem;
+    type PendingOperation = VmPendingOperation;
+
+    fn run_segment(
+        &mut self,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> BytecodeUnitControl<VmFiber> {
+        match VmFiber::run_segment(self, heap, budget) {
+            VmControl::Continue => BytecodeControl::Continue,
+            VmControl::Complete(result) => BytecodeControl::Complete(result),
+            VmControl::EnterChild(invocation) => BytecodeControl::EnterChild(invocation),
+            VmControl::EnterAdapter(invocation) => BytecodeControl::EnterAdapter(invocation),
+            VmControl::EmitStream(item) => BytecodeControl::EmitStream(item),
+            VmControl::Park(operation) => BytecodeControl::Park(operation),
+        }
+    }
+
+    fn resume(
+        &mut self,
+        token: VmResumeToken,
+        outcome: ResumeOutcome,
+    ) -> Result<(), BytecodeSchedulerError> {
+        VmFiber::resume(self, token, outcome).map_err(BytecodeSchedulerError::from)
+    }
+
+    fn child_completion_to_resume_outcome(completed: VmResult) -> ResumeOutcome {
+        match completed {
+            Ok(values) => ResumeOutcome::Values(values),
+            Err(error) => ResumeOutcome::Failure(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        num::NonZeroU32,
+        sync::{Arc, Mutex},
+    };
+
+    use skiff_runtime_model::{
+        vm_heap::{VmHeap, VmHeapError},
+        vm_root::{VmRootSource, VmRootVisitor},
+        vm_value::ValueSlot,
+    };
+    use skiff_runtime_vm::{VmBudget, VmBudgetError, VmSemanticCharge};
+
+    use super::*;
+    use crate::{
+        PendingOwnerDraft, PendingPublication, PendingRegistry, PendingWake, PendingWakeQueue,
+        RootDisposition, RootEscrow, RootEscrowBacking, SettleDisposition,
+    };
+
+    struct NoopHeap;
+
+    impl VmHeap for NoopHeap {
+        fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+
+        fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn release_snapshot(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+
+        fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    struct NoopBudget;
+
+    impl VmBudget for NoopBudget {
+        fn replenish_raw_fuel(&mut self, maximum: NonZeroU32) -> Result<NonZeroU32, VmBudgetError> {
+            Ok(maximum)
+        }
+
+        fn poll_interrupt(&mut self) -> Result<(), VmBudgetError> {
+            Ok(())
+        }
+
+        fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetError> {
+            Ok(())
+        }
+    }
+
+    type TestControl = BytecodeControl<usize, usize, usize, usize, usize>;
+    type TestSuspended = SuspendedTrampoline<TestUnit, usize>;
+    type TestWake = PendingWake<usize, TestSuspended, usize>;
+
+    #[derive(Debug)]
+    struct TestUnit {
+        control: Option<TestControl>,
+        resumed: Option<(usize, usize)>,
+    }
+
+    impl TestUnit {
+        fn parked(operation: usize) -> Self {
+            Self {
+                control: Some(TestControl::Park(operation)),
+                resumed: None,
+            }
+        }
+    }
+
+    impl VmRootSource for TestUnit {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl BytecodeUnit for TestUnit {
+        type ResumeToken = usize;
+        type ResumeOutcome = usize;
+        type RootResult = usize;
+        type ChildInvocation = usize;
+        type AdapterInvocation = usize;
+        type StreamItem = usize;
+        type PendingOperation = usize;
+
+        fn run_segment(
+            &mut self,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> TestControl {
+            if let Some((_, outcome)) = self.resumed.take() {
+                TestControl::Complete(outcome)
+            } else if let Some(control) = self.control.take() {
+                control
+            } else {
+                TestControl::Complete(0)
+            }
+        }
+
+        fn resume(&mut self, token: usize, outcome: usize) -> Result<(), BytecodeSchedulerError> {
+            self.resumed = Some((token, outcome));
+            Ok(())
+        }
+
+        fn child_completion_to_resume_outcome(completed: usize) -> usize {
+            completed
+        }
+    }
+
+    struct TestStreamSupervisor {
+        parked: Mutex<Option<(usize, TestSuspended)>>,
+    }
+
+    impl BytecodeStreamSupervisor<TestUnit> for TestStreamSupervisor {
+        fn emit_stream(
+            &self,
+            _item: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeHandoff<TestUnit>, BytecodeSchedulerError> {
+            Err(BytecodeSchedulerError::UnsupportedStream)
+        }
+
+        fn park(
+            &self,
+            operation: usize,
+            suspended: TestSuspended,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<(), BytecodeSchedulerError> {
+            *self.parked.lock().unwrap() = Some((operation, suspended));
+            Ok(())
+        }
+    }
+
+    struct EmptyRoots;
+
+    impl VmRootSource for EmptyRoots {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl RootEscrowBacking for EmptyRoots {
+        fn root_count(&self) -> usize {
+            0
+        }
+
+        fn restore_roots(self: Box<Self>) {}
+
+        fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {}
+    }
+
+    struct TestWakeQueue(Mutex<Vec<TestWake>>);
+
+    impl PendingWakeQueue<usize, TestSuspended, usize> for TestWakeQueue {
+        fn enqueue(&self, wake: TestWake) {
+            self.0.lock().unwrap().push(wake);
+        }
+    }
+
+    #[test]
+    fn pending_park_and_resume_round_trip() {
+        let mut heap = NoopHeap;
+        let mut budget = NoopBudget;
+        let supervisor = Arc::new(TestStreamSupervisor {
+            parked: Mutex::new(None),
+        });
+        let ports = BytecodeSchedulerPorts {
+            child_executor: None,
+            stream_supervisor: Some(
+                supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<TestUnit>>
+            ),
+        };
+
+        let outcome = BytecodeScheduler::new(TestUnit::parked(7), ports)
+            .run(&mut heap, &mut budget)
+            .unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
+
+        let (operation, suspended) = supervisor.parked.lock().unwrap().take().unwrap();
+        assert_eq!(operation, 7);
+
+        let registry = PendingRegistry::<usize, TestSuspended, usize>::default();
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(EmptyRoots)))
+            .unwrap();
+        let queue = Arc::new(TestWakeQueue(Mutex::new(Vec::new())));
+        let wake_queue: Arc<dyn PendingWakeQueue<usize, TestSuspended, usize>> = queue.clone();
+        let publication = registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(11, suspended),
+                wake_queue,
+            )
+            .unwrap();
+        assert_eq!(publication, PendingPublication::Waiting);
+        assert!(matches!(
+            completion.complete(42),
+            SettleDisposition::Enqueued
+        ));
+
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+        let scheduler = BytecodeScheduler::<TestUnit>::resume_from_pending_wake(
+            wake,
+            BytecodeSchedulerPorts::default(),
+        )
+        .unwrap();
+        let outcome = scheduler.run(&mut heap, &mut budget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(42)));
+    }
+}
