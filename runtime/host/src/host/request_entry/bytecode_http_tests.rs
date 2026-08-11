@@ -27,12 +27,10 @@ use skiff_compiler_core::id::PublicationId;
 use skiff_compiler_input::PublicationApiSpec;
 use skiff_compiler_source::source_graph::CompilerSourceFile;
 use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_runtime_loader::FilesystemRuntimeAssemblyContentResolver;
+use skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver;
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::{
-    protocol::{
-        decode_binary_frame, decode_response_end_frame, RUNTIME_FRAME_SCHEMA_VERSION,
-    },
+    protocol::{decode_binary_frame, decode_response_end_frame, RUNTIME_FRAME_SCHEMA_VERSION},
     runtime_assembly_request::{
         RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
         RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
@@ -489,11 +487,8 @@ async fn assert_bytecode_response_error(
 
 fn connection_bootstrap(fixture: &CompiledFixture) -> ConnectionBootstrap {
     ConnectionBootstrap {
-        resolver: FilesystemRuntimeAssemblyContentResolver::open(&fixture.artifact_root)
+        resolver: FilesystemDeploymentBytecodeContentResolver::open(&fixture.artifact_root)
             .expect("bytecode filesystem resolver"),
-        service_db: skiff_artifact_model::AssemblyActivationServiceDb {
-            mongo_url: "mongodb://127.0.0.1:27017".to_string(),
-        },
         activation: serde_json::from_value(serde_json::json!({ "profile": "test" }))
             .expect("test bootstrap activation"),
         max_response_bytes: 1024,

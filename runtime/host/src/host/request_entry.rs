@@ -1,15 +1,9 @@
-#[cfg(test)]
-use skiff_artifact_model::ServiceIngressKey;
 use skiff_runtime_request::{BoundaryResponse, RequestCancel, RequestError, RouterWriterMessage};
 use skiff_runtime_transport::response_mapper::OrdinaryResponseEvent;
 use skiff_runtime_transport::{response_mapper, TransportError};
 use tracing::info;
 
-#[cfg(test)]
-use crate::loader::assembly_admission::ActiveAssemblyRoute;
-use crate::{
-    error::{Result, RuntimeError},
-};
+use crate::error::{Result, RuntimeError};
 
 use super::RuntimeHost;
 
@@ -20,26 +14,6 @@ mod bytecode_http_tests;
 mod websocket_jsonrpc;
 
 impl RuntimeHost {
-    /// Resolves a canonical ingress from the already-loaded deployment
-    /// registry (no lazy load). Test paths use this after direct admission.
-    ///
-    /// The canonical wire bridge supplies the selector. This entry performs no artifact access or
-    /// candidate mutation and returns the activation plus exact linked gateway entry pinned by
-    /// `ActiveAssemblyRoute`.
-    #[cfg(test)]
-    pub(crate) fn lookup_active_assembly_request_route(
-        &self,
-        key: &ServiceIngressKey,
-    ) -> Result<ActiveAssemblyRoute> {
-        let route = self
-            .active_runtime_assembly_route(key)
-            .map_err(|error| RuntimeError::Decode(error.to_string()))?
-            .ok_or_else(|| {
-                RuntimeError::Unsupported(format!("no active assembly ingress matches {key:?}"))
-            })?;
-        Ok(route)
-    }
-
     pub(crate) async fn cancel_request(&self, cancel: RequestCancel) {
         if self.request_supervisor.cancel(&cancel).await {
             info!(
