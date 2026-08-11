@@ -75,6 +75,7 @@ mod tests {
             external_refs: file_ir.external_refs.clone(),
             source_map: file_ir.source_map.clone(),
             type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
             constants: Vec::new(),
             functions: vec![function],

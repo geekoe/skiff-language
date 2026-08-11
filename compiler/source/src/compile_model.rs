@@ -119,6 +119,7 @@ pub struct PackageSourceModel {
     /// 不得通过 `dependencies` 字段重新拿原始数据。
     name_resolution: NameResolutionModel,
     type_resolution: TypeResolutionModel,
+    dependency_analysis: super::SourceDependencyAnalysisInput,
     source_events: SourceEventFacts,
     expression_types: ExpressionTypeModel,
     publication_api: PublicationApiModel,
@@ -296,6 +297,7 @@ impl PackageSourceModel {
             entity_model,
             name_resolution,
             type_resolution,
+            dependency_analysis: input.dependency_analysis.clone(),
             source_events,
             expression_types,
             publication_api,
@@ -345,6 +347,10 @@ impl PackageSourceModel {
 
     pub fn type_resolution(&self) -> &TypeResolutionModel {
         &self.type_resolution
+    }
+
+    pub fn dependency_analysis(&self) -> &super::SourceDependencyAnalysisInput {
+        &self.dependency_analysis
     }
 
     /// Returns the source-authoritative local conformance handoff without

@@ -17,8 +17,10 @@ use crate::file_ir::{
     ServiceSymbolRef, TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
 };
 use skiff_artifact_identity::type_ref_abi_key;
-use skiff_artifact_model::{NamedUnionBranchIr, NominalTypeRefBaseIr};
-use skiff_compiler_core::source_role::PublicationSourceRole;
+use skiff_artifact_model::{
+    ContractTypeDescriptor, NamedUnionBranchIr, NominalTypeRefBaseIr,
+};
+use skiff_compiler_core::{source_role::PublicationSourceRole, type_ref::contract_type_ref_to_ir};
 use skiff_compiler_source::api::PublicSymbolKind;
 use skiff_compiler_source::parsed_sources::ParsedCompilerSource;
 use skiff_compiler_source::PackageSourceModel;
@@ -187,12 +189,36 @@ impl LoweredPackage {
         // Typed MIR/CFG post-pass: one MirUnit per FileIrUnit. Typed callable
         // identity and full source-owned effects are copied into MIR; pending
         // is derived from that summary (design §2.4), never from File IR.
-        let mir_units = crate::mir::builder::build_mir_units_with_source_facts(
+        let package_type_records = model
+            .dependency_analysis()
+            .package_schema_records()
+            .filter_map(|(alias, symbol_path, record)| {
+                let ContractTypeDescriptor::Record { fields } =
+                    &record.canonical_descriptor.descriptor
+                else {
+                    return None;
+                };
+                let fields = fields
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), contract_type_ref_to_ir(ty)))
+                    .collect::<BTreeMap<_, _>>();
+                Some([
+                    ((alias.to_string(), symbol_path.to_string()), fields.clone()),
+                    (
+                        (alias.to_string(), record.stable_schema_key.clone()),
+                        fields,
+                    ),
+                ])
+            })
+            .flatten()
+            .collect::<BTreeMap<_, _>>();
+        let mir_units = crate::mir::builder::build_mir_units_with_source_facts_and_package_records(
             model.policy().package_id(),
             &file_ir_units,
             model.callable_effects(),
             model.resolved_call_targets(),
             &mir_source_facts,
+            package_type_records,
         )
         .map_err(|error| PublicationError::ContractValidation {
             message: format!("MIR build failed: {error}"),

@@ -657,7 +657,12 @@ impl MirFunction {
             if !slot.writable_local {
                 continue;
             }
-            if slot.kind != MirSlotKind::Local {
+            let inout_parameter = slot.kind == MirSlotKind::Param
+                && self.params.iter().any(|parameter| {
+                    parameter.slot == slot.slot
+                        && parameter.mode == MirParamMode::InOut
+                });
+            if slot.kind != MirSlotKind::Local && !inout_parameter {
                 return Err(MirContractError::InvalidWritableLocalSlot {
                     function: self.symbol.clone(),
                     slot: slot.slot,

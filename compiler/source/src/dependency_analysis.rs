@@ -310,6 +310,17 @@ impl SourceDependencyAnalysisInput {
         self.packages.get(alias)?.schema_records.get(stable_key)
     }
 
+    pub fn package_schema_records(
+        &self,
+    ) -> impl Iterator<Item = (&str, &str, &PackageSchemaTypeRecord)> {
+        self.packages.iter().flat_map(|(alias, facts)| {
+            facts
+                .schema_records
+                .iter()
+                .map(move |(symbol_path, record)| (alias.as_str(), symbol_path.as_str(), record))
+        })
+    }
+
     pub fn exact_package_type(
         &self,
         package_id: &str,

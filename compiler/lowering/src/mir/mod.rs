@@ -144,6 +144,7 @@ pub struct MirUnit {
     pub external_refs: ExternalRefTable,
     pub source_map: SourceMapDto,
     pub type_table: Vec<TypeDeclIr>,
+    pub package_type_records: BTreeMap<(String, String), BTreeMap<String, TypeRefIr>>,
     pub link_targets: FileLinkTargets,
     /// Dense local-constant metadata. Frozen graphs remain a separate
     /// ConstEvaluator input keyed by `MirConst::symbol`; initializer bodies

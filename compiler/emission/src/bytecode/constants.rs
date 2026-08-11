@@ -9,7 +9,7 @@ use skiff_artifact_model::{
 use skiff_compiler_core::type_ref::{map_type_ref, walk_type_ref};
 use skiff_compiler_lowering::mir::{MirFunction, MirUnit};
 
-use super::{inputs::ValidatedEmissionInputs, BytecodeEmissionError};
+use super::{inputs::{ValidatedConstant, ValidatedEmissionInputs}, BytecodeEmissionError};
 
 pub(crate) struct ConstantImage {
     pub(crate) pools: BytecodePools,
@@ -218,7 +218,7 @@ pub(crate) fn build_constant_image(
         ..BytecodePools::default()
     };
 
-    merge_graphs(inputs, pools, &type_indices)
+    merge_graphs(inputs, pools, type_indices)
 }
 
 fn collect_canonical_types(
@@ -321,10 +321,11 @@ fn collect_function_types(
 fn merge_graphs(
     inputs: &ValidatedEmissionInputs<'_>,
     mut pools: BytecodePools,
-    type_indices: &BTreeMap<String, u32>,
+    mut type_indices: BTreeMap<String, u32>,
 ) -> Result<ConstantImage, BytecodeEmissionError> {
     let mut nodes = Vec::new();
     let mut roots = BTreeMap::new();
+    let mut shape_indices = BTreeMap::new();
 
     for (symbol, validated) in &inputs.constants {
         let graph = validated.bundle.graph(symbol)?;
@@ -345,7 +346,16 @@ fn merge_graphs(
         for local_index in 0..graph.nodes.len() {
             let local_index = checked_index(local_index, "relocating a constant node")?;
             let node = validated.bundle.node(symbol, local_index)?;
-            nodes.push(relocate_node(symbol, local_index, node, base)?);
+            nodes.push(relocate_node(
+                symbol,
+                local_index,
+                node,
+                base,
+                validated,
+                &mut pools,
+                &mut type_indices,
+                &mut shape_indices,
+            )?);
         }
 
         let node_index =
@@ -385,17 +395,22 @@ fn merge_graphs(
         pools,
         roots,
         graph: FrozenConstantGraph { nodes },
-        type_indices: type_indices.clone(),
-        shape_indices: BTreeMap::new(),
+        type_indices,
+        shape_indices,
         writable_path_indices: BTreeMap::new(),
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn relocate_node(
     symbol: &str,
     node_index: u32,
     node: &FrozenConstantNode,
     base: u32,
+    validated: &ValidatedConstant<'_>,
+    pools: &mut BytecodePools,
+    type_indices: &mut BTreeMap<String, u32>,
+    shape_indices: &mut BTreeMap<String, u32>,
 ) -> Result<FrozenConstantNode, BytecodeEmissionError> {
     let relocate_children = |children: &[u32]| {
         children
@@ -425,13 +440,21 @@ fn relocate_node(
         FrozenConstantNode::Array { children } => Ok(FrozenConstantNode::Array {
             children: relocate_children(children)?,
         }),
-        FrozenConstantNode::Record { children, .. } => {
-            let _ = relocate_children(children)?;
-            Err(BytecodeEmissionError::UnsupportedConstantNode {
-                symbol: symbol.to_string(),
-                node_index,
-                construct: "Record",
-                reason: "the frozen shape sidecar has no nominal owner, field names, or explicit field transfer plans",
+        FrozenConstantNode::Record {
+            shape_index,
+            children,
+        } => {
+            let children = relocate_children(children)?;
+            let shape_index = relocate_constant_shape(
+                validated,
+                *shape_index,
+                pools,
+                type_indices,
+                shape_indices,
+            )?;
+            Ok(FrozenConstantNode::Record {
+                shape_index,
+                children,
             })
         }
         FrozenConstantNode::Representation { value, .. } => {
@@ -443,16 +466,108 @@ fn relocate_node(
                 reason: "producer-owned representation type/value facts are not yet connected to emission",
             })
         }
-        FrozenConstantNode::Implementation { record, .. } => {
-            let _ = relocate_children(std::slice::from_ref(record))?;
-            Err(BytecodeEmissionError::UnsupportedConstantNode {
-                symbol: symbol.to_string(),
-                node_index,
-                construct: "Implementation/Behavior",
-                reason: "producer-owned implementation/behavior ownership facts are not yet connected to emission",
+        FrozenConstantNode::Implementation { record, behaviors } => {
+            let record = base.checked_add(*record).ok_or(
+                BytecodeEmissionError::ArithmeticOverflow {
+                    context: "relocating frozen implementation record",
+                },
+            )?;
+            Ok(FrozenConstantNode::Implementation {
+                record,
+                behaviors: behaviors.clone(),
             })
         }
     }
+}
+
+fn relocate_constant_shape(
+    validated: &ValidatedConstant<'_>,
+    shape_index: u32,
+    pools: &mut BytecodePools,
+    type_indices: &mut BTreeMap<String, u32>,
+    shape_indices: &mut BTreeMap<String, u32>,
+) -> Result<u32, BytecodeEmissionError> {
+    let shape = validated.bundle.shape(shape_index).map_err(|error| {
+        BytecodeEmissionError::CanonicalSerialization {
+            context: format!("constant `{}` shape {shape_index}", validated.constant.symbol),
+            message: error.to_string(),
+        }
+    })?;
+    let owner = validated
+        .bundle
+        .type_ref(shape.type_ref())
+        .map_err(|error| BytecodeEmissionError::CanonicalSerialization {
+            context: format!("constant `{}` shape owner", validated.constant.symbol),
+            message: error.to_string(),
+        })?
+        .clone();
+    let owner = qualify_local_types(validated.module_path, &owner);
+    let owner_ref = intern_merged_type(validated.module_path, &owner, pools, type_indices)?;
+    let mut fields = Vec::with_capacity(shape.fields().len());
+    for field in shape.fields() {
+        let ty = validated
+            .bundle
+            .type_ref(field.type_ref())
+            .map_err(|error| BytecodeEmissionError::CanonicalSerialization {
+                context: format!(
+                    "constant `{}` shape field `{}` type",
+                    validated.constant.symbol,
+                    field.name()
+                ),
+                message: error.to_string(),
+            })?
+            .clone();
+        let qualified = qualify_local_types(validated.module_path, &ty);
+        let field_type_ref = intern_merged_type(validated.module_path, &qualified, pools, type_indices)?;
+        fields.push(ShapeFieldDeclaration {
+            name: field.name().to_string(),
+            type_ref: field_type_ref,
+            plan: ValueTransferPlan::FromType { ty: qualified },
+        });
+    }
+    let declaration = ShapeDeclaration {
+        type_ref: owner_ref,
+        fields,
+    };
+    let key = serde_json::to_string(&declaration).map_err(|error| {
+        BytecodeEmissionError::CanonicalSerialization {
+            context: format!("constant `{}` shape", validated.constant.symbol),
+            message: error.to_string(),
+        }
+    })?;
+    if let Some(index) = shape_indices.get(&key) {
+        return Ok(*index);
+    }
+    let index = checked_index(pools.shapes.len(), "indexing constant record shapes")?;
+    pools
+        .shapes
+        .push(BytecodePoolEntry::ShapeRef { shape: declaration });
+    check_limit(
+        "MAX_POOL_ENTRIES",
+        "image.pools.shapes",
+        pools.shapes.len(),
+        limits::MAX_POOL_ENTRIES,
+    )?;
+    shape_indices.insert(key, index);
+    Ok(index)
+}
+
+fn intern_merged_type(
+    module_path: &str,
+    ty: &TypeRefIr,
+    pools: &mut BytecodePools,
+    type_indices: &mut BTreeMap<String, u32>,
+) -> Result<u32, BytecodeEmissionError> {
+    let key = type_key(ty, &format!("constant shape type in `{module_path}`"))?;
+    if let Some(index) = type_indices.get(&key) {
+        return Ok(*index);
+    }
+    let index = checked_index(pools.types.len(), "indexing canonical constant shape types")?;
+    pools
+        .types
+        .push(BytecodePoolEntry::TypeRef { ty: ty.clone() });
+    type_indices.insert(key, index);
+    Ok(index)
 }
 
 fn insert_type(

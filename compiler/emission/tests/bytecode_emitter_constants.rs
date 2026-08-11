@@ -53,6 +53,7 @@ mod tests {
             external_refs: file_ir.external_refs.clone(),
             source_map: file_ir.source_map.clone(),
             type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
             constants: file_ir
                 .constants
@@ -331,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn record_shape_without_nominal_field_facts_fails_closed() {
+    fn record_constants_relocate_bundle_shapes() {
         fn owner(module_path: &str) -> (MirUnit, FrozenConstantBundle) {
             let mut file_ir = FileIrUnit::empty(module_path, "source-hash");
             file_ir.type_table = vec![
@@ -380,15 +381,11 @@ mod tests {
         let units = [zeta_mir, alpha_mir];
         let bundles = [zeta_bundle, alpha_bundle];
         let plans = explicit_constant_plans(&units);
-        let error = emit_bytecode_artifact(&units, &bundles, &plans)
-            .expect_err("record constants require nominal field and lifecycle facts");
-        assert!(matches!(
-            error,
-            BytecodeEmissionError::UnsupportedConstantNode {
-                construct: "Record",
-                ..
-            }
-        ));
+        let artifact = emit_bytecode_artifact(&units, &bundles, &plans)
+            .expect("record constants relocate bundle shapes");
+        assert_eq!(artifact.image.pools.shapes.len(), 2);
+        skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("relocated record constants must validate");
     }
 
     #[test]

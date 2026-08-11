@@ -3,18 +3,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
-    BytecodeSpecialization, CallTargetIr, CatchMatcher, ExceptionRegion, ExprIr, ExprRefIr,
-    DbOperandRole, DbOperationKind, DbOperationReference, DbTargetIr,
-    FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite, IntrinsicReference,
+    BytecodeSpecialization, CallLoanBinding, CallLoanLayout, CallTargetIr, CatchMatcher,
+    ExceptionRegion, ExprIr, ExprRefIr, DbOperandRole, DbOperationKind, DbOperationReference,
+    DbTargetIr, FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
+    IntrinsicReference,
     LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode, ParamModeIr,
     ParameterSlotDecl, PatternIr, RelocatableBytecodeFunction, RemoteInterfaceMethod,
-    RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, SourceMapEntry, StatementEntry,
-    SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, WritablePathSegment,
+    RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, SourceMapEntry, StatementAttributionId,
+    StatementEntry, SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr,
+    WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
-    MirFunction, MirIndexReceiverKind, MirParamMode, MirSlot, MirSlotKind, MirSourceEvent,
-    MirStmtKind, MirUnit, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
+    MirFunction, MirIndexReceiverKind, MirInOutPathSegment, MirParamMode, MirSlot, MirSlotKind,
+    MirSourceEvent, MirStmtKind, MirUnit, MirWritablePathSegment, MirWritablePlace,
+    MirWritableRoot,
 };
 
 use super::inputs::is_void;
@@ -60,6 +63,7 @@ struct FunctionEmitter<'a> {
     pending_pc_branches: Vec<PendingPcBranch>,
     pending_resumes: Vec<PendingResume>,
     pending_exception_regions: Vec<PendingExceptionRegion>,
+    call_loan_layouts: Vec<CallLoanLayout>,
     block_starts: Vec<Option<usize>>,
     events: Vec<MirSourceEvent>,
     event_mapping: Vec<Option<usize>>,
@@ -124,10 +128,10 @@ impl<'a> FunctionEmitter<'a> {
         image: &'a mut ConstantImage,
         inputs: &'a ValidatedEmissionInputs<'a>,
     ) -> Result<Self, BytecodeEmissionError> {
-        if !function.type_params.is_empty() || function.self_type.is_some() {
+        if !function.type_params.is_empty() {
             return Err(unsupported(
                 key,
-                "generic or receiver-bound function emission",
+                "generic function emission",
                 "non-generic scalar core only",
             ));
         }
@@ -151,6 +155,7 @@ impl<'a> FunctionEmitter<'a> {
             pending_pc_branches: Vec::new(),
             pending_resumes: Vec::new(),
             pending_exception_regions: Vec::new(),
+            call_loan_layouts: Vec::new(),
             block_starts: vec![None; function.blocks.len()],
             events,
             event_mapping: vec![None; event_count],
@@ -191,6 +196,18 @@ impl<'a> FunctionEmitter<'a> {
         let statement_entries = self.build_statement_entries(&instruction_pcs)?;
         let source_map = self.build_source_map(words.len())?;
         let frame = self.build_frame()?;
+        let self_type_ref = self
+            .function
+            .self_type
+            .as_ref()
+            .map(|ty| {
+                self.image.type_index(
+                    self.unit.module_path.as_str(),
+                    ty,
+                    &format!("function `{key}` self type", key = self.key),
+                )
+            })
+            .transpose()?;
         let origin = BytecodeFunctionOrigin::Executable {
             executable: self.function.origin.clone(),
         };
@@ -198,10 +215,10 @@ impl<'a> FunctionEmitter<'a> {
             function_key: self.key.clone(),
             origin,
             type_parameters: Vec::new(),
-            self_type_ref: None,
+            self_type_ref,
             words,
             relocations: self.relocations,
-            call_loan_layouts: Vec::new(),
+            call_loan_layouts: self.call_loan_layouts,
             frame_layout: frame,
             max_operand_depth,
             effect_summary_ref: self.function.effect_summary_ref.clone(),
@@ -245,6 +262,7 @@ impl<'a> FunctionEmitter<'a> {
             ));
         }
         let body_ids = value_block_body_ids(self.function, fact.body_block)?;
+        let body_depth = self.operand_depth;
         let mut completion_edges = Vec::new();
         for &block_id in &body_ids {
             let ordinal = usize::try_from(block_id)
@@ -259,6 +277,7 @@ impl<'a> FunctionEmitter<'a> {
             let start = self.instructions.len();
             self.block_starts[ordinal] = Some(start);
             self.current_block = block_id;
+            self.operand_depth = body_depth;
             let branch_start = self.pending_branches.len();
             self.emit_value_block_block(block)?;
             self.redirect_value_block_completions(
@@ -267,6 +286,7 @@ impl<'a> FunctionEmitter<'a> {
                 &mut completion_edges,
             )?;
         }
+        self.operand_depth = body_depth;
         let resume_instruction = self.instructions.len();
         for edge in &mut completion_edges {
             edge.target_instruction = resume_instruction;
@@ -543,7 +563,32 @@ impl<'a> FunctionEmitter<'a> {
                     })?;
                 self.emit_stream_next(*endpoint_slot, item_type, Some(end_block))?;
             }
-            MirStmtKind::Expr { value } => {
+            MirStmtKind::TestEffectRegister {
+                expect,
+                step_expect,
+                outcome,
+                ..
+            } => {
+                self.emit_number_constant(0)?;
+                self.emit_op(Opcode::Pop, Vec::new())?;
+                for expected in expect.iter().chain(step_expect.iter()) {
+                    self.map_completed_expression_events(expected.value.expression)?;
+                }
+                match outcome {
+                    skiff_artifact_model::TestEffectOutcomeIr::Respond { value, .. } => {
+                        self.map_completed_expression_events(value.expression)?;
+                    }
+                    skiff_artifact_model::TestEffectOutcomeIr::Throw { value, .. } => {
+                        self.map_completed_expression_events(value.expression)?;
+                    }
+                    skiff_artifact_model::TestEffectOutcomeIr::Stream { values, .. } => {
+                        for value in values {
+                            self.map_completed_expression_events(value.expression)?;
+                        }
+                    }
+                }
+            }
+            MirStmtKind::Expr { value } | MirStmtKind::Dispatch { call: value } => {
                 let expression = self.function.expression(*value)?;
                 self.emit_expression(*value)?;
                 if !is_void(&expression.ty) {
@@ -774,7 +819,7 @@ impl<'a> FunctionEmitter<'a> {
                 ));
             }
         }
-        Ok(())
+        self.map_completed_expression_events(expression.index)
     }
 
     fn emit_call_expression(
@@ -1131,10 +1176,15 @@ impl<'a> FunctionEmitter<'a> {
         value: ExprRefIr,
     ) -> Result<(), BytecodeEmissionError> {
         let expression = self.function.expression(value)?;
+        if is_never_type(&expression.ty) {
+            self.emit_expression(value)?;
+            return Ok(());
+        }
         if is_stream_type(&expression.ty) {
             if let ExprIr::LoadSlot { slot: source } = &expression.expression {
                 self.begin_expression(expression.index);
                 self.emit_op(Opcode::MoveSlot, vec![*source, slot])?;
+                self.map_completed_expression_events(expression.index)?;
                 return Ok(());
             }
         }
@@ -1280,7 +1330,9 @@ impl<'a> FunctionEmitter<'a> {
         {
             return Ok(false);
         }
-        self.map_all_expression_events(expression.index);
+        if self.has_extra_expression_events(expression.index) {
+            return Ok(false);
+        }
         self.emit_direct_call(expression, true)
     }
 
@@ -1307,33 +1359,53 @@ impl<'a> FunctionEmitter<'a> {
                 "direct call facts are absent from MIR",
             )
         })?;
-        if facts
+        let has_inout = facts
             .arguments
             .iter()
-            .any(|argument| matches!(argument, MirCallArgument::InOut { .. }))
-        {
-            return Err(BytecodeEmissionError::InOutEmissionPending {
-                function_key: self.key.clone(),
-                expression: expression.index,
-            });
+            .any(|argument| matches!(argument, MirCallArgument::InOut { .. }));
+        if tail && has_inout {
+            return Ok(false);
         }
-        for argument in &facts.arguments {
-            let MirCallArgument::Value { value } = argument else {
-                return Err(BytecodeEmissionError::InOutEmissionPending {
-                    function_key: self.key.clone(),
-                    expression: expression.index,
-                });
-            };
+        let values = facts
+            .arguments
+            .iter()
+            .filter_map(|argument| match argument {
+                MirCallArgument::Value { value } => Some(*value),
+                MirCallArgument::InOut { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let loans = facts
+            .arguments
+            .iter()
+            .filter_map(|argument| match argument {
+                MirCallArgument::InOut { loan } => Some(loan.clone()),
+                MirCallArgument::Value { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let mut selectors = Vec::new();
+        let loan_layout = if loans.is_empty() {
+            None
+        } else {
+            Some(self.emit_inout_loan_layout(&loans, &mut selectors)?)
+        };
+        for value in &values {
             self.emit_expression(*value)?;
+        }
+        for selector in &selectors {
+            self.emit_expression(*selector)?;
         }
         let relocation = self.direct_relocation(expression, facts)?;
         let relocation_index = u32::try_from(self.relocations.len())
             .map_err(|_| arithmetic(self.key.as_str(), "relocation index conversion"))?;
         self.relocations.push(relocation);
-        let arg_count = u32::try_from(facts.arguments.len())
-            .map_err(|_| arithmetic(self.key.as_str(), "argument count conversion"))?;
-        let mut operands = vec![relocation_index, arg_count];
-        let opcode = if tail {
+        let input_count = u32::try_from(values.len() + selectors.len())
+            .map_err(|_| arithmetic(self.key.as_str(), "inout input count conversion"))?;
+        let mut operands = vec![relocation_index, input_count];
+        let opcode = if let Some(loan_layout) = loan_layout {
+            operands.push(u32::from(!is_void(&expression.ty)));
+            operands.push(loan_layout);
+            Opcode::CallLocalInOut
+        } else if tail {
             Opcode::TailCallLocal
         } else {
             operands.push(u32::from(!is_void(&expression.ty)));
@@ -1342,6 +1414,114 @@ impl<'a> FunctionEmitter<'a> {
         self.emit_op(opcode, operands)?;
         self.map_call_event(expression.index);
         Ok(true)
+    }
+
+    fn emit_inout_loan_layout(
+        &mut self,
+        loans: &[skiff_compiler_lowering::mir::MirInOutLoan],
+        selectors: &mut Vec<ExprRefIr>,
+    ) -> Result<u32, BytecodeEmissionError> {
+        let layout_index = u32::try_from(self.call_loan_layouts.len())
+            .map_err(|_| arithmetic(&self.key, "inout loan layout index conversion"))?;
+        let mut bindings = Vec::with_capacity(loans.len());
+        for loan in loans {
+            let mut current_ty = loan.root_type.clone();
+            let mut segments = Vec::new();
+            let mut next_selector_ordinal = 0_u32;
+            for segment in &loan.path {
+                match segment {
+                    MirInOutPathSegment::Field { name } => {
+                        let fields =
+                            self.record_shape_fields(&current_ty, "inout field path")?;
+                        let field_ordinal = fields
+                            .keys()
+                            .position(|candidate| candidate == name)
+                            .ok_or_else(|| {
+                                unsupported(
+                                    &self.key,
+                                    "inout field path",
+                                    &format!("field `{name}` is absent from the record shape"),
+                                )
+                            })?;
+                        let shape_ref = self.image.intern_shape(
+                            self.unit.module_path.as_str(),
+                            &current_ty,
+                            &fields,
+                            &format!("inout field path in `{}`", self.key),
+                        )?;
+                        segments.push(WritablePathSegment::DenseField {
+                            shape_ref,
+                            field_ordinal: field_ordinal as u32,
+                        });
+                        current_ty = fields.get(name).expect("ordinal was found").clone();
+                    }
+                    MirInOutPathSegment::Index { selector, access, .. } => {
+                        let selector_ordinal = next_selector_ordinal;
+                        next_selector_ordinal = next_selector_ordinal.saturating_add(1);
+                        selectors.push(*selector);
+                        match access.receiver_kind {
+                            MirIndexReceiverKind::Array => {
+                                let element_ty = access.result_type.clone();
+                                let element_type_ref = self.image.type_index(
+                                    self.unit.module_path.as_str(),
+                                    &element_ty,
+                                    &format!("inout array path in `{}`", self.key),
+                                )?;
+                                segments.push(WritablePathSegment::ArrayIndex {
+                                    selector_ordinal,
+                                    element_type_ref,
+                                });
+                                current_ty = element_ty;
+                            }
+                            MirIndexReceiverKind::Map => {
+                                let (key_ty, value_ty) = self.map_key_value_types(
+                                    &current_ty,
+                                    "inout map path",
+                                )?;
+                                let key_type_ref = self.image.type_index(
+                                    self.unit.module_path.as_str(),
+                                    &key_ty,
+                                    &format!("inout map key path in `{}`", self.key),
+                                )?;
+                                let value_type_ref = self.image.type_index(
+                                    self.unit.module_path.as_str(),
+                                    &value_ty,
+                                    &format!("inout map value path in `{}`", self.key),
+                                )?;
+                                segments.push(WritablePathSegment::MapKey {
+                                    selector_ordinal,
+                                    key_type_ref,
+                                    value_type_ref,
+                                });
+                                current_ty = value_ty;
+                            }
+                            MirIndexReceiverKind::JsonObject => {
+                                return Err(unsupported(
+                                    &self.key,
+                                    "inout call",
+                                    "JsonObject inout paths are outside the emitted core",
+                                ))
+                            }
+                        }
+                    }
+                }
+            }
+            let path_ref = self.image.intern_writable_path(
+                self.unit.module_path.as_str(),
+                &loan.root_type,
+                &current_ty,
+                segments,
+                &format!("inout call in `{}`", self.key),
+            )?;
+            bindings.push(CallLoanBinding {
+                parameter_ordinal: loan.parameter_ordinal,
+                root_slot: loan.root_slot,
+                writable_path_ref: path_ref,
+            });
+        }
+        self.call_loan_layouts
+            .push(CallLoanLayout { loans: bindings });
+        Ok(layout_index)
     }
 
     fn direct_relocation(
@@ -1520,11 +1700,20 @@ impl<'a> FunctionEmitter<'a> {
             }
         }
         let leaf_ty = &self.function.expression(value)?.ty;
-        if leaf_ty != &current_ty {
+        if is_never_type(leaf_ty) {
+            for selector in &selector_expressions {
+                self.emit_expression(*selector)?;
+            }
+            self.emit_expression(value)?;
+            return Ok(());
+        }
+        if !writable_value_type_matches(leaf_ty, &current_ty) {
             return Err(unsupported(
                 &self.key,
                 "writable assignment",
-                "assigned value type does not match writable path leaf type",
+                &format!(
+                    "assigned value type `{leaf_ty:?}` does not match writable path leaf type `{current_ty:?}`"
+                ),
             ));
         }
         for selector in &selector_expressions {
@@ -1620,7 +1809,21 @@ impl<'a> FunctionEmitter<'a> {
         type_ref: &TypeRefIr,
         fields: &BTreeMap<String, ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
-        let declared = self.record_shape_fields(type_ref, "record construct")?;
+        let declared = match self.record_shape_fields(type_ref, "record construct") {
+            Ok(declared) => declared,
+            Err(_) if is_package_symbol_type(type_ref) => {
+                fields
+                    .iter()
+                    .map(|(name, value)| {
+                        Ok((
+                            name.clone(),
+                            self.function.expression(*value)?.ty.clone(),
+                        ))
+                    })
+                    .collect::<Result<BTreeMap<_, _>, BytecodeEmissionError>>()?
+            }
+            Err(error) => return Err(error),
+        };
         if declared.len() != fields.len() || declared.keys().any(|name| !fields.contains_key(name))
         {
             return Err(unsupported(
@@ -1848,6 +2051,53 @@ impl<'a> FunctionEmitter<'a> {
                     )),
                 }
             }
+            TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => {
+                let unit = self
+                    .inputs
+                    .units
+                    .get(symbol.module_path.as_str())
+                    .ok_or_else(|| {
+                        unsupported(
+                            &self.key,
+                            context,
+                            &format!("symbol module `{}` is absent", symbol.module_path),
+                        )
+                    })?;
+                let declaration = unit
+                    .type_table
+                    .iter()
+                    .find(|declaration| declaration.name == symbol.symbol)
+                    .ok_or_else(|| {
+                        unsupported(
+                            &self.key,
+                            context,
+                            &format!("symbol `{}` is absent", symbol.symbol_path()),
+                        )
+                    })?;
+                if !declaration.type_params.is_empty() {
+                    return Err(unsupported(
+                        &self.key,
+                        context,
+                        "generic nominal record shapes are outside the emitted core",
+                    ));
+                }
+                match &declaration.descriptor {
+                    skiff_artifact_model::TypeDescriptorIr::Record { fields } => Ok(fields.clone()),
+                    _ => Err(unsupported(
+                        &self.key,
+                        context,
+                        &format!("symbol `{}` is not a record", symbol.symbol_path()),
+                    )),
+                }
+            }
+            TypeRefIr::PackageSymbol { symbol } => {
+                self.package_record_fields(symbol, context)
+            }
+            TypeRefIr::AppliedNominal {
+                base:
+                    skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol },
+                arguments,
+            } if arguments.is_empty() => self.package_record_fields(symbol, context),
             TypeRefIr::AppliedNominal { .. } => Err(unsupported(
                 &self.key,
                 context,
@@ -1859,6 +2109,39 @@ impl<'a> FunctionEmitter<'a> {
                 &format!("type `{other:?}` is not a record shape"),
             )),
         }
+    }
+
+    fn package_record_fields(
+        &self,
+        symbol: &skiff_artifact_model::PackageSymbolRef,
+        context: &'static str,
+    ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
+        let skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } =
+            &symbol.package
+        else {
+            return Err(unsupported(
+                &self.key,
+                context,
+                &format!(
+                    "package symbol `{}` has no resolved dependency record shape",
+                    symbol.symbol_path
+                ),
+            ));
+        };
+        self.unit
+            .package_type_records
+            .get(&(dependency_ref.clone(), symbol.symbol_path.clone()))
+            .cloned()
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    context,
+                    &format!(
+                        "package symbol `{}` has no resolved record shape",
+                        symbol.symbol_path
+                    ),
+                )
+            })
     }
 
     fn array_element_type(
@@ -1922,6 +2205,7 @@ impl<'a> FunctionEmitter<'a> {
             if let ExprIr::LoadSlot { slot } = &iterable_expression.expression {
                 self.begin_expression(iterable_expression.index);
                 self.emit_op(Opcode::MoveSlot, vec![*slot, iterable_slot])?;
+                self.map_completed_expression_events(iterable_expression.index)?;
             } else {
                 self.emit_expression(iterable)?;
                 self.emit_op(Opcode::StoreSlot, vec![iterable_slot])?;
@@ -2181,32 +2465,35 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn begin_expression(&mut self, expression_index: u32) {
-        let emission = self
+        *self
             .expression_emissions
             .entry(expression_index)
-            .or_insert(0);
-        let occurrence = *emission;
-        let call_expression = self
-            .function
-            .expression(skiff_artifact_model::ExprRefIr {
-                expression: expression_index,
-            })
-            .is_ok_and(|expression| matches!(expression.expression, ExprIr::Call { .. }));
+            .or_insert(0) += 1;
+    }
+
+    fn map_completed_expression_events(
+        &mut self,
+        expression_index: u32,
+    ) -> Result<(), BytecodeEmissionError> {
+        let instruction = self.instructions.len().checked_sub(1).ok_or_else(|| {
+            unsupported(
+                &self.key,
+                "expression source event",
+                "expression produced no emitted instruction",
+            )
+        })?;
         for (index, event) in self.events.iter().enumerate() {
             if let MirEmissionAnchor::Expression {
                 expression_index: anchored,
-                occurrence_ordinal,
+                ..
             } = event.anchor
             {
-                if anchored == expression_index
-                    && occurrence_ordinal == occurrence
-                    && !(call_expression && occurrence_ordinal == 0)
-                {
-                    self.event_mapping[index].get_or_insert(self.instructions.len());
+                if anchored == expression_index {
+                    self.event_mapping[index].get_or_insert(instruction);
                 }
             }
         }
-        *emission += 1;
+        Ok(())
     }
 
     fn map_call_event(&mut self, expression_index: u32) {
@@ -2220,6 +2507,10 @@ impl<'a> FunctionEmitter<'a> {
                 | MirEmissionAnchor::TailLocalCallCandidate {
                     expression_index: anchored,
                     ..
+                }
+                | MirEmissionAnchor::Expression {
+                    expression_index: anchored,
+                    occurrence_ordinal: 0,
                 } if anchored == expression_index
             );
             if matches {
@@ -2228,11 +2519,8 @@ impl<'a> FunctionEmitter<'a> {
         }
     }
 
-    fn anchor_extra_call_expression_events(
-        &mut self,
-        expression_index: u32,
-    ) -> Result<(), BytecodeEmissionError> {
-        let has_extra = self.events.iter().any(|event| {
+    fn has_extra_expression_events(&self, expression_index: u32) -> bool {
+        self.events.iter().any(|event| {
             matches!(
                 event.anchor,
                 MirEmissionAnchor::Expression {
@@ -2240,7 +2528,14 @@ impl<'a> FunctionEmitter<'a> {
                     occurrence_ordinal,
                 } if anchored == expression_index && occurrence_ordinal > 0
             )
-        });
+        })
+    }
+
+    fn anchor_extra_call_expression_events(
+        &mut self,
+        expression_index: u32,
+    ) -> Result<(), BytecodeEmissionError> {
+        let has_extra = self.has_extra_expression_events(expression_index);
         if !has_extra {
             return Ok(());
         }
@@ -2259,20 +2554,6 @@ impl<'a> FunctionEmitter<'a> {
             }
         }
         Ok(())
-    }
-
-    fn map_all_expression_events(&mut self, expression_index: u32) {
-        for (index, event) in self.events.iter().enumerate() {
-            if let MirEmissionAnchor::Expression {
-                expression_index: anchored,
-                ..
-            } = event.anchor
-            {
-                if anchored == expression_index {
-                    self.event_mapping[index].get_or_insert(self.instructions.len());
-                }
-            }
-        }
     }
 
     fn map_statement_events(&mut self, statement_index: u32) {
@@ -2320,7 +2601,11 @@ impl<'a> FunctionEmitter<'a> {
                 unsupported(
                     &self.key,
                     "operand stack",
-                    "instruction underflows the emitted stack",
+                    &format!(
+                        "instruction {opcode:?} underflows the emitted stack at depth {} after {:?}",
+                        self.operand_depth,
+                        self.instructions.iter().map(|i| i.opcode).collect::<Vec<_>>()
+                    ),
                 )
             })?
             .checked_add(output)
@@ -2545,7 +2830,7 @@ impl<'a> FunctionEmitter<'a> {
                 unsupported(
                     &self.key,
                     "operand stack",
-                    "instruction underflows the emitted stack",
+                    &format!("instruction {:?} underflows the emitted stack", instruction.opcode),
                 )
             })?;
             depth = depth
@@ -2588,6 +2873,64 @@ impl<'a> FunctionEmitter<'a> {
                 self.events[event_index].site.clone(),
             ));
         }
+
+        let max_expression_index = rows
+            .iter()
+            .filter_map(|(_, _, attribution_id, _)| match attribution_id {
+                StatementAttributionId::Expression { expression_index, .. } => {
+                    Some(*expression_index)
+                }
+                _ => None,
+            })
+            .max();
+        let synthetic_expression_index = match max_expression_index {
+            Some(index) => index.checked_add(1).ok_or_else(|| {
+                arithmetic(&self.key, "synthetic expression index overflow")
+            })?,
+            None => 0,
+        };
+        let mut synthetic_occurrence = 0_u32;
+        let mut synthetic_order = usize::MAX;
+        for (instruction_index, instruction) in self.instructions.iter().enumerate() {
+            if !matches!(
+                instruction.opcode,
+                Opcode::CallLocal | Opcode::CallLocalInOut | Opcode::TailCallLocal
+            ) {
+                continue;
+            }
+            let pc = *pcs
+                .get(instruction_index)
+                .ok_or_else(|| arithmetic(&self.key, "call source event pc lookup"))?;
+            let has_expression = rows.iter().any(|(row_pc, _, attribution_id, _)| {
+                *row_pc == pc
+                    && matches!(
+                        attribution_id,
+                        StatementAttributionId::Expression { .. }
+                    )
+            });
+            if has_expression {
+                continue;
+            }
+            let attribution_id = StatementAttributionId::Expression {
+                expression_index: synthetic_expression_index,
+                occurrence_ordinal: synthetic_occurrence,
+            };
+            synthetic_occurrence = synthetic_occurrence.checked_add(1).ok_or_else(|| {
+                arithmetic(&self.key, "synthetic expression occurrence overflow")
+            })?;
+            rows.push((
+                pc,
+                synthetic_order,
+                attribution_id,
+                InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                },
+            ));
+            synthetic_order = synthetic_order.checked_sub(1).ok_or_else(|| {
+                arithmetic(&self.key, "synthetic source event ordering overflow")
+            })?;
+        }
+
         rows.sort_by_key(|row| (row.0, row.1));
         let mut entries = Vec::with_capacity(rows.len());
         let mut previous_pc = None;
@@ -2688,6 +3031,26 @@ impl<'a> FunctionEmitter<'a> {
                 plan,
             });
         }
+        if let Some(receiver) = &self.function.receiver {
+            if !parameter_slots
+                .iter()
+                .any(|parameter| parameter.slot == receiver.slot)
+            {
+                let slot = receiver.slot as usize;
+                let plan = self.plans.slot_plans.get(slot).cloned().ok_or_else(|| {
+                    unsupported(
+                        &self.key,
+                        "receiver transfer plan",
+                        &format!("receiver slot {slot} has no slot plan"),
+                    )
+                })?;
+                parameter_slots.push(ParameterSlotDecl {
+                    slot: receiver.slot,
+                    mode: ParamModeIr::Value,
+                    plan,
+                });
+            }
+        }
         let is_stream_producer = self.function.stream_result.is_some();
         let result_count = if is_stream_producer {
             0
@@ -2721,7 +3084,7 @@ impl<'a> FunctionEmitter<'a> {
             .function
             .slots
             .iter()
-            .filter(|slot| slot.writable_local)
+            .filter(|slot| slot.writable_local && slot.kind == MirSlotKind::Local)
             .map(|slot| slot.slot)
             .collect();
         Ok(FrameLayout {
@@ -2757,6 +3120,11 @@ fn stack_effect(
         | Opcode::LeaveRegion => (0, 0),
         Opcode::JumpIfTrue | Opcode::JumpIfFalse => (1, 0),
         Opcode::CallLocal => {
+            let arguments = instruction.operands[1] as usize;
+            let results = instruction.operands[2] as usize;
+            (arguments, results)
+        }
+        Opcode::CallLocalInOut => {
             let arguments = instruction.operands[1] as usize;
             let results = instruction.operands[2] as usize;
             (arguments, results)
@@ -2836,8 +3204,40 @@ fn binary_opcode(op: skiff_artifact_model::BinaryOpIr) -> Result<Opcode, Bytecod
     })
 }
 
+fn writable_value_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
+    actual == expected
+        || matches!(
+            (actual, expected),
+            (
+                TypeRefIr::Literal {
+                    value: skiff_artifact_model::LiteralIr::String { .. },
+                },
+                TypeRefIr::Builtin { name, args },
+            ) if name == "string" && args.is_empty()
+        )
+        || matches!(
+            (actual, expected),
+            (
+                TypeRefIr::Builtin { name: actual_name, args: actual_args },
+                TypeRefIr::Builtin { name: expected_name, args: expected_args },
+            ) if actual_name == "integer"
+                && expected_name == "number"
+                && actual_args.is_empty()
+                && expected_args.is_empty()
+        )
+}
+
 fn stream_item_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
     actual == expected
+        || matches!(
+            (actual, expected),
+            (
+                TypeRefIr::Literal {
+                    value: skiff_artifact_model::LiteralIr::String { .. },
+                },
+                TypeRefIr::Builtin { name, args },
+            ) if name == "string" && args.is_empty()
+        )
         || matches!(
             (actual, expected),
             (

@@ -5,7 +5,7 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     InterfaceInstantiationRef, NominalTypeRefBaseIr, PackageArtifact, PackageCallableSignature,
-    PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, TypeRefIr,
+    PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, ParamModeIr, TypeRefIr,
 };
 use skiff_compiler_core::id::SKIFF_STD_PUBLICATION_ID;
 use skiff_compiler_input::ResolvedContractDependency;
@@ -412,10 +412,19 @@ fn package_callable_analysis_from_symbols(
                     ))
                 })
                 .map(|semantic_facts| {
+                    let signature = bind_callable_signature_identity(signature, artifact);
+                    let inout_parameters = signature
+                        .parameters
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, parameter)| parameter.mode == ParamModeIr::InOut)
+                        .map(|(index, parameter)| (index, parameter.name.clone()))
+                        .collect::<Vec<_>>();
                     (
                         member_path(selected_path),
                         PackageDependencyCallableAnalysis::new(callable_id.clone(), semantic_facts)
-                            .with_signature(bind_callable_signature_identity(signature, artifact)),
+                            .with_signature(signature)
+                            .with_inout_parameters(inout_parameters),
                     )
                 });
             Some(result)

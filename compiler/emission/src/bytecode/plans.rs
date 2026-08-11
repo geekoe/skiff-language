@@ -2,9 +2,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     native_value_lifecycle_registry, NativeResourceDropPlan, NativeValueDropPlan,
-    NativeValueEmbedding, NativeValueLifecycleConcrete, NativeValueLifecycleLookupError,
-    NativeValueLifecycleResolution, NominalTypeRefBaseIr, ResourceDropPlan, TypeRefIr,
-    ValueDropPlan, ValueTransferPlan,
+    NativeValueEmbedding, NativeValueLifecycleConcrete, NativeValueLifecycleResolution,
+    NominalTypeRefBaseIr, ResourceDropPlan, TypeRefIr, ValueDropPlan, ValueTransferPlan,
 };
 use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
@@ -96,9 +95,15 @@ fn concrete_value_plan(
     if is_ordinary_structural_type(ty) {
         return Ok(snapshot_release_plan());
     }
+    if is_stream_with_package_symbol_item(ty) {
+        return Ok(ValueTransferPlan::AffineResource {
+            drop: ResourceDropPlan::ResourceTableRelease,
+        });
+    }
     let resolution = match native_value_lifecycle_registry().lookup(ty) {
         Ok(resolution) => resolution,
-        Err(NativeValueLifecycleLookupError::Missing { .. }) if is_package_symbol_type(ty) => {
+        Err(error) if is_package_symbol_type(ty) => {
+            let _ = error;
             return Ok(snapshot_release_plan());
         }
         Err(error) => {
@@ -144,6 +149,16 @@ fn is_package_symbol_type(ty: &TypeRefIr) -> bool {
                 ..
             }
         )
+}
+
+fn is_stream_with_package_symbol_item(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args }
+            if name == "Stream"
+                && args.len() == 1
+                && is_package_symbol_type(&args[0])
+    )
 }
 
 fn concrete_lifecycle_plan(
@@ -456,6 +471,52 @@ mod tests {
             .unwrap(),
             ValueTransferPlan::SnapshotShare {
                 drop: ValueDropPlan::SnapshotRelease,
+            }
+        );
+        let dependency_symbol = skiff_artifact_model::PackageSymbolRef {
+            package: skiff_artifact_model::PackageRefIr::Dependency {
+                dependency_ref: "helper".to_string(),
+            },
+            symbol_path: "helper.EffectResponse".to_string(),
+            abi_expectation: None,
+        };
+        assert_eq!(
+            concrete_value_plan(
+                &[],
+                "m",
+                "f",
+                " slot `events`",
+                &TypeRefIr::PackageSymbol {
+                    symbol: dependency_symbol,
+                },
+            )
+            .unwrap(),
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease,
+            }
+        );
+        assert_eq!(
+            concrete_value_plan(
+                &[],
+                "m",
+                "f",
+                " slot `events`",
+                &TypeRefIr::Builtin {
+                    name: "Stream".to_string(),
+                    args: vec![TypeRefIr::PackageSymbol {
+                        symbol: skiff_artifact_model::PackageSymbolRef {
+                            package: skiff_artifact_model::PackageRefIr::Dependency {
+                                dependency_ref: "helper".to_string(),
+                            },
+                            symbol_path: "helper.EffectResponse".to_string(),
+                            abi_expectation: None,
+                        },
+                    }],
+                },
+            )
+            .unwrap(),
+            ValueTransferPlan::AffineResource {
+                drop: ResourceDropPlan::ResourceTableRelease,
             }
         );
     }

@@ -7,7 +7,7 @@ use skiff_artifact_model::{
     AssignTargetIr, BoxSourceIr, CallableEffectSummary, ConcurrentLaneIr, ConcurrentPlanIr,
     ContractOperationId, DbBodyIr, DbChangeOpIr, DbPredicateIr, DbSelectorIr, ExecutableIr, ExprIr,
     ExprRefIr, FileIrUnit, PackageExecutableCoordinate, ParamModeIr, ServiceCallRef, SourceSpanRef,
-    StmtIr,
+    StmtIr, TypeRefIr,
 };
 use skiff_compiler_core::{implementation_package_callable_id, ImplementationCallableKind};
 use skiff_compiler_source::{ResolvedCallTargetFacts, SourceCallableEffectFacts, SourceSymbolKey};
@@ -90,6 +90,24 @@ pub fn build_mir_units_with_source_facts(
     resolved_call_targets: &ResolvedCallTargetFacts,
     source_facts: &MirSourceFacts,
 ) -> Result<Vec<MirUnit>, MirBuildError> {
+    build_mir_units_with_source_facts_and_package_records(
+        package_id,
+        units,
+        effects,
+        resolved_call_targets,
+        source_facts,
+        BTreeMap::new(),
+    )
+}
+
+pub fn build_mir_units_with_source_facts_and_package_records(
+    package_id: &str,
+    units: &[FileIrUnit],
+    effects: &SourceCallableEffectFacts,
+    resolved_call_targets: &ResolvedCallTargetFacts,
+    source_facts: &MirSourceFacts,
+    package_type_records: BTreeMap<(String, String), BTreeMap<String, TypeRefIr>>,
+) -> Result<Vec<MirUnit>, MirBuildError> {
     let source_fact_owners = source_facts
         .owners()
         .map(|(owner, _)| owner.clone())
@@ -133,6 +151,7 @@ pub fn build_mir_units_with_source_facts(
                 effects.operations(),
                 &catalog,
                 source_facts,
+                &package_type_records,
             )
         })
         .collect()
@@ -152,6 +171,7 @@ pub(crate) fn build_mir_unit_with_effect_map(
         per_callable,
         &catalog,
         &MirSourceFacts::new(),
+        &BTreeMap::new(),
     )
 }
 
@@ -166,6 +186,7 @@ fn build_mir_unit_with_catalog(
     per_callable: &CallableEffectMap,
     catalog: &MirPackageCatalog<'_>,
     source_facts: &MirSourceFacts,
+    package_type_records: &BTreeMap<(String, String), BTreeMap<String, TypeRefIr>>,
 ) -> Result<MirUnit, MirBuildError> {
     if u32::try_from(unit.executables.len()).is_err() {
         return Err(MirBuildError::ExecutableIndexOverflow {
@@ -237,6 +258,7 @@ fn build_mir_unit_with_catalog(
         external_refs: unit.external_refs.clone(),
         source_map: unit.source_map.clone(),
         type_table: unit.type_table.clone(),
+        package_type_records: package_type_records.clone(),
         link_targets: unit.link_targets.clone(),
         constants,
         functions,
@@ -321,18 +343,25 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
         .slots
         .slots
         .iter()
-        .map(|slot| MirSlot {
-            slot: slot.index,
-            name: slot.name.clone(),
-            kind: match slot.kind {
-                skiff_artifact_model::SlotKind::Param => MirSlotKind::Param,
-                skiff_artifact_model::SlotKind::SelfValue => MirSlotKind::SelfValue,
-                skiff_artifact_model::SlotKind::Local => MirSlotKind::Local,
-                skiff_artifact_model::SlotKind::Temp => MirSlotKind::Temp,
-                skiff_artifact_model::SlotKind::Pattern => MirSlotKind::Pattern,
-            },
-            writable_local: slot.writable_local,
-            ty: slot.ty.clone(),
+        .map(|slot| {
+            let inout_parameter = matches!(slot.kind, skiff_artifact_model::SlotKind::Param)
+                && params.iter().any(|parameter| {
+                    parameter.slot == slot.index
+                        && parameter.mode == MirParamMode::InOut
+                });
+            MirSlot {
+                slot: slot.index,
+                name: slot.name.clone(),
+                kind: match slot.kind {
+                    skiff_artifact_model::SlotKind::Param => MirSlotKind::Param,
+                    skiff_artifact_model::SlotKind::SelfValue => MirSlotKind::SelfValue,
+                    skiff_artifact_model::SlotKind::Local => MirSlotKind::Local,
+                    skiff_artifact_model::SlotKind::Temp => MirSlotKind::Temp,
+                    skiff_artifact_model::SlotKind::Pattern => MirSlotKind::Pattern,
+                },
+                writable_local: slot.writable_local || inout_parameter,
+                ty: slot.ty.clone(),
+            }
         })
         .collect::<Vec<_>>();
     let receiver = build_receiver_facts(unit, executable, &params, &slots)?;
