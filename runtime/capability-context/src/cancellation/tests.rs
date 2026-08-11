@@ -157,7 +157,7 @@ async fn signal_set_wakes_when_any_token_cancelled() {
 
 #[test]
 fn polling_fallback_allowlist_entries_have_counter_and_removal_owner() {
-    assert!(!FLAG_BACKED_CANCELLATION_POLLING_FALLBACK_ALLOWLIST.is_empty());
+    assert_eq!(FLAG_BACKED_CANCELLATION_POLLING_FALLBACK_ALLOWLIST.len(), 5);
     for entry in FLAG_BACKED_CANCELLATION_POLLING_FALLBACK_ALLOWLIST {
         assert_eq!(entry.counter, "cancellation.flag_backed_waiters.active");
         assert!(!entry.bound.is_empty());

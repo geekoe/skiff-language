@@ -362,16 +362,19 @@ pub enum StreamPoll {
 #[derive(Debug)]
 pub struct StreamInternalItem {
     value: RuntimeValue,
-    heap: RequestHeap,
+    heap: Box<RequestHeap>,
 }
 
 impl StreamInternalItem {
     pub fn new(value: RuntimeValue, heap: RequestHeap) -> Self {
-        Self { value, heap }
+        Self {
+            value,
+            heap: Box::new(heap),
+        }
     }
 
     pub fn into_parts(self) -> (RuntimeValue, RequestHeap) {
-        (self.value, self.heap)
+        (self.value, *self.heap)
     }
 }
 

@@ -154,19 +154,21 @@ pub trait NativeCapabilityProjectionSource {
     fn resource(&self) -> Self::Resource;
 }
 
+pub type ProjectedNativeCapabilityContexts<Source> = NativeCapabilityContexts<
+    <Source as NativeCapabilityProjectionSource>::Actor,
+    <Source as NativeCapabilityProjectionSource>::File,
+    <Source as NativeCapabilityProjectionSource>::Time,
+    <Source as NativeCapabilityProjectionSource>::HttpClient,
+    <Source as NativeCapabilityProjectionSource>::HttpResponseStream,
+    <Source as NativeCapabilityProjectionSource>::Websocket,
+    <Source as NativeCapabilityProjectionSource>::Telemetry,
+    <Source as NativeCapabilityProjectionSource>::Resource,
+>;
+
 pub fn project_native_capability_context<Source>(
     required_context: NativeRequiredContext,
     source: &Source,
-) -> NativeCapabilityContexts<
-    Source::Actor,
-    Source::File,
-    Source::Time,
-    Source::HttpClient,
-    Source::HttpResponseStream,
-    Source::Websocket,
-    Source::Telemetry,
-    Source::Resource,
->
+) -> ProjectedNativeCapabilityContexts<Source>
 where
     Source: NativeCapabilityProjectionSource,
 {
