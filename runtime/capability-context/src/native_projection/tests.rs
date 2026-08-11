@@ -5,7 +5,9 @@ use super::*;
 #[derive(Default)]
 struct TestProjectionSource {
     actor: Cell<usize>,
+    config: Cell<usize>,
     file: Cell<usize>,
+    db: Cell<usize>,
     time: Cell<usize>,
     http_client: Cell<usize>,
     http_response_stream: Cell<usize>,
@@ -20,10 +22,12 @@ impl TestProjectionSource {
         value
     }
 
-    fn call_counts(&self) -> [usize; 8] {
+    fn call_counts(&self) -> [usize; 10] {
         [
             self.actor.get(),
+            self.config.get(),
             self.file.get(),
+            self.db.get(),
             self.time.get(),
             self.http_client.get(),
             self.http_response_stream.get(),
@@ -36,6 +40,8 @@ impl TestProjectionSource {
 
 impl NativeCapabilityProjectionSource for TestProjectionSource {
     type Actor = &'static str;
+    type Config = &'static str;
+    type Db = &'static str;
     type File = NativeFileCapabilityContext<&'static str, &'static str, &'static str>;
     type Time = &'static str;
     type HttpClient = NativeHttpClientCapabilityContext<&'static str>;
@@ -48,12 +54,20 @@ impl NativeCapabilityProjectionSource for TestProjectionSource {
         Self::increment(&self.actor, "actor")
     }
 
+    fn config(&self) -> Self::Config {
+        Self::increment(&self.config, "config")
+    }
+
     fn file(&self) -> Self::File {
         NativeFileCapabilityContext::new(
             Self::increment(&self.file, "file"),
             "file_source_stream",
             "heap_limits",
         )
+    }
+
+    fn db(&self) -> Self::Db {
+        Self::increment(&self.db, "db")
     }
 
     fn time(&self) -> Self::Time {
@@ -89,7 +103,9 @@ fn native_capability_projection_covers_every_required_context_variant() {
     let cases = [
         NativeRequiredContext::None,
         NativeRequiredContext::Actor,
+        NativeRequiredContext::Config,
         NativeRequiredContext::File,
+        NativeRequiredContext::Db,
         NativeRequiredContext::Time,
         NativeRequiredContext::HttpClient,
         NativeRequiredContext::HttpResponseStream,
@@ -105,45 +121,53 @@ fn native_capability_projection_covers_every_required_context_variant() {
         assert_eq!(projected.required_context(), required_context);
         match (required_context, projected) {
             (NativeRequiredContext::None, NativeCapabilityContexts::None) => {
-                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 0, 0]);
+                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
             }
             (NativeRequiredContext::Actor, NativeCapabilityContexts::Actor(value)) => {
                 assert_eq!(value, "actor");
-                assert_eq!(source.call_counts(), [1, 0, 0, 0, 0, 0, 0, 0]);
+                assert_eq!(source.call_counts(), [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+            }
+            (NativeRequiredContext::Config, NativeCapabilityContexts::Config(value)) => {
+                assert_eq!(value, "config");
+                assert_eq!(source.call_counts(), [0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
             }
             (NativeRequiredContext::File, NativeCapabilityContexts::File(value)) => {
                 assert_eq!(
                     value.into_parts(),
                     ("file", "file_source_stream", "heap_limits")
                 );
-                assert_eq!(source.call_counts(), [0, 1, 0, 0, 0, 0, 0, 0]);
+                assert_eq!(source.call_counts(), [0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+            }
+            (NativeRequiredContext::Db, NativeCapabilityContexts::Db(value)) => {
+                assert_eq!(value, "db");
+                assert_eq!(source.call_counts(), [0, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
             }
             (NativeRequiredContext::Time, NativeCapabilityContexts::Time(value)) => {
                 assert_eq!(value, "time");
-                assert_eq!(source.call_counts(), [0, 0, 1, 0, 0, 0, 0, 0]);
+                assert_eq!(source.call_counts(), [0, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
             }
             (NativeRequiredContext::HttpClient, NativeCapabilityContexts::HttpClient(value)) => {
                 assert_eq!(value.into_effect_context(), "http_client");
-                assert_eq!(source.call_counts(), [0, 0, 0, 1, 0, 0, 0, 0]);
+                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
             }
             (
                 NativeRequiredContext::HttpResponseStream,
                 NativeCapabilityContexts::HttpResponseStream(value),
             ) => {
                 assert_eq!(value.into_execution_context(), "http_response_stream");
-                assert_eq!(source.call_counts(), [0, 0, 0, 0, 1, 0, 0, 0]);
+                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 1, 0, 0, 0]);
             }
             (NativeRequiredContext::Websocket, NativeCapabilityContexts::Websocket(value)) => {
                 assert_eq!(value, "websocket");
-                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 1, 0, 0]);
+                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 0, 1, 0, 0]);
             }
             (NativeRequiredContext::Telemetry, NativeCapabilityContexts::Telemetry(value)) => {
                 assert_eq!(value.into_effect_context(), "telemetry");
-                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 1, 0]);
+                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 0, 0, 1, 0]);
             }
             (NativeRequiredContext::Resource, NativeCapabilityContexts::Resource(value)) => {
                 assert_eq!(value, "resource");
-                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 0, 1]);
+                assert_eq!(source.call_counts(), [0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
             }
             (expected, actual) => panic!(
                 "required context {expected:?} projected unexpected variant {:?}",

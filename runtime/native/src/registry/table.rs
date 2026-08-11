@@ -228,6 +228,8 @@ pub(super) fn native_route_matches_required_context(
 
     match (required_context, route) {
         (NativeRequiredContext::Actor, RuntimeNativeRoute::Actor)
+        | (NativeRequiredContext::Config, RuntimeNativeRoute::Config)
+        | (NativeRequiredContext::Db, RuntimeNativeRoute::Db)
         | (NativeRequiredContext::File, RuntimeNativeRoute::File)
         | (NativeRequiredContext::HttpClient, RuntimeNativeRoute::Http)
         | (NativeRequiredContext::HttpResponseStream, RuntimeNativeRoute::Http)
@@ -236,6 +238,7 @@ pub(super) fn native_route_matches_required_context(
         | (NativeRequiredContext::Resource, RuntimeNativeRoute::Resource)
         | (NativeRequiredContext::None, RuntimeNativeRoute::Bytes)
         | (NativeRequiredContext::None, RuntimeNativeRoute::Json)
+        | (NativeRequiredContext::None, RuntimeNativeRoute::Builtin)
         | (NativeRequiredContext::None, RuntimeNativeRoute::TaskControl)
         | (NativeRequiredContext::None, RuntimeNativeRoute::NativeRegistry)
         | (NativeRequiredContext::Time, RuntimeNativeRoute::Time) => true,

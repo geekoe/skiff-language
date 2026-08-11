@@ -2,6 +2,7 @@ use std::{future::Future, pin::Pin};
 
 use bytes::Bytes;
 use serde_json::Value;
+use skiff_artifact_model::DbOperationReference;
 use skiff_runtime_boundary::file::{FileCreateOptions, ImmutableFileRef};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,
@@ -14,7 +15,8 @@ use skiff_runtime_model::{
     LoadedPublicationResource, RuntimeProgramResourceLookupError,
 };
 
-use crate::error::Result;
+use crate::dispatch::PreparedNativeCall;
+use crate::error::{Result, RuntimeError};
 use crate::runtime_value_facade::{
     ActorRef, RequestHeap, RequestHeapLimits, RuntimeTypePlan, RuntimeValue,
 };
@@ -31,6 +33,42 @@ pub trait NativeConfigCapability {
         args: &[Value],
         type_arg: Option<&RuntimeTypePlan>,
     ) -> Result<Value>;
+}
+
+impl NativeConfigCapability for () {
+    fn read_config_target(
+        &self,
+        _current_addr: &ExecutableAddr,
+        _target: &str,
+        _args: &[Value],
+        _type_arg: Option<&RuntimeTypePlan>,
+    ) -> Result<Value> {
+        Err(RuntimeError::Unsupported(
+            "config capability is not attached".to_string(),
+        ))
+    }
+}
+
+pub trait NativeDbCapability: Send + Sync {
+    fn prepare_db_operation(
+        &self,
+        operation: &DbOperationReference,
+        args: Vec<RuntimeValue>,
+        heap: &mut RequestHeap,
+    ) -> Result<PreparedNativeCall<'static>>;
+}
+
+impl NativeDbCapability for () {
+    fn prepare_db_operation(
+        &self,
+        _operation: &DbOperationReference,
+        _args: Vec<RuntimeValue>,
+        _heap: &mut RequestHeap,
+    ) -> Result<PreparedNativeCall<'static>> {
+        Err(RuntimeError::Unsupported(
+            "db capability is not attached".to_string(),
+        ))
+    }
 }
 
 pub trait NativeActorCapability {

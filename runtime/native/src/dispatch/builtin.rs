@@ -13,6 +13,7 @@ impl BuiltinDispatch {
                 | "string.contains"
                 | "string.replaceAll"
                 | "string.concat"
+                | "std.string.concat"
                 | "string.startsWith"
                 | "string.endsWith"
                 | "string.lowercase"
@@ -84,7 +85,7 @@ impl BuiltinDispatch {
                 )?;
                 Ok(RuntimeValue::String(value.replace(needle, replacement)))
             }
-            "string.concat" => {
+            "string.concat" | "std.string.concat" => {
                 let left = runtime_string_arg(
                     args.first().ok_or_else(|| {
                         RuntimeError::Decode("string.concat requires left argument".to_string())

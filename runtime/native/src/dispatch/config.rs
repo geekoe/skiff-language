@@ -11,7 +11,30 @@ pub(super) struct ConfigNativeDispatch;
 
 impl ConfigNativeDispatch {
     pub(super) fn matches(target: &str) -> bool {
-        matches!(target, "config.require" | "config.optional" | "config.has")
+        canonical_target(target).is_some()
+    }
+
+    pub(super) fn dispatch_native_call(
+        config_context: &impl NativeConfigCapability,
+        invocation: crate::dispatch::RuntimeNativeInvocation,
+        args: Vec<RuntimeValue>,
+        heap: &mut RequestHeap,
+    ) -> Result<RuntimeValue> {
+        let target = canonical_target(invocation.binding_key()).ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "{} resolved config call has an unsupported target",
+                invocation.target_name()
+            ))
+        })?;
+        let type_arg_plan = config_type_arg_plan(target, &invocation)?;
+        Self::dispatch_builtin(
+            config_context,
+            invocation.current_addr()?,
+            target,
+            type_arg_plan,
+            &args,
+            heap,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -80,6 +103,45 @@ impl ConfigNativeDispatch {
                     .codec_for_expected(plan, BoundaryUse::TypedJson, format!("{target} response"))
                     .from_wire_json(&value, heap)
                     .map_err(RuntimeError::from)
+            }
+        }
+    }
+}
+
+fn canonical_target(target: &str) -> Option<&'static str> {
+    match target {
+        "config.require" | "std.config.require" => Some("config.require"),
+        "config.optional" | "std.config.optional" => Some("config.optional"),
+        "config.has" | "std.config.has" => Some("config.has"),
+        _ => None,
+    }
+}
+
+fn config_type_arg_plan(
+    target: &str,
+    invocation: &crate::dispatch::RuntimeNativeInvocation,
+) -> Result<Option<RuntimeTypePlan>> {
+    match target {
+        "config.require" => Ok(Some(invocation.return_plan()?.clone())),
+        "config.optional" => Ok(Some(nullable_inner(invocation.return_plan()?)?.clone())),
+        "config.has" => Ok(None),
+        _ => Err(RuntimeError::Unsupported(format!(
+            "unsupported config native target {target}"
+        ))),
+    }
+}
+
+fn nullable_inner(plan: &RuntimeTypePlan) -> Result<&RuntimeTypePlan> {
+    let mut plan = plan;
+    loop {
+        match &plan.node {
+            RuntimeTypeNode::Alias(inner) => plan = inner,
+            RuntimeTypeNode::Nullable(inner) => return Ok(inner),
+            _ => {
+                return Err(RuntimeError::InvalidArtifact(
+                    "config.optional response boundary is missing its nullable type descriptor"
+                        .to_string(),
+                ))
             }
         }
     }

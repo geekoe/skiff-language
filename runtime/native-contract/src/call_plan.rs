@@ -1,3 +1,4 @@
+use skiff_artifact_model::DbOperationReference;
 use skiff_runtime_model::{service_error::NamedUnionOwnerIdentity, type_plan::RuntimeTypePlan};
 
 use super::{NativeBindingKey, NativeRequiredContext};
@@ -8,6 +9,7 @@ pub struct NativeCallPlan {
     pub arg_plans: Vec<RuntimeTypePlan>,
     pub return_plan: RuntimeTypePlan,
     pub required_context: NativeRequiredContext,
+    pub db_operation: Option<DbOperationReference>,
     named_union_error_owner: Option<NamedUnionOwnerIdentity>,
 }
 
@@ -23,6 +25,7 @@ impl NativeCallPlan {
             arg_plans,
             return_plan,
             required_context,
+            db_operation: None,
             named_union_error_owner: None,
         }
     }
@@ -43,6 +46,15 @@ impl NativeCallPlan {
 
     pub fn named_union_error_owner(&self) -> Option<&NamedUnionOwnerIdentity> {
         self.named_union_error_owner.as_ref()
+    }
+
+    pub fn with_db_operation(mut self, operation: DbOperationReference) -> Self {
+        self.db_operation = Some(operation);
+        self
+    }
+
+    pub fn db_operation(&self) -> Option<&DbOperationReference> {
+        self.db_operation.as_ref()
     }
 }
 

@@ -36,9 +36,9 @@ pub use actor::{
 pub use effect_context::{EffectDispatchContext, HttpEffectContext};
 pub use http::HttpClientCapabilityContext;
 pub use native_projection::{
-    RuntimeNativeFileCapabilityContext, RuntimeNativeHttpClientCapabilityContext,
-    RuntimeNativeHttpResponseStreamCapabilityContext, RuntimeNativeTelemetryCapabilityContext,
-    RuntimeNativeTimeCapabilityContext,
+    RuntimeNativeDbCapabilityContext, RuntimeNativeFileCapabilityContext,
+    RuntimeNativeHttpClientCapabilityContext, RuntimeNativeHttpResponseStreamCapabilityContext,
+    RuntimeNativeTelemetryCapabilityContext, RuntimeNativeTimeCapabilityContext,
 };
 pub use request_payload::ConfigCapabilityContext;
 pub use response::response_error_from_runtime_error;

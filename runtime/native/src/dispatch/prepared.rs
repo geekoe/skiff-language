@@ -1,5 +1,9 @@
 use std::{any::Any, future::Future, pin::Pin};
 
+use skiff_runtime_capability_context::{
+    DbCapabilityError, DbRuntimeFinalizer, PreparedDbValueRuntimeOperation,
+};
+
 use crate::{
     error::{Result, RuntimeError},
     runtime_value_facade::{RequestHeap, RuntimeValue},
@@ -83,6 +87,26 @@ impl<'a> PreparedExternalNativeOperation<'a> {
 pub enum PreparedNativeCall<'a> {
     Ready(RuntimeValue),
     ExternalWait(PreparedExternalNativeOperation<'a>),
+}
+
+pub fn prepared_native_call_from_db_value_operation(
+    operation: PreparedDbValueRuntimeOperation,
+) -> PreparedNativeCall<'static> {
+    let wait = operation.into_wait();
+    PreparedNativeCall::ExternalWait(PreparedExternalNativeOperation::new(
+        async move {
+            wait.await.map_err(db_capability_error_to_native)
+        },
+        |finalizer: DbRuntimeFinalizer<RuntimeValue>, heap: &mut RequestHeap| {
+            finalizer
+                .finalize(heap)
+                .map_err(db_capability_error_to_native)
+        },
+    ))
+}
+
+fn db_capability_error_to_native(error: DbCapabilityError) -> RuntimeError {
+    RuntimeError::Opaque(Box::new(error))
 }
 
 pub(super) async fn run_prepared_native_call(

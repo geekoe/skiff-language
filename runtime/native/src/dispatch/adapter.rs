@@ -6,9 +6,10 @@ use super::{
 use crate::error::{Result, RuntimeError};
 use crate::{
     capability::{
-        NativeActorCapability, NativeConfigCapability, NativeFileCapabilityBundle,
-        NativeHttpClientCapability, NativeHttpResponseStreamCapability, NativeResourceCapability,
-        NativeTelemetryCapability, NativeTimeCapability, NativeWebsocketCapability,
+        NativeActorCapability, NativeConfigCapability, NativeDbCapability,
+        NativeFileCapabilityBundle, NativeHttpClientCapability, NativeHttpResponseStreamCapability,
+        NativeResourceCapability, NativeTelemetryCapability, NativeTimeCapability,
+        NativeWebsocketCapability,
     },
     runtime_value_facade::{RequestHeap, RuntimeTypePlan, RuntimeValue},
 };
@@ -83,6 +84,8 @@ impl NativeDispatch {
         WebsocketContext,
         TelemetryContext,
         ResourceContext,
+        ConfigContext,
+        DbContext,
     >(
         &self,
         native_capability_context: NativeCapabilityContexts<
@@ -94,6 +97,8 @@ impl NativeDispatch {
             WebsocketContext,
             TelemetryContext,
             ResourceContext,
+            ConfigContext,
+            DbContext,
         >,
         invocation: RuntimeNativeInvocation,
         args: Vec<RuntimeValue>,
@@ -101,6 +106,8 @@ impl NativeDispatch {
     ) -> Result<PreparedNativeCall<'a>>
     where
         ActorContext: NativeActorCapability + Send + 'a,
+        ConfigContext: NativeConfigCapability,
+        DbContext: NativeDbCapability,
         FileContext: NativeFileCapabilityBundle,
         <FileContext as NativeFileCapabilityBundle>::File: 'a,
         <FileContext as NativeFileCapabilityBundle>::FileSourceStream: 'a,
@@ -124,6 +131,8 @@ impl NativeDispatch {
         WebsocketContext,
         TelemetryContext,
         ResourceContext,
+        ConfigContext,
+        DbContext,
     >(
         &self,
         native_capability_context: NativeCapabilityContexts<
@@ -135,6 +144,8 @@ impl NativeDispatch {
             WebsocketContext,
             TelemetryContext,
             ResourceContext,
+            ConfigContext,
+            DbContext,
         >,
         invocation: RuntimeNativeInvocation,
         args: Vec<RuntimeValue>,
@@ -142,6 +153,8 @@ impl NativeDispatch {
     ) -> Result<RuntimeValue>
     where
         ActorContext: NativeActorCapability + Send,
+        ConfigContext: NativeConfigCapability,
+        DbContext: NativeDbCapability,
         FileContext: NativeFileCapabilityBundle,
         TimeContext: NativeTimeCapability + Send,
         HttpClientContext: NativeHttpClientCapability + Send,

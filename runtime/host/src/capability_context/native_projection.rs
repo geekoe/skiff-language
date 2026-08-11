@@ -1,21 +1,22 @@
 //! Runtime concrete context constructors for promoted native capability traits.
 
 use super::{
-    ActorClient, ActorClientContext, ConfigCapabilityContext, FileCapabilityContext,
-    FileSourceStreamContext, HttpClientCapabilityContext, HttpResponseStreamCapabilityContext,
-    RequestClientContext, TelemetryCapabilityContext, TimeCapabilityContext,
-    WebsocketCapabilityContext,
+    ActorClient, ActorClientContext, ConfigCapabilityContext, DbCapabilityContext,
+    DbRecoverableRuntimeContext, FileCapabilityContext, FileSourceStreamContext,
+    HttpClientCapabilityContext, HttpResponseStreamCapabilityContext, RequestClientContext,
+    TelemetryCapabilityContext, TimeCapabilityContext, WebsocketCapabilityContext,
 };
 use crate::error as runtime_error;
 use bytes::Bytes;
 use promoted_runtime::{
     capability::{
         NativeActorCapability, NativeCapabilityFuture, NativeConfigCapability,
-        NativeFileCapability, NativeFileCapabilityBundle, NativeFileChunkSource,
-        NativeFileSourceStreamCapability, NativeHttpClientCapability,
+        NativeDbCapability, NativeFileCapability, NativeFileCapabilityBundle,
+        NativeFileChunkSource, NativeFileSourceStreamCapability, NativeHttpClientCapability,
         NativeHttpResponseStreamCapability, NativeTelemetryCapability, NativeTimeCapability,
         NativeWebsocketCapability,
     },
+    dispatch::{prepared_native_call_from_db_value_operation, PreparedNativeCall},
     error::{BudgetReason as NativeBudgetReason, Result, RuntimeError},
 };
 use serde_json::Value;
@@ -90,6 +91,59 @@ impl<'execution> RuntimeNativeHttpResponseStreamCapabilityContext<'execution> {
         Self(ContractNativeHttpResponseStreamCapabilityContext::new(
             context,
         ))
+    }
+}
+
+#[derive(Clone)]
+pub struct RuntimeNativeDbCapabilityContext {
+    db_context: DbCapabilityContext,
+    recoverable_context: DbRecoverableRuntimeContext,
+}
+
+impl RuntimeNativeDbCapabilityContext {
+    pub fn new(
+        db_context: DbCapabilityContext,
+        recoverable_context: DbRecoverableRuntimeContext,
+    ) -> Self {
+        Self {
+            db_context,
+            recoverable_context,
+        }
+    }
+
+    pub fn db_context(&self) -> &DbCapabilityContext {
+        &self.db_context
+    }
+
+    pub fn recoverable_context(&self) -> &DbRecoverableRuntimeContext {
+        &self.recoverable_context
+    }
+}
+
+impl NativeDbCapability for RuntimeNativeDbCapabilityContext {
+    fn prepare_db_operation(
+        &self,
+        operation: &skiff_artifact_model::DbOperationReference,
+        args: Vec<RuntimeValue>,
+        heap: &mut RequestHeap,
+    ) -> Result<PreparedNativeCall<'static>> {
+        let target = operation.target.type_name.clone();
+        let store = self
+            .db_context
+            .require_store(
+                &target,
+                "serviceDb is not configured for std.db.operation",
+            )
+            .map_err(|error| runtime_error_to_native(error.into()))?;
+        let value = args.into_iter().next().ok_or_else(|| {
+            RuntimeError::Decode(
+                "std.db.operation requires exactly one ObjectFields argument".to_string(),
+            )
+        })?;
+        let prepared = store
+            .prepare_create_runtime(&target, &value, heap, self.recoverable_context.clone())
+            .map_err(|error| runtime_error_to_native(error.into()))?;
+        Ok(prepared_native_call_from_db_value_operation(prepared))
     }
 }
 

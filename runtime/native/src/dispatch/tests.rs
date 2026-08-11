@@ -50,9 +50,12 @@ fn native_signature_registry_shared_targets_are_runtime_reachable() {
 
     let expected_routes = BTreeSet::from([
         RuntimeNativeRoute::Actor,
+        RuntimeNativeRoute::Config,
+        RuntimeNativeRoute::Db,
         RuntimeNativeRoute::Bytes,
         RuntimeNativeRoute::File,
         RuntimeNativeRoute::Json,
+        RuntimeNativeRoute::Builtin,
         RuntimeNativeRoute::Time,
         RuntimeNativeRoute::Http,
         RuntimeNativeRoute::Websocket,

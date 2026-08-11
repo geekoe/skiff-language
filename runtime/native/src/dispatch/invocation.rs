@@ -1,7 +1,7 @@
 use crate::error::{Result, RuntimeError};
 use crate::{boundary::NativeBoundaryAdapter, runtime_value_facade::RuntimeTypePlan};
 use skiff_runtime_capability_context::ActorInvocationDeclarationOwner;
-use skiff_runtime_model::addr::UnitAddr;
+use skiff_runtime_model::addr::{ExecutableAddr, UnitAddr};
 use skiff_runtime_model::service_error::NamedUnionOwnerIdentity;
 use skiff_runtime_native_contract::{NativeCallPlan, NativeRequiredContext};
 
@@ -11,6 +11,7 @@ pub struct RuntimeNativeInvocation {
     plan: Option<NativeCallPlan>,
     actor_metadata: Option<RuntimeActorNativeMetadata>,
     resource_owner: Option<UnitAddr>,
+    current_addr: Option<ExecutableAddr>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,6 +75,7 @@ impl RuntimeNativeInvocation {
             plan,
             actor_metadata,
             resource_owner,
+            current_addr: None,
         }
     }
 
@@ -157,6 +159,20 @@ impl RuntimeNativeInvocation {
         self.resource_owner.as_ref().ok_or_else(|| {
             RuntimeError::InvalidArtifact(format!(
                 "{} resolved resource native call is missing call-site owner",
+                self.target_name
+            ))
+        })
+    }
+
+    pub fn with_current_addr(mut self, current_addr: ExecutableAddr) -> Self {
+        self.current_addr = Some(current_addr);
+        self
+    }
+
+    pub fn current_addr(&self) -> Result<&ExecutableAddr> {
+        self.current_addr.as_ref().ok_or_else(|| {
+            RuntimeError::InvalidArtifact(format!(
+                "{} resolved native call is missing its current executable address",
                 self.target_name
             ))
         })

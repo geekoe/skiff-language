@@ -86,10 +86,14 @@ pub enum NativeCapabilityContexts<
     WebsocketContext,
     TelemetryContext,
     ResourceContext,
+    ConfigContext = (),
+    DbContext = (),
 > {
     None,
     Actor(ActorContext),
+    Config(ConfigContext),
     File(FileContext),
+    Db(DbContext),
     Time(TimeContext),
     HttpClient(HttpClientContext),
     HttpResponseStream(HttpResponseStreamContext),
@@ -107,6 +111,8 @@ impl<
         WebsocketContext,
         TelemetryContext,
         ResourceContext,
+        ConfigContext,
+        DbContext,
     >
     NativeCapabilityContexts<
         ActorContext,
@@ -117,13 +123,17 @@ impl<
         WebsocketContext,
         TelemetryContext,
         ResourceContext,
+        ConfigContext,
+        DbContext,
     >
 {
     pub fn required_context(&self) -> NativeRequiredContext {
         match self {
             Self::None => NativeRequiredContext::None,
             Self::Actor(_) => NativeRequiredContext::Actor,
+            Self::Config(_) => NativeRequiredContext::Config,
             Self::File(_) => NativeRequiredContext::File,
+            Self::Db(_) => NativeRequiredContext::Db,
             Self::Time(_) => NativeRequiredContext::Time,
             Self::HttpClient(_) => NativeRequiredContext::HttpClient,
             Self::HttpResponseStream(_) => NativeRequiredContext::HttpResponseStream,
@@ -143,6 +153,8 @@ pub trait NativeCapabilityProjectionSource {
     type Websocket;
     type Telemetry;
     type Resource;
+    type Config;
+    type Db;
 
     fn actor(&self) -> Self::Actor;
     fn file(&self) -> Self::File;
@@ -152,6 +164,8 @@ pub trait NativeCapabilityProjectionSource {
     fn websocket(&self) -> Self::Websocket;
     fn telemetry(&self) -> Self::Telemetry;
     fn resource(&self) -> Self::Resource;
+    fn config(&self) -> Self::Config;
+    fn db(&self) -> Self::Db;
 }
 
 #[allow(clippy::type_complexity)]
@@ -167,6 +181,8 @@ pub fn project_native_capability_context<Source>(
     Source::Websocket,
     Source::Telemetry,
     Source::Resource,
+    Source::Config,
+    Source::Db,
 >
 where
     Source: NativeCapabilityProjectionSource,
@@ -174,7 +190,9 @@ where
     match required_context {
         NativeRequiredContext::None => NativeCapabilityContexts::None,
         NativeRequiredContext::Actor => NativeCapabilityContexts::Actor(source.actor()),
+        NativeRequiredContext::Config => NativeCapabilityContexts::Config(source.config()),
         NativeRequiredContext::File => NativeCapabilityContexts::File(source.file()),
+        NativeRequiredContext::Db => NativeCapabilityContexts::Db(source.db()),
         NativeRequiredContext::Time => NativeCapabilityContexts::Time(source.time()),
         NativeRequiredContext::HttpClient => {
             NativeCapabilityContexts::HttpClient(source.http_client())

@@ -86,6 +86,8 @@ impl HttpNativeDispatch {
         WebsocketContext,
         TelemetryContext,
         ResourceContext,
+        ConfigContext,
+        DbContext,
     >(
         &self,
         native_capability_context: NativeCapabilityContexts<
@@ -97,6 +99,8 @@ impl HttpNativeDispatch {
             WebsocketContext,
             TelemetryContext,
             ResourceContext,
+            ConfigContext,
+            DbContext,
         >,
         invocation: RuntimeNativeInvocation,
         diagnostic_target: String,
@@ -286,6 +290,8 @@ impl HttpNativeDispatch {
         WebsocketContext,
         TelemetryContext,
         ResourceContext,
+        ConfigContext,
+        DbContext,
     >(
         &self,
         native_capability_context: NativeCapabilityContexts<
@@ -297,6 +303,8 @@ impl HttpNativeDispatch {
             WebsocketContext,
             TelemetryContext,
             ResourceContext,
+            ConfigContext,
+            DbContext,
         >,
         invocation: RuntimeNativeInvocation,
         diagnostic_target: String,
@@ -683,6 +691,8 @@ pub(super) fn ensure_http_helper_none_capability_context<
     WebsocketContext,
     TelemetryContext,
     ResourceContext,
+    ConfigContext,
+    DbContext,
 >(
     binding_key: &str,
     native_capability_context: &NativeCapabilityContexts<
@@ -694,6 +704,8 @@ pub(super) fn ensure_http_helper_none_capability_context<
         WebsocketContext,
         TelemetryContext,
         ResourceContext,
+        ConfigContext,
+        DbContext,
     >,
 ) -> Result<()> {
     ensure_native_capability_context(

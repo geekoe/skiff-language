@@ -8,6 +8,7 @@ mod builtin;
 mod bytes;
 mod config;
 mod core;
+mod db;
 mod external;
 mod file;
 mod http;
@@ -29,8 +30,8 @@ use core::{
 pub use core::{runtime_shared_native_route, RuntimeNativeRoute};
 pub use invocation::{RuntimeActorNativeMetadata, RuntimeNativeInvocation};
 pub use prepared::{
-    NativeExternalFinalize, NativeExternalOutcome, NativeExternalWait,
-    PreparedExternalNativeOperation, PreparedNativeCall,
+    prepared_native_call_from_db_value_operation, NativeExternalFinalize, NativeExternalOutcome,
+    NativeExternalWait, PreparedExternalNativeOperation, PreparedNativeCall,
 };
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use super::{
-    actor::ActorNativeDispatch, bytes::BytesNativeDispatch, external::ExternalNativeDispatch,
+    actor::ActorNativeDispatch, builtin::BuiltinDispatch, bytes::BytesNativeDispatch,
+    config::ConfigNativeDispatch, db::DbNativeDispatch, external::ExternalNativeDispatch,
     file::FileNativeDispatch, http::HttpNativeDispatch, invocation::RuntimeNativeInvocation,
     json::JsonNativeDispatch, prepared::run_prepared_native_call, resource::ResourceNativeDispatch,
     task::TaskControlNativeDispatch, telemetry::TelemetryNativeDispatch, time::TimeNativeDispatch,
@@ -8,9 +9,10 @@ use super::{
 use crate::error::{Result, RuntimeError};
 use crate::{
     capability::{
-        NativeActorCapability, NativeFileCapabilityBundle, NativeHttpClientCapability,
-        NativeHttpResponseStreamCapability, NativeResourceCapability, NativeTelemetryCapability,
-        NativeTimeCapability, NativeWebsocketCapability,
+        NativeActorCapability, NativeConfigCapability, NativeDbCapability,
+        NativeFileCapabilityBundle, NativeHttpClientCapability, NativeHttpResponseStreamCapability,
+        NativeResourceCapability, NativeTelemetryCapability, NativeTimeCapability,
+        NativeWebsocketCapability,
     },
     registry::NativeRegistry,
     runtime_value_facade::{RequestHeap, RuntimeValue},
@@ -21,9 +23,12 @@ use skiff_runtime_native_contract::NativeRequiredContext;
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RuntimeNativeRoute {
     Actor,
+    Config,
+    Db,
     Bytes,
     File,
     Json,
+    Builtin,
     Time,
     Http,
     Websocket,
@@ -44,6 +49,12 @@ pub(crate) fn runtime_shared_native_route_for_validation(
 ) -> Option<RuntimeNativeRoute> {
     if ActorNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::Actor);
+    }
+    if ConfigNativeDispatch::matches(target) {
+        return Some(RuntimeNativeRoute::Config);
+    }
+    if DbNativeDispatch::matches(target) {
+        return Some(RuntimeNativeRoute::Db);
     }
     if BytesNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::Bytes);
@@ -68,6 +79,9 @@ pub(crate) fn runtime_shared_native_route_for_validation(
     }
     if ResourceNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::Resource);
+    }
+    if BuiltinDispatch::matches(target) {
+        return Some(RuntimeNativeRoute::Builtin);
     }
     if TaskControlNativeDispatch::matches(target) {
         return Some(RuntimeNativeRoute::TaskControl);
@@ -119,6 +133,8 @@ pub(super) fn prepare_resolved_native_call<
     WebsocketContext,
     TelemetryContext,
     ResourceContext,
+    ConfigContext,
+    DbContext,
 >(
     native_capability_context: NativeCapabilityContexts<
         ActorContext,
@@ -129,6 +145,8 @@ pub(super) fn prepare_resolved_native_call<
         WebsocketContext,
         TelemetryContext,
         ResourceContext,
+        ConfigContext,
+        DbContext,
     >,
     invocation: RuntimeNativeInvocation,
     args: Vec<RuntimeValue>,
@@ -136,6 +154,8 @@ pub(super) fn prepare_resolved_native_call<
 ) -> Result<PreparedNativeCall<'a>>
 where
     ActorContext: NativeActorCapability + Send + 'a,
+    ConfigContext: NativeConfigCapability,
+    DbContext: NativeDbCapability,
     FileContext: NativeFileCapabilityBundle,
     <FileContext as NativeFileCapabilityBundle>::File: 'a,
     <FileContext as NativeFileCapabilityBundle>::FileSourceStream: 'a,
@@ -165,6 +185,53 @@ where
             native_capability_context.required_context(),
         )?;
         let value = JsonNativeDispatch::dispatch(&invocation, &diagnostic_target, args, heap)?;
+        return Ok(PreparedNativeCall::Ready(value));
+    }
+    if ConfigNativeDispatch::matches(&binding_key) {
+        ensure_native_capability_context(
+            &binding_key,
+            NativeRequiredContext::Config,
+            native_capability_context.required_context(),
+        )?;
+        let config_context = match native_capability_context {
+            NativeCapabilityContexts::Config(config_context) => config_context,
+            other => {
+                return Err(native_capability_route_mismatch(
+                    &binding_key,
+                    NativeRequiredContext::Config,
+                    other.required_context(),
+                ));
+            }
+        };
+        let value =
+            ConfigNativeDispatch::dispatch_native_call(&config_context, invocation, args, heap)?;
+        return Ok(PreparedNativeCall::Ready(value));
+    }
+    if DbNativeDispatch::matches(&binding_key) {
+        ensure_native_capability_context(
+            &binding_key,
+            NativeRequiredContext::Db,
+            native_capability_context.required_context(),
+        )?;
+        let db_context = match native_capability_context {
+            NativeCapabilityContexts::Db(db_context) => db_context,
+            other => {
+                return Err(native_capability_route_mismatch(
+                    &binding_key,
+                    NativeRequiredContext::Db,
+                    other.required_context(),
+                ));
+            }
+        };
+        return DbNativeDispatch::prepare(&db_context, invocation, args, heap);
+    }
+    if BuiltinDispatch::matches(&binding_key) {
+        ensure_native_capability_context(
+            &binding_key,
+            NativeRequiredContext::None,
+            native_capability_context.required_context(),
+        )?;
+        let value = BuiltinDispatch::dispatch(&binding_key, args, heap)?;
         return Ok(PreparedNativeCall::Ready(value));
     }
     if TimeNativeDispatch::matches(&binding_key) {
@@ -313,6 +380,8 @@ pub(super) async fn dispatch_resolved_native_call<
     WebsocketContext,
     TelemetryContext,
     ResourceContext,
+    ConfigContext,
+    DbContext,
 >(
     native_capability_context: NativeCapabilityContexts<
         ActorContext,
@@ -323,6 +392,8 @@ pub(super) async fn dispatch_resolved_native_call<
         WebsocketContext,
         TelemetryContext,
         ResourceContext,
+        ConfigContext,
+        DbContext,
     >,
     invocation: RuntimeNativeInvocation,
     args: Vec<RuntimeValue>,
@@ -330,6 +401,8 @@ pub(super) async fn dispatch_resolved_native_call<
 ) -> Result<RuntimeValue>
 where
     ActorContext: NativeActorCapability + Send,
+    ConfigContext: NativeConfigCapability,
+    DbContext: NativeDbCapability,
     FileContext: NativeFileCapabilityBundle,
     TimeContext: NativeTimeCapability + Send,
     HttpClientContext: NativeHttpClientCapability + Send,

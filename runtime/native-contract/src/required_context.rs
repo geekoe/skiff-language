@@ -4,6 +4,8 @@ use super::{TARGET_STD_HTTP_REQUEST, TARGET_STD_HTTP_SSE, TARGET_STD_HTTP_STREAM
 pub enum NativeRequiredContext {
     None,
     Actor,
+    Config,
+    Db,
     File,
     Time,
     HttpClient,
@@ -45,6 +47,7 @@ impl NativeRequiredContext {
             | "std.json.getBool"
             | "std.json.getArray"
             | "std.string.join"
+            | "std.string.concat"
             | "std.string.split"
             | "std.string.isAsciiDigits"
             | "std.string.truncateUtf8Bytes"
@@ -94,6 +97,10 @@ impl NativeRequiredContext {
             | "std.file.delete"
             | "std.file.createFromStream" => Self::File,
             "std.telemetry.emit" => Self::Telemetry,
+            "std.config.require"
+            | "std.config.optional"
+            | "std.config.has" => Self::Config,
+            "std.db.operation" => Self::Db,
             "std.websocket.sendTextToConnection"
             | "std.websocket.sendBinaryToConnection"
             | "std.websocket.sendTextToBusinessIdentity"
