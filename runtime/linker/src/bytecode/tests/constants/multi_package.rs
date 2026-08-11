@@ -27,6 +27,24 @@ fn two_packages_rebase_local_zero_rows_and_relink_deterministically() {
         first.frozen_constant_nodes(),
         second.frozen_constant_nodes()
     );
+    assert_eq!(first.packages().len(), 2);
+    assert_eq!(first.packages().len(), hydrated.packages().len());
+    for provenance in first.packages() {
+        let package = hydrated
+            .packages()
+            .get(provenance.package_build_id())
+            .expect("linked package provenance must retain an exact hydrated owner");
+        assert_eq!(
+            package.platform_error_projection_registry(),
+            hydrated.platform_error_projection_registry()
+        );
+        assert_eq!(
+            provenance
+                .authorities()
+                .platform_error_projection_registry(),
+            package.platform_error_projection_registry()
+        );
+    }
     assert_eq!(first.constants().len(), 2);
     assert_eq!(first.constant_roots().len(), 2);
     assert_eq!(first.frozen_constant_nodes().len(), 2);

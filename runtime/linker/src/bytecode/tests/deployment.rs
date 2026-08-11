@@ -4,7 +4,8 @@ use skiff_artifact_identity::{
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
     InstructionSourceSite, Opcode, SourcePosition, SourceSpanRef, StatementAttributionId,
-    StructuralValidationError, SyntheticInstructionSiteReason, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    StructuralValidationError, SyntheticInstructionSiteReason, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind, LinkedFunction,
@@ -45,10 +46,17 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         .packages()
         .get(&fixture.package_reference.package_build_id)
         .unwrap();
-    assert_exact_v6_provenance(provenance, hydrated_package);
+    assert_exact_v7_provenance(provenance, hydrated_package);
+    // The loader is the only safe hydrated-deployment constructor, so its
+    // mixed-registry negative tests own impossible receipt construction. The
+    // linker tests prove that the opaque joined receipt survives unchanged.
+    assert_eq!(
+        hydrated_package.platform_error_projection_registry(),
+        hydrated.platform_error_projection_registry()
+    );
     assert_eq!(
         hydrated_package.artifact().schema_version,
-        "skiff-package-artifact-v14"
+        "skiff-package-artifact-v15"
     );
     assert_eq!(
         hydrated_package.artifact().schema_version,
@@ -58,7 +66,7 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         .package_reference
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v13:sha256"));
+        .starts_with("skiff-package-build-v14:sha256"));
     assert!(fixture
         .package_reference
         .package_build_id
@@ -317,7 +325,9 @@ fn production_entry_links_stream_producer_with_zero_ordinary_results() {
     assert_eq!(root.instructions()[1].opcode(), Opcode::EmitStream);
     assert!(root.frame().result_types().is_empty());
     assert!(root.frame().result_plans().is_empty());
-    let stream_type = root.stream_result_type_ref().expect("producer stream authority");
+    let stream_type = root
+        .stream_result_type_ref()
+        .expect("producer stream authority");
     assert!(matches!(
         candidate.types()[stream_type.get() as usize].type_ref(),
         TypeRefIr::Builtin { name, .. } if name == "Stream"
@@ -388,7 +398,7 @@ fn source_site(source_id: u64) -> InstructionSourceSite {
     }
 }
 
-fn assert_exact_v6_provenance(
+fn assert_exact_v7_provenance(
     provenance: &LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
 ) {
@@ -396,7 +406,7 @@ fn assert_exact_v6_provenance(
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");
-    assert_eq!(provenance.schema_version(), "skiff-bytecode-v6");
+    assert_eq!(provenance.schema_version(), "skiff-bytecode-v7");
     assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v4");
     assert_eq!(provenance.schema_version(), view.schema_version());
     assert_eq!(provenance.isa_version(), view.isa_version());
@@ -420,8 +430,13 @@ fn assert_exact_v6_provenance(
         provenance.authorities().intrinsic_registry(),
         view.intrinsic_registry()
     );
+    assert_eq!(
+        provenance
+            .authorities()
+            .platform_error_projection_registry(),
+        package.platform_error_projection_registry()
+    );
 }
-
 
 #[test]
 fn production_entry_links_record_shape_and_dense_field_relocation() {
@@ -454,7 +469,9 @@ fn production_entry_links_array_builder_with_container_stack_map() {
     let array = candidate
         .types()
         .iter()
-        .find(|entry| matches!(entry.type_ref(), TypeRefIr::Builtin { name, .. } if name == "Array"))
+        .find(
+            |entry| matches!(entry.type_ref(), TypeRefIr::Builtin { name, .. } if name == "Array"),
+        )
         .unwrap();
     assert_eq!(
         array.container_layout().map(|layout| layout.kind()),

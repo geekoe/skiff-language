@@ -19,6 +19,17 @@ use super::{unsatisfied, DeploymentLinker};
 impl<'a> DeploymentLinker<'a> {
     pub(super) fn validate_exact_package_closure(&self) -> Result<(), BytecodeLinkError> {
         let location = self.deployment_location();
+        let deployment_registry = self.deployment.platform_error_projection_registry();
+        for package in self.deployment.packages().values() {
+            if package.platform_error_projection_registry() != deployment_registry {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ExactPackageClosure,
+                    self.package_location(package),
+                    "hydrated package platform error projection registry differs from the deployment closure receipt"
+                        .to_string(),
+                ));
+            }
+        }
         self.tracker
             .check_packages(self.deployment.packages().len() as u64, location.clone())?;
         let implementation = &self.deployment.deployment().implementation;
@@ -131,6 +142,7 @@ impl<'a> DeploymentLinker<'a> {
                     view.value_lifecycle_policy().clone(),
                     view.host_effect_registry().clone(),
                     view.intrinsic_registry().clone(),
+                    package.platform_error_projection_registry().clone(),
                 )
                 .map_err(|error| {
                     unsatisfied(
