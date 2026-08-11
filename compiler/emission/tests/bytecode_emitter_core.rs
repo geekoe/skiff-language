@@ -1168,6 +1168,158 @@ mod tests {
     }
 
     #[test]
+    fn stream_for_in_emits_stream_next_store_and_loop_backedge() {
+        let item_type = TypeRefIr::builtin("number");
+        let stream_type = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![item_type.clone()],
+        };
+        let expressions = vec![
+            MirExpression {
+                index: 0,
+                expression: ExprIr::LoadSlot { slot: 0 },
+                ty: stream_type.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: Some(MirStreamResultFacts {
+                    item_type: item_type.clone(),
+                }),
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 1,
+                expression: ExprIr::LoadSlot { slot: 1 },
+                ty: item_type.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+        ];
+        let facts = MirForInFacts {
+            iterable_type: stream_type.clone(),
+            binding: MirForInBinding::Item {
+                slot: 1,
+                ty: item_type.clone(),
+                kind: MirForInItemKind::StreamItem,
+            },
+        };
+        let function = function(
+            "streams",
+            "consume",
+            TypeRefIr::builtin("void"),
+            vec![
+                MirSlot {
+                    slot: 0,
+                    name: "values".to_string(),
+                    kind: MirSlotKind::Local,
+                    writable_local: false,
+                    ty: Some(stream_type.clone()),
+                },
+                MirSlot {
+                    slot: 1,
+                    name: "item".to_string(),
+                    kind: MirSlotKind::Local,
+                    writable_local: false,
+                    ty: Some(item_type.clone()),
+                },
+            ],
+            expressions,
+            vec![
+                MirBlock {
+                    id: 0,
+                    label: "header".to_string(),
+                    statements: vec![MirStmt {
+                        statement_index: 0,
+                        span: None,
+                        kind: MirStmtKind::ForIn {
+                            iterable: expression(0),
+                            facts,
+                            body: 1,
+                            continuation: 2,
+                        },
+                    }],
+                    successors: vec![1, 2],
+                },
+                MirBlock {
+                    id: 1,
+                    label: "body".to_string(),
+                    statements: vec![MirStmt {
+                        statement_index: 1,
+                        span: None,
+                        kind: MirStmtKind::Expr {
+                            value: expression(1),
+                        },
+                    }],
+                    successors: vec![2],
+                },
+                MirBlock {
+                    id: 2,
+                    label: "continuation".to_string(),
+                    statements: vec![MirStmt {
+                        statement_index: 2,
+                        span: None,
+                        kind: MirStmtKind::Return { value: None },
+                    }],
+                    successors: Vec::new(),
+                },
+            ],
+            vec![
+                MirStatementEntry {
+                    statement_index: 0,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 1,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 2,
+                    span: None,
+                },
+            ],
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
+        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()])
+            .expect("stream for-in plans derive");
+        assert_eq!(
+            plans.function("streams::consume").unwrap().slot_plans[0],
+            ValueTransferPlan::AffineResource {
+                drop: ResourceDropPlan::ResourceTableRelease,
+            }
+        );
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("stream for-in emits bytecode");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("stream for-in bytecode must validate");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "streams::consume")
+            .expect("stream consumer function");
+        assert!(function.instructions.iter().any(|instruction| {
+            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::StreamNext
+        }));
+        assert!(function.instructions.iter().any(|instruction| {
+            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::MoveSlot
+        }));
+        assert_eq!(artifact.image.pools.resume.len(), 1);
+        let BytecodePoolEntry::ResumeDescriptor(descriptor) = &artifact.image.pools.resume[0]
+        else {
+            panic!("resume pool is homogeneous");
+        };
+        assert_eq!(
+            descriptor.result_plans,
+            vec![ValueTransferPlan::FromType {
+                ty: item_type.clone(),
+            }]
+        );
+    }
+
+    #[test]
     fn stream_return_derives_affine_plan_and_emits_bytecode() {
         let item_type = TypeRefIr::builtin("number");
         let stream_type = TypeRefIr::Builtin {
@@ -1213,6 +1365,11 @@ mod tests {
                             value: expression(0),
                         },
                     },
+                    MirStmt {
+                        statement_index: 2,
+                        span: None,
+                        kind: MirStmtKind::Return { value: None },
+                    },
                 ],
                 successors: Vec::new(),
             }],
@@ -1223,6 +1380,10 @@ mod tests {
                 },
                 MirStatementEntry {
                     statement_index: 1,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 2,
                     span: None,
                 },
             ],

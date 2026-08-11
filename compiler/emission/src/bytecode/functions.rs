@@ -109,6 +109,7 @@ struct LoopBackedge {
     item_slot: u32,
     value_slot: Option<u32>,
     array: bool,
+    stream: bool,
 }
 
 impl<'a> FunctionEmitter<'a> {
@@ -871,7 +872,7 @@ impl<'a> FunctionEmitter<'a> {
         endpoint_slot: u32,
         item_type: &TypeRefIr,
     ) -> Result<(), BytecodeEmissionError> {
-        let endpoint_type = self.function.slot_type(endpoint_slot)?;
+        let endpoint_type = self.slot_type(endpoint_slot)?;
         let TypeRefIr::Builtin { name, args } = endpoint_type else {
             return Err(unsupported(
                 &self.key,
@@ -1564,25 +1565,45 @@ impl<'a> FunctionEmitter<'a> {
         continuation: u32,
     ) -> Result<(), BytecodeEmissionError> {
         let iterable_ty = facts.iterable_type.clone();
-        let (array, item_slot, value_slot, item_ty) = match &facts.binding {
+        let (array, stream, item_slot, value_slot, item_ty) = match &facts.binding {
             skiff_compiler_lowering::mir::MirForInBinding::Item { slot, ty, kind } => match kind {
-                MirForInItemKind::ArrayItem => (true, *slot, None, ty.clone()),
-                MirForInItemKind::MapKey => (false, *slot, None, ty.clone()),
-                MirForInItemKind::StreamItem => {
-                    return Err(unsupported(
-                        &self.key,
-                        "for-in",
-                        "stream iteration is outside the emitted core",
-                    ))
-                }
+                MirForInItemKind::ArrayItem => (true, false, *slot, None, ty.clone()),
+                MirForInItemKind::MapKey => (false, false, *slot, None, ty.clone()),
+                MirForInItemKind::StreamItem => (false, true, *slot, None, ty.clone()),
             },
             skiff_compiler_lowering::mir::MirForInBinding::MapEntry {
                 key_slot,
                 value_slot,
                 ..
-            } => (false, *key_slot, Some(*value_slot), iterable_ty.clone()),
+            } => (false, false, *key_slot, Some(*value_slot), iterable_ty.clone()),
         };
         let iterable_slot = self.push_generated_slot(&iterable_ty, "$forIterable")?;
+        if stream {
+            let index_slot = 0;
+            if let ExprIr::LoadSlot { slot } = &self.function.expression(iterable)?.expression {
+                self.emit_op(Opcode::MoveSlot, vec![*slot, iterable_slot])?;
+            } else {
+                self.emit_expression(iterable)?;
+                self.emit_op(Opcode::StoreSlot, vec![iterable_slot])?;
+            }
+            let header_instruction = self.instructions.len();
+            self.emit_stream_next(iterable_slot, &item_ty)?;
+            self.emit_op(Opcode::StoreSlot, vec![item_slot])?;
+            self.emit_jump_to_block(body)?;
+            self.loop_backedges.insert(
+                body,
+                LoopBackedge {
+                    header_instruction,
+                    iterable_slot,
+                    index_slot,
+                    item_slot,
+                    value_slot,
+                    array,
+                    stream,
+                },
+            );
+            return Ok(());
+        }
         let index_slot = self.push_generated_slot(&TypeRefIr::builtin("number"), "$forIndex")?;
         self.emit_expression(iterable)?;
         self.emit_op(Opcode::StoreSlot, vec![iterable_slot])?;
@@ -1612,6 +1633,7 @@ impl<'a> FunctionEmitter<'a> {
                 item_slot,
                 value_slot,
                 array,
+                stream,
             },
         );
         let _ = item_ty;
@@ -1623,6 +1645,10 @@ impl<'a> FunctionEmitter<'a> {
         _block: u32,
         backedge: &LoopBackedge,
     ) -> Result<(), BytecodeEmissionError> {
+        if backedge.stream {
+            self.emit_jump_to_instruction(backedge.header_instruction)?;
+            return Ok(());
+        }
         self.emit_op(Opcode::LoadSlot, vec![backedge.iterable_slot])?;
         self.emit_op(Opcode::LoadSlot, vec![backedge.index_slot])?;
         if backedge.array {
@@ -1725,6 +1751,29 @@ impl<'a> FunctionEmitter<'a> {
             cleanup_depth: region.cleanup_depth,
         });
         self.emit_expression(body)
+    }
+
+    fn slot_type(&self, slot: u32) -> Result<&TypeRefIr, BytecodeEmissionError> {
+        let index = slot as usize;
+        let found = self
+            .function
+            .slots
+            .get(index)
+            .filter(|candidate| candidate.slot == slot)
+            .or_else(|| {
+                self.generated_slots
+                    .get(index.saturating_sub(self.function.slots.len()))
+                    .filter(|candidate| candidate.slot == slot)
+            });
+        found
+            .and_then(|candidate| candidate.ty.as_ref())
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "slot type",
+                    &format!("slot {slot} is absent"),
+                )
+            })
     }
 
     fn push_generated_slot(
