@@ -11,7 +11,7 @@ use skiff_test_runner::{
     run_skiff_tests_with_options, validate_control_url, validate_ingress_url, SkiffTestOptions,
 };
 
-const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir>... --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity> --base-config-snapshot <identity>] [--live --control-url <url> --ingress-url <url> --profile <id>] [--deny-skips] [--require-tests]";
+const USAGE: &str = "usage: skiff-test-runner <input-file-or-dir>... --artifact-root <dir> --platform-source-root <absolute-dir> [--base-assembly <identity>] [--base-config-snapshot <identity>] [--live --control-url <url> --ingress-url <url> --profile <id>] [--deny-skips] [--require-tests]";
 
 fn main() -> ExitCode {
     let stdout = io::stdout();
@@ -138,11 +138,6 @@ fn finish_args(parsed: RawCliArgs) -> Result<CliArgs, String> {
         platform_source_root.ok_or_else(|| "missing --platform-source-root".to_string())?;
     let platform_sources =
         CompilerPlatformSources::new(&platform_source_root).map_err(|error| error.to_string())?;
-    if base_assembly.is_some() != base_config_snapshot.is_some() {
-        return Err(
-            "--base-assembly and --base-config-snapshot must be provided together".to_string(),
-        );
-    }
     if live && (control_url.is_none() || ingress_url.is_none() || profile.is_none()) {
         return Err("--live requires --control-url, --ingress-url and --profile".to_string());
     }
