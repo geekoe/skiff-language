@@ -34,11 +34,11 @@ use skiff_runtime_transport::actor_owner::{
     ActorOwnerRouteAuthorityFrameHeader,
 };
 use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
-    RuntimeAssemblyTaskAttemptFrameHeader, RuntimeAssemblyTaskInvocationFrameHeader,
-    RuntimeAssemblyTaskRequestCallerFrameHeader, RuntimeAssemblyTaskRequestRoutingFrameHeader,
-    RuntimeAssemblyTaskRequestStartFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeRequestDeadlineFrameHeader, BytecodeRequestTraceFrameHeader,
+    BytecodeTaskAttemptFrameHeader, BytecodeTaskInvocationFrameHeader,
+    BytecodeTaskRequestCallerFrameHeader, BytecodeTaskRequestRoutingFrameHeader,
+    BytecodeTaskRequestStartFrameHeader,
 };
 use skiff_task_control::model::{DetachedCallTarget, TaskLease, TaskRecord};
 use skiff_task_control::scheduler::{AdmissionDecision, AttemptAdmission};
@@ -187,7 +187,7 @@ impl RouterTaskAttemptAdmission {
     fn build_request(
         &self,
         record: &TaskRecord,
-    ) -> Option<RuntimeAssemblyTaskRequestStartFrameHeader> {
+    ) -> Option<BytecodeTaskRequestStartFrameHeader> {
         let lease = record.active_lease.as_ref()?;
         let now = self.clock.now_ms();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
@@ -208,15 +208,15 @@ impl RouterTaskAttemptAdmission {
             expires_at: super::iso_timestamp(now.saturating_add(self.request_timeout_ms)),
         };
         let test_case = record.test_case.as_ref();
-        Some(RuntimeAssemblyTaskRequestStartFrameHeader {
+        Some(BytecodeTaskRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "request.start".to_string(),
             request_id,
             mode: "unary".to_string(),
-            caller: RuntimeAssemblyTaskRequestCallerFrameHeader {
+            caller: BytecodeTaskRequestCallerFrameHeader {
                 kind: "service".to_string(),
             },
-            routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
+            routing: BytecodeTaskRequestRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
                 assembly_identity: None,
                 assembly_generation: None,
@@ -225,16 +225,16 @@ impl RouterTaskAttemptAdmission {
                     record.execution.deployment.deployment_artifact_identity.to_string(),
                 ),
             },
-            invocation: RuntimeAssemblyTaskInvocationFrameHeader {
+            invocation: BytecodeTaskInvocationFrameHeader {
                 kind: "task".to_string(),
                 target_kind: target.0,
                 target: target.1,
             },
-            deadline: Some(RuntimeAssemblyRequestDeadlineFrameHeader {
+            deadline: Some(BytecodeRequestDeadlineFrameHeader {
                 timeout_ms: deadline.timeout_ms,
                 expires_at: deadline.expires_at.clone(),
             }),
-            trace: RuntimeAssemblyRequestTraceFrameHeader {
+            trace: BytecodeRequestTraceFrameHeader {
                 trace_id: record.trace.trace_id.clone(),
                 span_id,
                 parent_span_id: None,
@@ -242,7 +242,7 @@ impl RouterTaskAttemptAdmission {
             },
             test_effects_enabled: test_case.is_some(),
             test_case_capability: test_case.map(|authority| authority.test_case_capability.clone()),
-            task_attempt: Some(RuntimeAssemblyTaskAttemptFrameHeader {
+            task_attempt: Some(BytecodeTaskAttemptFrameHeader {
                 task_id: record.task_id.as_str().to_string(),
                 attempt_id: lease.attempt_id.as_str().to_string(),
                 lease_id: lease.lease_id.as_str().to_string(),

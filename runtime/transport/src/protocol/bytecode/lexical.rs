@@ -183,7 +183,7 @@ where
     )
 }
 
-pub(super) fn deserialize_runtime_assembly_websocket_jsonrpc_request_id<'de, D>(
+pub(super) fn deserialize_bytecode_websocket_jsonrpc_request_id<'de, D>(
     deserializer: D,
 ) -> Result<String, D::Error>
 where
@@ -196,7 +196,7 @@ where
     )
 }
 
-pub(super) fn deserialize_runtime_assembly_websocket_jsonrpc_method<'de, D>(
+pub(super) fn deserialize_bytecode_websocket_jsonrpc_method<'de, D>(
     deserializer: D,
 ) -> Result<String, D::Error>
 where
@@ -209,7 +209,7 @@ where
     )
 }
 
-pub(super) fn deserialize_runtime_assembly_websocket_jsonrpc_connection_id<'de, D>(
+pub(super) fn deserialize_bytecode_websocket_jsonrpc_connection_id<'de, D>(
     deserializer: D,
 ) -> Result<String, D::Error>
 where
@@ -271,7 +271,7 @@ where
     deserialize_exact_string(deserializer, "gateway", "runtimeAssembly caller.kind")
 }
 
-pub(super) fn deserialize_runtime_assembly_routing_kind<'de, D>(
+pub(super) fn deserialize_bytecode_routing_kind<'de, D>(
     deserializer: D,
 ) -> Result<String, D::Error>
 where

@@ -12,12 +12,12 @@ use skiff_runtime_transport::protocol::{
     ResponseChunkFrameHeader, ResponseEndFrameHeader, ResponseStartFrameHeader,
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
-    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressFrameHeader,
-    RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestNameValueFrameHeader,
-    RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-    RuntimeAssemblyRequestTraceFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
+    BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressFrameHeader,
+    BytecodeRequestIngressProtocol, BytecodeRequestNameValueFrameHeader,
+    BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
+    BytecodeRequestTraceFrameHeader,
 };
 use skiff_runtime_transport::TransportError;
 
@@ -36,7 +36,7 @@ pub fn build_request_start_header(
     timeout: Duration,
     metadata: &HttpRequestMetadata,
     test_correlation: Option<&TestCaseCorrelation>,
-) -> Result<RuntimeAssemblyRequestStartFrameHeader, HttpError> {
+) -> Result<BytecodeRequestStartFrameHeader, HttpError> {
     let (timeout_ms, expires_at) = deadline_parts(timeout);
     let gateway_entry_identity = binding.gateway_entry_identity.clone();
     let method = binding
@@ -45,46 +45,46 @@ pub fn build_request_start_header(
         .as_deref()
         .unwrap_or_default()
         .to_ascii_uppercase();
-    Ok(RuntimeAssemblyRequestStartFrameHeader {
+    Ok(BytecodeRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
         request_id,
         mode: binding.mode.as_wire_str().to_string(),
-        caller: RuntimeAssemblyRequestCallerFrameHeader {
+        caller: BytecodeRequestCallerFrameHeader {
             kind: "gateway".to_string(),
         },
-        routing: RuntimeAssemblyRequestRoutingFrameHeader {
+        routing: BytecodeRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
             assembly_identity: None,
             assembly_generation: None,
             deployment: binding.deployment.clone(),
             build_id: Some(binding.build_id.clone()),
             gateway_entry_identity,
-            ingress: RuntimeAssemblyRequestIngressFrameHeader {
-                protocol: RuntimeAssemblyRequestIngressProtocol::Http,
+            ingress: BytecodeRequestIngressFrameHeader {
+                protocol: BytecodeRequestIngressProtocol::Http,
                 method,
                 path: binding.selector.path.clone(),
             },
         },
         client_session: None,
-        deadline: Some(RuntimeAssemblyRequestDeadlineFrameHeader {
+        deadline: Some(BytecodeRequestDeadlineFrameHeader {
             timeout_ms,
             expires_at,
         }),
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
+        trace: BytecodeRequestTraceFrameHeader {
             trace_id: new_trace_id(),
             span_id: new_span_id(),
             parent_span_id: None,
             sampled: None,
         },
-        http_request: RuntimeAssemblyHttpRequestFrameHeader {
+        http_request: BytecodeHttpRequestFrameHeader {
             method: metadata.method.clone(),
             url: metadata.url.clone(),
             path: metadata.path.clone(),
             query: metadata
                 .query
                 .iter()
-                .map(|item| RuntimeAssemblyRequestNameValueFrameHeader {
+                .map(|item| BytecodeRequestNameValueFrameHeader {
                     name: item.name.clone(),
                     value: item.value.clone(),
                 })
@@ -92,7 +92,7 @@ pub fn build_request_start_header(
             headers: metadata
                 .headers
                 .iter()
-                .map(|item| RuntimeAssemblyRequestNameValueFrameHeader {
+                .map(|item| BytecodeRequestNameValueFrameHeader {
                     name: item.name.clone(),
                     value: item.value.clone(),
                 })
@@ -110,7 +110,7 @@ pub fn build_request_start_header(
 
 /// Encodes a `request.start` binary frame with the raw opaque body payload.
 pub fn encode_request_start_frame(
-    header: &RuntimeAssemblyRequestStartFrameHeader,
+    header: &BytecodeRequestStartFrameHeader,
     payload: &[u8],
 ) -> Result<Vec<u8>, TransportError> {
     encode_binary_frame(header, payload)

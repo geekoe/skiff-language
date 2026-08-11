@@ -1,5 +1,3 @@
-#![cfg(feature = "legacy-wire")]
-
 //! Task-family byte-exact wire corpus + resolver/router reference model.
 //! Durable task semantics are defined by
 //! `doc/architecture/durable-task-dispatch.md`; this test owns the byte-exact
@@ -31,8 +29,8 @@ use skiff_runtime_transport::protocol::{
     encode_task_submit_request_frame, encode_task_submit_response_frame, TaskControlRejectionCode,
     TaskSubmitRejectionCode, TaskSubmitRequestFrameHeaderV2,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
+use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
 };
 
 const REQUIRED_FRAMES: [&str; 23] = [
@@ -549,7 +547,7 @@ mod tests {
                 }
                 "request.start.task.without-attempt" | "request.start.task.with-attempt" => (
                     "request.start",
-                    "RuntimeAssemblyTaskRequestStart",
+                    "BytecodeTaskRequestStart",
                     "required",
                 ),
                 _ => panic!("unexpected task frame {name}"),
@@ -840,9 +838,9 @@ mod tests {
         let catalog = catalog();
         let entry = &catalog.frames["request.start.task.without-attempt"];
         let bytes = hex_bytes(&entry.frame_hex);
-        let (header, payload) = decode_runtime_assembly_request_start_frame(&bytes)
+        let (header, payload) = decode_bytecode_request_start_frame(&bytes)
             .expect("task request.start without attempt must decode");
-        let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+        let BytecodeRequestStartFrameWireHeader::Task(header) = header else {
             panic!("request.start.task must decode as the task union branch")
         };
         assert!(header.task_attempt.is_none());
@@ -855,9 +853,9 @@ mod tests {
 
         let entry = &catalog.frames["request.start.task.with-attempt"];
         let bytes = hex_bytes(&entry.frame_hex);
-        let (header, payload) = decode_runtime_assembly_request_start_frame(&bytes)
+        let (header, payload) = decode_bytecode_request_start_frame(&bytes)
             .expect("task request.start with attempt must decode");
-        let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+        let BytecodeRequestStartFrameWireHeader::Task(header) = header else {
             panic!("request.start.task must decode as the task union branch")
         };
         let attempt = header

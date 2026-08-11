@@ -1,5 +1,3 @@
-#![cfg(feature = "legacy-wire")]
-
 //! Byte-exact request-wire corpus verifier for C-model-request
 //! (`doc/implementation/router-rust-migration/contracts/router-rust-migration-c-model-request-contract.md`).
 //!
@@ -17,8 +15,8 @@ use skiff_runtime_transport::protocol::{
     RequestCancelFrameHeader, ResponseChunkFrameHeader, ResponseEndFrameHeader,
     ResponseErrorFrameHeader, ResponseStartFrameHeader,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
+use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
 };
 
 const REQUIRED_FRAMES: [&str; 12] = [
@@ -295,10 +293,10 @@ fn frames_round_trip_byte_exact_with_real_codec() {
         let reencoded = match entry.decode_as.as_str() {
             "RequestStartHttpUnary" | "RequestStartHttpStream" => {
                 let (header, payload) =
-                    decode_runtime_assembly_request_start_frame(&expected_bytes)
+                    decode_bytecode_request_start_frame(&expected_bytes)
                         .unwrap_or_else(|error| panic!("{name} start decode: {error}"));
                 let mode = match &header {
-                    RuntimeAssemblyRequestStartFrameWireHeader::Http(http) => http.mode.as_str(),
+                    BytecodeRequestStartFrameWireHeader::Http(http) => http.mode.as_str(),
                     other => panic!("{name} must decode as HTTP start, got {other:?}"),
                 };
                 let expected_mode = if entry.decode_as == "RequestStartHttpUnary" {
@@ -374,7 +372,7 @@ fn reject_cases_fail_closed_with_expected_errors() {
         assert_eq!(case.decode_as, "RequestStartHttpUnary", "{}", case.id);
         let frame = encode_binary_frame(&case.json, &[])
             .unwrap_or_else(|error| panic!("{} must encode: {error}", case.id));
-        let result = decode_runtime_assembly_request_start_frame(&frame);
+        let result = decode_bytecode_request_start_frame(&frame);
         let message = match result {
             Ok((_, _)) => panic!("{} must be rejected", case.id),
             Err(error) => error.to_string(),

@@ -59,7 +59,7 @@ use skiff_runtime_transport::protocol::{
     RuntimeCapabilitiesFrameHeader, RuntimeDispatchModeCapability, RuntimeHealthFrameHeader,
     RuntimeRegisteredFrameHeader,
 };
-use skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyTaskRequestStartFrameHeader;
+use skiff_runtime_transport::protocol::BytecodeTaskRequestStartFrameHeader;
 use skiff_task_control::store::TaskStore;
 use skiff_task_control::{MongoTaskStore, MongoTaskStoreOptions};
 use tokio::net::TcpListener;
@@ -1011,7 +1011,7 @@ fn task_attempt_starts(state: &Arc<RelayState>, connection: u64) -> Vec<(String,
             continue;
         }
         let Ok((header, _)) =
-            decode_typed_binary_frame::<RuntimeAssemblyTaskRequestStartFrameHeader>(bytes)
+            decode_typed_binary_frame::<BytecodeTaskRequestStartFrameHeader>(bytes)
         else {
             continue;
         };

@@ -2,7 +2,7 @@
 //!
 //! Driven by `scripts/check-router-ws-live.mjs`: the harness compiles a real
 //! WebSocket gateway service (`websocket.yml` with a connect handler and the
-//! `status.get` / `chat.big` JSON-RPC methods), projects the RuntimeAssembly
+//! `status.get` / `chat.big` JSON-RPC methods), projects the Bytecode
 //! with that exact ServiceDeploymentRef, produces the runtime config
 //! snapshot, starts an isolated temporary Mongo replica set, leases router
 //! ports and builds both explicit Rust binaries. This ignored test seeds the

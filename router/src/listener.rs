@@ -1051,7 +1051,7 @@ fn build_ws_connect_metadata(
     let query = target
         .query
         .iter()
-        .map(|value| skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader {
+        .map(|value| skiff_runtime_transport::protocol::BytecodeRequestNameValueFrameHeader {
             name: value.name.clone(),
             value: value.value.clone(),
         })
@@ -1072,7 +1072,7 @@ fn build_ws_connect_metadata(
                     None => (segment.to_string(), String::new()),
                 };
                 cookies.push(
-                    skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader {
+                    skiff_runtime_transport::protocol::BytecodeRequestNameValueFrameHeader {
                         name: cookie_name,
                         value: cookie_value,
                     },
@@ -1080,7 +1080,7 @@ fn build_ws_connect_metadata(
             }
         } else {
             request_headers.push(
-                skiff_runtime_transport::runtime_assembly_request::RuntimeAssemblyRequestNameValueFrameHeader {
+                skiff_runtime_transport::protocol::BytecodeRequestNameValueFrameHeader {
                     name,
                     value,
                 },

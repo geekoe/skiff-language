@@ -21,13 +21,13 @@ use skiff_router::dispatch::{
 use skiff_router::routing::{CandidateDirectoryView, CandidateSession, RegisteredSessionLease};
 use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
-    RuntimeAssemblyRequestIngressFrameHeader, RuntimeAssemblyRequestIngressProtocol,
-    RuntimeAssemblyRequestRoutingFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-    RuntimeAssemblyRequestTraceFrameHeader, RuntimeAssemblyTaskAttemptFrameHeader,
-    RuntimeAssemblyTaskInvocationFrameHeader, RuntimeAssemblyTaskRequestCallerFrameHeader,
-    RuntimeAssemblyTaskRequestRoutingFrameHeader, RuntimeAssemblyTaskRequestStartFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
+    BytecodeRequestIngressFrameHeader, BytecodeRequestIngressProtocol,
+    BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
+    BytecodeRequestTraceFrameHeader, BytecodeTaskAttemptFrameHeader,
+    BytecodeTaskInvocationFrameHeader, BytecodeTaskRequestCallerFrameHeader,
+    BytecodeTaskRequestRoutingFrameHeader, BytecodeTaskRequestStartFrameHeader,
 };
 
 /// One live session fact in the fake directory view.
@@ -143,7 +143,7 @@ pub struct PeerRecord {
     pub starts: Vec<String>,
     pub cancels: Vec<(String, String)>,
     pub attempts: Vec<String>,
-    pub attempt_headers: Vec<RuntimeAssemblyTaskRequestStartFrameHeader>,
+    pub attempt_headers: Vec<BytecodeTaskRequestStartFrameHeader>,
     pub fail_start: bool,
     pub fail_cancel: bool,
     pub fail_attempt: bool,
@@ -272,16 +272,16 @@ pub fn session_state(id: &str, replica_id: &str, connection_generation: u64) -> 
 }
 
 /// Fixed corpus-shaped `request.start` header.
-pub fn request_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestStartFrameHeader {
-    RuntimeAssemblyRequestStartFrameHeader {
+pub fn request_header(request_id: &str, mode: &str) -> BytecodeRequestStartFrameHeader {
+    BytecodeRequestStartFrameHeader {
         schema_version: "skiff-runtime-frame-v4".to_string(),
         frame_type: "request.start".to_string(),
         request_id: request_id.to_string(),
         mode: mode.to_string(),
-        caller: RuntimeAssemblyRequestCallerFrameHeader {
+        caller: BytecodeRequestCallerFrameHeader {
             kind: "gateway".to_string(),
         },
-        routing: RuntimeAssemblyRequestRoutingFrameHeader {
+        routing: BytecodeRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
             assembly_identity: None,
             assembly_generation: None,
@@ -298,21 +298,21 @@ pub fn request_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestSta
                 "skiff-gateway-entry-v2:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             )
             .expect("gateway entry identity"),
-            ingress: RuntimeAssemblyRequestIngressFrameHeader {
-                protocol: RuntimeAssemblyRequestIngressProtocol::Http,
+            ingress: BytecodeRequestIngressFrameHeader {
+                protocol: BytecodeRequestIngressProtocol::Http,
                 method: "POST".to_string(),
                 path: "/".to_string(),
             },
         },
         client_session: None,
         deadline: None,
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
+        trace: BytecodeRequestTraceFrameHeader {
             trace_id: "trace".to_string(),
             span_id: "span".to_string(),
             parent_span_id: None,
             sampled: None,
         },
-        http_request: RuntimeAssemblyHttpRequestFrameHeader {
+        http_request: BytecodeHttpRequestFrameHeader {
             method: "POST".to_string(),
             url: "http://example.test/".to_string(),
             path: "/".to_string(),
@@ -351,15 +351,15 @@ pub fn task_attempt(
     lease_id: &str,
 ) -> TaskAttemptSubmit {
     TaskAttemptSubmit {
-        header: RuntimeAssemblyTaskRequestStartFrameHeader {
+        header: BytecodeTaskRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "request.start".to_string(),
             request_id: request_id.to_string(),
             mode: "unary".to_string(),
-            caller: RuntimeAssemblyTaskRequestCallerFrameHeader {
+            caller: BytecodeTaskRequestCallerFrameHeader {
                 kind: "service".to_string(),
             },
-            routing: RuntimeAssemblyTaskRequestRoutingFrameHeader {
+            routing: BytecodeTaskRequestRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
                 assembly_identity: None,
                 assembly_generation: None,
@@ -370,13 +370,13 @@ pub fn task_attempt(
                         .to_string(),
                 ),
             },
-            invocation: RuntimeAssemblyTaskInvocationFrameHeader {
+            invocation: BytecodeTaskInvocationFrameHeader {
                 kind: "task".to_string(),
                 target_kind: "function".to_string(),
                 target: "example.com/service-1:fn".to_string(),
             },
             deadline: None,
-            trace: RuntimeAssemblyRequestTraceFrameHeader {
+            trace: BytecodeRequestTraceFrameHeader {
                 trace_id: "trace-task".to_string(),
                 span_id: "span-task".to_string(),
                 parent_span_id: None,
@@ -384,7 +384,7 @@ pub fn task_attempt(
             },
             test_effects_enabled: false,
             test_case_capability: None,
-            task_attempt: Some(RuntimeAssemblyTaskAttemptFrameHeader {
+            task_attempt: Some(BytecodeTaskAttemptFrameHeader {
                 task_id: task_id.to_string(),
                 attempt_id: attempt_id.to_string(),
                 lease_id: lease_id.to_string(),

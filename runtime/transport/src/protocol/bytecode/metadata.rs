@@ -6,13 +6,13 @@ const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyRequestClientSessionFrameHeader {
+pub struct BytecodeRequestClientSessionFrameHeader {
     pub id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyRequestDeadlineFrameHeader {
+pub struct BytecodeRequestDeadlineFrameHeader {
     #[serde(deserialize_with = "deserialize_safe_unsigned_integer")]
     pub timeout_ms: u64,
     pub expires_at: String,
@@ -20,7 +20,7 @@ pub struct RuntimeAssemblyRequestDeadlineFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyRequestTraceFrameHeader {
+pub struct BytecodeRequestTraceFrameHeader {
     pub trace_id: String,
     pub span_id: String,
     #[serde(
@@ -39,19 +39,19 @@ pub struct RuntimeAssemblyRequestTraceFrameHeader {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyRequestNameValueFrameHeader {
+pub struct BytecodeRequestNameValueFrameHeader {
     pub name: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct RuntimeAssemblyHttpRequestFrameHeader {
+pub struct BytecodeHttpRequestFrameHeader {
     pub method: String,
     pub url: String,
     pub path: String,
-    pub query: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
-    pub headers: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
+    pub query: Vec<BytecodeRequestNameValueFrameHeader>,
+    pub headers: Vec<BytecodeRequestNameValueFrameHeader>,
 }
 
 pub(super) fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>

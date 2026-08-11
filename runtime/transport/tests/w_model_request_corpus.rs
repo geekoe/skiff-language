@@ -1,5 +1,3 @@
-#![cfg(feature = "legacy-wire")]
-
 //! W-model-request corpus gate.
 //!
 //! Consumes the frozen C-model-request corpus
@@ -28,8 +26,8 @@ use skiff_runtime_transport::protocol::{
     RESPONSE_CHUNK_FRAME_TYPE, RESPONSE_END_FRAME_TYPE, RESPONSE_ERROR_FRAME_TYPE,
     RESPONSE_START_FRAME_TYPE, RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
+use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
 };
 
 const REQUIRED_FRAMES: [&str; 12] = [
@@ -228,10 +226,10 @@ mod tests {
             let reencoded = match entry.decode_as.as_str() {
                 "RequestStartHttpUnary" | "RequestStartHttpStream" => {
                     let (header, payload) =
-                        decode_runtime_assembly_request_start_frame(&expected_bytes)
+                        decode_bytecode_request_start_frame(&expected_bytes)
                             .unwrap_or_else(|error| panic!("{name} start decode: {error}"));
                     let mode = match &header {
-                        RuntimeAssemblyRequestStartFrameWireHeader::Http(http) => {
+                        BytecodeRequestStartFrameWireHeader::Http(http) => {
                             http.mode.as_str()
                         }
                         other => panic!("{name} must decode as HTTP start, got {other:?}"),
@@ -327,7 +325,7 @@ mod tests {
             assert_eq!(case.decode_as, "RequestStartHttpUnary", "{}", case.id);
             let frame = encode_binary_frame(&case.json, &[])
                 .unwrap_or_else(|error| panic!("{} must encode: {error}", case.id));
-            let result = decode_runtime_assembly_request_start_frame(&frame);
+            let result = decode_bytecode_request_start_frame(&frame);
             let message = match result {
                 Ok((_, _)) => panic!("{} must be rejected", case.id),
                 Err(error) => error.to_string(),

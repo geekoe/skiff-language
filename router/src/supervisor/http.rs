@@ -19,11 +19,11 @@ use skiff_runtime_transport::protocol::{
     decode_response_error_frame, decode_response_start_frame, ResponseErrorFrameHeader,
     RuntimeHttpResponseFrameHeader,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    decode_runtime_assembly_websocket_connect_response_end_frame,
-    decode_runtime_assembly_websocket_jsonrpc_response_end_frame,
-    RuntimeAssemblyWebSocketConnectResponseFrameHeader,
-    RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader,
+use skiff_runtime_transport::protocol::{
+    decode_bytecode_websocket_connect_response_end_frame,
+    decode_bytecode_websocket_jsonrpc_response_end_frame,
+    BytecodeWebSocketConnectResponseFrameHeader,
+    BytecodeWebSocketConnectionPolicyOverflowFrameHeader,
 };
 use tokio::sync::mpsc;
 
@@ -214,9 +214,9 @@ impl InboundFrameSink for RequestFrameSink {
             }
             // WS connect admission response (E-ws): settle the connect
             // correlation; no ordinary dispatcher pending is involved.
-            if let Ok(header) = decode_runtime_assembly_websocket_connect_response_end_frame(raw) {
+            if let Ok(header) = decode_bytecode_websocket_connect_response_end_frame(raw) {
                 let outcome = match header.websocket_connect {
-                    RuntimeAssemblyWebSocketConnectResponseFrameHeader::Accept {
+                    BytecodeWebSocketConnectResponseFrameHeader::Accept {
                         business_identity,
                         admission_rank,
                         connection_policy,
@@ -226,10 +226,10 @@ impl InboundFrameSink for RequestFrameSink {
                                 Some(policy) => (
                                     policy.max_connections.get(),
                                     match policy.overflow {
-                                        RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader::CloseOldest => {
+                                        BytecodeWebSocketConnectionPolicyOverflowFrameHeader::CloseOldest => {
                                             OverflowPolicy::CloseOldest
                                         }
-                                        RuntimeAssemblyWebSocketConnectionPolicyOverflowFrameHeader::RejectNew => {
+                                        BytecodeWebSocketConnectionPolicyOverflowFrameHeader::RejectNew => {
                                             OverflowPolicy::RejectNew
                                         }
                                     },
@@ -252,7 +252,7 @@ impl InboundFrameSink for RequestFrameSink {
                             close_reason,
                         }
                     }
-                    RuntimeAssemblyWebSocketConnectResponseFrameHeader::Reject { code, reason } => {
+                    BytecodeWebSocketConnectResponseFrameHeader::Reject { code, reason } => {
                         ConnectOutcome::Rejected { code, reason }
                     }
                 };
@@ -262,7 +262,7 @@ impl InboundFrameSink for RequestFrameSink {
             // WS inbound JSON-RPC response (E-ws): the broker owns the peer
             // terminal; the store owns the runtime correlation.
             if let Ok((header, payload)) =
-                decode_runtime_assembly_websocket_jsonrpc_response_end_frame(raw)
+                decode_bytecode_websocket_jsonrpc_response_end_frame(raw)
             {
                 ws.on_inbound_response(
                     &header.request_id,

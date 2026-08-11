@@ -24,23 +24,23 @@ use skiff_artifact_model::{
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::protocol::{encode_binary_frame, RUNTIME_FRAME_SCHEMA_VERSION};
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyRequestCallerFrameHeader, RuntimeAssemblyRequestDeadlineFrameHeader,
-    RuntimeAssemblyRequestNameValueFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
-    RuntimeAssemblyWebSocketConnectIngressFrameHeader,
-    RuntimeAssemblyWebSocketConnectIngressProtocol,
-    RuntimeAssemblyWebSocketConnectRequestFrameHeader,
-    RuntimeAssemblyWebSocketConnectRequestStartFrameHeader,
-    RuntimeAssemblyWebSocketConnectRoutingFrameHeader,
-    RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader,
-    RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader,
-    RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader,
-    RuntimeAssemblyWebSocketConnectionClosedRoutingFrameHeader,
-    RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader, RuntimeAssemblyWebSocketJsonRpcProfile,
-    RuntimeAssemblyWebSocketJsonRpcRequestFrameHeader,
-    RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader,
-    RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
-    RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeRequestCallerFrameHeader, BytecodeRequestDeadlineFrameHeader,
+    BytecodeRequestNameValueFrameHeader, BytecodeRequestTraceFrameHeader,
+    BytecodeWebSocketConnectIngressFrameHeader,
+    BytecodeWebSocketConnectIngressProtocol,
+    BytecodeWebSocketConnectRequestFrameHeader,
+    BytecodeWebSocketConnectRequestStartFrameHeader,
+    BytecodeWebSocketConnectRoutingFrameHeader,
+    BytecodeWebSocketConnectionClosedIngressFrameHeader,
+    BytecodeWebSocketConnectionClosedRequestFrameHeader,
+    BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
+    BytecodeWebSocketConnectionClosedRoutingFrameHeader,
+    BytecodeWebSocketJsonRpcIngressFrameHeader, BytecodeWebSocketJsonRpcProfile,
+    BytecodeWebSocketJsonRpcRequestFrameHeader,
+    BytecodeWebSocketJsonRpcRequestStartFrameHeader,
+    BytecodeWebSocketJsonRpcResponseOutcome,
+    BytecodeWebSocketJsonRpcRoutingFrameHeader,
 };
 
 use crate::dispatch::{Reservation, RuntimeAdmissionPool};
@@ -334,9 +334,9 @@ impl WsConnectSelector for ProductionWsConnectSelector {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WsConnectMetadata {
     pub url: String,
-    pub query: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
-    pub headers: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
-    pub cookies: Vec<RuntimeAssemblyRequestNameValueFrameHeader>,
+    pub query: Vec<BytecodeRequestNameValueFrameHeader>,
+    pub headers: Vec<BytecodeRequestNameValueFrameHeader>,
+    pub cookies: Vec<BytecodeRequestNameValueFrameHeader>,
 }
 
 /// One settled connect outcome (accept/reject/unavailable).
@@ -524,37 +524,37 @@ impl WsDispatchStore {
                 return;
             }
         };
-        let header = RuntimeAssemblyWebSocketConnectionClosedRequestStartFrameHeader {
+        let header = BytecodeWebSocketConnectionClosedRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "request.start".to_string(),
             request_id: self.new_request_id(),
             mode: "unary".to_string(),
-            caller: RuntimeAssemblyRequestCallerFrameHeader {
+            caller: BytecodeRequestCallerFrameHeader {
                 kind: "gateway".to_string(),
             },
-            routing: RuntimeAssemblyWebSocketConnectionClosedRoutingFrameHeader {
+            routing: BytecodeWebSocketConnectionClosedRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
                 assembly_identity: None,
                 assembly_generation: None,
                 deployment: binding.deployment.clone(),
                 build_id: Some(binding.deployment.deployment_artifact_identity.to_string()),
                 gateway_entry_identity: binding.gateway_entry_identity.clone(),
-                ingress: RuntimeAssemblyWebSocketConnectionClosedIngressFrameHeader {
-                    protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
+                ingress: BytecodeWebSocketConnectionClosedIngressFrameHeader {
+                    protocol: BytecodeWebSocketConnectIngressProtocol::WebSocket,
                     path: binding.path.clone(),
                     entry_kind: "connectionClosed".to_string(),
                 },
             },
             client_session: None,
             deadline: None,
-            trace: RuntimeAssemblyRequestTraceFrameHeader {
+            trace: BytecodeRequestTraceFrameHeader {
                 trace_id: format!("ws-trace-{}", now_nanos()),
                 span_id: format!("ws-span-{}", now_nanos()),
                 parent_span_id: None,
                 sampled: None,
             },
             websocket_connection_closed:
-                RuntimeAssemblyWebSocketConnectionClosedRequestFrameHeader {
+                BytecodeWebSocketConnectionClosedRequestFrameHeader {
                     connection_id: record.connection_id.clone(),
                     websocket_entry_id,
                     gateway_entry_identity: binding.gateway_entry_identity.clone(),
@@ -603,39 +603,39 @@ impl WsDispatchStore {
         let (tx, rx) = tokio::sync::watch::channel(None);
         let websocket_entry_id = WebSocketEntryId::parse(&binding.websocket_entry_id)
             .map_err(|error| format!("websocket entry id parse failed: {error}"))?;
-        let header = RuntimeAssemblyWebSocketConnectRequestStartFrameHeader {
+        let header = BytecodeWebSocketConnectRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "request.start".to_string(),
             request_id: request_id.clone(),
             mode: "unary".to_string(),
-            caller: RuntimeAssemblyRequestCallerFrameHeader {
+            caller: BytecodeRequestCallerFrameHeader {
                 kind: "gateway".to_string(),
             },
-            routing: RuntimeAssemblyWebSocketConnectRoutingFrameHeader {
+            routing: BytecodeWebSocketConnectRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
                 assembly_identity: None,
                 assembly_generation: None,
                 deployment: binding.deployment.clone(),
                 build_id: Some(binding.deployment.deployment_artifact_identity.to_string()),
                 gateway_entry_identity: binding.gateway_entry_identity.clone(),
-                ingress: RuntimeAssemblyWebSocketConnectIngressFrameHeader {
-                    protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
+                ingress: BytecodeWebSocketConnectIngressFrameHeader {
+                    protocol: BytecodeWebSocketConnectIngressProtocol::WebSocket,
                     method: (),
                     path: binding.path.clone(),
                 },
             },
             client_session: None,
-            deadline: Some(RuntimeAssemblyRequestDeadlineFrameHeader {
+            deadline: Some(BytecodeRequestDeadlineFrameHeader {
                 timeout_ms,
                 expires_at: format_iso8601_now_plus(timeout_ms),
             }),
-            trace: RuntimeAssemblyRequestTraceFrameHeader {
+            trace: BytecodeRequestTraceFrameHeader {
                 trace_id: format!("ws-trace-{}", now_nanos()),
                 span_id: format!("ws-span-{}", now_nanos()),
                 parent_span_id: None,
                 sampled: None,
             },
-            websocket_connect: RuntimeAssemblyWebSocketConnectRequestFrameHeader {
+            websocket_connect: BytecodeWebSocketConnectRequestFrameHeader {
                 connection_id: connection_id.to_string(),
                 url: metadata.url.clone(),
                 query: metadata.query.clone(),
@@ -695,15 +695,15 @@ impl WsDispatchStore {
         let request_id = self.new_request_id();
         let websocket_entry_id = WebSocketEntryId::parse(&record.binding.websocket_entry_id)
             .map_err(|error| format!("websocket entry id parse failed: {error}"))?;
-        let header = RuntimeAssemblyWebSocketJsonRpcRequestStartFrameHeader {
+        let header = BytecodeWebSocketJsonRpcRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "request.start".to_string(),
             request_id: request_id.clone(),
             mode: "unary".to_string(),
-            caller: RuntimeAssemblyRequestCallerFrameHeader {
+            caller: BytecodeRequestCallerFrameHeader {
                 kind: "gateway".to_string(),
             },
-            routing: RuntimeAssemblyWebSocketJsonRpcRoutingFrameHeader {
+            routing: BytecodeWebSocketJsonRpcRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
                 assembly_identity: None,
                 assembly_generation: None,
@@ -712,25 +712,25 @@ impl WsDispatchStore {
                     record.binding.deployment.deployment_artifact_identity.to_string(),
                 ),
                 gateway_entry_identity: method_binding.gateway_entry_identity.clone(),
-                ingress: RuntimeAssemblyWebSocketJsonRpcIngressFrameHeader {
-                    protocol: RuntimeAssemblyWebSocketConnectIngressProtocol::WebSocket,
+                ingress: BytecodeWebSocketJsonRpcIngressFrameHeader {
+                    protocol: BytecodeWebSocketConnectIngressProtocol::WebSocket,
                     method: action.method.clone(),
                     path: record.binding.path.clone(),
                 },
             },
             client_session: None,
-            deadline: Some(RuntimeAssemblyRequestDeadlineFrameHeader {
+            deadline: Some(BytecodeRequestDeadlineFrameHeader {
                 timeout_ms: self.inbound_timeout_ms,
                 expires_at: format_iso8601_now_plus(self.inbound_timeout_ms),
             }),
-            trace: RuntimeAssemblyRequestTraceFrameHeader {
+            trace: BytecodeRequestTraceFrameHeader {
                 trace_id: format!("ws-trace-{}", now_nanos()),
                 span_id: format!("ws-span-{}", now_nanos()),
                 parent_span_id: None,
                 sampled: None,
             },
-            websocket_json_rpc: RuntimeAssemblyWebSocketJsonRpcRequestFrameHeader {
-                profile: RuntimeAssemblyWebSocketJsonRpcProfile::JsonRpc2_0Text,
+            websocket_json_rpc: BytecodeWebSocketJsonRpcRequestFrameHeader {
+                profile: BytecodeWebSocketJsonRpcProfile::JsonRpc2_0Text,
                 connection_id: action.connection_id.clone(),
                 websocket_entry_id,
                 gateway_entry_identity: method_binding.gateway_entry_identity.clone(),
@@ -765,23 +765,23 @@ impl WsDispatchStore {
     pub fn on_inbound_response(
         &self,
         request_id: &str,
-        outcome: RuntimeAssemblyWebSocketJsonRpcResponseOutcome,
+        outcome: BytecodeWebSocketJsonRpcResponseOutcome,
         payload: Vec<u8>,
     ) {
         let pending = self.lock().inbound.remove(request_id);
         if let Some(pending) = pending {
             pending.reservation.release();
             let result = match outcome {
-                RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success => {
+                BytecodeWebSocketJsonRpcResponseOutcome::Success => {
                     InboundDispatchResult::Success { result: payload }
                 }
-                RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InvalidParams => {
+                BytecodeWebSocketJsonRpcResponseOutcome::InvalidParams => {
                     InboundDispatchResult::InvalidParams
                 }
-                RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InternalError => {
+                BytecodeWebSocketJsonRpcResponseOutcome::InternalError => {
                     InboundDispatchResult::InternalError
                 }
-                RuntimeAssemblyWebSocketJsonRpcResponseOutcome::DeadlineExceeded => {
+                BytecodeWebSocketJsonRpcResponseOutcome::DeadlineExceeded => {
                     InboundDispatchResult::DeadlineExceeded
                 }
             };

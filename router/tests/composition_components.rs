@@ -50,11 +50,11 @@ use skiff_runtime_transport::protocol::{
     ResponseEndFrameMetadata, ResponseStartFrameHeader, RuntimeHttpNameValueFrameHeader,
     RuntimeHttpResponseFrameHeader, RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyHttpRequestFrameHeader, RuntimeAssemblyRequestCallerFrameHeader,
-    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestIngressFrameHeader,
-    RuntimeAssemblyRequestIngressProtocol, RuntimeAssemblyRequestRoutingFrameHeader,
-    RuntimeAssemblyRequestStartFrameHeader, RuntimeAssemblyRequestTraceFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
+    BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressFrameHeader,
+    BytecodeRequestIngressProtocol, BytecodeRequestRoutingFrameHeader,
+    BytecodeRequestStartFrameHeader, BytecodeRequestTraceFrameHeader,
 };
 fn deployment() -> ServiceDeploymentRef {
     ServiceDeploymentRef {
@@ -215,16 +215,16 @@ fn dispatcher_pair(
     (dispatcher, peer)
 }
 
-fn request_start_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestStartFrameHeader {
-    RuntimeAssemblyRequestStartFrameHeader {
+fn request_start_header(request_id: &str, mode: &str) -> BytecodeRequestStartFrameHeader {
+    BytecodeRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
         request_id: request_id.to_string(),
         mode: mode.to_string(),
-        caller: RuntimeAssemblyRequestCallerFrameHeader {
+        caller: BytecodeRequestCallerFrameHeader {
             kind: "gateway".to_string(),
         },
-        routing: RuntimeAssemblyRequestRoutingFrameHeader {
+        routing: BytecodeRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
             assembly_identity: None,
             assembly_generation: None,
@@ -234,24 +234,24 @@ fn request_start_header(request_id: &str, mode: &str) -> RuntimeAssemblyRequestS
                 "skiff-gateway-entry-v2:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             )
             .expect("gateway entry identity"),
-            ingress: RuntimeAssemblyRequestIngressFrameHeader {
-                protocol: RuntimeAssemblyRequestIngressProtocol::Http,
+            ingress: BytecodeRequestIngressFrameHeader {
+                protocol: BytecodeRequestIngressProtocol::Http,
                 method: "GET".to_string(),
                 path: "/docs".to_string(),
             },
         },
         client_session: None,
-        deadline: Some(RuntimeAssemblyRequestDeadlineFrameHeader {
+        deadline: Some(BytecodeRequestDeadlineFrameHeader {
             timeout_ms: 5000,
             expires_at: "2026-08-02T00:00:00Z".to_string(),
         }),
-        trace: RuntimeAssemblyRequestTraceFrameHeader {
+        trace: BytecodeRequestTraceFrameHeader {
             trace_id: "trace-1".to_string(),
             span_id: "span-1".to_string(),
             parent_span_id: None,
             sampled: None,
         },
-        http_request: RuntimeAssemblyHttpRequestFrameHeader {
+        http_request: BytecodeHttpRequestFrameHeader {
             method: "GET".to_string(),
             url: "http://127.0.0.1/docs".to_string(),
             path: "/docs".to_string(),

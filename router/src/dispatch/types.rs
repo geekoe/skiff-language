@@ -1,9 +1,9 @@
 //! Typed dispatch DTOs (C-dispatch §7.2, C-model-request §3).
 
 use skiff_artifact_model::ServiceDeploymentRef;
-use skiff_runtime_transport::runtime_assembly_request::{
-    RuntimeAssemblyRequestDeadlineFrameHeader, RuntimeAssemblyRequestStartFrameHeader,
-    RuntimeAssemblyTaskRequestStartFrameHeader,
+use skiff_runtime_transport::protocol::{
+    BytecodeRequestDeadlineFrameHeader, BytecodeRequestStartFrameHeader,
+    BytecodeTaskRequestStartFrameHeader,
 };
 
 use crate::routing::DispatchMode;
@@ -22,7 +22,7 @@ use super::candidate::dispatch_mode_from_wire;
 /// `None`).
 #[derive(Debug, Clone)]
 pub struct DispatchSubmit {
-    pub header: RuntimeAssemblyRequestStartFrameHeader,
+    pub header: BytecodeRequestStartFrameHeader,
     pub payload_bytes: Vec<u8>,
     pub prefer_session: Option<RuntimeSessionEpoch>,
 }
@@ -59,8 +59,8 @@ pub struct RequestDeadline {
     pub expires_at: String,
 }
 
-impl From<&RuntimeAssemblyRequestDeadlineFrameHeader> for RequestDeadline {
-    fn from(value: &RuntimeAssemblyRequestDeadlineFrameHeader) -> Self {
+impl From<&BytecodeRequestDeadlineFrameHeader> for RequestDeadline {
+    fn from(value: &BytecodeRequestDeadlineFrameHeader) -> Self {
         Self {
             timeout_ms: value.timeout_ms,
             expires_at: value.expires_at.clone(),
@@ -81,7 +81,7 @@ pub struct RequestAuthority {
 
 impl RequestAuthority {
     pub fn from_header(
-        header: &RuntimeAssemblyRequestStartFrameHeader,
+        header: &BytecodeRequestStartFrameHeader,
         session_epoch: &RuntimeSessionEpoch,
     ) -> Self {
         Self {
@@ -108,7 +108,7 @@ pub struct TaskAttemptSubmit {
     /// Fresh per-attempt transport frame (`request.start` with the task
     /// invocation shape and `taskAttempt` populated). `request_id` is not
     /// the task identity.
-    pub header: RuntimeAssemblyTaskRequestStartFrameHeader,
+    pub header: BytecodeTaskRequestStartFrameHeader,
     pub payload: Vec<u8>,
     pub task_id: String,
     pub attempt_id: String,

@@ -1,5 +1,3 @@
-#![cfg(feature = "legacy-wire")]
-
 //! W-model-task corpus gate: the task-wire corpus is consumed through the
 //! canonical production codec (`callerKind` closed enum + required
 //! `callerRequestId`). The legacy old shape has no compatible reader; the
@@ -25,8 +23,8 @@ use skiff_runtime_transport::protocol::{
     encode_task_submit_request_frame, encode_task_submit_response_frame,
     TaskSubmitRequestFrameHeaderV2,
 };
-use skiff_runtime_transport::runtime_assembly_request::{
-    decode_runtime_assembly_request_start_frame, RuntimeAssemblyRequestStartFrameWireHeader,
+use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
 };
 
 const REQUIRED_FRAMES: [&str; 23] = [
@@ -411,9 +409,9 @@ mod tests {
         ] {
             let entry = &catalog.frames[name];
             let bytes = hex_bytes(&entry.frame_hex);
-            let (header, payload) = decode_runtime_assembly_request_start_frame(&bytes)
+            let (header, payload) = decode_bytecode_request_start_frame(&bytes)
                 .unwrap_or_else(|error| panic!("{name}: {error}"));
-            let RuntimeAssemblyRequestStartFrameWireHeader::Task(header) = header else {
+            let BytecodeRequestStartFrameWireHeader::Task(header) = header else {
                 panic!("{name}: must decode as task request.start")
             };
             assert_eq!(
@@ -516,7 +514,7 @@ mod tests {
                 "TaskCancelError"
             }
             "request.start.task.without-attempt" | "request.start.task.with-attempt" => {
-                "RuntimeAssemblyTaskRequestStart"
+                "BytecodeTaskRequestStart"
             }
             _ => panic!("unexpected task frame {name}"),
         }
