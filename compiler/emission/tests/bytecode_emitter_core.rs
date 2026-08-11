@@ -180,6 +180,87 @@ mod tests {
     }
 
     #[test]
+    fn init_slot_emits_store_slot() {
+        let slot_ty = TypeRefIr::builtin("number");
+        let expressions = vec![MirExpression {
+            index: 0,
+            expression: ExprIr::Literal {
+                value: LiteralIr::Number {
+                    value: serde_json::Number::from(42),
+                },
+            },
+            ty: slot_ty.clone(),
+            writable: None,
+            direct_call: None,
+            stream_result: None,
+            remote_interface: None,
+        }];
+        let function = function(
+            "slots",
+            "init",
+            TypeRefIr::builtin("void"),
+            vec![MirSlot {
+                slot: 0,
+                name: "value".to_string(),
+                kind: MirSlotKind::Local,
+                writable_local: false,
+                ty: Some(slot_ty.clone()),
+            }],
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![
+                    MirStmt {
+                        statement_index: 0,
+                        span: None,
+                        kind: MirStmtKind::InitSlot {
+                            slot: 0,
+                            value: expression(0),
+                        },
+                    },
+                    MirStmt {
+                        statement_index: 1,
+                        span: None,
+                        kind: MirStmtKind::Return { value: None },
+                    },
+                ],
+                successors: Vec::new(),
+            }],
+            vec![
+                MirStatementEntry {
+                    statement_index: 0,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 1,
+                    span: None,
+                },
+            ],
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("slots", Vec::new(), ExternalRefTable::default(), function);
+        let artifact = emit_bytecode_artifact(
+            &[unit],
+            &[bundle],
+            &plans("slots::init", &[slot_ty], &TypeRefIr::builtin("void")),
+        )
+        .expect("init slot body emits");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("init slot body must validate");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "slots::init")
+            .expect("init slot function");
+        assert!(function.instructions.iter().any(|instruction| {
+            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::StoreSlot
+        }));
+    }
+
+    #[test]
     fn record_construction_and_field_read_emit_shape_and_dense_field() {
         let type_table = vec![TypeDeclIr {
             name: "Person".to_string(),

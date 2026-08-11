@@ -252,7 +252,7 @@ impl<'a> FunctionEmitter<'a> {
         statement: &skiff_compiler_lowering::mir::MirStmt,
     ) -> Result<(), BytecodeEmissionError> {
         match &statement.kind {
-            MirStmtKind::Let { slot, value } => {
+            MirStmtKind::InitSlot { slot, value } => {
                 self.emit_expression(*value)?;
                 self.emit_op(Opcode::StoreSlot, vec![*slot])?;
             }
