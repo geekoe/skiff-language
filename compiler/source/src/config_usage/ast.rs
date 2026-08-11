@@ -616,6 +616,19 @@ fn collect_config_uses_in_expr(
                 );
             }
         }
+        Expr::ArrayLiteral { items } => {
+            for (item_index, item) in items.iter().enumerate() {
+                collect_config_uses_in_expr(
+                    paths,
+                    item,
+                    child_span(expr_spans, item_index),
+                    const_strings,
+                    uses,
+                    presence_uses,
+                    violations,
+                );
+            }
+        }
         Expr::Patch { operations, .. } => {
             for (operation_index, operation) in operations.iter().enumerate() {
                 match operation {

@@ -383,6 +383,11 @@ impl CreateValidator<'_> {
                     self.check_reads(&entry.value, assigned)?;
                 }
             }
+            Expr::ArrayLiteral { items } => {
+                for item in items {
+                    self.check_reads(item, assigned)?;
+                }
+            }
             Expr::Patch { operations, .. } => {
                 for operation in operations {
                     match operation {
@@ -490,6 +495,11 @@ impl CreateValidator<'_> {
             Expr::ObjectLiteral { entries } => {
                 for entry in entries {
                     self.check_self_calls(&entry.value)?;
+                }
+            }
+            Expr::ArrayLiteral { items } => {
+                for item in items {
+                    self.check_self_calls(item)?;
                 }
             }
             Expr::Patch { operations, .. } => {

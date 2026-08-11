@@ -248,6 +248,16 @@ impl<'a> OwnerChecker<'a> {
         } = assignment;
         let target_key = self.transparent_value_target_key(value_key);
         let target_value = transparent_value_target(value);
+        if matches!(target_value, Expr::ArrayLiteral { .. }) {
+            return self.materialize_target_typed_array_literal(
+                annotation,
+                target_value,
+                &target_key,
+                actual,
+                expected,
+                context,
+            );
+        }
         if matches!(target_value, Expr::ObjectLiteral { .. }) {
             let target_actual = self
                 .outputs

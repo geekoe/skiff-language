@@ -258,6 +258,10 @@ impl<'a> FunctionLowerer<'a> {
             }
             Expr::Generic { callee, .. } => self.infer_expr_type_text(callee),
             Expr::Timeout { value, .. } => self.infer_expr_type_text(value),
+            Expr::ArrayLiteral { items } => items.iter().find_map(|item| {
+                self.infer_expr_type_text(item)
+                    .map(|item| format!("Array<{item}>"))
+            }),
             Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
                 self.infer_expr_type_text(&value.tail)
             }

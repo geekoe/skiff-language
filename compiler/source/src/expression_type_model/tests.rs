@@ -170,6 +170,76 @@ fn bracket_typing_publishes_exact_strict_collection_facts() {
 }
 
 #[test]
+fn array_literal_publishes_exact_array_and_item_types() {
+    let model = expression_type_result(
+        r#"
+              function values() -> Array<number> {
+                return [1, 2]
+              }
+
+              function localValues() -> void {
+                let values = [1, 2]
+              }
+
+              function emptyValues() -> Array<string> {
+                return []
+              }
+            "#,
+    )
+    .expect("array literals should type-check");
+
+    let owner = ExpressionOwnerKey::Function("values".to_string());
+    let array_key = ExpressionKey::new(ANY_INTERFACE_MODULE, owner.clone(), 0);
+    assert_eq!(
+        model
+            .fact(&array_key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| ty.ir.clone()),
+        Some(TypeRefIr::Builtin {
+            name: BuiltinShape::Array.name().to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        })
+    );
+    for (offset, expected) in [(1, "integer"), (2, "integer")] {
+        let key = ExpressionKey::new(ANY_INTERFACE_MODULE, owner.clone(), offset);
+        assert_eq!(
+            model
+                .fact(&key)
+                .and_then(|fact| fact.ty.as_ref())
+                .map(|ty| ty.ir.clone()),
+            Some(TypeRefIr::builtin(expected)),
+            "array item {offset} should retain its source type"
+        );
+    }
+
+    let local_owner = ExpressionOwnerKey::Function("localValues".to_string());
+    let local_array_key = ExpressionKey::new(ANY_INTERFACE_MODULE, local_owner, 0);
+    assert_eq!(
+        model
+            .fact(&local_array_key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| ty.ir.clone()),
+        Some(TypeRefIr::Builtin {
+            name: BuiltinShape::Array.name().to_string(),
+            args: vec![TypeRefIr::builtin("integer")],
+        })
+    );
+
+    let empty_owner = ExpressionOwnerKey::Function("emptyValues".to_string());
+    let empty_key = ExpressionKey::new(ANY_INTERFACE_MODULE, empty_owner, 0);
+    assert_eq!(
+        model
+            .fact(&empty_key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| ty.ir.clone()),
+        Some(TypeRefIr::Builtin {
+            name: BuiltinShape::Array.name().to_string(),
+            args: vec![TypeRefIr::builtin("string")],
+        })
+    );
+}
+
+#[test]
 fn indexed_places_publish_exact_policies_and_evaluation_dependencies() {
     let model = expression_type_result(
         r#"

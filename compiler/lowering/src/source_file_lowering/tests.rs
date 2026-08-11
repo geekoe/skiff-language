@@ -1155,6 +1155,43 @@ fn executable<'a>(unit: &'a FileIrUnit, name: &str) -> &'a ExecutableIr {
 }
 
 #[test]
+fn array_literal_lowers_to_exact_array_builder_inputs() {
+    let unit = lowered_unit(
+        r#"
+          function values() -> Array<number> {
+            return [1, 2]
+          }
+        "#,
+    );
+    let executable = executable(&unit, "values");
+    let array_index = executable
+        .body
+        .expressions
+        .iter()
+        .position(|expression| matches!(expression, ExprIr::ArrayLiteral { .. }))
+        .expect("array literal should lower");
+    let ExprIr::ArrayLiteral { items } = &executable.body.expressions[array_index] else {
+        panic!("array literal expression should be present");
+    };
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().enumerate().all(|(index, item)| {
+        matches!(
+            &executable.body.expressions[item.expression as usize],
+            ExprIr::Literal {
+                value: LiteralIr::Number { value }
+            } if value.as_f64() == Some(index as f64 + 1.0)
+        )
+    }));
+    assert_eq!(
+        executable.expression_types[array_index],
+        TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        }
+    );
+}
+
+#[test]
 fn ternary_lowers_to_lazy_value_block_with_if_and_temp_slot() {
     let unit = lowered_unit(
         r#"

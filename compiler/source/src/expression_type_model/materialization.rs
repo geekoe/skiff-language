@@ -413,6 +413,157 @@ impl<'a> OwnerChecker<'a> {
         }
         valid
     }
+
+    pub(super) fn materialize_target_typed_array_literal(
+        &mut self,
+        annotation: Option<&TypeRef>,
+        value: &Expr,
+        value_key: &ExpressionKey,
+        actual: &ResolvedTypeRef,
+        expected: &ResolvedTypeRef,
+        context: &str,
+    ) -> bool {
+        let Expr::ArrayLiteral { items } = value else {
+            return false;
+        };
+        let Some(element_ty) =
+            exact_array_element_type(self.type_resolution, &expected.ir, &self.type_context)
+        else {
+            return self
+                .generic_array_assignable(annotation, value, value_key, actual, expected, context);
+        };
+        let materialized = array_type_from_ir(element_ty.clone());
+        let element_ty = ResolvedTypeRef::new(element_ty);
+        let mut valid = true;
+        for (index, item) in items.iter().enumerate() {
+            let item_key = ExpressionKey::new(
+                value_key.module_path().to_string(),
+                value_key.owner().clone(),
+                value_key
+                    .preorder_index()
+                    .checked_add((index as u32).saturating_add(1))
+                    .expect("array item expression key should fit in u32"),
+            );
+            let Some(item_actual) = self
+                .outputs
+                .facts
+                .get(&item_key)
+                .and_then(|fact| fact.ty.clone())
+            else {
+                self.outputs.diagnostics.push(format!(
+                    "{}: {context} array literal item at {} has no resolved expression type",
+                    self.module_path,
+                    self.expression_span_label(value_key)
+                ));
+                valid = false;
+                continue;
+            };
+            valid &= self.check_value_assignable_to_expected(
+                item,
+                &item_key,
+                &item_actual,
+                &element_ty,
+                ValueAssignmentContext {
+                    annotation: None,
+                    exact_expected: None,
+                    diagnostic_context: &format!("{context} array element {index}"),
+                    fallback_span: self.expression_span(&item_key),
+                },
+            );
+        }
+        if valid {
+            if let Some(fact) = self.outputs.facts.get_mut(value_key) {
+                fact.ty = Some(materialized.clone());
+            }
+            if let Some(dependency_analysis) = self.dependency_analysis {
+                match ContractProjectionState::project_resolved_type(
+                    &materialized,
+                    self.type_resolution,
+                    dependency_analysis,
+                    &self.type_context,
+                ) {
+                    Ok(projected) => {
+                        self.contract_projection
+                            .record_expression_type(value_key.clone(), projected);
+                    }
+                    Err(error) => self.outputs.diagnostics.push(format!(
+                        "{}: {context} array literal exact type projection failed at {}: {error}",
+                        self.module_path,
+                        self.expression_span_label(value_key)
+                    )),
+                }
+            }
+        }
+        valid
+    }
+
+    fn generic_array_assignable(
+        &mut self,
+        annotation: Option<&TypeRef>,
+        value: &Expr,
+        value_key: &ExpressionKey,
+        actual: &ResolvedTypeRef,
+        expected: &ResolvedTypeRef,
+        context: &str,
+    ) -> bool {
+        let assignability = ExpressionAssignability::new(
+            self.module_path,
+            self.expression_sources,
+            self.type_resolution,
+            &self.type_context,
+            self.dependency_analysis,
+        );
+        let assignability = if context.starts_with("call `std.json.encode` argument ") {
+            assignability.with_package_json_context()
+        } else {
+            assignability
+        };
+        let expected_projected = self.dependency_analysis.and_then(|dependency_analysis| {
+            annotation.and_then(|annotation| {
+                ContractProjectionState::project_source_type_ref(
+                    annotation,
+                    self.type_resolution,
+                    dependency_analysis,
+                    &self.type_context,
+                )
+                .ok()
+            })
+        });
+        match assignability.value_assignable_to_expected(
+            annotation,
+            value,
+            actual,
+            expected,
+            expected_projected.as_ref(),
+        ) {
+            Ok(assignable) => assignable,
+            Err(error) => {
+                self.outputs.diagnostics.push(format!(
+                    "{}: {context} array assignability failed at {}: {error}",
+                    self.module_path,
+                    self.expression_span_label(value_key)
+                ));
+                false
+            }
+        }
+    }
+}
+
+fn exact_array_element_type(
+    type_resolution: &TypeResolutionModel,
+    ty: &TypeRefIr,
+    context: &TypeResolutionContext<'_>,
+) -> Option<TypeRefIr> {
+    let ty = type_resolution.transparent_alias_ir(ty, context);
+    match ty {
+        TypeRefIr::Builtin { name, args }
+            if name == BuiltinShape::Array.name() && args.len() == 1 =>
+        {
+            Some(args[0].clone())
+        }
+        TypeRefIr::Nullable { inner } => exact_array_element_type(type_resolution, &inner, context),
+        _ => None,
+    }
 }
 
 fn expression_accepts_contextual_target(value: &Expr) -> bool {

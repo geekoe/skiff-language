@@ -153,6 +153,22 @@ fn equal_spans_keep_distinct_typed_source_keys() {
 }
 
 #[test]
+fn array_literal_expression_spans_cover_items_and_children() {
+    let source = r#"function run() -> Array<number> {
+  return [1, [2]]
+}"#;
+    let events = facts("pkg.arrays", source);
+    let owner = function_owner("run");
+    let expected = [(0, "[1, [2]]"), (1, "1"), (2, "[2]"), (3, "2")];
+    for (index, expected_text) in expected {
+        let event = events
+            .fact(&expression_key("pkg.arrays", &owner, index))
+            .unwrap_or_else(|| panic!("missing array expression preorder index {index}"));
+        assert_eq!(source_text(source, event.site()), expected_text);
+    }
+}
+
+#[test]
 fn zero_expression_statements_and_nested_blocks_have_statement_facts() {
     let source = r#"function run(flag: bool) -> void {
   while flag {

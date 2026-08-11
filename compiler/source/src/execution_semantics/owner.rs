@@ -338,6 +338,11 @@ impl<'a> OwnerAnalyzer<'a> {
                     self.validate_expr(&entry.value, scope, context);
                 }
             }
+            Expr::ArrayLiteral { items } => {
+                for item in items {
+                    self.validate_expr(item, scope, context);
+                }
+            }
             Expr::Patch { operations, .. } => {
                 for operation in operations {
                     match operation {

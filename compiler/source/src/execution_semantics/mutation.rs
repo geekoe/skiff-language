@@ -293,6 +293,9 @@ fn definitely_lane_local_fresh(expression: &Expr, scope: &Scope) -> bool {
         Expr::ObjectLiteral { entries } => entries
             .iter()
             .all(|entry| lane_local_payload_is_safe(&entry.value, scope)),
+        Expr::ArrayLiteral { items } => items
+            .iter()
+            .all(|item| lane_local_payload_is_safe(item, scope)),
         Expr::Patch { operations, .. } => operations.iter().all(|operation| match operation {
             crate::shared::ast::PatchOperation::Set { value, .. }
             | crate::shared::ast::PatchOperation::Inc { value, .. } => {
@@ -355,6 +358,9 @@ fn lane_local_payload_is_safe(expression: &Expr, scope: &Scope) -> bool {
                 && lane_local_payload_is_safe(else_expr, scope)
         }
         Expr::Timeout { value, .. } => lane_local_payload_is_safe(value, scope),
+        Expr::ArrayLiteral { items } => items
+            .iter()
+            .all(|item| lane_local_payload_is_safe(item, scope)),
         Expr::ValueBlock(value) | Expr::ConcurrentValue(value) => {
             lane_local_payload_is_safe(&value.tail, scope)
         }

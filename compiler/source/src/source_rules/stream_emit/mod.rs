@@ -358,6 +358,11 @@ impl StreamEmitTypeChecker<'_> {
                     self.check_expr(&entry.value);
                 }
             }
+            Expr::ArrayLiteral { items } => {
+                for item in items {
+                    self.check_expr(item);
+                }
+            }
             Expr::Patch { operations, .. } => {
                 for operation in operations {
                     match operation {

@@ -368,7 +368,31 @@ mod tests {
             &plans("arrays::second", &[], &TypeRefIr::builtin("number")),
         )
         .expect("array body emits");
-        assert!(!artifact.image.functions["arrays::second"].words.is_empty());
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("array body must validate");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "arrays::second")
+            .expect("array function");
+        let opcodes = function
+            .instructions
+            .iter()
+            .map(|instruction| instruction.descriptor.kind)
+            .collect::<Vec<_>>();
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::NewArrayBuilder));
+        assert_eq!(
+            opcodes
+                .iter()
+                .filter(
+                    |opcode| **opcode == skiff_artifact_model::bytecode::Opcode::ArrayBuilderPush
+                )
+                .count(),
+            2
+        );
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::FreezeArray));
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::ArrayGet));
+        assert!(opcodes.contains(&skiff_artifact_model::bytecode::Opcode::Return));
     }
 
     #[test]

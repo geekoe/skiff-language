@@ -65,6 +65,11 @@ pub(super) fn collect_emit_expression_call_violations(
                 collect_emit_expression_call_violations(path, &entry.value, violations);
             }
         }
+        Expr::ArrayLiteral { items } => {
+            for item in items {
+                collect_emit_expression_call_violations(path, item, violations);
+            }
+        }
         Expr::Patch { operations, .. } => {
             for operation in operations {
                 match operation {
@@ -327,6 +332,9 @@ pub(super) fn infer_expr_type(
             infer_concurrent_value_type(value, env, function_return_types)
         }
         Expr::Timeout { value, .. } => infer_expr_type(value, env, function_return_types),
+        Expr::ArrayLiteral { items } => items.iter().find_map(|item| {
+            infer_expr_type(item, env, function_return_types).map(|item| format!("Array<{item}>"))
+        }),
         Expr::Binary { .. }
         | Expr::Unary { .. }
         | Expr::Ternary { .. }

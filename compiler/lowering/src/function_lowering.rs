@@ -1822,6 +1822,12 @@ impl<'a> FunctionLowerer<'a> {
                     expected_target,
                 )?
             }
+            Expr::ArrayLiteral { items } => ExprIr::ArrayLiteral {
+                items: items
+                    .iter()
+                    .map(|item| self.lower_expr(item))
+                    .collect::<Result<Vec<_>>>()?,
+            },
             Expr::Patch { target, operations } => self.lower_patch_expr(target, operations)?,
             Expr::Record {
                 type_name,
@@ -3523,6 +3529,7 @@ pub(super) fn expr_preorder_node_count(expr: &Expr) -> u32 {
                 .map(|entry| expr_preorder_node_count(&entry.value))
                 .sum::<u32>()
         }
+        Expr::ArrayLiteral { items } => 1 + items.iter().map(expr_preorder_node_count).sum::<u32>(),
         Expr::Patch { operations, .. } => {
             1 + operations
                 .iter()

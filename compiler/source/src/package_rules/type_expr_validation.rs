@@ -177,6 +177,18 @@ pub(super) fn collect_package_expr_std_type_violations(
                 );
             }
         }
+        Expr::ArrayLiteral { items } => {
+            for item in items {
+                collect_package_expr_std_type_violations(
+                    path,
+                    item,
+                    imported_std_roots,
+                    dependency_roots,
+                    package_type_names,
+                    violations,
+                );
+            }
+        }
         Expr::Patch { target, operations } => {
             collect_package_std_type_name_violations(
                 path,

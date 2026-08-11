@@ -124,6 +124,17 @@ impl OwnerCollector<'_> {
                     )?;
                 }
             }
+            Expr::ArrayLiteral { items } => {
+                for (index, item) in items.iter().enumerate() {
+                    self.visit_expr(
+                        item,
+                        next_expression_child(
+                            &mut children,
+                            &format!("array literal item {index}"),
+                        )?,
+                    )?;
+                }
+            }
             Expr::Patch { operations, .. } => {
                 skip_syntactic_target_child(&mut children, spans.children.len(), operations.len())?;
                 for (index, operation) in operations.iter().enumerate() {
@@ -355,6 +366,7 @@ fn expression_kind(expression: &Expr) -> &'static str {
         Expr::Index { .. } => "index",
         Expr::Record { .. } => "record",
         Expr::ObjectLiteral { .. } => "object literal",
+        Expr::ArrayLiteral { .. } => "array literal",
         Expr::Patch { .. } => "patch",
         Expr::ValueBlock(_) => "value block",
         Expr::ConcurrentValue(_) => "concurrent value",

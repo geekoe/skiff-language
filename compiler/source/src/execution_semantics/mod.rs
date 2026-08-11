@@ -314,6 +314,11 @@ impl<'a> crate::shared::ast_utils::AstVisitor for ConstPurityVisitor<'a> {
                     self.visit_expr(&entry.value);
                 }
             }
+            crate::shared::ast::Expr::ArrayLiteral { items } => {
+                for item in items {
+                    self.visit_expr(item);
+                }
+            }
             crate::shared::ast::Expr::Patch { operations, .. } => {
                 for operation in operations {
                     match operation {

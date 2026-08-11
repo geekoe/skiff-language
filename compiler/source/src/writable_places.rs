@@ -121,6 +121,7 @@ fn index_selector(expr: &Expr) -> IndexSelector {
         | Expr::Index { .. }
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
+        | Expr::ArrayLiteral { .. }
         | Expr::Patch { .. }
         | Expr::ValueBlock(_)
         | Expr::ConcurrentValue(_)
@@ -184,6 +185,7 @@ pub fn place_from_expr(expr: &Expr) -> Option<WritablePlace> {
         | Expr::InterfaceBox { .. }
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
+        | Expr::ArrayLiteral { .. }
         | Expr::Patch { .. }
         | Expr::ValueBlock(_)
         | Expr::ConcurrentValue(_)
@@ -225,6 +227,7 @@ pub fn selectors_from_expr(expr: &Expr) -> Option<Vec<Selector>> {
         | Expr::InterfaceBox { .. }
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
+        | Expr::ArrayLiteral { .. }
         | Expr::Patch { .. }
         | Expr::ValueBlock(_)
         | Expr::ConcurrentValue(_)

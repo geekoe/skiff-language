@@ -298,6 +298,11 @@ fn collect_call_targets_in_expr(
                 collect_call_targets_in_expr(&entry.value, known, targets);
             }
         }
+        Expr::ArrayLiteral { items } => {
+            for item in items {
+                collect_call_targets_in_expr(item, known, targets);
+            }
+        }
         Expr::Patch { operations, .. } => {
             for operation in operations {
                 match operation {

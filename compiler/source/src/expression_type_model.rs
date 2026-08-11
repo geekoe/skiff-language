@@ -1499,6 +1499,43 @@ impl<'a> OwnerChecker<'a> {
         );
     }
 
+    fn check_array_literal_expr(
+        &mut self,
+        _key: &ExpressionKey,
+        items: &[Expr],
+    ) -> Option<ResolvedTypeRef> {
+        let mut element_types = Vec::new();
+        for item in items {
+            if let Some(ty) = self.check_expr(item) {
+                element_types.push(self.array_literal_element_candidate(ty));
+            }
+        }
+        let element = if element_types.is_empty() {
+            TypeRefIr::builtin(BuiltinShape::Unknown.name())
+        } else {
+            normalize_union(TypeRefIr::Union {
+                items: element_types.into_iter().map(|ty| ty.ir).collect(),
+            })
+        };
+        Some(array_type_from_ir(element))
+    }
+
+    fn array_literal_element_candidate(&self, ty: ResolvedTypeRef) -> ResolvedTypeRef {
+        match &ty.ir {
+            TypeRefIr::Literal {
+                value: LiteralIr::String { .. },
+            } => self
+                .resolve_builtin(BuiltinShape::String.name())
+                .unwrap_or(ty),
+            TypeRefIr::Literal {
+                value: LiteralIr::Bool { .. },
+            } => self
+                .resolve_builtin(BuiltinShape::Bool.name())
+                .unwrap_or(ty),
+            _ => ty,
+        }
+    }
+
     fn check_expr(&mut self, expr: &Expr) -> Option<ResolvedTypeRef> {
         self.check_expr_with_field_diagnostics(expr, true, None)
     }
@@ -1586,6 +1623,7 @@ impl<'a> OwnerChecker<'a> {
                     fields,
                 } => self.check_record_expr(&key, type_name, type_args, fields),
                 Expr::ObjectLiteral { entries } => self.check_object_literal_expr(&key, entries),
+                Expr::ArrayLiteral { items } => self.check_array_literal_expr(&key, items),
                 Expr::Patch { operations, .. } => self.check_patch_expr(operations),
                 Expr::ValueBlock(value) => self.check_value_block_expr(&key, value),
                 Expr::ConcurrentValue(value) => self.check_concurrent_value_expr(&key, value),
@@ -2201,6 +2239,7 @@ impl<'a> OwnerChecker<'a> {
             | Expr::Call { .. }
             | Expr::Record { .. }
             | Expr::ObjectLiteral { .. }
+            | Expr::ArrayLiteral { .. }
             | Expr::Patch { .. }
             | Expr::InterfaceBox { .. }
             | Expr::Throw { .. }
@@ -2535,6 +2574,14 @@ fn resolved_type_from_ir(ty: &TypeRefIr) -> ResolvedTypeRef {
     ResolvedTypeRef::new(ty.clone())
 }
 
+fn array_type_from_ir(element: TypeRefIr) -> ResolvedTypeRef {
+    let ty = TypeRefIr::Builtin {
+        name: BuiltinShape::Array.name().to_string(),
+        args: vec![element.clone()],
+    };
+    ResolvedTypeRef::with_text(ty.clone(), format!("Array<{}>", debug_text(&element)))
+}
+
 fn nullable_type(inner: ResolvedTypeRef) -> ResolvedTypeRef {
     let text = format!("{inner}?");
     ResolvedTypeRef::with_text(
@@ -2609,7 +2656,10 @@ fn block_assigns_obviously_non_null(block: &Block, path: &str) -> bool {
 fn expr_obviously_non_null(expr: &Expr) -> bool {
     match expr {
         Expr::Literal(Literal::Null) => false,
-        Expr::Literal(_) | Expr::Record { .. } | Expr::ObjectLiteral { .. } => true,
+        Expr::Literal(_)
+        | Expr::Record { .. }
+        | Expr::ObjectLiteral { .. }
+        | Expr::ArrayLiteral { .. } => true,
         Expr::Binary {
             op: BinaryOp::Add,
             left,
@@ -2642,6 +2692,7 @@ fn place_contains_index(expr: &Expr) -> bool {
         | Expr::InterfaceBox { .. }
         | Expr::Record { .. }
         | Expr::ObjectLiteral { .. }
+        | Expr::ArrayLiteral { .. }
         | Expr::Patch { .. }
         | Expr::ValueBlock(_)
         | Expr::ConcurrentValue(_)
