@@ -5,7 +5,7 @@ use std::{fmt, sync::Arc};
 use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError};
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 use skiff_runtime_vm::{
-    AdapterInvocation as VmAdapterInvocation, ChildInvocation as VmChildInvocation,
+    AdapterInvocation as VmAdapterInvocation, ChildInvocation as VmChildInvocation, ChildTarget,
     PendingOperation as VmPendingOperation, ResumeOutcome, StreamItem as VmStreamItem, VmBudget,
     VmControl, VmError, VmFiber, VmResult, VmResumeToken,
 };
@@ -97,6 +97,15 @@ pub trait BytecodeUnit: VmRootSource {
     ) -> Result<(), BytecodeSchedulerError>;
 
     fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome;
+
+    /// Reports whether a child invocation is a `StreamNext` consumer poll.
+    ///
+    /// Scheduler-neutral fixtures can override this with their own invocation
+    /// vocabulary; the VM implementation identifies `ChildTarget::StreamNext`.
+    fn is_stream_next_child(invocation: &Self::ChildInvocation) -> bool {
+        let _ = invocation;
+        false
+    }
 }
 
 /// Typed control returned by one bytecode execution unit.
@@ -147,6 +156,36 @@ pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
     ) -> Result<BytecodeHandoff<U>, BytecodeSchedulerError>;
+
+    /// Polls one `StreamNext` consumer child.
+    ///
+    /// `Ready` resumes the parent with the consumer's item, natural end or
+    /// error. `Pending` preserves the item continuation in an actual pending
+    /// operation so a later consumer wake can settle with the correct outcome.
+    /// Implementations that do not handle stream consumers must return
+    /// `UnsupportedChild`.
+    fn execute_stream_next(
+        &self,
+        invocation: U::ChildInvocation,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeStreamHandoff<U>, BytecodeSchedulerError> {
+        let _ = (invocation, heap, budget);
+        Err(BytecodeSchedulerError::UnsupportedChild)
+    }
+
+    /// Publishes the stream-consumer pending owner produced by
+    /// [`Self::execute_stream_next`].
+    fn park_stream_next(
+        &self,
+        operation: U::PendingOperation,
+        suspended: SuspendedTrampoline<U, U::ResumeToken>,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<(), BytecodeSchedulerError> {
+        let _ = (operation, suspended, heap, budget);
+        Err(BytecodeSchedulerError::UnsupportedPark)
+    }
 }
 
 /// Port used for stream emission and actual-Pending parking.
@@ -301,6 +340,21 @@ where
                         .child_executor
                         .as_ref()
                         .ok_or(BytecodeSchedulerError::UnsupportedChild)?;
+                    if U::is_stream_next_child(&invocation) {
+                        match executor.execute_stream_next(invocation, heap, budget)? {
+                            BytecodeStreamHandoff::Ready(handoff) => {
+                                self.trampoline
+                                    .active_mut()
+                                    .resume(handoff.resume, handoff.outcome)?;
+                            }
+                            BytecodeStreamHandoff::Pending(operation) => {
+                                let suspended = self.trampoline.suspend();
+                                executor.park_stream_next(operation, suspended, heap, budget)?;
+                                return Ok(BytecodeSchedulerOutcome::Parked);
+                            }
+                        }
+                        continue;
+                    }
                     let start = executor.execute_child(invocation, heap, budget)?;
                     self.trampoline.enter_child(start.unit, start.resume);
                 }
@@ -423,6 +477,10 @@ impl BytecodeUnit for VmFiber {
             Ok(values) => ResumeOutcome::Values(values),
             Err(error) => ResumeOutcome::Failure(error),
         }
+    }
+
+    fn is_stream_next_child(invocation: &VmChildInvocation) -> bool {
+        invocation.target() == ChildTarget::StreamNext
     }
 }
 
