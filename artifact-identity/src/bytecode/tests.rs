@@ -6,11 +6,12 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     BytecodeArtifact, BytecodeArtifactRef, BytecodeConstantRef, BytecodeFunctionOrigin,
-    BytecodeImage, BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
-    DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph, FrozenConstantNode, LiteralIr,
-    PackageCallableId, PackageExecutableCoordinate, RelocatableBytecodeFunction, SourceMapEntry,
-    StatementAttributionId, StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    BytecodeImage, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodePools, BytecodeRelocation,
+    BytecodeSpecialization, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
+    FrozenConstantNode, HostEffectSignature, IntrinsicReference, LiteralIr, PackageCallableId,
+    PackageExecutableCoordinate, RelocatableBytecodeFunction, ResumeDescriptor, ResumeErrorMode,
+    SourceMapEntry, StatementAttributionId, StatementEntry, TypeRefIr, ValueDropPlan,
+    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -168,7 +169,8 @@ fn identity_is_deterministic_and_excludes_the_identity_field() {
 #[test]
 fn schema_isa_and_all_semantic_authorities_participate_in_the_preimage() {
     let base = fixture();
-    let base_hash = bytecode_identity_after_structural(&base).unwrap();
+    let base_view = skiff_artifact_model::structurally_validate(&base).unwrap();
+    let base_hash = bytecode_identity_after_structural(&base, Some(&base_view)).unwrap();
 
     let mutations: [BytecodeMutation; 14] = [
         ("schemaVersion", |artifact| {
@@ -226,7 +228,7 @@ fn schema_isa_and_all_semantic_authorities_participate_in_the_preimage() {
     for (label, mutate) in mutations {
         let mut mutated = base.clone();
         mutate(&mut mutated);
-        let mutated_hash = bytecode_identity_after_structural(&mutated).unwrap();
+        let mutated_hash = bytecode_identity_after_structural(&mutated, None).unwrap();
         assert_ne!(
             mutated_hash, base_hash,
             "{label} mutation must change the bytecode identity"
@@ -444,5 +446,150 @@ fn identity_format_validation_accepts_only_framed_lowercase_sha256() {
     assert!(
         error.to_string().contains(BYTECODE_IDENTITY_PREFIX),
         "format diagnostics must use the current identity prefix"
+    );
+}
+
+fn authority_fixture() -> BytecodeArtifact {
+    let mut artifact = fixture();
+    let entry = skiff_artifact_model::intrinsic_registry()
+        .entries()
+        .iter()
+        .find(|entry| {
+            matches!(
+                &entry.target,
+                BytecodeIntrinsicRef::Static { canonical_key, .. }
+                    if canonical_key == "core.array.empty"
+            )
+        })
+        .expect("intrinsic registry contains core.array.empty");
+    let intrinsic = IntrinsicReference {
+        target: entry.target.clone(),
+        signature: HostEffectSignature {
+            parameter_types: Vec::new(),
+            parameter_modes: Vec::new(),
+            parameter_plans: Vec::new(),
+            result_types: vec![TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![TypeRefIr::builtin("string")],
+            }],
+            result_plans: vec![ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease,
+            }],
+            effects: entry.signature.effects.clone(),
+        },
+    };
+    artifact
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .relocations
+        .push(BytecodeRelocation::IntrinsicRef { intrinsic });
+
+    let stream_index = artifact.image.pools.types.len() as u32;
+    artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
+        ty: TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        },
+    });
+    artifact
+        .image
+        .pools
+        .resume
+        .push(BytecodePoolEntry::ResumeDescriptor(ResumeDescriptor {
+            function_key: "module::producer".to_string(),
+            site_pc: 0,
+            resume_pc: 2,
+            expected_stack_height_before_result: 0,
+            result_type_refs: Vec::new(),
+            result_plans: Vec::new(),
+            error_mode: ResumeErrorMode::RaiseAtSite,
+        }));
+    let producer = RelocatableBytecodeFunction {
+        function_key: "module::producer".to_string(),
+        origin: BytecodeFunctionOrigin::Executable {
+            executable: PackageExecutableCoordinate {
+                file_ir_identity: format!("{}:{}", crate::FILE_IR_IDENTITY_PREFIX, "a".repeat(64)),
+                module_path: "module".to_string(),
+                executable_index: 1,
+            },
+        },
+        type_parameters: Vec::new(),
+        self_type_ref: None,
+        words: vec![0x61, 0, 0x25],
+        relocations: Vec::new(),
+        call_loan_layouts: Vec::new(),
+        frame_layout: FrameLayout {
+            slot_count: 0,
+            slot_type_refs: Vec::new(),
+            parameter_slots: Vec::new(),
+            writable_local_slots: Vec::new(),
+            result_count: 1,
+            result_type_refs: vec![stream_index],
+            result_plans: vec![snapshot_share()],
+            slot_plans: Vec::new(),
+        },
+        max_operand_depth: 1,
+        effect_summary_ref: PackageCallableId::new("operation:module:producer"),
+        exception_regions: Vec::new(),
+        active_regions: Vec::new(),
+        switch_tables: Vec::new(),
+        statement_entries: vec![StatementEntry {
+            pc: 0,
+            sequence_ordinal: 0,
+            attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
+        }],
+        source_map: vec![SourceMapEntry {
+            start_pc: 0,
+            end_pc: 2,
+            site: skiff_artifact_model::InstructionSourceSite::Synthetic {
+                reason: skiff_artifact_model::SyntheticInstructionSiteReason::CompilerGeneratedTestHarness,
+            },
+        }],
+    };
+    artifact
+        .image
+        .functions
+        .insert("module::producer".to_string(), producer);
+    artifact
+}
+
+#[test]
+fn derived_execution_authorities_participate_in_the_preimage() {
+    let artifact = authority_fixture();
+    let view = skiff_artifact_model::structurally_validate(&artifact).unwrap();
+    assert_eq!(view.function_stream_items().len(), 1);
+    assert_eq!(view.intrinsic_contracts().len(), 1);
+
+    let with_contracts = bytecode_identity_after_structural(&artifact, Some(&view)).unwrap();
+    let without_contracts = bytecode_identity_after_structural(&artifact, None).unwrap();
+    assert_ne!(
+        with_contracts, without_contracts,
+        "derived execution authorities must be canonical identity inputs"
+    );
+
+    let mut mutated = artifact;
+    let string_stream_index = mutated.image.pools.types.len() as u32;
+    mutated.image.pools.types.push(BytecodePoolEntry::TypeRef {
+        ty: TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::builtin("string")],
+        },
+    });
+    mutated
+        .image
+        .functions
+        .get_mut("module::producer")
+        .unwrap()
+        .frame_layout
+        .result_type_refs[0] = string_stream_index;
+    assert_ne!(
+        bytecode_identity(&mutated).unwrap(),
+        with_contracts,
+        "stream producer item type must participate in bytecode identity"
     );
 }

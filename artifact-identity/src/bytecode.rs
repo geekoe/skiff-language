@@ -19,7 +19,7 @@ use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
     BytecodeArtifact, BytecodeArtifactRef, BytecodeImage, HostEffectRegistryIdentity,
     IntrinsicRegistryIdentity, NativeValueLifecycleRegistryIdentity, StructurallyValidatedView,
-    ValueLifecyclePolicyIdentity,
+    ValidatedFunctionStreamItem, ValidatedIntrinsicContract, ValueLifecyclePolicyIdentity,
 };
 
 use crate::framing::{canonical_ir_bytes, framed_identity, sha256_hex};
@@ -44,10 +44,15 @@ struct BytecodeIdentityPayload<'a> {
     host_effect_registry: &'a HostEffectRegistryIdentity,
     intrinsic_registry: &'a IntrinsicRegistryIdentity,
     image: &'a BytecodeImage,
+    intrinsic_contracts: Option<&'a [ValidatedIntrinsicContract]>,
+    function_stream_items: Option<&'a [ValidatedFunctionStreamItem]>,
 }
 
 impl<'a> BytecodeIdentityPayload<'a> {
-    fn from_artifact(artifact: &'a BytecodeArtifact) -> Self {
+    fn from_view(
+        artifact: &'a BytecodeArtifact,
+        view: Option<&'a StructurallyValidatedView>,
+    ) -> Self {
         Self {
             schema: BYTECODE_IDENTITY_SCHEMA_MARKER,
             schema_version: &artifact.schema_version,
@@ -58,6 +63,8 @@ impl<'a> BytecodeIdentityPayload<'a> {
             host_effect_registry: &artifact.host_effect_registry,
             intrinsic_registry: &artifact.intrinsic_registry,
             image: &artifact.image,
+            intrinsic_contracts: view.map(StructurallyValidatedView::intrinsic_contracts),
+            function_stream_items: view.map(StructurallyValidatedView::function_stream_items),
         }
     }
 }
@@ -66,15 +73,18 @@ impl<'a> BytecodeIdentityPayload<'a> {
 /// validation. The declared `bytecode_identity` field is not part of the
 /// preimage; callers use `validate_bytecode_identity` to compare it.
 pub fn bytecode_identity(artifact: &BytecodeArtifact) -> Result<String> {
-    skiff_artifact_model::structurally_validate(artifact)?;
-    bytecode_identity_after_structural(artifact)
+    let view = skiff_artifact_model::structurally_validate(artifact)?;
+    bytecode_identity_after_structural(artifact, Some(&view))
 }
 
 /// Identity computation without the C1–C8 gate. Only reachable after
 /// `structurally_validate` succeeded (or from tests that pin the raw preimage
 /// participation of schema/ISA/fingerprint fields).
-fn bytecode_identity_after_structural(artifact: &BytecodeArtifact) -> Result<String> {
-    let payload = BytecodeIdentityPayload::from_artifact(artifact);
+fn bytecode_identity_after_structural(
+    artifact: &BytecodeArtifact,
+    view: Option<&StructurallyValidatedView>,
+) -> Result<String> {
+    let payload = BytecodeIdentityPayload::from_view(artifact, view);
     let bytes = canonical_ir_bytes(&payload, ArtifactIdentityError::SerializeBytecodeIdentity)?;
     Ok(framed_identity(
         BYTECODE_IDENTITY_PREFIX,
@@ -100,7 +110,7 @@ pub fn validate_bytecode_identity(artifact: &BytecodeArtifact) -> Result<()> {
 /// `ValidatedBytecodeArtifact::admit`).
 fn validated_bytecode_view(artifact: &BytecodeArtifact) -> Result<StructurallyValidatedView> {
     let view = skiff_artifact_model::structurally_validate(artifact)?;
-    let computed = bytecode_identity_after_structural(artifact)?;
+    let computed = bytecode_identity_after_structural(artifact, Some(&view))?;
     if artifact.bytecode_identity != computed {
         return Err(ArtifactIdentityError::BytecodeIdentityMismatch {
             declared: artifact.bytecode_identity.clone(),

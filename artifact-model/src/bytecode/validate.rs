@@ -24,6 +24,11 @@ use self::plans::{validate_adapter_key, validate_transfer_plan};
 
 use std::collections::BTreeSet;
 
+use crate::bytecode::authority::{
+    FunctionStreamEndContract, FunctionStreamItemAuthority, IntrinsicAdapterResultPlan,
+    IntrinsicResumeContract, ValidatedFunctionStreamItem, ValidatedIntrinsicContract,
+    ValidatedResumeResultAuthority,
+};
 use crate::bytecode::decode::{BoundedDecoder, BytecodeDecodeError, DecodedInstruction};
 use crate::bytecode::dto::limits;
 use crate::bytecode::dto::{
@@ -164,6 +169,8 @@ pub struct ValidatedFunction {
     pub effect_summary_ref: crate::PackageCallableId,
     pub instructions: Vec<DecodedInstruction>,
     pub header_pcs: Vec<u32>,
+    pub intrinsic_contracts: Vec<ValidatedIntrinsicContract>,
+    pub function_stream_item: Option<FunctionStreamItemAuthority>,
 }
 
 /// One pending site after its pool descriptor has been proven unique and
@@ -178,6 +185,21 @@ pub struct ValidatedResumeSite {
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<crate::bytecode::dto::ValueTransferPlan>,
     pub error_mode: crate::bytecode::dto::ResumeErrorMode,
+    pub stream_item: Option<FunctionStreamItemAuthority>,
+}
+
+impl ValidatedResumeSite {
+    /// Exact typed authority for a consumer to mint/check one resume token.
+    pub fn result_authority(&self) -> ValidatedResumeResultAuthority {
+        ValidatedResumeResultAuthority {
+            descriptor_index: self.descriptor_index,
+            expected_stack_height_before_result: self.expected_stack_height_before_result,
+            result_type_refs: self.result_type_refs.clone(),
+            result_plans: self.result_plans.clone(),
+            error_mode: self.error_mode,
+            stream_item: self.stream_item.clone(),
+        }
+    }
 }
 
 /// Opaque validated view. Fields are private: the only construction path is a
@@ -219,6 +241,8 @@ pub struct StructurallyValidatedView {
     host_effect_registry: crate::HostEffectRegistryIdentity,
     intrinsic_registry: crate::IntrinsicRegistryIdentity,
     resume_sites: Vec<ValidatedResumeSite>,
+    intrinsic_contracts: Vec<ValidatedIntrinsicContract>,
+    function_stream_items: Vec<ValidatedFunctionStreamItem>,
 }
 
 impl StructurallyValidatedView {
@@ -277,6 +301,14 @@ impl StructurallyValidatedView {
     pub fn resume_sites(&self) -> &[ValidatedResumeSite] {
         &self.resume_sites
     }
+
+    pub fn intrinsic_contracts(&self) -> &[ValidatedIntrinsicContract] {
+        &self.intrinsic_contracts
+    }
+
+    pub fn function_stream_items(&self) -> &[ValidatedFunctionStreamItem] {
+        &self.function_stream_items
+    }
 }
 
 /// C1–C8 structural validation entry point.
@@ -296,6 +328,23 @@ pub fn structurally_validate(
     validate_debug_bindings(artifact, &functions)?;
     validate_constant_graph(artifact)?;
 
+    let intrinsic_contracts = functions
+        .iter()
+        .flat_map(|function| function.intrinsic_contracts.iter().cloned())
+        .collect();
+    let function_stream_items = functions
+        .iter()
+        .filter_map(|function| {
+            function
+                .function_stream_item
+                .as_ref()
+                .map(|authority| ValidatedFunctionStreamItem {
+                    function_key: function.function_key.clone(),
+                    authority: authority.clone(),
+                })
+        })
+        .collect();
+
     Ok(StructurallyValidatedView {
         functions,
         pools: artifact.image.pools.clone(),
@@ -311,6 +360,8 @@ pub fn structurally_validate(
         host_effect_registry: artifact.host_effect_registry.clone(),
         intrinsic_registry: artifact.intrinsic_registry.clone(),
         resume_sites,
+        intrinsic_contracts,
+        function_stream_items,
     })
 }
 
@@ -1122,6 +1173,9 @@ fn validate_function(
     validate_targets(key, function, &decoded)?;
     validate_tables(key, function, &decoded, &artifact.image.pools)?;
 
+    let intrinsic_contracts = collect_intrinsic_contracts(key, function, &artifact.image.pools)?;
+    let function_stream_item = derive_function_stream_item(key, function, &artifact.image.pools)?;
+
     output.push(ValidatedFunction {
         function_key: function.function_key.clone(),
         origin: function.origin.clone(),
@@ -1140,8 +1194,105 @@ fn validate_function(
         effect_summary_ref: function.effect_summary_ref.clone(),
         instructions: decoded.instructions,
         header_pcs: decoded.header_pcs,
+        intrinsic_contracts,
+        function_stream_item,
     });
     Ok(())
+}
+
+/// Derives the canonical producer stream authority from an exact
+/// `Stream<T>` function result declaration.
+fn derive_function_stream_item(
+    key: &str,
+    function: &RelocatableBytecodeFunction,
+    pools: &BytecodePools,
+) -> Result<Option<FunctionStreamItemAuthority>, StructuralValidationError> {
+    let frame = &function.frame_layout;
+    if frame.result_count == 0 {
+        return Ok(None);
+    }
+    if frame.result_type_refs.len() != 1 {
+        return Err(table_error(
+            key,
+            "stream producer frame must have exactly one result type ref".to_string(),
+        ));
+    }
+    let stream_result_type_ref = frame.result_type_refs[0];
+    let Some(BytecodePoolEntry::TypeRef { ty }) = pools.types.get(stream_result_type_ref as usize)
+    else {
+        return Err(table_error(
+            key,
+            "stream producer result type ref must select a types pool entry".to_string(),
+        ));
+    };
+    let TypeRefIr::Builtin { name, args } = ty else {
+        return Ok(None);
+    };
+    if name != "Stream" {
+        return Ok(None);
+    }
+    let [item_type] = args.as_slice() else {
+        return Err(table_error(
+            key,
+            "stream producer result type must have exactly one item type".to_string(),
+        ));
+    };
+    let item_plan = crate::bytecode::dto::ValueTransferPlan::FromType {
+        ty: item_type.clone(),
+    };
+    validate_transfer_plan(
+        &item_plan,
+        pools,
+        None,
+        &format!("functions[{key}].derivedFunctionStreamItemPlan"),
+    )?;
+    Ok(Some(FunctionStreamItemAuthority {
+        function_key: key.to_string(),
+        stream_result_type_ref,
+        item_type: item_type.clone(),
+        item_plan,
+        end: FunctionStreamEndContract::NormalExit,
+    }))
+}
+
+/// Collects the exact intrinsic result/continuation contracts for every
+/// validated intrinsic relocation.
+fn collect_intrinsic_contracts(
+    key: &str,
+    function: &RelocatableBytecodeFunction,
+    _pools: &BytecodePools,
+) -> Result<Vec<ValidatedIntrinsicContract>, StructuralValidationError> {
+    let mut contracts = Vec::new();
+    for (relocation_index, relocation) in function.relocations.iter().enumerate() {
+        let crate::bytecode::dto::BytecodeRelocation::IntrinsicRef { intrinsic } = relocation
+        else {
+            continue;
+        };
+        if intrinsic.signature.effects.may_pending() {
+            return Err(table_error(
+                key,
+                format!(
+                    "relocations[{relocation_index}] IntrinsicRef declares pending effects without an exact resume contract"
+                ),
+            ));
+        }
+        let resume = IntrinsicResumeContract::Never;
+        let relocation_index =
+            u32::try_from(relocation_index).map_err(|_| StructuralValidationError::Arithmetic {
+                context: format!("functions[{key}] intrinsic relocation index conversion"),
+            })?;
+        contracts.push(ValidatedIntrinsicContract {
+            function_key: key.to_string(),
+            relocation_index,
+            target: intrinsic.target.clone(),
+            plan: IntrinsicAdapterResultPlan {
+                result_types: intrinsic.signature.result_types.clone(),
+                result_plans: intrinsic.signature.result_plans.clone(),
+                resume,
+            },
+        });
+    }
+    Ok(contracts)
 }
 
 /// C2: per-function count/declaration limits.

@@ -94,6 +94,18 @@ pub(super) fn validate_resume_sites(
                     ),
                 });
             }
+            let stream_item = if descriptor.kind == Opcode::EmitStream {
+                Some(function.function_stream_item.clone().ok_or_else(|| {
+                    StructuralValidationError::Target {
+                        function_key: function.function_key.clone(),
+                        pc: instruction.pc,
+                        message: "EmitStream requires an exact function stream item authority"
+                            .to_string(),
+                    }
+                })?)
+            } else {
+                None
+            };
             validated.push(ValidatedResumeSite {
                 function_key: function.function_key.clone(),
                 descriptor_index,
@@ -103,6 +115,7 @@ pub(super) fn validate_resume_sites(
                 result_type_refs: resume.result_type_refs.clone(),
                 result_plans: resume.result_plans.clone(),
                 error_mode: resume.error_mode,
+                stream_item,
             });
         }
     }

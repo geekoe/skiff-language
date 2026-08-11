@@ -19,12 +19,14 @@
 //!   `StructurallyValidatedView` (C9 identity consistency is reserved for the
 //!   artifact-identity task).
 
+pub mod authority;
 pub mod decode;
 pub mod dto;
 pub mod encode;
 pub mod opcodes;
 pub mod validate;
 
+pub use authority::*;
 pub use decode::*;
 pub use dto::*;
 pub use encode::*;

@@ -3,6 +3,7 @@
 
 pub(crate) use super::*;
 
+mod authority;
 mod corpus;
 mod limits;
 mod manifests;
