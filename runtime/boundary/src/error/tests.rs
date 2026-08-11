@@ -6,6 +6,79 @@ use skiff_runtime_model::recoverable::{
 
 use super::*;
 
+const RECOVERABLE_ERROR_CODE_FIXTURE: [(RecoverableBoundaryErrorCode, &str); 13] = [
+    (
+        RecoverableBoundaryErrorCode::UnsupportedEncode,
+        "recoverableUnsupportedEncode",
+    ),
+    (
+        RecoverableBoundaryErrorCode::UnsupportedDecode,
+        "recoverableUnsupportedDecode",
+    ),
+    (
+        RecoverableBoundaryErrorCode::CodeIdentityMissing,
+        "recoverable_code_identity_missing",
+    ),
+    (
+        RecoverableBoundaryErrorCode::ArtifactUnavailable,
+        "recoverable_artifact_unavailable",
+    ),
+    (
+        RecoverableBoundaryErrorCode::NativeMissingAdapter,
+        "recoverable_native_missing_adapter",
+    ),
+    (
+        RecoverableBoundaryErrorCode::ExpectedTypeMismatch,
+        "recoverable_expected_type_mismatch",
+    ),
+    (
+        RecoverableBoundaryErrorCode::InterfaceConformanceMissing,
+        "recoverable_interface_conformance_missing",
+    ),
+    (
+        RecoverableBoundaryErrorCode::StateInvalid,
+        "recoverable_state_invalid",
+    ),
+    (
+        RecoverableBoundaryErrorCode::CrossServiceInterfaceCallbackUnavailable,
+        "cross_service_interface_callback_unavailable",
+    ),
+    (
+        RecoverableBoundaryErrorCode::CallbackCapabilityNotRecoverable,
+        "callback_capability_not_recoverable",
+    ),
+    (
+        RecoverableBoundaryErrorCode::CrossServiceRecoverableBehaviorUnavailable,
+        "cross_service_recoverable_behavior_unavailable",
+    ),
+    (
+        RecoverableBoundaryErrorCode::UntrustedBehaviorPayload,
+        "recoverable_untrusted_behavior_payload",
+    ),
+    (
+        RecoverableBoundaryErrorCode::SealedPayloadInvalid,
+        "recoverable_sealed_payload_invalid",
+    ),
+];
+
+fn recoverable_error_code_fixture_index(code: RecoverableBoundaryErrorCode) -> usize {
+    match code {
+        RecoverableBoundaryErrorCode::UnsupportedEncode => 0,
+        RecoverableBoundaryErrorCode::UnsupportedDecode => 1,
+        RecoverableBoundaryErrorCode::CodeIdentityMissing => 2,
+        RecoverableBoundaryErrorCode::ArtifactUnavailable => 3,
+        RecoverableBoundaryErrorCode::NativeMissingAdapter => 4,
+        RecoverableBoundaryErrorCode::ExpectedTypeMismatch => 5,
+        RecoverableBoundaryErrorCode::InterfaceConformanceMissing => 6,
+        RecoverableBoundaryErrorCode::StateInvalid => 7,
+        RecoverableBoundaryErrorCode::CrossServiceInterfaceCallbackUnavailable => 8,
+        RecoverableBoundaryErrorCode::CallbackCapabilityNotRecoverable => 9,
+        RecoverableBoundaryErrorCode::CrossServiceRecoverableBehaviorUnavailable => 10,
+        RecoverableBoundaryErrorCode::UntrustedBehaviorPayload => 11,
+        RecoverableBoundaryErrorCode::SealedPayloadInvalid => 12,
+    }
+}
+
 fn recoverable_error(code: RecoverableBoundaryErrorCode) -> RecoverableBoundaryError {
     let context = RuntimeRecoverableBoundaryContext::new(
         RuntimeRecoverableBoundaryKind::RuntimeBinaryPayload,
@@ -25,31 +98,47 @@ fn recoverable_error(code: RecoverableBoundaryErrorCode) -> RecoverableBoundaryE
 
 #[test]
 fn recoverable_error_codes_are_stable() {
-    assert_eq!(
-        RecoverableBoundaryErrorCode::UnsupportedEncode.as_str(),
-        "recoverableUnsupportedEncode"
-    );
-    assert_eq!(
-        RecoverableBoundaryErrorCode::UnsupportedDecode.as_str(),
-        "recoverableUnsupportedDecode"
-    );
-    assert_eq!(
-        RecoverableBoundaryErrorCode::ArtifactUnavailable.as_str(),
-        "recoverable_artifact_unavailable"
-    );
-    assert_eq!(
-        RecoverableBoundaryErrorCode::StateInvalid.as_str(),
-        "recoverable_state_invalid"
-    );
-    assert_eq!(
-        RecoverableBoundaryErrorCode::CallbackCapabilityNotRecoverable.as_str(),
-        "callback_capability_not_recoverable"
-    );
+    for (fixture_index, (code, expected)) in
+        RECOVERABLE_ERROR_CODE_FIXTURE.into_iter().enumerate()
+    {
+        assert_eq!(recoverable_error_code_fixture_index(code), fixture_index);
+        assert_eq!(code.as_str(), expected);
+    }
 }
 
 #[test]
-fn recoverable_details_json_contains_context_and_expected() {
-    let error = recoverable_error(RecoverableBoundaryErrorCode::UnsupportedEncode);
+fn recoverable_constructor_accessors_clone_eq_display_and_source_are_stable() {
+    let context = RuntimeRecoverableBoundaryContext::new(
+        RuntimeRecoverableBoundaryKind::RuntimeBinaryPayload,
+        RuntimeRecoverableTrustBoundary::OwnerInternal,
+        RuntimeRecoverableStorageLane::RecoverableEnvelope,
+    )
+    .with_explicit_recoverable_slot();
+    let expected = RuntimeRecoverableExpectedTypePlan::unresolved("string");
+    let error = RecoverableBoundaryError::new(
+        RecoverableBoundaryErrorCode::UnsupportedEncode,
+        "recoverable boundary is unsupported",
+        &context,
+        &expected,
+    );
+
+    assert_eq!(
+        error.code(),
+        RecoverableBoundaryErrorCode::UnsupportedEncode
+    );
+    assert_eq!(error.message(), "recoverable boundary is unsupported");
+    assert_eq!(error.context(), &context);
+    assert_eq!(error.expected(), &expected);
+    assert_eq!(error.detail(), None);
+    assert_eq!(error.clone(), error);
+    assert_eq!(
+        error.to_string(),
+        "recoverable boundary error recoverableUnsupportedEncode: recoverable boundary is unsupported"
+    );
+    assert!(
+        <RecoverableBoundaryError as std::error::Error>::source(&error).is_none(),
+        "the leaf error currently has no Rust source"
+    );
 
     let details = error.details_json();
     let object = details
@@ -68,9 +157,12 @@ fn recoverable_details_json_contains_context_and_expected() {
 }
 
 #[test]
-fn recoverable_details_json_includes_optional_detail() {
+fn recoverable_with_detail_updates_accessor_and_diagnostic_details() {
+    let detail = serde_json::json!({ "artifactIdentity": "pkg/service" });
     let error = recoverable_error(RecoverableBoundaryErrorCode::ArtifactUnavailable)
-        .with_detail(serde_json::json!({ "artifactIdentity": "pkg/service" }));
+        .with_detail(detail.clone());
+
+    assert_eq!(error.detail(), Some(&detail));
 
     assert_eq!(
         error
@@ -79,6 +171,52 @@ fn recoverable_details_json_includes_optional_detail() {
             .and_then(|detail| detail.get("artifactIdentity")),
         Some(&serde_json::json!("pkg/service"))
     );
+}
+
+#[test]
+fn recoverable_runtime_error_is_diagnostic_only() {
+    let recoverable = recoverable_error(RecoverableBoundaryErrorCode::ArtifactUnavailable)
+        .with_detail(serde_json::json!({ "artifactIdentity": "pkg/service" }));
+    let expected_details = recoverable.details_json();
+    let error = RuntimeError::from(recoverable);
+
+    let payload = error.payload();
+    assert_eq!(payload.code, "recoverable_artifact_unavailable");
+    assert_eq!(payload.message, "recoverable boundary is unsupported");
+    assert_eq!(payload.details, Some(expected_details));
+    assert_eq!(error.catch_projection(), None);
+}
+
+#[test]
+fn generic_json_source_error_is_diagnostic_only() {
+    let source = serde_json::from_str::<serde_json::Value>("{")
+        .expect_err("fixture should be malformed JSON");
+    let error = RuntimeError::from(source);
+
+    assert!(matches!(&error, RuntimeError::Json(_)));
+    assert_eq!(error.payload().code, "JsonError");
+    assert_eq!(error.catch_projection(), None);
+}
+
+#[test]
+fn diagnostic_only_runtime_error_variants_have_no_catch_projection() {
+    let errors = [
+        RuntimeError::InvalidArtifact("invalid package artifact".to_string()),
+        RuntimeError::Decode("internal value decode failed".to_string()),
+        RuntimeError::decode_target("runtime.config", "invalid config"),
+        RuntimeError::Unsupported("runtime feature is unsupported".to_string()),
+        RuntimeError::ResourceLimitExceeded {
+            resource: "response.body".to_string(),
+            reason: "too large".to_string(),
+            limit: 10,
+            current: 8,
+            requested_delta: 4,
+        },
+    ];
+
+    for error in errors {
+        assert_eq!(error.catch_projection(), None, "unexpected catch for {error}");
+    }
 }
 
 #[test]
@@ -172,9 +310,5 @@ fn boundary_catch_projection_covers_public_catchable_variants() {
                 "detail": { "status": 500 },
             })
         ))
-    );
-    assert_eq!(
-        RuntimeError::decode_target("runtime.config", "invalid config").catch_projection(),
-        None
     );
 }
