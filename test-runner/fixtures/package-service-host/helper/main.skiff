@@ -8,7 +8,7 @@ type EffectRequest {
 
 type EffectResponse { value: string }
 
-function mutate(input: Box) -> void {
+function mutate(inout input: Box) -> void {
   input.value = "helper-mutated"
 }
 

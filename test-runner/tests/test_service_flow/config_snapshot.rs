@@ -42,8 +42,8 @@ fn write_configured_test_service(root: &Path) {
     fs::write(
         root.join("main.skiff"),
         r#"function configured() -> string {
-  const token = config.require<string>("app.token")
-  const ingress = config.require<string>("skiff.test.ingressUrl")
+  final token = config.require<string>("app.token")
+  final ingress = config.require<string>("skiff.test.ingressUrl")
   return token.concat(ingress)
 }
 "#,
