@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use skiff_artifact_model::validate_activation_profile;
+use skiff_artifact_model::{validate_activation_profile, PlatformErrorProjectionRegistryRef};
 
 use crate::{
     protocol::{
@@ -25,9 +25,10 @@ pub struct RuntimeCapabilitiesFrameHeader {
     pub capabilities: RuntimeCapabilitiesFrameHeaderMetadata,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeCapabilitiesFrameHeaderMetadata {
+    pub platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dispatch_modes: Vec<RuntimeDispatchModeCapability>,
     #[serde(default, skip_serializing_if = "is_false")]

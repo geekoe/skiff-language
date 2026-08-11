@@ -16,6 +16,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::Value;
+use skiff_artifact_model::current_platform_error_projection_registry_ref;
 use skiff_runtime_transport::protocol::{
     decode_binary_frame, decode_router_bootstrap_frame_header, decode_typed_binary_frame,
     encode_binary_frame, RouterBootstrapFrameHeader, RuntimeCapabilitiesFrameHeader,
@@ -378,6 +379,11 @@ fn decode_catalog_frame(entry: &FrameEntry) -> SemanticFrame {
             let (typed, payload): (RuntimeCapabilitiesFrameHeader, Vec<u8>) =
                 decode_typed_binary_frame(&bytes).expect("capabilities decodes");
             assert!(payload.is_empty(), "capabilities payload must be empty");
+            assert_eq!(
+                &typed.capabilities.platform_error_projection_registry,
+                current_platform_error_projection_registry_ref(),
+                "current capabilities snapshot must carry the generated registry singleton"
+            );
             let reencoded = encode_binary_frame(&typed, &[]).expect("capabilities re-encodes");
             assert_eq!(reencoded, bytes, "capabilities frame must be byte-exact");
             SemanticFrame::Capabilities {
