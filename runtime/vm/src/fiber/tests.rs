@@ -1,7 +1,15 @@
 use skiff_artifact_model::Opcode;
+use skiff_runtime_linked_bytecode::{
+    FrameSlotIndex, InstructionBoundaryIndex, InstructionIndex, LinkedCatchMatcher,
+    LinkedExceptionRegion, TypeIndex,
+};
+use skiff_runtime_model::vm_heap::VmHeap;
 use skiff_runtime_model::vm_value::ValueSlot;
 
-use super::{comparable_equality, opcode_supported, DispatchOutcome, VerifiedVmEntry, Vm, VmFiber};
+use super::{
+    catch_matches, comparable_equality, find_exception_region, nominal_tag_index, opcode_supported,
+    DispatchOutcome, VerifiedVmEntry, Vm, VmFiber,
+};
 use crate::{VmError, VmLimits};
 
 type VmStartFn = fn(VerifiedVmEntry, Box<[ValueSlot]>, VmLimits) -> Result<VmFiber, VmError>;
@@ -20,8 +28,9 @@ fn fiber_keeps_frame_and_values_out_of_the_managed_heap() {
 }
 
 #[test]
-fn opcode_dispatch_still_has_no_budget_or_heap_port() {
-    let dispatch: fn(&mut VmFiber) -> Result<DispatchOutcome, VmError> = VmFiber::dispatch_one;
+fn opcode_dispatch_has_a_heap_port_but_no_budget_port() {
+    let dispatch: fn(&mut VmFiber, &mut dyn VmHeap) -> Result<DispatchOutcome, VmError> =
+        VmFiber::dispatch_one;
 
     let _ = dispatch;
 }
@@ -64,18 +73,120 @@ fn value_control_and_scalar_opcodes_are_supported() {
 
 #[test]
 fn unsupported_opcodes_remain_fail_closed() {
+    let opcode = Opcode::CallLocalInOut;
+    assert!(
+        !opcode_supported(opcode),
+        "{opcode:?} should be unsupported"
+    );
+}
+
+#[test]
+fn production_opcode_families_are_dispatched() {
     for opcode in [
         Opcode::SwitchTag,
+        Opcode::Trap,
         Opcode::CallService,
-        Opcode::NewRecord,
+        Opcode::CallActor,
+        Opcode::CallInterface,
         Opcode::InvokeHost,
         Opcode::InvokeIntrinsic,
+        Opcode::MakeCallback,
+        Opcode::InvokeCallback,
+        Opcode::NewRecord,
+        Opcode::GetDenseField,
+        Opcode::SetWritablePath,
+        Opcode::RepresentationWrap,
+        Opcode::NewArrayBuilder,
+        Opcode::ArrayBuilderPush,
+        Opcode::FreezeArray,
+        Opcode::ArrayGet,
+        Opcode::ArrayPushOwned,
+        Opcode::ArrayLen,
+        Opcode::NewMapBuilder,
+        Opcode::MapBuilderPut,
+        Opcode::FreezeMap,
+        Opcode::MapGet,
+        Opcode::MapPutOwned,
+        Opcode::MapLen,
+        Opcode::MapEntryAt,
+        Opcode::StreamNext,
+        Opcode::EmitStream,
+        Opcode::Throw,
+        Opcode::Rethrow,
+        Opcode::EnterRegion,
+        Opcode::LeaveRegion,
+        Opcode::InterfaceBoxLocal,
+        Opcode::InterfaceBoxRemote,
     ] {
-        assert!(
-            !opcode_supported(opcode),
-            "{opcode:?} should be unsupported"
-        );
+        assert!(opcode_supported(opcode), "{opcode:?} should be supported");
     }
+}
+
+#[test]
+fn exception_region_selection_uses_the_innermost_matching_handler() {
+    let outer = exception_region(0, 8, 20, TypeIndex::new(1), FrameSlotIndex::new(0));
+    let inner = exception_region(2, 5, 30, TypeIndex::new(2), FrameSlotIndex::new(1));
+    let regions = [outer.clone(), inner];
+
+    assert_eq!(
+        find_exception_region(&regions, InstructionIndex::new(3), Some(TypeIndex::new(2)))
+            .map(|region| region.handler()),
+        Some(InstructionIndex::new(30))
+    );
+    assert_eq!(
+        find_exception_region(&regions, InstructionIndex::new(6), Some(TypeIndex::new(1)))
+            .map(|region| region.handler()),
+        Some(InstructionIndex::new(20))
+    );
+    assert_eq!(
+        find_exception_region(&regions, InstructionIndex::new(3), Some(TypeIndex::new(9))),
+        None
+    );
+}
+
+#[test]
+fn catch_all_and_exact_type_matchers_are_closed() {
+    assert!(catch_matches(&LinkedCatchMatcher::CatchAll, None));
+    assert!(!catch_matches(
+        &LinkedCatchMatcher::Type(TypeIndex::new(3)),
+        Some(TypeIndex::new(4))
+    ));
+    assert!(catch_matches(
+        &LinkedCatchMatcher::Type(TypeIndex::new(3)),
+        Some(TypeIndex::new(3))
+    ));
+}
+
+#[test]
+fn nominal_switch_tag_comes_from_reference_metadata_only() {
+    assert_eq!(nominal_tag_index(&ValueSlot::number(1.0)), 0);
+    assert_eq!(
+        nominal_tag_index(&ValueSlot::request_heap_ref(
+            skiff_runtime_model::vm_value::VmHandle::new(1),
+            skiff_runtime_model::vm_value::CompactTypeTag::new(42),
+            skiff_runtime_model::vm_value::ValueFlags::new(0),
+        )),
+        42
+    );
+}
+
+fn exception_region(
+    start: u32,
+    end: u32,
+    handler: u32,
+    catch_type: TypeIndex,
+    catch_slot: FrameSlotIndex,
+) -> LinkedExceptionRegion {
+    LinkedExceptionRegion::new(
+        InstructionIndex::new(start),
+        InstructionBoundaryIndex::new(end),
+        InstructionIndex::new(handler),
+        0,
+        Box::new([LinkedCatchMatcher::Type(catch_type)]),
+        catch_slot,
+        catch_type,
+        0,
+    )
 }
 
 #[test]

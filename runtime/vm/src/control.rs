@@ -148,6 +148,10 @@ impl VmResumeToken {
         }
     }
 
+    pub(crate) const fn authority(&self) -> VmResumeAuthority {
+        self.authority
+    }
+
     /// Consumes this unforgeable continuation capability after the scheduler
     /// has established the completion cell and root escrow identified by
     /// `ticket`. The target/control authority remains sealed inside the token.
@@ -176,6 +180,7 @@ pub enum ChildTarget {
         method_ordinal: u32,
     },
     Callback(SyntheticCallbackIndex),
+    StreamNext,
 }
 
 #[allow(dead_code)]

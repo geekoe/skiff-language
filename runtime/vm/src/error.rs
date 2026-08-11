@@ -1,10 +1,12 @@
 use std::{fmt, num::NonZeroU32};
 
 use skiff_artifact_model::Opcode;
-use skiff_runtime_linked_bytecode::{FrameSlotIndex, FunctionIndex, InstructionIndex, TypeIndex};
+use skiff_runtime_linked_bytecode::{
+    ActiveRegionIndex, CandidateTable, FrameSlotIndex, FunctionIndex, InstructionIndex, TypeIndex,
+};
 use skiff_runtime_model::{vm_heap::VmHeapError, vm_value::ValueKind};
 
-use crate::{fiber::VmFiberState, VmBudgetError};
+use crate::{fiber::VmFiberState, VmBudgetError, VmInternalTerminal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmEntryArgumentRejection {
@@ -98,6 +100,26 @@ pub enum VmError {
         expected: usize,
         actual: usize,
     },
+    LinkedTableRowMissing {
+        table: CandidateTable,
+        row: u32,
+    },
+    AssertionFailed {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    },
+    UnhandledThrow {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        payload_type: Option<TypeIndex>,
+    },
+    RegionLeaveMismatch {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        expected: ActiveRegionIndex,
+        actual: ActiveRegionIndex,
+    },
+    InternalTerminal(VmInternalTerminal),
     InstructionPointerOutOfBounds {
         function: FunctionIndex,
         instruction: InstructionIndex,
@@ -259,6 +281,45 @@ impl fmt::Display for VmError {
                 formatter,
                 "VM resume expects {expected} values but received {actual}"
             ),
+            Self::LinkedTableRowMissing { table, row } => write!(
+                formatter,
+                "verified VM references missing linked {table:?} row {row}"
+            ),
+            Self::AssertionFailed {
+                function,
+                instruction,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} assertion failed",
+                function.get(),
+                instruction.get()
+            ),
+            Self::UnhandledThrow {
+                function,
+                instruction,
+                payload_type,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} threw unhandled exception {payload_type:?}",
+                function.get(),
+                instruction.get()
+            ),
+            Self::RegionLeaveMismatch {
+                function,
+                instruction,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} attempted to leave region {} while {} is active",
+                function.get(),
+                instruction.get(),
+                expected.get(),
+                actual.get()
+            ),
+            Self::InternalTerminal(reason) => {
+                write!(formatter, "VM continuation terminated internally: {reason:?}")
+            }
             Self::InstructionPointerOutOfBounds {
                 function,
                 instruction,
