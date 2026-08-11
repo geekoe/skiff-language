@@ -7,8 +7,7 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_linked_bytecode::{
     FrameSlotIndex, FunctionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedFunction,
-    LinkedInstruction, LinkedInstructionTarget, LinkedValueTransferPlan, ResumeSiteIndex,
-    TypeIndex,
+    LinkedInstruction, LinkedInstructionTarget, ResumeSiteIndex, TypeIndex,
 };
 
 use super::{
@@ -208,10 +207,31 @@ fn prove_stream_read(
         .get(coordinate.site.get() as usize)
         .ok_or_else(|| violation(location, "resume site has no input state"))?;
     let resume_location = instruction_location(coordinate.function, row.resume());
+    let end_location = row
+        .end_resume()
+        .map(|end| instruction_location(coordinate.function, end));
     let resumed = flow
         .states_before
         .get(row.resume().get() as usize)
         .ok_or_else(|| violation(resume_location, "resume PC has no input state"))?;
+    let end_resume = row.end_resume().ok_or_else(|| {
+        violation(location, "StreamNext descriptor has no natural-end resume path")
+    })?;
+    if end_resume == row.resume() {
+        return Err(violation(
+            location,
+            "StreamNext item and natural-end resume PCs are equal",
+        ));
+    }
+    let ended = flow
+        .states_before
+        .get(end_resume.get() as usize)
+        .ok_or_else(|| {
+            violation(
+                end_location.unwrap_or(location),
+                "StreamNext end-resume PC has no input state",
+            )
+        })?;
 
     let expected_height = u32::try_from(before.stack.len())
         .map_err(|_| violation(location, "resume stack height does not fit u32"))?;
@@ -235,16 +255,17 @@ fn prove_stream_read(
         .successors
         .get(coordinate.site.get() as usize)
         .ok_or_else(|| violation(location, "StreamNext site has no CFG successor row"))?;
-    if row.resume() != expected_resume
-        || successor.as_ref()
-            != [super::ControlFlowEdge {
-                target: row.resume(),
-                kind: ControlFlowEdgeKind::Ordinary,
-            }]
-    {
+    let mut expected_successors = [row.resume(), end_resume];
+    expected_successors.sort_unstable_by_key(|target| target.get());
+    let ordinary_successors = successor
+        .iter()
+        .filter(|edge| matches!(edge.kind, ControlFlowEdgeKind::Ordinary))
+        .map(|edge| edge.target)
+        .collect::<Vec<_>>();
+    if row.resume() != expected_resume || ordinary_successors != expected_successors {
         return Err(violation(
             location,
-            "StreamNext ready path is not the exact immediate resume PC",
+            "StreamNext item/end CFG successors are not the exact resume PCs",
         ));
     }
 
@@ -262,13 +283,23 @@ fn prove_stream_read(
             "resume result is not the independently derived Stream<T> item",
         ));
     }
-    prove_ready_resume_isomorphism(
+    prove_stream_next_path_isomorphism(
         before,
         resumed,
-        Some(endpoint),
+        endpoint,
         item,
+        true,
         concrete,
         resume_location,
+    )?;
+    prove_stream_next_path_isomorphism(
+        before,
+        ended,
+        endpoint,
+        item,
+        false,
+        concrete,
+        end_location.unwrap_or(location),
     )?;
     let original_site = source
         .current_site(coordinate.function, coordinate.site)
@@ -281,14 +312,16 @@ fn prove_stream_read(
             function: row.function(),
             site: row.site(),
             resume: row.resume(),
+            end_resume: Some(end_resume),
             expected_stack_height_before_result: row.expected_stack_height_before_result(),
-            result_type: item,
-            result_plan: row.result_plans()[0].clone(),
+            result_types: Box::new([item]),
+            result_plans: Box::new([row.result_plans()[0].clone()]),
             error_mode: row.error_mode(),
             original_site,
             kind: VerifiedResumeKind::StreamRead {
                 endpoint_slot: endpoint,
                 item_type: item,
+                end_resume,
             },
         },
     ))
@@ -305,6 +338,12 @@ fn prove_pending_boundary(
     source: &SourceAttributionFacts,
 ) -> Result<VerifiedResumeSite, VerificationError> {
     let location = instruction_location(coordinate.function, coordinate.site);
+    if row.end_resume().is_some() {
+        return Err(violation(
+            location,
+            "end resume is only valid for a StreamNext descriptor",
+        ));
+    }
     if row.error_mode() != ResumeErrorMode::RaiseAtSite {
         return Err(violation(
             location,
@@ -407,25 +446,16 @@ fn prove_pending_boundary(
             ))
         }
     };
-    let result_type = row
-        .result_types()
-        .first()
-        .copied()
-        .unwrap_or(TypeIndex::new(0));
-    let result_plan = row
-        .result_plans()
-        .first()
-        .cloned()
-        .unwrap_or_else(empty_plan);
     Ok(VerifiedResumeSite::from_parts(
         crate::resume::VerifiedResumeSiteParts {
             index: row.index(),
             function: row.function(),
             site: row.site(),
             resume: row.resume(),
+            end_resume: row.end_resume(),
             expected_stack_height_before_result: row.expected_stack_height_before_result(),
-            result_type,
-            result_plan,
+            result_types: row.result_types().into(),
+            result_plans: row.result_plans().into(),
             error_mode: row.error_mode(),
             original_site,
             kind,
@@ -473,18 +503,20 @@ fn input_arity(
     Ok(total)
 }
 
-fn prove_ready_resume_isomorphism(
+fn prove_stream_next_path_isomorphism(
     before: &ProgramPointState,
     resumed: &ProgramPointState,
-    endpoint_slot: Option<FrameSlotIndex>,
+    endpoint_slot: FrameSlotIndex,
     item: TypeIndex,
+    pushes_item: bool,
     concrete: &ConcreteValueFacts,
     location: VerificationLocation,
 ) -> Result<(), VerificationError> {
+    let result_count = if pushes_item { 1 } else { 0 };
     let expected_stack_len = before
         .stack
         .len()
-        .checked_add(1)
+        .checked_add(result_count)
         .ok_or_else(|| violation(location, "resume result stack height overflowed usize"))?;
     if resumed.stack.len() != expected_stack_len
         || resumed.slots.len() != before.slots.len()
@@ -493,38 +525,43 @@ fn prove_ready_resume_isomorphism(
     {
         return Err(violation(
             location,
-            "ready and resumed StreamNext states have different shapes",
+            "StreamNext resume state shape differs from its ready state",
         ));
     }
     for (ready, resumed) in before.stack.iter().zip(resumed.stack.iter()) {
         if !same_value(*ready, *resumed, concrete) {
             return Err(violation(
                 location,
-                "resume stack prefix differs from ready state",
+                "StreamNext resume stack prefix differs from ready state",
             ));
         }
     }
-    if !same_value(
-        AbstractValue::Concrete(item),
-        resumed.stack[before.stack.len()],
-        concrete,
-    ) {
+    if pushes_item
+        && !same_value(
+            AbstractValue::Concrete(item),
+            resumed.stack[before.stack.len()],
+            concrete,
+        )
+    {
         return Err(violation(
             location,
-            "resume stack result is not Stream<T> item T",
+            "StreamNext item resume result is not Stream<T> item T",
         ));
     }
-    for (ready, resumed) in before.slots.iter().zip(resumed.slots.iter()) {
-        if !same_slot(*ready, *resumed, concrete) {
+    for (ordinal, (ready, resumed)) in before.slots.iter().zip(resumed.slots.iter()).enumerate() {
+        if ordinal == endpoint_slot.get() as usize {
+            if !matches!(resumed, AbstractSlotState::Moved) {
+                return Err(violation(
+                    location,
+                    "stream endpoint is not moved/dead on every StreamNext successor",
+                ));
+            }
+        } else if !same_slot(*ready, *resumed, concrete) {
             return Err(violation(
                 location,
-                "resume slot state differs from ready state",
+                "StreamNext resume slot state differs from ready state",
             ));
         }
-    }
-    if let Some(endpoint_slot) = endpoint_slot {
-        let resumed_endpoint = live_slot(resumed, endpoint_slot, location)?;
-        concrete.stream_item_type(resumed_endpoint, location)?;
     }
     Ok(())
 }
@@ -681,12 +718,6 @@ fn instruction_index(
                 "resume instruction index does not fit u32",
             )
         })
-}
-
-fn empty_plan() -> LinkedValueTransferPlan {
-    LinkedValueTransferPlan::SnapshotShare {
-        drop: skiff_runtime_linked_bytecode::LinkedValueDropPlan::Trivial,
-    }
 }
 
 const fn instruction_location(

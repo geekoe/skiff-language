@@ -34,6 +34,7 @@ pub(crate) struct ExactResumeEntry {
     function: FunctionIndex,
     site: InstructionIndex,
     resume: InstructionIndex,
+    end_resume: Option<InstructionIndex>,
     expected_stack_height_before_result: u32,
     result_types: Box<[TypeIndex]>,
     result_plans: Box<[LinkedValueTransferPlan]>,
@@ -51,6 +52,7 @@ impl ExactResumeEntry {
             function: row.function(),
             site: row.site(),
             resume: row.resume(),
+            end_resume: row.end_resume(),
             expected_stack_height_before_result: row.expected_stack_height_before_result(),
             result_types: row.result_types().into(),
             result_plans: row.result_plans().into(),
@@ -76,6 +78,10 @@ impl ExactResumeEntry {
 
     pub(crate) const fn resume(&self) -> InstructionIndex {
         self.resume
+    }
+
+    pub(crate) const fn end_resume(&self) -> Option<InstructionIndex> {
+        self.end_resume
     }
 
     pub(crate) const fn expected_stack_height_before_result(&self) -> u32 {

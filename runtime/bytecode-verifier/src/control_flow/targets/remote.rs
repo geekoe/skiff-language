@@ -991,6 +991,7 @@ mod tests {
                 Box::new([]),
                 Box::new([]),
                 Box::new([]),
+                None,
             )
             .unwrap(),
             0,
@@ -1051,6 +1052,7 @@ mod tests {
             FunctionIndex::new(0),
             InstructionIndex::new(0),
             InstructionIndex::new(1),
+            None,
             0,
             Box::new([]),
             Box::new([]),

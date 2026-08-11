@@ -455,6 +455,7 @@ fn empty_artifact_frame() -> FrameLayout {
         result_count: 0,
         result_type_refs: Vec::new(),
         result_plans: Vec::new(),
+        stream_result_type_ref: None,
         slot_plans: Vec::new(),
     }
 }
@@ -467,6 +468,7 @@ fn empty_linked_frame() -> LinkedFrameLayout {
         Box::new([]),
         Box::new([]),
         Box::new([]),
+        None,
     )
     .unwrap()
 }

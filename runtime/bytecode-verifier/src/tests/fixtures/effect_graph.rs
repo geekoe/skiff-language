@@ -43,6 +43,7 @@ pub(crate) enum EffectGraphCallKind {
     Ordinary,
     Tail,
     Resume,
+    StreamProducer,
     StreamRead,
     StreamReadTwice,
     InOut,
@@ -55,7 +56,7 @@ impl EffectGraphCallKind {
 
     pub(super) const fn resume_site_count(self) -> u32 {
         match self {
-            Self::Resume | Self::StreamRead => 1,
+            Self::Resume | Self::StreamProducer | Self::StreamRead => 1,
             Self::StreamReadTwice => 2,
             Self::Ordinary | Self::Tail | Self::InOut => 0,
         }
@@ -178,6 +179,9 @@ fn artifact_function(
             }],
         ),
         (EffectGraphCallKind::Resume, None) => (vec![0x61, resume_index, 0x25], Vec::new()),
+        (EffectGraphCallKind::StreamProducer, None) => {
+            (vec![0x06, 0, 0x61, resume_index, 0x25], Vec::new())
+        }
         (EffectGraphCallKind::StreamRead, None) => {
             (vec![0x60, 0, resume_index, 0x08, 0x25], Vec::new())
         }
@@ -190,6 +194,8 @@ fn artifact_function(
                 0,
                 resume_index + 1,
                 0x08,
+                0x08,
+                0x25,
                 0x08,
                 0x25,
             ],
@@ -209,6 +215,7 @@ fn artifact_function(
         | (EffectGraphCallKind::Tail, None)
         | (EffectGraphCallKind::InOut, None) => (vec![0x25], Vec::new()),
         (EffectGraphCallKind::Resume, Some(_))
+        | (EffectGraphCallKind::StreamProducer, Some(_))
         | (EffectGraphCallKind::StreamRead, Some(_))
         | (EffectGraphCallKind::StreamReadTwice, Some(_)) => {
             panic!("resume fixture cannot have a target")
@@ -239,12 +246,14 @@ fn artifact_function(
                 EffectGraphCallKind::Ordinary => statements::artifact_entries(),
                 EffectGraphCallKind::Tail => statements::artifact_tail_entries(),
                 EffectGraphCallKind::Resume => Vec::new(),
+                EffectGraphCallKind::StreamProducer => Vec::new(),
                 EffectGraphCallKind::StreamRead => Vec::new(),
                 EffectGraphCallKind::StreamReadTwice => Vec::new(),
                 EffectGraphCallKind::InOut => statements::artifact_call_only_entries(),
             }),
         source_map: match function.call_kind {
             EffectGraphCallKind::Resume => statements::artifact_resume_source_map(),
+            EffectGraphCallKind::StreamProducer => statements::artifact_producer_source_map(),
             EffectGraphCallKind::StreamRead => statements::artifact_stream_source_map(),
             EffectGraphCallKind::StreamReadTwice => statements::artifact_double_stream_source_map(),
             EffectGraphCallKind::Ordinary => function

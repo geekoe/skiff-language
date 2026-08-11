@@ -38,6 +38,7 @@ struct Context<'a> {
 
 pub(super) enum InstructionTransfer {
     Continue(ProgramPointState),
+    ContinueDual(ProgramPointState, ProgramPointState),
     Tail(VerifiedTailCallProof),
 }
 
@@ -92,6 +93,9 @@ pub(super) fn apply(
         let plan = exact_call.ok_or_else(|| tail::unavailable(location))?;
         return tail::prove(before, &context, plan).map(InstructionTransfer::Tail);
     }
+    if instruction.opcode() == Opcode::StreamNext {
+        return apply_stream_next(before, &context);
+    }
     require_supported(instruction.opcode(), location)?;
 
     let (mut stack, inputs) = consume_inputs(before, &context)?;
@@ -106,6 +110,42 @@ pub(super) fn apply(
         active_regions: active_regions.into_boxed_slice(),
         writable_loans: writable_loans.into_boxed_slice(),
     }))
+}
+
+fn apply_stream_next(
+    before: &ProgramPointState,
+    context: &Context<'_>,
+) -> Result<InstructionTransfer, VerificationError> {
+    let (stack, _inputs) = consume_inputs(before, context)?;
+    let endpoint_slot = values::resolve_slot(context, OperandRole::Slot)?;
+    let endpoint = values::live_slot(before, endpoint_slot, context.location)?;
+    let AbstractValue::Concrete(endpoint) = endpoint;
+    let item = context
+        .facts
+        .stream_item_type(endpoint, context.location)?;
+    let mut slots = before.slots.to_vec();
+    values::set_slot(
+        &mut slots,
+        endpoint_slot,
+        crate::control_flow::AbstractSlotState::Moved,
+        context.location,
+    )?;
+    let mut item_stack = stack.clone();
+    item_stack.push(AbstractValue::Concrete(item));
+    Ok(InstructionTransfer::ContinueDual(
+        ProgramPointState {
+            stack: item_stack.into_boxed_slice(),
+            slots: slots.clone().into_boxed_slice(),
+            active_regions: before.active_regions.clone(),
+            writable_loans: before.writable_loans.clone(),
+        },
+        ProgramPointState {
+            stack: stack.into_boxed_slice(),
+            slots: slots.into_boxed_slice(),
+            active_regions: before.active_regions.clone(),
+            writable_loans: before.writable_loans.clone(),
+        },
+    ))
 }
 
 fn apply_region_and_loan_effects(
@@ -664,8 +704,29 @@ fn validate_input_source(
             )?;
             values::require_exception_envelope(slot_value, context, context.location)
         }
-        ValueSource::FunctionStreamItem
-        | ValueSource::InOutCallInputs { .. }
+        ValueSource::FunctionStreamItem => {
+            require_one(input, context)?;
+            let stream = context
+                .function
+                .stream_result_type_ref()
+                .ok_or_else(|| {
+                    violation(
+                        context.location,
+                        "EmitStream requires the explicit producer stream authority",
+                    )
+                })?;
+            let item = context
+                .facts
+                .stream_item_type(stream, context.location)?;
+            values::require_same_type(
+                input[0],
+                item,
+                context.facts,
+                context.location,
+                "stream producer item",
+            )
+        }
+        ValueSource::InOutCallInputs { .. }
         | ValueSource::TaggedValue
         | ValueSource::Constant { .. }
         | ValueSource::Slot { .. }

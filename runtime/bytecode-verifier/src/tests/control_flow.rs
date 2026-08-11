@@ -7,14 +7,16 @@ use skiff_artifact_model::{
     BYTECODE_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
-    ActiveRegionIndex, ArtifactFunctionKey, ArtifactTypeIndex, BytecodePackageIndex, FunctionIndex,
-    InstructionBoundaryIndex, InstructionIndex, LinkedActiveRegion, LinkedActiveRegionKind,
-    LinkedArtifactPoolOrigin, LinkedBytecodeAuthorityPins, LinkedBytecodeCandidate,
-    LinkedBytecodeCandidateParts, LinkedCallableEffectDeclaration, LinkedFrameLayout,
-    LinkedFunction, LinkedFunctionTables, LinkedInstruction, LinkedInstructionTarget,
-    LinkedPackageBytecodeProvenance, LinkedProgramPointState, LinkedResolvedOperand,
-    LinkedResumeSite, LinkedStackMapCandidate, LinkedSwitchCase, LinkedSwitchTable,
-    LinkedTypeEntry, ResumeSiteIndex, SpecializationKey, SwitchTableIndex, TypeIndex,
+    ActiveRegionIndex, ArtifactFunctionKey, ArtifactTypeIndex, BytecodePackageIndex, FrameSlotIndex,
+    FunctionIndex, InstructionBoundaryIndex, InstructionIndex, LinkedActiveRegion,
+    LinkedActiveRegionKind, LinkedArtifactPoolOrigin, LinkedBytecodeAuthorityPins,
+    LinkedBytecodeCandidate, LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts,
+    LinkedCallableEffectDeclaration, LinkedFrameLayout, LinkedFunction, LinkedFunctionTables,
+    LinkedInstruction, LinkedInstructionTarget, LinkedPackageBytecodeProvenance,
+    LinkedProgramPointState, LinkedResolvedOperand, LinkedResumeSite, LinkedSlotState,
+    LinkedStackMapCandidate, LinkedSwitchCase, LinkedSwitchTable, LinkedTypeEntry,
+    LinkedValueDropPlan, LinkedValueTransferPlan, ResumeSiteIndex, SpecializationKey,
+    SwitchTableIndex, TypeIndex,
 };
 
 use crate::{
@@ -145,6 +147,7 @@ fn actual_resume_descriptor_is_accepted_by_the_cfg_gate() {
         FunctionIndex::new(0),
         InstructionIndex::new(0),
         InstructionIndex::new(1),
+        None,
         0,
         Box::new([]),
         Box::new([]),
@@ -160,6 +163,56 @@ fn actual_resume_descriptor_is_accepted_by_the_cfg_gate() {
         u64::MAX,
     )
     .expect("an actual-resume descriptor is accepted by the independent CFG gate");
+}
+
+#[test]
+fn stream_next_without_end_resume_is_rejected_by_candidate_shape() {
+    let resume = LinkedResumeSite::new(
+        ResumeSiteIndex::new(0),
+        FunctionIndex::new(0),
+        InstructionIndex::new(0),
+        InstructionIndex::new(1),
+        None,
+        0,
+        Box::new([]),
+        Box::new([]),
+        ResumeErrorMode::RaiseAtSite,
+    )
+    .unwrap();
+    let error = try_stream_candidate(
+        vec![stream_next(0), plain(Opcode::Return)],
+        vec![resume],
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        LinkedBytecodeCandidateError::StreamNextMissingEndResume { .. }
+    ));
+}
+
+#[test]
+fn non_stream_resume_with_end_resume_is_rejected_by_candidate_shape() {
+    let resume = LinkedResumeSite::new(
+        ResumeSiteIndex::new(0),
+        FunctionIndex::new(0),
+        InstructionIndex::new(0),
+        InstructionIndex::new(1),
+        Some(InstructionIndex::new(1)),
+        0,
+        Box::new([]),
+        Box::new([]),
+        ResumeErrorMode::RaiseAtSite,
+    )
+    .unwrap();
+    let error = try_stream_candidate(
+        vec![emit_stream(0), plain(Opcode::Return)],
+        vec![resume],
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        LinkedBytecodeCandidateError::EndResumeOnlyValidForStreamNext { .. }
+    ));
 }
 
 #[test]
@@ -248,6 +301,102 @@ fn candidate_from_parts(
     .unwrap()
 }
 
+fn try_stream_candidate(
+    instructions: Vec<LinkedInstruction>,
+    resume_sites: Vec<LinkedResumeSite>,
+) -> Result<LinkedBytecodeCandidate, LinkedBytecodeCandidateError> {
+    let build = PackageBuildId::new("package-build:stream-cfg-test");
+    let function = linked_stream_function(build.clone(), instructions);
+    let package = linked_package(build.clone());
+    let types = (0..2)
+        .map(|index| {
+            LinkedTypeEntry::new(
+                TypeIndex::new(index),
+                LinkedArtifactPoolOrigin::new(build.clone(), ArtifactTypeIndex::new(index), None)
+                    .unwrap(),
+                TypeRefIr::builtin("string"),
+                None,
+            )
+        })
+        .collect();
+    LinkedBytecodeCandidate::try_from_parts(LinkedBytecodeCandidateParts {
+        packages: vec![package],
+        functions: vec![function],
+        operation_entries: Vec::new(),
+        gateway_entries: Vec::new(),
+        exact_local_targets: Vec::new(),
+        service_operations: Vec::new(),
+        actor_creates: Vec::new(),
+        actor_methods: Vec::new(),
+        interface_tables: Vec::new(),
+        synthetic_callbacks: Vec::new(),
+        callback_capture_layouts: Vec::new(),
+        host_effect_adapters: Vec::new(),
+        intrinsics: Vec::new(),
+        types,
+        shapes: Vec::new(),
+        constants: Vec::new(),
+        constant_roots: Vec::new(),
+        frozen_constant_nodes: Vec::new(),
+        resume_sites,
+        writable_paths: Vec::new(),
+    })
+}
+
+fn linked_stream_function(build: PackageBuildId, instructions: Vec<LinkedInstruction>) -> LinkedFunction {
+    let states = (0..instructions.len())
+        .map(|instruction| {
+            LinkedProgramPointState::new(
+                InstructionIndex::new(u32::try_from(instruction).unwrap()),
+                Box::new([]),
+                Box::new([LinkedSlotState::Uninitialized]),
+                Box::new([]),
+                Box::new([]),
+            )
+        })
+        .collect::<Vec<_>>();
+    let stack_map =
+        LinkedStackMapCandidate::try_new(states.into_boxed_slice(), instructions.len(), 1, 0)
+            .unwrap();
+    LinkedFunction::new(
+        FunctionIndex::new(0),
+        SpecializationKey::new(
+            build,
+            ArtifactFunctionKey::parse("module::stream-cfg").unwrap(),
+            PackageCallableId::new("cfg"),
+            Box::new([]),
+            None,
+        ),
+        instructions.into_boxed_slice(),
+        LinkedFrameLayout::new(
+            Box::new([TypeIndex::new(0)]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            }]),
+            Box::new([]),
+            None,
+        )
+        .unwrap(),
+        0,
+        LinkedCallableEffectDeclaration::new(
+            PackageCallableId::new("cfg"),
+            CallableEffectSummary::analysis_pending(),
+        ),
+        LinkedFunctionTables::new(
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+        ),
+        stack_map,
+    )
+}
+
 fn linked_function(
     build: PackageBuildId,
     instructions: Vec<LinkedInstruction>,
@@ -285,6 +434,7 @@ fn linked_function(
             Box::new([]),
             Box::new([]),
             Box::new([]),
+            None,
         )
         .unwrap(),
         0,
@@ -363,6 +513,25 @@ fn call_local(target: u32) -> LinkedInstruction {
             0,
             LinkedInstructionTarget::Function(FunctionIndex::new(target)),
         )]),
+        0,
+    )
+    .unwrap()
+}
+
+fn stream_next(resume: u32) -> LinkedInstruction {
+    LinkedInstruction::new(
+        Opcode::StreamNext,
+        Box::new([0, resume]),
+        Box::new([
+            LinkedResolvedOperand::new(
+                0,
+                LinkedInstructionTarget::FrameSlot(FrameSlotIndex::new(0)),
+            ),
+            LinkedResolvedOperand::new(
+                1,
+                LinkedInstructionTarget::ResumeSite(ResumeSiteIndex::new(resume)),
+            ),
+        ]),
         0,
     )
     .unwrap()

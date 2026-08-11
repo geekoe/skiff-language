@@ -359,6 +359,11 @@ pub(super) fn prove_resume_sites(
             && linked.site() == site
             && linked.resume()
                 == instruction_index_for_pc(source, artifact.resume_pc, row_location)?
+            && linked.end_resume()
+                == artifact
+                    .end_resume_pc
+                    .map(|end_pc| instruction_index_for_pc(source, end_pc, row_location))
+                    .transpose()?
             && linked.expected_stack_height_before_result()
                 == artifact.expected_stack_height_before_result
             && linked.error_mode() == artifact.error_mode

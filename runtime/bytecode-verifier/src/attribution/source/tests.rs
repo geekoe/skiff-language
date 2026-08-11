@@ -236,6 +236,7 @@ fn function(
         Box::new([]),
         slot_plans,
         Box::new([]),
+        None,
     )
     .unwrap();
     let states = (0..instructions.len())

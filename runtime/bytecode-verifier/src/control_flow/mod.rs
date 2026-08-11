@@ -371,7 +371,7 @@ pub(crate) fn prove_control_flow_and_stack(
         &targets,
         source,
     )?;
-    let mut stream_read_sites = resume_sites
+    let stream_read_sites = resume_sites
         .rows()
         .iter()
         .filter_map(|row| {
@@ -379,9 +379,10 @@ pub(crate) fn prove_control_flow_and_stack(
                 .then_some((row.function(), row.site()))
         })
         .collect::<Vec<_>>();
-    stream_read_sites.sort_unstable();
-    stream_read_sites.dedup();
-    if stream_read_sites.len() != resume_sites.rows().len() {
+    let mut unique_stream_read_sites = stream_read_sites.clone();
+    unique_stream_read_sites.sort_unstable();
+    unique_stream_read_sites.dedup();
+    if unique_stream_read_sites.len() != stream_read_sites.len() {
         return Err(VerificationError::SemanticViolation {
             obligation: crate::VerificationObligation::ResumeSite,
             location: crate::VerificationLocation::Image,
@@ -395,7 +396,7 @@ pub(crate) fn prove_control_flow_and_stack(
         tail_calls,
         instructions,
         resume_sites,
-        stream_read_sites: stream_read_sites.into_boxed_slice(),
+        stream_read_sites: unique_stream_read_sites.into_boxed_slice(),
     })
 }
 
