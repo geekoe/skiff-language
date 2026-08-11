@@ -576,7 +576,10 @@ fn visit_values(values: &[ValueSlot], visitor: &mut dyn VmRootVisitor) -> Result
 mod tests {
     use std::mem::size_of;
 
-    use super::{PendingOperation, PendingTicket, VmControl, VmOwnedValues, VmResumeToken};
+    use super::{
+        PendingOperation, PendingTicket, ResumeOutcome, StreamItem, VmControl, VmOwnedValues,
+        VmResumeToken,
+    };
 
     #[test]
     fn continuation_and_ticket_remain_compact_value_envelopes() {
@@ -595,6 +598,34 @@ mod tests {
     fn pending_handoff_consumes_only_unforgeable_resume_authority() {
         let into_pending: fn(VmResumeToken, PendingTicket) -> PendingOperation =
             VmResumeToken::into_pending;
+
+        let _ = into_pending;
+    }
+
+    #[test]
+    fn empty_owned_values_constructor_is_a_zero_value_authority() {
+        fn empty(
+            image: std::sync::Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        ) -> VmOwnedValues {
+            VmOwnedValues::empty(image)
+        }
+
+        let _ = empty;
+    }
+
+    #[test]
+    fn empty_resume_outcome_is_a_public_zero_result_path() {
+        let _: fn() -> ResumeOutcome = || ResumeOutcome::Empty;
+    }
+
+    #[test]
+    fn stream_item_backpressure_handoff_keeps_item_and_pending_authority() {
+        fn into_pending(
+            item: StreamItem,
+            ticket: PendingTicket,
+        ) -> (VmOwnedValues, PendingOperation) {
+            item.into_pending(ticket)
+        }
 
         let _ = into_pending;
     }
