@@ -46,12 +46,12 @@ pub(super) fn project_package_actor_routing(
     }
 }
 
-/// Projects the merged actor routing record for one runtime assembly.
+/// Projects the merged actor routing record for one deployment set.
 ///
 /// Each root deployment is projected with its exact deployment/package
 /// binding; the frozen `ActorRoutingProjection::new` performs the shared
 /// ordering, uniqueness and identity validation over the union (A0 immutable
-/// epoch construction semantics). An empty assembly is the legal empty
+/// epoch construction semantics). An empty deployment set is the legal empty
 /// projection.
 pub fn project_assembly_actor_routing(
     store: &CanonicalArtifactStore,
@@ -127,7 +127,7 @@ pub fn package_actor_routing_input(
     })
 }
 
-/// Projects actor routing for an assembly using precomputed per-package
+/// Projects actor routing for a deployment set using precomputed per-package
 /// facts. Unlike [`project_assembly_actor_routing`], this never re-reads the
 /// artifact store, so callers that activate many deployments over the same
 /// package closure can avoid repeated canonical JSON admission and File IR

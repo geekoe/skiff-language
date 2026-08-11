@@ -165,8 +165,8 @@ fn validate_bytecode_publication_state(
                     "bytecode publication handoff does not match PackageArtifact bytecode reference",
                 ));
             }
-            if published.artifact.bytecode_statement_manifest_identity
-                != handoff.statement_manifest_receipt().identity().as_str()
+            if &published.artifact.bytecode_statement_manifest_identity
+                != handoff.statement_manifest_receipt().identity()
             {
                 return Err(invalid_input(
                     "bytecode publication handoff does not match PackageArtifact statement manifest",

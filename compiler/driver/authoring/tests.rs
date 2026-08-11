@@ -1,16 +1,15 @@
 use std::{cell::Cell, fs, path::PathBuf};
 
 use super::{
-    build_authoring_object_legacy, project_runtime_assembly,
-    reject_top_level_aliases_outside_test_service, resolve_reachable_package_closure,
-    run_after_platform_context_guard, AuthoringObject,
+    build_authoring_object_legacy, reject_top_level_aliases_outside_test_service,
+    resolve_reachable_package_closure, run_after_platform_context_guard, AuthoringObject,
 };
 use serde_json::json;
-use skiff_artifact_identity::{package_schema_index_identity, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX};
+use skiff_artifact_identity::package_schema_index_identity;
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity, DeploymentArtifactIdentity, DeploymentRevision,
-    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageLocalAbiIdentity,
-    PackageRequirement, PackageRequirementKey, ServiceDeploymentRef,
+    derive_bytecode_statement_manifest_identity, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageBuildId, PackageLocalAbiIdentity, PackageRequirement,
+    PackageRequirementKey,
 };
 use skiff_compiler_input::{package_config::read_user_package_manifest, CompilerPlatformSources};
 use skiff_compiler_source::prelude_registry::{
@@ -207,99 +206,12 @@ fn ordinary_package_authoring_rejects_top_level_alias_before_dependency_resoluti
 }
 
 #[test]
-fn runtime_assembly_projection_rejects_operation_input_before_store_reads() {
-    let root = unique_temp_root("runtime-assembly-operation-validation");
-    let reference = exact_deployment_ref("provider");
-
-    let invalid_profile =
-        project_runtime_assembly(&root, "../dev", std::slice::from_ref(&reference), false)
-            .unwrap_err()
-            .to_string();
-    assert!(invalid_profile.contains("assembly release"));
-
-    let duplicate =
-        project_runtime_assembly(&root, "dev", &[reference.clone(), reference.clone()], false)
-            .unwrap_err()
-            .to_string();
-    assert!(duplicate.contains("duplicate exact reference"));
-
-    let mut malformed = reference;
-    malformed.deployment_artifact_identity = DeploymentArtifactIdentity::new("not-an-identity");
-    let malformed = project_runtime_assembly(&root, "dev", &[malformed], false)
-        .unwrap_err()
-        .to_string();
-    assert!(malformed.contains("deploymentArtifactIdentity"));
-
+fn assembly_authoring_object_is_removed() {
+    let error = AuthoringObject::parse("assembly").unwrap_err().to_string();
     assert!(
-        !root.exists(),
-        "invalid operation input must fail before creating or reading the artifact store"
+        error.contains("unknown authoring object assembly; expected package"),
+        "{error}"
     );
-}
-
-#[test]
-fn runtime_assembly_projection_publishes_the_canonical_empty_assembly_deterministically() {
-    let root = unique_temp_root("runtime-assembly-empty");
-    let first = project_runtime_assembly(&root, "dev", &[], false).unwrap();
-    let second = project_runtime_assembly(&root, "dev", &[], false).unwrap();
-
-    let first_receipt = &first["runtimeAssemblyReceipt"];
-    let second_receipt = &second["runtimeAssemblyReceipt"];
-    assert_eq!(first_receipt["profile"], json!("dev"));
-    assert_eq!(first_receipt["assembly"], second_receipt["assembly"]);
-    assert_eq!(first_receipt["recordPath"], second_receipt["recordPath"]);
-
-    let record_path = first_receipt["recordPath"].as_str().unwrap();
-    let assembly = serde_json::from_slice::<skiff_artifact_model::RuntimeAssembly>(
-        &fs::read(root.join(record_path)).unwrap(),
-    )
-    .unwrap();
-    assert!(assembly.roots.is_empty());
-    assert!(assembly.resolved_deployments.is_empty());
-    assert!(assembly.resolved_contracts.is_empty());
-    assert!(assembly.resolved_packages.is_empty());
-    assert!(assembly.package_link_plan.code_slots.is_empty());
-    assert!(assembly.package_link_plan.package_links.is_empty());
-    assert!(assembly.service_binding_templates.is_empty());
-    assert!(assembly.activation_templates.is_empty());
-    assert!(assembly.gateway_ingress.is_empty());
-    skiff_artifact_identity::validate_runtime_assembly_identity(&assembly).unwrap();
-
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn runtime_assembly_projection_never_expands_missing_deployment_refs_through_pointers() {
-    let root = unique_temp_root("runtime-assembly-no-pointer-expansion");
-    let missing = exact_deployment_ref("missing");
-    let error = project_runtime_assembly(&root, "dev", &[missing], false)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("records/service-deployments"), "{error}");
-    assert!(!error.contains("pointers/service-deployments"), "{error}");
-    fs::remove_dir_all(root).unwrap();
-}
-
-fn exact_deployment_ref(revision: &str) -> ServiceDeploymentRef {
-    ServiceDeploymentRef {
-        service_id: "example.com/provider".to_string(),
-        contract_version: "1.0.0".to_string(),
-        deployment_revision: DeploymentRevision::new(revision),
-        deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
-            "{DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX}:{}",
-            "a".repeat(64)
-        )),
-    }
-}
-
-fn unique_temp_root(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "skiff-{name}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ))
 }
 
 fn package(
