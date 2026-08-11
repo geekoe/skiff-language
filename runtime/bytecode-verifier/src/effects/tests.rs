@@ -381,21 +381,31 @@ fn swapped_resume_targets_fail_at_exact_hydration_binding() {
 }
 
 #[test]
-fn repeated_stream_read_is_rejected_after_the_endpoint_moves() {
+fn repeated_stream_read_preserves_live_endpoint_and_stack_prefix() {
     let mut function = stream_function(stream_effects());
     function.call_kind = EffectGraphCallKind::StreamReadTwice;
-    let error = verify_graph(vec![function])
-        .expect_err("StreamNext must move its affine endpoint on both successors");
-    assert!(matches!(
-        error,
-        VerificationError::SemanticViolation {
-            obligation: VerificationObligation::StackAndSlotState,
-            location: VerificationLocation::Instruction { function, instruction },
-            detail,
-        } if function == FunctionIndex::new(0)
-            && instruction == InstructionIndex::new(1)
-            && detail.contains("already moved")
-    ));
+    let image = verify_graph(vec![function])
+        .expect("a StreamNext endpoint stays live across resumed item reads");
+    let [first, second] = image.resume_sites().rows() else {
+        panic!("two resume certificates were expected")
+    };
+    assert_eq!(first.site(), InstructionIndex::new(0));
+    assert_eq!(first.resume(), InstructionIndex::new(1));
+    assert_eq!(first.end_resume(), Some(InstructionIndex::new(6)));
+    assert_eq!(first.expected_stack_height_before_result(), 0);
+    assert_eq!(second.site(), InstructionIndex::new(1));
+    assert_eq!(second.resume(), InstructionIndex::new(2));
+    assert_eq!(second.end_resume(), Some(InstructionIndex::new(5)));
+    assert_eq!(second.expected_stack_height_before_result(), 1);
+    assert_eq!(second.result_type(), TypeIndex::new(0));
+    assert_eq!(
+        second.kind(),
+        &VerifiedResumeKind::StreamRead {
+            endpoint_slot: FrameSlotIndex::new(0),
+            item_type: TypeIndex::new(0),
+            end_resume: InstructionIndex::new(5),
+        }
+    );
 }
 
 #[test]

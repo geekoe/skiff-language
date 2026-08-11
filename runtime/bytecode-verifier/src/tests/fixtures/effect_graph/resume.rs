@@ -1,8 +1,8 @@
 use skiff_artifact_model::{BytecodePoolEntry, BytecodePools, ResumeDescriptor, ResumeErrorMode};
 use skiff_runtime_linked_bytecode::{
     FunctionIndex, InstructionIndex, LinkedInstruction, LinkedInstructionTarget,
-    LinkedProgramPointState, LinkedResolvedOperand, LinkedResumeSite, LinkedSlotState,
-    LinkedStackValue, ResumeSiteIndex, TypeIndex,
+    LinkedProgramPointState, LinkedResolvedOperand, LinkedResumeSite, LinkedStackValue,
+    ResumeSiteIndex, TypeIndex,
 };
 
 use super::{identities::function_key, EffectGraphCallKind, EffectGraphFunction};
@@ -208,54 +208,54 @@ pub(super) fn linked_states(
     if matches!(kind, EffectGraphCallKind::StreamRead) {
         return vec![
             program_point(0, Box::new([]), kind),
-            program_point_with_slots(
+            program_point(
                 1,
                 Box::new([LinkedStackValue::new(
                     TypeIndex::new(0),
                     super::inout::linked_item_plan(),
                 )]),
-                moved_slot_state(kind),
+                kind,
             ),
-            program_point_with_slots(2, Box::new([]), moved_slot_state(kind)),
+            program_point(2, Box::new([]), kind),
         ];
     }
     if matches!(kind, EffectGraphCallKind::StreamReadTwice) {
         return vec![
             program_point(0, Box::new([]), kind),
-            program_point_with_slots(
+            program_point(
                 1,
                 Box::new([LinkedStackValue::new(
                     TypeIndex::new(0),
                     super::inout::linked_item_plan(),
                 )]),
-                moved_slot_state(kind),
+                kind,
             ),
-            program_point_with_slots(
+            program_point(
                 2,
                 Box::new([
                     LinkedStackValue::new(TypeIndex::new(0), super::inout::linked_item_plan()),
                     LinkedStackValue::new(TypeIndex::new(0), super::inout::linked_item_plan()),
                 ]),
-                moved_slot_state(kind),
+                kind,
             ),
-            program_point_with_slots(
+            program_point(
                 3,
                 Box::new([LinkedStackValue::new(
                     TypeIndex::new(0),
                     super::inout::linked_item_plan(),
                 )]),
-                moved_slot_state(kind),
+                kind,
             ),
-            program_point_with_slots(4, Box::new([]), moved_slot_state(kind)),
-            program_point_with_slots(
+            program_point(4, Box::new([]), kind),
+            program_point(
                 5,
                 Box::new([LinkedStackValue::new(
                     TypeIndex::new(0),
                     super::inout::linked_item_plan(),
                 )]),
-                moved_slot_state(kind),
+                kind,
             ),
-            program_point_with_slots(6, Box::new([]), moved_slot_state(kind)),
+            program_point(6, Box::new([]), kind),
         ];
     }
     (0..instruction_count)
@@ -263,11 +263,6 @@ pub(super) fn linked_states(
         .collect()
 }
 
-fn moved_slot_state(kind: EffectGraphCallKind) -> Box<[LinkedSlotState]> {
-    (0..super::inout::slot_count(kind))
-        .map(|_| LinkedSlotState::Moved)
-        .collect()
-}
 
 
 fn program_point(
@@ -279,20 +274,6 @@ fn program_point(
         InstructionIndex::new(instruction),
         stack,
         super::inout::linked_slot_states(kind),
-        Box::new([]),
-        Box::new([]),
-    )
-}
-
-fn program_point_with_slots(
-    instruction: u32,
-    stack: Box<[LinkedStackValue]>,
-    slots: Box<[LinkedSlotState]>,
-) -> LinkedProgramPointState {
-    LinkedProgramPointState::new(
-        InstructionIndex::new(instruction),
-        stack,
-        slots,
         Box::new([]),
         Box::new([]),
     )

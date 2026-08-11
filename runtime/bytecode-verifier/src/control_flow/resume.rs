@@ -286,7 +286,6 @@ fn prove_stream_read(
     prove_stream_next_path_isomorphism(
         before,
         resumed,
-        endpoint,
         item,
         true,
         concrete,
@@ -295,7 +294,6 @@ fn prove_stream_read(
     prove_stream_next_path_isomorphism(
         before,
         ended,
-        endpoint,
         item,
         false,
         concrete,
@@ -506,7 +504,6 @@ fn input_arity(
 fn prove_stream_next_path_isomorphism(
     before: &ProgramPointState,
     resumed: &ProgramPointState,
-    endpoint_slot: FrameSlotIndex,
     item: TypeIndex,
     pushes_item: bool,
     concrete: &ConcreteValueFacts,
@@ -548,15 +545,8 @@ fn prove_stream_next_path_isomorphism(
             "StreamNext item resume result is not Stream<T> item T",
         ));
     }
-    for (ordinal, (ready, resumed)) in before.slots.iter().zip(resumed.slots.iter()).enumerate() {
-        if ordinal == endpoint_slot.get() as usize {
-            if !matches!(resumed, AbstractSlotState::Moved) {
-                return Err(violation(
-                    location,
-                    "stream endpoint is not moved/dead on every StreamNext successor",
-                ));
-            }
-        } else if !same_slot(*ready, *resumed, concrete) {
+    for (ready, resumed) in before.slots.iter().zip(resumed.slots.iter()) {
+        if !same_slot(*ready, *resumed, concrete) {
             return Err(violation(
                 location,
                 "StreamNext resume slot state differs from ready state",

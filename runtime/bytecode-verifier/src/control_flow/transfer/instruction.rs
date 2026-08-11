@@ -123,25 +123,18 @@ fn apply_stream_next(
     let item = context
         .facts
         .stream_item_type(endpoint, context.location)?;
-    let mut slots = before.slots.to_vec();
-    values::set_slot(
-        &mut slots,
-        endpoint_slot,
-        crate::control_flow::AbstractSlotState::Moved,
-        context.location,
-    )?;
     let mut item_stack = stack.clone();
     item_stack.push(AbstractValue::Concrete(item));
     Ok(InstructionTransfer::ContinueDual(
         ProgramPointState {
             stack: item_stack.into_boxed_slice(),
-            slots: slots.clone().into_boxed_slice(),
+            slots: before.slots.clone(),
             active_regions: before.active_regions.clone(),
             writable_loans: before.writable_loans.clone(),
         },
         ProgramPointState {
             stack: stack.into_boxed_slice(),
-            slots: slots.into_boxed_slice(),
+            slots: before.slots.clone(),
             active_regions: before.active_regions.clone(),
             writable_loans: before.writable_loans.clone(),
         },

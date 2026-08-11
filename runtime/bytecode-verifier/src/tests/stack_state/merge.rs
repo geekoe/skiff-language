@@ -2,7 +2,8 @@ use skiff_artifact_model::{Opcode, ParamModeIr, TypeRefIr};
 use skiff_runtime_linked_bytecode::FunctionIndex;
 
 use super::{
-    assert_instruction_violation, branch_fixture, hint, live, moved, prove, spec, WithHints,
+    assert_instruction_violation, branch_fixture, hint, live, moved, prove, spec, uninitialized,
+    WithHints,
 };
 use crate::{
     tests::fixtures::stack_state::{branch, fixture, plain, slot_instruction},
@@ -64,6 +65,47 @@ fn merge_rejects_different_slot_liveness() {
         ],
     );
     assert_instruction_violation(prove(&fixture).unwrap_err(), 6);
+}
+
+#[test]
+fn merge_accepts_uninitialized_and_live_before_converging_write() {
+    let fixture = fixture(
+        vec![
+            TypeRefIr::builtin("bool"),
+            TypeRefIr::builtin("string"),
+            TypeRefIr::builtin("string"),
+        ],
+        spec(
+            vec![0, 1, 2],
+            vec![(0, ParamModeIr::Value), (2, ParamModeIr::Value)],
+            Vec::new(),
+            vec![
+                slot_instruction(Opcode::TakeSlot, 0),
+                branch(Opcode::JumpIfTrue, 5),
+                slot_instruction(Opcode::LoadSlot, 2),
+                slot_instruction(Opcode::StoreSlot, 1),
+                branch(Opcode::Jump, 6),
+                branch(Opcode::Jump, 6),
+                slot_instruction(Opcode::LoadSlot, 2),
+                slot_instruction(Opcode::StoreSlot, 1),
+                plain(Opcode::Return),
+            ],
+            1,
+        )
+        .with_hints(vec![
+            hint(&[], &[live(0), uninitialized(), live(2)]),
+            hint(&[0], &[moved(), uninitialized(), live(2)]),
+            hint(&[], &[moved(), uninitialized(), live(2)]),
+            hint(&[2], &[moved(), uninitialized(), live(2)]),
+            hint(&[], &[moved(), live(1), live(2)]),
+            hint(&[], &[moved(), uninitialized(), live(2)]),
+            hint(&[], &[moved(), uninitialized(), live(2)]),
+            hint(&[2], &[moved(), uninitialized(), live(2)]),
+            hint(&[], &[moved(), live(1), live(2)]),
+        ]),
+    );
+    prove(&fixture)
+        .expect("uninitialized entry and live backedge must merge to uninitialized before write");
 }
 
 #[test]

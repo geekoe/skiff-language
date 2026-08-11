@@ -106,6 +106,15 @@ pub(super) fn merge(
                 let AbstractValue::Concrete(merged) = value;
                 *left = AbstractSlotState::Live(merged);
             }
+            (AbstractSlotState::Uninitialized, AbstractSlotState::Live(_))
+            | (AbstractSlotState::Live(_), AbstractSlotState::Uninitialized) => {
+                // A loop header can see a slot live only on the backedge and
+                // still uninitialized on entry. Keep the merged state
+                // non-live; a later write converges both paths, while any
+                // read or drop before that write fails closed.
+                *left = AbstractSlotState::Uninitialized;
+                changed = true;
+            }
             _ => {
                 return Err(violation(
                     location,
