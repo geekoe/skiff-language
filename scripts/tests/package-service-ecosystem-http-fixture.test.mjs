@@ -38,29 +38,56 @@ test('router compiler fixture uses split HTTP authoring without an empty busines
 });
 
 test('owned WebSocket source fixtures use private current connect authoring', async () => {
-  for (const [name, serviceId, api, functionNames] of [
+  const connectOnlyWebsocket = `path: /socket
+connect:
+  handler: main.websocketConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+`;
+  const closeWebsocket = `path: /socket
+connect:
+  handler: main.websocketConnect
+  adapterArgs:
+    - param: request
+      source: { kind: websocket.connectRequest }
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+close:
+  handler: main.handleConnectionClosed
+  adapterArgs:
+    - param: connectionId
+      source: { kind: websocket.connectionId }
+`;
+  for (const [name, serviceId, api, expectedWebsocket, functionNames] of [
     [
       'package-service-websocket-smoke',
       'test.skiff/package-service-websocket-smoke',
       'marker: main.marker\n',
-      ['marker', '__skiffHttpProbe', 'websocketConnect'],
+      closeWebsocket,
+      ['marker', '__skiffHttpProbe', 'websocketConnect', 'handleConnectionClosed'],
     ],
     [
       'package-service-websocket-generation-a',
       'test.skiff/package-service-websocket-smoke',
       'marker: main.marker\n',
+      connectOnlyWebsocket,
       ['marker', '__skiffHttpProbe', 'websocketConnect'],
     ],
     [
       'package-service-websocket-generation-b',
       'test.skiff/package-service-websocket-smoke',
       'marker: main.marker\n',
+      connectOnlyWebsocket,
       ['marker', '__skiffHttpProbe', 'websocketConnect'],
     ],
     [
       'package-service-i02-spawn-submit',
       'test.skiff/package-service-i02-spawn-submit',
       'marker: main.submitSpawnReceipt\n',
+      connectOnlyWebsocket,
       [
         'submittedReceiptSource',
         'nestedSubmittedReceipt',
@@ -108,15 +135,7 @@ kind: test
     );
     assert.equal(
       websocket,
-      `path: /socket
-connect:
-  handler: main.websocketConnect
-  adapterArgs:
-    - param: request
-      source: { kind: websocket.connectRequest }
-    - param: connectionId
-      source: { kind: websocket.connectionId }
-`,
+      expectedWebsocket,
       `${name} WebSocket authoring`,
     );
     assert.match(
