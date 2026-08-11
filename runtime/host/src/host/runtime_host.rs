@@ -6,10 +6,6 @@ use std::{
 use skiff_runtime_capability_context::{
     ConnectionRequestRegistry, DbProviderSource, HttpRuntimeOptions,
 };
-use skiff_runtime_eval::actor_instance::{
-    ActorInstanceFence, ActorInstanceHandle, ActorInstanceSessionTrackError,
-    ActorInstanceSessionTracker, ActorInstanceStore,
-};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use tokio::sync::Mutex;
 
@@ -17,12 +13,8 @@ use crate::{
     config::{skiff_file_tmp_dir, RuntimeMemoryBudgets},
     loader::bytecode_admission::BytecodeDeploymentRegistry,
 };
-#[cfg(test)]
-use crate::loader::assembly_admission::AssemblyAdmissionController;
 
 use super::{
-    actor_owner_invocations::ActorOwnerInvocationRegistry,
-    actor_route_holds::ActorRouteHoldRegistry,
     blob_store::BlobStore,
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
@@ -33,7 +25,6 @@ use super::{
     OutboundRequestRegistry,
 };
 use crate::capability_context::actor_method_outbound::ActorMethodOutboundRegistry;
-use crate::capability_context::TestHttpEntryRegistry;
 
 #[derive(Clone)]
 pub struct RuntimeConfig {
@@ -73,8 +64,6 @@ pub struct RuntimeHost {
     pub(super) http_runtime_options: HttpRuntimeOptions,
     pub(super) memory_budgets: RuntimeMemoryBudgets,
     pub(super) bytecode_only: bool,
-    #[cfg(test)]
-    pub(crate) assembly_admission: Arc<AssemblyAdmissionController>,
     pub(crate) bytecode_deployments: Arc<BytecodeDeploymentRegistry>,
     pub(super) artifact_root: Arc<StdMutex<Option<String>>>,
     pub(super) blob_store: Arc<StdMutex<Option<Arc<dyn BlobStore>>>>,
@@ -85,10 +74,6 @@ pub struct RuntimeHost {
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
     pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
     pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
-    pub(crate) actor_owner_invocations: Arc<ActorOwnerInvocationRegistry>,
-    pub(crate) actor_route_holds: Arc<ActorRouteHoldRegistry>,
-    pub(crate) actor_instances: Arc<ActorInstanceSessionTracker>,
-    pub(crate) test_http_entries: TestHttpEntryRegistry,
 }
 
 impl RuntimeHost {
@@ -195,7 +180,6 @@ impl RuntimeHost {
         ));
         #[cfg(not(test))]
         let _ = db_provider;
-        let actor_instance_store = Arc::new(ActorInstanceStore::new());
         Ok(Self {
             router_url,
             base_runtime_id: base_runtime_id.clone(),
@@ -205,11 +189,6 @@ impl RuntimeHost {
             http_runtime_options,
             memory_budgets: RuntimeMemoryBudgets::default(),
             bytecode_only,
-            #[cfg(test)]
-            assembly_admission: Arc::new(AssemblyAdmissionController::new(
-                base_runtime_id.clone(),
-                db_provider,
-            )),
             bytecode_deployments: Arc::new(BytecodeDeploymentRegistry::new()),
             artifact_root: Arc::new(StdMutex::new(None)),
             blob_store: Arc::new(StdMutex::new(None)),
@@ -220,10 +199,6 @@ impl RuntimeHost {
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
             connection_requests: Arc::new(ConnectionRequestRegistry::new(1024)),
             actor_method_outbound: Arc::new(ActorMethodOutboundRegistry::default()),
-            actor_owner_invocations: Arc::new(ActorOwnerInvocationRegistry::default()),
-            actor_route_holds: Arc::new(ActorRouteHoldRegistry::default()),
-            actor_instances: Arc::new(ActorInstanceSessionTracker::new(actor_instance_store)),
-            test_http_entries: TestHttpEntryRegistry::default(),
         })
     }
 
@@ -253,73 +228,6 @@ impl RuntimeHost {
                 "router bootstrap profile {profile} does not match Runtime frozen profile {frozen}"
             )),
         }
-    }
-
-    pub(crate) fn actor_instance_session_lease(
-        &self,
-        router_session_id: &str,
-    ) -> Result<
-        skiff_runtime_eval::actor_instance::ActorInstanceSessionLease,
-        ActorInstanceSessionTrackError,
-    > {
-        self.actor_instances.session_lease(router_session_id)
-    }
-
-    pub(crate) fn track_actor_instance_with_lease(
-        &self,
-        session: &skiff_runtime_eval::actor_instance::ActorInstanceSessionLease,
-        handle: ActorInstanceHandle,
-    ) -> Result<(), ActorInstanceSessionTrackError> {
-        let cleanup_handle = handle.clone();
-        let result = self.actor_instances.track_with_lease(session, handle);
-        if matches!(
-            result,
-            Err(ActorInstanceSessionTrackError::SessionNotOpen { .. })
-        ) {
-            self.actor_instances.discard_if_untracked(&cleanup_handle);
-        }
-        result
-    }
-
-    pub(crate) fn open_actor_instance_session(
-        &self,
-        router_session_id: &str,
-    ) -> Result<(), ActorInstanceSessionTrackError> {
-        self.actor_instances.open_session(router_session_id)
-    }
-
-    pub(crate) fn discard_actor_instances_for_session(&self, router_session_id: &str) -> usize {
-        self.actor_instances.discard_session(router_session_id)
-    }
-
-    pub(crate) fn begin_actor_upgrade_exact(
-        &self,
-        router_session_id: &str,
-        fence: &ActorInstanceFence,
-    ) -> bool {
-        self.actor_instances
-            .begin_upgrade_exact(router_session_id, fence)
-    }
-
-    pub(crate) fn discard_upgrading_actor_exact(
-        &self,
-        router_session_id: &str,
-        fence: &ActorInstanceFence,
-    ) -> bool {
-        self.actor_instances
-            .discard_upgrading_exact(router_session_id, fence)
-    }
-
-    pub(crate) fn discard_actor_exact(
-        &self,
-        router_session_id: &str,
-        fence: &ActorInstanceFence,
-    ) -> bool {
-        self.actor_instances.discard_exact(router_session_id, fence)
-    }
-
-    pub fn shutdown_actor_instances(&self) -> usize {
-        self.actor_instances.discard_all()
     }
 
     pub async fn shutdown_telemetry(&self) {

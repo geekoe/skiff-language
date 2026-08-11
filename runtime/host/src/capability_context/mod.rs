@@ -15,7 +15,6 @@ mod stream;
 mod stream_runtime;
 mod telemetry;
 mod test_effect_double;
-mod test_http_entry;
 mod time;
 mod websocket;
 
@@ -57,10 +56,5 @@ pub use stream_runtime::{StreamCancelSignal, StreamRuntime, StreamSink};
 pub use telemetry::TelemetryCapabilityContext;
 pub use test_effect_double::TestEffectDouble;
 pub use test_effect_double::TestEffectDoubleContext;
-pub(crate) use test_http_entry::{
-    ActorMethodTestEffectContext, ActorMethodTestEffectExecution, PreparedTestHttpSelfIngress,
-    TestHttpAdmittedContext, TestHttpEntryRegistry, TestHttpSelfIngressContext,
-    TestHttpSelfIngressLease, TestRequestRevoker,
-};
 pub use time::TimeCapabilityContext;
 pub use websocket::WebsocketCapabilityContext;

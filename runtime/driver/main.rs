@@ -126,7 +126,6 @@ async fn run() -> anyhow::Result<()> {
     if let Some(emitter) = profile_emitter {
         emitter.shutdown().await;
     }
-    host.shutdown_actor_instances();
     host.shutdown_telemetry().await;
 
     Ok(())

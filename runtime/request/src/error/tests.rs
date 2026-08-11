@@ -70,11 +70,6 @@ fn cancellation_terminal_has_no_ordinary_payload_catch_or_response_projection() 
             limit: None,
             elapsed_ms: 0.0,
         },
-        RequestError::Eval(EvalRuntimeError::Cancelled),
-        RequestError::Eval(
-            EvalRuntimeError::Cancelled
-                .with_diagnostic_frame(serde_json::json!({ "operation": "request.cancel" })),
-        ),
     ] {
         assert!(error.is_cancellation_terminal());
         assert_eq!(error.ordinary_payload(), None);
@@ -154,67 +149,13 @@ fn request_catch_projection_covers_only_ordinary_errors() {
 }
 
 #[test]
-fn fixed_service_failure_is_extracted_only_from_the_typed_eval_carrier() {
-    let encoded = br#"{
-          "kind":"internalError",
-          "payload":{
-            "message":"The service could not complete the request.",
-            "traceId":"trace-request-fixed",
-            "errorId":"error-request-fixed"
-          }
-        }"#
-    .to_vec();
-    let fixed = OpaqueServiceError::decode(encoded.clone()).expect("fixed fixture");
-    let error = RequestError::Eval(EvalRuntimeError::WithDiagnosticFrame {
-        frame: Box::new(serde_json::json!({
-            "message": "provider-private-secret",
-        })),
-        error: Box::new(EvalRuntimeError::FixedServiceFailure(fixed)),
-    });
-
-    let extracted = error
-        .fixed_service_failure()
-        .expect("typed fixed carrier must remain available to request");
-    assert_eq!(extracted.encoded_bytes(), encoded);
-
+fn fixed_service_response_failure_is_not_derived_from_generic_errors() {
     let generic = RequestError::external_error_payload(
         "InternalError".to_string(),
         "canonical service failure".to_string(),
         Some(500),
         None,
     );
-    assert!(
-        generic.fixed_service_failure().is_none(),
-        "matching generic control values must not be upgraded"
-    );
-}
-
-#[test]
-fn fixed_service_response_failure_preserves_all_envelope_bytes() {
-    let fixtures = [
-            br#"{"kind":"publicTypedError","packageId":"example.com/errors","stableSchemaKey":"not-found","packageSchemaTypeId":"type:not-found","encodedPayload":[123,125],"traceId":"trace-public","errorId":"error-public"}"#
-                .as_slice(),
-            br#"{
-              "kind":"internalError",
-              "payload":{
-                "message":"The service could not complete the request.",
-                "traceId":"trace-internal",
-                "errorId":"error-internal"
-              }
-            }"#
-            .as_slice(),
-            br#"{"kind":"platformError","builtinErrorIdentity":"std.db.ConflictError","encodedPayload":[123,125],"traceId":"trace-platform","errorId":"error-platform"}"#
-                .as_slice(),
-        ];
-
-    for encoded in fixtures {
-        let encoded = encoded.to_vec();
-        let fixed = OpaqueServiceError::decode(encoded.clone()).expect("fixed fixture");
-        let error = RequestError::Eval(EvalRuntimeError::FixedServiceFailure(fixed));
-
-        let response = error
-            .fixed_service_response_failure()
-            .expect("typed response failure");
-        assert_eq!(response.error().encoded_bytes(), encoded);
-    }
+    assert!(generic.fixed_service_failure().is_none());
+    assert!(generic.fixed_service_response_failure().is_none());
 }

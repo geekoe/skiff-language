@@ -16,16 +16,10 @@ workspace = true
 
 [features]
 default = []
-legacy-eval = [
-  "skiff-runtime-eval/legacy-eval",
-  "skiff-runtime-linked-program/legacy-eval",
-]
 test-support = [
   "skiff-runtime-capability-context/test-support",
-  "skiff-runtime-eval/test-support",
   "skiff-runtime-host/test-support",
   "skiff-runtime-linker/test-support",
-  "skiff-runtime-linked-type-plan/test-support",
 ]
 
 [dependencies]
@@ -45,13 +39,10 @@ sha1 = "0.10"
 sha2 = "0.10"
 skiff-profiling = { path = "../profiling" }
 skiff-runtime-loader = { path = "loader" }
-skiff-runtime-linked-type-plan = { path = "linked-type-plan" }
-skiff-runtime-linked-program = { path = "linked-program" }
 skiff-runtime-linker = { path = "linker" }
 skiff-runtime-activation = { path = "activation" }
 skiff-runtime-boundary = { path = "boundary" }
 skiff-runtime-capability-context = { path = "capability-context" }
-skiff-runtime-eval = { path = "eval" }
 skiff-runtime-host = { path = "host" }
 skiff-runtime-model = { path = "model" }
 skiff-runtime-native = { path = "native" }
@@ -74,7 +65,6 @@ uuid = { version = "1.16", features = ["v4"] }
 criterion = { version = "0.5", features = ["async_tokio"] }
 serde_json = "1.0"
 skiff-runtime-boundary = { path = "boundary", features = ["test-support"] }
-skiff-runtime-eval = { path = "eval", features = ["test-support"] }
 skiff-runtime-host = { path = "host", features = ["test-support"] }
 skiff-runtime-linker = { path = "linker", features = ["test-support"] }
 

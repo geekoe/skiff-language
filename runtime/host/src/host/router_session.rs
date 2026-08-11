@@ -4,21 +4,12 @@ use futures_util::{stream::FuturesUnordered, FutureExt, Sink, SinkExt, StreamExt
 use serde::Serialize;
 use serde_json::Value;
 use skiff_runtime_capability_context::{
-    ActorInvocationCancellation, ActorInvocationError, ActorInvocationOutcome,
     ConnectionRequestSession, ConnectionRequestTerminal,
 };
 use skiff_runtime_request::{OutboundResponse, ResponseError};
 #[cfg(test)]
 use skiff_runtime_transport::protocol::RouterControlEnvelope;
 use skiff_runtime_transport::{
-    actor_method::{decode_actor_method_frame, ActorMethodErrorFramePayload, ActorMethodFrame},
-    actor_owner::{
-        decode_actor_owner_control_frame, decode_actor_owner_failure_frame,
-        decode_actor_owner_invoke_frame, encode_actor_owner_control_ack_frame,
-        ActorOwnerControlAckFrameHeader, ActorOwnerControlOperation,
-        ACTOR_OWNER_CONTROL_ACK_FRAME_TYPE, ACTOR_OWNER_CONTROL_FRAME_TYPE,
-        ACTOR_OWNER_FAILURE_FRAME_TYPE, ACTOR_OWNER_INVOKE_FRAME_TYPE,
-    },
     connection_protocol::{decode_connection_response_frame, ConnectionResponseOutcome},
     control_mapper::encode_outbound_control_message,
     protocol::{
@@ -141,16 +132,8 @@ where
         None
     };
 
-    if let Err(error) = host.open_actor_instance_session(&router_session_id) {
-        return Err(RuntimeError::Decode(error.to_string()));
-    }
     let mut session_guard =
         ConnectedRouterSessionGuard::new(host.clone(), router_session_id.clone());
-    // Actor owner work is connection-scoped. Poll it as a child of this session instead of
-    // detaching Tokio tasks, so every exit path drops all in-flight activation/test leases before
-    // session teardown returns.
-    let mut child_tasks = RouterSessionChildTasks::default();
-
     let session_result = async {
         let mut health_reporter = RuntimeHealthReporter::default();
         let mut bootstrap = initial_bootstrap;
@@ -171,7 +154,6 @@ where
                         &mut health_reporter,
                         &mut bootstrap,
                         &mut handshake,
-                        &mut child_tasks,
                     )
                     .await?
                     {
@@ -204,7 +186,6 @@ where
                 _ = health_zero_transition_interval.tick(), if health_reporter.should_probe_zero_transition() => {
                     health_reporter.send_zero_transition_if_needed(&host, &sender).await?;
                 }
-                _ = child_tasks.next(), if !child_tasks.is_empty() => {}
                 _ = tokio::time::sleep_until(handshake_deadline.unwrap_or_else(|| tokio::time::Instant::now())), if handshake_deadline.is_some() => {
                     let kind = if handshake.phase() == ClientHandshakePhase::WaitingBootstrap {
                         ClientTimeoutKind::Bootstrap
@@ -221,9 +202,6 @@ where
     }
     .await;
 
-    // Dropping the owned futures synchronously runs their activation and test-derived lease RAII.
-    // Do this before closing Actor/test registries, so teardown never races a surviving child.
-    drop(child_tasks);
     let disconnect_result = session_guard.close();
     drop(sender);
     session_result.and(disconnect_result)
@@ -238,7 +216,6 @@ async fn handle_router_session_message<S>(
     health_reporter: &mut RuntimeHealthReporter,
     bootstrap: &mut Option<ConnectionBootstrap>,
     handshake: &mut ClientHandshake,
-    child_tasks: &mut RouterSessionChildTasks,
 ) -> Result<bool>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -279,7 +256,6 @@ where
                 health_reporter,
                 bootstrap,
                 handshake,
-                child_tasks,
             )
             .await?;
         }
@@ -313,49 +289,6 @@ fn router_binary_frame_type(bytes: &[u8]) -> Result<String> {
     Ok(typed.envelope_type)
 }
 
-type RouterSessionChildTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-
-#[derive(Default)]
-struct RouterSessionChildTasks {
-    tasks: FuturesUnordered<RouterSessionChildTask>,
-}
-
-enum RouterSessionChildTaskDispatch<'a> {
-    Owned(&'a mut RouterSessionChildTasks),
-    #[cfg(test)]
-    Detached,
-}
-
-impl RouterSessionChildTaskDispatch<'_> {
-    fn submit(self, task: RouterSessionChildTask) {
-        match self {
-            Self::Owned(tasks) => tasks.push(task),
-            #[cfg(test)]
-            Self::Detached => {
-                tokio::spawn(task);
-            }
-        }
-    }
-}
-
-impl RouterSessionChildTasks {
-    fn push(&mut self, task: RouterSessionChildTask) {
-        self.tasks.push(Box::pin(async move {
-            if AssertUnwindSafe(task).catch_unwind().await.is_err() {
-                warn!(event = "runtime.router_session_child_panicked");
-            }
-        }));
-    }
-
-    fn is_empty(&self) -> bool {
-        self.tasks.is_empty()
-    }
-
-    async fn next(&mut self) {
-        let _ = self.tasks.next().await;
-    }
-}
-
 struct ConnectedRouterSessionGuard {
     host: super::RuntimeHost,
     router_session_id: String,
@@ -385,23 +318,7 @@ impl ConnectedRouterSessionGuard {
             status: None,
             details: None,
         });
-        self.host.actor_method_outbound.fail_all(
-            crate::capability_context::actor_method_outbound::ActorInvocationTransportError {
-                code: "ConnectionClosed".to_string(),
-                message: "router connection closed".to_string(),
-            },
-        );
-        self.host
-            .actor_owner_invocations
-            .cancel_session(&self.router_session_id);
-        // Fence the Actor connection generation first. This wakes session-owned
-        // activation tasks and exact-discards provisional instances before any
-        // later teardown step can expose a stale parent/test authority window.
-        self.host
-            .discard_actor_instances_for_session(&self.router_session_id);
-        self.host
-            .test_http_entries
-            .disconnect_session(&self.router_session_id)
+        Ok(())
     }
 }
 
@@ -620,7 +537,6 @@ async fn dispatch_router_binary_frame(
         None,
         &mut bootstrap,
         &mut handshake,
-        RouterSessionChildTaskDispatch::Detached,
     )
     .await
 }
@@ -655,7 +571,6 @@ async fn dispatch_router_binary_frame_with_http_response_max(
         None,
         &mut bootstrap,
         &mut handshake,
-        RouterSessionChildTaskDispatch::Detached,
     )
     .await
 }
@@ -668,7 +583,6 @@ async fn dispatch_router_binary_frame_with_health(
     health_reporter: &mut RuntimeHealthReporter,
     bootstrap: &mut Option<ConnectionBootstrap>,
     handshake: &mut ClientHandshake,
-    child_tasks: &mut RouterSessionChildTasks,
 ) -> Result<()> {
     dispatch_router_binary_frame_inner(
         host,
@@ -678,7 +592,6 @@ async fn dispatch_router_binary_frame_with_health(
         Some(health_reporter),
         bootstrap,
         handshake,
-        RouterSessionChildTaskDispatch::Owned(child_tasks),
     )
     .await
 }
@@ -691,7 +604,6 @@ async fn dispatch_router_binary_frame_inner(
     mut health_reporter: Option<&mut RuntimeHealthReporter>,
     bootstrap: &mut Option<ConnectionBootstrap>,
     handshake: &mut ClientHandshake,
-    child_tasks: RouterSessionChildTaskDispatch<'_>,
 ) -> Result<()> {
     let (typed, payload) = decode_typed_binary_frame::<TypedEnvelope>(bytes)
         .map_err(super::transport_error_into_runtime_error)?;
@@ -824,51 +736,15 @@ async fn dispatch_router_binary_frame_inner(
                 );
             }
         }
-        ACTOR_OWNER_INVOKE_FRAME_TYPE => {
-            if bootstrap.is_none() {
-                return Err(RuntimeError::Decode(
-                    "actor.owner.invoke requires router.bootstrap first".to_string(),
-                ));
-            }
-            let (header, arguments_payload) = decode_actor_owner_invoke_frame(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if header.target_runtime_id != host.base_runtime_id {
-                return Err(RuntimeError::Decode(
-                    "actor.owner.invoke targets a different Runtime".to_string(),
-                ));
-            }
-            let task = host.begin_actor_owner_invoke(
-                router_session_id.to_string(),
-                header,
-                arguments_payload,
-                sender.clone(),
-            )?;
-            child_tasks.submit(task);
-        }
-        ACTOR_OWNER_CONTROL_FRAME_TYPE => {
-            let task = begin_actor_owner_control(host, router_session_id, bytes, sender)?;
-            child_tasks.submit(task);
-        }
-        ACTOR_OWNER_FAILURE_FRAME_TYPE => {
-            let failure = decode_actor_owner_failure_frame(bytes)
-                .map_err(super::transport_error_into_runtime_error)?;
-            if !host.actor_method_outbound.complete_failure(
-                &failure.invocation_id,
-                failure.epoch,
-                &failure.actor_implementation_identity,
-                crate::capability_context::actor_method_outbound::ActorInvocationTransportError {
-                    code: failure.reason.code,
-                    message: failure.reason.message,
-                },
-            ) {
-                warn!(
-                    event = "runtime.unmatched_actor_owner_failure",
-                    invocation_id = %failure.invocation_id
-                );
-            }
-        }
-        "actor.method.return" | "actor.method.error" | "actor.method.cancel" => {
-            dispatch_actor_method_terminal(host, router_session_id, bytes)?;
+        "actor.owner.invoke"
+        | "actor.owner.control"
+        | "actor.owner.failure"
+        | "actor.method.return"
+        | "actor.method.error"
+        | "actor.method.cancel" => {
+            return Err(RuntimeError::Unsupported(
+                "legacy actor frames are not supported by bytecode runtime".to_string(),
+            ));
         }
         "actor.getOrCreate.response" => {
             let (header, payload) =
@@ -1047,231 +923,6 @@ async fn dispatch_router_binary_frame_inner(
         }
     }
     Ok(())
-}
-
-fn dispatch_actor_method_terminal(
-    host: &super::RuntimeHost,
-    router_session_id: &str,
-    bytes: &[u8],
-) -> Result<()> {
-    let (invocation_id, outcome) = match decode_actor_method_frame(bytes)
-        .map_err(super::transport_error_into_runtime_error)?
-    {
-        ActorMethodFrame::Return(header, payload) => (
-            header.invocation_id,
-            ActorInvocationOutcome::Returned(payload),
-        ),
-        ActorMethodFrame::Error(header) => {
-            let outcome = match header.error {
-                ActorMethodErrorFramePayload::ActorUpgradingError { retry_after_ms, .. } => {
-                    ActorInvocationOutcome::ActorError(ActorInvocationError::ActorUpgrading {
-                        retry_after_ms,
-                    })
-                }
-                ActorMethodErrorFramePayload::ActorVersionRejectedError {
-                    requested_implementation_identity,
-                    accepted_implementation_identity,
-                    ..
-                } => {
-                    ActorInvocationOutcome::ActorError(ActorInvocationError::ActorVersionRejected {
-                        requested: requested_implementation_identity,
-                        accepted: accepted_implementation_identity,
-                    })
-                }
-                ActorMethodErrorFramePayload::ActorIncarnationReplacedError {
-                    actor_ref,
-                    current_epoch,
-                } => ActorInvocationOutcome::ActorError(
-                    ActorInvocationError::ActorIncarnationReplaced {
-                        requested_epoch: actor_ref.epoch,
-                        current_epoch,
-                    },
-                ),
-            };
-            (header.invocation_id, outcome)
-        }
-        ActorMethodFrame::Cancel(header) => {
-            let expected = host
-                .actor_method_outbound
-                .cancellation_correlation(&header.invocation_id);
-            if expected.is_none() {
-                host.actor_owner_invocations.cancel_for_session(
-                    &header.invocation_id,
-                    router_session_id,
-                    &header.cancellation_correlation,
-                    header.reason.into(),
-                );
-                return Ok(());
-            }
-            if expected.as_deref() != Some(header.cancellation_correlation.as_str()) {
-                return Ok(());
-            }
-            let reason = match header.reason {
-                skiff_runtime_transport::actor_method::ActorMethodCancelReason::Cancelled => {
-                    ActorInvocationCancellation::Cancelled
-                }
-                skiff_runtime_transport::actor_method::ActorMethodCancelReason::DeadlineExceeded => {
-                    ActorInvocationCancellation::DeadlineExceeded
-                }
-            };
-            (
-                header.invocation_id,
-                ActorInvocationOutcome::Cancelled(reason),
-            )
-        }
-        ActorMethodFrame::Invoke(_, _) => {
-            return Err(RuntimeError::Decode(
-                "public actor.method.invoke is not a terminal frame".to_string(),
-            ))
-        }
-    };
-    if !host.actor_method_outbound.complete(&invocation_id, outcome) {
-        warn!(
-            event = "runtime.unmatched_actor_method_terminal",
-            invocation_id = %invocation_id
-        );
-    }
-    Ok(())
-}
-
-fn begin_actor_owner_control(
-    host: &super::RuntimeHost,
-    router_session_id: &str,
-    bytes: &[u8],
-    sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
-) -> Result<RouterSessionChildTask> {
-    let control = decode_actor_owner_control_frame(bytes)
-        .map_err(super::transport_error_into_runtime_error)?;
-    if control.target_runtime_id != host.base_runtime_id {
-        return Err(RuntimeError::Decode(
-            "actor.owner.control targets a different Runtime".to_string(),
-        ));
-    }
-    let session_lease = host
-        .actor_instance_session_lease(router_session_id)
-        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
-    // Test-aware create admission is synchronous with the Router frame. This binds the
-    // authenticated parent on this exact connection before the session-owned activation can be
-    // cancelled, disconnected, or race root finalization.
-    let test_effect_execution = match (
-        control.test_case_capability.as_deref(),
-        control.test_case_parent_request_id.as_deref(),
-    ) {
-        (Some(capability), Some(parent_request_id))
-            if control.operation == ActorOwnerControlOperation::ActivateInitial =>
-        {
-            Some(host.test_http_entries.begin_actor_method(
-                capability,
-                parent_request_id,
-                router_session_id,
-                control.request_id.clone(),
-            )?)
-        }
-        (None, None) => None,
-        _ => {
-            return Err(RuntimeError::Decode(
-                "Actor initial activation test capability and parent request id must be present together"
-                    .to_string(),
-            ))
-        }
-    };
-    let host = host.clone();
-    let router_session_id = router_session_id.to_string();
-    let sender = sender.clone();
-    Ok(Box::pin(async move {
-        let accepted = {
-            let activation =
-                async {
-                    match control.operation {
-                ActorOwnerControlOperation::MarkUpgrading => {
-                    if super::actor_owner_execution::control_instance_fence(&control).is_ok_and(
-                        |fence| host.begin_actor_upgrade_exact(&router_session_id, &fence),
-                    ) {
-                        super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted
-                    } else {
-                        super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(None)
-                    }
-                }
-                ActorOwnerControlOperation::Discard => {
-                    if super::actor_owner_execution::control_instance_fence(&control).is_ok_and(
-                        |fence| host.discard_upgrading_actor_exact(&router_session_id, &fence),
-                    ) {
-                        super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted
-                    } else {
-                        super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(None)
-                    }
-                }
-                ActorOwnerControlOperation::IdleEvict => {
-                    if super::actor_owner_execution::control_instance_fence(&control)
-                        .is_ok_and(|fence| host.discard_actor_exact(&router_session_id, &fence))
-                    {
-                        super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted
-                    } else {
-                        super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(None)
-                    }
-                }
-                ActorOwnerControlOperation::Activate => {
-                    if host
-                        .activate_actor_owner_control(&session_lease, &control, &sender)
-                        .await
-                    {
-                        super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted
-                    } else {
-                        super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(None)
-                    }
-                }
-                ActorOwnerControlOperation::ActivateInitial => {
-                    host.activate_actor_owner_initial(
-                        &session_lease,
-                        &control,
-                        &sender,
-                        test_effect_execution.as_ref().map(
-                            crate::capability_context::ActorMethodTestEffectExecution::context,
-                        ),
-                    )
-                    .await
-                }
-                }
-                };
-            tokio::pin!(activation);
-            tokio::select! {
-                biased;
-                _ = session_lease.wait_closed() => {
-                    super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(Some(
-                        super::actor_owner_execution::control_reason(
-                            "ConnectionClosed",
-                            "Router session closed during Actor owner control",
-                        ),
-                    ))
-                }
-                accepted = &mut activation => accepted,
-            }
-        };
-        let (accepted, reason) = match accepted {
-            super::actor_owner_execution::ActorOwnerControlAcceptance::Accepted => (true, None),
-            super::actor_owner_execution::ActorOwnerControlAcceptance::Rejected(reason) => {
-                (false, reason)
-            }
-        };
-        if let Some(execution) = test_effect_execution.as_ref() {
-            execution.revoke_exact();
-        }
-        let ack = ActorOwnerControlAckFrameHeader {
-            schema_version: skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION.into(),
-            envelope_type: ACTOR_OWNER_CONTROL_ACK_FRAME_TYPE.into(),
-            runtime_id: host.base_runtime_id.clone(),
-            request_id: control.request_id,
-            operation: control.operation,
-            accepted,
-            reason,
-        };
-        if let Ok(frame) = encode_actor_owner_control_ack_frame(&ack) {
-            let _ = sender.send(super::RouterWriterMessage::Binary(frame));
-        }
-        // Retain test ownership through ACK encode/send, including rejection and closed-writer
-        // tails, so the root cannot finalize while create still appears active to the Router.
-        drop(test_effect_execution);
-    }))
 }
 
 fn dispatch_control_response<THeader: Serialize>(

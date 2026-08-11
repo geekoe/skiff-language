@@ -2049,10 +2049,7 @@ dependencies = [
  "skiff-runtime-activation",
  "skiff-runtime-boundary",
  "skiff-runtime-capability-context",
- "skiff-runtime-eval",
  "skiff-runtime-host",
- "skiff-runtime-linked-program",
- "skiff-runtime-linked-type-plan",
  "skiff-runtime-linker",
  "skiff-runtime-loader",
  "skiff-runtime-model",
@@ -2609,8 +2606,6 @@ name = "skiff-runtime-activation"
 version = "0.1.0"
 dependencies = [
  "skiff-artifact-model",
- "skiff-runtime-linked-program",
- "skiff-runtime-linker",
  "skiff-runtime-model",
  "thiserror 2.0.18",
 ]
@@ -2681,39 +2676,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "skiff-runtime-eval"
-version = "0.1.0"
-dependencies = [
- "async-recursion",
- "base64",
- "bytes",
- "hex",
- "serde",
- "serde_json",
- "sha2",
- "skiff-artifact-identity",
- "skiff-artifact-model",
- "skiff-canonical-json",
- "skiff-compiler",
- "skiff-deployment",
- "skiff-profiling",
- "skiff-runtime-activation",
- "skiff-runtime-boundary",
- "skiff-runtime-capability-context",
- "skiff-runtime-linked-program",
- "skiff-runtime-linked-type-plan",
- "skiff-runtime-linker",
- "skiff-runtime-model",
- "skiff-runtime-native",
- "skiff-runtime-native-contract",
- "skiff-runtime-request",
- "skiff-test-runner",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "skiff-runtime-host"
 version = "0.1.0"
 dependencies = [
@@ -2742,9 +2704,6 @@ dependencies = [
  "skiff-runtime-capability-context",
  "skiff-runtime-config-snapshot",
  "skiff-runtime-deployment-image",
- "skiff-runtime-eval",
- "skiff-runtime-linked-program",
- "skiff-runtime-linked-type-plan",
  "skiff-runtime-linker",
  "skiff-runtime-loader",
  "skiff-runtime-model",
@@ -2772,18 +2731,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "skiff-runtime-linked-program"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "skiff-artifact-identity",
- "skiff-artifact-model",
- "skiff-runtime-model",
-]
-
-[[package]]
 name = "skiff-runtime-linked-type-plan"
 version = "0.1.0"
 dependencies = [
@@ -2791,7 +2738,6 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-runtime-boundary",
- "skiff-runtime-linked-program",
  "skiff-runtime-model",
  "skiff-runtime-native-contract",
  "thiserror 2.0.18",
@@ -2811,8 +2757,6 @@ dependencies = [
  "skiff-compiler",
  "skiff-deployment",
  "skiff-runtime-linked-bytecode",
- "skiff-runtime-linked-program",
- "skiff-runtime-linked-type-plan",
  "skiff-runtime-loader",
  "skiff-runtime-native-contract",
  "skiff-test-runner",
@@ -2906,9 +2850,6 @@ dependencies = [
  "skiff-runtime-bytecode-verifier",
  "skiff-runtime-capability-context",
  "skiff-runtime-deployment-image",
- "skiff-runtime-eval",
- "skiff-runtime-linked-program",
- "skiff-runtime-linker",
  "skiff-runtime-loader",
  "skiff-runtime-model",
  "skiff-runtime-request-contract",

@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use serde_json::Value;
-use skiff_runtime_linked_program::{ExecutableAddr, UnitAddr};
+use skiff_runtime_model::addr::{ExecutableAddr, UnitAddr};
 use skiff_runtime_model::type_plan::RuntimeTypePlan;
 
 use crate::{

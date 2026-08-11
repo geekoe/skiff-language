@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
-use skiff_runtime_eval::{
-    RuntimeWebSocketJsonRpcExecutionOutcome, RuntimeWebSocketJsonRpcExecutionTerminal,
-};
 use skiff_runtime_request::{
     self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
     BytecodeRequestExecutionInput, RequestEnvelope, ResponseEnd, ResponseEvent,
@@ -17,6 +14,20 @@ use skiff_runtime_transport::{
     },
 };
 use tokio::sync::mpsc;
+
+#[derive(Debug)]
+enum WebSocketJsonRpcOutcome {
+    Success { payload: Vec<u8> },
+    InvalidParams,
+    InternalError,
+    DeadlineExceeded,
+}
+
+#[derive(Debug)]
+enum WebSocketJsonRpcTerminal {
+    Response(WebSocketJsonRpcOutcome),
+    Cancelled,
+}
 use tracing::error;
 
 use super::assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest;
@@ -141,18 +152,18 @@ impl RuntimeHost {
                 });
             let terminal = match result {
                 Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))) => {
-                    RuntimeWebSocketJsonRpcExecutionTerminal::Response(
-                        RuntimeWebSocketJsonRpcExecutionOutcome::Success { payload },
+                    WebSocketJsonRpcTerminal::Response(
+                        WebSocketJsonRpcOutcome::Success { payload },
                     )
                 }
-                Ok(_) => RuntimeWebSocketJsonRpcExecutionTerminal::Response(
-                    RuntimeWebSocketJsonRpcExecutionOutcome::InternalError,
+                Ok(_) => WebSocketJsonRpcTerminal::Response(
+                    WebSocketJsonRpcOutcome::InternalError,
                 ),
                 Err(error) if error.is_cancellation_terminal() => {
-                    RuntimeWebSocketJsonRpcExecutionTerminal::Cancelled
+                    WebSocketJsonRpcTerminal::Cancelled
                 }
-                Err(_) => RuntimeWebSocketJsonRpcExecutionTerminal::Response(
-                    RuntimeWebSocketJsonRpcExecutionOutcome::InternalError,
+                Err(_) => WebSocketJsonRpcTerminal::Response(
+                    WebSocketJsonRpcOutcome::InternalError,
                 ),
             };
             host.finish_websocket_jsonrpc_request(
@@ -199,10 +210,10 @@ impl RuntimeHost {
         &self,
         supervised_request: &SupervisedRequest,
         request_id: String,
-        terminal: RuntimeWebSocketJsonRpcExecutionTerminal,
+        terminal: WebSocketJsonRpcTerminal,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
-        let RuntimeWebSocketJsonRpcExecutionTerminal::Response(outcome) = terminal else {
+        let WebSocketJsonRpcTerminal::Response(outcome) = terminal else {
             self.request_supervisor
                 .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
                 .await;
@@ -350,22 +361,22 @@ fn websocket_jsonrpc_supervisor_request(
 }
 
 fn websocket_jsonrpc_response_parts(
-    outcome: RuntimeWebSocketJsonRpcExecutionOutcome,
+    outcome: WebSocketJsonRpcOutcome,
 ) -> (RuntimeAssemblyWebSocketJsonRpcResponseOutcome, Vec<u8>) {
     match outcome {
-        RuntimeWebSocketJsonRpcExecutionOutcome::Success { payload } => (
+        WebSocketJsonRpcOutcome::Success { payload } => (
             RuntimeAssemblyWebSocketJsonRpcResponseOutcome::Success,
             payload,
         ),
-        RuntimeWebSocketJsonRpcExecutionOutcome::InvalidParams => (
+        WebSocketJsonRpcOutcome::InvalidParams => (
             RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InvalidParams,
             Vec::new(),
         ),
-        RuntimeWebSocketJsonRpcExecutionOutcome::InternalError => (
+        WebSocketJsonRpcOutcome::InternalError => (
             RuntimeAssemblyWebSocketJsonRpcResponseOutcome::InternalError,
             Vec::new(),
         ),
-        RuntimeWebSocketJsonRpcExecutionOutcome::DeadlineExceeded => (
+        WebSocketJsonRpcOutcome::DeadlineExceeded => (
             RuntimeAssemblyWebSocketJsonRpcResponseOutcome::DeadlineExceeded,
             Vec::new(),
         ),

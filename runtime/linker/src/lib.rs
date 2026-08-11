@@ -1,63 +1,6 @@
-mod assembly;
-mod assembly_execution;
 pub mod bytecode;
-mod linker;
-pub mod program;
-pub mod resolver;
 
-pub use assembly::{
-    link_runtime_assembly, AssemblyLinkedCandidate, AssemblyServiceCallError,
-    LinkedActivationTemplate, LinkedContractOperation, LinkedGatewayCallable, LinkedGatewayEntry,
-    LinkedServiceBindingTemplate,
-};
 pub use bytecode::{
     link_deployment, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
     BytecodeLinkObligation, LinkLimits,
 };
-pub use program::{
-    anonymous_type_decl, config_and_effect_metadata_shape, publication_id_for_type_addr,
-    type_descriptor_to_value, type_ref_to_value, ArtifactFileIrUnit, CallIr,
-    ConfigAndEffectMetadata, ConstAddr, ConstExport, ConstIr, DbBodyIr, DbChangeIr, DbChangeOpIr,
-    DbIndexDirectionIr, DbLeaseClaimIr, DbLeaseReadIr, DbOpKindIr, DbOperationIr, DbOrderIr,
-    DbPredicateCompareOpIr, DbPredicateIr, DbProjectionIr, DbQueryIr, DbSelectorIr, DbTargetIr,
-    DbTransactionIr, DbTransactionModeIr, DeclarationIr, ExecutableAddr, ExecutableExport,
-    ExecutableIndex, ExecutableKind, ExprRefIr, ExternalRefIr, ExternalRefTable, FieldPathIr,
-    FileAddr, FileDeclarations, FileIrIdentity, FileIrRef, FileLinkTargets, FunctionTypeParamIr,
-    GatewayConfig, InOutArgIr, InOutPathSegmentIr, InterfaceDeclIr, InterfaceOperationIr,
-    LinkedBoxSourceIr, LinkedCallTarget, LinkedConcurrentLaneIr, LinkedConcurrentPlanIr,
-    LinkedConstExport, LinkedExecutable, LinkedExecutableBody, LinkedExecutableExport,
-    LinkedExprIr, LinkedFileUnit, LinkedFunctionTypeParamIr, LinkedInterfaceInstantiationRef,
-    LinkedInterfaceMethodSlotPlanIr, LinkedInterfaceMethodSlotSignatureIr,
-    LinkedInterfaceMethodSlotTargetIr, LinkedInterfaceMethodTablePlanIr, LinkedPackageExportIndex,
-    LinkedProgramImage, LinkedRemoteOperationSlotPlanIr, LinkedRemoteOperationTablePlanIr,
-    LinkedStmtIr, LinkedTypeDescriptor, LinkedTypeExport, LinkedTypeRef, LiteralIr,
-    LoadedFileIndex, MatchArmIr, MetadataValue, NativeTarget, OperationAbiRef,
-    OperationConstReceiverRef, OperationIngressKind, OperationMode, OperationRouteBinding,
-    OperationTargetRef, OperationTargetRefRuntimeExt, PackageAbiExpectation, PackageAbiIdentity,
-    PackageBuildIdentity, PackageDependencyConstraint, PackageExportIndex, PackageRefIr,
-    PackageSlot, PackageSymbolKey, PackageSymbolRef, PackageUsedSymbol, PackageUsedSymbolKind,
-    ParamIr, ParamModeIr, PatternIr, ReceiverCallAbi, RuntimeProgramIdentity, RuntimeTypeContext,
-    ServiceConfigMetadata, ServiceDependencySymbolRef, ServiceMeta, ServiceOperation,
-    ServiceSymbolKey, ServiceSymbolRef, ServiceTimeoutConfig, SlotBindingIr, SlotIr, SlotLayoutIr,
-    SourceAstHash, SourceMapDto, StmtRefIr, TaskTargetIr, TaskTargetKindIr, TypeAddr, TypeDeclIr,
-    TypeExport, TypeIndex, UnaryOpIr, UnitAddr,
-};
-pub use resolver::{
-    LinkedProgramImageResolverExt, ProgramError, ProgramResult, ResolvedLinkedExecutable,
-};
-
-#[cfg(any(test, feature = "test-support"))]
-pub fn link_package_fixture_from_runtime_assembly(
-    assembly: &skiff_artifact_model::RuntimeAssembly,
-    packages: impl IntoIterator<Item = skiff_runtime_linked_program::HydratedPackageCode>,
-) -> anyhow::Result<std::sync::Arc<skiff_runtime_linked_program::AssemblyExecutionImage>> {
-    let shared = std::sync::Arc::new(
-        skiff_runtime_linked_program::SharedPackageLinkedImage::from_runtime_assembly(
-            assembly, packages,
-        )?,
-    );
-    crate::assembly_execution::link_assembly_execution_image(shared)
-}
-
-#[cfg(test)]
-mod tests;

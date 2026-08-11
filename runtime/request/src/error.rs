@@ -3,7 +3,6 @@ use skiff_runtime_capability_context::{
     ExecutionBudgetFailure, ExecutionBudgetReason, ExecutionControlError,
     FixedServiceResponseFailure, ResponseError,
 };
-use skiff_runtime_eval::error::RuntimeError as EvalRuntimeError;
 use skiff_runtime_model::{
     error::{RuntimeErrorPayload, WirePayload},
     service_error::{CatchIdentity, OpaqueServiceError, PlatformBuiltinErrorIdentity},
@@ -36,8 +35,6 @@ pub enum RequestError {
         limit: Option<u64>,
         elapsed_ms: f64,
     },
-    #[error(transparent)]
-    Eval(#[from] EvalRuntimeError),
     #[error(transparent)]
     Boundary(#[from] skiff_runtime_boundary::error::RuntimeError),
     #[error("{message}")]
@@ -75,7 +72,6 @@ impl RequestError {
         match self {
             Self::Cancelled => true,
             Self::ExecutionBudgetExceeded { reason, .. } => reason.is_cancellation_terminal(),
-            Self::Eval(error) => error.is_cancellation_terminal(),
             Self::Decode(_)
             | Self::Unsupported(_)
             | Self::Protocol { .. }
@@ -94,13 +90,8 @@ impl RequestError {
         })
     }
 
-    /// Returns only the strict fixed service carrier held by eval.
-    ///
-    /// Generic response metadata is intentionally not inspected, so a control
-    /// error with matching code/message values can never be upgraded to fixed.
     pub fn fixed_service_failure(&self) -> Option<&OpaqueServiceError> {
         match self {
-            Self::Eval(error) => error.fixed_service_failure(),
             _ => None,
         }
     }
@@ -165,7 +156,6 @@ impl RequestError {
                     })),
                 }
             }
-            Self::Eval(error) => return error.ordinary_payload(),
             Self::Boundary(error) => error.payload(),
             Self::ExternalErrorPayload {
                 code,
@@ -211,7 +201,6 @@ impl RequestError {
                     ))
                 }
             }
-            Self::Eval(error) => error.ordinary_catch_projection(),
             Self::Boundary(error) => error.catch_projection(),
             Self::Decode(_) | Self::Unsupported(_) | Self::ExternalErrorPayload { .. } => None,
         }

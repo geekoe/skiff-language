@@ -412,37 +412,6 @@ impl fmt::Display for Diagnosed {
 
 impl std::error::Error for Diagnosed {}
 
-impl From<skiff_runtime_eval::error::RuntimeError> for RuntimeError {
-    fn from(error: skiff_runtime_eval::error::RuntimeError) -> Self {
-        if error.is_cancellation_terminal() {
-            return RuntimeError::Cancelled;
-        }
-        match error {
-            skiff_runtime_eval::error::RuntimeError::WithSource {
-                source_id,
-                frame,
-                error,
-            } => RuntimeError::from(*error).with_source(source_id, *frame),
-            skiff_runtime_eval::error::RuntimeError::WithDiagnosticFrame { frame, error } => {
-                RuntimeError::from(*error).with_diagnostic_frame(*frame)
-            }
-            skiff_runtime_eval::error::RuntimeError::RootRuntimePayload(payload) => {
-                RuntimeError::ExternalErrorPayload {
-                    code: payload.code,
-                    message: payload.message,
-                    status: payload.status,
-                    details: payload.details,
-                }
-            }
-            skiff_runtime_eval::error::RuntimeError::Opaque(error) => RuntimeError::Opaque(error),
-            error => RuntimeError::Opaque(Box::new(
-                skiff_runtime_eval::error::OrdinaryRuntimeError::try_new(error)
-                    .expect("eval cancellation was split before ordinary trait erasure"),
-            )),
-        }
-    }
-}
-
 impl From<skiff_runtime_model::error::RuntimeModelError> for RuntimeError {
     fn from(error: skiff_runtime_model::error::RuntimeModelError) -> Self {
         RuntimeError::Opaque(Box::new(error))
@@ -451,12 +420,6 @@ impl From<skiff_runtime_model::error::RuntimeModelError> for RuntimeError {
 
 impl From<skiff_runtime_boundary::error::RuntimeError> for RuntimeError {
     fn from(error: skiff_runtime_boundary::error::RuntimeError) -> Self {
-        RuntimeError::Opaque(Box::new(error))
-    }
-}
-
-impl From<skiff_runtime_linked_type_plan::Error> for RuntimeError {
-    fn from(error: skiff_runtime_linked_type_plan::Error) -> Self {
         RuntimeError::Opaque(Box::new(error))
     }
 }
@@ -990,7 +953,3 @@ fn add_frame_to_details(details: &mut Map<String, Value>, frame: Value) {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "error/tests.rs"]
-mod tests;

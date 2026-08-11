@@ -726,19 +726,6 @@ fn stream_runtime_error_root_fold_preserves_cancellation_as_terminal() {
     assert_eq!(error.ordinary_catch_projection(), None);
 }
 
-#[test]
-fn stream_runtime_error_eval_fold_preserves_cancellation_as_terminal() {
-    let error = skiff_runtime_eval::error::RuntimeError::from(StreamRuntimeError::Cancelled);
-
-    assert!(matches!(
-        error,
-        skiff_runtime_eval::error::RuntimeError::Cancelled
-    ));
-    assert!(error.is_cancellation_terminal());
-    assert_eq!(error.ordinary_payload(), None);
-    assert_eq!(error.ordinary_catch_projection(), None);
-}
-
 struct PendingPullSource;
 
 #[derive(Debug)]

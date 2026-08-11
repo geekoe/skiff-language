@@ -2,7 +2,6 @@ pub(crate) mod capability_context;
 pub mod config;
 pub mod config_view;
 pub mod error;
-pub mod eval;
 pub mod host;
 pub mod profiling;
 pub mod request;
@@ -18,5 +17,5 @@ pub use value_codec::runtime_value;
 
 #[allow(unused_imports)]
 pub(crate) use value_codec::{
-    date_value, runtime_type_algebra, runtime_value_graph, std_runtime_schema, type_descriptor,
+    date_value, runtime_type_algebra, runtime_value_graph,
 };

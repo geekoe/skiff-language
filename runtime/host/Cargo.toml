@@ -11,9 +11,7 @@ workspace = true
 default = []
 test-support = [
   "skiff-runtime-capability-context/test-support",
-  "skiff-runtime-eval/test-support",
   "skiff-runtime-linker/test-support",
-  "skiff-runtime-linked-type-plan/test-support",
 ]
 
 [dependencies]
@@ -36,9 +34,6 @@ skiff-runtime-boundary = { path = "../boundary" }
 skiff-runtime-capability-context = { path = "../capability-context" }
 skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
 skiff-runtime-deployment-image = { path = "../deployment-image" }
-skiff-runtime-eval = { path = "../eval" }
-skiff-runtime-linked-program = { path = "../linked-program" }
-skiff-runtime-linked-type-plan = { path = "../linked-type-plan" }
 skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-loader = { path = "../loader" }
 skiff-runtime-model = { path = "../model" }
@@ -65,6 +60,5 @@ skiff-compiler-source = { path = "../../compiler/source" }
 skiff-deployment = { path = "../../deployment" }
 skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
 skiff-runtime-capability-context = { path = "../capability-context", features = ["test-support"] }
-skiff-runtime-eval = { path = "../eval", features = ["test-support"] }
 skiff-runtime-linker = { path = "../linker", features = ["test-support"] }
 skiff-test-runner = { path = "../../test-runner" }
