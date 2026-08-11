@@ -53,20 +53,16 @@ fn shared_executor_prepares_and_becomes_ready_once_then_dispatches_every_case() 
     let readiness_calls = Cell::new(0);
     let dispatch_coordinates = RefCell::new(Vec::new());
 
-    let summary = execute_shared_assembly_with(
+    let summary = execute_shared_execution_with(
         three_entrypoints(),
         || {
             activate_calls.set(activate_calls.get() + 1);
             timeline.borrow_mut().push("prepare".to_string());
-            Ok(test_active_assembly())
+            Ok(test_active_execution())
         },
         |active| {
             readiness_calls.set(readiness_calls.get() + 1);
             timeline.borrow_mut().push("readiness".to_string());
-            assert_eq!(
-                active.assembly.assembly_identity.as_str(),
-                test_support::ASSEMBLY_B
-            );
             Ok(())
         },
         |active, entrypoint| {
@@ -74,7 +70,6 @@ fn shared_executor_prepares_and_becomes_ready_once_then_dispatches_every_case() 
                 .borrow_mut()
                 .push(format!("dispatch:{}", entrypoint.case.name));
             dispatch_coordinates.borrow_mut().push((
-                active.assembly.assembly_identity.as_str().to_string(),
                 entrypoint.deployment.clone(),
                 entrypoint.gateway_entry_identity.clone(),
             ));
@@ -102,13 +97,10 @@ fn shared_executor_prepares_and_becomes_ready_once_then_dispatches_every_case() 
     assert_eq!((summary.passed, summary.failed), (2, 1));
     let dispatch_coordinates = dispatch_coordinates.borrow();
     assert_eq!(dispatch_coordinates.len(), 3);
-    assert!(dispatch_coordinates
-        .iter()
-        .all(|(identity, _, _)| identity == test_support::ASSEMBLY_B));
     assert_eq!(
         dispatch_coordinates
             .iter()
-            .map(|(_, deployment, _)| deployment.service_id.as_str())
+            .map(|(deployment, _)| deployment.service_id.as_str())
             .collect::<Vec<_>>(),
         vec![
             "test.skiff/package/example-1",
@@ -119,7 +111,7 @@ fn shared_executor_prepares_and_becomes_ready_once_then_dispatches_every_case() 
     assert_eq!(
         dispatch_coordinates
             .iter()
-            .map(|(_, _, gateway)| gateway.as_str())
+            .map(|(_, gateway)| gateway.as_str())
             .collect::<Vec<_>>(),
         vec![
             concat!(
@@ -142,10 +134,10 @@ fn shared_executor_prepares_and_becomes_ready_once_then_dispatches_every_case() 
 fn shared_executor_prepare_failure_has_an_empty_ledger_and_zero_dispatches() {
     let readiness_calls = Cell::new(0);
     let dispatch_calls = Cell::new(0);
-    let error = execute_shared_assembly_with(
+    let error = execute_shared_execution_with(
         three_entrypoints(),
         || {
-            Err::<ActivatedAssembly<()>, _>(CanonicalFixtureError::RemoteControl {
+            Err::<ActivatedExecution<()>, _>(CanonicalFixtureError::RemoteControl {
                 status: 500,
                 code: "ReleasePointerWriteFailed".to_string(),
                 message: "release pointer table write failed".to_string(),
@@ -172,11 +164,11 @@ fn shared_executor_readiness_failure_has_an_empty_ledger_and_zero_dispatches() {
     let activate_calls = Cell::new(0);
     let readiness_calls = Cell::new(0);
     let dispatch_calls = Cell::new(0);
-    let error = execute_shared_assembly_with(
+    let error = execute_shared_execution_with(
         three_entrypoints(),
         || {
             activate_calls.set(activate_calls.get() + 1);
-            Ok(test_active_assembly())
+            Ok(test_active_execution())
         },
         |_| {
             readiness_calls.set(readiness_calls.get() + 1);
@@ -215,11 +207,8 @@ fn shared_executor_readiness_failure_has_an_empty_ledger_and_zero_dispatches() {
 #[test]
 fn test_service_control_body_is_the_exact_http_request() {
     let entrypoint = test_service_entrypoint();
-    let assembly = RuntimeAssemblyRef {
-        assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
-    };
 
-    let body = test_dispatch_body("http://127.0.0.1:46123", &assembly, &entrypoint).unwrap();
+    let body = test_dispatch_body("http://127.0.0.1:46123", &entrypoint).unwrap();
     let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert_eq!(
@@ -228,7 +217,10 @@ fn test_service_control_body_is_the_exact_http_request() {
             "kind": "test",
             "routing": {
                 "kind": "runtimeAssembly",
-                "assemblyIdentity": test_support::ASSEMBLY_B,
+                "buildId": concat!(
+                    "skiff-deployment-artifact-v4:sha256:",
+                    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                ),
                 "deployment": {
                     "serviceId": "test.skiff/package/example",
                     "contractVersion": "1.0.0",
@@ -270,6 +262,7 @@ fn test_service_control_body_is_the_exact_http_request() {
         "testEffectsEnabled",
         "testEffectDoubles",
         "assemblyGeneration",
+        "assemblyIdentity",
     ] {
         assert!(
             !encoded.contains(retired),
@@ -280,16 +273,13 @@ fn test_service_control_body_is_the_exact_http_request() {
 
 #[test]
 fn test_service_control_body_rejects_non_http_or_methodless_selectors() {
-    let assembly = RuntimeAssemblyRef {
-        assembly_identity: skiff_artifact_model::AssemblyIdentity::new(test_support::ASSEMBLY_B),
-    };
     let mut entrypoint = test_service_entrypoint();
     entrypoint.selector.protocol = IngressProtocol::WebSocket;
-    assert!(test_dispatch_body("http://127.0.0.1:46123", &assembly, &entrypoint).is_err());
+    assert!(test_dispatch_body("http://127.0.0.1:46123", &entrypoint).is_err());
 
     entrypoint.selector.protocol = IngressProtocol::Http;
     entrypoint.selector.method = None;
-    assert!(test_dispatch_body("http://127.0.0.1:46123", &assembly, &entrypoint).is_err());
+    assert!(test_dispatch_body("http://127.0.0.1:46123", &entrypoint).is_err());
 }
 
 #[test]
@@ -493,15 +483,8 @@ fn three_entrypoints() -> Vec<CanonicalTestServiceEntrypoint> {
         .collect()
 }
 
-fn test_active_assembly() -> ActivatedAssembly<()> {
-    ActivatedAssembly {
-        assembly: RuntimeAssemblyRef {
-            assembly_identity: skiff_artifact_model::AssemblyIdentity::new(
-                test_support::ASSEMBLY_B,
-            ),
-        },
-        readiness: (),
-    }
+fn test_active_execution() -> ActivatedExecution<()> {
+    ActivatedExecution { readiness: () }
 }
 
 fn assert_empty_first_case_ledger(error: CanonicalFixtureError, expected_code: &str) {

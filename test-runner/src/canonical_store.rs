@@ -3,64 +3,51 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use skiff_artifact_identity::{service_contract_ref, service_deployment_ref};
+use skiff_artifact_identity::service_contract_ref;
 use skiff_artifact_model::{
-    AssemblyIdentity, PackageArtifact, PackageArtifactRef, RuntimeAssembly, RuntimeAssemblyRef,
-    RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef, ServiceContract, ServiceDeployment,
+    PackageArtifact, PackageArtifactRef, RuntimeConfigSnapshotId, RuntimeConfigSnapshotRef,
+    ServiceContract, ServiceDeployment,
 };
-use skiff_compiler::{authoring::publish_package_artifact_records, PublishedPackageArtifact};
-use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_deployment::storage::PackageArtifactAdmissionCache;
+use skiff_compiler::{
+    authoring::publish_package_artifact_records_with_bytecode, PackageBytecodeLane,
+    PublishedPackageArtifact,
+};
+use skiff_deployment::storage::{CanonicalArtifactStore, PackageArtifactAdmissionCache};
 use skiff_runtime_config_snapshot::{RuntimeConfigSnapshot, RuntimeConfigSnapshotStore};
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
-/// Exact, hydrated closure selected by `--base-assembly`.
+/// Exact base closure selected by the base config snapshot.
+///
+/// The legacy `RuntimeAssembly` is gone. The base closure is hydrated from
+/// deployment records and their exact package/contract records, so service
+/// requirements and config inheritance work from the same immutable closure
+/// the runtime would load.
 #[derive(Debug, Clone, Default)]
-pub struct CanonicalBaseAssembly {
-    pub assembly: Option<RuntimeAssembly>,
+pub struct CanonicalBaseClosure {
     pub config_snapshot: Option<RuntimeConfigSnapshot>,
     pub packages: Vec<PackageArtifact>,
     pub contracts: Vec<ServiceContract>,
     pub deployments: Vec<ServiceDeployment>,
 }
 
-impl CanonicalBaseAssembly {
+impl CanonicalBaseClosure {
     pub fn load(
         artifact_root: &Path,
-        identity: Option<&str>,
+        _base_assembly: Option<&str>,
         config_snapshot_id: Option<&str>,
         target_profile: &str,
     ) -> Result<Self, CanonicalFixtureError> {
-        let (Some(identity), Some(config_snapshot_id)) = (identity, config_snapshot_id) else {
-            if identity.is_none() && config_snapshot_id.is_none() {
+        let Some(config_snapshot_id) = config_snapshot_id else {
+            if _base_assembly.is_none() {
                 return Ok(Self::default());
             }
             return Err(CanonicalFixtureError::InvalidInput(
-                "base assembly and base config snapshot must be provided together".to_string(),
+                "base assembly is retired; supply only the base config snapshot".to_string(),
             ));
         };
         let store = CanonicalArtifactStore::open(artifact_root)?;
-        let reference = RuntimeAssemblyRef {
-            assembly_identity: AssemblyIdentity::new(identity),
-        };
-        let assembly = store.read_runtime_assembly(&reference)?.as_ref().clone();
-        let deployments = assembly
-            .resolved_deployments
-            .iter()
-            .map(|reference| Ok(store.read_service_deployment(reference)?.as_ref().clone()))
-            .collect::<Result<Vec<_>, skiff_deployment::storage::EcosystemStorageError>>()?;
-        let contracts = assembly
-            .resolved_contracts
-            .iter()
-            .map(|reference| Ok(store.read_service_contract(reference)?.as_ref().clone()))
-            .collect::<Result<Vec<_>, skiff_deployment::storage::EcosystemStorageError>>()?;
-        let packages = assembly
-            .resolved_packages
-            .iter()
-            .map(|reference| Ok(store.read_package_artifact(reference)?.as_ref().clone()))
-            .collect::<Result<Vec<_>, skiff_deployment::storage::EcosystemStorageError>>()?;
-        let config_snapshot_ref = RuntimeConfigSnapshotRef {
+        let snapshot_ref = RuntimeConfigSnapshotRef {
             snapshot_id: RuntimeConfigSnapshotId::parse(config_snapshot_id).map_err(|error| {
                 CanonicalFixtureError::InvalidInput(format!(
                     "base config snapshot identity is invalid: {error}"
@@ -69,7 +56,7 @@ impl CanonicalBaseAssembly {
         };
         let config_snapshot =
             RuntimeConfigSnapshotStore::open(artifact_root.join("runtime-config"))
-                .and_then(|store| store.read(&config_snapshot_ref))
+                .and_then(|store| store.read(&snapshot_ref))
                 .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
         if config_snapshot.profile() != target_profile {
             return Err(CanonicalFixtureError::InvalidInput(format!(
@@ -78,24 +65,86 @@ impl CanonicalBaseAssembly {
                 target_profile
             )));
         }
-        let expected = assembly
-            .resolved_deployments
+
+        let deployment_refs = config_snapshot
+            .deployments()
             .iter()
-            .cloned()
+            .map(|deployment| deployment.deployment().clone())
+            .collect::<Vec<_>>();
+        let mut deployments = Vec::with_capacity(deployment_refs.len());
+        let mut package_refs = BTreeSet::new();
+        let mut contract_refs = BTreeSet::new();
+        for reference in deployment_refs {
+            let deployment = store
+                .read_service_deployment(&reference)
+                .map_err(|error| {
+                    CanonicalFixtureError::InvalidInput(format!(
+                        "base deployment {}@{} is missing from the artifact store: {error}",
+                        reference.service_id, reference.contract_version
+                    ))
+                })?
+                .as_ref()
+                .clone();
+            package_refs.insert(deployment.implementation.clone());
+            package_refs.extend(
+                deployment
+                    .package_bindings
+                    .iter()
+                    .map(|binding| binding.package.clone()),
+            );
+            contract_refs.insert(deployment.contract.clone());
+            contract_refs.extend(
+                deployment
+                    .service_selectors
+                    .iter()
+                    .map(|selector| selector.contract.clone()),
+            );
+            deployments.push(deployment);
+        }
+        let actual_deployments = deployments
+            .iter()
+            .map(skiff_artifact_identity::service_deployment_ref)
             .collect::<BTreeSet<_>>();
-        let actual = config_snapshot
+        let snapshot_deployments = config_snapshot
             .deployments()
             .iter()
             .map(|deployment| deployment.deployment().clone())
             .collect::<BTreeSet<_>>();
-        if expected != actual || actual.len() != config_snapshot.deployments().len() {
+        if actual_deployments != snapshot_deployments
+            || actual_deployments.len() != config_snapshot.deployments().len()
+        {
             return Err(CanonicalFixtureError::InvalidInput(
-                "base config snapshot deployments do not exactly match the base assembly"
+                "base config snapshot deployments do not exactly match the base deployment closure"
                     .to_string(),
             ));
         }
+
+        let mut packages = Vec::with_capacity(package_refs.len());
+        for reference in package_refs {
+            let package = store
+                .read_package_artifact(&reference)
+                .map_err(|error| {
+                    CanonicalFixtureError::InvalidInput(format!(
+                        "base package {}@{} is missing from the artifact store: {error}",
+                        reference.package_id, reference.package_version
+                    ))
+                })?
+                .as_ref()
+                .clone();
+            packages.push(package);
+        }
+        let mut contracts = Vec::with_capacity(contract_refs.len());
+        for reference in contract_refs {
+            let contract = store.read_service_contract(&reference).map_err(|error| {
+                CanonicalFixtureError::InvalidInput(format!(
+                    "base contract {}@{} is missing from the artifact store: {error}",
+                    reference.service_id, reference.contract_version
+                ))
+            })?;
+            contracts.push(contract.as_ref().clone());
+        }
+
         Ok(Self {
-            assembly: Some(assembly),
             config_snapshot: Some(config_snapshot),
             packages,
             contracts,
@@ -104,20 +153,20 @@ impl CanonicalBaseAssembly {
     }
 }
 
-/// Test-owned records plus the final immutable assembly.
+/// Test-owned records plus the final immutable deployment closure.
 #[derive(Debug, Clone)]
 pub struct CanonicalTestRecords {
     pub packages: Vec<PublishedPackageArtifact>,
+    pub bytecode: PackageBytecodeLane,
     pub contracts: Vec<ServiceContract>,
     pub deployments: Vec<ServiceDeployment>,
-    pub assembly: RuntimeAssembly,
     pub config_snapshot: RuntimeConfigSnapshot,
-    pub base_assembly: Option<RuntimeAssembly>,
+    pub base: CanonicalBaseClosure,
 }
 
 impl CanonicalTestRecords {
     /// Copies the exact external closure into the writable runtime root, then
-    /// publishes only test-owned records and the projected test assembly.
+    /// publishes only test-owned records and the combined config snapshot.
     pub fn publish(
         &self,
         source_artifact_root: &Path,
@@ -152,33 +201,39 @@ impl CanonicalTestRecords {
         let owned_deployments = self
             .deployments
             .iter()
-            .map(service_deployment_ref)
+            .map(skiff_artifact_identity::service_deployment_ref)
             .collect::<BTreeSet<_>>();
 
         let mut written = Vec::new();
-        for package in &self.assembly.resolved_packages {
-            if !owned_packages.contains(package) {
-                copy_package(&source, &target, package, session, &mut written)?;
+        for package in &self.base.packages {
+            if !owned_packages.contains(&declared_package_ref(package)) {
+                copy_package(
+                    &source,
+                    &target,
+                    &declared_package_ref(package),
+                    session,
+                    &mut written,
+                )?;
             }
         }
-        for contract in &self.assembly.resolved_contracts {
-            if !owned_contracts.contains(contract) {
-                let value = source.read_service_contract(contract)?;
+        for contract in &self.base.contracts {
+            let reference = service_contract_ref(contract)
+                .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+            if !owned_contracts.contains(&reference) {
+                let value = source.read_service_contract(&reference)?;
                 written.push(target.write_service_contract(&value)?);
             }
         }
-        for deployment in &self.assembly.resolved_deployments {
-            if !owned_deployments.contains(deployment) {
-                let value = source.read_service_deployment(deployment)?;
+        for deployment in &self.base.deployments {
+            let reference = skiff_artifact_identity::service_deployment_ref(deployment);
+            if !owned_deployments.contains(&reference) {
+                let value = source.read_service_deployment(&reference)?;
                 written.push(target.write_service_deployment(&value)?);
             }
         }
-        if let Some(base) = &self.base_assembly {
-            written.push(target.write_runtime_assembly(base)?);
-        }
 
         for package in &self.packages {
-            publish_package(&target, package, session, &mut written)?;
+            publish_package(&target, package, &self.bytecode, session, &mut written)?;
         }
         for contract in &self.contracts {
             written.push(target.write_service_contract(contract)?);
@@ -186,7 +241,6 @@ impl CanonicalTestRecords {
         for deployment in &self.deployments {
             written.push(target.write_service_deployment(deployment)?);
         }
-        written.push(target.write_runtime_assembly(&self.assembly)?);
         written.push(
             RuntimeConfigSnapshotStore::create(runtime_artifact_root.join("runtime-config"))
                 .and_then(|store| store.publish(&self.config_snapshot))
@@ -221,6 +275,15 @@ fn copy_package(
     session: &mut CanonicalPublishSession,
     written: &mut Vec<PathBuf>,
 ) -> Result<(), CanonicalFixtureError> {
+    let artifact = source
+        .read_package_artifact(reference)
+        .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+    if let Some(bytecode_reference) = artifact.bytecode.as_ref() {
+        let bytecode = source
+            .read_package_bytecode(reference, bytecode_reference)
+            .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
+        written.push(target.write_package_bytecode(reference, bytecode.artifact())?);
+    }
     if session.trusted_source {
         let records = source.read_package_copy_records_raw(reference)?;
         written.extend(target.write_package_copy_records_raw(&records)?);
@@ -234,6 +297,7 @@ fn copy_package(
 fn publish_package(
     store: &CanonicalArtifactStore,
     package: &PublishedPackageArtifact,
+    bytecode: &PackageBytecodeLane,
     session: &mut CanonicalPublishSession,
     written: &mut Vec<PathBuf>,
 ) -> Result<(), CanonicalFixtureError> {
@@ -249,7 +313,13 @@ fn publish_package(
         session.package_admissions.admit(store, &reference)?;
         return Ok(());
     }
-    let receipt = publish_package_artifact_records(store.root(), package)
+    let handoff = bytecode.handoff().ok_or_else(|| {
+        CanonicalFixtureError::InvalidInput(format!(
+            "test-owned package {} has no bytecode handoff",
+            reference.package_build_id
+        ))
+    })?;
+    let receipt = publish_package_artifact_records_with_bytecode(store.root(), package, handoff)
         .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     if receipt.artifact != reference {
         return Err(CanonicalFixtureError::InvalidInput(

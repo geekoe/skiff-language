@@ -90,7 +90,7 @@ mod tests {
         let first = run("bootstrap-std-a");
         let repeated = run("bootstrap-std-b");
         assert_eq!(first["schemaVersion"], "skiff-package-service-bootstrap-v3");
-        assert_json_keys(&first["bootstrap"], &["assembly", "configSnapshot", "std"]);
+        assert_json_keys(&first["bootstrap"], &["configSnapshot", "std"]);
         assert_json_keys(
             &first["bootstrap"]["std"],
             &["package", "pointer", "pointerPath"],

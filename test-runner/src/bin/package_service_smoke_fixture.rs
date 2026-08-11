@@ -6,13 +6,8 @@ use std::{
 };
 
 use serde_json::json;
-use skiff_artifact_identity::{
-    runtime_assembly_ref, service_deployment_ref, PackageArtifactRecordPath,
-};
-use skiff_artifact_model::{
-    AssemblyIdentity, CanonicalPackageLinkPlan, GatewayDispatchMode, RuntimeAssembly,
-    RUNTIME_ASSEMBLY_SCHEMA_VERSION,
-};
+use skiff_artifact_identity::{service_deployment_ref, PackageArtifactRecordPath};
+use skiff_artifact_model::GatewayDispatchMode;
 use skiff_compiler::CompilerPlatformSources;
 use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
 use skiff_runtime_config_snapshot::{
@@ -228,7 +223,6 @@ fn emit_bootstrap(
             "schemaVersion": "skiff-package-service-bootstrap-v3",
             "profile": profile,
             "bootstrap": {
-                "assembly": bootstrap["assembly"],
                 "configSnapshot": bootstrap["configSnapshot"],
                 "std": std.to_json(),
             },
@@ -260,7 +254,6 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
         None
     };
 
-    let assembly = runtime_assembly_ref(&fixture.records.assembly)?;
     let test_service_record_path =
         PackageArtifactRecordPath::new(&fixture.test_service)?.to_string();
     let test_entrypoint = &case.entrypoint;
@@ -322,7 +315,6 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
             "profile": args.profile,
             "bootstrap": bootstrap,
             "candidate": {
-                "assembly": assembly,
                 "configSnapshot": fixture.records.config_snapshot.snapshot_ref(),
                 "testService": fixture.test_service,
                 "testServiceRecordPath": test_service_record_path,
@@ -338,7 +330,7 @@ fn publish_candidate(args: FixtureArgs) -> anyhow::Result<()> {
 /// Assembles one canonical test-service fixture candidate for the smoke
 /// fixture modes: seeds std, compiles the package for test, discovers its
 /// `.test.skiff` cases and builds the immutable fixture records (package,
-/// contracts, deployments, assembly, config snapshot).
+/// contracts, deployments, config snapshot).
 fn assemble_fixture_candidate(
     platform_sources: &CompilerPlatformSources,
     package_root: &Path,
@@ -374,8 +366,8 @@ fn assemble_fixture_candidate(
 }
 
 /// Seeds one fixture package as the current release set for its profile:
-/// publishes the fixture's immutable records (service deployments, assembly,
-/// config snapshot), writes the canonical actor routing projection record and
+/// publishes the fixture's immutable records (service deployments, config
+/// snapshot), writes the canonical actor routing projection record and
 /// sets the release pointer for every published deployment. The emitted
 /// `skiff-package-service-bootstrap-v3` receipt drives the isolated release
 /// seed, so the router resolves the profile's releases without any
@@ -396,7 +388,6 @@ fn seed_committed(
         let pointer = ReleasePointer::new(profile, deployment_ref.clone())?;
         store.write_release_pointer(&pointer)?;
     }
-    let assembly_ref = runtime_assembly_ref(&fixture.records.assembly)?;
     let config_snapshot_ref = fixture.records.config_snapshot.snapshot_ref().clone();
     println!(
         "{}",
@@ -404,7 +395,6 @@ fn seed_committed(
             "schemaVersion": "skiff-package-service-bootstrap-v3",
             "profile": profile,
             "bootstrap": {
-                "assembly": assembly_ref,
                 "configSnapshot": config_snapshot_ref,
                 "std": std.to_json(),
             },
@@ -430,28 +420,10 @@ fn initialize_empty_profile(
     store: &CanonicalArtifactStore,
     profile: &str,
 ) -> anyhow::Result<serde_json::Value> {
-    let mut empty = RuntimeAssembly {
-        schema_version: RUNTIME_ASSEMBLY_SCHEMA_VERSION.to_string(),
-        assembly_identity: AssemblyIdentity::new("unassigned"),
-        roots: Vec::new(),
-        resolved_deployments: Vec::new(),
-        resolved_contracts: Vec::new(),
-        resolved_packages: Vec::new(),
-        package_link_plan: CanonicalPackageLinkPlan {
-            code_slots: Vec::new(),
-            package_links: Vec::new(),
-        },
-        service_binding_templates: Vec::new(),
-        activation_templates: Vec::new(),
-        gateway_ingress: Vec::new(),
-    };
-    skiff_artifact_identity::assign_runtime_assembly_identity(&mut empty)?;
-    store.write_runtime_assembly(&empty)?;
     // The E-bootstrap strict loader requires the canonical actor routing
     // projection record at the artifact root; the empty profile carries an
     // empty projection until the A1 producer publishes real routing facts.
     write_actor_routing_projection(store.root())?;
-    let reference = runtime_assembly_ref(&empty)?;
     let config_snapshot_ref = new_runtime_config_snapshot_ref();
     let config_snapshot =
         RuntimeConfigSnapshot::new(profile, config_snapshot_ref.clone(), Vec::new())?;
@@ -460,7 +432,6 @@ fn initialize_empty_profile(
     // The empty profile is a baseline with an empty release pointer table;
     // no coordination state is written for it.
     Ok(json!({
-        "assembly": reference,
         "configSnapshot": config_snapshot_ref,
     }))
 }

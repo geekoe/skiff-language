@@ -2975,6 +2975,8 @@ dependencies = [
  "skiff-config-snapshot-tooling",
  "skiff-deployment",
  "skiff-runtime-config-snapshot",
+ "skiff-runtime-linker",
+ "skiff-runtime-loader",
  "skiff-runtime-model",
  "skiff-syntax",
  "thiserror 2.0.18",

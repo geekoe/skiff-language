@@ -2,10 +2,6 @@ use serde_json::Value;
 use skiff_artifact_model::RuntimeConfigSnapshotRef;
 
 pub(super) const PROFILE: &str = "package-tests";
-pub(super) const ASSEMBLY_B: &str = concat!(
-    "skiff-runtime-assembly-v3:sha256:",
-    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-);
 pub(super) const SNAPSHOT_B: &str =
     "skiff-runtime-config-snapshot-v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 pub(super) const DEPLOYMENT_A: &str = concat!(

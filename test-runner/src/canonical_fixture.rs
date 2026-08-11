@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::SkiffTestResult;
 
-pub use crate::canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords};
+pub use crate::canonical_store::{CanonicalBaseClosure, CanonicalTestRecords};
 pub use crate::runtime_execution::run_package_cases;
 pub use crate::test_discovery::{discover_test_service_cases, TestServiceCase};
 pub use crate::test_service_fixture::{

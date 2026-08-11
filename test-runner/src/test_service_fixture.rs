@@ -25,16 +25,13 @@ use skiff_config_snapshot_tooling::{
     load_service_config, project_runtime_config_snapshot_with_base, ConfigSnapshotDeploymentInput,
     ConfigSnapshotPackageInput, ServiceConfigLayers,
 };
-use skiff_deployment::{
-    assembly::resolve_runtime_assembly_with_validated_packages,
-    projection::project_service_deployment_with_validated_packages,
-};
+use skiff_deployment::projection::project_service_deployment_with_validated_packages;
 use skiff_runtime_config_snapshot::new_runtime_config_snapshot_ref;
 
 use crate::{
     canonical_fixture::{CanonicalFixtureError, SERVICE_TEST_FIXTURE_GUIDANCE},
     canonical_package::CanonicalPackageProject,
-    canonical_store::{CanonicalBaseAssembly, CanonicalTestRecords},
+    canonical_store::{CanonicalBaseClosure, CanonicalTestRecords},
     canonical_test_gateway::canonical_typed_null_gateway,
     test_discovery::TestServiceCase,
 };
@@ -91,7 +88,7 @@ impl CanonicalTestServiceFixture {
 pub fn assemble_test_service_fixture(
     project: &CanonicalPackageProject,
     cases: &[TestServiceCase],
-    base: CanonicalBaseAssembly,
+    base: CanonicalBaseClosure,
     target_profile: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
     let scope = test_service_execution_nonce()?;
@@ -111,7 +108,7 @@ pub fn assemble_test_service_fixture(
 pub fn assemble_test_service_fixture_for_run(
     project: &CanonicalPackageProject,
     cases: &[TestServiceCase],
-    base: CanonicalBaseAssembly,
+    base: CanonicalBaseClosure,
     run_scope: &str,
     target_profile: &str,
 ) -> Result<CanonicalTestServiceFixture, CanonicalFixtureError> {
@@ -131,7 +128,7 @@ pub fn assemble_test_service_fixture_for_run(
 pub fn assemble_test_service_fixture_for_run_with_ingress(
     project: &CanonicalPackageProject,
     cases: &[TestServiceCase],
-    base: CanonicalBaseAssembly,
+    base: CanonicalBaseClosure,
     run_scope: &str,
     ingress_url: &str,
     target_profile: &str,
@@ -178,7 +175,7 @@ pub(crate) fn load_test_service_run_config(
 pub(crate) fn assemble_test_service_fixture_for_run_with_config(
     project: &CanonicalPackageProject,
     cases: &[TestServiceCase],
-    base: CanonicalBaseAssembly,
+    base: CanonicalBaseClosure,
     run_scope: &str,
     config: &CanonicalTestServiceRunConfig,
     target_profile: &str,
@@ -198,7 +195,7 @@ pub(crate) fn assemble_test_service_fixture_for_run_with_config(
 fn assemble_test_service_fixture_inner(
     project: &CanonicalPackageProject,
     cases: &[TestServiceCase],
-    base: CanonicalBaseAssembly,
+    base: CanonicalBaseClosure,
     run_scope: &str,
     config: &CanonicalTestServiceRunConfig,
     target_profile: &str,
@@ -327,28 +324,6 @@ fn assemble_test_service_fixture_inner(
             },
         ));
     }
-    let mut roots = base
-        .assembly
-        .as_ref()
-        .map(|assembly| assembly.roots.clone())
-        .unwrap_or_default();
-    roots.extend(
-        case_entries
-            .iter()
-            .map(|(_, entrypoint)| entrypoint.deployment.clone()),
-    );
-    let mut all_contracts = base.contracts.clone();
-    all_contracts.extend(contracts.iter().cloned());
-    let mut all_deployments = base.deployments.clone();
-    all_deployments.extend(deployments.iter().cloned());
-    let assembly = resolve_runtime_assembly_with_validated_packages(
-        &roots,
-        &all_deployments,
-        &all_contracts,
-        &all_packages,
-        &validated_all_packages,
-    )
-    .map_err(|error| CanonicalFixtureError::InvalidInput(error.to_string()))?;
     let config_snapshot = test_service_config_snapshot(
         project,
         &deployments,
@@ -357,31 +332,32 @@ fn assemble_test_service_fixture_inner(
         config,
         target_profile,
     )?;
-    let assembly_deployments = assembly
-        .resolved_deployments
+    let mut expected_deployments = base
+        .deployments
         .iter()
-        .cloned()
+        .map(service_deployment_ref)
         .collect::<BTreeSet<_>>();
+    expected_deployments.extend(deployments.iter().map(service_deployment_ref));
     let snapshot_deployments = config_snapshot
         .deployments()
         .iter()
         .map(|deployment| deployment.deployment().clone())
         .collect::<BTreeSet<_>>();
-    if assembly_deployments != snapshot_deployments
+    if expected_deployments != snapshot_deployments
         || snapshot_deployments.len() != config_snapshot.deployments().len()
     {
         return Err(CanonicalFixtureError::InvalidInput(
-            "test assembly and config snapshot must contain the same exact deployment set"
+            "test deployments and config snapshot must contain the same exact deployment set"
                 .to_string(),
         ));
     }
     let records = Arc::new(CanonicalTestRecords {
         packages: vec![project.package.clone()],
+        bytecode: project.bytecode.clone(),
         contracts,
         deployments,
-        assembly,
         config_snapshot,
-        base_assembly: base.assembly.clone(),
+        base,
     });
     let case_fixtures = case_entries
         .into_iter()
@@ -402,15 +378,10 @@ fn test_service_config_snapshot(
     project: &CanonicalPackageProject,
     deployments: &[ServiceDeployment],
     packages: &[PackageArtifact],
-    base: &CanonicalBaseAssembly,
+    base: &CanonicalBaseClosure,
     config: &CanonicalTestServiceRunConfig,
     target_profile: &str,
 ) -> Result<skiff_runtime_config_snapshot::RuntimeConfigSnapshot, CanonicalFixtureError> {
-    if base.assembly.is_some() != base.config_snapshot.is_some() {
-        return Err(CanonicalFixtureError::InvalidInput(
-            "base assembly and base config snapshot must form one exact pair".to_string(),
-        ));
-    }
     let package_inputs = packages
         .iter()
         .map(|package| ConfigSnapshotPackageInput {
@@ -650,7 +621,7 @@ fn declared_package_ref(artifact: &PackageArtifact) -> PackageArtifactRef {
 
 fn test_service_selectors(
     packages: &[PackageArtifact],
-    base: &CanonicalBaseAssembly,
+    base: &CanonicalBaseClosure,
 ) -> Result<Vec<ServiceSelectorBinding>, CanonicalFixtureError> {
     packages
         .iter()
@@ -668,9 +639,8 @@ fn test_service_selectors(
                 .collect::<Vec<_>>();
             let [contract] = matches.as_slice() else {
                 return Err(CanonicalFixtureError::InvalidInput(format!(
-                    "runtime service requirement {}@{} needs exactly one --base-assembly contract; found {}: \
-                     supply exact baseline identities as a pair \
-                     (--base-assembly <identity> --base-config-snapshot <identity>); {}",
+                    "runtime service requirement {}@{} needs exactly one base config snapshot contract; found {}: \
+                     supply an exact baseline config snapshot with its deployment closure; {}",
                     expected.service_id, expected.contract_version, matches.len(),
                     SERVICE_TEST_FIXTURE_GUIDANCE
                 )));

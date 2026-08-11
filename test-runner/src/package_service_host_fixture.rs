@@ -2,11 +2,10 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use serde_json::{json, Value};
 use skiff_artifact_model::{
-    PackageArtifact, PackageArtifactRef, RuntimeAssemblyRef, RuntimeConfigSnapshotRef,
-    ServiceContractRef, ServiceDeploymentRef,
+    PackageArtifactRef, RuntimeConfigSnapshotRef, ServiceContractRef, ServiceDeploymentRef,
 };
 use skiff_compiler::{
-    authoring::{build_authoring_object, project_runtime_assembly, AuthoringObject},
+    authoring::{build_authoring_object, AuthoringObject},
     CompilerPlatformSources,
 };
 use skiff_config_snapshot_tooling::{
@@ -27,7 +26,6 @@ pub struct PackageServiceHostFixtureReceipt {
     pub consumer_package: PackageArtifactRef,
     pub provider_deployment: ServiceDeploymentRef,
     pub consumer_deployment: ServiceDeploymentRef,
-    pub base_assembly: RuntimeAssemblyRef,
     pub base_config_snapshot: RuntimeConfigSnapshotRef,
 }
 
@@ -49,7 +47,6 @@ impl PackageServiceHostFixtureReceipt {
                 "provider": self.provider_deployment,
                 "consumer": self.consumer_deployment,
             },
-            "baseAssembly": self.base_assembly,
             "baseConfigSnapshot": self.base_config_snapshot,
         })
     }
@@ -105,11 +102,10 @@ pub fn prepare_package_service_host_fixture(
         publish_service_package(platform_sources, &consumer_root, artifact_root, profile)?;
 
     let root_deployments = [provider.deployment.clone(), consumer.deployment.clone()];
-    let base_assembly = project_assembly(artifact_root, profile, &root_deployments)?;
     let base_config_snapshot = project_config_snapshot(
         artifact_root,
         profile,
-        &base_assembly,
+        &root_deployments,
         [
             (provider.deployment.clone(), provider_root),
             (consumer.deployment.clone(), consumer_root),
@@ -125,7 +121,6 @@ pub fn prepare_package_service_host_fixture(
         consumer_package: consumer.package,
         provider_deployment: provider.deployment,
         consumer_deployment: consumer.deployment,
-        base_assembly,
         base_config_snapshot,
     })
 }
@@ -184,27 +179,34 @@ fn prepare_service_root(
 fn project_config_snapshot(
     artifact_root: &Path,
     profile: &str,
-    assembly_ref: &RuntimeAssemblyRef,
+    deployment_refs: &[ServiceDeploymentRef],
     sources: [(ServiceDeploymentRef, std::path::PathBuf); 2],
 ) -> anyhow::Result<RuntimeConfigSnapshotRef> {
     let store = CanonicalArtifactStore::open(artifact_root)?;
-    let assembly = store.read_runtime_assembly(assembly_ref)?.as_ref().clone();
-    let package_artifacts =
-        assembly
-            .resolved_packages
-            .iter()
-            .map(|reference| {
-                store
-                    .read_package_artifact(reference)
-                    .map(|artifact| (reference.clone(), artifact.as_ref().clone()))
-            })
-            .collect::<skiff_deployment::storage::StorageResult<
-                BTreeMap<PackageArtifactRef, PackageArtifact>,
-            >>()?;
+    let mut deployments = BTreeMap::new();
+    for reference in deployment_refs {
+        let deployment = store.read_service_deployment(reference)?.as_ref().clone();
+        deployments.insert(reference.clone(), deployment);
+    }
+    let mut package_refs = std::collections::BTreeSet::new();
+    for deployment in deployments.values() {
+        package_refs.insert(deployment.implementation.clone());
+        package_refs.extend(
+            deployment
+                .package_bindings
+                .iter()
+                .map(|binding| binding.package.clone()),
+        );
+    }
+    let mut package_artifacts = BTreeMap::new();
+    for reference in package_refs {
+        let artifact = store.read_package_artifact(&reference)?.as_ref().clone();
+        package_artifacts.insert(reference, artifact);
+    }
     let receipt = produce_runtime_config_snapshot(
         ConfigSnapshotProductionInput {
             profile: profile.to_string(),
-            assembly,
+            deployments,
             package_artifacts,
             sources: sources
                 .into_iter()
@@ -297,18 +299,6 @@ fn publish_package(
     )?;
     Ok(serde_json::from_value(
         receipt["packageArtifactReceipt"]["artifact"].clone(),
-    )?)
-}
-
-fn project_assembly(
-    artifact_root: &Path,
-    profile: &str,
-    root_deployments: &[ServiceDeploymentRef],
-) -> anyhow::Result<RuntimeAssemblyRef> {
-    let receipt = project_runtime_assembly(artifact_root, profile, root_deployments, true)
-        .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-    Ok(serde_json::from_value(
-        receipt["runtimeAssemblyReceipt"]["assembly"].clone(),
     )?)
 }
 
