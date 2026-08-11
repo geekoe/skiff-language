@@ -4,8 +4,8 @@ use super::{
     canonical_file_ir_builtin, compiler_builtin_type, compiler_owned_type_symbol,
     config_prelude_type, file_ir_builtin_source_spellings, module_symbol_root,
     qualified_prelude_type, validate_package_api_public_path, validate_root_projection_metadata,
-    CompilerBuiltinTypeKind, FileIrBuiltinTypeKind, COMPILER_BUILTIN_TYPES,
-    LANGUAGE_PRIMITIVE_TYPES, PRELUDE_REGISTRY_ID,
+    CompilerBuiltinTypeAuthority, CompilerBuiltinTypeKind, FileIrBuiltinTypeKind,
+    COMPILER_BUILTIN_TYPES, LANGUAGE_PRIMITIVE_TYPES, PRELUDE_REGISTRY_ID,
 };
 
 #[test]
@@ -73,45 +73,92 @@ fn prelude_type_helpers_parse_supported_forms() {
         Some(("config", "DecodeError"))
     );
     assert_eq!(config_prelude_type("config.deep.Type"), None);
-    assert_eq!(compiler_owned_type_symbol("JsonObject"), Some("JsonObject"));
+    assert_eq!(
+        compiler_owned_type_symbol("JsonObject").as_deref(),
+        Some("JsonObject")
+    );
 }
 
 #[test]
 fn compiler_builtin_registry_owns_identity_kind_and_arity() {
     let array = compiler_builtin_type("Array").unwrap();
-    assert_eq!(array.symbol, "std.collection.Array");
+    assert_eq!(array.canonical_symbol(), "std.collection.Array");
     assert_eq!(array.arity, 1);
     assert_eq!(array.kind, CompilerBuiltinTypeKind::Container);
-    assert_eq!(compiler_builtin_type(array.symbol), Some(array));
+    assert_eq!(
+        compiler_builtin_type(array.canonical_symbol().as_ref()),
+        Some(array)
+    );
 
     let session = compiler_builtin_type("ClientSessionRef").unwrap();
-    assert_eq!(session.symbol, "std.session.ClientSessionRef");
+    assert_eq!(session.canonical_symbol(), "std.session.ClientSessionRef");
     assert_eq!(session.arity, 0);
     assert_eq!(session.kind, CompilerBuiltinTypeKind::OpaqueHandle);
 
     let task_ref = compiler_builtin_type("TaskRef").unwrap();
-    assert_eq!(task_ref.symbol, "std.task.TaskRef");
+    assert_eq!(task_ref.canonical_symbol(), "std.task.TaskRef");
     assert_eq!(task_ref.arity, 0);
     assert_eq!(task_ref.kind, CompilerBuiltinTypeKind::OpaqueHandle);
-    assert_eq!(compiler_builtin_type(task_ref.symbol), Some(task_ref));
+    assert_eq!(
+        compiler_builtin_type(task_ref.canonical_symbol().as_ref()),
+        Some(task_ref)
+    );
 
     let status = compiler_builtin_type("TaskStatus").unwrap();
-    assert_eq!(status.symbol, "std.task.TaskStatus");
+    assert_eq!(status.canonical_symbol(), "std.task.TaskStatus");
     assert_eq!(status.arity, 0);
     assert_eq!(status.kind, CompilerBuiltinTypeKind::Value);
-    assert_eq!(compiler_builtin_type(status.symbol), Some(status));
+    assert_eq!(
+        compiler_builtin_type(status.canonical_symbol().as_ref()),
+        Some(status)
+    );
 
     let cancel_result = compiler_builtin_type("TaskCancelResult").unwrap();
-    assert_eq!(cancel_result.symbol, "std.task.TaskCancelResult");
+    assert_eq!(
+        cancel_result.canonical_symbol(),
+        "std.task.TaskCancelResult"
+    );
     assert_eq!(cancel_result.arity, 0);
     assert_eq!(cancel_result.kind, CompilerBuiltinTypeKind::Value);
     assert_eq!(
-        compiler_builtin_type(cancel_result.symbol),
+        compiler_builtin_type(cancel_result.canonical_symbol().as_ref()),
         Some(cancel_result)
     );
 
     assert!(compiler_builtin_type("ActorRef").is_none());
     assert!(compiler_builtin_type("NotABuiltin").is_none());
+}
+
+#[test]
+fn timeout_error_identity_is_backed_by_the_exact_prelude_declaration() {
+    let timeout = compiler_builtin_type("TimeoutError").unwrap();
+    assert_eq!(
+        timeout.authority,
+        CompilerBuiltinTypeAuthority::PreludeDeclaration {
+            expected_module: "std.error"
+        }
+    );
+    assert_eq!(timeout.prelude_declaration_module(), Some("std.error"));
+    assert_eq!(timeout.canonical_symbol(), "std.error.TimeoutError");
+    assert_eq!(timeout.arity, 0);
+    assert_eq!(timeout.kind, CompilerBuiltinTypeKind::Error);
+    assert!(timeout.matches_spelling("TimeoutError"));
+    assert!(timeout.matches_spelling("std.error.TimeoutError"));
+    assert_eq!(compiler_builtin_type("TimeoutError"), Some(timeout));
+    assert_eq!(
+        compiler_builtin_type("std.error.TimeoutError"),
+        Some(timeout)
+    );
+    assert_eq!(
+        compiler_owned_type_symbol("TimeoutError").as_deref(),
+        Some("std.error.TimeoutError")
+    );
+
+    let source_backed = COMPILER_BUILTIN_TYPES
+        .iter()
+        .filter(|builtin| builtin.prelude_declaration_module().is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(source_backed, vec![timeout]);
 }
 
 #[test]
@@ -121,7 +168,7 @@ fn canonical_file_ir_builtin_spelling_registry_is_complete_and_collision_free() 
     for spelling in &spellings {
         assert!(
             source_spellings
-                .insert(spelling.source_spelling, spelling.canonical_name)
+                .insert(spelling.source_spelling.as_ref(), spelling.canonical_name)
                 .is_none(),
             "source builtin spelling {} must have exactly one canonical owner",
             spelling.source_spelling
@@ -129,13 +176,19 @@ fn canonical_file_ir_builtin_spelling_registry_is_complete_and_collision_free() 
     }
 
     let mut canonical_compiler_names = BTreeSet::new();
+    let mut canonical_compiler_symbols = BTreeSet::new();
     for builtin in COMPILER_BUILTIN_TYPES {
         assert!(
             canonical_compiler_names.insert(builtin.name),
             "compiler builtin canonical name {} must be unique",
             builtin.name
         );
-        for source_spelling in [builtin.name, builtin.symbol] {
+        let canonical_symbol = builtin.canonical_symbol();
+        assert!(
+            canonical_compiler_symbols.insert(canonical_symbol.clone()),
+            "compiler builtin canonical symbol {canonical_symbol} must be unique"
+        );
+        for source_spelling in [builtin.name, canonical_symbol.as_ref()] {
             let resolved = canonical_file_ir_builtin(source_spelling)
                 .unwrap_or_else(|| panic!("{source_spelling} must resolve"));
             assert_eq!(resolved.canonical_name, builtin.name);

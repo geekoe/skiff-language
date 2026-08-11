@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 pub const PRELUDE_REGISTRY_ID: &str = "skiff.prelude";
 pub const RESERVED_ROOT_NAMES: &[&str] =
@@ -59,125 +62,195 @@ pub enum CompilerBuiltinTypeKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompilerBuiltinTypeAuthority {
+    CompilerIntrinsic { canonical_symbol: &'static str },
+    PreludeDeclaration { expected_module: &'static str },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompilerBuiltinType {
     pub name: &'static str,
-    pub symbol: &'static str,
+    pub authority: CompilerBuiltinTypeAuthority,
     pub arity: usize,
     pub kind: CompilerBuiltinTypeKind,
+}
+
+impl CompilerBuiltinType {
+    pub fn canonical_symbol(&self) -> Cow<'static, str> {
+        match self.authority {
+            CompilerBuiltinTypeAuthority::CompilerIntrinsic { canonical_symbol } => {
+                Cow::Borrowed(canonical_symbol)
+            }
+            CompilerBuiltinTypeAuthority::PreludeDeclaration { expected_module } => {
+                Cow::Owned(format!("{expected_module}.{}", self.name))
+            }
+        }
+    }
+
+    pub fn prelude_declaration_module(&self) -> Option<&'static str> {
+        match self.authority {
+            CompilerBuiltinTypeAuthority::CompilerIntrinsic { .. } => None,
+            CompilerBuiltinTypeAuthority::PreludeDeclaration { expected_module } => {
+                Some(expected_module)
+            }
+        }
+    }
+
+    pub fn matches_spelling(&self, spelling: &str) -> bool {
+        self.name == spelling || self.canonical_symbol() == spelling
+    }
 }
 
 pub const COMPILER_BUILTIN_TYPES: &[CompilerBuiltinType] = &[
     CompilerBuiltinType {
         name: "bytes",
-        symbol: "std.bytes.bytes",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.bytes.bytes",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Value,
     },
     CompilerBuiltinType {
         name: "Array",
-        symbol: "std.collection.Array",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.collection.Array",
+        },
         arity: 1,
         kind: CompilerBuiltinTypeKind::Container,
     },
     CompilerBuiltinType {
         name: "Map",
-        symbol: "std.collection.Map",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.collection.Map",
+        },
         arity: 2,
         kind: CompilerBuiltinTypeKind::Container,
     },
     CompilerBuiltinType {
         name: "Config",
-        symbol: "config.Config",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "config.Config",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Capability,
     },
     CompilerBuiltinType {
         name: "Date",
-        symbol: "Date",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "Date",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Value,
     },
     CompilerBuiltinType {
         name: "Json",
-        symbol: "Json",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "Json",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Value,
     },
     CompilerBuiltinType {
         name: "JsonObject",
-        symbol: "JsonObject",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "JsonObject",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Value,
     },
     CompilerBuiltinType {
         name: "Stream",
-        symbol: "std.stream.Stream",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.stream.Stream",
+        },
         arity: 1,
         kind: CompilerBuiltinTypeKind::OpaqueHandle,
     },
     CompilerBuiltinType {
         name: "Exception",
-        symbol: "std.error.Exception",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.error.Exception",
+        },
         arity: 1,
         kind: CompilerBuiltinTypeKind::Error,
     },
     CompilerBuiltinType {
         name: "CatchResult",
-        symbol: "std.error.CatchResult",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.error.CatchResult",
+        },
         arity: 2,
         kind: CompilerBuiltinTypeKind::Error,
     },
     CompilerBuiltinType {
         name: "SourceLocation",
-        symbol: "std.error.SourceLocation",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.error.SourceLocation",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Error,
     },
     CompilerBuiltinType {
         name: "StackTrace",
-        symbol: "std.error.StackTrace",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.error.StackTrace",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Error,
     },
     CompilerBuiltinType {
         name: "StackFrame",
-        symbol: "std.error.StackFrame",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.error.StackFrame",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Error,
     },
     CompilerBuiltinType {
         name: "TimeoutError",
-        symbol: "std.error.TimeoutError",
+        authority: CompilerBuiltinTypeAuthority::PreludeDeclaration {
+            expected_module: "std.error",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Error,
     },
     CompilerBuiltinType {
         name: "ClientSessionRef",
-        symbol: "std.session.ClientSessionRef",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.session.ClientSessionRef",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::OpaqueHandle,
     },
     CompilerBuiltinType {
         name: "ClientCapability",
-        symbol: "std.session.ClientCapability",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.session.ClientCapability",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Capability,
     },
     CompilerBuiltinType {
         name: "TaskRef",
-        symbol: "std.task.TaskRef",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.task.TaskRef",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::OpaqueHandle,
     },
     CompilerBuiltinType {
         name: "TaskStatus",
-        symbol: "std.task.TaskStatus",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.task.TaskStatus",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Value,
     },
     CompilerBuiltinType {
         name: "TaskCancelResult",
-        symbol: "std.task.TaskCancelResult",
+        authority: CompilerBuiltinTypeAuthority::CompilerIntrinsic {
+            canonical_symbol: "std.task.TaskCancelResult",
+        },
         arity: 0,
         kind: CompilerBuiltinTypeKind::Value,
     },
@@ -189,9 +262,9 @@ pub enum FileIrBuiltinTypeKind {
     Compiler(CompilerBuiltinTypeKind),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileIrBuiltinSourceSpelling {
-    pub source_spelling: &'static str,
+    pub source_spelling: Cow<'static, str>,
     pub canonical_name: &'static str,
     pub arity: usize,
     pub kind: FileIrBuiltinTypeKind,
@@ -202,21 +275,22 @@ pub fn file_ir_builtin_source_spellings(
     let primitives = LANGUAGE_PRIMITIVE_TYPES
         .iter()
         .map(|primitive| FileIrBuiltinSourceSpelling {
-            source_spelling: primitive.source_spelling,
+            source_spelling: Cow::Borrowed(primitive.source_spelling),
             canonical_name: primitive.canonical_name,
             arity: 0,
             kind: FileIrBuiltinTypeKind::LanguagePrimitive,
         });
     let compiler_builtins = COMPILER_BUILTIN_TYPES.iter().flat_map(|builtin| {
+        let canonical_symbol = builtin.canonical_symbol();
         [
             Some(FileIrBuiltinSourceSpelling {
-                source_spelling: builtin.name,
+                source_spelling: Cow::Borrowed(builtin.name),
                 canonical_name: builtin.name,
                 arity: builtin.arity,
                 kind: FileIrBuiltinTypeKind::Compiler(builtin.kind),
             }),
-            (builtin.symbol != builtin.name).then_some(FileIrBuiltinSourceSpelling {
-                source_spelling: builtin.symbol,
+            (canonical_symbol != builtin.name).then_some(FileIrBuiltinSourceSpelling {
+                source_spelling: canonical_symbol,
                 canonical_name: builtin.name,
                 arity: builtin.arity,
                 kind: FileIrBuiltinTypeKind::Compiler(builtin.kind),
@@ -230,7 +304,8 @@ pub fn file_ir_builtin_source_spellings(
 
 pub fn canonical_file_ir_builtin(source_spelling: &str) -> Option<FileIrBuiltinSourceSpelling> {
     let source_spelling = source_spelling.trim();
-    file_ir_builtin_source_spellings().find(|builtin| builtin.source_spelling == source_spelling)
+    file_ir_builtin_source_spellings()
+        .find(|builtin| builtin.source_spelling.as_ref() == source_spelling)
 }
 
 pub fn canonical_file_ir_builtin_name(source_spelling: &str) -> Option<&'static str> {
@@ -241,7 +316,7 @@ pub fn compiler_builtin_type(name: &str) -> Option<&'static CompilerBuiltinType>
     let name = name.trim();
     COMPILER_BUILTIN_TYPES
         .iter()
-        .find(|builtin| builtin.name == name || builtin.symbol == name)
+        .find(|builtin| builtin.matches_spelling(name))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,8 +412,8 @@ pub fn module_symbol_root(package_id: &str, module_path: &str) -> String {
     }
 }
 
-pub fn compiler_owned_type_symbol(name: &str) -> Option<&'static str> {
-    compiler_builtin_type(name).map(|builtin| builtin.symbol)
+pub fn compiler_owned_type_symbol(name: &str) -> Option<Cow<'static, str>> {
+    compiler_builtin_type(name).map(CompilerBuiltinType::canonical_symbol)
 }
 
 pub fn schema_primitive_type(name: &str) -> bool {
