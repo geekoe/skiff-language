@@ -5,11 +5,13 @@ use skiff_artifact_identity::{
     PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
-    config_shape_from_package_requirements, derive_bytecode_statement_manifest_identity, FileIrRef,
-    FileIrUnit, PackageArtifact, PackageBuildId, PackageConfigRequirement,
-    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PublicationResourceRef,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    config_shape_from_package_requirements, current_platform_error_projection_registry_ref,
+    derive_bytecode_statement_manifest_identity,
+    validate_current_platform_error_projection_registry_ref,
+    validate_platform_error_projection_registry_ref_shape, FileIrRef, FileIrUnit, PackageArtifact,
+    PackageBuildId, PackageConfigRequirement, PackageImplementationLinks, PackageLocalAbi,
+    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
+    PublicationResourceRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::json_utils::sha256_hex;
 
@@ -23,16 +25,20 @@ fn fixture_uses_the_current_package_epoch_and_canonical_empty_statement_manifest
 
     assert_eq!(
         PACKAGE_ARTIFACT_SCHEMA_VERSION,
-        "skiff-package-artifact-v14"
+        "skiff-package-artifact-v15"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-        "skiff-package-build-v13:sha256"
+        "skiff-package-build-v14:sha256"
     );
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v13:sha256:"));
+        .starts_with("skiff-package-build-v14:sha256:"));
+    assert_eq!(
+        &artifact.platform_error_projection_registry,
+        current_platform_error_projection_registry_ref()
+    );
     assert_eq!(
         artifact.bytecode_statement_manifest_identity.as_str(),
         "skiff-bytecode-statement-manifest-v1:sha256:0350b69056203fd496b78959a6ab3c48c3624a8ef4a6927e12dfb8e541026671"
@@ -43,6 +49,7 @@ fn fixture_uses_the_current_package_epoch_and_canonical_empty_statement_manifest
 fn single_materializer_attaches_storage_paths_and_preserves_canonical_identity() {
     let (projected, file, resource) = fixture();
     let projected_identity = projected.package_build_id.clone();
+    let projected_registry = projected.platform_error_projection_registry.clone();
 
     let materialized = materialize_package_artifact(
         &projected,
@@ -52,6 +59,22 @@ fn single_materializer_attaches_storage_paths_and_preserves_canonical_identity()
     .unwrap();
 
     assert_eq!(materialized.artifact.package_build_id, projected_identity);
+    assert_eq!(
+        materialized.artifact.platform_error_projection_registry,
+        projected_registry
+    );
+    assert_eq!(
+        materialized.published.value["platformErrorProjectionRegistry"],
+        serde_json::to_value(&projected_registry).unwrap()
+    );
+    validate_platform_error_projection_registry_ref_shape(
+        &materialized.artifact.platform_error_projection_registry,
+    )
+    .unwrap();
+    validate_current_platform_error_projection_registry_ref(
+        &materialized.artifact.platform_error_projection_registry,
+    )
+    .unwrap();
     assert_eq!(
         materialized.artifact.files[0].artifact_path.as_deref(),
         Some("units/files/api.json")
@@ -275,6 +298,8 @@ fn fixture() -> (
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         files: vec![file_ref],
         static_resources: vec![resource_ref],
         bytecode: None,
