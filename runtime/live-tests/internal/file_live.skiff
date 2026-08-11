@@ -39,7 +39,7 @@ function liveFileOneMiBChunk() -> bytes {
 }
 
 function liveFileStagedChunks(marker: string) -> Stream<bytes> {
-  let chunk = liveFileOneMiBChunk()
+  final chunk = liveFileOneMiBChunk()
   emit(chunk)
   emit(bytes.fromUtf8(marker))
   emit(chunk)

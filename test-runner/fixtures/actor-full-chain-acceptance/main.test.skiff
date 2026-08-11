@@ -30,7 +30,7 @@ function actorTestExternalEffectUrl(path: string) -> string {
 }
 
 function actorTestEffectIngress(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let response = std.http.request(std.http.HttpClientRequest {
+  final response = std.http.request(std.http.HttpClientRequest {
     method: "POST",
     url: actorTestExternalEffectUrl(request.path),
     headers: Array.empty<std.http.HttpHeader>(),
@@ -45,7 +45,7 @@ function actorTestEffectIngress(request: std.http.HttpRequest) -> std.http.HttpR
 }
 
 function consumeActorTestEffect(path: string) -> string {
-  let response = std.http.request(std.http.HttpClientRequest {
+  final response = std.http.request(std.http.HttpClientRequest {
     method: "POST",
     url: actorTestSelfIngressUrl(path),
     headers: Array.empty<std.http.HttpHeader>(),
@@ -56,7 +56,7 @@ function consumeActorTestEffect(path: string) -> string {
 }
 
 function requireActorTestEffect(path: string, expected: string) -> void {
-  let actual = consumeActorTestEffect(path)
+  final actual = consumeActorTestEffect(path)
   if actual != expected {
     throw std.service.ProtocolError {
       target: "actor-test-effect",
@@ -115,7 +115,7 @@ test "root finalization waits for spawned and recursively spawned actor effects"
     ],
   }
 } {
-  let actor = std.actor.get<TestEffectActor>("spawned-effect-case")
+  final actor = std.actor.get<TestEffectActor>("spawned-effect-case")
   dispatch actor.consumeThenSpawn(
     "/actor-test-effect/spawned-first",
     "spawned-first-body",
@@ -137,6 +137,6 @@ test "direct synchronous actor call inherits only its case effect capability" ef
     },
   }
 } {
-  let actor = std.actor.get<TestEffectActor>("direct-sync-effect-case")
+  final actor = std.actor.get<TestEffectActor>("direct-sync-effect-case")
   assert actor.consume("/actor-test-effect/direct-sync") == "direct-sync-body"
 }

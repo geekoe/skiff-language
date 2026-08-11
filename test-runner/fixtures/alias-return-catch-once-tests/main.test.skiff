@@ -16,8 +16,8 @@ impl HostHttpBarrierObserver {
 }
 
 test "private interface receiver converges across top-level alias" {
-  let observed = Array.empty<string>()
-  let observer = HostHttpBarrierObserver { observed: observed }
+  final observed = Array.empty<string>()
+  final observer = HostHttpBarrierObserver { observed: observed }
   assert subjectImpl/main.dispatchObserved(
     "host-ping",
     "generation-7",
@@ -27,24 +27,24 @@ test "private interface receiver converges across top-level alias" {
 }
 
 test "package receiver method" {
-  let box = subjectImpl/main.makeBox("ok")
+  final box = subjectImpl/main.makeBox("ok")
   assert box.read() == "ok"
 }
 
 test "direct alias receiver chain followed by catch success executes effect once" {
-  let state = Array.empty<string>()
+  final state = Array.empty<string>()
   assert subjectImpl/main.aliasThenCatch(state, false) == "value:ok"
   assert state.length() == 1
 }
 
 test "direct alias receiver chain followed by catch error executes effect once" {
-  let state = Array.empty<string>()
+  final state = Array.empty<string>()
   assert subjectImpl/main.aliasThenCatch(state, true) == "value:error"
   assert state.length() == 1
 }
 
 test "fresh return receiver chain control executes effect once" {
-  let state = Array.empty<string>()
+  final state = Array.empty<string>()
   assert subjectImpl/main.copiedThenCatch(state) == "value:ok"
   assert state.length() == 1
 }
@@ -58,22 +58,22 @@ function joinChunks(chunks: Array<bytes>) -> string {
 }
 
 test "package alias receiver followed by nested catch call executes effect once" {
-  let state = Array.empty<string>()
-  let first = subjectImpl/main.alias(bytes.fromUtf8("value")).toUtf8String()
-  let second = joinChunks(subjectImpl/main.caughtEffect(state, false))
+  final state = Array.empty<string>()
+  final first = subjectImpl/main.alias(bytes.fromUtf8("value")).toUtf8String()
+  final second = joinChunks(subjectImpl/main.caughtEffect(state, false))
   assert first == "value"
   assert second == "ok"
   assert state.length() == 1
 }
 
 test "nested catch error executes effect once" {
-  let state = Array.empty<string>()
+  final state = Array.empty<string>()
   assert joinChunks(subjectImpl/main.caughtEffect(state, true)) == ""
   assert state.length() == 1
 }
 
 test "optional narrowing preserves alias and executes following catch once" {
-  let state = Array.empty<string>()
+  final state = Array.empty<string>()
   assert subjectImpl/main.optionalAliasThenCatch(bytes.fromUtf8("value"), state) == "value:ok"
   assert state.length() == 1
 }

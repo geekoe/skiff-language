@@ -27,8 +27,8 @@ function requestWithBody(method: string, path: string, body: bytes, headers: Arr
 }
 
 test "live raw http adapter handles runtime http envelope" {
-  let marker = root.internal.http_adapter.marker()
-  let response = root.internal.http_adapter.rawEcho(localRequest(marker))
+  final marker = root.internal.http_adapter.marker()
+  final response = root.internal.http_adapter.rawEcho(localRequest(marker))
 
   assert response.status == 200
   assert response.body.toUtf8String().contains("runtime-live-http:".concat(marker))
@@ -37,10 +37,10 @@ test "live raw http adapter handles runtime http envelope" {
 }
 
 test "live http adapter decodes typed json and returns json body" {
-  let marker = root.internal.http_adapter.marker()
+  final marker = root.internal.http_adapter.marker()
   var headers = Array.empty<std.http.HttpHeader>()
   headers.push(std.http.HttpHeader { name: "content-type", value: "application/json" })
-  let response = root.internal.http_adapter.typedJsonEcho(requestWithBody(
+  final response = root.internal.http_adapter.typedJsonEcho(requestWithBody(
     "POST",
     "/runtime-live/json",
     bytes.fromUtf8("{\"marker\":\"".concat(marker).concat("\",\"count\":3}")),
@@ -54,9 +54,9 @@ test "live http adapter decodes typed json and returns json body" {
 }
 
 test "live http adapter returns binary payload and guard short circuits" {
-  let marker = root.internal.http_adapter.marker()
-  let headers = Array.empty<std.http.HttpHeader>()
-  let binary = root.internal.http_adapter.binaryEcho(requestWithBody(
+  final marker = root.internal.http_adapter.marker()
+  final headers = Array.empty<std.http.HttpHeader>()
+  final binary = root.internal.http_adapter.binaryEcho(requestWithBody(
     "POST",
     "/runtime-live/binary",
     bytes.fromUtf8(marker),
@@ -65,7 +65,7 @@ test "live http adapter returns binary payload and guard short circuits" {
   assert binary.status == 201
   assert binary.body.toUtf8String() == "runtime-live-binary:".concat(marker)
 
-  let guarded = root.internal.http_adapter.guardedPost(requestWithBody(
+  final guarded = root.internal.http_adapter.guardedPost(requestWithBody(
     "GET",
     "/runtime-live/guarded",
     bytes.fromUtf8(""),
@@ -75,7 +75,7 @@ test "live http adapter returns binary payload and guard short circuits" {
 }
 
 test "live http adapter streams response events and package route uses private wrapper" {
-  let marker = root.internal.http_adapter.marker()
+  final marker = root.internal.http_adapter.marker()
   var headers = Array.empty<std.http.HttpHeader>()
   var sawStart = false
   var sawChunk = false
@@ -105,7 +105,7 @@ test "live http adapter streams response events and package route uses private w
   assert sawEnd
   assert body == "runtime-live-stream:".concat(marker)
 
-  let package = root.internal.http_adapter.packageEcho(requestWithBody(
+  final package = root.internal.http_adapter.packageEcho(requestWithBody(
     "POST",
     "/runtime-live/package",
     bytes.fromUtf8("package-direct"),

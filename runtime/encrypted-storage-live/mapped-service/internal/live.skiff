@@ -55,11 +55,11 @@ function guard(request: std.http.HttpRequest) -> std.http.HttpResponse? {
 }
 
 function writerBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse? {
-  let barrier = db find RotationBarrier("encrypted-storage-live")
+  final barrier = db find RotationBarrier("encrypted-storage-live")
   if barrier == null || !barrier.active {
     return null
   }
-  let provided = std.http.header(request, "x-skiff-rotation-token")
+  final provided = std.http.header(request, "x-skiff-rotation-token")
   if provided != null && provided == barrier.token {
     return null
   }
@@ -67,8 +67,8 @@ function writerBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse? 
 }
 
 function activateBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<BarrierInput>(request)
-  let result = db upsert RotationBarrier("encrypted-storage-live") {
+  final input = std.http.decodeJson<BarrierInput>(request)
+  final result = db upsert RotationBarrier("encrypted-storage-live") {
     token = input.token
     active = true
   } {
@@ -79,15 +79,15 @@ function activateBarrier(request: std.http.HttpRequest) -> std.http.HttpResponse
 }
 
 function barrierStatus(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let barrier = db find RotationBarrier("encrypted-storage-live")
+  final barrier = db find RotationBarrier("encrypted-storage-live")
   return std.http.json(200, BarrierStatus { active: barrier != null && barrier.active })
 }
 
 function insertServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialInput>(request)
-  let row = db insert Credential {
+  final input = std.http.decodeJson<CredentialInput>(request)
+  final row = db insert Credential {
     id = input.id
     apiKey = input.apiKey
     label = input.label
@@ -97,28 +97,28 @@ function insertServiceContextProbe(request: std.http.HttpRequest) -> std.http.Ht
 }
 
 function readServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<IdInput>(request)
+  final input = std.http.decodeJson<IdInput>(request)
   return std.http.json(200, db require Credential(input.id))
 }
 
 function scanServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let input = std.http.decodeJson<ScanInput>(request)
-  let rows = db find many Credential { where id > input.lastId order id asc limit 100 }
+  final input = std.http.decodeJson<ScanInput>(request)
+  final rows = db find many Credential { where id > input.lastId order id asc limit 100 }
   return std.http.json(200, rows)
 }
 
 function rewriteServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialInput>(request)
-  let row = db update Credential(input.id) { apiKey = input.apiKey }
+  final input = std.http.decodeJson<CredentialInput>(request)
+  final row = db update Credential(input.id) { apiKey = input.apiKey }
   return std.http.json(200, row)
 }
 
 function rewriteServiceContextProbeBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialBatchInput>(request)
+  final input = std.http.decodeJson<CredentialBatchInput>(request)
   db transaction {
     for row in input.rows {
       db update Credential(row.id) { apiKey = row.apiKey }
@@ -128,10 +128,10 @@ function rewriteServiceContextProbeBatch(request: std.http.HttpRequest) -> std.h
 }
 
 function restoreServiceContextProbe(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
-  let input = std.http.decodeJson<CredentialInput>(request)
-  let row = db update Credential(input.id) {
+  final input = std.http.decodeJson<CredentialInput>(request)
+  final row = db update Credential(input.id) {
     apiKey = input.apiKey
     label = input.label
     sequence = input.sequence
@@ -140,7 +140,7 @@ function restoreServiceContextProbe(request: std.http.HttpRequest) -> std.http.H
 }
 
 function insertOne(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
   return encryptedStore/insertOne(request)
 }
@@ -154,13 +154,13 @@ function scan(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 function rewrite(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
   return encryptedStore/rewrite(request)
 }
 
 function rewriteBatch(request: std.http.HttpRequest) -> std.http.HttpResponse {
-  let blocked = writerBarrier(request)
+  final blocked = writerBarrier(request)
   if blocked != null { return blocked }
   return encryptedStore/rewriteBatch(request)
 }

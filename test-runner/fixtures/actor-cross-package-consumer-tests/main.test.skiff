@@ -2,7 +2,7 @@ import std
 import subjectImpl
 
 test "top-level alias resolves provider actor for registry get and method calls" {
-  let actor = std.actor.get<subjectImpl/thread_actor.ThreadActor>("thread-1")
+  final actor = std.actor.get<subjectImpl/thread_actor.ThreadActor>("thread-1")
   assert actor.read() == ""
   assert actor.setLabel("hello") == "hello"
   assert actor.read() == "hello"

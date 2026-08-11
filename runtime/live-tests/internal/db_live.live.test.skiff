@@ -3,66 +3,66 @@ import std
 test defaultRun false
 
 test "live service db persists object db operations" {
-  let marker = root.internal.db_live.marker()
-  let docId = "runtime-live-db-".concat(std.crypto.uuidSimple())
+  final marker = root.internal.db_live.marker()
+  final docId = "runtime-live-db-".concat(std.crypto.uuidSimple())
 
-  let inserted = db insert root.internal.db_live.RuntimeLiveDoc { id = docId value = marker visits = 1 rank = 10 }
+  final inserted = db insert root.internal.db_live.RuntimeLiveDoc { id = docId value = marker visits = 1 rank = 10 }
   assert inserted.id == docId
   assert inserted.value == marker
   assert inserted.visits == 1
   assert inserted.rank == 10
 
-  let read = db require root.internal.db_live.RuntimeLiveDoc(docId)
+  final read = db require root.internal.db_live.RuntimeLiveDoc(docId)
   assert read.id == docId
   assert read.value == marker
 
-  let found = db find root.internal.db_live.RuntimeLiveDoc(docId)
+  final found = db find root.internal.db_live.RuntimeLiveDoc(docId)
   assert found != null
   assert found.id == docId
 
-  let updated = db update root.internal.db_live.RuntimeLiveDoc(docId) { visits += 1 }
+  final updated = db update root.internal.db_live.RuntimeLiveDoc(docId) { visits += 1 }
   assert updated != null
   assert updated.visits == 2
   assert db exists root.internal.db_live.RuntimeLiveDoc(docId)
   assert db count root.internal.db_live.RuntimeLiveDoc { where id == docId } == 1
 
-  let deleted = db delete root.internal.db_live.RuntimeLiveDoc(docId)
+  final deleted = db delete root.internal.db_live.RuntimeLiveDoc(docId)
   assert deleted
   assert !db exists root.internal.db_live.RuntimeLiveDoc(docId)
 }
 
 test "live service db supports find order offset replace upsert and transaction" {
-  let marker = root.internal.db_live.marker()
-  let prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
-  let firstId = prefix.concat("-a")
-  let secondId = prefix.concat("-b")
-  let thirdId = prefix.concat("-c")
-  let upsertId = prefix.concat("-upsert")
-  let rollbackId = prefix.concat("-rollback")
+  final marker = root.internal.db_live.marker()
+  final prefix = "runtime-live-db-".concat(std.crypto.uuidSimple())
+  final firstId = prefix.concat("-a")
+  final secondId = prefix.concat("-b")
+  final thirdId = prefix.concat("-c")
+  final upsertId = prefix.concat("-upsert")
+  final rollbackId = prefix.concat("-rollback")
 
   db insert root.internal.db_live.RuntimeLiveDoc { id = firstId value = marker.concat("-first") visits = 1 rank = 10 }
   db insert root.internal.db_live.RuntimeLiveDoc { id = secondId value = marker.concat("-second") visits = 2 rank = 20 }
   db insert root.internal.db_live.RuntimeLiveDoc { id = thirdId value = marker.concat("-third") visits = 3 rank = 30 }
 
-  let ordered = db find many root.internal.db_live.RuntimeLiveDoc { where id != null order rank asc offset 1 limit 1 }
+  final ordered = db find many root.internal.db_live.RuntimeLiveDoc { where id != null order rank asc offset 1 limit 1 }
   assert ordered.length() == 1
   for row in ordered {
     assert row.id == secondId
     assert row.rank == 20
   }
 
-  let replaced = db replace root.internal.db_live.RuntimeLiveDoc(secondId) { value = marker.concat("-replaced") visits = 22 rank = 25 }
+  final replaced = db replace root.internal.db_live.RuntimeLiveDoc(secondId) { value = marker.concat("-replaced") visits = 22 rank = 25 }
   assert replaced != null
   assert replaced.id == secondId
   assert replaced.value == marker.concat("-replaced")
   assert replaced.visits == 22
 
-  let upsertInserted = db upsert root.internal.db_live.RuntimeLiveDoc(upsertId) { value = marker.concat("-created") visits = 1 rank = 40 } { visits += 1 }
+  final upsertInserted = db upsert root.internal.db_live.RuntimeLiveDoc(upsertId) { value = marker.concat("-created") visits = 1 rank = 40 } { visits += 1 }
   assert upsertInserted.inserted
   assert upsertInserted.value.id == upsertId
   assert upsertInserted.value.visits == 1
 
-  let upsertUpdated = db upsert root.internal.db_live.RuntimeLiveDoc(upsertId) { value = marker.concat("-created") visits = 1 rank = 40 } { visits += 1 }
+  final upsertUpdated = db upsert root.internal.db_live.RuntimeLiveDoc(upsertId) { value = marker.concat("-created") visits = 1 rank = 40 } { visits += 1 }
   assert !upsertUpdated.inserted
   assert upsertUpdated.value.visits == 2
 
@@ -74,14 +74,14 @@ test "live service db supports find order offset replace upsert and transaction"
   assert db require root.internal.db_live.RuntimeLiveDoc(firstId).visits == 11
   assert !db exists root.internal.db_live.RuntimeLiveDoc(thirdId)
 
-  let committed = db transaction value {
+  final committed = db transaction value {
     db require root.internal.db_live.RuntimeLiveDoc(upsertId)
   }
   assert committed.visits == 2
 
   db insert root.internal.db_live.RuntimeLiveDoc { id = rollbackId value = marker.concat("-rollback") visits = 1 rank = 50 }
-  let beforeRollback = db require root.internal.db_live.RuntimeLiveDoc(firstId).visits
-  let rollback = catch<root.internal.db_live.RuntimeLiveRollbackError>(root.internal.db_live.rollbackProbe(firstId))
+  final beforeRollback = db require root.internal.db_live.RuntimeLiveDoc(firstId).visits
+  final rollback = catch<root.internal.db_live.RuntimeLiveRollbackError>(root.internal.db_live.rollbackProbe(firstId))
   assert rollback.tag == "err"
   assert db require root.internal.db_live.RuntimeLiveDoc(firstId).visits == beforeRollback
 
@@ -92,17 +92,17 @@ test "live service db supports find order offset replace upsert and transaction"
 }
 
 test "live service db claim reads releases and fences writes" {
-  let marker = root.internal.db_live.marker()
-  let docId = "runtime-live-lease-".concat(std.crypto.uuidSimple())
+  final marker = root.internal.db_live.marker()
+  final docId = "runtime-live-lease-".concat(std.crypto.uuidSimple())
 
   db insert root.internal.db_live.RuntimeLiveDoc { id = docId value = marker visits = 1 rank = 10 }
 
-  let firstClaim = root.internal.db_live.claimAndUpdateProbe(docId)
+  final firstClaim = root.internal.db_live.claimAndUpdateProbe(docId)
   assert firstClaim
   assert db require root.internal.db_live.RuntimeLiveDoc(docId).visits == 2
   assert db lease root.internal.db_live.RuntimeLiveDoc(docId).drain == null
 
-  let secondClaim = root.internal.db_live.claimAndUpdateProbe(docId)
+  final secondClaim = root.internal.db_live.claimAndUpdateProbe(docId)
   assert secondClaim
   assert db require root.internal.db_live.RuntimeLiveDoc(docId).visits == 3
 
@@ -110,11 +110,11 @@ test "live service db claim reads releases and fences writes" {
 }
 
 test "live service db dynamically rejects claim inside transaction" {
-  let marker = root.internal.db_live.marker()
-  let docId = "runtime-live-lease-tx-".concat(std.crypto.uuidSimple())
+  final marker = root.internal.db_live.marker()
+  final docId = "runtime-live-lease-tx-".concat(std.crypto.uuidSimple())
 
   db insert root.internal.db_live.RuntimeLiveDoc { id = docId value = marker visits = 1 rank = 10 }
-  let rejected = catch<std.db.DecodeError>(db transaction value {
+  final rejected = catch<std.db.DecodeError>(db transaction value {
     root.internal.db_live.dynamicTransactionClaimProbe(docId)
   })
 

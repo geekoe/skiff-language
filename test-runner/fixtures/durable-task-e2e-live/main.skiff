@@ -45,13 +45,13 @@ function markEffectSlow(tag: string) -> void {
 }
 
 function submitImmediate(body: SubmitInput) -> string {
-  let task = dispatch markEffect(body.tag)
+  final task = dispatch markEffect(body.tag)
   db insert TaskEntry { id = body.id task = task }
   return "submitted"
 }
 
 function submitAfter(body: SubmitInput) -> string {
-  let task = dispatch markEffect(body.tag) after(3000ms)
+  final task = dispatch markEffect(body.tag) after(3000ms)
   db insert TaskEntry { id = body.id task = task }
   return "submitted"
 }
@@ -62,13 +62,13 @@ function submitAfter(body: SubmitInput) -> string {
 // reachable by the compiler/lowering and the runtime eval at-timing tests
 // (`canonical_task_statement_at_timing_evaluates_expression_once`).
 function scheduleAt(future: Instant) -> string {
-  let task = dispatch markEffect("effect-at") at(future)
+  final task = dispatch markEffect("effect-at") at(future)
   db insert TaskEntry { id = "task-at" task = task }
   return "submitted"
 }
 
 function submitSlow(body: SubmitInput) -> string {
-  let task = dispatch markEffectSlow(body.tag)
+  final task = dispatch markEffectSlow(body.tag)
   db insert TaskEntry { id = body.id task = task }
   return "submitted"
 }
@@ -77,7 +77,7 @@ function submitSlow(body: SubmitInput) -> string {
 // fix), so `TaskStatus` / `TaskCancelResult` branches are matched directly
 // instead of projecting through std.json.
 function statusKind(ref: std.task.TaskRef) -> string {
-  let s = std.task.status(ref)
+  final s = std.task.status(ref)
   match s {
     { kind: "scheduled" } => {
       return "scheduled"
@@ -110,7 +110,7 @@ function statusKind(ref: std.task.TaskRef) -> string {
 }
 
 function cancelKind(ref: std.task.TaskRef) -> string {
-  let result = std.task.cancel(ref)
+  final result = std.task.cancel(ref)
   match result {
     { kind: "canceled" } => {
       return "canceled"
@@ -131,7 +131,7 @@ function cancelKind(ref: std.task.TaskRef) -> string {
 }
 
 function status(body: IdInput) -> StatusOutput {
-  let row = db find TaskEntry(body.id)
+  final row = db find TaskEntry(body.id)
   if row == null {
     return { kind: "missing" }
   }
@@ -139,7 +139,7 @@ function status(body: IdInput) -> StatusOutput {
 }
 
 function cancel(body: IdInput) -> StatusOutput {
-  let row = db find TaskEntry(body.id)
+  final row = db find TaskEntry(body.id)
   if row == null {
     return { kind: "missing" }
   }
@@ -147,7 +147,7 @@ function cancel(body: IdInput) -> StatusOutput {
 }
 
 function effect(body: IdInput) -> number {
-  let row = db find Effect(body.id)
+  final row = db find Effect(body.id)
   if row == null {
     return 0
   }
@@ -170,13 +170,13 @@ impl Counter {
   }
 
   function scheduleIncrement(id: string) -> string {
-    let ref = dispatch self.increment()
+    final ref = dispatch self.increment()
     db insert TaskEntry { id = id task = ref }
     return "scheduled"
   }
 
   function scheduleIncrementDelayed(id: string) -> string {
-    let ref = dispatch self.increment() after(4000ms)
+    final ref = dispatch self.increment() after(4000ms)
     db insert TaskEntry { id = id task = ref }
     return "scheduled"
   }
@@ -192,13 +192,13 @@ impl Counter {
 }
 
 function submitActor(body: SubmitInput) -> string {
-  let actor = std.actor.get<Counter>(body.tag)
+  final actor = std.actor.get<Counter>(body.tag)
   actor.scheduleIncrement(body.id)
   return "submitted"
 }
 
 function submitActorAfter(body: SubmitInput) -> string {
-  let actor = std.actor.get<Counter>(body.tag)
+  final actor = std.actor.get<Counter>(body.tag)
   actor.scheduleIncrementDelayed(body.id)
   return "submitted"
 }
@@ -208,13 +208,13 @@ function submitActorAfter(body: SubmitInput) -> string {
 // the activation snapshot from its local live incarnation of the same actor
 // (no actor execution frame involved).
 function submitActorDirect(body: SubmitInput) -> string {
-  let actor = std.actor.get<Counter>(body.tag)
-  let task = dispatch actor.increment()
+  final actor = std.actor.get<Counter>(body.tag)
+  final task = dispatch actor.increment()
   db insert TaskEntry { id = body.id task = task }
   return "submitted"
 }
 
 function actorCount(body: IdInput) -> number {
-  let actor = std.actor.get<Counter>(body.id)
+  final actor = std.actor.get<Counter>(body.id)
   return actor.count()
 }

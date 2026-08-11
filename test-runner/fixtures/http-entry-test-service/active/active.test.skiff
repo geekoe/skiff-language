@@ -31,7 +31,7 @@ function plain(request: std.http.HttpRequest) -> std.http.HttpResponse {
 }
 
 test "second active self-ingress is rejected" {
-  let active = std.http.stream(request("/slow"))
+  final active = std.http.stream(request("/slow"))
   assert active.status == 200
   std.http.request(request("/plain"))
 }
