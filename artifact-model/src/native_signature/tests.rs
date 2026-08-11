@@ -61,6 +61,10 @@ fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
         "std.actor.get",
         "core.array.empty",
         "core.map.empty",
+        "std.config.require",
+        "std.config.optional",
+        "std.config.has",
+        "std.db.operation",
         "core.bytes.concat",
         "core.bytes.fromBase64",
         "core.bytes.fromHex",
@@ -135,16 +139,22 @@ fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
                     | "std.http.client.request"
                     | "std.http.client.sse"
                     | "std.http.client.stream"
+                    | "std.db.operation"
                     | "std.task.cancel"
                     | "std.task.status"
                     | "std.time.sleep"
                     | "std.websocket.requestJsonToConnection"
             );
+        let is_host_effect_pending = semantics.binding_key == "std.db.operation";
         assert_eq!(semantics.effects.may_pending, is_pending);
         assert_eq!(
             semantics.effects.pending_effect_categories,
             if is_pending {
-                vec![PendingEffectCategory::NativeCall]
+                if is_host_effect_pending {
+                    vec![PendingEffectCategory::HostEffect]
+                } else {
+                    vec![PendingEffectCategory::NativeCall]
+                }
             } else {
                 Vec::new()
             }
@@ -724,6 +734,7 @@ fn audited_receiver_identities_map_to_exact_native_signatures() {
             "core.date.toEpochMilliseconds",
         ),
         ("Duration", "toMilliseconds", "core.duration.toMilliseconds"),
+        ("string", "concat", "std.string.concat"),
     ] {
         let op = builtin_receiver_op_by_name(root, method)
             .expect("audited receiver op should be supported");
@@ -732,4 +743,85 @@ fn audited_receiver_identities_map_to_exact_native_signatures() {
             Some(binding_key)
         );
     }
+}
+
+#[test]
+fn config_intrinsics_are_host_effect_registry_targets_without_pending() {
+    for (binding_key, target, type_param_count, params, return_type) in [
+        (
+            "std.config.require",
+            "config.require",
+            1,
+            &[super::STRING][..],
+            super::T0,
+        ),
+        (
+            "std.config.optional",
+            "config.optional",
+            1,
+            &[super::STRING][..],
+            super::NativeSignatureTypeExpr::Nullable(&super::T0),
+        ),
+        (
+            "std.config.has",
+            "config.has",
+            0,
+            &[super::STRING][..],
+            super::BOOL,
+        ),
+    ] {
+        let semantics = native_callable_semantics(binding_key)
+            .unwrap_or_else(|| panic!("{binding_key} should have audited semantics"));
+        assert!(!semantics.effects.may_pending());
+        assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+        let signature = STD_NATIVE_SIGNATURES
+            .iter()
+            .find(|signature| signature.binding_key == binding_key)
+            .unwrap_or_else(|| panic!("{binding_key} should have a native signature"));
+        assert_eq!(signature.target, target);
+        assert!(signature.aliases.is_empty());
+        assert_eq!(signature.type_param_count, type_param_count);
+        assert_eq!(signature.params, params);
+        assert_eq!(signature.return_type, return_type);
+    }
+}
+
+#[test]
+fn db_operation_semantics_are_pending_host_effects() {
+    let semantics = native_callable_semantics("std.db.operation")
+        .expect("std.db.operation should have audited semantics");
+    assert_eq!(
+        semantics.effects,
+        CallableMayEffects {
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::HostEffect],
+            inout_path_effects: Vec::new(),
+        }
+    );
+    assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
+    let signature = STD_NATIVE_SIGNATURES
+        .iter()
+        .find(|signature| signature.binding_key == "std.db.operation")
+        .expect("std.db.operation should have a native signature");
+    assert_eq!(signature.target, "std.db.operation");
+    assert!(signature.aliases.is_empty());
+    assert_eq!(signature.type_param_count, 1);
+    assert_eq!(signature.params, &[super::T0]);
+    assert_eq!(signature.return_type, super::T0);
+}
+
+#[test]
+fn string_concat_receiver_signature_is_two_strings() {
+    let op = builtin_receiver_op_by_name("string", "concat")
+        .expect("string.concat receiver op should exist");
+    let signature = native_signature_for_receiver_op(op)
+        .expect("string.concat should have receiver intrinsic semantics");
+    assert_eq!(signature.target, "string.concat");
+    assert_eq!(signature.binding_key, "std.string.concat");
+    assert_eq!(signature.type_param_count, 0);
+    assert_eq!(signature.params, &[super::STRING, super::STRING]);
+    assert_eq!(signature.return_type, super::STRING);
 }

@@ -15,9 +15,9 @@ use crate::{
 use super::contract::*;
 
 pub const HOST_EFFECT_REGISTRY_ID: &str = "skiff-host-effect-registry";
-pub const HOST_EFFECT_REGISTRY_VERSION: &str = "skiff-host-effect-registry-v1";
+pub const HOST_EFFECT_REGISTRY_VERSION: &str = "skiff-host-effect-registry-v2";
 pub const HOST_EFFECT_REGISTRY_FINGERPRINT: &str =
-    "9d3ef8fef0faed7d6e9c6ec25531ffde486050d449ba06f566712aa4c57ea13b";
+    "720859be58de0dc417ba4e0627f8fd1d0d2e63ef6983656a4036d0a68e7625d9";
 
 #[derive(Debug)]
 pub struct HostEffectRegistry {
@@ -219,6 +219,8 @@ fn fingerprint(
 fn required_context(binding_key: &str) -> Option<HostEffectRequiredContext> {
     use HostEffectRequiredContext as Context;
     Some(match binding_key {
+        "std.config.require" | "std.config.optional" | "std.config.has" => Context::Config,
+        "std.db.operation" => Context::Db,
         "std.actor.get" => Context::Actor,
         "core.date.now" | "std.time.sleep" => Context::Time,
         "std.http.client.request" | "std.http.client.stream" | "std.http.client.sse" => {

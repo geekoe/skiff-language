@@ -19,7 +19,9 @@ pub struct HostEffectRegistryIdentity {
 #[serde(rename_all = "camelCase")]
 pub enum HostEffectRequiredContext {
     None,
+    Config,
     Actor,
+    Db,
     File,
     Time,
     HttpClient,

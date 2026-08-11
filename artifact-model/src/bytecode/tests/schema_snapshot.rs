@@ -297,3 +297,82 @@ fn version_constants_freeze_schema_v6_and_isa_v4() {
     assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v6");
     assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v4");
 }
+
+#[test]
+fn db_operation_reference_round_trips_camel_case_without_metadata_strings() {
+    let effect = HostEffectReference {
+        target: crate::NativeTarget {
+            namespace: "std".to_string(),
+            symbol: "db.operation".to_string(),
+            binding_key: Some("std.db.operation".to_string()),
+            metadata: std::collections::BTreeMap::new(),
+        },
+        signature: HostEffectSignature {
+            parameter_types: vec![string_type()],
+            parameter_modes: vec![crate::ParamModeIr::Value],
+            parameter_plans: vec![snapshot_share()],
+            result_types: vec![string_type()],
+            result_plans: vec![snapshot_share()],
+            effects: crate::CallableMayEffects {
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_pending: true,
+                pending_effect_categories: vec![crate::PendingEffectCategory::HostEffect],
+                inout_path_effects: Vec::new(),
+            },
+        },
+        db_operation: Some(Box::new(crate::bytecode::dto::DbOperationReference {
+            op: crate::bytecode::dto::DbOperationKind::Insert,
+            target: crate::DbTargetIr {
+                type_ref: string_type(),
+                type_name: "fixture".to_string(),
+            },
+            operand_roles: vec![crate::bytecode::dto::DbOperandRole::ObjectFields],
+            result_type: string_type(),
+            result_plans: vec![snapshot_share()],
+        })),
+    };
+    let value = serde_json::to_value(&effect).expect("serialize DB host effect");
+    assert_eq!(value["dbOperation"]["op"], serde_json::json!("insert"));
+    assert_eq!(value["dbOperation"]["target"]["typeName"], "fixture");
+    assert_eq!(
+        value["dbOperation"]["operandRoles"],
+        serde_json::json!(["objectFields"])
+    );
+    assert_eq!(value["dbOperation"]["resultType"]["kind"], "builtin");
+    assert_eq!(value["dbOperation"]["resultPlans"][0]["kind"], "snapshotShare");
+    let decoded: HostEffectReference =
+        serde_json::from_value(value).expect("decode DB host effect");
+    assert_eq!(decoded, effect);
+}
+
+#[test]
+fn db_operation_wire_rejects_unsupported_ops_and_roles() {
+    assert!(serde_json::from_value::<crate::bytecode::dto::DbOperationKind>(
+        serde_json::json!("update")
+    )
+    .is_err());
+    assert!(serde_json::from_value::<crate::bytecode::dto::DbOperandRole>(
+        serde_json::json!("query")
+    )
+    .is_err());
+}
+
+#[test]
+fn std_db_operation_without_structured_reference_fails_closed() {
+    let mut artifact = canonical_artifact();
+    let BytecodePoolEntry::HostEffectRef(effect) = &mut artifact.image.pools.effects[0] else {
+        unreachable!("canonical fixture has a host effect");
+    };
+    effect.target = crate::NativeTarget {
+        namespace: "std".to_string(),
+        symbol: "db.operation".to_string(),
+        binding_key: Some("std.db.operation".to_string()),
+        metadata: std::collections::BTreeMap::new(),
+    };
+    effect.db_operation = None;
+    let error = structurally_validate(&artifact)
+        .expect_err("std.db.operation must require a structured DB operation");
+    assert!(error.to_string().contains("dbOperation"), "{error}");
+}

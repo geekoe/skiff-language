@@ -112,6 +112,37 @@ fn receiver_date_epoch() -> IntrinsicReference {
     }
 }
 
+fn string_plan() -> ValueTransferPlan {
+    ValueTransferPlan::SnapshotShare {
+        drop: ValueDropPlan::SnapshotRelease,
+    }
+}
+
+fn receiver_string_concat() -> IntrinsicReference {
+    let entry = intrinsic_registry()
+        .entries()
+        .iter()
+        .find(|entry| {
+            matches!(
+                &entry.target,
+                crate::BytecodeIntrinsicRef::Receiver { op }
+                    if op.canonical_key == "receiver:string.concat@1"
+            )
+        })
+        .unwrap();
+    IntrinsicReference {
+        target: entry.target.clone(),
+        signature: HostEffectSignature {
+            parameter_types: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("string")],
+            parameter_modes: vec![ParamModeIr::Value, ParamModeIr::Value],
+            parameter_plans: vec![string_plan(), string_plan()],
+            result_types: vec![TypeRefIr::builtin("string")],
+            result_plans: vec![string_plan()],
+            effects: entry.signature.effects.clone(),
+        },
+    }
+}
+
 #[test]
 fn static_receiver_and_explicit_unsupported_authority_are_frozen() {
     let registry = intrinsic_registry();
@@ -119,14 +150,14 @@ fn static_receiver_and_explicit_unsupported_authority_are_frozen() {
     assert_eq!(registry.identity().version, INTRINSIC_REGISTRY_VERSION);
     assert_eq!(
         INTRINSIC_REGISTRY_FINGERPRINT,
-        "fc6c7ab282d3b5d3cad79a84fec84d71d0749d6d75cbd3dbb0bb7b96e7cd7c61"
+        "0737ed2b2cb8a514a6cf73b6f401cc0a47304c35bb9dd294c8022c57ee8c462a"
     );
     assert_eq!(
         registry.identity().fingerprint,
         INTRINSIC_REGISTRY_FINGERPRINT
     );
-    assert_eq!(registry.entries().len(), 8);
-    assert_eq!(UNSUPPORTED_INTRINSIC_RECEIVER_KEYS.len(), 34);
+    assert_eq!(registry.entries().len(), 9);
+    assert_eq!(UNSUPPORTED_INTRINSIC_RECEIVER_KEYS.len(), 33);
     assert!(registry
         .entries()
         .iter()
@@ -137,6 +168,7 @@ fn static_receiver_and_explicit_unsupported_authority_are_frozen() {
 fn static_and_receiver_matchers_accept_exact_instantiations() {
     assert!(match_reference(&static_array_empty()).is_ok());
     assert!(match_reference(&receiver_date_epoch()).is_ok());
+    assert!(match_reference(&receiver_string_concat()).is_ok());
 }
 
 #[test]

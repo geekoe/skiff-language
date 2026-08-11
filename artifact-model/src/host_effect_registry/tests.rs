@@ -5,7 +5,7 @@ use crate::{
     bytecode::{HostEffectSignature, ValueDropPlan, ValueTransferPlan},
     CallableMayEffects, InterfaceInstantiationRef, MetadataValue, PackageSchemaTypeId, ParamModeIr,
     PendingEffectCategory, ResolvedPackageValueType, TypeRefIr, ValueLifecycleFactResolver,
-    ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
+    ValueLifecyclePolicyBudget, ValueLifecycleResolverError, ValueProvenance,
 };
 
 struct BuiltinResolver;
@@ -92,13 +92,13 @@ fn built_in_registry_is_sorted_sparse_and_frozen() {
     assert_eq!(registry.identity().version, HOST_EFFECT_REGISTRY_VERSION);
     assert_eq!(
         HOST_EFFECT_REGISTRY_FINGERPRINT,
-        "9d3ef8fef0faed7d6e9c6ec25531ffde486050d449ba06f566712aa4c57ea13b"
+        "720859be58de0dc417ba4e0627f8fd1d0d2e63ef6983656a4036d0a68e7625d9"
     );
     assert_eq!(
         registry.identity().fingerprint,
         HOST_EFFECT_REGISTRY_FINGERPRINT
     );
-    assert_eq!(registry.entries().len(), 50);
+    assert_eq!(registry.entries().len(), 54);
     assert!(registry
         .entries()
         .windows(2)
@@ -273,4 +273,40 @@ fn constructor_rejects_nonadjacent_bindings_and_alias_collisions() {
         HostEffectRegistry::new("test", "v1", vec![receiver]),
         Err(HostEffectRegistryBuildError::InvalidReceiver { .. })
     ));
+}
+
+#[test]
+fn config_host_effect_entries_are_fresh_non_pending_and_config_scoped() {
+    for binding_key in ["std.config.require", "std.config.optional", "std.config.has"] {
+        let entry = host_effect_registry()
+            .entries()
+            .iter()
+            .find(|entry| entry.binding_key == binding_key)
+            .unwrap_or_else(|| panic!("{binding_key} must be registered"));
+        assert_eq!(entry.required_context, HostEffectRequiredContext::Config);
+        assert!(!entry.signature.effects.may_pending());
+        assert_eq!(entry.return_provenance, ValueProvenance::Fresh);
+    }
+    let has = host_effect_registry()
+        .entries()
+        .iter()
+        .find(|entry| entry.binding_key == "std.config.has")
+        .expect("config.has must be registered");
+    assert_eq!(has.signature.type_parameter_count, 0);
+}
+
+#[test]
+fn db_operation_host_effect_entry_is_pending_db_scoped_host_effect() {
+    let entry = host_effect_registry()
+        .entries()
+        .iter()
+        .find(|entry| entry.binding_key == "std.db.operation")
+        .expect("std.db.operation must be registered");
+    assert_eq!(entry.required_context, HostEffectRequiredContext::Db);
+    assert_eq!(
+        entry.signature.effects.pending_effect_categories,
+        vec![PendingEffectCategory::HostEffect]
+    );
+    assert!(entry.signature.effects.may_pending());
+    assert_eq!(entry.return_provenance, ValueProvenance::Fresh);
 }

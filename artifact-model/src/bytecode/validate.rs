@@ -919,7 +919,76 @@ fn validate_host_effect_reference(
         )));
     };
     validate_adapter_key(binding_key, &format!("{location}.target"))?;
-    validate_callable_signature(&effect.signature, pools, location, true)
+    validate_callable_signature(&effect.signature, pools, location, true)?;
+    match (binding_key, effect.db_operation.as_ref()) {
+        ("std.db.operation", Some(operation)) => {
+            validate_db_operation_reference(effect, pools, location, operation)
+        }
+        ("std.db.operation", None) => Err(header_error(format!(
+            "{location}.dbOperation is required for std.db.operation"
+        ))),
+        (_, Some(_)) => Err(header_error(format!(
+            "{location}.dbOperation is only valid for std.db.operation"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+fn validate_db_operation_reference(
+    effect: &HostEffectReference,
+    pools: &BytecodePools,
+    location: &str,
+    operation: &crate::bytecode::dto::DbOperationReference,
+) -> Result<(), StructuralValidationError> {
+    let operation_location = format!("{location}.dbOperation");
+    if operation.op != crate::bytecode::dto::DbOperationKind::Insert {
+        return Err(header_error(format!(
+            "{operation_location}.op only supports single insert in this contract generation"
+        )));
+    }
+    if operation.operand_roles
+        != vec![crate::bytecode::dto::DbOperandRole::ObjectFields]
+    {
+        return Err(header_error(format!(
+            "{operation_location}.operandRoles only supports ObjectFields in this contract generation"
+        )));
+    }
+    if operation.target.type_name.is_empty() {
+        return Err(header_error(format!(
+            "{operation_location}.target.typeName must not be empty"
+        )));
+    }
+    validate_inline_type_depth(
+        &operation.target.type_ref,
+        &format!("{operation_location}.target.typeRef"),
+    )?;
+    validate_inline_type_depth(
+        &operation.result_type,
+        &format!("{operation_location}.resultType"),
+    )?;
+    if effect.signature.parameter_types.len() != 1
+        || effect.signature.parameter_plans.len() != 1
+        || operation.target.type_ref != effect.signature.parameter_types[0]
+    {
+        return Err(header_error(format!(
+            "{operation_location}.target.typeRef must match the single insert parameter type"
+        )));
+    }
+    if effect.signature.result_types.len() != 1
+        || effect.signature.result_plans.len() != 1
+        || operation.result_type != effect.signature.result_types[0]
+        || operation.result_plans != effect.signature.result_plans
+    {
+        return Err(header_error(format!(
+            "{operation_location} result type/plans must match the single insert result signature"
+        )));
+    }
+    validate_transfer_plan(
+        &operation.result_plans[0],
+        pools,
+        None,
+        &format!("{operation_location}.resultPlans[0]"),
+    )
 }
 
 fn validate_callable_signature(

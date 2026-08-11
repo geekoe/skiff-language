@@ -494,6 +494,37 @@ pub struct HostEffectSignature {
     pub effects: crate::CallableMayEffects,
 }
 
+/// Structured DB operation kind carried by a host-effect invocation. The first
+/// contract generation only admits single-object insert; unsupported DB
+/// operations remain fail-closed at serde and structural validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum DbOperationKind {
+    Insert,
+}
+
+/// Role of each operand passed to a structured DB operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum DbOperandRole {
+    ObjectFields,
+}
+
+/// Exact typed facts for a DB operation carried by `HostEffectReference`.
+///
+/// This is intentionally not a metadata string: `HostEffectSignature` still
+/// carries the instantiated parameter/result plans, while this reference names
+/// the operation, target and operand roles as typed artifact data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DbOperationReference {
+    pub op: DbOperationKind,
+    pub target: crate::DbTargetIr,
+    pub operand_roles: Vec<DbOperandRole>,
+    pub result_type: TypeRefIr,
+    pub result_plans: Vec<ValueTransferPlan>,
+}
+
 /// Complete host effect lookup fact. A non-empty `NativeTarget::binding_key`
 /// is required by structural validation; registry absence or any exact target,
 /// metadata or signature mismatch is a linker/verifier error.
@@ -502,6 +533,8 @@ pub struct HostEffectSignature {
 pub struct HostEffectReference {
     pub target: crate::NativeTarget,
     pub signature: HostEffectSignature,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_operation: Option<Box<DbOperationReference>>,
 }
 
 /// Relocation kinds (§3.4). Payloads carry target identity and

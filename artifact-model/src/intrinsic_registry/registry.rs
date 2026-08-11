@@ -13,9 +13,9 @@ use crate::{
 use super::contract::*;
 
 pub const INTRINSIC_REGISTRY_ID: &str = "skiff-intrinsic-registry";
-pub const INTRINSIC_REGISTRY_VERSION: &str = "skiff-intrinsic-registry-v1";
+pub const INTRINSIC_REGISTRY_VERSION: &str = "skiff-intrinsic-registry-v2";
 pub const INTRINSIC_REGISTRY_FINGERPRINT: &str =
-    "fc6c7ab282d3b5d3cad79a84fec84d71d0749d6d75cbd3dbb0bb7b96e7cd7c61";
+    "0737ed2b2cb8a514a6cf73b6f401cc0a47304c35bb9dd294c8022c57ee8c462a";
 pub const UNSUPPORTED_INTRINSIC_RECEIVER_KEYS: &[&str] = &[
     "receiver:Array.clone@1",
     "receiver:Array.length@1",
@@ -44,7 +44,6 @@ pub const UNSUPPORTED_INTRINSIC_RECEIVER_KEYS: &[&str] = &[
     "receiver:number.ceil@1",
     "receiver:number.floor@1",
     "receiver:number.round@1",
-    "receiver:string.concat@1",
     "receiver:string.contains@1",
     "receiver:string.endsWith@1",
     "receiver:string.length@1",

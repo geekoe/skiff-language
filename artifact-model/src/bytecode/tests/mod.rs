@@ -444,6 +444,7 @@ pub(crate) fn canonical_pools() -> BytecodePools {
                     inout_path_effects: Vec::new(),
                 },
             },
+            db_operation: None,
         })],
         resume: vec![BytecodePoolEntry::ResumeDescriptor(ResumeDescriptor {
             function_key: "module::main".to_string(),

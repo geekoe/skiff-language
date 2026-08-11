@@ -85,12 +85,31 @@ fn escaping_suspending_native(binding_key: &'static str) -> NativeCallableSemant
     }
 }
 
+fn pending_host_effect_native(binding_key: &'static str) -> NativeCallableSemantics {
+    NativeCallableSemantics {
+        binding_key,
+        effects: CallableMayEffects {
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::HostEffect],
+            inout_path_effects: Vec::new(),
+        },
+        return_provenance: ValueProvenance::Fresh,
+    }
+}
+
 pub static STD_NATIVE_CALLABLE_SEMANTICS: LazyLock<Vec<NativeCallableSemantics>> =
     LazyLock::new(|| {
         vec![
             detached_native("std.actor.get", true),
             detached_scalar_native("core.array.empty"),
             detached_scalar_native("core.map.empty"),
+            detached_scalar_native("std.config.require"),
+            detached_scalar_native("std.config.optional"),
+            detached_scalar_native("std.config.has"),
+            pending_host_effect_native("std.db.operation"),
             detached_scalar_native("core.bytes.concat"),
             detached_scalar_native("core.bytes.fromBase64"),
             detached_scalar_native("core.bytes.fromHex"),
@@ -240,6 +259,30 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         type_param_count: 2,
         params: &[T1],
         return_type: T0,
+    },
+    NativeSignatureDef {
+        target: "config.require",
+        binding_key: "std.config.require",
+        aliases: &[],
+        type_param_count: 1,
+        params: &[STRING],
+        return_type: T0,
+    },
+    NativeSignatureDef {
+        target: "config.optional",
+        binding_key: "std.config.optional",
+        aliases: &[],
+        type_param_count: 1,
+        params: &[STRING],
+        return_type: NativeSignatureTypeExpr::Nullable(&T0),
+    },
+    NativeSignatureDef {
+        target: "config.has",
+        binding_key: "std.config.has",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[STRING],
+        return_type: BOOL,
     },
     NativeSignatureDef {
         target: "Array.empty",
@@ -471,6 +514,14 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         aliases: &["string.join"],
         type_param_count: 0,
         params: &[STRING_ARRAY, STRING],
+        return_type: STRING,
+    },
+    NativeSignatureDef {
+        target: "string.concat",
+        binding_key: "std.string.concat",
+        aliases: &[],
+        type_param_count: 0,
+        params: &[STRING, STRING],
         return_type: STRING,
     },
     NativeSignatureDef {
@@ -848,6 +899,14 @@ pub const STD_NATIVE_SIGNATURES: &[NativeSignatureDef] = &[
         type_param_count: 0,
         params: &[STRING],
         return_type: BOOL,
+    },
+    NativeSignatureDef {
+        target: "std.db.operation",
+        binding_key: "std.db.operation",
+        aliases: &[],
+        type_param_count: 1,
+        params: &[T0],
+        return_type: T0,
     },
     NativeSignatureDef {
         target: "std.telemetry.emit",
