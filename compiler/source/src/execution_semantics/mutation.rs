@@ -542,7 +542,7 @@ mod tests {
                   var outer = 0
                   var loan = 0
                   var laneFresh = 0
-                  let locked = 0
+                  final locked = 0
                   outer = 1
                   loan = 2
                   laneFresh = 3

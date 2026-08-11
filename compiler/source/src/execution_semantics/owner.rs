@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     shared::{
-        ast::{Block, DispatchTiming, Expr, ForBinding, FunctionDecl, LetKind, Stmt, ValueBlock},
+        ast::{Block, DispatchTiming, Expr, ForBinding, FunctionDecl, LocalBindingKind, Stmt, ValueBlock},
         ast_utils::{walk_expr, AstVisitor},
         error::SourceSpan,
     },
@@ -145,7 +145,7 @@ impl<'a> OwnerAnalyzer<'a> {
                 }
             }
             Stmt::Assert { condition, .. } => self.validate_expr(condition, scope, context),
-            Stmt::Let {
+            Stmt::LocalBinding {
                 kind, name, value, ..
             } => {
                 self.validate_expr(value, scope, context);
@@ -156,9 +156,9 @@ impl<'a> OwnerAnalyzer<'a> {
                             value,
                             scope,
                             context.in_lane,
-                            matches!(kind, LetKind::Var),
+                            matches!(kind, LocalBindingKind::Var),
                         ),
-                        kind: if matches!(kind, LetKind::Var) {
+                        kind: if matches!(kind, LocalBindingKind::Var) {
                             BindingKind::Var
                         } else {
                             BindingKind::Immutable

@@ -8,7 +8,7 @@ use crate::{
     prelude_registry::prelude_registry,
     semantic::{ExecutableIndex, SemanticSource},
     shared::{
-        ast::{Block, Expr, ForBinding, FunctionDecl, LetKind, Pattern, Stmt},
+        ast::{Block, Expr, ForBinding, FunctionDecl, LocalBindingKind, Pattern, Stmt},
         ast_utils::{dependency_source_address_parts, expr_path, walk_expr, walk_stmt, AstVisitor},
         type_syntax::generic_parts,
     },
@@ -242,7 +242,7 @@ impl AstVisitor for TargetCollector<'_> {
     fn visit_stmt(&mut self, statement: &Stmt) {
         match statement {
             Stmt::CompilerTestEffectRegister { .. } => walk_stmt(self, statement),
-            Stmt::Let { name, value, .. } => {
+            Stmt::LocalBinding { name, value, .. } => {
                 self.visit_expr(value);
                 self.value_scope.insert(name.clone());
             }
@@ -356,8 +356,8 @@ impl TargetCollector<'_> {
         for statement in &body.statements {
             self.value_scope = sibling_scope.clone();
             self.visit_stmt(statement);
-            if let Stmt::Let {
-                kind: LetKind::Let,
+            if let Stmt::LocalBinding {
+                kind: LocalBindingKind::Final,
                 name,
                 ..
             } = statement

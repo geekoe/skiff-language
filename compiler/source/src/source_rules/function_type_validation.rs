@@ -84,7 +84,7 @@ fn collect_stmt_function_type_violations(path: &str, stmt: &Stmt, violations: &m
                 collect_expr_function_type_violations(path, expression, violations);
             }
         }
-        Stmt::Let { ty, value, .. } => {
+        Stmt::LocalBinding { ty, value, .. } => {
             if let Some(ty) = ty {
                 collect_function_type_name_violations(path, &ty.name, violations);
             }

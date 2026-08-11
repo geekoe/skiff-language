@@ -26,7 +26,7 @@ pub(super) fn collect_package_block_std_type_violations(
                     );
                 }
             }
-            Stmt::Let { ty, value, .. } => {
+            Stmt::LocalBinding { ty, value, .. } => {
                 if let Some(ty) = ty {
                     collect_package_std_type_name_violations(
                         path,

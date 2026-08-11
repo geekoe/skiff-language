@@ -19,7 +19,7 @@ use crate::{
         resolve::{intrinsic_resolver_root_id, ResolutionEnv},
         EntityNamespace, PublicationEntityTable, ResolvedPath,
     },
-    shared::ast::{Block, Expr, ForBinding, LetKind, Pattern, SourceFile, Stmt},
+    shared::ast::{Block, Expr, ForBinding, LocalBindingKind, Pattern, SourceFile, Stmt},
     shared::ast_utils::{expr_path, walk_expr, walk_stmt, AstVisitor},
 };
 
@@ -447,8 +447,8 @@ impl<'a, 'env> ResolvedPathCollector<'a, 'env> {
         for statement in &body.statements {
             self.scope = sibling_scope.clone();
             self.visit_stmt(statement);
-            if let Stmt::Let {
-                kind: LetKind::Let,
+            if let Stmt::LocalBinding {
+                kind: LocalBindingKind::Final,
                 name,
                 ..
             } = statement
@@ -476,7 +476,7 @@ impl AstVisitor for ResolvedPathCollector<'_, '_> {
     fn visit_stmt(&mut self, statement: &Stmt) {
         match statement {
             Stmt::CompilerTestEffectRegister { .. } => walk_stmt(self, statement),
-            Stmt::Let { name, value, .. } => {
+            Stmt::LocalBinding { name, value, .. } => {
                 self.visit_expr(value);
                 self.scope.insert(name.clone());
             }

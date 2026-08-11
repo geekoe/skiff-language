@@ -96,7 +96,7 @@ fn map_empty_materialization_accumulator_uses_exact_native_semantics() {
     let model = AnalysisFixture::new(
         r#"
             function materializeCompletedResult() -> Map<string, Json> {
-              let accumulator = Map.empty<string, Json>()
+              final accumulator = Map.empty<string, Json>()
               return accumulator
             }
         "#,
@@ -137,7 +137,7 @@ fn json_decode_materialization_uses_exact_detached_semantics() {
             type Event { id: string, values: Array<string> }
 
             function materializeCompletedResult(encoded: string) -> Event? {
-              let decoded = catch<std.json.DecodeError>(
+              final decoded = catch<std.json.DecodeError>(
                 std.json.decode<Event>(encoded)
               )
               if decoded.tag != "ok" {
@@ -348,7 +348,7 @@ fn bytes_concat_openai_multipart_shape_uses_exact_native_semantics() {
             type MultipartPart { body: bytes }
 
             function multipartBody(parts: Array<MultipartPart>, boundary: string) -> bytes {
-              let chunks = Array.empty<bytes>()
+              final chunks = Array.empty<bytes>()
               for part in parts {
                 chunks.push(bytes.fromUtf8("--".concat(boundary).concat("\r\n")))
                 chunks.push(part.body)
@@ -396,8 +396,8 @@ fn exact_http_request_natives_transfer_through_local_helpers() {
             }
 
             function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
-              let values = headerValues(request)
-              let session = cookieValue(request)
+              final values = headerValues(request)
+              final session = cookieValue(request)
               return std.http.HttpResponse {
                 status: 200,
                 headers: Array.empty<std.http.HttpHeader>(),
@@ -556,8 +556,8 @@ fn exact_http_response_stream_event_constructors_are_fresh_and_effect_free() {
               headers: Array<std.http.HttpHeader>,
               value: bytes
             ) -> std.http.HttpResponseStreamEvent {
-              let started = std.http.streamStart(status, headers)
-              let chunked = std.http.streamChunk(value)
+              final started = std.http.streamStart(status, headers)
+              final chunked = std.http.streamChunk(value)
               return std.http.streamEnd()
             }
         "#,

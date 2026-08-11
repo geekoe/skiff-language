@@ -18,7 +18,7 @@ use crate::{
     semantic::impl_method_declaration_name,
     shared::ast::{
         BinaryOp, Block, CallArg, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector,
-        DbWhereClause, DispatchTiming, Expr, ForBinding, FunctionDecl, LetKind, Literal, Param,
+        DbWhereClause, DispatchTiming, Expr, ForBinding, FunctionDecl, LocalBindingKind, Literal, Param,
         SourceFile, Stmt, TypeRef, UnaryOp,
     },
     shared::ast_utils::{dependency_source_address_parts, expr_path},
@@ -814,7 +814,7 @@ impl<'a> OwnerChecker<'a> {
                 outcome,
             ),
             Stmt::Assert { condition, .. } => self.check_assert_stmt(condition),
-            Stmt::Let {
+            Stmt::LocalBinding {
                 name, ty, value, ..
             } => self.check_let_stmt(name, ty.as_ref(), value),
             Stmt::Assign { target, value } => self.check_assign_stmt(target, value),
@@ -1410,8 +1410,8 @@ impl<'a> OwnerChecker<'a> {
             self.path_refinements = saved_path_refinements.clone();
             self.check_stmt(statement);
 
-            if let Stmt::Let {
-                kind: LetKind::Let,
+            if let Stmt::LocalBinding {
+                kind: LocalBindingKind::Final,
                 name,
                 ..
             } = statement

@@ -78,8 +78,8 @@ fn timeout_value_is_target_typed_lexically_scoped_and_type_transparent() {
             type Receipt { value: string }
 
             function run(input: string) -> Receipt {
-              let receipt: Receipt = timeout(20ms) value {
-                let local = input;
+              final receipt: Receipt = timeout(20ms) value {
+                final local = input;
                 ({ value: local })
               }
               return receipt
@@ -93,13 +93,13 @@ fn timeout_value_is_target_typed_lexically_scoped_and_type_transparent() {
     for source in [
         r#"
             function run() -> string {
-              let value = timeout(20ms) value { 1 }
+              final value = timeout(20ms) value { 1 }
               return value
             }
         "#,
         r#"
             function run() -> string {
-              let value = value { let local = "ok" local }
+              final value = value { final local = "ok" local }
               return local
             }
         "#,
@@ -116,8 +116,8 @@ fn timeout_value_is_target_typed_lexically_scoped_and_type_transparent() {
             function local() -> string { return "top-level" }
 
             function run() -> string {
-              let captured = value {
-                let local = "block-local"
+              final captured = value {
+                final local = "block-local"
                 local
               }
               return local()
@@ -184,12 +184,12 @@ fn concurrent_serial_and_concurrent_value_are_rejected_in_v1() {
     let cases = [
         (
             "concurrent statement",
-            "function run() -> void {\n  concurrent { let value = 1 }\n}\n",
+            "function run() -> void {\n  concurrent { final value = 1 }\n}\n",
             "concurrent is not supported in v1",
         ),
         (
             "serial",
-            "function run() -> void {\n  serial { let value = 1 }\n}\n",
+            "function run() -> void {\n  serial { final value = 1 }\n}\n",
             "serial is not supported in v1",
         ),
         (
@@ -316,7 +316,7 @@ fn db_transaction_is_allowed_in_actor_methods_create_and_through_local_helpers()
 
 #[test]
 fn ordinary_sources_without_concurrent_surface_still_compile() {
-    build_ok("function run() -> number {\n  let value = 1\n  return value\n}\n");
+    build_ok("function run() -> number {\n  final value = 1\n  return value\n}\n");
 }
 
 #[test]
@@ -329,7 +329,7 @@ fn timeout_and_value_walkers_reach_config_roots_calls_stream_and_db_paths() {
 
             function configured() -> string {
               return timeout(30ms) value {
-                let configured = config.require<string>("timeout.value")
+                final configured = config.require<string>("timeout.value")
                 helper().concat(configured)
               }
             }

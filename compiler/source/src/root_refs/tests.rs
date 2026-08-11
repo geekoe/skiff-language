@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::shared::ast::{
     AliasDecl, Block, BuiltinPackage, ConstDecl, Expr, FieldDecl, FunctionDecl, ImportDecl,
-    InterfaceDecl, LetKind, PackageId, Param, ParamMode, SourceFile, Stmt, TypeDecl, TypeRef,
+    InterfaceDecl, LocalBindingKind, PackageId, Param, ParamMode, SourceFile, Stmt, TypeDecl, TypeRef,
 };
 use crate::shared::error::SourceSpan;
 use crate::shared::parser::parse_source;
@@ -168,7 +168,7 @@ fn resolves_root_path_in_db_query_target() {
     let mut consumer = parse_source(
         r#"
             function run(enabled: bool) -> string {
-              let query = db query root.internal.models.Thread {
+              final query = db query root.internal.models.Thread {
                 where if enabled { title == "x" }
               }
               return "ok"
@@ -180,7 +180,7 @@ fn resolves_root_path_in_db_query_target() {
     let outcome = resolve_root_refs_in_ast(&mut consumer, &index);
 
     assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
-    let Stmt::Let { value, .. } = &consumer.functions[0].body.statements[0] else {
+    let Stmt::LocalBinding { value, .. } = &consumer.functions[0].body.statements[0] else {
         panic!("expected db query binding");
     };
     let Expr::DbQuery(query) = value else {
@@ -266,8 +266,8 @@ fn read_only_resolution_matches_mutable_resolution_without_changing_ast() {
             return_type: type_ref("Array<root.a.b.Foo>"),
             body: Block {
                 statements: vec![
-                    Stmt::Let {
-                        kind: LetKind::Let,
+                    Stmt::LocalBinding {
+                        kind: LocalBindingKind::Final,
                         name: "local".to_string(),
                         ty: Some(type_ref("root.a.b.Foo")),
                         value: dotted_expr(&["root", "a", "b", "Foo"]),
@@ -581,7 +581,7 @@ fn lexical_package_local_is_not_treated_as_legacy_root() {
             }
 
             function run() -> string {
-              let package = Parcel { id: "p1" }
+              final package = Parcel { id: "p1" }
               accept(package)
               return package.id
             }
@@ -626,7 +626,7 @@ fn package_shadowing_is_limited_to_its_nested_lexical_scope() {
 
             function run() -> string {
               if true {
-                let package = Parcel { id: "p1" }
+                final package = Parcel { id: "p1" }
                 package.id
               }
               return package.api.user.UserDoc

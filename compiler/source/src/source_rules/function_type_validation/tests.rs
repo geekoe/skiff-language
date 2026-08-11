@@ -52,7 +52,7 @@ fn collects_local_annotation_and_generic_type_arg_function_types() {
     let violations = collect(
         r#"
                 function run(factory: Factory) -> void {
-                    let callback: fn(item: string) -> string = factory
+                    final callback: fn(item: string) -> string = factory
                     factory<fn(value: string) -> string>()
                 }
             "#,

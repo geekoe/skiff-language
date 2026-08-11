@@ -317,7 +317,7 @@ fn generic_callable_concrete_return_types_plain_bindings_and_object_fields() {
           }
 
           function plainBinding(value: string) -> Json {
-            let encoded = encodeJson(value)
+            final encoded = encodeJson(value)
             return encoded
           }
 
@@ -362,7 +362,7 @@ fn generic_callable_type_param_dependent_returns_remain_unresolved() {
         (
             r#"
               function singleton<T>(value: T) -> Array<T> {
-                let items = Array.empty<T>()
+                final items = Array.empty<T>()
                 items.push(value)
                 return items
               }

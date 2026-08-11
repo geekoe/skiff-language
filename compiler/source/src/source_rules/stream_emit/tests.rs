@@ -86,7 +86,7 @@ fn rejects_emit_expression_call() {
                 }
 
                 function events() -> Stream<Chunk> {
-                    let ignored = emit(makeChunk())
+                    final ignored = emit(makeChunk())
                     return {}
                 }
             "#,
@@ -174,7 +174,7 @@ fn rejects_local_annotation_and_chunk_type_mismatch() {
                 }
 
                 function events() -> Stream<GoodChunk> {
-                    let chunk: GoodChunk = makeWrongChunk()
+                    final chunk: GoodChunk = makeWrongChunk()
                     emit(chunk)
                     return {}
                 }

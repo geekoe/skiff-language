@@ -62,14 +62,14 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
             }
 
             function rethrowStatement(input: Boxed) -> void {
-              let attempted = catch<Failure>(throw Failure { message: input.value })
+              final attempted = catch<Failure>(throw Failure { message: input.value })
               if attempted.tag == "err" {
                 rethrow attempted.exception
               }
             }
 
             function rethrowExpression(input: Boxed) -> Failure {
-              let attempted = catch<Failure>(throw Failure { message: input.value })
+              final attempted = catch<Failure>(throw Failure { message: input.value })
               if attempted.tag == "err" {
                 return rethrow attempted.exception
               }
@@ -77,7 +77,7 @@ fn throw_and_rethrow_preserve_operand_effects_but_detach_emitted_provenance() {
             }
 
             function nestedRethrow(input: Boxed) -> void {
-              let outer = catch<Failure>(rethrowStatement(input))
+              final outer = catch<Failure>(rethrowStatement(input))
               if outer.tag == "err" {
                 rethrow outer.exception
               }
@@ -154,7 +154,7 @@ fn stream_task_database_and_callback_escape_lanes_are_explicit() {
             }
 
             function expressionSpawn(input: Boxed) -> void {
-              let ref = dispatch sink(input)
+              final ref = dispatch sink(input)
             }
 
             function persist(input: Boxed) -> void {
@@ -162,7 +162,7 @@ fn stream_task_database_and_callback_escape_lanes_are_explicit() {
             }
 
             function callback(input: Boxed) -> void {
-              let boxed = input as Provider
+              final boxed = input as Provider
             }
         "#,
     )
@@ -291,7 +291,7 @@ fn database_value_transactions_transfer_the_exact_final_value() {
 
             function receipt(input: Input) -> Receipt {
               return db transaction value {
-                let pointer = input.pointer
+                final pointer = input.pointer
                 Receipt { sequence: 1, pointer: pointer }
               }
             }
@@ -353,7 +353,7 @@ fn database_writes_detach_static_field_projections_but_not_direct_or_unknown_val
             }
 
             function projected(input: Input) -> Stored {
-              let result = db upsert Stored(input.id) {
+              final result = db upsert Stored(input.id) {
                 id = input.id
                 pointer = input.pointer
               } {
@@ -432,7 +432,7 @@ fn formal_indexed_stream_escape_ignores_unrelated_caller_actuals_through_helpers
             }
 
             function freshStream(state: JsonObject) -> void {
-              let stream = std.bytes.fromUtf8("fresh")
+              final stream = std.bytes.fromUtf8("fresh")
               nestedForward(stream, state)
               recursiveForward(stream, state, true)
             }

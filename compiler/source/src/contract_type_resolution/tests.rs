@@ -126,7 +126,7 @@ fn service_api_nominal_record_uses_ordinary_constructor_and_field_paths() {
     let model = build_model(
         r#"
             function submit(input: payments.User) -> payments.User {
-                let copied = payments.User { value: input.value }
+                final copied = payments.User { value: input.value }
                 payments/submit(copied)
                 return copied
             }

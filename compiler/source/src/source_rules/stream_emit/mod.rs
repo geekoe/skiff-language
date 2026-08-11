@@ -224,7 +224,7 @@ impl StreamEmitTypeChecker<'_> {
             Stmt::Assert { condition, .. } => {
                 self.check_expr(condition);
             }
-            Stmt::Let { value, .. } => {
+            Stmt::LocalBinding { value, .. } => {
                 self.check_expr(value);
             }
             Stmt::Assign { target, value } => {

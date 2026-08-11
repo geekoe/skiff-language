@@ -17,12 +17,12 @@ fn receiver_effects_are_contextual_to_caller_reachable_values() {
             }
 
             function freshLocal() -> void {
-              let items = Array.empty<string>()
+              final items = Array.empty<string>()
               appendHop(items)
             }
 
             function freshLocalSuspend() -> void {
-              let items = Array.empty<string>()
+              final items = Array.empty<string>()
               std.time.sleep(Duration.milliseconds(1))
               appendHop(items)
             }
@@ -62,12 +62,12 @@ fn json_object_set_effects_are_contextual_to_caller_reachable_values() {
             }
 
             function freshLocal() -> void {
-              let object: JsonObject = {}
+              final object: JsonObject = {}
               return object.set("value", 1)
             }
 
             function freshLocalCallerValue(value: Json) -> void {
-              let object: JsonObject = {}
+              final object: JsonObject = {}
               return object.set("value", value)
             }
         "#,
@@ -390,7 +390,7 @@ fn exact_json_object_delete_mutates_caller_receiver_but_discharges_fresh_receive
             }
 
             function sanitize() -> bool {
-              let value: JsonObject = { instructions: "drop", keep: true }
+              final value: JsonObject = { instructions: "drop", keep: true }
               return value.delete("instructions")
             }
         "#,
@@ -453,7 +453,7 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
 
             function jsonObject(value: Json?) -> JsonObject? {
               if value == null { return null }
-              let parsed = catch<std.json.DecodeError>(
+              final parsed = catch<std.json.DecodeError>(
                 std.json.decode<JsonObject>(std.json.encode<Json>(value))
               )
               if parsed.tag == "ok" { return parsed.value }
@@ -461,7 +461,7 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
             }
 
             function jsonField(value: Json?, key: string) -> Json? {
-              let object = jsonObject(value)
+              final object = jsonObject(value)
               if object == null { return null }
               return object.get(key)
             }
@@ -522,7 +522,7 @@ fn exact_map_get_preserves_caller_alias_but_discharges_fresh_accumulator() {
             }
 
             function local(key: string) -> Item? {
-              let items = Map.empty<string, Item>()
+              final items = Map.empty<string, Item>()
               return items.get(key)
             }
         "#,
@@ -572,7 +572,7 @@ fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
             }
 
             function local(key: string, value: Item) -> bool {
-              let items = Map.empty<string, Item>()
+              final items = Map.empty<string, Item>()
               items.set(key, value)
               return items.has(key)
             }
@@ -628,7 +628,7 @@ fn formal_indexed_receiver_writes_ignore_unrelated_caller_actuals_through_helper
             }
 
             function freshHeaders(request: string) -> void {
-              let headers = Array.empty<string>()
+              final headers = Array.empty<string>()
               nestedAdd(headers, request)
               recursiveAdd(headers, request, true)
             }
