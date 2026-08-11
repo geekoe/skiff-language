@@ -2,7 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     self, BoundaryOperationContract, BytecodeIntrinsicRef, BytecodeRelocation,
-    CallableEffectSummary, CallableMayEffects, ContractOperationId, ContractTypeRef,
+    CallableEffectSummary, CallableMayEffects, ContractOperationId, ContractTypeRef, DbOperandRole,
+    DbOperationKind, HostEffectRequiredContext,
     InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, PackageBuildId,
     PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId, PackageSymbolRef, ParamModeIr,
     PendingEffectCategory, ResolvedPackageValueType, ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver, ValueLifecycleResolverError,
@@ -955,6 +956,7 @@ impl DeploymentLinker<'_> {
                             skiff_artifact_model::host_effect_registry()
                                 .match_reference(&effect.target, &effect.signature, &mut resolver, &mut budget)
                                 .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("host effect registry rejected target: {error:?}")))?;
+                            validate_host_effect_contract(effect, &location)?;
                             let signature = native_signature(package, specialization, &effect.signature, type_linker, &location)?;
                             let binding_key = effect.target.binding_key.as_deref().ok_or_else(|| {
                                 unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "host effect target has no binding key".to_string())
@@ -1231,6 +1233,86 @@ fn native_signature(
         signature.effects.clone(),
     )
     .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))
+}
+
+fn validate_host_effect_contract(
+    effect: &skiff_artifact_model::HostEffectReference,
+    location: &BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let binding_key = effect.target.binding_key.as_deref().ok_or_else(|| {
+        unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            "host effect target has no binding key".to_string(),
+        )
+    })?;
+    let entry = skiff_artifact_model::host_effect_registry()
+        .entries()
+        .iter()
+        .find(|entry| entry.binding_key == binding_key)
+        .ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("host effect binding key `{binding_key}` is absent from the registry"),
+            )
+        })?;
+    match binding_key {
+        "std.config.require" | "std.config.optional" | "std.config.has" => {
+            if entry.required_context != HostEffectRequiredContext::Config {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!("{binding_key} must require Config context"),
+                ));
+            }
+            if !entry.signature.effects.pending_effect_categories.is_empty() {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!("{binding_key} must be NoPending"),
+                ));
+            }
+        }
+        "std.db.operation" => {
+            if entry.required_context != HostEffectRequiredContext::Db {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "std.db.operation must require Db context".to_string(),
+                ));
+            }
+            if !entry.signature.effects.may_pending()
+                || entry.signature.effects.pending_effect_categories
+                    != vec![PendingEffectCategory::HostEffect]
+            {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "std.db.operation must be a pending HostEffect".to_string(),
+                ));
+            }
+            let operation = effect.db_operation.as_deref().ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "std.db.operation requires a structured DbOperationReference".to_string(),
+                )
+            })?;
+            if operation.op != DbOperationKind::Insert
+                || operation.operand_roles != vec![DbOperandRole::ObjectFields]
+            {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "std.db.operation supports only single insert with ObjectFields"
+                        .to_string(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 struct DeploymentLifecycleResolver<'a> {

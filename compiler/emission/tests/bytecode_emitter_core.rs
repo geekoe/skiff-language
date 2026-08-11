@@ -3,9 +3,12 @@ mod tests {
     use std::collections::BTreeMap;
 
     use skiff_artifact_model::{
-        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, BoxSourceIr,
-        BytecodePoolEntry, BytecodeRelocation, CallIr, CallTargetIr, CallableEffectSummary,
-        ContractOperationId, ExprIr, ExprRefIr, ExternalRefTable, FileIrUnit, FunctionTypeParamIr,
+        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssignTargetIr,
+        BoxSourceIr, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodeRelocation, CallIr,
+        CallTargetIr,
+        CallableEffectSummary, ContractOperationId, DbBodyIr, DbOpKindIr, DbOperandRole,
+        DbOperationIr, DbOperationKind, DbTargetIr, ExprIr, ExprRefIr, ExternalRefTable,
+        FileIrUnit, FunctionTypeParamIr,
         InstructionSourceSite, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
         LiteralIr, NativeTarget, PackageCallableId, PatternIr, RemoteOperationSlotPlanIr,
         RemoteOperationTablePlanIr, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
@@ -19,11 +22,11 @@ mod tests {
     use skiff_compiler_lowering::{
         mir::{
             liveness::compute_liveness, MirBlock, MirExecutableKind, MirExpression,
-            MirForInBinding, MirForInFacts, MirForInItemKind, MirFunction, MirIndexAccessFacts,
-            MirIndexPolicy, MirIndexReceiverKind, MirLiveness, MirMatchArmIr,
+            MirExpressionBlockFact, MirForInBinding, MirForInFacts, MirForInItemKind, MirFunction,
+            MirIndexAccessFacts, MirIndexPolicy, MirIndexReceiverKind, MirLiveness, MirMatchArmIr,
             MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind,
             MirSourceEventPlan, MirSourceEventUnavailableReason, MirStatementEntry, MirStmt,
-            MirStmtKind, MirStreamResultFacts, MirUnit,
+            MirStmtKind, MirStreamResultFacts, MirUnit, MirWritablePlace, MirWritableRoot,
         },
         Bounds, ConstEvaluator, FrozenConstantBundle,
     };
@@ -107,6 +110,7 @@ mod tests {
             receiver: None,
             slots,
             index_accesses,
+            expression_blocks: BTreeMap::new(),
             expressions,
             blocks,
             regions,
@@ -122,7 +126,13 @@ mod tests {
                 MirSourceEventUnavailableReason::SourceFactsNotProvided,
             ),
         };
-        function.liveness = compute_liveness(&function).expect("test liveness computes");
+        if !function
+            .expressions
+            .iter()
+            .any(|expression| matches!(expression.expression, ExprIr::ValueBlock { .. }))
+        {
+            function.liveness = compute_liveness(&function).expect("test liveness computes");
+        }
         function
     }
 
@@ -1641,5 +1651,468 @@ mod tests {
             relocation.methods[0].contract_operation_id.as_str(),
             operation_abi_id
         );
+    }
+
+    #[test]
+    fn value_block_linearizes_branch_completion_to_resume() {
+        let slot_ty = TypeRefIr::builtin("number");
+        let expressions = vec![
+            MirExpression {
+                index: 0,
+                expression: ExprIr::ValueBlock {
+                    block: "pick".to_string(),
+                    result: expression(3),
+                },
+                ty: slot_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 1,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::Bool { value: true },
+                },
+                ty: TypeRefIr::builtin("bool"),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 2,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::Number {
+                        value: serde_json::Number::from(1),
+                    },
+                },
+                ty: slot_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 3,
+                expression: ExprIr::LoadSlot { slot: 0 },
+                ty: slot_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+        ];
+        let writable = MirWritablePlace {
+            root: MirWritableRoot::Slot { slot: 0 },
+            path: Vec::new(),
+        };
+        let function = function(
+            "blocks",
+            "pick",
+            slot_ty.clone(),
+            vec![MirSlot {
+                slot: 0,
+                name: "chosen".to_string(),
+                kind: MirSlotKind::Local,
+                writable_local: true,
+                ty: Some(slot_ty.clone()),
+            }],
+            expressions,
+            vec![
+                MirBlock {
+                    id: 0,
+                    label: "entry".to_string(),
+                    statements: vec![MirStmt {
+                        statement_index: 0,
+                        span: None,
+                        kind: MirStmtKind::Return {
+                            value: Some(expression(0)),
+                        },
+                    }],
+                    successors: Vec::new(),
+                },
+                MirBlock {
+                    id: 1,
+                    label: "pick".to_string(),
+                    statements: vec![MirStmt {
+                        statement_index: 1,
+                        span: None,
+                        kind: MirStmtKind::If {
+                            condition: expression(1),
+                            then_block: 2,
+                            else_block: Some(0),
+                        },
+                    }],
+                    successors: vec![0, 2],
+                },
+                MirBlock {
+                    id: 2,
+                    label: "pick".to_string(),
+                    statements: vec![MirStmt {
+                        statement_index: 2,
+                        span: None,
+                        kind: MirStmtKind::Assign {
+                            target: AssignTargetIr::Slot { slot: 0 },
+                            place: writable.clone(),
+                            value: expression(2),
+                        },
+                    }],
+                    successors: vec![0],
+                },
+            ],
+            vec![
+                MirStatementEntry {
+                    statement_index: 0,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 1,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 2,
+                    span: None,
+                },
+            ],
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let mut function = function;
+        function.expression_blocks.insert(
+            0,
+            MirExpressionBlockFact {
+                body_block: 1,
+                result: expression(3),
+                completion_targets: vec![1, 2],
+            },
+        );
+        function.liveness = compute_liveness(&function).expect("ValueBlock liveness computes");
+        let (unit, bundle) = mir_and_bundle(
+            "blocks",
+            Vec::new(),
+            ExternalRefTable::default(),
+            function,
+        );
+        let artifact = emit_bytecode_artifact(
+            &[unit],
+            &[bundle],
+            &plans("blocks::pick", &[slot_ty.clone()], &slot_ty),
+        )
+        .expect("ValueBlock linearization emits");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("ValueBlock artifact validates");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "blocks::pick")
+            .expect("pick function");
+        assert!(function.instructions.iter().any(|instruction| {
+            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::Jump
+        }));
+    }
+
+    #[test]
+    fn db_operation_emits_one_structured_host_insert() {
+        let record_ty = TypeRefIr::Record {
+            fields: BTreeMap::from([(
+                "value".to_string(),
+                TypeRefIr::builtin("number"),
+            )]),
+        };
+        let operation = DbOperationIr {
+            op: DbOpKindIr::Insert,
+            many: false,
+            target: DbTargetIr {
+                type_ref: record_ty.clone(),
+                type_name: "Item".to_string(),
+            },
+            selector: None,
+            query: None,
+            projection: None,
+            body: Some(DbBodyIr::ObjectFields {
+                fields: BTreeMap::from([("value".to_string(), expression(1))]),
+            }),
+            insert_body: None,
+            change: None,
+            result_type: record_ty.clone(),
+            source_span: None,
+        };
+        let expressions = vec![
+            MirExpression {
+                index: 0,
+                expression: ExprIr::DbOperation { operation },
+                ty: record_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 1,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::Number {
+                        value: serde_json::Number::from(42),
+                    },
+                },
+                ty: TypeRefIr::builtin("number"),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+        ];
+        let function = function(
+            "db",
+            "insertItem",
+            record_ty.clone(),
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: one_return(expression(0)),
+                successors: Vec::new(),
+            }],
+            return_statements(0),
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("db", Vec::new(), ExternalRefTable::default(), function);
+        let artifact = emit_bytecode_artifact(
+            &[unit],
+            &[bundle],
+            &plans("db::insertItem", &[], &record_ty),
+        )
+        .expect("single insert DbOperation emits");
+        let relocation = artifact.image.functions["db::insertItem"]
+            .relocations
+            .iter()
+            .find_map(|relocation| match relocation {
+                BytecodeRelocation::HostEffectRef(effect) => Some(effect),
+                _ => None,
+            })
+            .expect("DbOperation emits one HostEffectRef");
+        assert_eq!(
+            relocation.target.binding_key.as_deref(),
+            Some("std.db.operation")
+        );
+        let db = relocation
+            .db_operation
+            .as_deref()
+            .expect("std.db.operation carries structured facts");
+        assert_eq!(db.op, DbOperationKind::Insert);
+        assert_eq!(db.operand_roles, vec![DbOperandRole::ObjectFields]);
+        assert_eq!(db.target.type_name, "Item");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("DbOperation artifact validates");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "db::insertItem")
+            .expect("insertItem function")
+            .instructions
+            .iter()
+            .filter(|instruction| {
+                instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::InvokeHost
+            })
+            .count();
+        assert_eq!(function, 1);
+    }
+
+    #[test]
+    fn string_concat_emits_receiver_intrinsic_with_explicit_operand() {
+        let string_ty = TypeRefIr::builtin("string");
+        let op = skiff_artifact_model::builtin_receiver_op_by_name("string", "concat")
+            .expect("string.concat receiver op");
+        let expressions = vec![
+            MirExpression {
+                index: 0,
+                expression: ExprIr::Call {
+                    call: CallIr {
+                        target: CallTargetIr::ReceiverBuiltin { op },
+                        concrete_receiver: None,
+                        site: site(),
+                        args: vec![expression(1), expression(2)],
+                        inout_args: Vec::new(),
+                        type_args: BTreeMap::new(),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                ty: string_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 1,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "a".to_string(),
+                    },
+                },
+                ty: string_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 2,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "b".to_string(),
+                    },
+                },
+                ty: string_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+        ];
+        let function = function(
+            "strings",
+            "concat",
+            string_ty.clone(),
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: one_return(expression(0)),
+                successors: Vec::new(),
+            }],
+            return_statements(0),
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("strings", Vec::new(), ExternalRefTable::default(), function);
+        let artifact = emit_bytecode_artifact(
+            &[unit],
+            &[bundle],
+            &plans("strings::concat", &[], &string_ty),
+        )
+        .expect("string.concat intrinsic emits");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("string.concat artifact validates");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "strings::concat")
+            .expect("concat function");
+        assert!(function.instructions.iter().any(|instruction| {
+            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::InvokeIntrinsic
+        }));
+        let intrinsic = artifact.image.functions["strings::concat"]
+            .relocations
+            .iter()
+            .find_map(|relocation| match relocation {
+                BytecodeRelocation::IntrinsicRef { intrinsic } => Some(intrinsic),
+                _ => None,
+            })
+            .expect("string.concat emits one intrinsic relocation");
+        assert!(matches!(
+            &intrinsic.target,
+            BytecodeIntrinsicRef::Receiver { op }
+                if op.canonical_key == "receiver:string.concat@1"
+        ));
+        assert_eq!(intrinsic.signature.parameter_types.len(), 2);
+    }
+
+    #[test]
+    fn config_require_emits_generic_host_call() {
+        let string_ty = TypeRefIr::builtin("string");
+        let expressions = vec![
+            MirExpression {
+                index: 0,
+                expression: ExprIr::Call {
+                    call: CallIr {
+                        target: CallTargetIr::Native {
+                            target: NativeTarget {
+                                namespace: "config".to_string(),
+                                symbol: "require".to_string(),
+                                binding_key: Some("std.config.require".to_string()),
+                                metadata: BTreeMap::new(),
+                            },
+                        },
+                        concrete_receiver: None,
+                        site: site(),
+                        args: vec![expression(1)],
+                        inout_args: Vec::new(),
+                        type_args: BTreeMap::from([("T0".to_string(), string_ty.clone())]),
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                ty: string_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 1,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "app.token".to_string(),
+                    },
+                },
+                ty: string_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+        ];
+        let function = function(
+            "config",
+            "load",
+            string_ty.clone(),
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: one_return(expression(0)),
+                successors: Vec::new(),
+            }],
+            return_statements(0),
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("config", Vec::new(), ExternalRefTable::default(), function);
+        let artifact = emit_bytecode_artifact(
+            &[unit],
+            &[bundle],
+            &plans("config::load", &[], &string_ty),
+        )
+        .expect("config.require host call emits");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("config.require artifact validates");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "config::load")
+            .expect("load function");
+        assert!(function.instructions.iter().any(|instruction| {
+            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::InvokeHost
+        }));
+        let host = artifact.image.functions["config::load"]
+            .relocations
+            .iter()
+            .find_map(|relocation| match relocation {
+                BytecodeRelocation::HostEffectRef(effect) => Some(effect),
+                _ => None,
+            })
+            .expect("config.require emits one HostEffectRef");
+        assert_eq!(
+            host.target.binding_key.as_deref(),
+            Some("std.config.require")
+        );
+        assert!(host.db_operation.is_none());
     }
 }

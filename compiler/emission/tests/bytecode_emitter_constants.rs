@@ -111,6 +111,7 @@ mod tests {
             receiver: None,
             slots: Vec::new(),
             index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
             expressions: Vec::new(),
             blocks: Vec::new(),
             regions: Vec::new(),

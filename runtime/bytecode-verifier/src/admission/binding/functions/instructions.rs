@@ -1,6 +1,7 @@
 use skiff_artifact_model::{
     contract_for_opcode, decode_branch_target, BytecodeIntrinsicRef, BytecodeRelocation,
-    BytecodeSpecialization, OperandKind, PackageRefIr, ValidatedFunction,
+    BytecodeSpecialization, DbOperandRole, DbOperationKind, HostEffectReference,
+    HostEffectRequiredContext, OperandKind, PackageRefIr, PendingEffectCategory, ValidatedFunction,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedBytecodeCandidate, LinkedFunction, LinkedInstructionTarget, LinkedInterfaceTableKind,
@@ -451,7 +452,9 @@ fn prove_value_relocation_target(
                 && linked.symbol() == effect.target.symbol
                 && effect.target.binding_key.as_deref() == Some(linked.binding_key().as_str())
                 && linked.metadata() == &effect.target.metadata;
-            exact_or_error(exact, location, "host-effect relocation target")
+            exact_or_error(exact, location, "host-effect relocation target")?;
+            validate_host_effect_contract(effect, location)?;
+            Ok(())
         }
         (
             BytecodeRelocation::IntrinsicRef { intrinsic },
@@ -746,7 +749,86 @@ fn prove_intrinsic_target(
         }
         _ => false,
     };
-    exact_or_error(exact, location, "intrinsic relocation target")
+    exact_or_error(exact, location, "intrinsic relocation target")?;
+    if !skiff_artifact_model::intrinsic_registry()
+        .entries()
+        .iter()
+        .any(|entry| entry.target == source.target)
+    {
+        return Err(semantic_violation(
+            location,
+            "intrinsic target is absent from the frozen intrinsic registry",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_host_effect_contract(
+    effect: &HostEffectReference,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    let binding_key = effect.target.binding_key.as_deref().ok_or_else(|| {
+        semantic_violation(location, "host effect target has no binding key")
+    })?;
+    let entry = skiff_artifact_model::host_effect_registry()
+        .entries()
+        .iter()
+        .find(|entry| entry.binding_key == binding_key)
+        .ok_or_else(|| {
+            semantic_violation(
+                location,
+                format!("host effect binding key `{binding_key}` is absent from the registry"),
+            )
+        })?;
+    match binding_key {
+        "std.config.require" | "std.config.optional" | "std.config.has" => {
+            if entry.required_context != HostEffectRequiredContext::Config {
+                return Err(semantic_violation(
+                    location,
+                    format!("{binding_key} must require Config context"),
+                ));
+            }
+            if !entry.signature.effects.pending_effect_categories.is_empty() {
+                return Err(semantic_violation(
+                    location,
+                    format!("{binding_key} must be NoPending"),
+                ));
+            }
+        }
+        "std.db.operation" => {
+            if entry.required_context != HostEffectRequiredContext::Db {
+                return Err(semantic_violation(
+                    location,
+                    "std.db.operation must require Db context".to_string(),
+                ));
+            }
+            if !entry.signature.effects.may_pending()
+                || entry.signature.effects.pending_effect_categories
+                    != vec![PendingEffectCategory::HostEffect]
+            {
+                return Err(semantic_violation(
+                    location,
+                    "std.db.operation must be a pending HostEffect".to_string(),
+                ));
+            }
+            let operation = effect.db_operation.as_deref().ok_or_else(|| {
+                semantic_violation(
+                    location,
+                    "std.db.operation requires a structured DbOperationReference".to_string(),
+                )
+            })?;
+            if operation.op != DbOperationKind::Insert
+                || operation.operand_roles != vec![DbOperandRole::ObjectFields]
+            {
+                return Err(semantic_violation(
+                    location,
+                    "std.db.operation supports only single insert with ObjectFields".to_string(),
+                ));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn prove_frozen_constant_target(

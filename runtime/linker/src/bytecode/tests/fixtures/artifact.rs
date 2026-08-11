@@ -507,6 +507,7 @@ fn valid_host_effect() -> HostEffectReference {
             result_plans: vec![snapshot_plan()],
             effects: entry.signature.effects.clone(),
         },
+        db_operation: None,
     }
 }
 

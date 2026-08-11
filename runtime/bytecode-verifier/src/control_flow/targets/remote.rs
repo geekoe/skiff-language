@@ -275,6 +275,7 @@ fn host_target(
         row.symbol(),
         row.binding_key().as_str()
     ));
+    let may_pending = row.signature().effects().may_pending();
     Ok(RemoteTarget {
         coordinate: ExactTargetCoordinate::HostEffectAdapter(row.index()),
         signature,
@@ -284,8 +285,16 @@ fn host_target(
                 effects: row.signature().effects().clone(),
             },
         ),
-        pending: pending_plan(contract, location)?,
-        resume: resume_coordinate(candidate, caller, site, instruction, contract, location)?,
+        pending: if may_pending {
+            pending_plan(contract, location)?
+        } else {
+            PendingPlan::Never
+        },
+        resume: if may_pending {
+            resume_coordinate(candidate, caller, site, instruction, contract, location)?
+        } else {
+            None
+        },
     })
 }
 

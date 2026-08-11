@@ -453,6 +453,7 @@ pub(super) fn corrupt_relocation_artifact() -> BytecodeArtifact {
                 result_plans: Vec::new(),
                 effects: no_effects(),
             },
+            db_operation: None,
         },
     );
     artifact

@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
     BytecodeSpecialization, CallTargetIr, CatchMatcher, ExceptionRegion, ExprIr, ExprRefIr,
-    FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
-    IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, Opcode, ParamModeIr,
+    DbOperandRole, DbOperationKind, DbOperationReference, DbTargetIr,
+    FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite, IntrinsicReference,
+    LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode, ParamModeIr,
     ParameterSlotDecl, PatternIr, RelocatableBytecodeFunction, RemoteInterfaceMethod,
     RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, SourceMapEntry, StatementEntry,
     SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, WritablePathSegment,
@@ -66,6 +67,7 @@ struct FunctionEmitter<'a> {
     current_block: u32,
     generated_slots: Vec<MirSlot>,
     loop_backedges: BTreeMap<u32, LoopBackedge>,
+    value_block_body_blocks: BTreeSet<u32>,
     operand_depth: usize,
 }
 
@@ -135,6 +137,7 @@ impl<'a> FunctionEmitter<'a> {
             .map(<[MirSourceEvent]>::to_vec)
             .unwrap_or_default();
         let event_count = events.len();
+        let value_block_body_blocks = value_block_body_blocks(function)?;
         Ok(Self {
             unit,
             function,
@@ -155,12 +158,16 @@ impl<'a> FunctionEmitter<'a> {
             current_block: 0,
             generated_slots: Vec::new(),
             loop_backedges: BTreeMap::new(),
+            value_block_body_blocks,
             operand_depth: 0,
         })
     }
 
     fn emit(mut self) -> Result<RelocatableBytecodeFunction, BytecodeEmissionError> {
         for block in &self.function.blocks {
+            if self.value_block_body_blocks.contains(&block.id) {
+                continue;
+            }
             let ordinal = usize::try_from(block.id)
                 .map_err(|_| arithmetic(self.key.as_str(), "block id to usize conversion"))?;
             let start = self.instructions.len();
@@ -207,6 +214,234 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_block(
+        &mut self,
+        block: &skiff_compiler_lowering::mir::MirBlock,
+    ) -> Result<(), BytecodeEmissionError> {
+        self.emit_value_block_block(block)
+    }
+
+    fn emit_value_block(
+        &mut self,
+        expression_index: u32,
+        result: ExprRefIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        let fact = self
+            .function
+            .expression_blocks
+            .get(&expression_index)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "ValueBlock",
+                    &format!("expression {expression_index} has no exact completion facts"),
+                )
+            })?;
+        let completion_targets = fact.completion_targets.iter().copied().collect::<BTreeSet<_>>();
+        if completion_targets.is_empty() {
+            return Err(unsupported(
+                &self.key,
+                "ValueBlock",
+                "expression completion target set is empty",
+            ));
+        }
+        let body_ids = value_block_body_ids(self.function, fact.body_block)?;
+        let mut completion_edges = Vec::new();
+        for &block_id in &body_ids {
+            let ordinal = usize::try_from(block_id)
+                .map_err(|_| arithmetic(self.key.as_str(), "ValueBlock block id conversion"))?;
+            let block = self.function.blocks.get(ordinal).ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "ValueBlock",
+                    &format!("body block {block_id} is absent"),
+                )
+            })?;
+            let start = self.instructions.len();
+            self.block_starts[ordinal] = Some(start);
+            self.current_block = block_id;
+            let branch_start = self.pending_branches.len();
+            self.emit_value_block_block(block)?;
+            self.redirect_value_block_completions(
+                branch_start,
+                &body_ids,
+                &mut completion_edges,
+            )?;
+        }
+        let resume_instruction = self.instructions.len();
+        for edge in &mut completion_edges {
+            edge.target_instruction = resume_instruction;
+        }
+        self.emit_expression(result)
+    }
+
+    fn redirect_value_block_completions(
+        &mut self,
+        start: usize,
+        body_blocks: &BTreeSet<u32>,
+        completion_edges: &mut Vec<PendingPcBranch>,
+    ) -> Result<(), BytecodeEmissionError> {
+        let mut retained = Vec::new();
+        for branch in self.pending_branches.drain(start..) {
+            if body_blocks.contains(&branch.block) {
+                retained.push(branch);
+            } else {
+                completion_edges.push(PendingPcBranch {
+                    instruction: branch.instruction,
+                    operand: branch.operand,
+                    target_instruction: 0,
+                });
+            }
+        }
+        self.pending_branches.extend(retained);
+        Ok(())
+    }
+
+    fn emit_db_operation(
+        &mut self,
+        expression: &MirExpression,
+        operation: &skiff_artifact_model::DbOperationIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        if operation.op != skiff_artifact_model::DbOpKindIr::Insert || operation.many {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "only single insert is supported in this contract generation",
+            ));
+        }
+        if operation.selector.is_some()
+            || operation.query.is_some()
+            || operation.projection.is_some()
+            || operation.insert_body.is_some()
+            || operation.change.is_some()
+        {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "single insert must carry only ObjectFields",
+            ));
+        }
+        let skiff_artifact_model::DbBodyIr::ObjectFields { fields } = operation
+            .body
+            .as_ref()
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "DbOperation",
+                    "single insert requires an ObjectFields body",
+                )
+            })?
+        else {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "single insert requires an ObjectFields body",
+            ));
+        };
+        let declared = self.record_shape_fields(
+            &operation.target.type_ref,
+            "DbOperation single insert object",
+        )?;
+        if declared.len() != fields.len()
+            || declared.keys().any(|name| !fields.contains_key(name))
+        {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "insert field set does not exactly match the declared target shape",
+            ));
+        }
+        let shape = self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            &operation.target.type_ref,
+            &declared,
+            &format!("DbOperation single insert in `{}`", self.key),
+        )?;
+        for name in declared.keys() {
+            self.emit_expression(*fields.get(name).expect("field set was checked"))?;
+        }
+        let field_count = u32::try_from(declared.len())
+            .map_err(|_| arithmetic(&self.key, "DbOperation field count conversion"))?;
+        self.emit_op(Opcode::NewRecord, vec![shape, field_count])?;
+
+        let qualified_target =
+            super::constants::qualify_local_types(self.unit.module_path.as_str(), &operation.target.type_ref);
+        let qualified_result =
+            super::constants::qualify_local_types(self.unit.module_path.as_str(), &operation.result_type);
+        let effects = skiff_artifact_model::host_effect_registry()
+            .entries()
+            .iter()
+            .find(|entry| entry.binding_key == "std.db.operation")
+            .map(|entry| entry.signature.effects.clone())
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "DbOperation",
+                    "std.db.operation is absent from the host effect registry",
+                )
+            })?;
+        let signature = HostEffectSignature {
+            parameter_types: vec![qualified_target.clone()],
+            parameter_modes: vec![ParamModeIr::Value],
+            parameter_plans: vec![skiff_artifact_model::ValueTransferPlan::FromType {
+                ty: qualified_target.clone(),
+            }],
+            result_types: vec![qualified_result.clone()],
+            result_plans: vec![skiff_artifact_model::ValueTransferPlan::FromType {
+                ty: qualified_result.clone(),
+            }],
+            effects,
+        };
+        let reference = HostEffectReference {
+            target: NativeTarget {
+                namespace: "std".to_string(),
+                symbol: "db.operation".to_string(),
+                binding_key: Some("std.db.operation".to_string()),
+                metadata: BTreeMap::new(),
+            },
+            signature,
+            db_operation: Some(Box::new(DbOperationReference {
+                op: DbOperationKind::Insert,
+                target: DbTargetIr {
+                    type_ref: qualified_target,
+                    type_name: operation.target.type_name.clone(),
+                },
+                operand_roles: vec![DbOperandRole::ObjectFields],
+                result_type: qualified_result.clone(),
+                result_plans: vec![skiff_artifact_model::ValueTransferPlan::FromType {
+                    ty: qualified_result,
+                }],
+            })),
+        };
+        let relocation_index = u32::try_from(self.relocations.len())
+            .map_err(|_| arithmetic(self.key.as_str(), "DbOperation relocation index conversion"))?;
+        self.relocations
+            .push(BytecodeRelocation::HostEffectRef(reference));
+        let result_count = u32::from(!is_void(&expression.ty));
+        let expected_stack_height_before_result = self.operand_depth.checked_sub(1).ok_or_else(|| {
+            unsupported(
+                &self.key,
+                "DbOperation",
+                "insert object operand is absent from the emitted stack",
+            )
+        })?;
+        let instruction = self.emit_op(
+            Opcode::InvokeHost,
+            vec![relocation_index, 1, result_count, 0],
+        )?;
+        self.pending_resumes.push(PendingResume {
+            instruction,
+            operand: 3,
+            expected_stack_height_before_result: u32::try_from(
+                expected_stack_height_before_result,
+            )
+            .map_err(|_| arithmetic(&self.key, "DbOperation resume stack height conversion"))?,
+            result_ty: Some(expression.ty.clone()),
+            end_block: None,
+        });
+        Ok(())
+    }
+
+    fn emit_value_block_block(
         &mut self,
         block: &skiff_compiler_lowering::mir::MirBlock,
     ) -> Result<(), BytecodeEmissionError> {
@@ -525,6 +760,12 @@ impl<'a> FunctionEmitter<'a> {
             ExprIr::Call { .. } => {
                 self.emit_call_expression(expression)?;
             }
+            ExprIr::ValueBlock { result, .. } => {
+                self.emit_value_block(expression.index, *result)?;
+            }
+            ExprIr::DbOperation { operation } => {
+                self.emit_db_operation(expression, operation)?;
+            }
             other => {
                 return Err(unsupported(
                     &self.key,
@@ -557,7 +798,14 @@ impl<'a> FunctionEmitter<'a> {
                 expression: expression.index,
             });
         }
-        if !call.type_args.is_empty() {
+        if !call.type_args.is_empty()
+            && !matches!(
+                &call.target,
+                CallTargetIr::Native { .. }
+                    | CallTargetIr::Builtin { .. }
+                    | CallTargetIr::ReceiverBuiltin { .. }
+            )
+        {
             return Err(unsupported(
                 &self.key,
                 "generic non-direct call",
@@ -769,6 +1017,7 @@ impl<'a> FunctionEmitter<'a> {
         Ok(HostEffectReference {
             target: target.clone(),
             signature: self.call_signature(call, expression, effects)?,
+            db_operation: None,
         })
     }
 
@@ -793,6 +1042,34 @@ impl<'a> FunctionEmitter<'a> {
                     "intrinsic target",
                     &format!(
                         "canonical key `{canonical_key}` is absent from the intrinsic registry"
+                    ),
+                )
+            })?;
+        Ok(IntrinsicReference {
+            target,
+            signature: self.call_signature(call, expression, effects)?,
+        })
+    }
+
+    fn receiver_intrinsic_reference(
+        &self,
+        call: &skiff_artifact_model::CallIr,
+        expression: &MirExpression,
+        op: &skiff_artifact_model::BuiltinReceiverOp,
+    ) -> Result<IntrinsicReference, BytecodeEmissionError> {
+        let target = BytecodeIntrinsicRef::Receiver { op: *op };
+        let effects = skiff_artifact_model::intrinsic_registry()
+            .entries()
+            .iter()
+            .find(|entry| entry.target == target)
+            .map(|entry| entry.signature.effects.clone())
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "receiver intrinsic target",
+                    &format!(
+                        "receiver key `{}` is absent from the intrinsic registry",
+                        op.canonical_key
                     ),
                 )
             })?;
@@ -942,37 +1219,57 @@ impl<'a> FunctionEmitter<'a> {
         expression: &MirExpression,
         op: &skiff_artifact_model::BuiltinReceiverOp,
     ) -> Result<(), BytecodeEmissionError> {
-        if call.args.len() != 1 {
-            return Err(unsupported(
-                &self.key,
-                "receiver builtin",
-                &format!(
-                    "`{}` requires exactly one receiver argument, found {}",
-                    op.canonical_key,
-                    call.args.len()
-                ),
-            ));
-        }
         match (op.receiver, op.method) {
             (
                 skiff_artifact_model::BuiltinReceiverRoot::Array,
                 skiff_artifact_model::BuiltinReceiverMethod::Length,
-            ) => self.emit_op(Opcode::ArrayLen, Vec::new()),
+            ) => {
+                if call.args.len() != 1 {
+                    return Err(unsupported(
+                        &self.key,
+                        "receiver builtin",
+                        &format!(
+                            "`{}` requires exactly one receiver argument, found {}",
+                            op.canonical_key,
+                            call.args.len()
+                        ),
+                    ));
+                }
+                self.emit_op(Opcode::ArrayLen, Vec::new())?;
+                self.map_call_event(expression.index);
+                return Ok(());
+            }
             (
                 skiff_artifact_model::BuiltinReceiverRoot::Map,
                 skiff_artifact_model::BuiltinReceiverMethod::Length,
-            ) => self.emit_op(Opcode::MapLen, Vec::new()),
-            _ => Err(unsupported(
-                &self.key,
-                "receiver builtin",
-                &format!(
-                    "`{}` is outside the emitted collection core",
-                    op.canonical_key
-                ),
-            )),
-        }?;
-        self.map_call_event(expression.index);
-        Ok(())
+            ) => {
+                if call.args.len() != 1 {
+                    return Err(unsupported(
+                        &self.key,
+                        "receiver builtin",
+                        &format!(
+                            "`{}` requires exactly one receiver argument, found {}",
+                            op.canonical_key,
+                            call.args.len()
+                        ),
+                    ));
+                }
+                self.emit_op(Opcode::MapLen, Vec::new())?;
+                self.map_call_event(expression.index);
+                return Ok(());
+            }
+            _ => {}
+        }
+        let relocation = BytecodeRelocation::IntrinsicRef {
+            intrinsic: self.receiver_intrinsic_reference(call, expression, op)?,
+        };
+        self.emit_pending_call(
+            expression,
+            Opcode::InvokeIntrinsic,
+            relocation,
+            None,
+            false,
+        )
     }
 
     fn try_emit_tail_call(
@@ -2634,6 +2931,60 @@ fn check_limit(
         });
     }
     Ok(())
+}
+
+fn value_block_body_blocks(
+    function: &MirFunction,
+) -> Result<BTreeSet<u32>, BytecodeEmissionError> {
+    let mut bodies = BTreeSet::new();
+    for fact in function.expression_blocks.values() {
+        bodies.extend(value_block_body_ids(function, fact.body_block)?);
+    }
+    Ok(bodies)
+}
+
+fn value_block_body_ids(
+    function: &MirFunction,
+    body_block: u32,
+) -> Result<BTreeSet<u32>, BytecodeEmissionError> {
+    let body_ordinal = usize::try_from(body_block)
+        .map_err(|_| arithmetic("scalar emitter", "ValueBlock body block id conversion"))?;
+    let body = function.blocks.get(body_ordinal).ok_or_else(|| {
+        unsupported(
+            "scalar emitter",
+            "ValueBlock CFG",
+            &format!("body block {body_block} is absent"),
+        )
+    })?;
+    let seen_label = body.label.clone();
+    let mut pending = vec![body_block];
+    let mut seen = BTreeSet::new();
+    while let Some(block_id) = pending.pop() {
+        let ordinal = usize::try_from(block_id)
+            .map_err(|_| arithmetic("scalar emitter", "ValueBlock block id conversion"))?;
+        let block = function.blocks.get(ordinal).ok_or_else(|| {
+            unsupported(
+                "scalar emitter",
+                "ValueBlock CFG",
+                &format!("body block {block_id} is absent"),
+            )
+        })?;
+        if block.id != block_id {
+            return Err(unsupported(
+                "scalar emitter",
+                "ValueBlock CFG",
+                &format!("body block {block_id} is non-canonical"),
+            ));
+        }
+        if block.label != seen_label {
+            continue;
+        }
+        if !seen.insert(block_id) {
+            continue;
+        }
+        pending.extend(block.successors.iter().copied());
+    }
+    Ok(seen)
 }
 
 fn return_count(function: &MirFunction) -> usize {
