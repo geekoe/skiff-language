@@ -22,7 +22,8 @@ decomposition, the runtime crate dependency contract and intermediate completion
 2. [`../../../worker-crate-parallel.md`](../../../worker-crate-parallel.md) is mandatory: one worker owns one
    crate, cross-crate contracts land as code first, workers commit only their declared write set, and the main
    agent is the only integration owner.
-3. Phase acceptance remains ordered. Work from a later phase may start after its consumed code contracts land,
+3. Phase acceptance remains ordered. Work from a later phase may start after its direct consumed code contracts
+   land; unrelated workers and later-cohort contract/interface work do not wait for preceding phase acceptance,
    but that phase cannot become `candidate` or `complete` before all preceding acceptance checkpoints pass.
 4. The immediate target is `vm-core-complete`. Existing application deployment cutover, Agine adoption and
    physical legacy deletion are later joins; they are not silently removed from the final project.
@@ -166,8 +167,9 @@ plus `FunctionIndex`, a candidate, or any unchecked/test-only entry.
 
 ## 4. Contract freeze sequence
 
-An implementation worker may start only after every contract it consumes is committed to main. A landed
-signature is not evidence that its semantic implementation or phase acceptance is complete.
+An implementation worker may start only after every direct contract it consumes is committed to main. This is a
+per-worker, per-interface condition, not a barrier to unrelated workers or later-cohort contract/interface work.
+A landed signature is not evidence that its semantic implementation or phase acceptance is complete.
 
 ### C0: Phase 2 and artifact handoff
 
@@ -258,9 +260,11 @@ that skips statement-schedule proof or lets VM accept `LinkedStatementEntry` row
 - Actor owner fence, exact build, incarnation, arena epoch, idle-discard request/ack and durable activation
   snapshot DTOs land together before Router and Runtime workers.
 
-## 5. Parallel waves
+## 5. Parallel launch cohorts
 
-### Wave A: upstream contracts and Phase 2 closure
+The cohort labels below are launch cohorts and dependency checkpoints, not blocking serial milestones. A worker may start when its direct consumed contracts are code-landed; later-cohort workers may begin contract/interface work and disjoint scaffolding before the preceding cohort's full acceptance completes. The main agent should dispatch continuously and does not wait for user prompting or for an entire upstream cohort to finish. Phase acceptance remains ordered and is separate from launch order.
+
+### Cohort A: upstream contracts and Phase 2 closure
 
 Run in parallel where write sets are disjoint:
 
@@ -272,9 +276,9 @@ Run in parallel where write sets are disjoint:
 The current Phase 2 dirty files are locked to their existing owner. No new worker touches them until a clean
 checkpoint exists.
 
-### Wave B0: independent runtime foundations
+### Cohort B0: independent runtime foundations
 
-After C0, these disjoint contract owners may run in parallel:
+After C0, these disjoint contract owners may run in parallel. This is a dependency checkpoint for this cohort, not a serial wave barrier: later-cohort workers may begin contract/interface work and disjoint scaffolding while B0 is still landing:
 
 - `runtime/linked-bytecode`: untrusted candidate vocabulary;
 - `runtime/deployment-image`: generic artifact-only owner/cache/pin layer;
@@ -283,9 +287,9 @@ After C0, these disjoint contract owners may run in parallel:
 
 Each result is only a contract/foundation checkpoint. None can claim linked bytecode executable.
 
-### Wave B1: linker, then verifier proof owner
+### Cohort B1: linker and verifier proof owner
 
-After the B0 interfaces are committed:
+After the B0 interfaces are committed, these may run in parallel. The dependency is on the specific B0 interfaces this cohort consumes, not on full B0 acceptance; later-cohort workers may begin contract/interface work and disjoint scaffolding while B1 is still landing:
 
 - `runtime/linker` borrows hydration and implements relocation/monomorphization into the candidate;
 - `runtime/bytecode-verifier` may land its public seal/error/entry interface after loader, candidate and generic
@@ -297,9 +301,9 @@ After the B0 interfaces are committed:
 Linker and verifier internals may overlap only after their shared data contracts are stable. An unchecked verified
 constructor, candidate-only verification or hand-built hydration is not an acceptable parallelization seam.
 
-### Wave C1: execution
+### Cohort C1: execution
 
-Only after the verifier can actually mint a seal and the exact checked entry pin exists:
+VM execution starts only after the verifier can actually mint a seal and the exact checked entry pin exists. That security boundary is not weakened by parallelization. While this boundary is pending, later-cohort workers may begin contract/interface work and disjoint scaffolding, but must not create any execution or bypass path:
 
 - `runtime/vm`: local/tail/control/throw/fuel vertical core over the concrete pinned verified entry;
 - `runtime/request`: heap/budget adapters after VM ports freeze;
@@ -309,18 +313,18 @@ The existence of the verifier signature while it still returns `ProofUnavailable
 In particular, the current VM raw-row charging code is unreachable migration debt, not delivered statement
 attribution; it must be replaced by verified-schedule consumption before the seal can become available.
 
-### Wave C2: scheduler
+### Cohort C2: scheduler
 
-After VM control/fiber contracts land:
+After VM control/fiber contracts land, scheduler and boundary owners may run in parallel. This is a dependency checkpoint for their direct consumed contracts, not a barrier to later-cohort contract/interface work or disjoint scaffolding:
 
 - `runtime/scheduler`: completion cell, trampoline, root handoff and stream supervision;
 - boundary/native adapter owners may implement against scheduler ports without constructing or decoding entries.
 
 The scheduler depends on VM; it does not interpret candidate instructions or reopen verified entry admission.
 
-### Wave D: semantic breadth
+### Cohort D: semantic breadth
 
-After the relevant ports exist:
+After the relevant direct ports exist, these may run in parallel. Workers may start earlier on disjoint contract and scaffolding work while their direct ports are still being landed:
 
 - boundary/materialization/callback;
 - DB/unwind/cleanup owner;
@@ -331,9 +335,9 @@ After the relevant ports exist:
 These workers may complete code before their original phase acceptance join. Their result documents must say
 which earlier checkpoint remains open.
 
-### Wave E: adoption and retirement
+### Cohort E: adoption and retirement
 
-Only after `vm-core-complete`:
+Actual deployment migration and retirement remain gated on `vm-core-complete`. Adoption-side contract work and disjoint preparation may begin earlier, but these final cutover actions still require the complete core evidence:
 
 - migrate existing Skiff application deployments and optionally Agine/AIHub/Codex Relay;
 - move each entire deployment to VM with fallback zero;
