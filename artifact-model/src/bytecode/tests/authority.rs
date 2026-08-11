@@ -27,6 +27,7 @@ fn stream_producer_artifact() -> BytecodeArtifact {
             function_key: "module::producer".to_string(),
             site_pc: 0,
             resume_pc: 2,
+            end_resume_pc: None,
             expected_stack_height_before_result: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
@@ -45,9 +46,10 @@ fn stream_producer_artifact() -> BytecodeArtifact {
         slot_type_refs: Vec::new(),
         parameter_slots: Vec::new(),
         writable_local_slots: Vec::new(),
-        result_count: 1,
-        result_type_refs: vec![stream_index],
-        result_plans: vec![snapshot_share()],
+        result_count: 0,
+        result_type_refs: Vec::new(),
+        result_plans: Vec::new(),
+        stream_result_type_ref: Some(stream_index),
         slot_plans: Vec::new(),
     };
     producer.max_operand_depth = 1;
@@ -66,6 +68,60 @@ fn stream_producer_artifact() -> BytecodeArtifact {
         .image
         .functions
         .insert("module::producer".to_string(), producer);
+    artifact
+}
+
+fn stream_consumer_artifact() -> BytecodeArtifact {
+    let mut artifact = canonical_artifact();
+    artifact
+        .image
+        .pools
+        .resume
+        .push(BytecodePoolEntry::ResumeDescriptor(ResumeDescriptor {
+            function_key: "module::consumer".to_string(),
+            site_pc: 0,
+            resume_pc: 3,
+            end_resume_pc: Some(4),
+            expected_stack_height_before_result: 0,
+            result_type_refs: vec![0],
+            result_plans: vec![snapshot_share()],
+            error_mode: ResumeErrorMode::RaiseAtSite,
+        }));
+
+    let mut consumer = callback_function();
+    consumer.function_key = "module::consumer".to_string();
+    consumer.origin = BytecodeFunctionOrigin::Executable {
+        executable: executable_coordinate(2),
+    };
+    consumer.words = vec![0x60, 0, 1, 0x08, 0x25];
+    consumer.relocations = Vec::new();
+    consumer.frame_layout = FrameLayout {
+        slot_count: 1,
+        slot_type_refs: vec![0],
+        parameter_slots: Vec::new(),
+        writable_local_slots: Vec::new(),
+        result_count: 0,
+        result_type_refs: Vec::new(),
+        result_plans: Vec::new(),
+        stream_result_type_ref: None,
+        slot_plans: vec![snapshot_share()],
+    };
+    consumer.max_operand_depth = 1;
+    consumer.effect_summary_ref = crate::PackageCallableId::new("operation:module:consumer");
+    consumer.exception_regions = Vec::new();
+    consumer.active_regions = Vec::new();
+    consumer.switch_tables = Vec::new();
+    consumer.statement_entries = vec![StatementEntry {
+        pc: 0,
+        sequence_ordinal: 0,
+        attribution_id: StatementAttributionId::Generated { ordinal: 0 },
+        site: statement_synthetic_site(),
+    }];
+    consumer.source_map = vec![source_map_synthetic(0, 4)];
+    artifact
+        .image
+        .functions
+        .insert("module::consumer".to_string(), consumer);
     artifact
 }
 
@@ -159,11 +215,152 @@ fn emit_stream_requires_the_function_stream_authority() {
         .get_mut("module::producer")
         .unwrap()
         .frame_layout
-        .result_type_refs[0] = 0;
+        .stream_result_type_ref = None;
     let error = assert_rejected(&artifact);
     assert!(error
         .to_string()
         .contains("exact function stream item authority"));
+}
+
+#[test]
+fn ordinary_result_frame_is_not_derived_as_stream_producer() {
+    let artifact = canonical_artifact();
+    assert_validates(&artifact);
+    let view = structurally_validate(&artifact).unwrap();
+
+    assert_eq!(view.function_stream_items().len(), 0);
+}
+
+#[test]
+fn stream_producer_requires_zero_return_arity_and_exact_stream_type() {
+    let mut wrong_type = stream_producer_artifact();
+    wrong_type
+        .image
+        .functions
+        .get_mut("module::producer")
+        .unwrap()
+        .frame_layout
+        .stream_result_type_ref = Some(0);
+    let error = assert_rejected(&wrong_type);
+    assert!(error.to_string().contains("must select Stream<T>"), "{error}");
+
+    let mut non_zero_return = stream_producer_artifact();
+    let stream_index = non_zero_return
+        .image
+        .functions
+        .get_mut("module::producer")
+        .unwrap()
+        .frame_layout
+        .stream_result_type_ref
+        .expect("producer authority");
+    let frame = &mut non_zero_return
+        .image
+        .functions
+        .get_mut("module::producer")
+        .unwrap()
+        .frame_layout;
+    frame.result_count = 1;
+    frame.result_type_refs = vec![stream_index];
+    frame.result_plans = vec![snapshot_share()];
+    let error = assert_rejected(&non_zero_return);
+    assert!(error.to_string().contains("resultCount must be 0"), "{error}");
+}
+
+#[test]
+fn stream_return_type_requires_explicit_producer_declaration() {
+    let mut artifact = canonical_artifact();
+    let stream_index = artifact.image.pools.types.len() as u32;
+    artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
+        ty: TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![string_type()],
+        },
+    });
+    artifact
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .result_type_refs[0] = stream_index;
+
+    let error = assert_rejected(&artifact);
+    assert!(
+        error
+            .to_string()
+            .contains("must declare frameLayout.streamResultTypeRef"),
+        "{error}"
+    );
+}
+
+#[test]
+fn stream_next_exposes_item_and_natural_end_resume_paths() {
+    let artifact = stream_consumer_artifact();
+    assert_validates(&artifact);
+    let view = structurally_validate(&artifact).unwrap();
+
+    let site = view
+        .resume_sites()
+        .iter()
+        .find(|site| site.function_key == "module::consumer")
+        .expect("stream_next resume site");
+    assert_eq!(site.resume_pc, 3);
+    assert_eq!(site.end_resume_pc, Some(4));
+    assert_eq!(site.stream_item, None);
+
+    let authority = site.result_authority();
+    assert_eq!(authority.end_resume_pc, Some(4));
+    assert_eq!(authority.result_type_refs, vec![0]);
+}
+
+#[test]
+fn stream_next_requires_explicit_end_resume_pc() {
+    let mut artifact = stream_consumer_artifact();
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut artifact.image.pools.resume[1]
+    else {
+        unreachable!("stream consumer resume descriptor")
+    };
+    descriptor.end_resume_pc = None;
+
+    let error = assert_rejected(&artifact);
+    assert!(error.to_string().contains("requires endResumePc"), "{error}");
+}
+
+#[test]
+fn non_stream_resume_cannot_declare_end_resume_pc() {
+    let mut artifact = canonical_artifact();
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut artifact.image.pools.resume[0]
+    else {
+        unreachable!("canonical resume descriptor")
+    };
+    descriptor.end_resume_pc = Some(27);
+
+    let error = assert_rejected(&artifact);
+    assert!(error.to_string().contains("only valid for StreamNext"), "{error}");
+}
+
+#[test]
+fn stream_next_end_resume_pc_must_be_distinct_instruction_header() {
+    let mut duplicate = stream_consumer_artifact();
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut duplicate.image.pools.resume[1]
+    else {
+        unreachable!("stream consumer resume descriptor")
+    };
+    descriptor.end_resume_pc = Some(3);
+    let error = assert_rejected(&duplicate);
+    assert!(error.to_string().contains("must differ from item resumePc"), "{error}");
+
+    let mut not_header = stream_consumer_artifact();
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut not_header.image.pools.resume[1]
+    else {
+        unreachable!("stream consumer resume descriptor")
+    };
+    descriptor.end_resume_pc = Some(2);
+    let error = assert_rejected(&not_header);
+    assert!(
+        error.to_string().contains("is not an instruction header"),
+        "{error}"
+    );
 }
 
 #[test]

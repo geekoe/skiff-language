@@ -83,6 +83,7 @@ fn basic_function(
             result_count: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
+            stream_result_type_ref: None,
             slot_plans: vec![snapshot_share(); slot_count as usize],
         },
         max_operand_depth: 0,

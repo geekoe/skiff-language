@@ -9,7 +9,7 @@ const GOLDEN_V6_SHAPE: &str = r#"{
   "artifact":["bytecodeIdentity","hostEffectRegistry","image","intrinsicRegistry","isaVersion","magic","nativeValueLifecycleRegistry","opcodeTableFingerprint","schemaVersion","valueLifecyclePolicy"],
   "image":["constantRoots","debugTable","frozenConstantGraph","functions","pools"],
   "function":["activeRegions","callLoanLayouts","effectSummaryRef","exceptionRegions","frameLayout","functionKey","maxOperandDepth","origin","relocations","selfTypeRef","sourceMap","statementEntries","switchTables","words"],
-  "frame":["parameterSlots","resultCount","resultPlans","resultTypeRefs","slotCount","slotPlans","slotTypeRefs","writableLocalSlots"],
+  "frame":["parameterSlots","resultCount","resultPlans","resultTypeRefs","slotCount","slotPlans","slotTypeRefs","streamResultTypeRef","writableLocalSlots"],
   "callLoanLayout":["loans"],
   "callLoanBinding":["parameterOrdinal","rootSlot","writablePathRef"],
   "localRelocation":["functionKey","kind","specialization"],
@@ -17,7 +17,7 @@ const GOLDEN_V6_SHAPE: &str = r#"{
   "statementEntry":["attributionId","pc","sequenceOrdinal","site"],
   "statementAttributionId":["expressionIndex","kind","occurrenceOrdinal"],
   "constantEntry":["kind","plan","reference","typeRef"],
-  "resume":["errorMode","expectedStackHeightBeforeResult","functionKey","kind","resultPlans","resultTypeRefs","resumePc","sitePc"]
+  "resume":["endResumePc","errorMode","expectedStackHeightBeforeResult","functionKey","kind","resultPlans","resultTypeRefs","resumePc","sitePc"]
 }"#;
 
 fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
@@ -173,7 +173,12 @@ fn schema_rejects_missing_required_header_image_and_frame_fields() {
         .remove("constantRoots");
     assert!(serde_json::from_value::<BytecodeArtifact>(missing_roots).is_err());
 
-    for field in ["slotTypeRefs", "writableLocalSlots", "resultTypeRefs"] {
+    for field in [
+        "slotTypeRefs",
+        "writableLocalSlots",
+        "resultTypeRefs",
+        "streamResultTypeRef",
+    ] {
         let mut missing = value.clone();
         missing["image"]["functions"]["module::main"]["frameLayout"]
             .as_object_mut()
@@ -184,6 +189,16 @@ fn schema_rejects_missing_required_header_image_and_frame_fields() {
             .to_string();
         assert!(error.contains("missing field"), "{field}: {error}");
     }
+
+    let mut missing_end_resume_pc = value.clone();
+    missing_end_resume_pc["image"]["pools"]["resume"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("endResumePc");
+    let error = serde_json::from_value::<BytecodeArtifact>(missing_end_resume_pc)
+        .expect_err("endResumePc must be required on the wire")
+        .to_string();
+    assert!(error.contains("missing field"), "{error}");
 
     for field in ["origin", "selfTypeRef", "callLoanLayouts"] {
         let mut missing = value.clone();

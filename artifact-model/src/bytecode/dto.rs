@@ -327,6 +327,11 @@ pub struct FrameLayout {
     /// One plan per result slot (schema declaration; arity/type proof is 3B).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub result_plans: Vec<ValueTransferPlan>,
+    /// Exact `Stream<T>` producer authority. Required on the wire and `null`
+    /// for non-producers. A stream producer's `resultCount` is zero: natural
+    /// end is a plain `return` with no stack payload.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub stream_result_type_ref: Option<u32>,
     /// One plan per frame slot, indexed by slot (schema declaration).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slot_plans: Vec<ValueTransferPlan>,
@@ -830,10 +835,16 @@ pub struct ResumeDescriptor {
     pub function_key: String,
     pub site_pc: u32,
     pub resume_pc: u32,
+    /// Independent natural-end continuation pc for `StreamNext`. Required on
+    /// the wire and `null` for every other pending site.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub end_resume_pc: Option<u32>,
     /// Operand stack height immediately before resumed results are pushed.
     pub expected_stack_height_before_result: u32,
     /// Type refs and plans in result order; both lengths equal site result
-    /// arity and v4 permits only zero or one.
+    /// arity and v4 permits only zero or one. For `StreamNext`, these describe
+    /// the one-item resume path; the natural-end path uses `endResumePc` with
+    /// zero results.
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<ValueTransferPlan>,
     pub error_mode: ResumeErrorMode,

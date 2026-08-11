@@ -191,6 +191,7 @@ fn shell_artifact(words: Vec<u32>) -> BytecodeArtifact {
                 result_count: 0,
                 result_type_refs: Vec::new(),
                 result_plans: Vec::new(),
+                stream_result_type_ref: None,
                 slot_plans: Vec::new(),
             },
             max_operand_depth: 0,

@@ -1,5 +1,5 @@
-pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v14";
-pub const FILE_IR_FORMAT_VERSION: &str = "skiff-file-ir-format-v8";
+pub const FILE_IR_SCHEMA_VERSION: &str = "skiff-file-ir-v15";
+pub const FILE_IR_FORMAT_VERSION: &str = "skiff-file-ir-format-v9";
 pub const FILE_IR_OPCODE_TABLE_VERSION: &str = "skiff-opcode-table-v2";
 pub const PACKAGE_ARTIFACT_SCHEMA_VERSION: &str = "skiff-package-artifact-v14";
 pub const SERVICE_CONTRACT_SCHEMA_VERSION: &str = "skiff-service-contract-v6";

@@ -63,6 +63,48 @@ pub(super) fn validate_resume_sites(
                     ),
                 });
             }
+            let end_resume_pc = match (descriptor.kind, resume.end_resume_pc) {
+                (Opcode::StreamNext, Some(end_resume_pc)) => {
+                    if end_resume_pc == resume_pc {
+                        return Err(StructuralValidationError::Target {
+                            function_key: function.function_key.clone(),
+                            pc: instruction.pc,
+                            message: format!(
+                                "StreamNext resume[{descriptor_index}] endResumePc {end_resume_pc} must differ from item resumePc {resume_pc}"
+                            ),
+                        });
+                    }
+                    if function.header_pcs.binary_search(&end_resume_pc).is_err() {
+                        return Err(StructuralValidationError::Target {
+                            function_key: function.function_key.clone(),
+                            pc: instruction.pc,
+                            message: format!(
+                                "StreamNext resume[{descriptor_index}] endResumePc {end_resume_pc} is not an instruction header"
+                            ),
+                        });
+                    }
+                    Some(end_resume_pc)
+                }
+                (Opcode::StreamNext, None) => {
+                    return Err(StructuralValidationError::Target {
+                        function_key: function.function_key.clone(),
+                        pc: instruction.pc,
+                        message: format!(
+                            "StreamNext resume[{descriptor_index}] requires endResumePc for natural stream end"
+                        ),
+                    });
+                }
+                (_, Some(_)) => {
+                    return Err(StructuralValidationError::Target {
+                        function_key: function.function_key.clone(),
+                        pc: instruction.pc,
+                        message: format!(
+                            "resume[{descriptor_index}] endResumePc is only valid for StreamNext"
+                        ),
+                    });
+                }
+                (_, None) => None,
+            };
             let result_arity = resolve_stack_effect_arity(
                 descriptor.stack_out,
                 instruction,
@@ -111,6 +153,7 @@ pub(super) fn validate_resume_sites(
                 descriptor_index,
                 site_pc: instruction.pc,
                 resume_pc,
+                end_resume_pc,
                 expected_stack_height_before_result: resume.expected_stack_height_before_result,
                 result_type_refs: resume.result_type_refs.clone(),
                 result_plans: resume.result_plans.clone(),

@@ -9,7 +9,7 @@ use crate::{
 fn origin(executable_index: u32) -> BytecodeFunctionOrigin {
     BytecodeFunctionOrigin::Executable {
         executable: PackageExecutableCoordinate {
-            file_ir_identity: "skiff-file-ir-v14:sha256:fixture".to_string(),
+            file_ir_identity: "skiff-file-ir-v15:sha256:fixture".to_string(),
             module_path: "example.main".to_string(),
             executable_index,
         },

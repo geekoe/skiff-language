@@ -10,17 +10,17 @@ mod semantic;
 fn current_identity_generations_are_atomic() {
     assert_eq!(
         skiff_artifact_model::FILE_IR_SCHEMA_VERSION,
-        "skiff-file-ir-v14"
+        "skiff-file-ir-v15"
     );
     assert_eq!(
         skiff_artifact_model::FILE_IR_FORMAT_VERSION,
-        "skiff-file-ir-format-v8"
+        "skiff-file-ir-format-v9"
     );
     assert_eq!(
         skiff_artifact_model::FILE_IR_OPCODE_TABLE_VERSION,
         "skiff-opcode-table-v2"
     );
-    assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v14:sha256");
+    assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v15:sha256");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
         "skiff-bytecode-artifact-v4"

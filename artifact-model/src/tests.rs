@@ -727,8 +727,8 @@ fn file_ir_unit_round_trips_canonical_artifact_shape() {
 fn empty_file_ir_uses_canonical_identity_versions_and_external_refs() {
     let unit = FileIrUnit::empty("svc.empty", "source:empty");
 
-    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v14");
-    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v8");
+    assert_eq!(FILE_IR_SCHEMA_VERSION, "skiff-file-ir-v15");
+    assert_eq!(FILE_IR_FORMAT_VERSION, "skiff-file-ir-format-v9");
     assert_eq!(FILE_IR_OPCODE_TABLE_VERSION, "skiff-opcode-table-v2");
     assert_eq!(unit.schema_version, FILE_IR_SCHEMA_VERSION);
     assert_eq!(unit.ir_format_version, FILE_IR_FORMAT_VERSION);
