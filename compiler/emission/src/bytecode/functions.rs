@@ -543,7 +543,7 @@ impl<'a> FunctionEmitter<'a> {
         expression: &MirExpression,
     ) -> Result<(), BytecodeEmissionError> {
         if self.try_emit_ordinary_call(expression)? {
-            self.map_all_expression_events(expression.index);
+            self.anchor_extra_call_expression_events(expression.index)?;
             return Ok(());
         }
         let ExprIr::Call { call } = &expression.expression else {
@@ -649,7 +649,7 @@ impl<'a> FunctionEmitter<'a> {
             )),
         };
         result?;
-        self.map_all_expression_events(expression.index);
+        self.anchor_extra_call_expression_events(expression.index)?;
         Ok(())
     }
 
@@ -930,7 +930,11 @@ impl<'a> FunctionEmitter<'a> {
             return Err(unsupported(
                 &self.key,
                 "receiver builtin",
-                "length builtin requires exactly one receiver argument",
+                &format!(
+                    "`{}` requires exactly one receiver argument, found {}",
+                    op.canonical_key,
+                    call.args.len()
+                ),
             ));
         }
         match (op.receiver, op.method) {
@@ -1862,13 +1866,22 @@ impl<'a> FunctionEmitter<'a> {
             .entry(expression_index)
             .or_insert(0);
         let occurrence = *emission;
+        let call_expression = self
+            .function
+            .expression(skiff_artifact_model::ExprRefIr {
+                expression: expression_index,
+            })
+            .is_ok_and(|expression| matches!(expression.expression, ExprIr::Call { .. }));
         for (index, event) in self.events.iter().enumerate() {
             if let MirEmissionAnchor::Expression {
                 expression_index: anchored,
                 occurrence_ordinal,
             } = event.anchor
             {
-                if anchored == expression_index && occurrence_ordinal == occurrence {
+                if anchored == expression_index
+                    && occurrence_ordinal == occurrence
+                    && !(call_expression && occurrence_ordinal == 0)
+                {
                     self.event_mapping[index].get_or_insert(self.instructions.len());
                 }
             }
@@ -1893,6 +1906,39 @@ impl<'a> FunctionEmitter<'a> {
                 self.event_mapping[index].get_or_insert(self.instructions.len() - 1);
             }
         }
+    }
+
+    fn anchor_extra_call_expression_events(
+        &mut self,
+        expression_index: u32,
+    ) -> Result<(), BytecodeEmissionError> {
+        let has_extra = self.events.iter().any(|event| {
+            matches!(
+                event.anchor,
+                MirEmissionAnchor::Expression {
+                    expression_index: anchored,
+                    occurrence_ordinal,
+                } if anchored == expression_index && occurrence_ordinal > 0
+            )
+        });
+        if !has_extra {
+            return Ok(());
+        }
+        let instruction = self.instructions.len();
+        self.emit_number_constant(0)?;
+        self.emit_op(Opcode::Pop, Vec::new())?;
+        for (index, event) in self.events.iter().enumerate() {
+            if let MirEmissionAnchor::Expression {
+                expression_index: anchored,
+                ..
+            } = event.anchor
+            {
+                if anchored == expression_index {
+                    self.event_mapping[index].get_or_insert(instruction);
+                }
+            }
+        }
+        Ok(())
     }
 
     fn map_all_expression_events(&mut self, expression_index: u32) {
@@ -2250,11 +2296,7 @@ impl<'a> FunctionEmitter<'a> {
         word_count: usize,
     ) -> Result<Vec<SourceMapEntry>, BytecodeEmissionError> {
         if word_count == 0 {
-            return Err(unsupported(
-                &self.key,
-                "function source map",
-                "function has no instructions",
-            ));
+            return Ok(Vec::new());
         }
         Ok(vec![SourceMapEntry {
             start_pc: 0,

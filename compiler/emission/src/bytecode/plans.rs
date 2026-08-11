@@ -93,6 +93,9 @@ fn concrete_value_plan(
             drop: ValueDropPlan::Trivial,
         });
     }
+    if is_ordinary_structural_type(ty) {
+        return Ok(snapshot_release_plan());
+    }
     let resolution = match native_value_lifecycle_registry().lookup(ty) {
         Ok(resolution) => resolution,
         Err(NativeValueLifecycleLookupError::Missing { .. }) if is_package_symbol_type(ty) => {
@@ -119,6 +122,16 @@ fn is_never_type(ty: &TypeRefIr) -> bool {
     matches!(
         ty,
         TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty()
+    )
+}
+
+fn is_ordinary_structural_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Union { .. }
+            | TypeRefIr::Nullable { .. }
+            | TypeRefIr::Literal { .. }
+            | TypeRefIr::AnyInterface { .. }
     )
 }
 
@@ -408,6 +421,21 @@ mod tests {
                 .unwrap(),
             ValueTransferPlan::SnapshotShare {
                 drop: ValueDropPlan::Trivial,
+            }
+        );
+        assert_eq!(
+            concrete_value_plan(
+                &[],
+                "m",
+                "f",
+                " return value",
+                &TypeRefIr::Nullable {
+                    inner: Box::new(TypeRefIr::builtin("string")),
+                },
+            )
+            .unwrap(),
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease,
             }
         );
         let symbol = skiff_artifact_model::PackageSymbolRef {
