@@ -1168,6 +1168,85 @@ mod tests {
     }
 
     #[test]
+    fn affine_stream_local_binding_emits_move_slot() {
+        let stream_type = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        };
+        let expressions = vec![MirExpression {
+            index: 0,
+            expression: ExprIr::LoadSlot { slot: 0 },
+            ty: stream_type.clone(),
+            writable: None,
+            direct_call: None,
+            stream_result: Some(MirStreamResultFacts {
+                item_type: TypeRefIr::builtin("number"),
+            }),
+            remote_interface: None,
+        }];
+        let function = function(
+            "streams",
+            "bind",
+            TypeRefIr::builtin("void"),
+            vec![
+                MirSlot {
+                    slot: 0,
+                    name: "values".to_string(),
+                    kind: MirSlotKind::Local,
+                    writable_local: false,
+                    ty: Some(stream_type.clone()),
+                },
+                MirSlot {
+                    slot: 1,
+                    name: "stream".to_string(),
+                    kind: MirSlotKind::Local,
+                    writable_local: false,
+                    ty: Some(stream_type.clone()),
+                },
+            ],
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::InitSlot {
+                        slot: 1,
+                        value: expression(0),
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
+        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()])
+            .expect("affine binding plans derive");
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("affine stream binding emits bytecode");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("affine stream binding bytecode must validate");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "streams::bind")
+            .expect("affine binding function");
+        assert!(function.instructions.iter().any(|instruction| {
+            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::MoveSlot
+        }));
+        assert!(function.instructions.iter().all(|instruction| {
+            instruction.descriptor.kind != skiff_artifact_model::bytecode::Opcode::LoadSlot
+        }));
+    }
+
+    #[test]
     fn stream_for_in_emits_stream_next_store_and_loop_backedge() {
         let item_type = TypeRefIr::builtin("number");
         let stream_type = TypeRefIr::Builtin {

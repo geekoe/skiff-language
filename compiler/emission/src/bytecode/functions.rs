@@ -264,16 +264,14 @@ impl<'a> FunctionEmitter<'a> {
     ) -> Result<(), BytecodeEmissionError> {
         match &statement.kind {
             MirStmtKind::InitSlot { slot, value } => {
-                self.emit_expression(*value)?;
-                self.emit_op(Opcode::StoreSlot, vec![*slot])?;
+                self.emit_slot_value(*slot, *value)?;
             }
             MirStmtKind::Assign {
                 target: AssignTargetIr::Slot { slot },
                 value,
                 ..
             } => {
-                self.emit_expression(*value)?;
-                self.emit_op(Opcode::StoreSlot, vec![*slot])?;
+                self.emit_slot_value(*slot, *value)?;
             }
             MirStmtKind::Assign { place, value, .. } => {
                 self.emit_writable_assign(place, *value)?;
@@ -848,6 +846,24 @@ impl<'a> FunctionEmitter<'a> {
             result_plans,
             effects,
         })
+    }
+
+    fn emit_slot_value(
+        &mut self,
+        slot: u32,
+        value: ExprRefIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        let expression = self.function.expression(value)?;
+        if is_stream_type(&expression.ty) {
+            if let ExprIr::LoadSlot { slot: source } = &expression.expression {
+                self.begin_expression(expression.index);
+                self.emit_op(Opcode::MoveSlot, vec![*source, slot])?;
+                return Ok(());
+            }
+        }
+        self.emit_expression(value)?;
+        self.emit_op(Opcode::StoreSlot, vec![slot])?;
+        Ok(())
     }
 
     fn emit_stream(&mut self, value: ExprRefIr) -> Result<(), BytecodeEmissionError> {
