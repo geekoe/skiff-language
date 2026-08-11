@@ -15,15 +15,18 @@ use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason}
 use skiff_runtime_deployment_image::{
     DeploymentImage, PinnedDeploymentEntry, PinnedDeploymentEntryError,
 };
-use skiff_runtime_model::{request_heap::RequestHeapLimits, vm_heap::VmHeap, vm_value::ValueSlot};
-use skiff_runtime_vm::{
-    AdapterInvocation, ChildInvocation, PendingOperation, ResumeOutcome, StreamItem, Vm, VmBudget,
-    VmBudgetError, VmControl, VmError, VmLimits, VmResumeToken, VmSemanticCharge,
-};
+use skiff_runtime_model::{request_heap::RequestHeapLimits, vm_value::ValueSlot};
+use skiff_runtime_scheduler::{BytecodeScheduler, BytecodeSchedulerOutcome};
+use skiff_runtime_vm::{Vm, VmBudget, VmBudgetError, VmError, VmFiber, VmLimits, VmSemanticCharge};
 
 use crate::{
     vm_heap::RequestVmHeap, BoundaryResponse, ExecutionBudget, ExecutionControl, RequestEnvelope,
     RequestError, RequestResult,
+};
+
+pub use skiff_runtime_scheduler::{
+    BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff, BytecodeSchedulerError,
+    BytecodeSchedulerPorts, BytecodeStreamSupervisor, SuspendedTrampoline,
 };
 
 /// One verified deployment image and the exact operation entry selected from it.
@@ -103,65 +106,12 @@ pub struct BytecodeRequestExecutionHandles {
     pub request_heap_limits: RequestHeapLimits,
 }
 
-/// Execution ports that a host or scheduler can supply for VM handoffs.
-///
-/// The existing host path constructs [`BytecodeRequestExecutionHandles`] with
-/// only heap limits and calls [`execute_runtime_bytecode_request`]. Ports are
-/// an additive seam so that same call can be upgraded without changing the
-/// host's current struct literal.
-#[derive(Default)]
-pub struct BytecodeRequestExecutionPorts {
-    pub child_executor: Option<Arc<dyn BytecodeChildExecutor>>,
-    pub stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor>>,
-}
+/// Execution ports supplied to the bytecode scheduler.
+pub type BytecodeRequestExecutionPorts = BytecodeSchedulerPorts<VmFiber>;
 
 /// One completed VM handoff plus the unique continuation that resumes its
 /// parent fiber.
-pub struct BytecodeInvocationHandoff {
-    pub resume: VmResumeToken,
-    pub outcome: ResumeOutcome,
-}
-
-/// Flat execution seam for child and host-adapter invocations.
-///
-/// The request crate never starts a child VM itself. Implementations receive
-/// the same heap and budget as the parent so child result slots remain valid
-/// for the parent's continuation.
-pub trait BytecodeChildExecutor: Send + Sync + 'static {
-    fn execute_child(
-        &self,
-        invocation: ChildInvocation,
-        heap: &mut dyn VmHeap,
-        budget: &mut dyn VmBudget,
-    ) -> RequestResult<BytecodeInvocationHandoff>;
-
-    fn execute_adapter(
-        &self,
-        invocation: AdapterInvocation,
-        heap: &mut dyn VmHeap,
-        budget: &mut dyn VmBudget,
-    ) -> RequestResult<BytecodeInvocationHandoff>;
-}
-
-/// Future seam for stream emission and actual-Pending parking.
-///
-/// This path is currently fail-closed because the bytecode HTTP entry has no
-/// stream response sink or pending registry yet.
-pub trait BytecodeStreamSupervisor: Send + Sync + 'static {
-    fn emit_stream(
-        &self,
-        item: StreamItem,
-        heap: &mut dyn VmHeap,
-        budget: &mut dyn VmBudget,
-    ) -> RequestResult<BytecodeInvocationHandoff>;
-
-    fn park(
-        &self,
-        operation: PendingOperation,
-        heap: &mut dyn VmHeap,
-        budget: &mut dyn VmBudget,
-    ) -> RequestResult<BytecodeInvocationHandoff>;
-}
+pub type BytecodeInvocationHandoff = BytecodeHandoff<VmFiber>;
 
 /// Executes one scalar bytecode request against a verified deployment image.
 pub fn execute_runtime_bytecode_request(
@@ -195,64 +145,50 @@ pub fn execute_runtime_bytecode_request_with_ports(
     } = target;
     let pinned = PinnedDeploymentEntry::try_new(image, entry)
         .map_err(pinned_entry_error_to_request_error)?;
-    let mut fiber = Vm::start(pinned, Box::new([]), vm_limits())
+    let fiber = Vm::start(pinned, Box::new([]), vm_limits())
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let mut heap = RequestVmHeap::new(handles.request_heap_limits);
     let mut budget = BytecodeVmBudget::new(execution_budget.clone(), cancelled, cancellation);
 
-    loop {
-        match fiber.run_segment(&mut heap, &mut budget) {
-            VmControl::Continue => {}
-            VmControl::Complete(result) => {
-                let values =
-                    result.map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-                let payload = json_payload_from_value_slots(values.values())?;
-                fiber
-                    .discard_terminal_roots(&mut heap)
-                    .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-                return Ok(BoundaryResponse::payload(payload));
-            }
-            VmControl::EnterChild(invocation) => {
-                let handoff = match &ports.child_executor {
-                    Some(executor) => executor.execute_child(invocation, &mut heap, &mut budget)?,
-                    None => {
-                        return Err(RequestError::Unsupported(
-                            "bytecode VM child invocation requires a child executor port"
-                                .to_string(),
-                        ))
-                    }
-                };
-                fiber
-                    .resume(handoff.resume, handoff.outcome)
-                    .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-            }
-            VmControl::EnterAdapter(invocation) => {
-                let handoff = match &ports.child_executor {
-                    Some(executor) => {
-                        executor.execute_adapter(invocation, &mut heap, &mut budget)?
-                    }
-                    None => {
-                        return Err(RequestError::Unsupported(
-                            "bytecode VM adapter invocation requires a child executor port"
-                                .to_string(),
-                        ))
-                    }
-                };
-                fiber
-                    .resume(handoff.resume, handoff.outcome)
-                    .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-            }
-            VmControl::EmitStream(_) => {
-                return Err(RequestError::Unsupported(
-                    "bytecode VM stream emission requires stream supervisor integration"
-                        .to_string(),
-                ))
-            }
-            VmControl::Park(_) => {
-                return Err(RequestError::Unsupported(
-                    "bytecode VM parking requires stream supervisor integration".to_string(),
-                ))
-            }
+    let outcome = BytecodeScheduler::new(
+        fiber,
+        BytecodeSchedulerPorts {
+            child_executor: ports.child_executor,
+            stream_supervisor: ports.stream_supervisor,
+        },
+    )
+    .run(&mut heap, &mut budget)
+    .map_err(|error| scheduler_error_to_request_error(&execution_budget, error))?;
+    let BytecodeSchedulerOutcome::Complete(result) = outcome else {
+        return Err(RequestError::Unsupported(
+            "bytecode VM parked; scalar ingress has no pending wake resume path".to_string(),
+        ));
+    };
+    let values = result.map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
+    let payload = json_payload_from_value_slots(values.values())?;
+    Ok(BoundaryResponse::payload(payload))
+}
+
+fn scheduler_error_to_request_error(
+    execution_budget: &ExecutionBudget,
+    error: BytecodeSchedulerError,
+) -> RequestError {
+    match error {
+        BytecodeSchedulerError::UnsupportedChild => RequestError::Unsupported(
+            "bytecode VM child invocation requires a child executor port".to_string(),
+        ),
+        BytecodeSchedulerError::UnsupportedAdapter => RequestError::Unsupported(
+            "bytecode VM adapter invocation requires a child executor port".to_string(),
+        ),
+        BytecodeSchedulerError::UnsupportedStream => RequestError::Unsupported(
+            "bytecode VM stream emission requires stream supervisor integration".to_string(),
+        ),
+        BytecodeSchedulerError::UnsupportedPark => RequestError::Unsupported(
+            "bytecode VM parking requires stream supervisor integration".to_string(),
+        ),
+        BytecodeSchedulerError::Vm(error) => vm_error_to_request_error(execution_budget, error),
+        BytecodeSchedulerError::Port(message) => {
+            RequestError::Unsupported(format!("bytecode scheduler port failed: {message}"))
         }
     }
 }
@@ -531,6 +467,27 @@ mod tests {
             .extra
             .insert("actorCall".to_string(), serde_json::json!({}));
         assert!(validate_bytecode_request(&actor_request).is_err());
+    }
+
+    #[test]
+    fn scheduler_fail_closed_errors_map_to_unsupported() {
+        let budget = ExecutionBudget::disabled();
+        assert!(matches!(
+            scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedChild),
+            RequestError::Unsupported(message) if message.contains("child executor port")
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedAdapter),
+            RequestError::Unsupported(message) if message.contains("child executor port")
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedStream),
+            RequestError::Unsupported(message) if message.contains("stream supervisor")
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedPark),
+            RequestError::Unsupported(message) if message.contains("stream supervisor")
+        ));
     }
 
     fn request() -> RequestEnvelope {
