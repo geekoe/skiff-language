@@ -1,6 +1,8 @@
 use serde_json::json;
 use skiff_artifact_model::{PackageSchemaTypeId, SourcePosition, SourceSpanRef};
-use skiff_runtime_request_contract::WirePayload;
+use skiff_runtime_request_contract::{
+    PlatformErrorProjectionPayload, StdDbConflictErrorPayload, WirePayload,
+};
 
 use super::*;
 use crate::{
@@ -18,38 +20,54 @@ fn site() -> InstructionSourceSite {
     }
 }
 
+fn public_error() -> OpaqueServiceError {
+    OpaqueServiceError::public_typed_error(
+        "example.errors",
+        "NotFound",
+        PackageSchemaTypeId::new("schema:not-found"),
+        br#"{"id":"42"}"#,
+        "trace-1",
+        "error-1",
+    )
+    .expect("public fixture should encode canonically")
+}
+
 fn public_envelope() -> ServiceErrorEnvelope {
-    ServiceErrorEnvelope::PublicTypedError {
-        package_id: "example.errors".to_string(),
-        stable_schema_key: "NotFound".to_string(),
-        package_schema_type_id: PackageSchemaTypeId::new("schema:not-found"),
-        encoded_payload: br#"{"id":"42"}"#.to_vec(),
-        trace_id: "trace-1".to_string(),
-        error_id: "error-1".to_string(),
-    }
+    public_error().envelope().clone()
+}
+
+fn internal_error() -> OpaqueServiceError {
+    OpaqueServiceError::internal_error(
+        "The service could not complete the request.",
+        "trace-1",
+        "error-2",
+    )
+    .expect("internal fixture should encode canonically")
 }
 
 fn internal_envelope() -> ServiceErrorEnvelope {
-    ServiceErrorEnvelope::InternalError {
-        payload: InternalErrorPayload {
-            message: "The service could not complete the request.".to_string(),
-            trace_id: "trace-1".to_string(),
-            error_id: "error-2".to_string(),
-        },
-    }
+    internal_error().envelope().clone()
+}
+
+fn db_conflict_projection() -> PlatformErrorProjectionPayload {
+    PlatformErrorProjectionPayload::StdDbConflictError(StdDbConflictErrorPayload {
+        message: "The database operation conflicted.".to_string(),
+        retryable: true,
+        target: "catalog".to_string(),
+    })
+}
+
+fn platform_error() -> OpaqueServiceError {
+    OpaqueServiceError::platform_error(&db_conflict_projection(), "trace-1", "error-3")
+        .expect("generated platform fixture should encode canonically")
 }
 
 fn platform_envelope() -> ServiceErrorEnvelope {
-    ServiceErrorEnvelope::PlatformError {
-        builtin_error_identity: PlatformBuiltinErrorIdentity::DbConflict,
-        encoded_payload: br#"{"retryable":true}"#.to_vec(),
-        trace_id: "trace-1".to_string(),
-        error_id: "error-3".to_string(),
-    }
+    platform_error().envelope().clone()
 }
 
 #[test]
-fn legacy_cancel_platform_error_envelope_is_rejected_by_the_finite_registry() {
+fn legacy_builtin_error_identity_field_is_rejected_by_the_current_service_wire() {
     let legacy = r#"{
           "kind": "platformError",
           "builtinErrorIdentity": "CancelError",
@@ -60,13 +78,13 @@ fn legacy_cancel_platform_error_envelope_is_rejected_by_the_finite_registry() {
 
     let error = serde_json::from_str::<ServiceErrorEnvelope>(legacy).unwrap_err();
     assert!(
-        error.to_string().contains("unknown variant `CancelError`"),
-        "legacy identity must be rejected before payload validation: {error}"
+        error.to_string().contains("builtinErrorIdentity"),
+        "the retired service-wire field must be rejected by the current envelope shape: {error}"
     );
 }
 
 #[test]
-fn legacy_cancel_symbol_is_not_a_platform_builtin_identity() {
+fn legacy_cancel_symbol_is_not_a_runtime_platform_builtin_identity() {
     assert_eq!(
         PlatformBuiltinErrorIdentity::from_symbol("CancelError"),
         None
@@ -74,7 +92,7 @@ fn legacy_cancel_symbol_is_not_a_platform_builtin_identity() {
 }
 
 #[test]
-fn database_constraint_platform_identity_round_trips_exactly() {
+fn database_constraint_runtime_platform_identity_round_trips_exactly() {
     let identity = PlatformBuiltinErrorIdentity::DbConstraint;
 
     assert_eq!(identity.symbol(), "std.db.ConstraintError");
@@ -89,7 +107,7 @@ fn database_constraint_platform_identity_round_trips_exactly() {
 }
 
 #[test]
-fn legacy_cancel_json_string_is_rejected_by_the_finite_registry() {
+fn legacy_cancel_json_string_is_rejected_by_the_runtime_identity_registry() {
     assert!(serde_json::from_str::<PlatformBuiltinErrorIdentity>(r#""CancelError""#).is_err());
 }
 
@@ -147,7 +165,7 @@ fn websocket_request_errors_keep_all_five_exact_named_union_branch_identities() 
 }
 
 #[test]
-fn timeout_platform_identity_and_envelope_round_trip_unchanged() {
+fn timeout_runtime_platform_identity_round_trips_and_keeps_catch_identity() {
     let identity = PlatformBuiltinErrorIdentity::Timeout;
 
     assert_eq!(identity.symbol(), "TimeoutError");
@@ -166,31 +184,38 @@ fn timeout_platform_identity_and_envelope_round_trip_unchanged() {
         serde_json::from_str::<PlatformBuiltinErrorIdentity>(&identity_json).unwrap(),
         identity
     );
+}
 
-    let envelope = ServiceErrorEnvelope::PlatformError {
-        builtin_error_identity: identity,
-        encoded_payload: br#"{"message":"deadline exceeded"}"#.to_vec(),
-        trace_id: "trace-timeout".to_string(),
-        error_id: "error-timeout".to_string(),
-    };
-    let wire = serde_json::to_vec(&envelope).unwrap();
+#[test]
+fn db_conflict_service_error_preserves_generated_projection_bytes_and_typed_evidence() {
+    let opaque = platform_error();
+    let fixed_bytes = opaque.encoded_bytes().to_vec();
+    let decoded = OpaqueServiceError::decode(fixed_bytes.clone())
+        .expect("generated exact-known projection should decode");
+    let evidence = decoded
+        .known_platform_projection()
+        .expect("the exact generated pair should retain typed evidence");
+
+    assert_eq!(evidence.projection_key(), db_conflict_projection().key());
+    assert!(matches!(
+        evidence.payload(),
+        PlatformErrorProjectionPayload::StdDbConflictError(StdDbConflictErrorPayload {
+            message,
+            retryable: true,
+            target,
+        }) if message == "The database operation conflicted." && target == "catalog"
+    ));
+    assert_eq!(decoded, opaque);
+    assert_eq!(decoded.encoded_bytes(), fixed_bytes);
     assert_eq!(
-        serde_json::from_slice::<ServiceErrorEnvelope>(&wire).unwrap(),
-        envelope
+        decoded.envelope(),
+        &platform_envelope(),
+        "the generated envelope must remain the fixed service cause"
     );
 }
 
 fn exact_public_bytes() -> Vec<u8> {
-    br#"{
-          "kind":"publicTypedError",
-          "packageId":"example.errors",
-          "stableSchemaKey":"NotFound",
-          "packageSchemaTypeId":"schema:not-found",
-          "encodedPayload":[123,125],
-          "traceId":"trace-1",
-          "errorId":"error-1"
-        }"#
-    .to_vec()
+    public_error().into_encoded_bytes()
 }
 
 fn local_identity(type_index: usize) -> CatchIdentity {
@@ -249,15 +274,9 @@ fn service_error_envelope_strictly_rejects_invalid_wire() {
     empty_owner["packageId"] = json!(" ");
     cases.push(empty_owner);
 
-    let mut unknown_builtin = serde_json::to_value(ServiceErrorEnvelope::PlatformError {
-        builtin_error_identity: PlatformBuiltinErrorIdentity::DbConflict,
-        encoded_payload: vec![1],
-        trace_id: "trace".to_string(),
-        error_id: "error".to_string(),
-    })
-    .unwrap();
-    unknown_builtin["builtinErrorIdentity"] = json!("std.resource.ResourceError");
-    cases.push(unknown_builtin);
+    let mut legacy_builtin_field = serde_json::to_value(platform_envelope()).unwrap();
+    legacy_builtin_field["builtinErrorIdentity"] = json!("std.resource.ResourceError");
+    cases.push(legacy_builtin_field);
 
     let mut internal_extra = serde_json::to_value(ServiceErrorEnvelope::InternalError {
         payload: InternalErrorPayload {
@@ -346,12 +365,13 @@ fn unlinked_imported_error_misses_catch_and_map_keeps_fixed_bytes() {
 
 #[test]
 fn every_fixed_error_kind_can_retain_a_local_carrier() {
-    for (type_index, expected) in [
-        (7, public_envelope()),
-        (8, internal_envelope()),
-        (9, platform_envelope()),
+    for (type_index, fixture) in [
+        (7, public_error()),
+        (8, internal_error()),
+        (9, platform_error()),
     ] {
-        let encoded = serde_json::to_vec(&expected).unwrap();
+        let expected = fixture.envelope().clone();
+        let encoded = fixture.encoded_bytes().to_vec();
         let opaque = OpaqueServiceError::decode(encoded.clone()).unwrap();
         let identity = local_identity(type_index);
         let local_value =
@@ -367,6 +387,14 @@ fn every_fixed_error_kind_can_retain_a_local_carrier() {
         assert_eq!(
             exception.fixed_service_error().unwrap().encoded_bytes(),
             encoded
+        );
+        assert_eq!(
+            exception
+                .fixed_service_error()
+                .unwrap()
+                .known_platform_projection(),
+            fixture.known_platform_projection(),
+            "retaining a local carrier must not drop exact-known typed evidence"
         );
     }
 }
