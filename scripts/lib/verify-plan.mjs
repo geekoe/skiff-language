@@ -279,6 +279,15 @@ function taskBuilders({
       ]),
       ...await checkerTasks(root, 'rust-quality'),
     ],
+    'bytecode-vm-phase-0-gate': async () => [
+      task(
+        root,
+        'bytecode-vm-phase-0:gate',
+        'implementation:runtime',
+        'node',
+        ['scripts/run-bytecode-vm-phase-0-gate.mjs'],
+      ),
+    ],
     'router-rust-process-smoke': async () => [
       task(root, 'router-rust:process-smoke', 'implementation:router', 'node', [
         'scripts/run-router-process-smoke.mjs',

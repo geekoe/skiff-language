@@ -1,6 +1,6 @@
 # Bytecode VM 架构收敛重构总计划
 
-> Status: project plan; Phase 0 planned
+> Status: project plan; Phase 0 accepted; Phase 1 planned
 >
 > Created: 2026-08-12
 >
@@ -223,6 +223,7 @@ semantic support surface 累计，不按 crate 测试数量统计；同一 scena
 VCP。建立本项目的 exact baseline、Phase 1 task DAG、执行约束和 Execution Map 建立条件。
 
 详细计划：[`phases/phase-0-architecture-reset.md`](./phases/phase-0-architecture-reset.md)。
+执行结果：[`results/phase-0.md`](./results/phase-0.md)。
 
 ### Phase 1 — Trusted synchronous core
 

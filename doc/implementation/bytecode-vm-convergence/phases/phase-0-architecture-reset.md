@@ -1,6 +1,6 @@
 # Phase 0：架构重置与垂直验证基础
 
-> Status: planned
+> Status: accepted
 >
 > Depends on: project plan accepted for execution
 >

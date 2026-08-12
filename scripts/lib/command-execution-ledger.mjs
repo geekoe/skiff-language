@@ -79,6 +79,8 @@ export const COMMAND_EXECUTION_LEDGER = deepFreeze([
     'skiff process resolves the component binary through cargo metadata'),
   owner('scripts/run-eval-bench.mjs', 'execFileSync', 'execFileSync', 'eval-bench-spawn', 'main', 'managed-component',
     'eval bench spawns the skiff test CLI synchronously'),
+  owner('scripts/run-bytecode-vm-phase-0-gate.mjs', 'execFileSync', 'execFileSync', 'bytecode-vm-phase-0-gate', 'main', 'domain-adapter',
+    'Phase 0 VCP gate runs git and cargo synchronously and preserves exit/evidence semantics', 2),
 ]);
 
 function owner(

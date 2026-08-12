@@ -24,6 +24,8 @@ tokio = { version = "1.44", features = ["sync", "time"] }
 
 [dev-dependencies]
 anyhow = "1.0"
+sha2 = "0.10"
+skiff-deployment = { path = "../../deployment" }
 skiff-compiler = { path = "../../compiler" }
 skiff-compiler-core = { path = "../../compiler/core" }
 skiff-compiler-input = { path = "../../compiler/input" }
