@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 11; D0-O, P0-G correction and host Proof running
+> Status: active; revision 14; D0-O and P0-G rejected; bounded repair designs running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
