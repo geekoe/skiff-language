@@ -8,19 +8,12 @@ use std::{
     time::Instant,
 };
 
-use skiff_artifact_model::{ContractOperationId, GatewayEntryKey, TypeRefIr};
+use skiff_artifact_model::TypeRefIr;
 use skiff_runtime_boundary::http::{HttpBoundaryNameValue, HttpBoundaryResponseStreamEvent};
 use skiff_runtime_boundary::value::{bytes_payload, bytes_value};
-use skiff_runtime_bytecode_verifier::{
-    VerifiedCodeEntry, VerifiedCodeEntryKind, VerifiedLinkedBytecodeImage,
-};
 use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
-use skiff_runtime_deployment_image::{
-    DeploymentImage, PinnedDeploymentEntry, PinnedDeploymentEntryError,
-};
-use skiff_runtime_linked_bytecode::{
-    LinkedGatewayCallableRole, LinkedValueDropPlan, LinkedValueTransferPlan,
-};
+use skiff_runtime_linked_bytecode::{LinkedValueDropPlan, LinkedValueTransferPlan};
+use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
     bytecode_execution_observation::BytecodeExecutionObserver,
     request_heap::RequestHeapLimits,
@@ -54,115 +47,6 @@ pub use skiff_runtime_scheduler::{
     BytecodeStreamSupervisor, BytecodeUnit, PendingWake, PendingWakeQueue, SuspendedTrampoline,
     VmPendingWake,
 };
-
-/// One verified deployment image and the exact operation or gateway entry selected from it.
-///
-/// Construction rejects an entry that does not share the image's exact program
-/// allocation or whose resolved kind does not match the requested target.
-#[derive(Debug)]
-pub struct BytecodeRequestTarget {
-    image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-    entry: VerifiedCodeEntry,
-    target: BytecodeRequestTargetKind,
-}
-
-impl BytecodeRequestTarget {
-    pub fn try_new(
-        image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-        entry: VerifiedCodeEntry,
-        operation_id: ContractOperationId,
-    ) -> Result<Self, BytecodeRequestTargetError> {
-        Self::try_new_target(
-            image,
-            entry,
-            BytecodeRequestTargetKind::Operation(operation_id),
-        )
-    }
-
-    pub fn try_new_gateway(
-        image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-        entry: VerifiedCodeEntry,
-        gateway_entry_key: GatewayEntryKey,
-        role: LinkedGatewayCallableRole,
-    ) -> Result<Self, BytecodeRequestTargetError> {
-        Self::try_new_target(
-            image,
-            entry,
-            BytecodeRequestTargetKind::Gateway {
-                gateway_entry_key,
-                role,
-            },
-        )
-    }
-
-    fn try_new_target(
-        image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-        entry: VerifiedCodeEntry,
-        target: BytecodeRequestTargetKind,
-    ) -> Result<Self, BytecodeRequestTargetError> {
-        if !Arc::ptr_eq(image.program(), entry.image()) {
-            return Err(BytecodeRequestTargetError::ProgramMismatch);
-        }
-        match (entry.kind(), &target) {
-            (
-                VerifiedCodeEntryKind::Operation {
-                    contract_operation_id,
-                },
-                BytecodeRequestTargetKind::Operation(expected),
-            ) if contract_operation_id == expected => {}
-            (
-                VerifiedCodeEntryKind::Gateway {
-                    gateway_entry_key,
-                    role,
-                    ..
-                },
-                BytecodeRequestTargetKind::Gateway {
-                    gateway_entry_key: expected_key,
-                    role: expected_role,
-                },
-            ) if gateway_entry_key == expected_key && role == expected_role => {}
-            _entry_kind => {
-                return Err(BytecodeRequestTargetError::TargetMismatch {
-                    target,
-                    entry_kind: entry.kind().clone(),
-                });
-            }
-        }
-        Ok(Self {
-            image,
-            entry,
-            target,
-        })
-    }
-
-    pub fn image(&self) -> &Arc<DeploymentImage<VerifiedLinkedBytecodeImage>> {
-        &self.image
-    }
-
-    pub fn entry(&self) -> &VerifiedCodeEntry {
-        &self.entry
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BytecodeRequestTargetKind {
-    Operation(ContractOperationId),
-    Gateway {
-        gateway_entry_key: GatewayEntryKey,
-        role: LinkedGatewayCallableRole,
-    },
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum BytecodeRequestTargetError {
-    #[error("bytecode request target image and verified code entry do not pin the same exact deployment program")]
-    ProgramMismatch,
-    #[error("bytecode request target requested {target:?}, but resolved {entry_kind:?}")]
-    TargetMismatch {
-        target: BytecodeRequestTargetKind,
-        entry_kind: VerifiedCodeEntryKind,
-    },
-}
 
 struct RequestAdapterExecutor {
     test_effects_enabled: bool,
@@ -339,7 +223,7 @@ impl RequestAdapterExecutor {
 
     fn http_error_handoff(
         &self,
-        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        image: Arc<skiff_runtime_linker::DeploymentExecutionImage>,
         heap: &mut dyn VmHeap,
         resume: VmResumeToken,
         message: String,
@@ -376,7 +260,7 @@ impl RequestAdapterExecutor {
 
     fn execute_http_request(
         &self,
-        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        image: Arc<skiff_runtime_linker::DeploymentExecutionImage>,
         argument: Option<&ValueSlot>,
         heap: &mut dyn VmHeap,
         resume: VmResumeToken,
@@ -453,7 +337,7 @@ impl RequestAdapterExecutor {
 
     fn execute_http_stream(
         &self,
-        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        image: Arc<skiff_runtime_linker::DeploymentExecutionImage>,
         argument: Option<&ValueSlot>,
         heap: &mut dyn VmHeap,
         resume: VmResumeToken,
@@ -639,7 +523,7 @@ impl RequestAdapterExecutor {
 
     fn execute_http_stream_event(
         &self,
-        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        image: Arc<skiff_runtime_linker::DeploymentExecutionImage>,
         arguments: &skiff_runtime_vm::VmOwnedValues,
         heap: &mut dyn VmHeap,
         resume: VmResumeToken,
@@ -673,14 +557,18 @@ impl RequestAdapterExecutor {
                     .filter(|value| value.fract() == 0.0 && (100.0..=599.0).contains(value))
                     .map(|value| value as u16)
                     .ok_or_else(|| {
-                        BytecodeSchedulerError::Port("std.http.streamStart status must be an integer".to_string())
+                        BytecodeSchedulerError::Port(
+                            "std.http.streamStart status must be an integer".to_string(),
+                        )
                     })?;
                 fields.push(VmRecordField {
                     name: "status".to_string(),
                     value: ValueSlot::integer(i64::from(status)),
                 });
                 let headers = arguments.values().get(1).ok_or_else(|| {
-                    BytecodeSchedulerError::Port("std.http.streamStart requires headers".to_string())
+                    BytecodeSchedulerError::Port(
+                        "std.http.streamStart requires headers".to_string(),
+                    )
                 })?;
                 fields.push(VmRecordField {
                     name: "headers".to_string(),
@@ -714,7 +602,7 @@ impl RequestAdapterExecutor {
 
     fn execute_bytes_from_utf8(
         &self,
-        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        image: Arc<skiff_runtime_linker::DeploymentExecutionImage>,
         argument: Option<&ValueSlot>,
         heap: &mut dyn VmHeap,
         resume: VmResumeToken,
@@ -739,7 +627,7 @@ impl RequestAdapterExecutor {
 
     fn execute_duration_milliseconds(
         &self,
-        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        image: Arc<skiff_runtime_linker::DeploymentExecutionImage>,
         argument: Option<&ValueSlot>,
         heap: &mut dyn VmHeap,
         resume: VmResumeToken,
@@ -759,8 +647,7 @@ impl RequestAdapterExecutor {
             })
             .ok_or_else(|| {
                 BytecodeSchedulerError::Port(
-                    "core.duration.milliseconds requires an integer millisecond value"
-                        .to_string(),
+                    "core.duration.milliseconds requires an integer millisecond value".to_string(),
                 )
             })?;
         let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
@@ -806,7 +693,7 @@ impl RequestAdapterExecutor {
 
     fn execute_sleep(
         &self,
-        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        image: Arc<skiff_runtime_linker::DeploymentExecutionImage>,
         argument: Option<&ValueSlot>,
         heap: &mut dyn VmHeap,
         resume: VmResumeToken,
@@ -859,7 +746,6 @@ fn linked_package_symbol_type_tag(
         })?;
     let mut matches = resume
         .image()
-        .candidate()
         .types()
         .iter()
         .filter(|entry| entry.origin().specialization() == Some(function.key()))
@@ -884,7 +770,7 @@ fn linked_package_symbol_type_tag(
 
 fn string_argument_value(
     heap: &mut dyn VmHeap,
-    image: &Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+    image: &Arc<skiff_runtime_linker::DeploymentExecutionImage>,
     value: &ValueSlot,
 ) -> Result<String, VmHeapError> {
     if let Some(handle) = value.as_const_ref() {
@@ -892,7 +778,6 @@ fn string_argument_value(
             u32::try_from(handle.get()).map_err(|_| VmHeapError::InvalidValueMetadata)?,
         );
         let node = image
-            .candidate()
             .frozen_constant_nodes()
             .get(index.get() as usize)
             .filter(|node| node.index() == index)
@@ -933,7 +818,7 @@ impl RootEscrowBacking for BytecodeRequestEmptyRoots {
 
 fn sleep_millis_argument(
     heap: &mut dyn VmHeap,
-    image: &Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+    image: &Arc<skiff_runtime_linker::DeploymentExecutionImage>,
     value: &ValueSlot,
 ) -> Result<u64, BytecodeSchedulerError> {
     let millis = if let Some(handle) = value.as_const_ref() {
@@ -945,7 +830,6 @@ fn sleep_millis_argument(
             })?,
         );
         let node = image
-            .candidate()
             .frozen_constant_nodes()
             .get(index.get() as usize)
             .filter(|node| node.index() == index)
@@ -1056,7 +940,6 @@ impl BytecodeChildExecutor<VmFiber> for RequestAdapterExecutor {
         let (adapter_index, arguments, resume) = invocation.into_parts();
         let image = Arc::clone(arguments.image());
         let adapter = image
-            .candidate()
             .host_effect_adapters()
             .get(adapter_index.get() as usize)
             .filter(|row| row.index() == adapter_index)
@@ -1083,15 +966,13 @@ impl BytecodeChildExecutor<VmFiber> for RequestAdapterExecutor {
             | "std.http.stream.chunk"
             | "std.http.streamChunk"
             | "std.http.stream.end"
-            | "std.http.streamEnd" => {
-                self.execute_http_stream_event(
-                    Arc::clone(&image),
-                    &arguments,
-                    heap,
-                    resume,
-                    adapter.binding_key().as_str(),
-                )
-            }
+            | "std.http.streamEnd" => self.execute_http_stream_event(
+                Arc::clone(&image),
+                &arguments,
+                heap,
+                resume,
+                adapter.binding_key().as_str(),
+            ),
             _ => Err(BytecodeSchedulerError::UnsupportedAdapter),
         }
     }
@@ -1117,7 +998,7 @@ impl BytecodeChildExecutor<VmFiber> for RequestAdapterExecutor {
 }
 
 pub struct BytecodeRequestExecutionInput {
-    pub target: BytecodeRequestTarget,
+    pub target: DeploymentExecutionEntry,
     pub request: RequestEnvelope,
     pub observer: BytecodeExecutionObserver,
     pub cancelled: Arc<AtomicBool>,
@@ -1264,19 +1145,12 @@ pub fn start_runtime_bytecode_request_with_ports(
         handles,
     } = input;
 
-    let BytecodeRequestTarget {
-        image,
-        entry,
-        target: _,
-    } = target;
-    let owner_pin = Arc::clone(&image);
-    let pinned = PinnedDeploymentEntry::try_new(image, entry)
-        .map_err(pinned_entry_error_to_request_error)?;
+    let owner_pin = Arc::clone(target.image());
     let resource_table: ResourceTable = Default::default();
     let mut request_heap = RequestVmHeap::new(handles.request_heap_limits);
     request_heap.set_resource_table(resource_table.clone());
-    let arguments = gateway_entry_arguments(&request, &pinned, &mut request_heap)?;
-    let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits(), observer)
+    let arguments = gateway_entry_arguments(&request, &target, &mut request_heap)?;
+    let fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
 
     let queue = Arc::new(InMemoryWakeQueue::new());
@@ -1361,11 +1235,7 @@ impl WakeSignal for NoopWake {
 }
 
 struct RequestResponseStream {
-    consumer: StreamConsumer<
-        Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-        VmOwnedValues,
-        VmStreamTerminal,
-    >,
+    consumer: StreamConsumer<Arc<DeploymentExecutionImage>, VmOwnedValues, VmStreamTerminal>,
     writer: ResponseStreamWriter,
     mode: String,
     execution_budget: Arc<ExecutionBudget>,
@@ -1688,18 +1558,11 @@ pub fn execute_runtime_bytecode_request_with_ports(
     let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
 
-    let BytecodeRequestTarget {
-        image,
-        entry,
-        target: _,
-    } = target;
-    let pinned = PinnedDeploymentEntry::try_new(image, entry)
-        .map_err(pinned_entry_error_to_request_error)?;
     let resource_table: ResourceTable = Default::default();
     let mut heap = RequestVmHeap::new(handles.request_heap_limits);
     heap.set_resource_table(resource_table.clone());
-    let arguments = gateway_entry_arguments(&request, &pinned, &mut heap)?;
-    let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits(), observer)
+    let arguments = gateway_entry_arguments(&request, &target, &mut heap)?;
+    let fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let queue = Arc::new(InMemoryWakeQueue::new());
     let child_cancellation = cancellation.clone();
@@ -1944,7 +1807,7 @@ fn url_origin(url: &str) -> Option<String> {
 
 fn gateway_entry_arguments(
     request: &RequestEnvelope,
-    pinned: &PinnedDeploymentEntry<VerifiedLinkedBytecodeImage, VerifiedCodeEntry>,
+    entry: &DeploymentExecutionEntry,
     heap: &mut RequestVmHeap,
 ) -> RequestResult<Vec<ValueSlot>> {
     let Some(adapter) = &request.http_adapter else {
@@ -1956,7 +1819,7 @@ fn gateway_entry_arguments(
     let typed_json_body = match adapter.kind {
         HttpAdapterKind::RawHttp => None,
         HttpAdapterKind::TypedJson => {
-            let parameter_count = pinned.entry().signature().parameter_types().len();
+            let parameter_count = entry.signature().parameter_types().len();
             if adapter.adapter_args.len() != parameter_count {
                 return Err(RequestError::Decode(format!(
                     "typedJson HTTP adapter has {} arguments but the exact pinned entry has {parameter_count} parameters",
@@ -1972,13 +1835,11 @@ fn gateway_entry_arguments(
                     "typedJson HTTP adapter has no http.body argument".to_string(),
                 ));
             }
-            Some(serde_json::from_slice::<serde_json::Value>(&binary.body).map_err(
-                |error| {
-                    RequestError::Decode(format!(
-                        "typedJson HTTP body is not valid JSON: {error}"
-                    ))
-                },
-            )?)
+            Some(
+                serde_json::from_slice::<serde_json::Value>(&binary.body).map_err(|error| {
+                    RequestError::Decode(format!("typedJson HTTP body is not valid JSON: {error}"))
+                })?,
+            )
         }
     };
     let mut arguments = Vec::with_capacity(adapter.adapter_args.len());
@@ -1986,7 +1847,7 @@ fn gateway_entry_arguments(
         let value = match arg.source {
             GatewayAdapterSource::HttpRequest => materialize_http_request(binary, heap)?,
             GatewayAdapterSource::HttpBody => match typed_json_body.as_ref() {
-                Some(body) => materialize_typed_json_scalar(body, pinned, ordinal)?,
+                Some(body) => materialize_typed_json_scalar(body, entry, ordinal)?,
                 None => heap
                     .alloc_bytes(binary.body.clone())
                     .map_err(heap_error_to_request_error)?,
@@ -2000,16 +1861,19 @@ fn gateway_entry_arguments(
 
 fn materialize_typed_json_scalar(
     body: &serde_json::Value,
-    pinned: &PinnedDeploymentEntry<VerifiedLinkedBytecodeImage, VerifiedCodeEntry>,
+    entry: &DeploymentExecutionEntry,
     ordinal: usize,
 ) -> RequestResult<ValueSlot> {
-    if matches!(body, serde_json::Value::Array(_) | serde_json::Value::Object(_)) {
+    if matches!(
+        body,
+        serde_json::Value::Array(_) | serde_json::Value::Object(_)
+    ) {
         return Err(RequestError::Unsupported(format!(
             "typedJson HTTP body for parameter {ordinal} is non-scalar; Phase 1 supports only number, bool, and null"
         )));
     }
 
-    let signature = pinned.entry().signature();
+    let signature = entry.signature();
     let expected_type = signature.parameter_types().get(ordinal).ok_or_else(|| {
         RequestError::Decode(format!(
             "typedJson HTTP body parameter {ordinal} is absent from the exact pinned entry signature"
@@ -2020,10 +1884,8 @@ fn materialize_typed_json_scalar(
             "typedJson HTTP body parameter {ordinal} has no exact pinned lifecycle plan"
         ))
     })?;
-    let type_entry = pinned
+    let type_entry = entry
         .image()
-        .program()
-        .candidate()
         .types()
         .get(expected_type.get() as usize)
         .filter(|entry| entry.index() == *expected_type)
@@ -2281,12 +2143,9 @@ fn http_response_from_vm_values(
     let status_slot = heap
         .record_field(record, "status")
         .map_err(heap_error_to_request_error)?;
-    let status = http_status_from_vm_slot(&status_slot)
-        .ok_or_else(|| {
-            RequestError::Unsupported(
-                "HTTP gateway response status must be an integer".to_string(),
-            )
-        })?;
+    let status = http_status_from_vm_slot(&status_slot).ok_or_else(|| {
+        RequestError::Unsupported("HTTP gateway response status must be an integer".to_string())
+    })?;
     let headers = http_headers_from_vm(heap, record, "headers")?
         .into_iter()
         .map(|header| HttpNameValue {
@@ -2327,9 +2186,7 @@ fn http_stream_event_from_vm_values(
                 .record_field(record, "status")
                 .map_err(heap_error_to_request_error)?;
             let status = http_status_from_vm_slot(&status_slot).ok_or_else(|| {
-                RequestError::Unsupported(
-                    "HTTP stream start status must be an integer".to_string(),
-                )
+                RequestError::Unsupported("HTTP stream start status must be an integer".to_string())
             })?;
             let headers = http_headers_from_vm(heap, record, "headers")?;
             Ok(HttpBoundaryResponseStreamEvent::Start { status, headers })
@@ -2355,8 +2212,7 @@ fn http_status_from_vm_slot(slot: &ValueSlot) -> Option<u16> {
         .and_then(|value| u16::try_from(value).ok())
         .or_else(|| {
             slot.as_number().and_then(|value| {
-                (value.fract() == 0.0 && (0.0..=65535.0).contains(&value))
-                    .then_some(value as u16)
+                (value.fract() == 0.0 && (0.0..=65535.0).contains(&value)).then_some(value as u16)
             })
         })
 }
@@ -2481,12 +2337,6 @@ fn vm_budget_error_to_request_error(
             "bytecode VM budget accounting failed closed: {error}"
         )),
     }
-}
-
-fn pinned_entry_error_to_request_error(error: PinnedDeploymentEntryError) -> RequestError {
-    RequestError::Decode(format!(
-        "bytecode deployment entry pin failed closed: {error}"
-    ))
 }
 
 fn vm_limits() -> VmLimits {

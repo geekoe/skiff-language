@@ -8,6 +8,7 @@ publish = false
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
 skiff-runtime-deployment-image = { path = "../deployment-image" }
+skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
 skiff-runtime-model = { path = "../model" }
 
@@ -18,7 +19,6 @@ skiff-compiler = { path = "../../compiler" }
 skiff-compiler-core = { path = "../../compiler/core" }
 skiff-compiler-input = { path = "../../compiler/input" }
 skiff-compiler-source = { path = "../../compiler/source" }
-skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-loader = { path = "../loader" }
 
 [lints]

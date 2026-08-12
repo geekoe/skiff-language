@@ -10,10 +10,9 @@ serde_json = "1.0"
 skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-runtime-boundary = { path = "../boundary" }
-skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
 skiff-runtime-capability-context = { path = "../capability-context" }
-skiff-runtime-deployment-image = { path = "../deployment-image" }
 skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
+skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-model = { path = "../model" }
 skiff-runtime-request-contract = { path = "../request-contract" }
 skiff-runtime-scheduler = { path = "../scheduler" }
@@ -30,8 +29,9 @@ skiff-compiler = { path = "../../compiler" }
 skiff-compiler-core = { path = "../../compiler/core" }
 skiff-compiler-input = { path = "../../compiler/input" }
 skiff-compiler-source = { path = "../../compiler/source" }
-skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-loader = { path = "../loader" }
+skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
+skiff-runtime-deployment-image = { path = "../deployment-image" }
 
 [lints]
 workspace = true

@@ -1,6 +1,6 @@
 use skiff_artifact_model::TypeRefIr;
-use skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage;
 use skiff_runtime_linked_bytecode::{LinkedValueTransferPlan, TypeIndex};
+use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::vm_value::{ValueKind, ValueSlot};
 
 use crate::{VmEntryArgumentRejection, VmError};
@@ -23,7 +23,7 @@ pub(crate) fn is_discardable_root(value: &ValueSlot) -> bool {
 }
 
 pub(crate) fn validate_entry_arguments(
-    program: &VerifiedLinkedBytecodeImage,
+    program: &DeploymentExecutionImage,
     expected_types: &[TypeIndex],
     expected_plans: &[LinkedValueTransferPlan],
     arguments: &[ValueSlot],
@@ -41,7 +41,6 @@ pub(crate) fn validate_entry_arguments(
         .enumerate()
     {
         let linked_type = program
-            .candidate()
             .types()
             .get(expected.get() as usize)
             .filter(|linked_type| linked_type.index() == expected);

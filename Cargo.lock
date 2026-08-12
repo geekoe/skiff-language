@@ -2633,7 +2633,6 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
- "skiff-runtime-deployment-image",
  "skiff-runtime-linked-bytecode",
  "skiff-runtime-loader",
  "skiff-runtime-model",
@@ -2758,6 +2757,8 @@ dependencies = [
  "skiff-canonical-json",
  "skiff-compiler",
  "skiff-deployment",
+ "skiff-runtime-bytecode-verifier",
+ "skiff-runtime-deployment-image",
  "skiff-runtime-linked-bytecode",
  "skiff-runtime-loader",
  "skiff-runtime-native-contract",
@@ -2824,7 +2825,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "skiff-artifact-model",
- "skiff-runtime-linked-bytecode",
+ "skiff-runtime-bytecode-verifier",
  "skiff-runtime-linker",
  "skiff-runtime-loader",
 ]
@@ -2982,6 +2983,7 @@ dependencies = [
  "skiff-compiler-source",
  "skiff-config-snapshot-tooling",
  "skiff-deployment",
+ "skiff-runtime-bytecode-verifier",
  "skiff-runtime-config-snapshot",
  "skiff-runtime-linker",
  "skiff-runtime-loader",

@@ -9,8 +9,8 @@ use skiff_runtime_linked_bytecode::{
 };
 
 use crate::{
-    admission::prove_admission, verify, VerificationError, VerificationLimit, VerificationLocation,
-    VerificationObligation,
+    admission::prove_admission, verify_facts, VerificationError, VerificationLimit,
+    VerificationLocation, VerificationObligation,
 };
 
 use super::fixtures::{
@@ -23,9 +23,8 @@ use super::fixtures::{
 fn exact_empty_admission_completes_the_vacuous_effect_proof() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
-    let image = verify(hydrated, candidate, &generous_limits())
+    verify_facts(hydrated, candidate, &generous_limits())
         .expect("empty image has a real vacuous effect certificate");
-    assert_eq!(image.functions().len(), 0);
 }
 
 #[test]
@@ -71,7 +70,7 @@ fn current_v7_platform_error_registry_getter_matrix_passes_exact_admission() {
         );
     }
 
-    verify(hydrated, candidate, &generous_limits())
+    verify_facts(hydrated, candidate, &generous_limits())
         .expect("the current v7 registry authority matrix must verify exactly");
 }
 
@@ -127,7 +126,7 @@ fn analyzed_target_does_not_upgrade_unknown_caller_effects() {
             if !effects.may_pending && effects.pending_effect_categories.is_empty()
     ));
 
-    let error = verify(hydrated, candidate, &generous_limits())
+    let error = verify_facts(hydrated, candidate, &generous_limits())
         .expect_err("unknown caller must remain fail closed");
     assert_eq!(
         error,
@@ -221,7 +220,7 @@ fn candidate_package_set_omission_is_rejected_before_semantic_proofs() {
         writable_paths: Vec::new(),
     })
     .unwrap();
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &generous_limits()).unwrap_err();
 
     assert!(matches!(
         error,
@@ -237,7 +236,7 @@ fn candidate_package_set_omission_is_rejected_before_semantic_proofs() {
 fn corrupt_candidate_schema_pin_is_rejected() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, Some("skiff-bytecode-v999"));
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &generous_limits()).unwrap_err();
 
     assert!(matches!(
         error,
@@ -258,7 +257,7 @@ fn assert_authority_pin_corruption_is_rejected_before_p2(
 ) {
     let hydrated = exact_hydration();
     let candidate = candidate_for_with_authority_corruption(&hydrated, None, Some(corruption));
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &generous_limits()).unwrap_err();
 
     let (obligation, location, detail) = match error {
         VerificationError::SemanticViolation {
@@ -339,7 +338,7 @@ fn same_v1_different_valid_registry_fingerprint_is_rejected_before_p2() {
     let historical_fingerprint = candidate_registry.fingerprint().to_string();
     let current_fingerprint = current.fingerprint().to_string();
 
-    let error = verify(hydrated, candidate, &generous_limits())
+    let error = verify_facts(hydrated, candidate, &generous_limits())
         .expect_err("a historical candidate registry pin must fail before instruction proofs");
     let VerificationError::SemanticViolation {
         obligation,
@@ -431,7 +430,7 @@ fn package_budget_is_enforced_before_binding() {
     let candidate = candidate_for(&hydrated, None);
     let mut limits = generous_limits();
     limits.max_image_table_entries = 0;
-    let error = verify(hydrated, candidate, &limits).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &limits).unwrap_err();
 
     assert_eq!(
         error,
@@ -454,7 +453,7 @@ fn fixed_image_and_function_ceilings_precede_attribution_row_scans() {
     limits.max_image_table_entries = 1;
     limits.max_functions = 0;
     limits.max_statement_events_per_pc = 0;
-    let error = verify(hydrated, candidate, &limits).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &limits).unwrap_err();
     assert_eq!(
         error,
         VerificationError::LimitExceeded {
@@ -472,7 +471,7 @@ fn fixed_image_and_function_ceilings_precede_attribution_row_scans() {
     let mut limits = generous_limits();
     limits.max_functions = 1;
     limits.max_statement_events_per_pc = 0;
-    let error = verify(hydrated, candidate, &limits).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &limits).unwrap_err();
     assert_eq!(
         error,
         VerificationError::LimitExceeded {
@@ -496,7 +495,7 @@ fn out_of_bounds_type_origin_coordinate_is_rejected_by_p1() {
     );
     let candidate = candidate_for_concrete_types(&hydrated, vec![linked], Vec::new())
         .expect("candidate-local validation cannot authorize an admitted pool coordinate");
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &generous_limits()).unwrap_err();
 
     assert!(matches!(
         error,
@@ -530,7 +529,7 @@ fn statement_instruction_sequence_id_and_site_corruption_fail_in_p1() {
     ];
     for (corruption, expected) in cases {
         let (hydrated, candidate) = loader_backed_local_call(corruption);
-        let error = verify(hydrated, candidate, &generous_limits())
+        let error = verify_facts(hydrated, candidate, &generous_limits())
             .expect_err("corrupt raw statement placement must fail before P2");
         assert!(matches!(
             error,

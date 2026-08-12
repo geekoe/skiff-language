@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector, ServiceDeploymentRef};
 use skiff_runtime_capability_context::ExecutionBudgetReason;
-use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
+use skiff_runtime_linker::DeploymentExecutionEntry;
 use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionCorrelation, BytecodeExecutionObserver,
 };
-use skiff_runtime_request::{BytecodeRequestTarget, RequestError, RouterWriterMessage};
+use skiff_runtime_request::{RequestError, RouterWriterMessage};
 use skiff_runtime_transport::protocol::{
     BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressProtocol,
     BytecodeRequestStartFrameHeader, BytecodeRequestStartFrameWireHeader,
@@ -31,32 +31,32 @@ pub(super) struct AdmittedBytecodeHttpRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeRequestStartFrameHeader,
     pub(super) body: Vec<u8>,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketConnectRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeWebSocketConnectRequestStartFrameHeader,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketConnectionClosedRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketJsonRpcRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeWebSocketJsonRpcRequestStartFrameHeader,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
     pub(super) params: Vec<u8>,
 }
 
 pub(super) struct AdmittedBytecodeTaskRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeTaskRequestStartFrameHeader,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
     pub(super) payload: Vec<u8>,
 }
 
@@ -268,7 +268,6 @@ impl RuntimeHost {
                         path: header.routing.ingress.path.clone(),
                     },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
-                    role: LinkedGatewayCallableRole::Handler,
                 },
                 observer,
             )
@@ -317,7 +316,6 @@ impl RuntimeHost {
                         path: header.routing.ingress.path.clone(),
                     },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
-                    role: LinkedGatewayCallableRole::CloseHandler,
                 },
                 observer,
             )
@@ -365,7 +363,6 @@ impl RuntimeHost {
                         path: header.routing.ingress.path.clone(),
                     },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
-                    role: LinkedGatewayCallableRole::Handler,
                 },
                 observer,
             )
@@ -395,10 +392,10 @@ impl RuntimeHost {
 
     async fn task_request_from_wire(
         &self,
-        mut header: BytecodeTaskRequestStartFrameHeader,
+        header: BytecodeTaskRequestStartFrameHeader,
         payload: Vec<u8>,
-        bootstrap: &ConnectionBootstrap,
-        observer: &BytecodeExecutionObserver,
+        _bootstrap: &ConnectionBootstrap,
+        _observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
         validate_task_header(&header, &payload)?;
         let deployment = &header.routing.deployment;
@@ -410,30 +407,12 @@ impl RuntimeHost {
                 });
             }
         }
-        let route = self
-            .resolve_bytecode_request_route(
-                deployment,
-                bootstrap,
-                BytecodeRouteSelector::Operation,
-                observer,
-            )
-            .await?
-            .expect("bytecode route is required after resolution");
-        header.deadline = effective_request_deadline(header.deadline.as_ref(), "task")?;
-        if header
-            .deadline
-            .as_ref()
-            .is_some_and(|deadline| deadline.timeout_ms == 0)
-        {
-            return Err(deadline_exceeded());
-        }
-        let target = bytecode_route_target(&route)?;
-        Ok(AdmittedBytecodeRequest::Task(AdmittedBytecodeTaskRequest {
-            route,
-            header,
-            target,
-            payload,
-        }))
+        let _ = payload;
+        Err(RuntimeError::Protocol {
+            target: header.invocation.target,
+            message: "task bytecode routing does not carry an exact typed ContractOperationId"
+                .to_string(),
+        })
     }
 
     async fn websocket_jsonrpc_request_from_wire(
@@ -455,7 +434,6 @@ impl RuntimeHost {
                         path: header.routing.ingress.path.clone(),
                     },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
-                    role: LinkedGatewayCallableRole::Handler,
                 },
                 observer,
             )
@@ -487,9 +465,9 @@ impl RuntimeHost {
     }
 }
 
-fn bytecode_route_target(route: &BytecodeRoute) -> Result<BytecodeRequestTarget> {
+fn bytecode_route_target(route: &BytecodeRoute) -> Result<DeploymentExecutionEntry> {
     route
-        .request_target()
+        .execution_entry()
         .map_err(|error| RuntimeError::Decode(error.to_string()))
 }
 

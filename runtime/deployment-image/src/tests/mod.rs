@@ -1,7 +1,6 @@
 mod cache_failure;
 mod cache_success;
 mod contracts;
-mod entry;
 
 use std::{
     fmt,
@@ -15,8 +14,7 @@ use skiff_artifact_model::{DeploymentArtifactIdentity, DeploymentRevision, Servi
 use tokio::task::JoinHandle;
 
 use crate::{
-    DeploymentImage, DeploymentLoadError, DeploymentLoadFailure, DeploymentOwnerIdentity,
-    DeploymentProgramFacts, ServiceDependencySlot,
+    DeploymentCacheValue, DeploymentLoadError, DeploymentLoadFailure, DeploymentOwnerIdentity,
 };
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(2);
@@ -35,7 +33,6 @@ impl std::error::Error for TestProviderError {}
 #[derive(Debug)]
 struct TestProgram {
     owner: DeploymentOwnerIdentity,
-    dependency_slots: Box<[ServiceDependencySlot]>,
     label: String,
 }
 
@@ -45,13 +42,9 @@ impl TestProgram {
     }
 }
 
-impl DeploymentProgramFacts for TestProgram {
+impl DeploymentCacheValue for TestProgram {
     fn owner(&self) -> &DeploymentOwnerIdentity {
         &self.owner
-    }
-
-    fn dependency_slots(&self) -> &[ServiceDependencySlot] {
-        &self.dependency_slots
     }
 }
 
@@ -68,26 +61,15 @@ fn owner_with(build_id: &str, service_id: &str, revision: &str) -> DeploymentOwn
     })
 }
 
-fn program(
-    owner: DeploymentOwnerIdentity,
-    label: &str,
-    dependency_slots: impl IntoIterator<Item = ServiceDependencySlot>,
-) -> Arc<TestProgram> {
+fn program(owner: DeploymentOwnerIdentity, label: &str) -> Arc<TestProgram> {
     Arc::new(TestProgram {
         owner,
-        dependency_slots: dependency_slots
-            .into_iter()
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
         label: label.to_string(),
     })
 }
 
-fn image(owner: &DeploymentOwnerIdentity, label: &str) -> Arc<DeploymentImage<TestProgram>> {
-    Arc::new(
-        DeploymentImage::try_new(program(owner.clone(), label, []))
-            .expect("empty dependency set is valid"),
-    )
+fn image(owner: &DeploymentOwnerIdentity, label: &str) -> Arc<TestProgram> {
+    program(owner.clone(), label)
 }
 
 fn attempt_failure(

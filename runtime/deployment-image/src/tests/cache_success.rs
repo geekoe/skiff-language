@@ -127,7 +127,7 @@ async fn cancelling_leader_does_not_cancel_the_load_attempt() {
     let loaded = join(waiter).await;
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(loaded.program().label(), "survived-cancellation");
+    assert_eq!(loaded.label(), "survived-cancellation");
 }
 
 #[tokio::test]
@@ -161,7 +161,7 @@ async fn different_builds_load_independently_and_snapshot_in_build_order() {
     let snapshot = cache.loaded_snapshot().await;
     let build_ids = snapshot
         .iter()
-        .map(|image| image.owner().build_id().as_str())
+        .map(|image| image.owner.build_id().as_str())
         .collect::<Vec<_>>();
     assert_eq!(build_ids, ["build:a", "build:z"]);
 }

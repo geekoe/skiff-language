@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage;
 use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
+use skiff_runtime_linker::DeploymentExecutionImage;
 
 /// VM-minted authority for one exact inline projection point.
 ///
@@ -12,11 +12,11 @@ use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 ///
 /// ```compile_fail
 /// use std::sync::Arc;
-/// use skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage;
+/// use skiff_runtime_linker::DeploymentExecutionImage;
 /// use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 /// use skiff_runtime_vm::VmProjectionHandoff;
 ///
-/// fn forge(image: Arc<VerifiedLinkedBytecodeImage>) -> VmProjectionHandoff {
+/// fn forge(image: Arc<DeploymentExecutionImage>) -> VmProjectionHandoff {
 ///     VmProjectionHandoff {
 ///         image,
 ///         function: FunctionIndex::new(0),
@@ -36,7 +36,7 @@ use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 /// ```
 #[must_use = "an inline VM projection handoff is unique, move-only authority"]
 pub struct VmProjectionHandoff {
-    image: Arc<VerifiedLinkedBytecodeImage>,
+    image: Arc<DeploymentExecutionImage>,
     function: FunctionIndex,
     instruction: InstructionIndex,
     stack_shape: VmProjectionStackShape,
@@ -55,7 +55,7 @@ struct VmProjectionStackShape {
 
 impl VmProjectionHandoff {
     pub(super) fn new(
-        image: Arc<VerifiedLinkedBytecodeImage>,
+        image: Arc<DeploymentExecutionImage>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         frame_depth: usize,
@@ -77,7 +77,7 @@ impl VmProjectionHandoff {
     }
 
     /// Returns the exact verified program allocation active at the VM site.
-    pub const fn image(&self) -> &Arc<VerifiedLinkedBytecodeImage> {
+    pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
         &self.image
     }
 

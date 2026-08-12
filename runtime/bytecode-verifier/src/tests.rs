@@ -1,4 +1,3 @@
-use skiff_runtime_deployment_image::{DeploymentProgramEntry, DeploymentProgramFacts};
 use skiff_runtime_linked_bytecode::{
     ConstantIndex, LinkedBytecodeCandidate, LinkedBytecodeCandidateParts,
 };
@@ -6,8 +5,8 @@ use skiff_runtime_loader::HydratedDeploymentBytecode;
 use skiff_runtime_model::vm_value::ValueSlot;
 
 use crate::{
-    verify, VerificationError, VerificationLimits, VerificationLocation, VerificationObligation,
-    VerifiedCodeEntry, VerifiedConstantHeap, VerifiedFunctionEffects, VerifiedLinkedBytecodeImage,
+    verify_executable_facts, ExecutableFacts, VerificationError, VerificationLimits,
+    VerificationLocation, VerificationObligation, VerifiedConstantHeap, VerifiedFunctionEffects,
     VerifiedStatementSchedule,
 };
 
@@ -75,21 +74,12 @@ fn empty_candidate() -> LinkedBytecodeCandidate {
 #[test]
 fn verify_signature_consumes_exact_hydration_and_candidate() {
     let verify_fn: for<'a> fn(
-        HydratedDeploymentBytecode,
-        LinkedBytecodeCandidate,
+        &'a HydratedDeploymentBytecode,
+        &'a LinkedBytecodeCandidate,
         &'a VerificationLimits,
-    ) -> Result<VerifiedLinkedBytecodeImage, VerificationError> = verify;
+    ) -> Result<ExecutableFacts, VerificationError> = verify_executable_facts;
 
     let _ = verify_fn;
-}
-
-#[test]
-fn verified_types_implement_deployment_pin_contracts() {
-    fn assert_program_facts<T: DeploymentProgramFacts>() {}
-    fn assert_program_entry<T: DeploymentProgramEntry<VerifiedLinkedBytecodeImage>>() {}
-
-    assert_program_facts::<VerifiedLinkedBytecodeImage>();
-    assert_program_entry::<VerifiedCodeEntry>();
 }
 
 #[test]
@@ -101,19 +91,19 @@ fn verified_constant_heap_exposes_only_typed_read_access() {
 }
 
 #[test]
-fn verified_image_carries_only_read_access_to_its_statement_schedule() {
-    let schedule: fn(&VerifiedLinkedBytecodeImage) -> &VerifiedStatementSchedule =
-        VerifiedLinkedBytecodeImage::statement_schedule;
+fn executable_facts_carry_only_read_access_to_the_statement_schedule() {
+    let schedule: fn(&ExecutableFacts) -> &VerifiedStatementSchedule =
+        ExecutableFacts::statement_schedule;
 
     let _ = schedule;
 }
 
 #[test]
-fn verified_image_exposes_only_dense_read_access_to_function_effects() {
+fn executable_facts_expose_only_dense_read_access_to_function_effects() {
     let effects: fn(
-        &VerifiedLinkedBytecodeImage,
+        &ExecutableFacts,
         skiff_runtime_linked_bytecode::FunctionIndex,
-    ) -> Option<&VerifiedFunctionEffects> = VerifiedLinkedBytecodeImage::function_effects;
+    ) -> Option<&VerifiedFunctionEffects> = ExecutableFacts::function_effects;
 
     let _ = effects;
 }

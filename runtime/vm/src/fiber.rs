@@ -7,22 +7,22 @@ mod tests;
 use std::sync::Arc;
 
 use skiff_artifact_model::{descriptor_for_opcode, LiteralIr, Opcode, ParamModeIr};
-use skiff_runtime_bytecode_verifier::{VerifiedCodeEntry, VerifiedLinkedBytecodeImage};
-use skiff_runtime_deployment_image::{DeploymentOwnerIdentity, PinnedDeploymentEntry};
+use skiff_runtime_bytecode_verifier::VerifiedResumeSite;
+use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
     ActiveRegionIndex, CandidateTable, FrameSlotIndex, FrozenConstantNodeIndex, FunctionIndex,
     InstructionIndex, LinkedCallableSignature, LinkedCatchMatcher, LinkedExceptionRegion,
-    LinkedFunction, LinkedInstruction, LinkedInstructionTarget, LinkedInterfaceTableKind,
-    LinkedFrozenConstantValue, LinkedIntrinsicKind, LinkedNativeCallableSignature,
-    LinkedResourceDropPlan, LinkedResumeSite, LinkedSlotState, LinkedValueTransferPlan,
-    LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
+    LinkedFrozenConstantValue, LinkedFunction, LinkedInstruction, LinkedInstructionTarget,
+    LinkedInterfaceTableKind, LinkedIntrinsicKind, LinkedNativeCallableSignature,
+    LinkedResourceDropPlan, LinkedSlotState, LinkedValueTransferPlan, LinkedWritablePathSegment,
+    ResumeSiteIndex, TypeIndex,
 };
+use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
     bytecode_execution_observation::{
         BytecodeExecutionEvent, BytecodeExecutionObserver, VmFirstInstructionDispatched,
     },
-    service_error::CatchIdentity,
-    vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmMapEntry, VmRecordField},
+    vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmRecordField},
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
@@ -40,8 +40,6 @@ use crate::{
     ResumeOutcome, VmBudget, VmControl, VmError, VmLimits, VmResumeToken, VmValueLocation,
     VmVerifiedInvariant,
 };
-
-pub type VerifiedVmEntry = PinnedDeploymentEntry<VerifiedLinkedBytecodeImage, VerifiedCodeEntry>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmFiberState {
@@ -61,7 +59,7 @@ impl Vm {
     }
 
     pub fn start(
-        entry: VerifiedVmEntry,
+        entry: DeploymentExecutionEntry,
         arguments: Box<[ValueSlot]>,
         limits: VmLimits,
         observer: BytecodeExecutionObserver,
@@ -78,7 +76,7 @@ impl Default for Vm {
 
 #[must_use = "a VM fiber owns live roots until completion or explicit terminal discard"]
 pub struct VmFiber {
-    entry: VerifiedVmEntry,
+    entry: DeploymentExecutionEntry,
     frames: Vec<VmFrame>,
     values: Vec<ValueSlot>,
     live_values: Vec<bool>,
@@ -101,7 +99,7 @@ struct UnwindState {
 
 #[derive(Debug, Clone)]
 struct PendingResume {
-    image: Arc<VerifiedLinkedBytecodeImage>,
+    image: Arc<DeploymentExecutionImage>,
     sequence: u64,
     function: FunctionIndex,
     instruction: InstructionIndex,
@@ -115,22 +113,22 @@ struct PendingResume {
 
 impl VmFiber {
     fn start(
-        entry: VerifiedVmEntry,
+        entry: DeploymentExecutionEntry,
         arguments: Box<[ValueSlot]>,
         limits: VmLimits,
         observer: BytecodeExecutionObserver,
     ) -> Result<Self, VmError> {
-        let function_index = entry.entry().function();
-        let program = entry.image().program();
+        let function_index = entry.function();
+        let program = entry.image();
         let function =
             verified_function(program, function_index).ok_or(VmError::VerifiedEntryInvariant {
                 invariant: VmVerifiedInvariant::EntryFunctionMissing,
             })?;
-        validate_entry_contract(entry.entry(), function, arguments.len())?;
+        validate_entry_contract(&entry, function, arguments.len())?;
         validate_entry_arguments(
             program,
-            entry.entry().signature().parameter_types(),
-            entry.entry().signature().parameter_plans(),
+            entry.signature().parameter_types(),
+            entry.signature().parameter_plans(),
             &arguments,
         )?;
 
@@ -199,7 +197,7 @@ impl VmFiber {
     }
 
     pub fn owner(&self) -> &DeploymentOwnerIdentity {
-        self.entry.owner()
+        self.entry.image().owner()
     }
 
     pub fn active_frame_count(&self) -> usize {
@@ -323,7 +321,7 @@ impl VmFiber {
             .checked_add(1)
             .ok_or(VmError::ResumeTokenMismatch)?;
         let handoff = VmProjectionHandoff::new(
-            Arc::clone(self.entry.image().program()),
+            Arc::clone(self.entry.image()),
             function_index,
             instruction_index,
             frame_depth,
@@ -506,8 +504,7 @@ impl VmFiber {
             _ => None,
         };
         if payload_type.is_none_or(|payload_type| {
-            self.program()
-                .candidate()
+            self.execution_image()
                 .types()
                 .get(payload_type.get() as usize)
                 .is_none_or(|row| row.index() != payload_type)
@@ -539,7 +536,7 @@ impl VmFiber {
     }
 
     fn charge_function_entry(&mut self, budget: &mut dyn VmBudget) -> Result<(), VmError> {
-        let schedule = self.entry.image().program().statement_schedule();
+        let schedule = self.entry.image().statement_schedule();
         let frame = self
             .frames
             .last_mut()
@@ -564,7 +561,7 @@ impl VmFiber {
     }
 
     fn charge_statement_events(&mut self, budget: &mut dyn VmBudget) -> Result<(), VmError> {
-        let schedule = self.entry.image().program().statement_schedule();
+        let schedule = self.entry.image().statement_schedule();
         let frame = self
             .frames
             .last_mut()
@@ -574,12 +571,7 @@ impl VmFiber {
 
     fn dispatch_one(&mut self, heap: &mut dyn VmHeap) -> Result<DispatchOutcome, VmError> {
         let frame = self.current_frame()?.clone();
-        self.reconcile_frame_slots_at(
-            Some(heap),
-            &frame,
-            frame.instruction(),
-            None,
-        )?;
+        self.reconcile_frame_slots_at(Some(heap), &frame, frame.instruction(), None)?;
         let (function_index, instruction_index, instruction) = {
             let frame = self.current_frame()?;
             let function = self.function(frame.function())?;
@@ -681,19 +673,30 @@ impl VmFiber {
             Opcode::GetDenseField => {
                 self.execute_get_dense_field(heap, function_index, instruction_index, &instruction)
             }
-            Opcode::SetWritablePath => {
-                self.execute_set_writable_path(heap, function_index, instruction_index, &instruction)
-            }
-            Opcode::RepresentationWrap => {
-                self.execute_representation_wrap(heap, function_index, instruction_index, &instruction)
-            }
-            Opcode::NewArrayBuilder => {
-                self.execute_new_array_builder(heap, function_index, instruction_index, &instruction)
-            }
+            Opcode::SetWritablePath => self.execute_set_writable_path(
+                heap,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::RepresentationWrap => self.execute_representation_wrap(
+                heap,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::NewArrayBuilder => self.execute_new_array_builder(
+                heap,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::ArrayBuilderPush => {
                 self.execute_array_builder_push(heap, function_index, instruction_index)
             }
-            Opcode::FreezeArray => self.execute_freeze_array(heap, function_index, instruction_index),
+            Opcode::FreezeArray => {
+                self.execute_freeze_array(heap, function_index, instruction_index)
+            }
             Opcode::ArrayGet => self.execute_array_get(heap, function_index, instruction_index),
             Opcode::ArrayPushOwned => {
                 self.execute_array_push_owned(heap, function_index, instruction_index, &instruction)
@@ -711,7 +714,9 @@ impl VmFiber {
                 self.execute_map_put_owned(heap, function_index, instruction_index, &instruction)
             }
             Opcode::MapLen => self.execute_map_len(heap, function_index, instruction_index),
-            Opcode::MapEntryAt => self.execute_map_entry_at(heap, function_index, instruction_index),
+            Opcode::MapEntryAt => {
+                self.execute_map_entry_at(heap, function_index, instruction_index)
+            }
             Opcode::InterfaceBoxLocal => {
                 self.execute_interface_box_local(function_index, instruction_index, &instruction)
             }
@@ -737,9 +742,12 @@ impl VmFiber {
                 instruction_index,
                 instruction.opcode(),
             ),
-            Opcode::Equal | Opcode::NotEqual => {
-                self.execute_equality(heap, function_index, instruction_index, instruction.opcode())
-            }
+            Opcode::Equal | Opcode::NotEqual => self.execute_equality(
+                heap,
+                function_index,
+                instruction_index,
+                instruction.opcode(),
+            ),
             _ => Err(VmError::UnsupportedOpcode {
                 function: function_index,
                 instruction: instruction_index,
@@ -747,17 +755,16 @@ impl VmFiber {
             }),
         };
         if outcome.is_ok() && self.observer.claim_vm_first_instruction_dispatch() {
-            self.observer.observe(
-                BytecodeExecutionEvent::VmFirstInstructionDispatched(
+            self.observer
+                .observe(BytecodeExecutionEvent::VmFirstInstructionDispatched(
                     VmFirstInstructionDispatched {
-                        image_owner: self.entry.owner().deployment().clone(),
-                        root_entry_function_index: self.entry.entry().function().get(),
+                        image_owner: self.entry.image().owner().deployment().clone(),
+                        root_entry_function_index: self.entry.function().get(),
                         current_function_index: function_index.get(),
                         instruction_index: instruction_index.get(),
                         opcode: instruction.opcode(),
                     },
-                ),
-            );
+                ));
         }
         outcome
     }
@@ -773,17 +780,13 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
-        let value = self
-            .entry
-            .image()
-            .program()
-            .constant_heap()
-            .get(index)
-            .ok_or(VmError::ConstantIndexOutOfBounds {
+        let value = self.entry.image().constant_heap().get(index).ok_or(
+            VmError::ConstantIndexOutOfBounds {
                 function,
                 instruction,
                 index: index.get(),
-            })?;
+            },
+        )?;
         self.push_operand(value)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
@@ -1196,12 +1199,7 @@ impl VmFiber {
         payload: ValueSlot,
     ) -> Result<(), VmError> {
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        self.reconcile_frame_slots_at(
-            None,
-            frame,
-            region.handler(),
-            Some(region.catch_slot()),
-        )?;
+        self.reconcile_frame_slots_at(None, frame, region.handler(), Some(region.catch_slot()))?;
         let handler_height = usize::try_from(region.handler_stack_height()).map_err(|_| {
             VmError::OperandStackOverflow {
                 function: frame.function(),
@@ -1472,7 +1470,7 @@ impl VmFiber {
         }
         let results = self.pop_operands(result_count, true)?;
         if self.frames.len() == 1 {
-            let image = Arc::clone(self.entry.image().program());
+            let image = Arc::clone(self.entry.image());
             let values = results.into_boxed_slice();
             self.frames.clear();
             self.values.clear();
@@ -1527,8 +1525,7 @@ impl VmFiber {
         };
         let field_count = self.operand_usize(decoded, 1, function, instruction)?;
         let shape = self
-            .program()
-            .candidate()
+            .execution_image()
             .shapes()
             .get(shape_index.get() as usize)
             .filter(|row| row.index() == shape_index)
@@ -1549,9 +1546,7 @@ impl VmFiber {
         for (field, value) in shape.fields().iter().zip(values) {
             let value = if matches!(value.kind(), Some(ValueKind::ConstRef)) {
                 match self.string_slot_value(heap, &value) {
-                    Ok(string) => heap
-                        .alloc_string(string)
-                        .map_err(VmError::Heap)?,
+                    Ok(string) => heap.alloc_string(string).map_err(VmError::Heap)?,
                     Err(_) => value,
                 }
             } else {
@@ -1588,8 +1583,7 @@ impl VmFiber {
         };
         let field_ordinal = self.operand_usize(decoded, 1, function, instruction)?;
         let shape = self
-            .program()
-            .candidate()
+            .execution_image()
             .shapes()
             .get(shape_index.get() as usize)
             .filter(|row| row.index() == shape_index)
@@ -1633,8 +1627,7 @@ impl VmFiber {
         };
         let selector_count = self.operand_usize(decoded, 2, function, instruction)?;
         let path = self
-            .program()
-            .candidate()
+            .execution_image()
             .writable_paths()
             .get(path_index.get() as usize)
             .filter(|row| row.index() == path_index)
@@ -1668,8 +1661,7 @@ impl VmFiber {
                     field_ordinal,
                 } => {
                     let shape_row = self
-                        .program()
-                        .candidate()
+                        .execution_image()
                         .shapes()
                         .get(shape.get() as usize)
                         .filter(|row| row.index() == *shape)
@@ -1677,14 +1669,13 @@ impl VmFiber {
                             table: CandidateTable::Shapes,
                             row: shape.get(),
                         })?;
-                    let field = shape_row
-                        .fields()
-                        .get(*field_ordinal as usize)
-                        .ok_or(VmError::FullValueLifecyclePlanUnavailable {
+                    let field = shape_row.fields().get(*field_ordinal as usize).ok_or(
+                        VmError::FullValueLifecyclePlanUnavailable {
                             function,
                             instruction,
                             opcode: Opcode::SetWritablePath,
-                        })?;
+                        },
+                    )?;
                     VmHeapPathSegment::DenseField {
                         field: field.name().to_string(),
                     }
@@ -1715,8 +1706,7 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
-        self.program()
-            .candidate()
+        self.execution_image()
             .types()
             .get(type_index.get() as usize)
             .filter(|row| row.index() == type_index)
@@ -1743,8 +1733,7 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
-        self.program()
-            .candidate()
+        self.execution_image()
             .types()
             .get(element_type.get() as usize)
             .filter(|row| row.index() == element_type)
@@ -1773,7 +1762,8 @@ impl VmFiber {
         let values = self.pop_operands(2, false)?;
         let builder = values[0];
         let value = values[1];
-        heap.array_push_owned(&builder, value).map_err(VmError::Heap)?;
+        heap.array_push_owned(&builder, value)
+            .map_err(VmError::Heap)?;
         self.push_operand(builder)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
@@ -1800,13 +1790,11 @@ impl VmFiber {
     ) -> Result<DispatchOutcome, VmError> {
         let values = self.pop_operands(2, false)?;
         let array = values[0];
-        let index = values[1]
-            .as_integer()
-            .ok_or(VmError::ExpectedNumber {
-                function,
-                instruction,
-                actual: values[1].kind(),
-            })?;
+        let index = values[1].as_integer().ok_or(VmError::ExpectedNumber {
+            function,
+            instruction,
+            actual: values[1].kind(),
+        })?;
         let index = usize::try_from(index).map_err(|_| VmError::ExpectedNumber {
             function,
             instruction,
@@ -1834,7 +1822,8 @@ impl VmFiber {
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
         let array = self.read_slot(&frame, slot_count, slot)?;
-        heap.array_push_owned(&array, value).map_err(VmError::Heap)?;
+        heap.array_push_owned(&array, value)
+            .map_err(VmError::Heap)?;
         if self.live_values[Self::slot_index(&frame, slot_count, slot, function)?] {
             self.clear_slot(&frame, slot_count, slot)?;
         }
@@ -1873,7 +1862,7 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
-        let types = self.program().candidate().types();
+        let types = self.execution_image().types();
         types
             .get(key_type.get() as usize)
             .filter(|row| row.index() == key_type)
@@ -1910,7 +1899,8 @@ impl VmFiber {
         let builder = values[0];
         let key = values[1];
         let value = values[2];
-        heap.map_put_owned(&builder, key, value).map_err(VmError::Heap)?;
+        heap.map_put_owned(&builder, key, value)
+            .map_err(VmError::Heap)?;
         self.push_operand(builder)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
@@ -1962,7 +1952,8 @@ impl VmFiber {
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
         let map = self.read_slot(&frame, slot_count, slot)?;
-        heap.map_put_owned(&map, key, value).map_err(VmError::Heap)?;
+        heap.map_put_owned(&map, key, value)
+            .map_err(VmError::Heap)?;
         if self.live_values[Self::slot_index(&frame, slot_count, slot, function)?] {
             self.clear_slot(&frame, slot_count, slot)?;
         }
@@ -1992,13 +1983,11 @@ impl VmFiber {
     ) -> Result<DispatchOutcome, VmError> {
         let values = self.pop_operands(2, false)?;
         let map = values[0];
-        let ordinal = values[1]
-            .as_integer()
-            .ok_or(VmError::ExpectedNumber {
-                function,
-                instruction,
-                actual: values[1].kind(),
-            })?;
+        let ordinal = values[1].as_integer().ok_or(VmError::ExpectedNumber {
+            function,
+            instruction,
+            actual: values[1].kind(),
+        })?;
         let ordinal = usize::try_from(ordinal).map_err(|_| VmError::ExpectedNumber {
             function,
             instruction,
@@ -2026,8 +2015,7 @@ impl VmFiber {
         let arg_count = self.operand_usize(decoded, 1, function, instruction)?;
         let result_count = self.operand_usize(decoded, 2, function, instruction)?;
         let intrinsic = self
-            .program()
-            .candidate()
+            .execution_image()
             .intrinsics()
             .get(intrinsic_index.get() as usize)
             .filter(|row| row.index() == intrinsic_index)
@@ -2063,13 +2051,16 @@ impl VmFiber {
         let result = match intrinsic.kind() {
             LinkedIntrinsicKind::Static(target) => match target.canonical_key().as_str() {
                 "core.array.empty" => {
-                    let result_type = intrinsic.signature().result_types().first().copied().ok_or(
-                        VmError::FullValueLifecyclePlanUnavailable {
+                    let result_type = intrinsic
+                        .signature()
+                        .result_types()
+                        .first()
+                        .copied()
+                        .ok_or(VmError::FullValueLifecyclePlanUnavailable {
                             function,
                             instruction,
                             opcode: Opcode::InvokeIntrinsic,
-                        },
-                    )?;
+                        })?;
                     heap.allocate_array(
                         &[],
                         CompactTypeTag::new(result_type.get()),
@@ -2078,13 +2069,16 @@ impl VmFiber {
                     .map_err(VmError::Heap)?
                 }
                 "core.map.empty" => {
-                    let result_type = intrinsic.signature().result_types().first().copied().ok_or(
-                        VmError::FullValueLifecyclePlanUnavailable {
+                    let result_type = intrinsic
+                        .signature()
+                        .result_types()
+                        .first()
+                        .copied()
+                        .ok_or(VmError::FullValueLifecyclePlanUnavailable {
                             function,
                             instruction,
                             opcode: Opcode::InvokeIntrinsic,
-                        },
-                    )?;
+                        })?;
                     heap.allocate_map(
                         &[],
                         CompactTypeTag::new(result_type.get()),
@@ -2151,8 +2145,7 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
-        self.program()
-            .candidate()
+        self.execution_image()
             .interface_tables()
             .get(table_index.get() as usize)
             .filter(|row| row.index() == table_index)
@@ -2179,8 +2172,7 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
-        self.program()
-            .candidate()
+        self.execution_image()
             .interface_tables()
             .get(table_index.get() as usize)
             .filter(|row| row.index() == table_index)
@@ -2214,8 +2206,7 @@ impl VmFiber {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
         let target = self
-            .program()
-            .candidate()
+            .execution_image()
             .service_operations()
             .get(target_index.get() as usize)
             .filter(|row| row.index() == target_index)
@@ -2267,10 +2258,7 @@ impl VmFiber {
         )?;
         let invocation = ChildInvocation::new(
             target,
-            VmOwnedValues::new(
-                Arc::clone(self.entry.image().program()),
-                arguments.into_boxed_slice(),
-            ),
+            VmOwnedValues::new(Arc::clone(self.entry.image()), arguments.into_boxed_slice()),
             token,
         )
         .map_err(|_| VmError::ResumeTokenMismatch)?;
@@ -2297,8 +2285,7 @@ impl VmFiber {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
         let target = self
-            .program()
-            .candidate()
+            .execution_image()
             .actor_methods()
             .get(target_index.get() as usize)
             .filter(|row| row.index() == target_index)
@@ -2350,10 +2337,7 @@ impl VmFiber {
         )?;
         let invocation = ChildInvocation::new(
             target,
-            VmOwnedValues::new(
-                Arc::clone(self.entry.image().program()),
-                arguments.into_boxed_slice(),
-            ),
+            VmOwnedValues::new(Arc::clone(self.entry.image()), arguments.into_boxed_slice()),
             token,
         )
         .map_err(|_| VmError::ResumeTokenMismatch)?;
@@ -2400,8 +2384,7 @@ impl VmFiber {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
         let table = self
-            .program()
-            .candidate()
+            .execution_image()
             .interface_tables()
             .get(table_index.get() as usize)
             .filter(|row| row.index() == table_index)
@@ -2481,10 +2464,7 @@ impl VmFiber {
         )?;
         let invocation = ChildInvocation::new(
             target,
-            VmOwnedValues::new(
-                Arc::clone(self.entry.image().program()),
-                arguments.into_boxed_slice(),
-            ),
+            VmOwnedValues::new(Arc::clone(self.entry.image()), arguments.into_boxed_slice()),
             token,
         )
         .map_err(|_| VmError::ResumeTokenMismatch)?;
@@ -2511,8 +2491,7 @@ impl VmFiber {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
         let adapter = self
-            .program()
-            .candidate()
+            .execution_image()
             .host_effect_adapters()
             .get(adapter_index.get() as usize)
             .filter(|row| row.index() == adapter_index)
@@ -2563,10 +2542,7 @@ impl VmFiber {
         )?;
         let invocation = AdapterInvocation::new(
             adapter_index,
-            VmOwnedValues::new(
-                Arc::clone(self.entry.image().program()),
-                arguments.into_boxed_slice(),
-            ),
+            VmOwnedValues::new(Arc::clone(self.entry.image()), arguments.into_boxed_slice()),
             token,
         )
         .map_err(|_| VmError::ResumeTokenMismatch)?;
@@ -2591,8 +2567,7 @@ impl VmFiber {
                         .map_err(|_| VmError::Heap(VmHeapError::InvalidValueMetadata))?,
                 );
                 let node = self
-                    .program()
-                    .candidate()
+                    .execution_image()
                     .frozen_constant_nodes()
                     .get(index.get() as usize)
                     .filter(|node| node.index() == index)
@@ -2625,8 +2600,7 @@ impl VmFiber {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
         let capture_count = self.operand_usize(decoded, 2, function, instruction)?;
-        self.program()
-            .candidate()
+        self.execution_image()
             .synthetic_callbacks()
             .get(callback_index.get() as usize)
             .filter(|row| row.index() == callback_index)
@@ -2635,8 +2609,7 @@ impl VmFiber {
                 row: callback_index.get(),
             })?;
         let layout = self
-            .program()
-            .candidate()
+            .execution_image()
             .callback_capture_layouts()
             .get(layout_index.get() as usize)
             .filter(|row| row.index() == layout_index)
@@ -2691,11 +2664,10 @@ impl VmFiber {
                 opcode: Opcode::StreamNext,
             });
         }
-        let end_resume_pc = resume.end_resume().ok_or(VmError::StreamEndResumeUnavailable)?;
-        let arguments = VmOwnedValues::new(
-            Arc::clone(self.entry.image().program()),
-            Box::new([]),
-        );
+        let end_resume_pc = resume
+            .end_resume()
+            .ok_or(VmError::StreamEndResumeUnavailable)?;
+        let arguments = VmOwnedValues::new(Arc::clone(self.entry.image()), Box::new([]));
         let expected_stack_height =
             self.current_frame()?
                 .operand_height()
@@ -2769,10 +2741,7 @@ impl VmFiber {
             0,
         )?;
         let stream_item = StreamItem::new(
-            VmOwnedValues::new(
-                Arc::clone(self.entry.image().program()),
-                item.into_boxed_slice(),
-            ),
+            VmOwnedValues::new(Arc::clone(self.entry.image()), item.into_boxed_slice()),
             token,
         )
         .map_err(|_| VmError::ResumeTokenMismatch)?;
@@ -2934,12 +2903,11 @@ impl VmFiber {
         instruction: InstructionIndex,
         opcode: Opcode,
         index: ResumeSiteIndex,
-    ) -> Result<&LinkedResumeSite, VmError> {
+    ) -> Result<&VerifiedResumeSite, VmError> {
         let row = self
-            .program()
-            .candidate()
+            .execution_image()
             .resume_sites()
-            .get(index.get() as usize)
+            .get(index)
             .filter(|row| {
                 row.index() == index && row.function() == function && row.site() == instruction
             })
@@ -2956,7 +2924,10 @@ impl VmFiber {
                 opcode,
             });
         }
-        if row.end_resume().is_some_and(|end_resume| end_resume.get() as usize >= function_len) {
+        if row
+            .end_resume()
+            .is_some_and(|end_resume| end_resume.get() as usize >= function_len)
+        {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
                 instruction,
@@ -2978,7 +2949,7 @@ impl VmFiber {
         expected_stack_height: u32,
         expected_result_count: u32,
     ) -> Result<VmResumeToken, VmError> {
-        let image = Arc::clone(self.entry.image().program());
+        let image = Arc::clone(self.entry.image());
         let sequence = self.resume_sequence;
         self.resume_sequence = self
             .resume_sequence
@@ -3023,12 +2994,12 @@ impl VmFiber {
             .ok_or(VmError::FiberNotRunnable { state: self.state })
     }
 
-    fn program(&self) -> &VerifiedLinkedBytecodeImage {
-        self.entry.image().program().as_ref()
+    fn execution_image(&self) -> &DeploymentExecutionImage {
+        self.entry.image().as_ref()
     }
 
     fn function(&self, index: FunctionIndex) -> Result<&LinkedFunction, VmError> {
-        verified_function(self.program(), index).ok_or(VmError::VerifiedEntryInvariant {
+        verified_function(self.execution_image(), index).ok_or(VmError::VerifiedEntryInvariant {
             invariant: VmVerifiedInvariant::EntryFunctionMissing,
         })
     }
@@ -3204,12 +3175,7 @@ impl VmFiber {
                 .slots_before()
                 .iter()
                 .zip(function.frame().slot_plans())
-                .map(|(state, plan)| {
-                    (
-                        matches!(state, LinkedSlotState::Live(_)),
-                        plan.clone(),
-                    )
-                })
+                .map(|(state, plan)| (matches!(state, LinkedSlotState::Live(_)), plan.clone()))
                 .collect::<Vec<_>>();
             (slot_facts, opcode)
         };
@@ -3239,13 +3205,13 @@ impl VmFiber {
                             opcode,
                         });
                     }
-                    let heap = heap.as_deref_mut().ok_or(
-                        VmError::FullValueLifecyclePlanUnavailable {
-                            function: frame.function(),
-                            instruction,
-                            opcode,
-                        },
-                    )?;
+                    let heap =
+                        heap.as_deref_mut()
+                            .ok_or(VmError::FullValueLifecyclePlanUnavailable {
+                                function: frame.function(),
+                                instruction,
+                                opcode,
+                            })?;
                     heap.release_resource(&value).map_err(VmError::Heap)?;
                 }
                 self.clear_value(index);
@@ -3587,7 +3553,7 @@ fn comparable_equality_with_string_resolver(
 }
 
 fn verified_function(
-    program: &VerifiedLinkedBytecodeImage,
+    program: &DeploymentExecutionImage,
     index: FunctionIndex,
 ) -> Option<&LinkedFunction> {
     let function = program.functions().get(index.get() as usize)?;

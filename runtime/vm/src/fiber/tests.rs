@@ -3,19 +3,24 @@ use skiff_runtime_linked_bytecode::{
     FrameSlotIndex, InstructionBoundaryIndex, InstructionIndex, LinkedCatchMatcher,
     LinkedExceptionRegion, TypeIndex,
 };
+use skiff_runtime_linker::DeploymentExecutionEntry;
+use skiff_runtime_model::bytecode_execution_observation::BytecodeExecutionObserver;
 use skiff_runtime_model::vm_heap::VmHeap;
-use skiff_runtime_model::vm_value::{
-    CompactTypeTag, ValueFlags, ValueSlot, VmHandle,
-};
+use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
     catch_matches, comparable_equality, comparable_equality_with_string_resolver,
-    find_exception_region, nominal_tag_index, opcode_supported, DispatchOutcome, VerifiedVmEntry,
-    Vm, VmFiber,
+    find_exception_region, nominal_tag_index, opcode_supported, DispatchOutcome, Vm, VmFiber,
 };
 use crate::{VmError, VmLimits};
 
-type VmStartFn = fn(VerifiedVmEntry, Box<[ValueSlot]>, VmLimits) -> Result<VmFiber, VmError>;
+type VmStartFn =
+    fn(
+        DeploymentExecutionEntry,
+        Box<[ValueSlot]>,
+        VmLimits,
+        BytecodeExecutionObserver,
+    ) -> Result<VmFiber, VmError>;
 
 #[test]
 fn production_start_signature_requires_the_concrete_pinned_entry() {
@@ -218,26 +223,14 @@ fn comparable_equality_matches_same_kind_and_numeric_equality() {
 
 #[test]
 fn comparable_equality_resolves_const_and_request_heap_strings() {
-    let const_left = ValueSlot::const_ref(
-        VmHandle::new(1),
-        CompactTypeTag::new(0),
-        ValueFlags::new(0),
-    );
-    let const_right = ValueSlot::const_ref(
-        VmHandle::new(2),
-        CompactTypeTag::new(0),
-        ValueFlags::new(0),
-    );
-    let heap_same = ValueSlot::request_heap_ref(
-        VmHandle::new(3),
-        CompactTypeTag::new(0),
-        ValueFlags::new(0),
-    );
-    let heap_different = ValueSlot::request_heap_ref(
-        VmHandle::new(4),
-        CompactTypeTag::new(0),
-        ValueFlags::new(0),
-    );
+    let const_left =
+        ValueSlot::const_ref(VmHandle::new(1), CompactTypeTag::new(0), ValueFlags::new(0));
+    let const_right =
+        ValueSlot::const_ref(VmHandle::new(2), CompactTypeTag::new(0), ValueFlags::new(0));
+    let heap_same =
+        ValueSlot::request_heap_ref(VmHandle::new(3), CompactTypeTag::new(0), ValueFlags::new(0));
+    let heap_different =
+        ValueSlot::request_heap_ref(VmHandle::new(4), CompactTypeTag::new(0), ValueFlags::new(0));
     let resolve_string = |value: &ValueSlot| match value.as_handle()?.get() {
         1 | 2 | 3 => Some("same".to_string()),
         4 => Some("different".to_string()),
@@ -261,11 +254,8 @@ fn comparable_equality_resolves_const_and_request_heap_strings() {
         Some(true)
     );
 
-    let unresolved = ValueSlot::const_ref(
-        VmHandle::new(9),
-        CompactTypeTag::new(0),
-        ValueFlags::new(0),
-    );
+    let unresolved =
+        ValueSlot::const_ref(VmHandle::new(9), CompactTypeTag::new(0), ValueFlags::new(0));
     assert_eq!(
         comparable_equality_with_string_resolver(&const_left, &unresolved, resolve_string),
         None

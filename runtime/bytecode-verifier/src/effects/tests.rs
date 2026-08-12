@@ -21,7 +21,8 @@ use crate::{
         generous_limits,
     },
     verifier::prove_statement_schedule_for_test,
-    verify, VerificationError, VerificationLocation, VerificationObligation, VerifiedResumeKind,
+    verify_executable_facts, verify_facts, ExecutableFacts, VerificationError,
+    VerificationLocation, VerificationObligation, VerifiedResumeKind,
 };
 
 #[test]
@@ -328,12 +329,13 @@ fn stream_next_stream_read_mints_a_nonempty_resume_certificate() {
 fn stream_producer_normal_end_uses_zero_return_arity() {
     let mut function = function(stream_effects(), None);
     function.call_kind = EffectGraphCallKind::StreamProducer;
-    let image = verify_graph(vec![function])
-        .expect("verified stream producer must emit one item and return zero ordinary results");
-    let frame = image.functions()[0].frame();
-    assert!(image.functions()[0].stream_result_type_ref().is_some());
+    let (hydrated, candidate) = loader_backed_effect_graph(vec![function]);
+    let frame = candidate.functions()[0].frame();
+    assert!(candidate.functions()[0].stream_result_type_ref().is_some());
     assert!(frame.result_types().is_empty());
     assert!(frame.result_plans().is_empty());
+    let image = verify_executable_facts(&hydrated, &candidate, &generous_limits())
+        .expect("verified stream producer must emit one item and return zero ordinary results");
     let [resume] = image.resume_sites().rows() else {
         panic!("one stream backpressure resume certificate was expected")
     };
@@ -366,7 +368,7 @@ fn swapped_resume_targets_fail_at_exact_hydration_binding() {
     function.call_kind = EffectGraphCallKind::StreamReadTwice;
     let functions = vec![function];
     let (hydrated, candidate) = loader_backed_effect_graph_with_resume_swap(functions);
-    let error = verify(hydrated, candidate, &generous_limits())
+    let error = verify_facts(hydrated, candidate, &generous_limits())
         .expect_err("raw descriptor and typed resume row may not be swapped");
     assert!(matches!(
         error,
@@ -426,11 +428,9 @@ fn call_local_inout_still_fails_at_the_earlier_target_plan_gate() {
     );
 }
 
-fn verify_graph(
-    functions: Vec<EffectGraphFunction>,
-) -> Result<crate::VerifiedLinkedBytecodeImage, VerificationError> {
+fn verify_graph(functions: Vec<EffectGraphFunction>) -> Result<ExecutableFacts, VerificationError> {
     let (hydrated, candidate) = loader_backed_effect_graph(functions);
-    verify(hydrated, candidate, &generous_limits())
+    verify_executable_facts(&hydrated, &candidate, &generous_limits())
 }
 
 fn function(effects: CallableMayEffects, target: Option<u32>) -> EffectGraphFunction {

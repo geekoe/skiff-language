@@ -1,6 +1,8 @@
 #[path = "phase_1_contract/support.rs"]
 mod support;
 
+use std::sync::Arc;
+
 use skiff_artifact_identity::{ArtifactIdentityError, ValidatedBytecodeArtifact};
 use skiff_artifact_model::{
     BytecodeDecodeError, BytecodeRelocation, InstructionSourceSite, Opcode, ParamModeIr,
@@ -11,17 +13,17 @@ use skiff_compiler::{
     Phase1UnsupportedCapability,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedBytecodeCandidate, LinkedFunction, LinkedGatewayCallableRole, LinkedInstruction,
-    LinkedInstructionTarget, TypeIndex,
+    LinkedFunction, LinkedInstruction, LinkedInstructionTarget, TypeIndex,
 };
 use skiff_runtime_linker::{
-    link_deployment, BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability,
+    link_deployment_execution_image, BytecodeLinkError, BytecodeLinkLocation,
+    DeploymentExecutionImage, DeploymentExecutionImageError, Phase1LinkedCapability,
 };
 use skiff_test_runner::canonical_package::{compile_package_project, CanonicalPackageProjectError};
 
 use support::{
-    package_source, production_sized_limits, repository_root, PublishedService, TempRoot,
-    PHASE_1_SCALAR_LOCAL_SOURCE,
+    package_source, production_sized_execution_limits, repository_root, PublishedService,
+    TempRoot, PHASE_1_SCALAR_LOCAL_SOURCE,
 };
 
 #[test]
@@ -114,12 +116,13 @@ fn scalar_local_source_facts_survive_canonical_publication_loader_and_link() {
         artifact_helper.frame_layout.result_type_refs
     );
 
-    let hydrated = fixture.hydrated();
-    let candidate = link_deployment(&hydrated, &production_sized_limits())
-        .expect("the admitted scalar/local source fixture must link");
-    assert_eq!(candidate.functions().len(), 2);
-    let linked_run = linked_function(&candidate, "main::run");
-    let linked_helper = linked_function(&candidate, "main::helper");
+    let image = Arc::new(
+        link_deployment_execution_image(fixture.hydrated(), &production_sized_execution_limits())
+            .expect("the admitted scalar/local source fixture must become an execution image"),
+    );
+    assert_eq!(image.functions().len(), 2);
+    let linked_run = linked_function(&image, "main::run");
+    let linked_helper = linked_function(&image, "main::helper");
 
     let call = only_instruction(linked_run, Opcode::CallLocal);
     assert_eq!(
@@ -167,28 +170,23 @@ fn scalar_local_source_facts_survive_canonical_publication_loader_and_link() {
         "the helper result retains its source-owned scalar type"
     );
     assert_linked_type_handoff(
-        &candidate,
+        &image,
         linked_run,
         linked_run.frame().slot_types()[0],
         artifact_run.frame_layout.slot_type_refs[0],
     );
     assert_linked_type_handoff(
-        &candidate,
+        &image,
         linked_helper,
         linked_helper.frame().slot_types()[0],
         artifact_helper.frame_layout.slot_type_refs[0],
     );
 
-    let gateway = candidate
-        .gateway_entries()
-        .iter()
-        .next()
-        .expect("canonical HTTP publication has one exact gateway entry");
-    assert_eq!(candidate.gateway_entries().len(), 1);
-    let handler = gateway
-        .handler()
-        .expect("gateway has the source run handler");
-    assert_eq!(handler.role(), LinkedGatewayCallableRole::Handler);
+    assert_eq!(image.ingress_bindings().len(), 1);
+    let (ingress, gateway_identity) = fixture.http_gateway_lookup();
+    let handler = image
+        .http_gateway_entry(&ingress, &gateway_identity)
+        .expect("canonical HTTP publication resolves its exact gateway entry");
     assert_eq!(handler.function(), linked_run.index());
     assert_eq!(
         handler.signature().parameter_types(),
@@ -304,8 +302,11 @@ fn bytecode_content_identity_mismatch_is_owned_by_artifact_admission() {
 fn reachable_pending_effect_is_rejected_by_the_link_capability_owner() {
     let fixture = PublishedService::build("reachable-effect");
     let (hydrated, package, function_key) = fixture.with_pending_effect("::run");
-    let error = link_deployment(&hydrated, &production_sized_limits())
+    let error = link_deployment_execution_image(hydrated, &production_sized_execution_limits())
         .expect_err("a reachable host effect must not enter the Phase 1 executable closure");
+    let DeploymentExecutionImageError::Link(error) = error else {
+        panic!("reachable host effect failed at the wrong boundary: {error}");
+    };
     assert_eq!(
         error,
         BytecodeLinkError::UnsupportedPhase1Capability {
@@ -323,15 +324,15 @@ fn design_dependent_unreachable_pending_effect_is_not_a_raw_artifact_scan() {
     let fixture = PublishedService::build("unreachable-effect");
     let (hydrated, _package, unsupported_function) = fixture.with_pending_effect("::unused");
 
-    let candidate = link_deployment(&hydrated, &production_sized_limits())
+    let image = link_deployment_execution_image(hydrated, &production_sized_execution_limits())
         .expect("an unreachable disabled function must not replace entry-closure admission");
-    assert!(candidate.functions().iter().all(|function| {
+    assert!(image.functions().iter().all(|function| {
         function.key().artifact_function_key().as_str() != unsupported_function
     }));
 }
 
-fn linked_function<'a>(candidate: &'a LinkedBytecodeCandidate, key: &str) -> &'a LinkedFunction {
-    candidate
+fn linked_function<'a>(image: &'a DeploymentExecutionImage, key: &str) -> &'a LinkedFunction {
+    image
         .functions()
         .iter()
         .find(|function| function.key().artifact_function_key().as_str() == key)
@@ -411,12 +412,12 @@ fn assert_required_opcodes(function: &LinkedFunction, required: &[Opcode]) {
 }
 
 fn assert_linked_type_handoff(
-    candidate: &LinkedBytecodeCandidate,
+    image: &DeploymentExecutionImage,
     function: &LinkedFunction,
     linked_type: TypeIndex,
     artifact_type_ref: u32,
 ) {
-    let entry = candidate
+    let entry = image
         .types()
         .get(linked_type.get() as usize)
         .expect("frame type index resolves in the linked image");

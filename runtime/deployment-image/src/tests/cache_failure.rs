@@ -151,7 +151,7 @@ async fn failed_attempt_is_not_published_and_retry_uses_next_id() {
 
     assert_eq!(first.attempt_id().get(), 1);
     assert_eq!(observed_attempt.load(Ordering::SeqCst), 2);
-    assert_eq!(loaded.program().label(), "retry-success");
+    assert_eq!(loaded.label(), "retry-success");
 }
 
 #[tokio::test]
@@ -193,7 +193,7 @@ async fn spoofed_owner_conflicts_without_joining_or_publishing() {
 
     release.notify_one();
     let genuine = join(genuine).await;
-    assert_eq!(genuine.program().label(), "genuine");
+    assert_eq!(genuine.label(), "genuine");
     let lookup_conflict = cache
         .loaded(&spoofed_owner)
         .await
@@ -249,10 +249,10 @@ async fn loader_task_panic_becomes_attempt_failure_and_retry_can_succeed() {
         })
         .await
         .expect("panic does not publish or wedge the key");
-    assert_eq!(retry.program().label(), "after-panic");
+    assert_eq!(retry.label(), "after-panic");
 }
 
-async fn panicking_loader() -> Result<Arc<crate::DeploymentImage<TestProgram>>, TestProviderError> {
+async fn panicking_loader() -> Result<Arc<TestProgram>, TestProviderError> {
     panic!("loader panic fixture")
 }
 

@@ -1,11 +1,11 @@
 use std::{num::NonZeroU64, sync::Arc};
 
-use skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage;
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex, InterfaceTableIndex,
     ResumeSiteIndex, ServiceOperationIndex, SyntheticCallbackIndex,
 };
+use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
     vm_heap::VmHeapError,
     vm_root::{VmRootSource, VmRootVisitor},
@@ -23,12 +23,12 @@ pub type VmResult = Result<VmOwnedValues, VmError>;
 /// `ValueSlot` to an unrelated image pin.
 #[must_use = "owned VM values retain roots and an exact verified-image pin"]
 pub struct VmOwnedValues {
-    image: Arc<VerifiedLinkedBytecodeImage>,
+    image: Arc<DeploymentExecutionImage>,
     values: Box<[ValueSlot]>,
 }
 
 impl VmOwnedValues {
-    pub(crate) fn new(image: Arc<VerifiedLinkedBytecodeImage>, values: Box<[ValueSlot]>) -> Self {
+    pub(crate) fn new(image: Arc<DeploymentExecutionImage>, values: Box<[ValueSlot]>) -> Self {
         Self { image, values }
     }
 
@@ -37,7 +37,7 @@ impl VmOwnedValues {
     /// The only externally constructible `VmOwnedValues` is empty: it can
     /// resume a verified zero-result site such as `EmitStream`, but cannot
     /// attach a raw `ValueSlot` to an unrelated image pin.
-    pub fn empty(image: Arc<VerifiedLinkedBytecodeImage>) -> Self {
+    pub fn empty(image: Arc<DeploymentExecutionImage>) -> Self {
         Self {
             image,
             values: Box::new([]),
@@ -49,14 +49,11 @@ impl VmOwnedValues {
     /// The caller must have produced every slot from the same request heap
     /// that will resume this outcome; the VM cannot validate heap provenance
     /// at construction time.
-    pub fn from_values(
-        image: Arc<VerifiedLinkedBytecodeImage>,
-        values: Box<[ValueSlot]>,
-    ) -> Self {
+    pub fn from_values(image: Arc<DeploymentExecutionImage>, values: Box<[ValueSlot]>) -> Self {
         Self { image, values }
     }
 
-    pub const fn image(&self) -> &Arc<VerifiedLinkedBytecodeImage> {
+    pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
         &self.image
     }
 
@@ -91,7 +88,7 @@ impl VmRootSource for VmOwnedValues {
 #[derive(Debug)]
 #[must_use = "a resume token is unique continuation authority"]
 pub struct VmResumeToken {
-    image: Arc<VerifiedLinkedBytecodeImage>,
+    image: Arc<DeploymentExecutionImage>,
     sequence: u64,
     function: FunctionIndex,
     instruction: InstructionIndex,
@@ -109,7 +106,7 @@ impl VmResumeToken {
     #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        image: Arc<VerifiedLinkedBytecodeImage>,
+        image: Arc<DeploymentExecutionImage>,
         sequence: u64,
         function: FunctionIndex,
         instruction: InstructionIndex,
@@ -138,7 +135,7 @@ impl VmResumeToken {
         self.sequence
     }
 
-    pub const fn image(&self) -> &Arc<VerifiedLinkedBytecodeImage> {
+    pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
         &self.image
     }
 
@@ -634,7 +631,7 @@ mod tests {
     #[test]
     fn empty_owned_values_constructor_is_a_zero_value_authority() {
         fn empty(
-            image: std::sync::Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+            image: std::sync::Arc<skiff_runtime_linker::DeploymentExecutionImage>,
         ) -> VmOwnedValues {
             VmOwnedValues::empty(image)
         }

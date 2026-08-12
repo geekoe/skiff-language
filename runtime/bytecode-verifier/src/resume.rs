@@ -30,7 +30,7 @@ impl VerifiedResumeSites {
 ///
 /// The first slice deliberately certifies no natural-end outcome: the ISA has
 /// not assigned that outcome a control-flow or stack contract yet.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VerifiedResumeSite {
     index: ResumeSiteIndex,
     function: FunctionIndex,

@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify};
 
-use crate::{DeploymentImage, DeploymentLoadFailure, DeploymentOwnerIdentity, LoadAttemptId};
+use crate::{DeploymentLoadFailure, DeploymentOwnerIdentity, LoadAttemptId};
 
 pub(crate) type SharedAttemptResult<P, E> =
-    Result<Arc<DeploymentImage<P>>, Arc<DeploymentLoadFailure<E>>>;
+    Result<Arc<P>, Arc<DeploymentLoadFailure<E>>>;
 
 pub(crate) struct LoadAttempt<P, E> {
     id: LoadAttemptId,

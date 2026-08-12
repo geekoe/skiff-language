@@ -3,10 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use skiff_artifact_model::DeploymentArtifactIdentity;
 
 use crate::attempt::{LoadAttempt, SharedAttemptResult};
-use crate::{
-    DeploymentImage, DeploymentLoadError, DeploymentOwnerConflict, DeploymentOwnerIdentity,
-    LoadAttemptId,
-};
+use crate::{DeploymentLoadError, DeploymentOwnerConflict, DeploymentOwnerIdentity, LoadAttemptId};
 
 pub(crate) struct CacheState<P, E> {
     slots: BTreeMap<DeploymentArtifactIdentity, OwnerSlot<P, E>>,
@@ -20,11 +17,11 @@ struct OwnerSlot<P, E> {
 
 enum CacheEntry<P, E> {
     Loading(Arc<LoadAttempt<P, E>>),
-    Loaded(Arc<DeploymentImage<P>>),
+    Loaded(Arc<P>),
 }
 
 pub(crate) enum BeginLoad<P, E> {
-    Loaded(Arc<DeploymentImage<P>>),
+    Loaded(Arc<P>),
     Join(Arc<LoadAttempt<P, E>>),
     Start(Arc<LoadAttempt<P, E>>),
 }
@@ -79,7 +76,7 @@ impl<P, E> CacheState<P, E> {
     pub(crate) fn loaded(
         &self,
         owner: &DeploymentOwnerIdentity,
-    ) -> Result<Option<Arc<DeploymentImage<P>>>, DeploymentOwnerConflict> {
+    ) -> Result<Option<Arc<P>>, DeploymentOwnerConflict> {
         let build_id = owner.build_id();
         let Some(slot) = self.slots.get(build_id) else {
             return Ok(None);
@@ -97,7 +94,7 @@ impl<P, E> CacheState<P, E> {
         }
     }
 
-    pub(crate) fn loaded_snapshot(&self) -> Box<[Arc<DeploymentImage<P>>]> {
+    pub(crate) fn loaded_snapshot(&self) -> Box<[Arc<P>]> {
         self.slots
             .values()
             .filter_map(|slot| match &slot.entry {

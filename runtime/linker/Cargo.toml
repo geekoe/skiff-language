@@ -17,6 +17,8 @@ skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-canonical-json = { path = "../../canonical-json" }
 skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
+skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
+skiff-runtime-deployment-image = { path = "../deployment-image" }
 skiff-runtime-loader = { path = "../loader" }
 skiff-runtime-native-contract = { path = "../native-contract" }
 thiserror = "2.0"

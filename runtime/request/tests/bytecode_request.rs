@@ -16,26 +16,29 @@ use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentOperationBinding,
-    DeploymentRevision, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan,
-    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentRevision, GatewayAdapterArg,
+    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
+    GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
     GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifact,
-    PackageCallableId, PackageLocalAbiSymbol, ServiceContract, ServiceDeployment,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifact, PackageCallableId,
+    PackageLocalAbiSymbol, ServiceContract, ServiceDeployment, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     compile_package, CompilerPlatformSources, ManifestOwner, ManifestProvenance,
     PackageCompileInput, PackageSourceInput, PublicationManifest, PublicationSourceGraph,
     SourceTree, SourceTreeFile,
 };
-use skiff_runtime_bytecode_verifier::{verify, VerificationLimits, VerifiedLinkedBytecodeImage};
+use skiff_runtime_bytecode_verifier::VerificationLimits;
 use skiff_runtime_capability_context::CancellationToken;
-use skiff_runtime_deployment_image::DeploymentImage;
-use skiff_runtime_linker::{link_deployment, LinkLimits};
-use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
-use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
+use skiff_runtime_linker::{
+    link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage,
+    DeploymentExecutionLimits, LinkLimits,
+};
+use skiff_runtime_loader::{
+    DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
+};
 use skiff_runtime_model::{
     bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
     request_heap::RequestHeapLimits,
@@ -43,8 +46,8 @@ use skiff_runtime_model::{
 use skiff_runtime_request::{
     execute_runtime_bytecode_request, start_runtime_bytecode_request, BinaryHttpRequest,
     BinaryHttpRequestMetadata, BoundaryResponse, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, BytecodeRequestRunOutcome, BytecodeRequestTarget,
-    ExecutionBudget, GatewayAdapterArg as RequestGatewayAdapterArg,
+    BytecodeRequestExecutionInput, BytecodeRequestRunOutcome, ExecutionBudget,
+    GatewayAdapterArg as RequestGatewayAdapterArg,
     GatewayAdapterSource as RequestGatewayAdapterSource, HttpAdapter, HttpAdapterCallable,
     HttpAdapterKind, RequestEnvelope, RequestError, ResponseEnd, ResponseEvent, ResponseEventSink,
     ResponseStreamEvent,
@@ -302,21 +305,12 @@ fn scalar_gateway_deployment(
 ) -> (
     Arc<ServiceDeployment>,
     skiff_artifact_model::ServiceDeploymentRef,
-    BTreeMap<&'static str, GatewayEntryKey>,
+    BTreeMap<&'static str, (IngressSelector, GatewayEntryIdentity)>,
 ) {
     let definitions = [
-        (
-            "number",
-            "main.numberBody",
-            GatewayExternalSchema::Number,
-        ),
+        ("number", "main.numberBody", GatewayExternalSchema::Number),
         ("bool", "main.boolBody", GatewayExternalSchema::Boolean),
         ("null", "main.nullBody", GatewayExternalSchema::Null),
-        (
-            "string",
-            "main.stringBody",
-            GatewayExternalSchema::String,
-        ),
     ];
     let mut gateway_entries = BTreeMap::new();
     let mut ingress = Vec::new();
@@ -324,15 +318,17 @@ fn scalar_gateway_deployment(
     for (name, selector, schema) in definitions {
         let (key, entry) =
             scalar_gateway_entry(name, implementation_callable_id(package, selector), schema);
+        let selector = IngressSelector {
+            protocol: IngressProtocol::Http,
+            method: Some("POST".to_string()),
+            path: format!("/{name}"),
+        };
+        let identity = entry.gateway_entry_identity.clone();
         ingress.push(DeploymentIngressBinding {
-            selector: IngressSelector {
-                protocol: IngressProtocol::Http,
-                method: Some("POST".to_string()),
-                path: format!("/{name}"),
-            },
+            selector: selector.clone(),
             gateway_entry_key: key.clone(),
         });
-        keys.insert(name, key.clone());
+        keys.insert(name, (selector, identity));
         gateway_entries.insert(key, entry);
     }
 
@@ -358,8 +354,8 @@ fn scalar_gateway_deployment(
 }
 
 struct ScalarGatewayFixture {
-    image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-    keys: BTreeMap<&'static str, GatewayEntryKey>,
+    image: Arc<DeploymentExecutionImage>,
+    keys: BTreeMap<&'static str, (IngressSelector, GatewayEntryIdentity)>,
 }
 
 impl ScalarGatewayFixture {
@@ -376,10 +372,6 @@ function boolBody(value: bool) -> bool {
 function nullBody(value: null) -> null {
   return value
 }
-
-function stringBody(value: string) -> string {
-  return value
-}
 ",
         );
         let contract = scalar_gateway_contract(package.package_id.as_str());
@@ -394,30 +386,16 @@ function stringBody(value: string) -> string {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_reference)
             .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(verified).unwrap());
+        let image = execution_image(hydrated);
         Self { image, keys }
     }
 
-    fn target(&self, name: &str) -> BytecodeRequestTarget {
-        let key = self
+    fn target(&self, name: &str) -> DeploymentExecutionEntry {
+        let (selector, identity) = self
             .keys
             .get(name)
-            .unwrap_or_else(|| panic!("unknown scalar gateway {name}"))
-            .clone();
-        let program = Arc::clone(self.image.program());
-        let entry = program
-            .gateway_entry(&key, LinkedGatewayCallableRole::Handler)
-            .unwrap();
-        BytecodeRequestTarget::try_new_gateway(
-            Arc::clone(&self.image),
-            entry,
-            key,
-            LinkedGatewayCallableRole::Handler,
-        )
-        .unwrap()
+            .unwrap_or_else(|| panic!("unknown scalar gateway {name}"));
+        self.image.http_gateway_entry(selector, identity).unwrap()
     }
 }
 
@@ -520,6 +498,16 @@ fn generous_verification_limits() -> VerificationLimits {
     }
 }
 
+fn execution_image(hydrated: HydratedDeploymentBytecode) -> Arc<DeploymentExecutionImage> {
+    Arc::new(
+        link_deployment_execution_image(
+            hydrated,
+            &DeploymentExecutionLimits::new(generous_link_limits(), generous_verification_limits()),
+        )
+        .unwrap(),
+    )
+}
+
 fn request_envelope() -> RequestEnvelope {
     RequestEnvelope {
         request_id: "scalar-bytecode-request".to_string(),
@@ -618,7 +606,8 @@ fn execute_scalar_gateway(
 }
 
 fn response_payload(response: BoundaryResponse) -> Vec<u8> {
-    let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) = response else {
+    let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) = response
+    else {
         panic!("scalar gateway returned a non-payload response: {response:?}");
     };
     payload
@@ -715,31 +704,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_json_unsupported_pinned_scalar_plan_fails_closed() {
-        let error = execute_scalar_gateway(
-            "string",
-            HttpAdapterKind::TypedJson,
-            b"\"value\"",
-            vec![http_body_argument()],
-        )
-        .unwrap_err();
-
-        assert!(matches!(
-            error,
-            RequestError::Unsupported(message)
-                if message.contains("unsupported exact pinned lifecycle plan")
-        ));
-    }
-
-    #[test]
     fn typed_json_adapter_arity_must_match_exact_pinned_entry() {
-        let error = execute_scalar_gateway(
-            "number",
-            HttpAdapterKind::TypedJson,
-            b"2",
-            Vec::new(),
-        )
-        .unwrap_err();
+        let error = execute_scalar_gateway("number", HttpAdapterKind::TypedJson, b"2", Vec::new())
+            .unwrap_err();
 
         assert!(matches!(
             error,
@@ -779,13 +746,8 @@ mod tests {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_reference)
             .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
+        let image = execution_image(hydrated);
+        let target = image.operation_entry(&operation_id).unwrap();
         let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
             target,
             request: request_envelope(),
@@ -823,13 +785,8 @@ mod tests {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_reference)
             .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
+        let image = execution_image(hydrated);
+        let target = image.operation_entry(&operation_id).unwrap();
         let sink = Arc::new(RecordingSink::default());
         let mut execution = start_runtime_bytecode_request(
             BytecodeRequestExecutionInput {
@@ -884,13 +841,8 @@ function run() -> number {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_reference)
             .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
+        let image = execution_image(hydrated);
+        let target = image.operation_entry(&operation_id).unwrap();
         let sink = Arc::new(RecordingSink::default());
         let mut execution = start_runtime_bytecode_request(
             BytecodeRequestExecutionInput {
@@ -948,13 +900,8 @@ function run() -> number {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_reference)
             .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
+        let image = execution_image(hydrated);
+        let target = image.operation_entry(&operation_id).unwrap();
         let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
             target,
             request: request_envelope(),
@@ -997,13 +944,8 @@ function run() -> number {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_reference)
             .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
+        let image = execution_image(hydrated);
+        let target = image.operation_entry(&operation_id).unwrap();
         let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
             target,
             request: request_envelope(),

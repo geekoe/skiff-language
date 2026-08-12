@@ -15,11 +15,10 @@ use skiff_runtime_vm::{
 
 use crate::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
-    BytecodeSchedulerError,
-    BytecodeStreamHandoff, BytecodeStreamSupervisor, PendingWakeQueue, RootDisposition, RootEscrow,
-    RootEscrowBacking, StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll,
-    StreamProducer, StreamSupervisor, SuspendedTrampoline, VmCompletionHandle, VmPendingRegistry,
-    WakeSignal,
+    BytecodeSchedulerError, BytecodeStreamHandoff, BytecodeStreamSupervisor, PendingWakeQueue,
+    RootDisposition, RootEscrow, RootEscrowBacking, StreamConsumer, StreamEmit, StreamError,
+    StreamEvent, StreamPoll, StreamProducer, StreamSupervisor, SuspendedTrampoline,
+    VmCompletionHandle, VmPendingRegistry, WakeSignal,
 };
 
 type VmSuspended = SuspendedTrampoline<VmFiber, VmResumeToken>;
@@ -64,9 +63,11 @@ struct BackpressureWake {
 impl WakeSignal for BackpressureWake {
     fn wake(&self) {
         if self.cancelled.load(Ordering::Acquire) {
-            let _ = self.completion.internal_stop(ResumeOutcome::InternalTerminal(
-                VmInternalTerminal::OwnerStopped,
-            ));
+            let _ = self
+                .completion
+                .internal_stop(ResumeOutcome::InternalTerminal(
+                    VmInternalTerminal::OwnerStopped,
+                ));
         } else {
             let _ = self.completion.complete(ResumeOutcome::Empty);
         }
@@ -216,9 +217,8 @@ where
         let (_target, _arguments, resume) = invocation.into_parts();
         let end_resume_pc = resume
             .image()
-            .candidate()
             .resume_sites()
-            .get(resume.resume_site().get() as usize)
+            .get(resume.resume_site())
             .and_then(|site| site.end_resume());
         if end_resume_pc.is_none() {
             return Err(BytecodeSchedulerError::Port(
@@ -352,10 +352,7 @@ where
     pub fn open(
         owner_pin: P,
         queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome>>,
-    ) -> (
-        Self,
-        StreamConsumer<P, VmOwnedValues, VmStreamTerminal>,
-    ) {
+    ) -> (Self, StreamConsumer<P, VmOwnedValues, VmStreamTerminal>) {
         let (supervisor, producer, consumer) = StreamSupervisor::open(owner_pin);
         (
             Self {
@@ -433,7 +430,10 @@ where
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(depth);
                 Ok(BytecodeStreamHandoff::Pending(operation))
             }
-            StreamEmit::Rejected { item: _item, reason } => {
+            StreamEmit::Rejected {
+                item: _item,
+                reason,
+            } => {
                 drop(producer);
                 self.shared.registry.abandon(completion.ticket());
                 Err(BytecodeSchedulerError::Port(format!(
@@ -457,11 +457,7 @@ where
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))
     }
 
-    fn finish_stream(
-        &self,
-        depth: usize,
-        result: &VmResult,
-    ) -> Result<(), BytecodeSchedulerError> {
+    fn finish_stream(&self, depth: usize, result: &VmResult) -> Result<(), BytecodeSchedulerError> {
         let mut active_depth = self
             .shared
             .active_depth
@@ -482,9 +478,11 @@ where
                 .finish_end()
                 .map_err(|error| BytecodeSchedulerError::Port(error.to_string())),
             Err(error) => {
-                if let Err((error, _)) = producer.finish_error(VmStreamTerminal::Error(error.clone()))
+                if let Err((error, _)) =
+                    producer.finish_error(VmStreamTerminal::Error(error.clone()))
                 {
-                    if error == StreamError::AlreadyTerminal && self.shared.supervisor.is_cancelled()
+                    if error == StreamError::AlreadyTerminal
+                        && self.shared.supervisor.is_cancelled()
                     {
                         Ok(())
                     } else {

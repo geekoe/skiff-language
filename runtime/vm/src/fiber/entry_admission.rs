@@ -1,11 +1,11 @@
 use skiff_artifact_model::ParamModeIr;
-use skiff_runtime_bytecode_verifier::VerifiedCodeEntry;
 use skiff_runtime_linked_bytecode::{LinkedCallableSignature, LinkedFrameLayout, LinkedFunction};
+use skiff_runtime_linker::DeploymentExecutionEntry;
 
 use crate::{VmError, VmVerifiedInvariant};
 
 pub(super) fn validate_entry_contract(
-    entry: &VerifiedCodeEntry,
+    entry: &DeploymentExecutionEntry,
     function: &LinkedFunction,
     argument_count: usize,
 ) -> Result<(), VmError> {

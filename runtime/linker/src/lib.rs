@@ -1,6 +1,8 @@
 pub mod bytecode;
 
 pub use bytecode::{
-    link_deployment, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
-    BytecodeLinkObligation, LinkLimits, Phase1LinkedCapability,
+    link_deployment_execution_image, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
+    BytecodeLinkObligation, CodeEntryLookupError, DeploymentExecutionEntry,
+    DeploymentExecutionImage, DeploymentExecutionImageError, DeploymentExecutionLimits, LinkLimits,
+    Phase1LinkedCapability,
 };

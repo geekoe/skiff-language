@@ -19,12 +19,12 @@ pub mod vm_heap;
 pub use bytecode_ingress::{
     execute_runtime_bytecode_request, execute_runtime_bytecode_request_with_ports,
     start_runtime_bytecode_request, start_runtime_bytecode_request_with_ports,
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff, BytecodeInvocationHandoff,
-    BytecodeRequestExecution, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
-    BytecodeRequestExecutionPorts, BytecodeRequestPendingWake, BytecodeRequestRunOutcome,
-    BytecodeRequestSuspended, BytecodeRequestTarget, BytecodeRequestTargetError,
-    BytecodeRequestWakeQueue, BytecodeSchedulerError, BytecodeSchedulerPorts,
-    BytecodeStreamHandoff, BytecodeStreamSupervisor, SuspendedTrampoline,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
+    BytecodeInvocationHandoff, BytecodeRequestExecution, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, BytecodeRequestExecutionPorts, BytecodeRequestPendingWake,
+    BytecodeRequestRunOutcome, BytecodeRequestSuspended, BytecodeRequestWakeQueue,
+    BytecodeSchedulerError, BytecodeSchedulerPorts, BytecodeStreamHandoff,
+    BytecodeStreamSupervisor, SuspendedTrampoline,
 };
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
@@ -34,13 +34,13 @@ pub use envelope::{
 pub use error::{OrdinaryRequestError, RequestError, RequestResult};
 pub use execution_budget::ExecutionBudget;
 pub use execution_control::{ExecutionControl, OwnedExecutionControl};
-pub use http_executor::{
-    BytecodeHttpExecutor, BytecodeHttpStream, BytecodeHttpStreamEvent, BytecodeSelfIngressContext,
-};
 pub use failure_projection::{
     ActiveCallSiteKey, ActiveRequestCallSite, AdmittedCallSiteProjection, ContinuationLaneId,
     ContinuationProjectionGuard, FailureProjectionError, FailureSite, RequestGeneration,
     ResumeOwnerKey, ResumeOwnerKind,
+};
+pub use http_executor::{
+    BytecodeHttpExecutor, BytecodeHttpStream, BytecodeHttpStreamEvent, BytecodeSelfIngressContext,
 };
 pub use outbound::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,

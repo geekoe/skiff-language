@@ -19,10 +19,12 @@ use skiff_compiler::{
     PackageCompileInput, PackageSourceInput, PublicationManifest, PublicationSourceGraph,
     SourceTree, SourceTreeFile,
 };
-use skiff_runtime_bytecode_verifier::{verify, VerificationLimits, VerifiedLinkedBytecodeImage};
-use skiff_runtime_deployment_image::{DeploymentImage, PinnedDeploymentEntry};
+use skiff_runtime_bytecode_verifier::VerificationLimits;
 use skiff_runtime_linked_bytecode::{ActiveRegionIndex, InstructionIndex};
-use skiff_runtime_linker::{link_deployment, LinkLimits};
+use skiff_runtime_linker::{
+    link_deployment_execution_image, DeploymentExecutionImage, DeploymentExecutionLimits,
+    LinkLimits,
+};
 use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
 use skiff_runtime_model::{
     bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
@@ -51,8 +53,8 @@ fn handoff_derives_exact_active_fiber_facts_and_monotonic_sequence() {
     let first = fiber.mint_projection_handoff().unwrap();
     let second = fiber.mint_projection_handoff().unwrap();
 
-    assert!(Arc::ptr_eq(first.image(), &image.verified));
-    assert!(Arc::ptr_eq(second.image(), &image.verified));
+    assert!(Arc::ptr_eq(first.image(), &image.image));
+    assert!(Arc::ptr_eq(second.image(), &image.image));
     assert_eq!(first.function(), frame.function());
     assert_eq!(first.instruction(), frame.instruction());
     assert_eq!(first.frame_depth(), frame_depth);
@@ -165,8 +167,7 @@ fn assert_no_handoff_reference(path: &std::path::Path) {
 }
 
 struct ProjectionTestImage {
-    verified: Arc<VerifiedLinkedBytecodeImage>,
-    image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
+    image: Arc<DeploymentExecutionImage>,
     operation: ContractOperationId,
 }
 
@@ -188,21 +189,20 @@ impl ProjectionTestImage {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_ref)
             .unwrap();
-        let candidate = link_deployment(&hydrated, &link_limits()).unwrap();
-        let verified = Arc::new(verify(hydrated, candidate, &verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        Self {
-            verified,
-            image,
-            operation,
-        }
+        let image = Arc::new(
+            link_deployment_execution_image(
+                hydrated,
+                &DeploymentExecutionLimits::new(link_limits(), verification_limits()),
+            )
+            .unwrap(),
+        );
+        Self { image, operation }
     }
 
     fn start(&self) -> VmFiber {
-        let entry = self.verified.operation_entry(&self.operation).unwrap();
-        let pinned = PinnedDeploymentEntry::try_new(Arc::clone(&self.image), entry).unwrap();
+        let entry = self.image.operation_entry(&self.operation).unwrap();
         Vm::start(
-            pinned,
+            entry,
             Box::<[ValueSlot]>::default(),
             vm_limits(),
             noop_observer(),

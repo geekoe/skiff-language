@@ -9,12 +9,13 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayProtocolSurface,
-    ServiceDeploymentRef,
+    IngressSelector, ServiceDeploymentRef,
 };
-use skiff_runtime_linked_bytecode::{
-    LinkedBytecodeCandidate, LinkedGatewayCallable, LinkedGatewayEntry,
+use skiff_runtime_bytecode_verifier::VerificationLimits;
+use skiff_runtime_linker::{
+    link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage,
+    DeploymentExecutionLimits, LinkLimits,
 };
-use skiff_runtime_linker::{link_deployment, LinkLimits};
 use skiff_runtime_loader::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
 };
@@ -44,33 +45,37 @@ where
         deployment: &ServiceDeploymentRef,
         entrypoints: impl IntoIterator<Item = PackageTestEntrypoint>,
     ) -> anyhow::Result<PackageTestRuntimeTemplate> {
-        let hydrated = Arc::new(DeploymentBytecodeLoader::new(self.resolver).load(deployment)?);
-        let candidate = Arc::new(link_deployment(&hydrated, &package_test_link_limits())?);
-        let entrypoints = validate_entrypoints(&hydrated, &candidate, entrypoints)?;
+        let hydrated = DeploymentBytecodeLoader::new(self.resolver).load(deployment)?;
+        let (entrypoints, ingress_by_id) = validate_entrypoints(&hydrated, entrypoints)?;
+        let limits = DeploymentExecutionLimits::new(
+            package_test_link_limits(),
+            package_test_verification_limits(),
+        );
+        let image = Arc::new(link_deployment_execution_image(hydrated, &limits)?);
+        for (id, entrypoint) in &entrypoints {
+            image.http_gateway_entry(
+                ingress_by_id
+                    .get(id)
+                    .expect("validated package-test ingress is retained"),
+                &entrypoint.gateway_entry_identity,
+            )?;
+        }
         Ok(PackageTestRuntimeTemplate {
-            hydrated,
-            candidate,
+            image,
             entrypoints,
+            ingress_by_id,
         })
     }
 }
 
 #[derive(Debug)]
 pub struct PackageTestRuntimeTemplate {
-    hydrated: Arc<HydratedDeploymentBytecode>,
-    candidate: Arc<LinkedBytecodeCandidate>,
+    image: Arc<DeploymentExecutionImage>,
     entrypoints: BTreeMap<String, PackageTestEntrypoint>,
+    ingress_by_id: BTreeMap<String, IngressSelector>,
 }
 
 impl PackageTestRuntimeTemplate {
-    pub fn hydrated(&self) -> &Arc<HydratedDeploymentBytecode> {
-        &self.hydrated
-    }
-
-    pub fn candidate(&self) -> &Arc<LinkedBytecodeCandidate> {
-        &self.candidate
-    }
-
     pub fn entrypoints(&self) -> impl ExactSizeIterator<Item = (&str, &PackageTestEntrypoint)> {
         self.entrypoints
             .iter()
@@ -83,47 +88,47 @@ impl PackageTestRuntimeTemplate {
             .get(entrypoint_id)
             .cloned()
             .ok_or_else(|| {
-                anyhow::anyhow!("package-test entrypoint {entrypoint_id} is not part of the deployment")
+                anyhow::anyhow!(
+                    "package-test entrypoint {entrypoint_id} is not part of the deployment"
+                )
             })?;
         Ok(LoadedPackageTestRuntimeProgram {
-            hydrated: Arc::clone(&self.hydrated),
-            candidate: Arc::clone(&self.candidate),
+            entry: self.image.http_gateway_entry(
+                self.ingress_by_id
+                    .get(entrypoint_id)
+                    .expect("validated package-test ingress is retained"),
+                &entrypoint.gateway_entry_identity,
+            )?,
             entrypoint,
         })
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LoadedPackageTestRuntimeProgram {
-    hydrated: Arc<HydratedDeploymentBytecode>,
-    candidate: Arc<LinkedBytecodeCandidate>,
+    entry: DeploymentExecutionEntry,
     entrypoint: PackageTestEntrypoint,
 }
 
 impl LoadedPackageTestRuntimeProgram {
-    pub fn hydrated(&self) -> &Arc<HydratedDeploymentBytecode> {
-        &self.hydrated
-    }
-
-    pub fn candidate(&self) -> &Arc<LinkedBytecodeCandidate> {
-        &self.candidate
+    pub fn entry(&self) -> &DeploymentExecutionEntry {
+        &self.entry
     }
 
     pub fn entrypoint(&self) -> &PackageTestEntrypoint {
         &self.entrypoint
     }
-
-    pub fn handler(&self) -> Option<&LinkedGatewayCallable> {
-        linked_entry(&self.candidate, &self.entrypoint).and_then(LinkedGatewayEntry::handler)
-    }
 }
 
 fn validate_entrypoints(
     hydrated: &HydratedDeploymentBytecode,
-    candidate: &LinkedBytecodeCandidate,
     entrypoints: impl IntoIterator<Item = PackageTestEntrypoint>,
-) -> anyhow::Result<BTreeMap<String, PackageTestEntrypoint>> {
+) -> anyhow::Result<(
+    BTreeMap<String, PackageTestEntrypoint>,
+    BTreeMap<String, IngressSelector>,
+)> {
     let mut validated = BTreeMap::new();
+    let mut ingress_by_id = BTreeMap::new();
     for entrypoint in entrypoints {
         if entrypoint.id.trim().is_empty() {
             anyhow::bail!("package-test entrypoint id must not be empty");
@@ -150,20 +155,8 @@ fn validate_entrypoints(
                 entrypoint.id
             );
         }
-        let linked_entry = linked_entry(candidate, &entrypoint).ok_or_else(|| {
-            anyhow::anyhow!(
-                "package-test entrypoint {} gateway entry is missing from the linked candidate",
-                entrypoint.id
-            )
-        })?;
-        if linked_entry.handler().is_none() {
-            anyhow::bail!(
-                "package-test entrypoint {} has no linked gateway handler",
-                entrypoint.id
-            );
-        }
         if !matches!(
-            linked_entry.protocol_surface().protocol,
+            declared.protocol_surface.protocol,
             GatewayProtocolSurface::Http(ref surface)
                 if surface.dispatch_mode == GatewayDispatchMode::Unary
         ) {
@@ -172,6 +165,24 @@ fn validate_entrypoints(
                 entrypoint.id
             );
         }
+        let mut ingress = hydrated
+            .deployment()
+            .ingress
+            .iter()
+            .filter(|binding| binding.gateway_entry_key == entrypoint.gateway_entry_key);
+        let selector = ingress.next().ok_or_else(|| {
+            anyhow::anyhow!(
+                "package-test entrypoint {} has no exact ingress binding",
+                entrypoint.id
+            )
+        })?;
+        if ingress.next().is_some() {
+            anyhow::bail!(
+                "package-test entrypoint {} has duplicate ingress bindings",
+                entrypoint.id
+            );
+        }
+        ingress_by_id.insert(entrypoint.id.clone(), selector.selector.clone());
         if validated
             .insert(entrypoint.id.clone(), entrypoint)
             .is_some()
@@ -182,17 +193,7 @@ fn validate_entrypoints(
     if validated.is_empty() {
         anyhow::bail!("canonical package-test runtime requires at least one entrypoint");
     }
-    Ok(validated)
-}
-
-fn linked_entry<'a>(
-    candidate: &'a LinkedBytecodeCandidate,
-    entrypoint: &PackageTestEntrypoint,
-) -> Option<&'a LinkedGatewayEntry> {
-    candidate.gateway_entries().iter().find(|entry| {
-        entry.gateway_entry_key() == &entrypoint.gateway_entry_key
-            && entry.gateway_entry_identity() == &entrypoint.gateway_entry_identity
-    })
+    Ok((validated, ingress_by_id))
 }
 
 fn package_test_link_limits() -> LinkLimits {
@@ -211,6 +212,30 @@ fn package_test_link_limits() -> LinkLimits {
         max_expanded_type_nodes: 1_000_000,
         max_expanded_type_bytes: 64 * 1024 * 1024,
         max_constant_graph_nodes: 1_000_000,
+        max_constant_graph_edges: 1_000_000,
+    }
+}
+
+fn package_test_verification_limits() -> VerificationLimits {
+    VerificationLimits {
+        max_functions: 100_000,
+        max_total_instructions: 100_000_000,
+        max_instructions_per_function: 1_000_000,
+        max_frame_slots_per_function: 65_536,
+        max_operand_depth: 65_536,
+        max_control_flow_edges_per_function: 1_000_000,
+        max_exception_regions_per_function: 1_000_000,
+        max_switch_targets_per_function: 65_536,
+        max_statement_events_per_pc: 100_000,
+        max_statement_events_per_function: 1_000_000,
+        max_total_statement_events: 10_000_000,
+        max_source_map_entries_per_function: 1_000_000,
+        max_image_table_entries: 1_000_000,
+        max_arity: 256,
+        max_callback_captures_per_callback: 4_096,
+        max_type_nesting_depth: 64,
+        max_value_lifecycle_nodes: 1_000_000,
+        max_value_lifecycle_canonical_bytes: 64 * 1024 * 1024,
         max_constant_graph_edges: 1_000_000,
     }
 }

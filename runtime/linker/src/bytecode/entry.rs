@@ -14,7 +14,7 @@ use crate::bytecode::{link::DeploymentLinker, BytecodeLinkError, LinkLimits};
 /// non-generic closure for which it can construct every candidate fact. Any
 /// graph requiring an unimplemented authority or target family fails before
 /// candidate construction; there is no partial or placeholder success path.
-pub fn link_deployment(
+pub(crate) fn link_deployment(
     deployment: &HydratedDeploymentBytecode,
     limits: &LinkLimits,
 ) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {

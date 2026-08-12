@@ -2,8 +2,8 @@ use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 
 use crate::{
     admission::prove_admission, attribution::prove_source_attribution,
-    concrete_values::prove_types_and_plans, control_flow::prove_control_flow_and_stack, verify,
-    VerificationError, VerificationLocation, VerificationObligation,
+    concrete_values::prove_types_and_plans, control_flow::prove_control_flow_and_stack,
+    verify_facts, VerificationError, VerificationLocation, VerificationObligation,
 };
 
 use super::super::fixtures::{
@@ -13,7 +13,7 @@ use super::super::fixtures::{
 #[test]
 fn loader_backed_local_target_authority_reaches_unknown_caller_effect() {
     let (hydrated, candidate) = loader_backed_local_call(LocalCallCandidateCorruption::None);
-    let error = verify(hydrated, candidate, &generous_limits())
+    let error = verify_facts(hydrated, candidate, &generous_limits())
         .expect_err("exact hydrated local authority must cross P3 target proof");
 
     assert!(matches!(

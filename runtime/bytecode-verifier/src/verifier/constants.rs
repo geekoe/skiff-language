@@ -18,7 +18,7 @@ use crate::{VerificationError, VerificationLocation, VerificationObligation};
 /// Fields and construction are private to the verifier. Scalar literals are
 /// materialized as immediates; strings are represented by a [`ValueSlot`] of
 /// kind `ConstRef` whose handle is meaningful only together with the same
-/// pinned [`crate::VerifiedLinkedBytecodeImage`]. This type never accepts values
+/// pinned deployment execution image. This type never accepts values
 /// or handles supplied by a caller.
 ///
 /// ```compile_fail

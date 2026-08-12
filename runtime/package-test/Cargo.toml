@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 anyhow = "1.0"
 skiff-artifact-model = { path = "../../artifact-model" }
-skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
+skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
 skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-loader = { path = "../loader" }
 
