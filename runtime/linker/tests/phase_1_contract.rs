@@ -1,3 +1,4 @@
+#[path = "phase_1_contract/support.rs"]
 mod support;
 
 use skiff_artifact_identity::{ArtifactIdentityError, ValidatedBytecodeArtifact};
