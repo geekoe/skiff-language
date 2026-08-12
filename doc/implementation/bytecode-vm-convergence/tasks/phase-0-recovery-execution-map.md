@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 2; P0-V/P0-G running; DEC0-S ready
+> Status: active; revision 3; P0-V/P0-G/DEC0-S running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -45,7 +45,7 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-V | Proof | running as `/root/p0_vcp`; started `2026-08-12T16:14:31Z` | 45–75 min | `2026-08-12T16:39:31Z` | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; Phase 0 fixture files; request test registration only if required | non-document commit; production-shaped expected-red/run evidence; no direct internal construction; exact blocker/event request if incomplete |
 | P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
-| DEC0-S | Design | ready after revision 2 | 15–25 min | 12 min after dispatch | one narrow decision receipt under `decisions/`; read-only production code | choose the existing production-owned VCP placement and minimum read-only observation contract without adding execution authority |
+| DEC0-S | Design | running as `/root/p0_seam_design`; started `2026-08-12T16:19:52Z` | 15–25 min | `2026-08-12T16:31:52Z` | `decisions/dec0-vcp-production-seam.md`; read-only production code | choose the existing production-owned VCP placement and minimum read-only observation contract without adding execution authority |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -124,3 +124,10 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   observation facts; it does not reopen verifier/image/entry architecture or block P0-G;
 - expected downstream tasks are a single host-owned VCP/observation Development lane and a resumed Proof assertion lane;
   exact write sets wait for the decision receipt and independent focused review.
+
+### Revision 3 — DEC0-S dispatch
+
+- created `codex/bcvm-p0-design` at exact input `dc7080fe` in `/Users/geek/workspace/skiff-bcvm-p0-design`;
+- dispatched `/root/p0_seam_design` with `fork_turns=none`, a single decision question, one-file write set, no Cargo/test
+  permission, 15–25 minute expectation and `2026-08-12T16:31:52Z` status checkpoint;
+- P0-V remains owner of the expected-red carrier; P0-G remains independent and continues Node-only implementation.
