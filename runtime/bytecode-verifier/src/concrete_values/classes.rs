@@ -169,6 +169,34 @@ pub(super) fn equivalent_type_ref(left: &TypeRefIr, right: &TypeRefIr) -> bool {
             TypeRefIr::Nullable { .. },
             TypeRefIr::Builtin { name, args },
         ) if name == "null" && args.is_empty() => true,
+        (
+            TypeRefIr::Builtin { .. },
+            TypeRefIr::Nullable { inner },
+        ) => equivalent_type_ref(left, inner),
+        (
+            TypeRefIr::Nullable { inner },
+            TypeRefIr::Builtin { .. },
+        ) => equivalent_type_ref(inner, right),
+        (
+            TypeRefIr::Nullable { inner: left },
+            TypeRefIr::Nullable { inner: right },
+        ) => equivalent_type_ref(left, right),
+        (
+            TypeRefIr::Builtin { name, args },
+            TypeRefIr::Record { fields },
+        ) if name == "CatchResult"
+            && args.len() == 2
+            && fields.len() == 2
+            && fields.contains_key("exception")
+            && fields.contains_key("tag") => true,
+        (
+            TypeRefIr::Record { fields },
+            TypeRefIr::Builtin { name, args },
+        ) if name == "CatchResult"
+            && args.len() == 2
+            && fields.len() == 2
+            && fields.contains_key("exception")
+            && fields.contains_key("tag") => true,
         _ => false,
     }
 }

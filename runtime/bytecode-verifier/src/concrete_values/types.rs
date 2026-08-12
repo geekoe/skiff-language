@@ -115,7 +115,9 @@ pub(super) fn prove_concrete_types(
                     "establishing row-scoped private type authority",
                 )
             })?;
-        let lifecycle = if is_std_http_client_stream_handle(&normalized_type) {
+        let lifecycle = if is_std_http_client_stream_handle(&normalized_type)
+            || is_exception_or_catch_result(&normalized_type)
+        {
             NativeValueLifecycleResolution {
                 lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
                     drop: NativeValueDropPlan::SnapshotRelease,
@@ -148,6 +150,15 @@ fn is_std_http_client_stream_handle(ty: &skiff_artifact_model::TypeRefIr) -> boo
                     PackageRefIr::PackageId { package_id }
                         if package_id == "skiff.run/std"
                 )
+    )
+}
+
+fn is_exception_or_catch_result(ty: &skiff_artifact_model::TypeRefIr) -> bool {
+    matches!(
+        ty,
+        skiff_artifact_model::TypeRefIr::Builtin { name, args }
+            if (name == "Exception" && args.len() == 1)
+                || (name == "CatchResult" && args.len() == 2)
     )
 }
 
