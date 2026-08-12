@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 17; finalizing-row and evidence-root identity corrections running
+> Status: active; revision 18; D0-O accepted; Gate correction under review; host proofs running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -44,13 +44,13 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | Task | Line | State | Expected elapsed | `status_after` | Initial write set | Join condition |
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
-| P0-G | Proof | clean takeover `6f6ecfc8` rejected; evidence-root/env-identity correction running | correction 12–20 min | 7/15 min, 20 min hard cutoff | existing Phase 0 Gate modules/tests only | fix root replacement/symlink race and bind actual child env; Gate owns no Rust semantics |
+| P0-G | Proof | evidence-root/env correction `8d470848` committed; independent delta review running | actual 15 min + Node | 7/15 min | existing Phase 0 Gate modules/tests only | root/subdir replacement rejected; actual child env bound; Gate owns no Rust semantics |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
 | REV0-S | Review | `FAIL`, complete in 8 min; corrections recorded in rev8 | actual 8 min | on checkpoint | read-only DEC0-S and cited production code | found omitted event-owner/test files and confirmed D0-R sealed-fact expansion; no new authority found |
 | D0-R | Development | takeover complete as `d12a9471`; integrated as `dd1399bc`; independent receive review PASS | actual 10 min takeover + focused validation | complete | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; 7 focused host cases green |
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
-| D0-O | Development | repair candidate `b79e31d7` rejected; finalizing-row correction running | correction 15–25 min | 8/20 min, 25 min hard cutoff | `runtime/host/src/host/request_supervisor.rs`; assembly cleanup call only if required | keep request-id guard through terminal and cleanup publication; reject cross-generation reuse/cancel; real production-chain tests remain Proof obligation |
-| P0-V-H/P0-N | Proof | common support `1c5c52da` independently accepted and integrated as `dab771ef`; success and negative writers wait for D0-O receive | support actual 12 min; success/negatives 20–30 min each | 10 min each | shared registration/support now frozen; success and negative host modules are disjoint write lanes | success and three negatives enter only `RuntimeHost::spawn_bytecode_request`, assert actual wire/typed facts, and never mint verdict/internal execution objects |
+| D0-O | Development | base `b79e31d7` + finalizing delta `a8eecffa` independently accepted and integrated as `5b305744` + `0da6e474` | implementation + bounded correction; focused 3/3 | complete | corrected DEC0-S observation set plus supervisor lifecycle | ordered observer; reservation; exact ingress; terminal/cleanup guard; try-only telemetry; production-chain assertions delegated to Proof |
+| P0-V-H/P0-N | Proof | support integrated; success `7e9fa1de` under independent source review; negative first writer watchdog-replaced, takeover running | success actual ~15 min; negative takeover 12 min | 5/12 min takeover | success and negative host modules are disjoint write lanes | exact production success five-event closure and three zero-observation fail-closed boundaries |
 | D0-K-M | Development | `c9f24dbf` independently accepted and integrated as `2c9c2fa7` | actual 10 min + 8 min review | complete | host HTTP admission and its focused host test only | production `serverStream` rejected as Unsupported before load/route/target/VM; 1/1 exact test; unary/WebSocket/task unchanged |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
@@ -326,3 +326,17 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   rejects root/subdirectory replacement around writes and binds the actual child environment identity;
 - both reviews were separate from their writers and neither green self-test result was treated as acceptance. Proof success
   and negative writers remain blocked only until the corrected observation API is received; no broad redesign was reopened.
+
+### Revision 18 — observation acceptance and host-proof frontier
+
+- D0-O finalizing correction `a8eecffa` passed independent delta review: the exact row remains occupied through terminal and
+  cleanup callbacks, observer calls occur outside the supervisor lock, stale/dropped permits fail closed, and request-id reuse
+  becomes possible only after exact cleanup guard removal. Its focused supervisor selector passed 3/3. The base observation
+  commit and lifecycle delta joined integration as `5b305744` and `0da6e474`;
+- success Proof produced single-file candidate `7e9fa1de` without Cargo. A separate reviewer now checks the exact production
+  composition, five-event identity joins, response `3.0` and absence of extra events before any executable acceptance;
+- the initial negative Proof writer reached its code checkpoint with an empty diff and was interrupted. A clean takeover on
+  the same disjoint test file now has a 5-minute visible-diff / 12-minute commit contract. It cannot run Cargo until success
+  review and the single Cargo lease sequence are recorded;
+- Gate correction `8d470848` reports 41/41 Node tests, including root/commands replacement and ambient-env drift
+  counterexamples. It remains frozen until the original independent reviewer returns a delta verdict.
