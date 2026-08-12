@@ -12,7 +12,9 @@ use skiff_runtime_model::vm_heap::VmHeapError;
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 use skiff_runtime_vm::{PendingOperation, PendingTicket, ResumeOutcome, VmResumeToken};
 
-use crate::{RootDisposition, RootEscrow};
+use crate::{
+    OwnerCreationError, PendingOwnerLease, PendingOwnerRegistration, RootDisposition, RootEscrow,
+};
 
 static NEXT_PENDING_TICKET: AtomicU64 = AtomicU64::new(1);
 
@@ -46,12 +48,18 @@ impl<R, S> PendingOwnerDraft<R, S> {
         (self.resume, self.suspended)
     }
 
-    fn attach(self, ticket: PendingTicket, roots: RootEscrow) -> PendingOwner<R, S> {
+    fn attach(
+        self,
+        ticket: PendingTicket,
+        roots: RootEscrow,
+        owner_lease: PendingOwnerLease,
+    ) -> PendingOwner<R, S> {
         PendingOwner {
             ticket,
             roots,
             resume: self.resume,
             suspended: self.suspended,
+            owner_lease,
         }
     }
 }
@@ -66,6 +74,7 @@ pub struct PendingOwner<R, S> {
     roots: RootEscrow,
     resume: R,
     suspended: S,
+    owner_lease: PendingOwnerLease,
 }
 
 impl<R, S> PendingOwner<R, S> {
@@ -77,8 +86,8 @@ impl<R, S> PendingOwner<R, S> {
         &self.roots
     }
 
-    pub fn into_parts(self) -> (R, S, RootEscrow) {
-        (self.resume, self.suspended, self.roots)
+    pub fn into_parts(self) -> (R, S, RootEscrow, PendingOwnerLease) {
+        (self.resume, self.suspended, self.roots, self.owner_lease)
     }
 }
 
@@ -238,6 +247,7 @@ pub enum SettleDisposition<O> {
 pub enum BeginPendingError {
     TicketSpaceExhausted,
     TicketCollision,
+    OwnerCreation(OwnerCreationError),
 }
 
 impl fmt::Display for BeginPendingError {
@@ -245,6 +255,7 @@ impl fmt::Display for BeginPendingError {
         match self {
             Self::TicketSpaceExhausted => formatter.write_str("pending ticket space is exhausted"),
             Self::TicketCollision => formatter.write_str("pending ticket collided in the registry"),
+            Self::OwnerCreation(error) => error.fmt(formatter),
         }
     }
 }
@@ -252,7 +263,10 @@ impl fmt::Display for BeginPendingError {
 impl std::error::Error for BeginPendingError {}
 
 enum CellState<R, S, O> {
-    Open(RootEscrow),
+    Open {
+        roots: RootEscrow,
+        owner_lease: PendingOwnerLease,
+    },
     Waiting {
         queue: Arc<dyn PendingWakeQueue<R, S, O>>,
         owner: PendingOwner<R, S>,
@@ -260,6 +274,7 @@ enum CellState<R, S, O> {
     Settled {
         settlement: PendingSettlement<O>,
         roots: RootEscrow,
+        owner_lease: PendingOwnerLease,
     },
     Claimed,
 }
@@ -274,15 +289,21 @@ impl<R, S, O> PendingCell<R, S, O> {
         let mut state = lock_unpoisoned(&self.state);
         let previous = std::mem::replace(&mut *state, CellState::Claimed);
         match previous {
-            CellState::Open(roots) => {
+            CellState::Open { roots, owner_lease } => {
                 drop(state);
                 roots.discard(RootDisposition::PublicationFailed);
+                drop(owner_lease);
                 true
             }
-            CellState::Settled { settlement, roots } => {
+            CellState::Settled {
+                settlement,
+                roots,
+                owner_lease,
+            } => {
                 drop(state);
                 roots.discard(RootDisposition::PublicationFailed);
                 drop(settlement);
+                drop(owner_lease);
                 true
             }
             waiting @ CellState::Waiting { .. } => {
@@ -300,8 +321,10 @@ where
 {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         match &*lock_unpoisoned(&self.state) {
-            CellState::Open(roots) => roots.visit_roots(visitor),
-            CellState::Settled { settlement, roots } => {
+            CellState::Open { roots, .. } => roots.visit_roots(visitor),
+            CellState::Settled {
+                settlement, roots, ..
+            } => {
                 roots.visit_roots(visitor)?;
                 settlement.visit_roots(visitor)
             }
@@ -317,16 +340,16 @@ where
     S: Send + 'static,
     O: Send + 'static,
 {
-    fn new(ticket: PendingTicket, roots: RootEscrow) -> Self {
+    fn new(ticket: PendingTicket, roots: RootEscrow, owner_lease: PendingOwnerLease) -> Self {
         Self {
             ticket,
-            state: Mutex::new(CellState::Open(roots)),
+            state: Mutex::new(CellState::Open { roots, owner_lease }),
         }
     }
 
     fn state(&self) -> PendingCellState {
         match &*lock_unpoisoned(&self.state) {
-            CellState::Open(_) => PendingCellState::Open,
+            CellState::Open { .. } => PendingCellState::Open,
             CellState::Waiting { .. } => PendingCellState::Waiting,
             CellState::Settled { .. } => PendingCellState::Settled,
             CellState::Claimed => PendingCellState::Claimed,
@@ -341,16 +364,20 @@ where
         let mut state = lock_unpoisoned(&self.state);
         let previous = std::mem::replace(&mut *state, CellState::Claimed);
         match previous {
-            CellState::Open(roots) => {
+            CellState::Open { roots, owner_lease } => {
                 *state = CellState::Waiting {
                     queue,
-                    owner: draft.attach(self.ticket, roots),
+                    owner: draft.attach(self.ticket, roots, owner_lease),
                 };
                 Ok(PendingPublication::Waiting)
             }
-            CellState::Settled { settlement, roots } => {
+            CellState::Settled {
+                settlement,
+                roots,
+                owner_lease,
+            } => {
                 let wake = PendingWake {
-                    owner: draft.attach(self.ticket, roots),
+                    owner: draft.attach(self.ticket, roots, owner_lease),
                     settlement,
                 };
                 drop(state);
@@ -375,8 +402,12 @@ where
         let mut state = lock_unpoisoned(&self.state);
         let previous = std::mem::replace(&mut *state, CellState::Claimed);
         match previous {
-            CellState::Open(roots) => {
-                *state = CellState::Settled { settlement, roots };
+            CellState::Open { roots, owner_lease } => {
+                *state = CellState::Settled {
+                    settlement,
+                    roots,
+                    owner_lease,
+                };
                 SettleDisposition::StoredBeforePublication
             }
             CellState::Waiting { queue, owner } => {
@@ -502,6 +533,7 @@ impl<R, S, O> fmt::Debug for CompletionHandle<R, S, O> {
 /// the visitor and escrow backing must not block or re-enter this registry.
 pub struct PendingRegistry<R, S, O> {
     inner: Arc<RegistryInner<R, S, O>>,
+    owner_registration: PendingOwnerRegistration,
 }
 
 /// Pending registry specialized to the VM's non-forgeable resume envelope.
@@ -516,12 +548,13 @@ pub type VmPendingWake<S> = PendingWake<VmResumeToken, S, ResumeOutcome>;
 /// The unique parked VM owner after a successful publication.
 pub type VmPendingOwner<S> = PendingOwner<VmResumeToken, S>;
 
-impl<R, S, O> Default for PendingRegistry<R, S, O> {
-    fn default() -> Self {
+impl<R, S, O> PendingRegistry<R, S, O> {
+    pub fn new(owner_registration: PendingOwnerRegistration) -> Self {
         Self {
             inner: Arc::new(RegistryInner {
                 cells: Mutex::new(HashMap::new()),
             }),
+            owner_registration,
         }
     }
 }
@@ -547,26 +580,38 @@ where
         let ticket = PendingTicket::new(
             NonZeroU64::new(raw).expect("pending ticket counter starts at one and never wraps"),
         );
-        let cell = Arc::new(PendingCell::new(ticket, roots));
-        let inserted = {
-            let mut cells = lock_unpoisoned(&self.inner.cells);
-            match cells.entry(ticket) {
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(Arc::clone(&cell));
-                    true
-                }
-                std::collections::hash_map::Entry::Occupied(_) => false,
-            }
-        };
-        if !inserted {
-            let abandoned = cell.abandon_before_publication();
-            debug_assert!(abandoned, "a new cell is open before publication");
+        let mut cells = lock_unpoisoned(&self.inner.cells);
+        if cells.contains_key(&ticket) {
+            drop(cells);
+            roots.discard(RootDisposition::PublicationFailed);
             return Err(BeginPendingError::TicketCollision);
         }
-        Ok(CompletionHandle {
-            cell,
-            registry: Arc::downgrade(&self.inner),
-        })
+        let mut roots = Some(roots);
+        let installed = self.owner_registration.install(|owner_lease| {
+            let cell = Arc::new(PendingCell::new(
+                ticket,
+                roots
+                    .take()
+                    .expect("pending roots move into exactly one installed owner"),
+                owner_lease,
+            ));
+            cells.insert(ticket, Arc::clone(&cell));
+            CompletionHandle {
+                cell,
+                registry: Arc::downgrade(&self.inner),
+            }
+        });
+        drop(cells);
+        match installed {
+            Ok(handle) => Ok(handle),
+            Err(error) => {
+                roots
+                    .take()
+                    .expect("rejected owner installation retains pending roots")
+                    .discard(RootDisposition::PublicationFailed);
+                Err(BeginPendingError::OwnerCreation(error))
+            }
+        }
     }
 
     /// Scheduler-internal transition used only after a typed envelope has
@@ -701,7 +746,10 @@ mod tests {
         PendingCellState, PendingOwnerDraft, PendingPublication, PendingRegistry, PendingWake,
         PendingWakeQueue, SettleDisposition, SettlementSource,
     };
-    use crate::{RootDisposition, RootEscrow, RootEscrowBacking};
+    use crate::{
+        PendingOwnerRegistration, RequestExecutionOwnerInventory, RootDisposition, RootEscrow,
+        RootEscrowBacking,
+    };
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum RootEvent {
@@ -812,6 +860,11 @@ mod tests {
     type TestCompletion = super::CompletionHandle<u64, &'static str, &'static str>;
     type PendingFixture = (TestCompletion, RootEventLog);
 
+    fn pending_registration() -> PendingOwnerRegistration {
+        let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        registrations.pending()
+    }
+
     fn begin(registry: &Registry) -> PendingFixture {
         let events = Arc::new(Mutex::new(Vec::new()));
         let handle = registry
@@ -823,8 +876,51 @@ mod tests {
     }
 
     #[test]
+    fn cloned_completion_handles_do_not_keep_an_abandoned_owner_registered() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let registry = Registry::new(registrations.pending());
+        let (completion, _roots) = begin(&registry);
+        let completion_clone = completion.clone();
+
+        assert!(registry.abandon(completion.ticket()));
+        assert_eq!(completion_clone.state(), PendingCellState::Claimed);
+
+        let frozen = freeze.freeze();
+        assert_eq!(frozen.pending().current(), 0);
+        assert!(frozen.pending().ever_created());
+    }
+
+    #[test]
+    fn pending_owner_lease_moves_into_the_claimed_wake() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let registry = Registry::new(registrations.pending());
+        let queue = Arc::new(RecordingQueue::default());
+        let (completion, _roots) = begin(&registry);
+
+        registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(1, "fiber"),
+                queue.clone(),
+            )
+            .unwrap();
+        assert!(matches!(
+            completion.complete("ready"),
+            SettleDisposition::Enqueued
+        ));
+        assert_eq!(registry.live_count(), 0);
+
+        let frozen = freeze.freeze();
+        assert_eq!(frozen.pending().current(), 1);
+        assert!(frozen.pending().ever_created());
+        drop(queue.0.lock().unwrap().pop().unwrap());
+    }
+
+    #[test]
     fn safepoint_root_walk_neither_enqueues_nor_drops_pending_payloads() {
-        let registry = PendingRegistry::<u64, (), NoRoots>::default();
+        let registry = PendingRegistry::<u64, (), NoRoots>::new(pending_registration());
         let counts = Arc::new(RootWalkCounts::default());
         let completion = registry
             .begin(RootEscrow::new(Box::new(SafepointRoots {
@@ -858,7 +954,7 @@ mod tests {
 
     #[test]
     fn completion_before_publication_claims_and_enqueues_once() {
-        let registry = Registry::default();
+        let registry = Registry::new(pending_registration());
         let queue = Arc::new(RecordingQueue::default());
         let (completion, roots) = begin(&registry);
 
@@ -884,15 +980,16 @@ mod tests {
         let (owner, settlement) = wake.into_parts();
         assert_eq!(settlement.source(), SettlementSource::HostCompletion);
         assert_eq!(settlement.into_outcome(), "ready");
-        let (resume, suspended, escrow) = owner.into_parts();
+        let (resume, suspended, escrow, pending_owner) = owner.into_parts();
         assert_eq!((resume, suspended), (7, "fiber"));
         escrow.restore();
+        drop(pending_owner);
         assert_eq!(*roots.lock().unwrap(), [RootEvent::Restored]);
     }
 
     #[test]
     fn publication_before_completion_waits_then_enqueues_once() {
-        let registry = Registry::default();
+        let registry = Registry::new(pending_registration());
         let queue = Arc::new(RecordingQueue::default());
         let (completion, _roots) = begin(&registry);
 
@@ -918,7 +1015,7 @@ mod tests {
 
     #[test]
     fn duplicate_terminal_outcome_is_returned_to_its_caller() {
-        let registry = Registry::default();
+        let registry = Registry::new(pending_registration());
         let (completion, _roots) = begin(&registry);
 
         assert!(matches!(
@@ -935,7 +1032,7 @@ mod tests {
 
     #[test]
     fn concurrent_terminal_race_has_one_winner() {
-        let registry = Registry::default();
+        let registry = Registry::new(pending_registration());
         let (completion, _roots) = begin(&registry);
         let barrier = Arc::new(Barrier::new(3));
         let mut workers = Vec::new();
@@ -975,13 +1072,14 @@ mod tests {
 
     #[test]
     fn zero_result_resume_outcome_is_delivered_once_through_the_wake_queue() {
-        let registry = PendingRegistry::<u64, &'static str, ResumeOutcome>::default();
+        let registry =
+            PendingRegistry::<u64, &'static str, ResumeOutcome>::new(pending_registration());
         let queue = Arc::new(RecordingResumeQueue::default());
         let wake_queue: Arc<dyn PendingWakeQueue<u64, &'static str, ResumeOutcome>> = queue.clone();
         let completion = registry
-            .begin(RootEscrow::new(Box::new(RecordingRoots(Arc::new(Mutex::new(
-                Vec::new(),
-            ))))))
+            .begin(RootEscrow::new(Box::new(RecordingRoots(Arc::new(
+                Mutex::new(Vec::new()),
+            )))))
             .unwrap();
 
         assert_eq!(
@@ -1006,22 +1104,20 @@ mod tests {
         let wake = queue.0.lock().unwrap().pop().unwrap();
         let (owner, settlement) = wake.into_parts();
         assert_eq!(owner.ticket(), completion.ticket());
-        assert!(matches!(
-            settlement.into_outcome(),
-            ResumeOutcome::Empty
-        ));
+        assert!(matches!(settlement.into_outcome(), ResumeOutcome::Empty));
         assert_eq!(registry.live_count(), 0);
     }
 
     #[test]
     fn failure_resume_outcome_is_delivered_once_through_the_wake_queue() {
-        let registry = PendingRegistry::<u64, &'static str, ResumeOutcome>::default();
+        let registry =
+            PendingRegistry::<u64, &'static str, ResumeOutcome>::new(pending_registration());
         let queue = Arc::new(RecordingResumeQueue::default());
         let wake_queue: Arc<dyn PendingWakeQueue<u64, &'static str, ResumeOutcome>> = queue.clone();
         let completion = registry
-            .begin(RootEscrow::new(Box::new(RecordingRoots(Arc::new(Mutex::new(
-                Vec::new(),
-            ))))))
+            .begin(RootEscrow::new(Box::new(RecordingRoots(Arc::new(
+                Mutex::new(Vec::new()),
+            )))))
             .unwrap();
         let failure = ResumeOutcome::Failure(VmError::ResumeNotExpected);
 
@@ -1051,7 +1147,7 @@ mod tests {
 
     #[test]
     fn abandoned_unpublished_cell_discards_roots_and_becomes_tombstone() {
-        let registry = Registry::default();
+        let registry = Registry::new(pending_registration());
         let (completion, roots) = begin(&registry);
 
         assert!(registry.abandon(completion.ticket()));
@@ -1067,7 +1163,7 @@ mod tests {
 
     #[test]
     fn abandon_cannot_steal_an_already_published_owner() {
-        let registry = Registry::default();
+        let registry = Registry::new(pending_registration());
         let queue = Arc::new(RecordingQueue::default());
         let (completion, _roots) = begin(&registry);
         assert_eq!(

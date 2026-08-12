@@ -445,8 +445,16 @@ where
         ports: BytecodeSchedulerPorts<U>,
     ) -> Result<Self, BytecodeSchedulerError> {
         let (owner, settlement) = wake.into_parts();
-        let (resume, suspended, escrow) = owner.into_parts();
-        Self::resume_from_suspended(suspended, resume, settlement.into_outcome(), escrow, ports)
+        let (resume, suspended, escrow, pending_owner) = owner.into_parts();
+        let resumed = Self::resume_from_suspended(
+            suspended,
+            resume,
+            settlement.into_outcome(),
+            escrow,
+            ports,
+        );
+        drop(pending_owner);
+        resumed
     }
 
     /// Restores a scheduler from a suspended chain and its resume envelope.
@@ -530,9 +538,15 @@ mod tests {
 
     use super::*;
     use crate::{
-        PendingOwnerDraft, PendingPublication, PendingRegistry, PendingWake, PendingWakeQueue,
-        RootDisposition, RootEscrow, RootEscrowBacking, SettleDisposition,
+        PendingOwnerDraft, PendingOwnerRegistration, PendingPublication, PendingRegistry,
+        PendingWake, PendingWakeQueue, RequestExecutionOwnerInventory, RootDisposition, RootEscrow,
+        RootEscrowBacking, SettleDisposition,
     };
+
+    fn pending_registration() -> PendingOwnerRegistration {
+        let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        registrations.pending()
+    }
 
     struct NoopHeap;
 
@@ -720,7 +734,7 @@ mod tests {
         let (operation, suspended) = supervisor.parked.lock().unwrap().take().unwrap();
         assert_eq!(operation, 7);
 
-        let registry = PendingRegistry::<usize, TestSuspended, usize>::default();
+        let registry = PendingRegistry::<usize, TestSuspended, usize>::new(pending_registration());
         let completion = registry
             .begin(RootEscrow::new(Box::new(EmptyRoots)))
             .unwrap();
@@ -773,7 +787,7 @@ mod tests {
         let (operation, suspended) = supervisor.parked.lock().unwrap().take().unwrap();
         assert_eq!(operation, 7);
 
-        let registry = PendingRegistry::<usize, TestSuspended, usize>::default();
+        let registry = PendingRegistry::<usize, TestSuspended, usize>::new(pending_registration());
         let completion = registry
             .begin(RootEscrow::new(Box::new(EmptyRoots)))
             .unwrap();

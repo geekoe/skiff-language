@@ -1,6 +1,6 @@
 use skiff_runtime_scheduler::{
-    BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerPorts, BytecodeUnit, PendingWake,
-    RootEscrow, SettlementSource, SuspendedTrampoline,
+    BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerPorts, BytecodeUnit,
+    PendingOwnerLease, PendingWake, RootEscrow, SettlementSource, SuspendedTrampoline,
 };
 
 /// Request-owned handoff for the winner of one pending settlement race.
@@ -16,6 +16,7 @@ struct PendingWinnerHandoff<U: BytecodeUnit> {
     suspended: SuspendedTrampoline<U, U::ResumeToken>,
     roots: RootEscrow,
     outcome: U::ResumeOutcome,
+    pending_owner: PendingOwnerLease,
 }
 
 impl<U: BytecodeUnit> PendingWinnerHandoff<U> {
@@ -25,13 +26,14 @@ impl<U: BytecodeUnit> PendingWinnerHandoff<U> {
         let (owner, settlement) = wake.into_parts();
         let source = settlement.source();
         let outcome = settlement.into_outcome();
-        let (resume, suspended, roots) = owner.into_parts();
+        let (resume, suspended, roots, pending_owner) = owner.into_parts();
         Self {
             source,
             resume,
             suspended,
             roots,
             outcome,
+            pending_owner,
         }
     }
 
@@ -48,8 +50,11 @@ impl<U: BytecodeUnit> PendingWinnerHandoff<U> {
             suspended,
             roots,
             outcome,
+            pending_owner,
         } = self;
-        route_pending_winner(source, suspended, resume, outcome, roots, ports)
+        let resumed = route_pending_winner(source, suspended, resume, outcome, roots, ports);
+        drop(pending_owner);
+        resumed
     }
 }
 

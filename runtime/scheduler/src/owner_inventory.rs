@@ -128,6 +128,22 @@ pub struct PendingOwnerLease(OwnerLease);
 pub struct ResourceOwnerLease(OwnerLease);
 pub struct ChildOwnerLease(OwnerLease);
 
+macro_rules! opaque_lease_debug {
+    ($lease:ident) => {
+        impl fmt::Debug for $lease {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter
+                    .debug_struct(stringify!($lease))
+                    .finish_non_exhaustive()
+            }
+        }
+    };
+}
+
+opaque_lease_debug!(PendingOwnerLease);
+opaque_lease_debug!(ResourceOwnerLease);
+opaque_lease_debug!(ChildOwnerLease);
+
 macro_rules! registration_install {
     ($registration:ident, $lease:ident, $domain:ident) => {
         impl $registration {
