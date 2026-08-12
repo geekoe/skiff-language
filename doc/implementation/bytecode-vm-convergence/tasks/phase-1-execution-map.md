@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 1; first joins, K1 decision review, and rejected false-green candidates
+> Status: active; revision 3; K1 authority accepted and kernel implementation ready
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -180,3 +180,47 @@ run the complete Phase 1 Gate and issue the final verdict.
 - DEC1-K1 candidate `fbb2b281` chooses one exact-entry-rooted `DeploymentExecutionImage`, keyed by deployment owner plus
   typed operation/gateway root and sole-minted atomically by linker. It is under a genuinely separate Design review; no K1
   production writer starts from the design author's self-report.
+
+## 9. Revision 2 — containment hardening and conditional-design frontier
+
+- K0A's independent reviewer rejected the first candidate despite green local tests: public `emit_bytecode_artifact` still
+  accepted raw MIR and emitted Array bytecode outside driver admission. Correction `fa6eb148` makes one opaque typed
+  `AdmittedPhase1BytecodeMir` token mandatory for public planning and emission, confines raw backends to crate-private tests,
+  and preserves direct local-call/scalar coverage. The executable array bypass regression and both package suites passed
+  `6/6`; the original reviewer returned `PASS`. K0A joined integration as `04cc6117` + `32ba1536`;
+- G1's independent reviewer rejected the first Node-green candidate because inherited `GIT_DIR`/`GIT_WORK_TREE` could send
+  real candidate probes to another worktree while workloads ran in `repoRoot`. The shared Phase 0/1 guard now rejects all
+  repository-controlling `GIT_*` before evidence creation or capture. A second review then caught a two-package Cargo summary
+  mismatch; final G1 uses two strict receipt-backed package commands. Final candidate `e40598ac` has 21 commands (12 probes,
+  9 workloads), Node/taxonomy `61/61`, and independent `PASS`; it joined as `cd5d5220..47e37cba`;
+- T-C `771b59de` received independent `PASS` as honest Proof source, not semantic green. Structural/identity/unreachable cases
+  are green; exact reachable HostEffect and unsupported source remain producer-owned expected red. T-R/V1 `52bfaf32` likewise
+  remains Proof-only expected red with five precise O1/L4/L5 gaps. Neither has joined integration;
+- the first DEC1-K1 exact-entry/per-root cache design failed independent review because canonical architecture requires one
+  deployment-build image/cache unit, protocol-aware gateway bundles and an independent post-link verifier/schedule. The
+  corrected per-build/publication-root-union decision is undergoing the original review before any K1 writer starts;
+- executable T-R evidence triggered DEC1-O and DEC1-B. DEC1-O defines a bounded extension of the existing observer for frame,
+  local-call/return, exact budget and actual cleanup-owner facts. DEC1-B defines grant-without-precharge, exact raw commit,
+  separate semantic accounting and one request-owned stop/terminal ledger. Both are doc-only candidates under independent
+  review; no O1/L4/L5 production task is ready yet.
+
+## 10. Revision 3 — accepted K1 target and kernel handoff
+
+- corrected DEC1-K1 `cddbf038` passed the original independent reviewer and joined integration as `59e92ea4`. Canonical K1
+  now has one immutable deployment-build image/cache allocation; it gates the reachable union of every canonical publication
+  root, retains an independent post-link bounded verifier that sole-produces the internal statement schedule, and exposes
+  image-owned typed entry pins only after load. There is no per-entry cache, public seal or second image;
+- K0B's earlier linker-only task is superseded by the K1 atomic boundary: deployment publication roots and capability gating
+  cannot be separated from exact link/verify/image construction without publishing a broad image first. K1's first reviewed
+  production slice must make the reachable HostEffect T-C scenario fail closed while preserving the unreachable private
+  companion. That slice supplies the missing K0B containment receipt before later K1 migration is accepted;
+- independently reviewed T-C proof commits joined as `e44b69e4..fe2afec6`. They deliberately make the integration target
+  semantically red at reachable unsupported effect until K1 containment lands; compiler admission can now turn the typed
+  unsupported-source case green. The Gate therefore has an executable target rather than a missing-test placeholder;
+- DEC1-O review rejected sequential Pending registry/wake counting and a missing raw-consumption hook. DEC1-B review rejected
+  a verdict-bearing budget event, cross-session cancellation, overdue-deadline ordering, missing scheduler consumers and an
+  untokenized grant/commit API. Both authors are amending the failed candidates; no production work starts from them;
+- K1 is the sole central write owner. Its write set may cross linker, linked-bytecode, thin verifier, deployment image,
+  host loader/cache, request/VM/scheduler consumers and the exact test-runner/package-test consumers listed by DEC1-K1. The
+  first checkpoint is a compile-visible type/constructor cut and the first committable milestone is capability containment
+  plus the T-C reachable/unreachable pair, not an interface-only placeholder.
