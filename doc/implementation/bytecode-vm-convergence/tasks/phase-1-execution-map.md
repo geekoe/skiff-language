@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 5; K1 hard cut and L1 ready, L4/L5 contract accepted
+> Status: active; revision 6; L1/L2 accepted, K1 hard cut validating
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -268,3 +268,20 @@ run the complete Phase 1 Gate and issue the final verdict.
   compiler successor now owns unavailable source-plan rejection, removal of opcode-derived statement attribution and exact
   caller/callee/slot/type joins. A separate T-C successor owns the production compiler-to-link proof; neither may use the
   other's local tests as acceptance.
+
+## 13. Revision 6 — accepted scalar producer/consumer join
+
+- L1 production successor `4eb732cd` passed focused compiler `4/4` and emission `6/6`, then independent review and joined as
+  `029bde09`. Public emission now requires an opaque admitted MIR, rejects unavailable source-event plans, exact-joins
+  parameter/slot/load/init and caller/callee ABI facts, and consumes only lowering-owned typed attribution events. The old
+  opcode-derived `CallLocal` statement fabrication is gone; the legacy stream synthesis is confined to a crate-private
+  backend that cannot acquire the public Phase 1 token;
+- the independent T-C successor `2c25b71..ddb4ff9a` joined as `0b2834d4..68dd6e09`. Its six scenarios all pass through the
+  production compiler, canonical artifact store/read admission, deployment loader and linker. It proves the exact helper
+  relocation operands `[0, 1, 1]`, resolved local target, gateway ABI/frame slots, scalar opcode/branch surface, statement
+  handoff and specialization-owned type provenance without equating unrelated linked `TypeIndex` coordinates;
+- independent clarification confirmed that linked type coordinates are interned by package, artifact row and specialization.
+  Cross-function raw-index equality is not a type-identity contract; T-C therefore checks exact origin and concrete type,
+  while K1 is forbidden to "fix" this by globally deduplicating specialization-owned rows;
+- L1 and L2 are now accepted producer/structural nodes. K1 hard-cut production crates compile and its full affected test
+  targets compile; focused execution and independent authority review remain required before L3/K2/L4/L5 implementation.
