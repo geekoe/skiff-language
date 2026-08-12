@@ -1,14 +1,13 @@
 # Skiff Runtime
 
-This crate is the Rust Runtime for the current RuntimeAssembly stack. It connects
-to the Router over one shared Runtime WebSocket transport, accepts the Router's
-bootstrap and assembly control frames, admits the exact deployments assigned to
-its profile, executes linked Skiff code, and returns Runtime transport
-frames.
+This crate is the Rust Runtime for the current bytecode deployment image stack.
+It connects to the Router over one shared Runtime WebSocket transport, accepts
+the Router's bootstrap and control frames, admits exact deployments assigned to
+its profile, executes linked Skiff code, and returns Runtime transport frames.
 
 The Router bootstrap owns the shared absolute artifact path, database transport
 binding, and HTTP response cap for that connection. Runtime configuration does
-not duplicate those values. Runtime rejects activation and registration until
+not duplicate those values. Runtime rejects deployment admission and registration until
 bootstrap succeeds and rejects a duplicate bootstrap.
 
 ## Run Locally
@@ -39,8 +38,9 @@ infrastructure state and must not store service business state.
 
 The Router and Runtime must observe identical string and content semantics for
 the bootstrapped artifact path. Current production deployments therefore use a
-shared filesystem. RuntimeAssembly activation provides the exact immutable
-deployment and package closure to admit; Runtime does not follow mutable
+shared filesystem. Exact deployment records identify the immutable deployment
+and package closure to admit; Runtime loads the immutable
+`DeploymentExecutionImage` for each buildId and does not follow mutable
 service-version pointers or infer a build topology.
 
 ## Source and Deployment Boundary
@@ -63,8 +63,10 @@ The current identity generations are:
 
 - GatewayEntry v2: `skiff-gateway-entry-v2`
 - ServiceProtocol v5: `skiff-service-protocol-v5`
-- DeploymentArtifact v3: `skiff-deployment-artifact-v3`
-- RuntimeAssembly v3: `skiff-runtime-assembly-v3`
+- ServiceDeploymentInput v5: `skiff-service-deployment-input-v5`
+- ServiceDeployment v4: `skiff-service-deployment-v4`
+- DeploymentArtifact v4: `skiff-deployment-artifact-v4`
+- Runtime frame v4: `skiff-runtime-frame-v4`
 
 Runtime admission and dispatch require exact current identities. The linked
 Runtime program owns executable addresses, callable targets, functions, impl
@@ -119,10 +121,10 @@ corresponding text send; there is no request/response behavior in those helpers.
 
 ## Runtime Configuration and Capabilities
 
-Service config values are supplied by the admitted deployment activation, not
-read from host environment variables or arbitrary config files during
-execution. Config, state owner, principal, quota, lifecycle, and resources
-remain scoped to the activation.
+Service config values are supplied by the admitted deployment record's baked
+config payload, not read from host environment variables or arbitrary config
+files during execution. Config, state owner, principal, quota, lifecycle, and
+resources remain scoped to the exact deployment record.
 
 Direct `std.http.request` is guarded by default for outbound egress. It rejects
 loopback, localhost, private, link-local, unspecified, multicast, and cloud
@@ -131,6 +133,7 @@ and automatic redirects are disabled. A Runtime operator can configure an
 explicit Runtime-local HTTP proxy, but service code cannot select one.
 
 Runtime reconnects to the Router with bounded backoff after a transport
-disconnect. Once the current assembly generation is admitted, it registers the
-exact supported deployments and gateway entries; request execution never falls
-back to an older identity generation or an inferred route.
+disconnect. Once the deployment record's immutable `DeploymentExecutionImage` is admitted,
+it registers the exact supported deployments and gateway entries; request
+execution never falls back to an older identity generation or an inferred
+route.

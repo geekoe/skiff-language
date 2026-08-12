@@ -1,14 +1,14 @@
 # Skiff Router
 
 This crate is the Rust Router (`skiff-router`) for the current
-RuntimeAssembly stack. It owns:
+bytecode deployment image stack. It owns:
 
-- the public HTTP listener and WebSocket upgrades selected from the active
-  RuntimeAssembly by exact deployment and service-scoped ingress;
-- the control listener used for RuntimeAssembly activation, health, and Runtime
-  WebSocket connections;
-- exact dispatch to a Runtime replica using the active assembly generation,
-  deployment, gateway entry, and service protocol identities;
+- the public HTTP listener and WebSocket upgrades selected from immutable
+  deployment records by exact deployment and service-scoped ingress;
+- the control listener used for health, Runtime WebSocket connections, and
+  test dispatch;
+- exact dispatch to a Runtime replica using the exact deployment buildId,
+  gateway entry, and service protocol identities;
 - the platform WebSocket request broker and the `jsonrpc-2.0-text` profile.
 
 The public HTTP and WebSocket surfaces come from service source, not Router
@@ -43,8 +43,6 @@ artifactsPath: ../var/skiff-artifacts
 serviceDb:
   mongoUrl: mongodb://127.0.0.1:27017/?replicaSet=rs0
 requestTimeoutMs: 20000
-activation:
-  prepareTimeoutMs: 120000
 http:
   port: 4000
   maxRequestBytes: 67108864
@@ -72,32 +70,27 @@ the request port ignored; there is no wildcard, artifact scan, or latest
 version lookup. Unknown Hosts return `421`, and
 `GET /__local_ingress/health` is handled by the ingress itself.
 
-`profile`, `artifactsPath`, and `serviceDb.mongoUrl` are required for
-RuntimeAssembly routing. The Router reads immutable records below
-`artifactsPath`, while activation state and audit are stored transactionally in
-MongoDB. Public ingress is keyed by `(ServiceDeploymentRef, IngressSelector)`;
-there is no bare assembly-global route selector. Rewrite-to-service,
-query-based service selection, and HTTP Host route selection are rejected.
+`profile`, `artifactsPath`, and `serviceDb.mongoUrl` are required for exact
+deployment routing. The Router reads immutable deployment records and release
+pointers below `artifactsPath`; it does not maintain assembly activation state.
+Public ingress is keyed by `(ServiceDeploymentRef, IngressSelector)`; there is
+no bare global route selector. Rewrite-to-service, query-based service
+selection, and HTTP Host route selection are rejected.
 
 The public HTTP listener defaults to port `4000`. The Runtime and control
 listener defaults to port `4001`, with Runtime connections at `/runtime`.
-`GET /__router/health` and `POST /__skiff/activate-assembly` are control-listener
-endpoints.
+`GET /__router/health` and `POST /__skiff/test-dispatch` are control-listener
+endpoints. The retired `/__skiff/activate-assembly` endpoint is not part of the
+current surface.
 
 `requestTimeoutMs` is only the platform cap for external business requests.
 The optional deployment `policy.timeoutMs` may shorten one such request, but
-neither value is an activation budget. RuntimeAssembly prepare uses the
-operator-owned `activation.prepareTimeoutMs`, which defaults to `120000` and
-must be a positive safe integer. Only expiry of that budget makes the
-coordinator abort the pending activation as a timeout and return `504` from the
-activation control endpoint.
-
-An activation client must use a separate deadline that is strictly greater
-than the Router prepare budget; `150000` is the recommended test-runner client
-deadline for the default prepare budget. WebSocket generation release has its
-own lifecycle timeout and does not inherit `requestTimeoutMs`, deployment
-`policy.timeoutMs`, or the activation prepare budget. The old cross-wiring of
-these timeout domains is not a compatibility input.
+neither value is an image-load or drain budget. Deployment image lazy-load and
+WebSocket connection drain use their own operator-owned lifecycle budgets; they
+do not inherit `requestTimeoutMs`, deployment `policy.timeoutMs`, or an
+assembly prepare budget. Skiff has no assembly prepare/commit/abort or
+generation release transaction. The old cross-wiring of these timeout domains
+is not a compatibility input.
 
 ## Service Ingress Source
 
@@ -137,8 +130,8 @@ jsonRpc:
 The compiler projects each source entry to an ingress selector and a resolved
 gateway entry. The selector is service-local: HTTP uses protocol/method/path and
 WebSocket upgrade uses protocol/path. The Router consumes those facts from the
-active RuntimeAssembly; it does not infer ingress from handler names, request
-Host, business payloads, or display names.
+selected deployment record; it does not infer ingress from handler names,
+request Host, business payloads, or display names.
 
 An ingress in front of the Router may map HTTP Host or other platform rules to
 the trusted request headers:
@@ -148,8 +141,8 @@ x-skiff-service: <service-id>
 x-skiff-version: <contract-version>
 ```
 
-The Router strictly parses both headers, selects the active assembly's unique
-exact `ServiceDeploymentRef`, and only then resolves method/path inside that
+The Router strictly parses both headers, selects the unique exact
+`ServiceDeploymentRef`, and only then resolves method/path inside that
 deployment. Missing, conflicting, invalid, unknown, or ambiguous selectors fail
 closed. The raw HTTP Host remains request metadata for the service but cannot
 change the selected deployment or handler. Host-to-header mapping is outside
@@ -159,13 +152,12 @@ Skiff production boundary.
 Different services may therefore both expose `GET /v1/models`. For example,
 Relay and AIHub use different service/version headers and each resolve their own
 handler on the same Router listener. A duplicate method/path inside one service
-still fails during projection/assembly validation.
+still fails during projection/deployment validation.
 
-Router-to-Runtime request frames carry the exact deployment, assembly
-generation, and gateway entry. Runtime admission rejects a frame that
-substitutes another service or deployment revision. WebSocket upgrade performs
-the same service selection and pins the exact deployment and generation for the
-socket lifetime.
+Router-to-Runtime request frames carry the exact deployment buildId and
+gateway entry. Runtime admission rejects a frame that substitutes another
+service or deployment revision. WebSocket upgrade performs the same service
+selection and pins the exact deployment buildId for the socket lifetime.
 
 ## WebSocket Semantics
 
@@ -220,11 +212,10 @@ The service-scoped ingress cutover requires these generations:
 - ServiceDeploymentInput v5: `skiff-service-deployment-input-v5`
 - ServiceDeployment v4: `skiff-service-deployment-v4`
 - DeploymentArtifact v4: `skiff-deployment-artifact-v4`
-- RuntimeAssembly v3: `skiff-runtime-assembly-v3`
 - Runtime frame v4: `skiff-runtime-frame-v4`
 
 Runtime registration and request dispatch bind exact current identities. The
-Router fails closed when the active assembly, ingress binding, deployment,
+Router fails closed when the exact deployment buildId, ingress binding,
 gateway entry, service protocol, or Runtime replica does not match.
 
 These versions describe the service-scoped ingress target state. Production
