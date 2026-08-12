@@ -1,5 +1,10 @@
 # 工兵 crate 并行开发流程（一个工兵一个 crate）
 
+> 本文是 crate/file write-set 隔离工具，不是所有大型任务的完整实施流程。跨多个 semantic owner、需要
+> Phase、worktree、frozen candidate 或 production cutover 的任务，应先建立定制项目计划，并参考
+> [`bytecode-vm-convergence/large-change-execution-principles.md`](implementation/bytecode-vm-convergence/large-change-execution-principles.md)。
+> 项目计划必须明确本文哪些 shared-checkout / interface-first 规则适用或被替代。
+
 ## 1. 角色与职责
 
 工兵是执行主 agent 派发的**有界实现任务**的 subagent。主 agent 负责任务书、调度、验收和合流，
