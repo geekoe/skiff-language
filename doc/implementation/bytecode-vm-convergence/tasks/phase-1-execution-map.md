@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 4; K1 capability closure accepted, atomic image hard cut ready
+> Status: active; revision 5; K1 hard cut and L1 ready, L4/L5 contract accepted
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -248,3 +248,23 @@ run the complete Phase 1 Gate and issue the final verdict.
   `before_dispatch -> dispatch_one` boundary, but independent review found that its exact VM write set and DEC1-O reference
   still conflict with the proposed API. L4/L5/O1 production writers remain unopened until one amended budget decision and
   the already accepted observation decision describe the same implementable protocol.
+
+## 12. Revision 5 — bounded-schema closure and execution-budget contract
+
+- L2 follow-up `aab1ee79` passed focused tests `2/2` and independent review, then joined as `6a7cd077`. Whole-schema
+  structural admission now bounds Local and Remote interface method slots, signature arity and nested parameter/return
+  types even for unused relocation rows. This is a resource/schema check only; interfaces remain outside Phase 1;
+- the earlier DEC1-B candidates `a800a5d1` and `d41f150a` are rejected history. Replacement decision `4410e6b1` passed the
+  original independent reviewer and joined as `824c4616`, atomically replacing the old DEC1-O text. The accepted protocol
+  charges exactly one attempted dispatch at the private adjacent `before_dispatch -> dispatch_one` boundary, has no grant,
+  remainder, refund or compatibility fuel API, and freezes one request-owned winner and four-field accounting settlement;
+- raw counter overflow is structurally unreachable below its finite `u64` limit; the required boundary is
+  `MAX-1 -> MAX -> N+1 fuel failure`. Semantic and poll overflow remain fail-closed. The hard cut deletes old
+  `VmBudgetError`/`InvalidFuelGrant` surfaces, including `control.rs` and `error.rs` consumers, rather than aliasing them;
+- supervisor activation has the closed outcomes `Activated`, `RevokedByCancel`, `RevokedBySessionStop` and `Invalid`.
+  Both revocation winners are `StopWithoutResponse` and create no budget/inventory, settlement, terminal observation or
+  cleanup permit. This resolves the admission-error response race before L4/L5 implementation starts;
+- independent L1 clarification found that K0A did not close source-event provenance or every local ABI fact. A narrow
+  compiler successor now owns unavailable source-plan rejection, removal of opcode-derived statement attribution and exact
+  caller/callee/slot/type joins. A separate T-C successor owns the production compiler-to-link proof; neither may use the
+  other's local tests as acceptance.
