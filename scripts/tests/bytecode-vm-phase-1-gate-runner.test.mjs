@@ -87,6 +87,13 @@ test('runner receipts all twenty commands and freezes the actual environment', a
     assert.equal(result.manifest.verdict, 'PASS');
     assert.equal(result.checkerError, null);
     assert.deepEqual(result.manifest.counts.commands, { total: 20, passed: 20, failed: 0 });
+    assert.deepEqual(
+      result.manifest.commands.find(({ id }) => id === 'k0a-compiler-containment')?.testSummary,
+      {
+        format: 'rust', summaries: 2, total: 6, passed: 6, failed: 0,
+        ignored: 0, measured: 0, filtered: 84, valid: true,
+      },
+    );
     assert.equal(observed.length, 20);
     assert.equal(observed.every((value) => value === 'before'), true);
     const receipt = JSON.parse(await readFile(
@@ -111,6 +118,7 @@ function successfulOutcome(command, args) {
     const exact = args.includes('--exact');
     const passed = exact ? 1 : 3;
     stdout = `test result: ok. ${passed} passed; 0 failed; 0 ignored; 0 measured; 42 filtered out; finished in 0.01s\n`;
+    if (args.includes('skiff-compiler-emission')) stdout += stdout;
   }
   return { code: 0, signal: null, error: null, stdout, stderr: '' };
 }

@@ -45,6 +45,7 @@ test('day-one matrix freezes eight commands and every required Proof lane', () =
     'test', '-p', 'skiff-compiler', '-p', 'skiff-compiler-emission', '--lib',
     'phase_1_bytecode_admission',
   ]);
+  assert.equal(specs[1].testFormat, 'rust-suite-2');
   assert.equal(specs[2].id, 'k0b-tc-production-contract');
   assert.deepEqual(specs[2].lanes, ['K0B', 'T-C']);
   assert.equal(specs[4].id, 'tr-v1-production-proof');
@@ -77,6 +78,24 @@ test('test summaries reject zero, skip, todo, cancel, ignore, and imprecise exac
   assert.equal(parsePhase1TestSummary('rust-suite', rust({ ignored: 1 })).valid, false);
   assert.equal(parsePhase1TestSummary('rust-exact', rust({ passed: 1 })).valid, true);
   assert.equal(parsePhase1TestSummary('rust-exact', rust({ passed: 2 })).valid, false);
+  const twoGreen = `${rust({ passed: 3 })}${rust({ passed: 4, filtered: 7 })}`;
+  assert.deepEqual(parsePhase1TestSummary('rust-suite-2', twoGreen), {
+    format: 'rust',
+    summaries: 2,
+    total: 7,
+    passed: 7,
+    failed: 0,
+    ignored: 0,
+    measured: 0,
+    filtered: 49,
+    valid: true,
+  });
+  assert.equal(parsePhase1TestSummary('rust-suite-2', rust({ passed: 3 })).valid, false);
+  assert.equal(
+    parsePhase1TestSummary('rust-suite-2',
+      `${rust({ passed: 3 })}${rust({ passed: 0 })}`).valid,
+    false,
+  );
 });
 
 function tap({ total = 2, passed = total, failed = 0, cancelled = 0, skipped = 0, todo = 0 } = {}) {

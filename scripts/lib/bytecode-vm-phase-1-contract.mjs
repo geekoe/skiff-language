@@ -51,7 +51,7 @@ export function phase1WorkloadSpecs(root) {
     spec(root, 'k0a-compiler-containment', 'cargo', [
       'test', '-p', 'skiff-compiler', '-p', 'skiff-compiler-emission', '--lib',
       'phase_1_bytecode_admission',
-    ], 'rust-suite', ['K0A']),
+    ], 'rust-suite-2', ['K0A']),
     spec(root, 'k0b-tc-production-contract', 'cargo', [
       'test', '--manifest-path', 'runtime/linker/Cargo.toml', '--test',
       'phase_1_contract',
@@ -99,8 +99,9 @@ export function assertPhase1LaneCoverage(specs) {
 
 export function parsePhase1TestSummary(format, output) {
   if (format === 'node-tap') return parseNodeTap(output);
-  if (format === 'rust-exact') return parseRust(output, true);
-  if (format === 'rust-suite') return parseRust(output, false);
+  if (format === 'rust-exact') return parseRust(output, { exact: true, expectedSummaries: 1 });
+  if (format === 'rust-suite') return parseRust(output, { exact: false, expectedSummaries: 1 });
+  if (format === 'rust-suite-2') return parseRust(output, { exact: false, expectedSummaries: 2 });
   return null;
 }
 
@@ -138,26 +139,37 @@ function parseNodeTap(output) {
   return { format: 'node-tap', declared: plans.length === 1 ? plans[0] : null, ...counts, valid };
 }
 
-function parseRust(output, exact) {
+function parseRust(output, { exact, expectedSummaries }) {
   const pattern = /^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; (\d+) measured; (\d+) filtered out(?:;.*)?$/gm;
   const matches = [...output.matchAll(pattern)];
-  if (matches.length !== 1) return rustSummary(null, null, null, null, null, false);
-  const [, disposition, passedText, failedText, ignoredText, measuredText, filteredText] = matches[0];
-  const [passed, failed, ignored, measured, filtered] = [
-    passedText, failedText, ignoredText, measuredText, filteredText,
-  ].map(Number);
-  const valid = disposition === 'ok'
-    && passed > 0
-    && (!exact || passed === 1)
-    && failed === 0
-    && ignored === 0
-    && measured === 0;
-  return rustSummary(passed, failed, ignored, measured, filtered, valid);
+  if (matches.length !== expectedSummaries) {
+    return rustSummary(null, null, null, null, null, false, matches.length);
+  }
+  const summaries = matches.map((match) => {
+    const [, disposition, passedText, failedText, ignoredText, measuredText, filteredText] = match;
+    const [passed, failed, ignored, measured, filtered] = [
+      passedText, failedText, ignoredText, measuredText, filteredText,
+    ].map(Number);
+    return { disposition, passed, failed, ignored, measured, filtered };
+  });
+  const total = (field) => summaries.reduce((sum, item) => sum + item[field], 0);
+  const passed = total('passed');
+  const failed = total('failed');
+  const ignored = total('ignored');
+  const measured = total('measured');
+  const filtered = total('filtered');
+  const valid = summaries.every((summary) => summary.disposition === 'ok'
+    && summary.passed > 0
+    && (!exact || summary.passed === 1)
+    && summary.failed === 0
+    && summary.ignored === 0
+    && summary.measured === 0);
+  return rustSummary(passed, failed, ignored, measured, filtered, valid, summaries.length);
 }
 
-function rustSummary(passed, failed, ignored, measured, filtered, valid) {
+function rustSummary(passed, failed, ignored, measured, filtered, valid, summaries) {
   return {
-    format: 'rust', total: passed, passed, failed, ignored, measured, filtered, valid,
+    format: 'rust', summaries, total: passed, passed, failed, ignored, measured, filtered, valid,
   };
 }
 
