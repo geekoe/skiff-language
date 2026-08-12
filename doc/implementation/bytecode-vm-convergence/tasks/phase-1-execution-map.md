@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 0; initial Development and Proof frontier frozen
+> Status: active; revision 1; first joins, K1 decision review, and rejected false-green candidates
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -151,3 +151,32 @@ The integration line is not an acceptance candidate. After all required Developm
 integrator runs a merged-state preflight, freezes exact commit/tree and creates a new detached Acceptance worktree. Any later
 production/test/fixture/Gate/event/schema change starts a new candidate and evidence epoch. Only a new Acceptance Agent may
 run the complete Phase 1 Gate and issue the final verdict.
+
+## 8. Revision 1 — first executable feedback
+
+- K0C candidate `32a6b97f` passed three exact host tests and independent review. It now rejects all non-unary HTTP, Task,
+  WebSocket, client-session, child and test-effect request headers before observation/reservation/load/target/dispatch while
+  preserving the accepted unary gateway path. It joined integration as `e038ce6a`;
+- L2 candidate `131ef600` closed a real C2 bounded-structure gap: every callback-capture pool row now enforces canonical
+  `MAX_ARITY=256`, including unused rows. The 256/257 boundary test passed and independent review returned `PASS`; it joined
+  as `4192b7d2`;
+- K0A candidate `747ca859` passed its three focused driver tests but failed independent receive review. Public
+  `emit_bytecode_artifact` still bypasses driver admission and can emit an Array artifact containing `NewArrayBuilder`.
+  The original writer owns a correction that makes admission an unavoidable typed capability of every public emitter path;
+  the rejected candidate did not join;
+- K0B stopped cleanly with no diff: current host loads, deployment-wide links/verifies and caches before route selector
+  resolution; linker roots all operation/gateway/Actor publication roots and cache identity is deployment-only. A requested-
+  entry gate cannot honestly be implemented in linker-only scope. This evidence triggered and now feeds DEC1-K1;
+- T-R/V1 candidate `52bfaf32` is source-reviewed `PASS` as an honest expected-red Proof. It reaches production response `3.0`
+  and both boundary negatives, then reports exactly five missing O1/L4/L5 facts. It remains on its Proof leaf until its
+  producers make those obligations green;
+- T-C candidate `771b59de` compiles/runs production compiler/artifact/link boundaries: structural, identity and unreachable
+  companions pass; reachable HostEffect is the intended semantic red. Its final typed-source fixture correction awaits
+  independent source review and a later producer join;
+- G1 candidate `342dc2b` passed Node self-tests but failed independent receive review with an executable two-worktree
+  counterexample: inherited `GIT_DIR`/`GIT_WORK_TREE` can redirect real identity probes away from workload `repoRoot` while
+  the Gate reports PASS. The Gate owner is correcting both shared Phase 0 and Phase 1 preflight to reject repository-
+  controlling Git environment before any evidence/capture. The rejected candidate did not join;
+- DEC1-K1 candidate `fbb2b281` chooses one exact-entry-rooted `DeploymentExecutionImage`, keyed by deployment owner plus
+  typed operation/gateway root and sole-minted atomically by linker. It is under a genuinely separate Design review; no K1
+  production writer starts from the design author's self-report.
