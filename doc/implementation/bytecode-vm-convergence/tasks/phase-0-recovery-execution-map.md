@@ -51,6 +51,7 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
 | D0-O | Development | running as `/root/p0_observation`; started `2026-08-12T17:03:00Z` | 60–85 min | 20 min, then 45 min | corrected DEC0-S D0-O set plus approved existing driver owner `runtime/host/src/host/request_entry/resumable.rs` | dependency-neutral failure-isolated observer; five sole mint points; full deployment owner; request-local terminal/cleanup proof; focused tests |
 | P0-V-H/P0-N | Proof | expected-red writer `/root/p0_host_proof`; started `2026-08-12T17:16:00Z` | 45–65 min | 15 min, then 35 min | two new host-internal test modules, module registration, removal of superseded request VCP; no production/Gate code | success and three negatives enter only `RuntimeHost::spawn_bytecode_request`, preserve actual wire/typed facts, and never mint verdict/internal execution objects |
+| D0-K-M | Development | running as `/root/p0_mode_containment`; started `2026-08-12T17:21:00Z` | 15–25 min | 10 min | host HTTP admission and its focused host test only | wire-valid `serverStream` is rejected before load/route/target/VM; unary and other independently-owned ingress modes unchanged |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -81,6 +82,7 @@ Revision 0 只预留首批 writer；实际 Agent ID 在 dispatch revision 中记
 | D0-M | `codex/bcvm-p0-materialize` | `/Users/geek/workspace/skiff-bcvm-p0-materialize` | revision-5 MAP commit | no until D0-R releases the lease |
 | D0-O | `codex/bcvm-p0-observation` | `/Users/geek/workspace/skiff-bcvm-p0-observation` | `dd1399bc` after D0-M/D0-R join | yes; one focused command after implementation, no workspace fmt |
 | P0-V-H/P0-N | `codex/bcvm-p0-host-proof` | `/Users/geek/workspace/skiff-bcvm-p0-host-proof` | `f2a1cdc7`; expected-red until D0-O joins | no until rebased after D0-O; no production writes |
+| D0-K-M | `codex/bcvm-p0-mode-containment` | `/Users/geek/workspace/skiff-bcvm-p0-mode-containment` | `a83fdf65` | yes only after D0-O released; one exact host test |
 
 同一 worktree 一个 writer。Agent 使用 `fork_turns=none`，只接收 exact task contract。Acceptance Agent 尚未创建，
 且必须与所有 candidate writer 独立。
@@ -240,3 +242,14 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
 - dispatched a bounded read-only `/root/p0_negative_clarify` to identify exact production setup and actual wire error facts
   for corrupt artifact, wrong entry and unsupported mode. It has no write set and only feeds P0-N;
 - D0-O retains the sole Cargo lease. P0-G remains Node-only; host Proof does not run Cargo against an intentionally missing API.
+
+### Revision 12 — request-mode containment trigger
+
+- P0-N clarification proved that the only wire-valid non-unary HTTP mode, `serverStream`, currently enters and completes the
+  scalar VM before returning `serverStream request completed without a response stream`; a malformed `clientStream` would be
+  rejected by the transport decoder and cannot serve as a production request-entry proof;
+- this satisfies the Phase Contract's D0-K trigger: an excluded capability is currently executable and existing admission
+  cannot prove no dispatch. The Gate remains strict and will not accept the current post-dispatch error;
+- dispatched `/root/p0_mode_containment` as a narrow Development owner. It may only reject non-unary HTTP at the existing
+  host admission boundary and update the focused host test; it cannot implement streams, change the VM mode surface or add a
+  fallback. P0-N will independently prove the resulting actual wire error and absence of dispatch after the join.
