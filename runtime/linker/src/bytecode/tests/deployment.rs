@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use skiff_artifact_identity::{
-    ArtifactIdentityError, ValidatedBytecodeArtifact, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+    contract_operation_id, ArtifactIdentityError, ValidatedBytecodeArtifact,
+    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
@@ -14,8 +17,9 @@ use skiff_runtime_linked_bytecode::{
 use skiff_runtime_loader::HydratedBytecodePackage;
 
 use crate::bytecode::{
-    link_deployment, link_deployment_backend_for_test, BytecodeLinkError, BytecodeLinkLocation,
-    BytecodeLinkObligation, Phase1LinkedCapability,
+    link_deployment, link_deployment_backend_for_test, link_deployment_execution_image,
+    BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation, CodeEntryLookupError,
+    Phase1LinkedCapability,
 };
 
 use super::{
@@ -25,6 +29,48 @@ use super::{
     },
     generous_limits,
 };
+
+#[test]
+fn production_execution_image_links_distinct_operation_entries_to_shared_image() {
+    let (fixture, operation_b) = Fixture::exact_two_operations();
+    let image = Arc::new(
+        link_deployment_execution_image(fixture.hydrate(), &super::generous_execution_limits())
+            .unwrap(),
+    );
+    let root = image
+        .functions()
+        .iter()
+        .find(|function| function.key().artifact_function_key().as_str() == ROOT_FUNCTION)
+        .unwrap()
+        .index();
+    let helper = image
+        .functions()
+        .iter()
+        .find(|function| function.key().artifact_function_key().as_str() == HELPER_FUNCTION)
+        .unwrap()
+        .index();
+    let entry_a = image.operation_entry(&fixture.operation).unwrap();
+    let entry_b = image.operation_entry(&operation_b).unwrap();
+
+    assert_eq!(entry_a.function(), root);
+    assert_eq!(entry_b.function(), helper);
+    assert_ne!(entry_a.function(), entry_b.function());
+    assert!(Arc::ptr_eq(entry_a.image(), &image));
+    assert!(Arc::ptr_eq(entry_b.image(), &image));
+
+    let unknown = contract_operation_id(
+        "example.bytecode-link-service",
+        "1.0.0",
+        "missing",
+    )
+    .unwrap();
+    assert!(matches!(
+        image.operation_entry(&unknown),
+        Err(CodeEntryLookupError::OperationNotFound {
+            contract_operation_id
+        }) if contract_operation_id == unknown
+    ));
+}
 
 #[test]
 fn production_entry_links_exact_ordinary_root_local_call_and_return() {

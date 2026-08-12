@@ -10,13 +10,15 @@ use skiff_artifact_identity::{
     ValidatedBytecodeArtifact,
 };
 use skiff_artifact_model::{
-    BytecodeArtifact, BytecodeArtifactRef, BytecodePoolEntry, CallableEffectSummary,
+    BoundaryOperationDescriptor, BytecodeArtifact, BytecodeArtifactRef, BytecodePoolEntry,
+    CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, ContractOperationId,
     ContractTypeDescriptor, DeploymentGatewayEntry, DeploymentIngressBinding, GatewayAdapterArg,
     GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
     GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
     GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol,
-    IngressSelector, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    DeploymentOperationBinding, IngressSelector, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageBuildId,
     PackageCallableId, PackageRequirement, PackageRequirementKey, PackageSchemaCanonicalDescriptor,
     PackageSchemaTypeRecord, ServiceContract, ServiceContractRef, ServiceDeployment,
     ServiceDeploymentRef, TypeRefIr,
@@ -201,6 +203,55 @@ impl Fixture {
 
     pub(super) fn hydrate(&self) -> HydratedDeploymentBytecode {
         self.try_hydrate().unwrap()
+    }
+
+    pub(super) fn exact_two_operations() -> (Self, ContractOperationId) {
+        let mut fixture = Self::exact_local();
+        let original_contract_ref = fixture.resolver.deployment.contract.clone();
+        let original_contract = fixture
+            .resolver
+            .contracts
+            .get(&original_contract_ref)
+            .unwrap();
+        let mut contract = original_contract.as_ref().clone();
+        let operation_b = skiff_artifact_identity::contract_operation_id(
+            &contract.service_id,
+            &contract.contract_version,
+            "helper",
+        )
+        .unwrap();
+        contract.operations.insert(
+            operation_b.clone(),
+            BoundaryOperationDescriptor {
+                operation_id: operation_b.clone(),
+                stable_key: "helper".to_string(),
+                contract: records::operation_contract(false),
+            },
+        );
+        contract
+            .diagnostic_text
+            .operations
+            .insert(operation_b.clone(), "helper".to_string());
+        skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
+        let contract = Arc::new(contract);
+        let contract_ref = skiff_artifact_identity::service_contract_ref(&contract).unwrap();
+
+        let mut deployment = fixture.resolver.deployment.as_ref().clone();
+        deployment.contract = contract_ref.clone();
+        deployment.operation_bindings.push(DeploymentOperationBinding {
+            contract_operation_id: operation_b.clone(),
+            package_callable_id: PackageCallableId::new(HELPER_CALLABLE),
+        });
+        assign_service_deployment_identity(&mut deployment).unwrap();
+        let deployment = Arc::new(deployment);
+        let deployment_reference = service_deployment_ref(&deployment);
+
+        fixture.resolver.contracts.remove(&original_contract_ref);
+        fixture.resolver.contracts.insert(contract_ref, contract);
+        fixture.resolver.deployment_reference = deployment_reference.clone();
+        fixture.resolver.deployment = deployment;
+        fixture.deployment_reference = deployment_reference;
+        (fixture, operation_b)
     }
 
     pub(super) fn try_hydrate(
