@@ -237,14 +237,14 @@ fn due_deadline_wins_every_open_transition_but_cannot_replace_a_frozen_winner() 
     let start = Instant::now();
     let deadline = start + Duration::from_millis(10);
     let clock = Arc::new(FakeClock::new(start));
-    let budget = budget(10, 2, Some(deadline), clock.clone());
+    let deadline_budget = budget(10, 2, Some(deadline), clock.clone());
 
     clock.set(deadline + Duration::from_millis(1));
-    let cancelled = budget.request_cancel().into_settlement();
+    let cancelled = deadline_budget.request_cancel().into_settlement();
     assert_eq!(cancelled.winner(), ExecutionWinner::DeadlineExceeded);
 
     clock.set(deadline + Duration::from_secs(1));
-    let later = budget
+    let later = deadline_budget
         .settle(CompletionCandidate::Success)
         .into_settlement();
     assert!(Arc::ptr_eq(&cancelled, &later));
