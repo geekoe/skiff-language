@@ -28,20 +28,22 @@ use skiff_runtime_linker::{
 use skiff_runtime_loader::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
 };
+use skiff_test_runner::canonical_package::{compile_package_project, CanonicalPackageProjectError};
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn unsupported_typed_source_is_owned_by_phase_1_compiler_admission() {
     let source = r#"function run() -> string { return "disabled" }"#;
-    let error = author_package("unsupported-source", source, false)
+    let source_root = package_source("unsupported-source", source, false);
+    let artifact_root = TempRoot::create("phase-1-contract-artifact-unsupported-source");
+    let platform = CompilerPlatformSources::new(&repository_root()).expect("open platform source");
+    let error = compile_package_project(&platform, source_root.path(), artifact_root.path())
         .expect_err("Phase 1 compiler admission must reject string values before emission");
-    let compile = error
-        .downcast_ref::<PackageCompileError>()
-        .expect("production authoring must retain PackageCompileError as the typed owner");
-
-    let PackageCompileError::BytecodeEmission { source } = compile else {
-        panic!("unsupported typed source must be owned by bytecode emission: {compile:?}");
+    let CanonicalPackageProjectError::Compile(PackageCompileError::BytecodeEmission { source }) =
+        error
+    else {
+        panic!("unsupported typed source must be owned by bytecode emission: {error:?}");
     };
     assert_eq!(
         format!("{source:?}"),
@@ -149,9 +151,9 @@ struct PublishedService {
 
 impl PublishedService {
     fn build(scenario: &str) -> Self {
-        let source = "function run() -> number { return 1 }\n\
+        let source = "function run(value: number) -> number { return value }\n\
                       function unused() -> number { return 2 }\n";
-        let receipt = author_package(scenario, source, true).expect("publish canonical fixture");
+        let receipt = author_package(scenario, source).expect("publish canonical fixture");
         let artifact_root = receipt.artifact_root.path();
         let output = receipt.output;
         let package_ref = serde_json::from_value::<PackageArtifactRef>(
@@ -305,27 +307,9 @@ struct AuthoringReceipt {
 fn author_package(
     scenario: &str,
     source: &str,
-    service: bool,
 ) -> Result<AuthoringReceipt, Box<dyn std::error::Error + Send + Sync>> {
-    let source_root = TempRoot::create(&format!("phase-1-contract-source-{scenario}"));
+    let source_root = package_source(scenario, source, true);
     let artifact_root = TempRoot::create(&format!("phase-1-contract-artifact-{scenario}"));
-    let package_id = format!("test.skiff/phase-1-contract-{scenario}");
-    fs::write(
-        source_root.path().join("package.yml"),
-        format!("id: {package_id}\nversion: 1.0.0\n"),
-    )?;
-    fs::write(source_root.path().join("main.skiff"), source)?;
-    if service {
-        fs::write(
-            source_root.path().join("service.yml"),
-            format!("id: {package_id}\n"),
-        )?;
-        fs::write(source_root.path().join("api.yml"), "{}\n")?;
-        fs::write(
-            source_root.path().join("http.yml"),
-            "run:\n  method: POST\n  path: /phase-1/contract\n  kind: typedJson\n  handler: main.run\n",
-        )?;
-    }
     let platform = CompilerPlatformSources::new(&repository_root())?;
     let output = build_authoring_object(
         &platform,
@@ -339,6 +323,31 @@ fn author_package(
         artifact_root,
         output,
     })
+}
+
+fn package_source(scenario: &str, source: &str, service: bool) -> TempRoot {
+    let source_root = TempRoot::create(&format!("phase-1-contract-source-{scenario}"));
+    let package_id = format!("test.skiff/phase-1-contract-{scenario}");
+    fs::write(
+        source_root.path().join("package.yml"),
+        format!("id: {package_id}\nversion: 1.0.0\n"),
+    )
+    .expect("write package manifest");
+    fs::write(source_root.path().join("main.skiff"), source).expect("write package source");
+    if service {
+        fs::write(
+            source_root.path().join("service.yml"),
+            format!("id: {package_id}\n"),
+        )
+        .expect("write service manifest");
+        fs::write(source_root.path().join("api.yml"), "{}\n").expect("write service API manifest");
+        fs::write(
+            source_root.path().join("http.yml"),
+            "run:\n  method: POST\n  path: /phase-1/contract\n  kind: typedJson\n  handler: main.run\n  adapterArgs:\n    - param: value\n      source: { kind: http.body }\n",
+        )
+        .expect("write HTTP manifest");
+    }
+    source_root
 }
 
 fn production_sized_limits() -> LinkLimits {
