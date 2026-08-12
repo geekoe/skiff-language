@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 19; D0-O and Gate accepted; corrected host proofs under review
+> Status: active; revision 20; success VCP runtime diagnosis; negative proof awaiting Cargo
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -50,7 +50,7 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | D0-R | Development | takeover complete as `d12a9471`; integrated as `dd1399bc`; independent receive review PASS | actual 10 min takeover + focused validation | complete | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; 7 focused host cases green |
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
 | D0-O | Development | base `b79e31d7` + finalizing delta `a8eecffa` independently accepted and integrated as `5b305744` + `0da6e474` | implementation + bounded correction; focused 3/3 | complete | corrected DEC0-S observation set plus supervisor lifecycle | ordered observer; reservation; exact ingress; terminal/cleanup guard; try-only telemetry; production-chain assertions delegated to Proof |
-| P0-V-H/P0-N | Proof | success `7e9fa1de` rejected then corrected by `94ec0895`; negative takeover `67f3d4b5` committed; both under independent source review | success correction + negative takeover | 5/10 min review | success test+fixture; negative test only | deterministic completion barriers, anti-helper fixture, exact production five-event success and three zero-observation boundaries |
+| P0-V-H/P0-N | Proof | proof/support candidates integrated for execution; success compiles but runtime returned zero observations before response was diagnosed; dedicated diagnosis running; negative source review corrections integrated but Cargo waits | success diagnosis 10–20 min | 5/15 min | success test/fixture/support only until actual response known; negative test frozen | deterministic completion barriers, anti-helper fixture, exact production five-event success and three zero-observation boundaries |
 | D0-K-M | Development | `c9f24dbf` independently accepted and integrated as `2c9c2fa7` | actual 10 min + 8 min review | complete | host HTTP admission and its focused host test only | production `serverStream` rejected as Unsupported before load/route/target/VM; 1/1 exact test; unary/WebSocket/task unchanged |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
@@ -352,3 +352,15 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
 - the first negative writer and its replacement are recorded separately: only the replacement produced code. Candidate
   `67f3d4b5` has the three canonical production-boundary scenarios and is under independent source review. Neither proof
   candidate may run Cargo or join until its reviewer closes deterministic-terminal and support-visibility questions.
+
+### Revision 20 — first integrated host Proof execution
+
+- both proof reviewers independently found that nested support items could not legally be re-exported to sibling tests.
+  Support delta `5186a5a1` exposes only the exact request-entry-scoped proof facts; an initial compile also found and fixed the
+  canonical record-path host conversion with `.as_path()` in `5b4e4134`;
+- success and negative deterministic-channel corrections plus the narrow support deltas joined integration. The first exact
+  success Cargo command compiled the entire host test but failed at runtime: a correlated terminal arrived while the recorder
+  contained zero observations. The current test asserted event count before decoding that terminal, so a clean diagnostic
+  owner now moves the immutable response assertion first to reveal the actual production boundary error;
+- negative Cargo remains intentionally queued behind the success diagnosis to preserve the single shared Cargo lease. Its
+  source reviewer otherwise confirmed the three mutation surfaces, error-code mapping and zero-observation ownership.
