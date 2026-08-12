@@ -471,6 +471,12 @@ fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> 
             "canonical request.start requestId must be non-empty".to_string(),
         ));
     }
+    if header.mode != "unary" {
+        return Err(RuntimeError::Unsupported(format!(
+            "bytecode HTTP ingress only supports unary request.start, got {}",
+            header.mode
+        )));
+    }
     if header.caller.kind != "gateway" {
         return Err(RuntimeError::Unsupported(
             "canonical HTTP gateway request requires caller.kind gateway".to_string(),

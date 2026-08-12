@@ -987,11 +987,12 @@ async fn canonical_http_server_stream_with_scalar_operation_fails_closed() {
     let bootstrap = connection_bootstrap(fixture);
     let mut header = canonical_header(fixture, "bytecode-http-server-stream");
     header.mode = "serverStream".to_string();
+    let body = b"2".to_vec();
     let (sender, mut receiver) = mpsc::unbounded_channel();
     host.spawn_bytecode_request(
         "bytecode-http-server-stream-session",
         BytecodeRequestStartFrameWireHeader::Http(header.clone()),
-        Vec::new(),
+        body,
         &bootstrap,
         sender,
     )
@@ -999,7 +1000,7 @@ async fn canonical_http_server_stream_with_scalar_operation_fails_closed() {
     assert_bytecode_response_error(
         &mut receiver,
         &header.request_id,
-        "serverStream request completed without a response stream",
+        "bytecode HTTP ingress only supports unary request.start, got serverStream",
     )
     .await;
 }
