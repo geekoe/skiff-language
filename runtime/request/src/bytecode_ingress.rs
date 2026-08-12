@@ -33,7 +33,6 @@ use skiff_runtime_vm::{
 
 use crate::{
     continuation_handoff::resume_pending_wake,
-    execution_budget::BytecodeVmBudget,
     http_executor::{BytecodeHttpExecutor, BytecodeHttpStreamEvent, BytecodeSelfIngressContext},
     response_stream_writer::ResponseStreamWriter,
     vm_heap::{RequestVmHeap, ResourceTable},

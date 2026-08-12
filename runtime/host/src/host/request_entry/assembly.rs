@@ -728,8 +728,7 @@ fn allow_http_candidate_response(
     let Some(error) = permit.response_override() else {
         return true;
     };
-    let event = OrdinaryResponseEvent::try_error(&error)
-        .expect("supervisor override is an ordinary response error");
+    let event = OrdinaryResponseEvent::Error(error);
     response_sink.send_terminal_response(request_id, event);
     false
 }
@@ -748,8 +747,7 @@ fn send_transport_override_or_allow_candidate(
     let Some(error) = permit.response_override() else {
         return true;
     };
-    let event = OrdinaryResponseEvent::try_error(&error)
-        .expect("supervisor override is an ordinary response error");
+    let event = OrdinaryResponseEvent::Error(error);
     if let Ok(message) = response_event_into_transport_message(request_id.to_string(), event) {
         let _ = sender.send(message);
     }
