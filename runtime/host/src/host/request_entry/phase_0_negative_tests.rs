@@ -60,7 +60,9 @@ async fn corrupt_published_bytecode_identity_fails_before_observation() {
         "bytecode deployment load failed: deployment load attempt 1 failed: deployment bytecode hydration failed: failed to resolve PackageBytecode {{ package: {:?}, bytecode: {:?} }}: invalid canonical ecosystem record at {}: raw JSON bytecodeIdentity does not match exact reference value {}",
         fixture.package_ref,
         bytecode,
-        fixture.artifact_root.path().join(&corruption.record_path).display(),
+        std::fs::canonicalize(fixture.artifact_root.path().join(&corruption.record_path))
+            .expect("canonicalize corrupted bytecode record path")
+            .display(),
         bytecode.bytecode_identity,
     );
     run_negative_request(
