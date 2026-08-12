@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 15; clean D0-O and P0-G takeovers running
+> Status: active; revision 16; D0-O and P0-G takeover candidates under independent receive review
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -44,13 +44,13 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | Task | Line | State | Expected elapsed | `status_after` | Initial write set | Join condition |
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
-| P0-G | Proof | corrected candidate `889cd78a` rejected by independent receive review; takeover pending | correction 20–30 min | 8 min after redispatch | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | exact production event/store facts; full image owner; exact process env; non-forgeable production ownership evidence; durable candidate-bound evidence; no harness-authored PASS |
+| P0-G | Proof | clean takeover `6f6ecfc8` committed; independent receive review running | actual 38 min to bounded commit | 10/30 min with hard partial cutoff | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 command/evidence/checker/self-test files; verify registry files only if required | Gate owns commands/candidate/durable evidence only; Rust exact tests own semantics; no JS wire/artifact/event parser or source regex |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
 | REV0-S | Review | `FAIL`, complete in 8 min; corrections recorded in rev8 | actual 8 min | on checkpoint | read-only DEC0-S and cited production code | found omitted event-owner/test files and confirmed D0-R sealed-fact expansion; no new authority found |
 | D0-R | Development | takeover complete as `d12a9471`; integrated as `dd1399bc`; independent receive review PASS | actual 10 min takeover + focused validation | complete | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; 7 focused host cases green |
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
-| D0-O | Development | candidate `cee91031` rejected by independent receive review; repair design running | correction 30–45 min after design | 10/25 min | corrected DEC0-S D0-O set plus approved existing driver owner `runtime/host/src/host/request_entry/resumable.rs` | ordered/reentrant-safe observation; no duplicate row overwrite; terminal-before-cleanup receipt; exact ingress selector; real production-chain tests |
-| P0-V-H/P0-N | Proof | writer exceeded expectation; interrupted; partial `217ac7f7` preserved but not accepted; split takeover pending | success 20–30 min, negatives 20–30 min | 10 min each | success/support host module and negative host module are separate write lanes after common registration is fixed | success and three negatives enter only `RuntimeHost::spawn_bytecode_request`, assert actual wire/typed facts, and never mint verdict/internal execution objects |
+| D0-O | Development | repair candidate `b79e31d7` compiled and committed; independent receive review running; production-chain test follow-up intentionally not started | actual bounded implementation to first commit | 20/35 min partial cutoff | corrected DEC0-S D0-O set plus approved existing driver owner `runtime/host/src/host/request_entry/resumable.rs` and try-only telemetry path | ordered/reentrant-safe observation; no duplicate row overwrite; terminal-before-cleanup permit; exact ingress selector; JSON-RPC failure; real production-chain tests remain Proof obligation |
+| P0-V-H/P0-N | Proof | common support `1c5c52da` independently accepted and integrated as `dab771ef`; success and negative writers wait for D0-O receive | support actual 12 min; success/negatives 20–30 min each | 10 min each | shared registration/support now frozen; success and negative host modules are disjoint write lanes | success and three negatives enter only `RuntimeHost::spawn_bytecode_request`, assert actual wire/typed facts, and never mint verdict/internal execution objects |
 | D0-K-M | Development | `c9f24dbf` independently accepted and integrated as `2c9c2fa7` | actual 10 min + 8 min review | complete | host HTTP admission and its focused host test only | production `serverStream` rejected as Unsupported before load/route/target/VM; 1/1 exact test; unary/WebSocket/task unchanged |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
@@ -297,3 +297,19 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   Independent Acceptance remains responsible for reviewing proof source and production sole mint ownership;
 - Phase 1 remains blocked until a fresh Phase 0 Gate and closure receipt pass. A read-only readiness clarification prepared
   the ready-after-closure DAG but authorized no Phase 1 production writer.
+
+### Revision 16 — proof support join and bounded candidate review
+
+- split the overrun host Proof carrier into a small common support task. Candidate `1c5c52da` was independently reviewed
+  `PASS` and integrated as `dab771ef`: canonical compiler/publication/store/bootstrap, production SKBF encode/decode,
+  correlated terminal receive and an exact valid-JSON bytecode-identity corruption helper are now frozen; it contains no
+  observer, verdict, raw-evidence writer, execution constructor or VM authority;
+- D0-O clean takeover committed `b79e31d7` after one exact host supervisor selector passed 2/2. It introduces the bounded
+  ordered observer, atomic reservation/activation, unique terminal winner and cleanup permit, exact ingress payload,
+  JSON-RPC failure mapping and try-only telemetry. It is frozen for independent receive review before integration; the
+  missing production five-event/duplicate/pre-admission tests remain explicit downstream Proof work, not self-acceptance;
+- P0-G clean takeover committed `6f6ecfc8` with focused Node/policy/taxonomy results 37/37. It deliberately removes JavaScript
+  wire/artifact/event semantics and regex source authority: the Gate now aggregates eight exact Rust/Node workloads and owns
+  candidate/command/durable-file integrity only. A fresh reviewer is testing false-green, symlink, TOCTOU and reporter cases;
+- no success/negative Proof writer starts until D0-O receive review resolves the exact observation API. Cargo ownership is
+  currently free; independent reviewers are read-only.
