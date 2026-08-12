@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use skiff_artifact_model::{GatewayEntryIdentity, IngressProtocol};
 use skiff_runtime_model::bytecode_execution_observation::{
@@ -9,7 +8,7 @@ use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::protocol::{
     decode_binary_frame, BytecodeRequestStartFrameWireHeader, ValidatedResponseErrorFrame,
 };
-use tokio::{sync::mpsc, time::timeout_at};
+use tokio::{sync::mpsc, time::timeout};
 
 use super::phase_0_proof_support::{
     runtime_host, CanonicalSkbfRequest, CorrelatedResponse, Correlation, PublishedFixture,
@@ -182,7 +181,12 @@ async fn run_negative_request(
     assert_eq!(error.code, expected_code, "{scenario} error code");
     assert_eq!(error.message, expected_message, "{scenario} error message");
     recording.assert_empty(scenario);
-    assert_no_second_terminal(&mut receiver, &correlation.request_id).await;
+    timeout(
+        std::time::Duration::from_secs(10),
+        drain_closed_channel_without_second_terminal(&mut receiver, &correlation.request_id),
+    )
+    .await
+    .expect("production sender must close after the terminal response");
     recording.assert_empty(scenario);
 }
 
@@ -197,16 +201,11 @@ fn different_gateway_identity(identity: &GatewayEntryIdentity) -> GatewayEntryId
     mutated
 }
 
-async fn assert_no_second_terminal(
+async fn drain_closed_channel_without_second_terminal(
     receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
     request_id: &str,
 ) {
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(75);
-    loop {
-        let message = match timeout_at(deadline, receiver.recv()).await {
-            Err(_) | Ok(None) => return,
-            Ok(Some(message)) => message,
-        };
+    while let Some(message) = receiver.recv().await {
         let RouterWriterMessage::Binary(frame) = message else {
             continue;
         };
