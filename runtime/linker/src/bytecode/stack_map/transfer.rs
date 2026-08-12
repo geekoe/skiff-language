@@ -360,6 +360,22 @@ fn equivalent_type_ref(
                         .is_some_and(|right_ty| equivalent_type_ref(left_ty, right_ty))
                 })
         }
+        (
+            skiff_artifact_model::TypeRefIr::Builtin { name, args },
+            skiff_artifact_model::TypeRefIr::Record { fields },
+        ) if name == "CatchResult"
+            && args.len() == 2
+            && fields.len() == 2
+            && fields.contains_key("exception")
+            && fields.contains_key("tag") => true,
+        (
+            skiff_artifact_model::TypeRefIr::Record { fields },
+            skiff_artifact_model::TypeRefIr::Builtin { name, args },
+        ) if name == "CatchResult"
+            && args.len() == 2
+            && fields.len() == 2
+            && fields.contains_key("exception")
+            && fields.contains_key("tag") => true,
         _ => false,
     }
 }

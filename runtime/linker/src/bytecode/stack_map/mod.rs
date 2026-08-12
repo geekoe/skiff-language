@@ -5,11 +5,11 @@ mod values;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{contract_for_opcode, OperandRole, TypeRefIr, ValidatedFunction};
+use skiff_artifact_model::{contract_for_opcode, TypeRefIr, ValidatedFunction};
 use skiff_runtime_linked_bytecode::{
-    LinkedConstantEntry, LinkedFrameLayout, LinkedInstruction, LinkedSlotState,
-    LinkedStackMapCandidate, LinkedStackValue, LinkedSwitchTable, ResumeSiteIndex,
-    SpecializationKey,
+    LinkedConstantEntry, LinkedFrameLayout, LinkedInstruction, LinkedInstructionTarget,
+    LinkedSlotState, LinkedStackMapCandidate, LinkedStackValue, LinkedSwitchTable,
+    ResumeSiteIndex, SpecializationKey,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -192,9 +192,21 @@ fn transfer_program_point(
     )?;
     check_operand_depth(&next, context.source.function.max_operand_depth, &location)?;
     if instruction.opcode() == skiff_artifact_model::Opcode::StreamNext {
-        let resume_ref =
-            values::operand_word(instruction, OperandRole::ResumeRef, location.clone())?;
-        let resume_index = ResumeSiteIndex::new(resume_ref);
+        let resume_index = instruction
+            .resolved_operands()
+            .iter()
+            .find_map(|resolved| match resolved.target() {
+                LinkedInstructionTarget::ResumeSite(index) => {
+                    Some(ResumeSiteIndex::new(index.get()))
+                }
+                _ => None,
+            })
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "StreamNext resume target is absent".to_string(),
+                )
+            })?;
         let (resume, end_resume) = {
             let site = context
                 .type_linker

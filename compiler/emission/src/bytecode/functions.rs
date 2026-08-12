@@ -17,8 +17,8 @@ use skiff_artifact_model::{
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
     MirFunction, MirIndexReceiverKind, MirInOutPathSegment, MirParamMode, MirSlot, MirSlotKind,
-    MirSourceEvent, MirStmtKind, MirUnit, MirWritablePathSegment, MirWritablePlace,
-    MirWritableRoot,
+    MirSourceEvent, MirStatementPlacement, MirStmtKind, MirUnit, MirWritablePathSegment,
+    MirWritablePlace, MirWritableRoot,
 };
 
 use super::inputs::is_void;
@@ -509,7 +509,6 @@ impl<'a> FunctionEmitter<'a> {
                 matches!(
                     instruction.opcode,
                     Opcode::Return
-                        | Opcode::Trap
                         | Opcode::Throw
                         | Opcode::Rethrow
                         | Opcode::Jump
@@ -2039,70 +2038,6 @@ impl<'a> FunctionEmitter<'a> {
         field: &str,
     ) -> Result<(), BytecodeEmissionError> {
         let object_expression = self.function.expression(object)?;
-        if let TypeRefIr::Builtin { name, args } = &object_expression.ty {
-            if name == "Exception" && args.len() == 1 && field == "error" {
-                self.emit_expression(object)?;
-                return Ok(());
-            }
-            if name == "Exception" && args.len() == 1 && field == "error" {
-                self.emit_expression(object)?;
-                return Ok(());
-            }
-            if name == "CatchResult" && args.len() == 2 {
-                let catch_slot = match &object_expression.expression {
-                    ExprIr::Catch {
-                        try_expression,
-                        catch_slot,
-                        ..
-                    } => {
-                        let _ = try_expression;
-                        *catch_slot
-                    }
-                    ExprIr::LoadSlot { slot } => *slot,
-                    other => {
-                        return Err(unsupported(
-                            &self.key,
-                            "CatchResult field read",
-                            &format!(
-                                "CatchResult expression is not an exception catch: {other:?}"
-                            ),
-                        ));
-                    }
-                };
-                self.map_completed_expression_events(object_expression.index)?;
-                return match field {
-                    "tag" => {
-                        let ty = TypeRefIr::builtin("string");
-                        let pool = self.image.add_literal_constant(
-                            self.unit.module_path.as_str(),
-                            &skiff_artifact_model::LiteralIr::String {
-                                value: "err".to_string(),
-                            },
-                            &ty,
-                            &format!("CatchResult tag in `{}`", self.key),
-                        )?;
-                        self.emit_op(Opcode::Const, vec![pool])?;
-                        Ok(())
-                    }
-                    "exception" => {
-                        self.emit_op(Opcode::LoadSlot, vec![catch_slot])?;
-                        Ok(())
-                    }
-                    "value" => {
-                        Err(unsupported(
-                            &self.key,
-                            "CatchResult field read",
-                            "CatchResult value read is outside the emitted core",
-                        ))
-                    }
-                    other => Err(unsupported(
-                        &self.key,
-                        "CatchResult field read",
-                        &format!("field `{other}` is absent from CatchResult"),
-                    )),
-                };
-            }
-        }
         let fields = self.record_shape_fields(&object_expression.ty, "field read")?;
         let ordinal = fields
             .keys()
@@ -2420,11 +2355,17 @@ impl<'a> FunctionEmitter<'a> {
         context: &'static str,
     ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
         match ty {
+            TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
+                Ok(BTreeMap::from([("error".to_string(), args[0].clone())]))
+            }
             TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
+                let exception_ty = TypeRefIr::Builtin {
+                    name: "Exception".to_string(),
+                    args: vec![args[1].clone()],
+                };
                 Ok(BTreeMap::from([
-                    ("exception".to_string(), args[1].clone()),
+                    ("exception".to_string(), exception_ty),
                     ("tag".to_string(), TypeRefIr::builtin("string")),
-                    ("value".to_string(), args[0].clone()),
                 ]))
             }
             TypeRefIr::Record { fields } => Ok(fields.clone()),
@@ -2645,7 +2586,31 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_expression(iterable)?;
                 self.emit_op(Opcode::StoreSlot, vec![iterable_slot])?;
             }
-            let header_instruction = self.instructions.len();
+            let next_generated = self
+                .events
+                .iter()
+                .filter_map(|event| match event.attribution_id {
+                    StatementAttributionId::Generated { ordinal } => Some(ordinal),
+                    _ => None,
+                })
+                .max()
+                .map_or(0, |ordinal| ordinal + 1);
+            let event_index = self.events.len();
+            self.events.push(MirSourceEvent {
+                attribution_id: StatementAttributionId::Generated {
+                    ordinal: next_generated,
+                },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                },
+                anchor: MirEmissionAnchor::GeneratedStatement {
+                    statement_index: 0,
+                    placement: MirStatementPlacement::BeforeStatement,
+                },
+            });
+            self.event_mapping.push(None);
+            let header_instruction = self.emit_op(Opcode::BudgetCheckpoint, Vec::new())?;
+            self.event_mapping[event_index] = Some(header_instruction);
             self.emit_stream_next(iterable_slot, &item_ty, Some(continuation))?;
             self.emit_op(Opcode::StoreSlot, vec![item_slot])?;
             self.emit_jump_to_block(body)?;
@@ -2816,21 +2781,19 @@ impl<'a> FunctionEmitter<'a> {
             cleanup_depth: region.cleanup_depth,
         });
         self.emit_expression(body)?;
-        let result_ty = TypeRefIr::Builtin {
-            name: "CatchResult".to_string(),
-            args: vec![try_ty.clone(), catch_type.clone()],
+        let exception_ty = TypeRefIr::Builtin {
+            name: "Exception".to_string(),
+            args: vec![catch_type.clone()],
         };
-        let fields = std::collections::BTreeMap::from([
-            ("exception".to_string(), catch_type.clone()),
-            ("tag".to_string(), TypeRefIr::builtin("string")),
-            ("value".to_string(), try_ty),
-        ]);
-        let shape = self.image.intern_shape(
+        let exception_fields =
+            std::collections::BTreeMap::from([("error".to_string(), catch_type.clone())]);
+        let exception_shape = self.image.intern_shape(
             self.unit.module_path.as_str(),
-            &result_ty,
-            &fields,
-            &format!("CatchResult construction in `{}`", self.key),
+            &exception_ty,
+            &exception_fields,
+            &format!("Exception construction in `{}`", self.key),
         )?;
+        self.emit_op(Opcode::NewRecord, vec![exception_shape, 1])?;
         let tag_pool = self.image.add_literal_constant(
             self.unit.module_path.as_str(),
             &skiff_artifact_model::LiteralIr::String {
@@ -2840,14 +2803,21 @@ impl<'a> FunctionEmitter<'a> {
             &format!("CatchResult tag in `{}`", self.key),
         )?;
         self.emit_op(Opcode::Const, vec![tag_pool])?;
-        let null_pool = self.image.add_literal_constant(
+        let result_ty = TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![try_ty, catch_type.clone()],
+        };
+        let fields = std::collections::BTreeMap::from([
+            ("exception".to_string(), exception_ty),
+            ("tag".to_string(), TypeRefIr::builtin("string")),
+        ]);
+        let shape = self.image.intern_shape(
             self.unit.module_path.as_str(),
-            &skiff_artifact_model::LiteralIr::Null,
-            &TypeRefIr::builtin("null"),
-            &format!("CatchResult value in `{}`", self.key),
+            &result_ty,
+            &fields,
+            &format!("CatchResult construction in `{}`", self.key),
         )?;
-        self.emit_op(Opcode::Const, vec![null_pool])?;
-        self.emit_op(Opcode::NewRecord, vec![shape, 3])?;
+        self.emit_op(Opcode::NewRecord, vec![shape, 2])?;
         Ok(())
     }
 
