@@ -33,7 +33,7 @@ set，但不再作为语义任务或完成单位。
 ```text
 user-visible reference / canonical architecture
   -> 本项目总体计划
-  -> 当前 accepted Phase design
+  -> 当前 accepted Phase Contract / shared decision receipts
   -> task contract
   -> implementation
 ```
@@ -81,8 +81,9 @@ user-visible reference / canonical architecture
 路径、旧路径在 replacement 分能力验收前删除。verifier 随后自然变成“语义债务汇集层”：上游没有传递的
 事实由它猜，下游再把 seal 当作完整保证。单纯给 verifier 增加规则只会加固这个结构。
 
-本计划据此改变顺序：先设计状态转移和 VCP，再建立可执行 harness，再实现最小 kernel；每个 Phase 只在
-同一 frozen candidate 的新路径上通过 Gate 后扩张支持面。crate 只负责 write-set 隔离，不再提供完成语义。
+本计划据此改变顺序：先冻结精简 Phase Contract，然后 Development Line 与 Proof Line 并行；expected-red、
+VCP/Gate 和最小 kernel 尽早互相反馈。每个 Phase 只在同一 frozen candidate 的新路径上通过 Gate 后扩张支持面。
+crate 只负责 write-set 隔离，不再提供完成语义。
 
 ### 2.2 Review finding 的 Phase owner
 
@@ -96,8 +97,8 @@ user-visible reference / canonical architecture
 | VM-08/09/10：task/cross-owner heap、materialization、handle provenance | Phase 6 | 分 lane disabled |
 | VM-14：fuel、memory、hot-path bound | Phase 1 建基础，Phase 7 完整收口 | 不宣称有统一预算保证 |
 
-Phase 0 必须用代码审计校正这张初始分配表；发现某项是更早 Phase 的前置条件时，只能前移或缩小支持面，
-不能把错误可达路径留给最终 Gate。
+Phase 0 必须用当前代码证据校正这张初始分配表；只有具体事实不清楚时才派 Clarification task。发现某项是
+更早 Phase 的前置条件时，只能前移或缩小支持面，不能把错误可达路径留给最终 Gate。
 
 ## 3. 目标执行拓扑（Phase 0 待冻结）
 
@@ -162,24 +163,25 @@ Phase 0 建立当前 capability ledger。每个后续 Phase 只允许把自己�
 
 ## 6. 垂直闭环证明
 
-从 Phase 1 开始，每个 Phase 必须在实现启动前定义并具备一个
+从 Phase 1 开始，每个 Phase 必须在两条执行线启动前定义一个
 **垂直闭环证明（Vertical Closure Proof，VCP）**。VCP 从本 Phase 的真实 producer 或公开输入开始，
 经过 production-shaped composition 到达本 Phase 的最终 consumer，并断言外部结果以及 exact owner、route、
 Pending、drop 等关键事实。
 
 VCP 不一定启动整个产品，因此不笼统称作 E2E；但它也绝不能是单 crate test 或直接构造 VM 内部对象。
-详细规则见[原则文档 §5](./large-change-execution-principles.md#5-垂直闭环证明vertical-closure-proofvcp)。
+详细规则见[原则文档 §7.1](./large-change-execution-principles.md#71-垂直闭环证明vertical-closure-proofvcp)。
 
-Phase 0 必须找到或建立 Phase 1 VCP。若找不到，Phase 0 标记 `blocked` 并先讨论验证 seam；不得先开发
-Phase 1，最后再首次整合。
+Phase 0 必须找到或建立 Phase 1 VCP 的真实 composition seam。Phase 1 的可执行 harness 由 Proof Line 从首批
+task 开始实现，与 Development Line 并行；不得等生产实现结束后才首次整合。seam 当前事实不明时启动
+Clarification；若新增 seam 会改变 execution authority，才启动条件 Design task。
 
 ### 6.1 VCP 与 Phase Gate
 
 VCP 是 Phase Gate 的必要证据，不是 Gate 本身：
 
 ```text
-Phase Test Design
-  -> tests / fixtures / scripts / observability
+Phase Contract
+  -> Proof Line: tests / fixtures / scripts / observability
   -> VCP evidence manifest
   -> Phase Gate 聚合 VCP + focused + negative + structural + regression evidence
   -> independent acceptance verdict
@@ -189,11 +191,11 @@ VCP 和 Gate 都必须可执行。Phase 0 要为 Phase 1 决定一个注册在�
 运行真实 fixture、生成并校验 manifest、拒绝 skip/零场景/stale candidate evidence。最终 result 文档只引用
 该命令和 evidence，不替代它们。
 
-### 6.2 测试是 Phase 设计的一部分
+### 6.2 测试是并行 Proof Line
 
-每个 Phase 在 production implementation 前先产生 Test Design Specification，按 invariant、状态转移、owner
-和支持面建立 scenario matrix。测试 owner 与 production leaf owner 分开；测试可以先落成 red harness，
-而不是等实现完成后由各 crate 顺手补 happy-path unit test。
+每个 Phase 在首批 production task 同时启动独立 Proof Line。Phase Contract 先给出最小外部成功结果、一个
+fail-closed companion、production seam 约束和不得伪造的事实；Proof Line 先落成 expected-red harness，再随
+真实状态转移滚动扩充 scenario matrix，而不是等待实现完成后补 happy-path unit test。
 
 最低 evidence 层包括：
 
@@ -205,7 +207,7 @@ VCP 和 Gate 都必须可执行。Phase 0 要为 Phase 1 决定一个注册在�
 - 本 Phase 声明涉及的 budget/performance checks；
 - 与此前 accepted capability 的 regression selector。
 
-具体规则见[原则文档 §6](./large-change-execution-principles.md#6-test-designvcp-和门禁的关系)。
+具体规则见[原则文档 §7](./large-change-execution-principles.md#7-vcp测试与-gate)。
 
 每个 accepted Phase 的 VCP 和 negative matrix 会成为后续 Phase 的永久 regression selector。测试覆盖按
 semantic support surface 累计，不按 crate 测试数量统计；同一 scenario 只有一个 canonical owner，避免
@@ -215,12 +217,13 @@ semantic support surface 累计，不按 crate 测试数量统计；同一 scena
 
 下面只冻结依赖方向、Phase 目标和初步 VCP。除 Phase 0 外，具体接口、task DAG 和命令均在前一 Phase
 接受后滚动细化；实际 Agent、branch、worktree 和派发顺序在执行每个 Phase 时由滚动 Execution Map 决定。
-审计发现一个 Phase 无法形成单一 Semantic Closure 时，可以拆分 Phase，但不能绕过前置 acceptance。
+执行中发现一个 Phase 无法形成单一 Semantic Closure 时，可以拆分 Phase，但不能绕过前置 acceptance。
 
 ### Phase 0 — Architecture reset and validation foundation
 
 关闭 verifier disposition、目标 pipeline、authority map、Phase 1 MVP、capability containment 和 Phase 1
-VCP。建立本项目的 exact baseline、Phase 1 task DAG、执行约束和 Execution Map 建立条件。
+VCP。补充闭合任务从共同 Phase Contract 同时启动可执行 Proof Line，产出 Phase 1 两条线的 first ready handoff；
+Clarification/Design 只按具体问题条件启动。
 
 详细计划：[`phases/phase-0-architecture-reset.md`](./phases/phase-0-architecture-reset.md)。
 执行结果：[`results/phase-0.md`](./results/phase-0.md)。
@@ -286,25 +289,24 @@ throw；证明无 raw handle 穿越、parent 同步恢复和 Pending chain root 
 某个 whole-system scenario 暴露语义缺口时，重开原 owner Phase。最终 VCP matrix 组合此前 accepted receipts，
 再运行真实 HTTP/service/stream/task/Actor 中实际声明支持的场景。
 
-## 8. Phase 内固定流程
+## 8. Phase 内核心流程
 
 每个 Phase 使用：
 
 ```text
-initial Execution Map for the ready frontier
-  -> baseline audit
-  -> phase design
-  -> independent design review
-  -> refresh Execution Map before each dispatch wave
-  -> executable proof harness
-  -> kernel
-  -> leaves + evidence
-  -> integration VCP
+Phase Contract + initial Execution Map
+  ├─ Development Line: containment / kernel / leaves
+  └─ Proof Line: expected-red / VCP / Gate / evidence
+conditional Clarification / Design / focused Review feed affected tasks only
+  -> rolling integration proof
   -> frozen candidate
-  -> required gates
-  -> independent acceptance verdict
+  -> independent Acceptance runs canonical Gate
   -> result / next-phase handoff
 ```
+
+Clarification 只回答具体当前事实；Design 只在未决定选择影响多个 write owner、两条线共同合同、
+authority/ownership/failure 语义、公共/持久边界或难以撤销时启动。它们不是固定前置角色，也不形成默认
+全局 join。详细条件见[原则文档 §4](./large-change-execution-principles.md#4-条件支持任务)。
 
 下一 Phase 可以提前做只读调查，不能在前一 Phase 未 `accepted` 时启动 production implementation。
 
@@ -337,7 +339,7 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 | reusable execution principles | written; adopted by this project |
 | project plan | active |
 | Phase 0 | integrated; acceptance blocked |
-| Phase 0 supplemental closure | ready |
+| Phase 0 supplemental closure | ready for restart; prior attempt aborted |
 | Phase 1 | detailed plan written; activation blocked on Phase 0 closure |
 | Phase 2–7 | outline only; not implementation-ready |
 

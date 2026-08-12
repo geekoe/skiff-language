@@ -7,6 +7,14 @@
 > Unblocks: Phase 1 design and implementation only after the
 > [supplemental closure task](../tasks/phase-0-supplemental-closure.md) passes
 
+> Historical workflow notice: this file records the original Phase 0 plan and integrated outputs. Its fixed
+> AUD0–AUD5 -> DEC0/TST0 -> review workflow must not be rerun. The supplemental closure task supersedes execution
+> procedure with parallel Development/Proof lines and conditional Clarification/Design tasks.
+>
+> Original completion items that prescribe a full Test Design Specification or unconditional Design Review are
+> historical procedure, not recovery gates. Their semantic obligations are carried by the supplemental Phase
+> Contract, executable Proof Line, conditional shared decisions and independent frozen-candidate Acceptance.
+
 Phase 0 不修复全部 VM 问题，也不扩展 bytecode 支持面。它负责把第一次实施中缺失的前置工作补齐：
 确认真实 baseline、关闭顶层架构决定、分类当前可达能力、找到或建立 Phase 1 的垂直闭环证明，并把
 Phase 1 细化到可以安全派发 Agent 的程度。

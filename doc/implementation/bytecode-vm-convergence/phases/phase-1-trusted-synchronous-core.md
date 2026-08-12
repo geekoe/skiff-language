@@ -1,6 +1,6 @@
 # Phase 1：最小可信同步执行闭环
 
-> Status: designed; activation requires a valid Phase 0 closure acceptance receipt
+> Status: Phase Contract drafted; activation requires a valid Phase 0 closure acceptance receipt
 >
 > Semantic Closure: Trusted Synchronous Execution Closure
 >
@@ -9,16 +9,16 @@
 > Unblocks: Phase 2 value lifecycle and writable path
 
 本文在“Phase 0 已有效 accepted”的假设下定义 Phase 1。实际执行时不能仅相信状态文字；主 Agent 必须读取
-Phase 0 closure result、acceptance receipt、exact candidate/tree、CDEC0、CTST0 和 CPLN1。任一输入缺失、互相
-矛盾或不属于同一 evidence epoch，Phase 1 保持 `blocked`。
+Phase 0 closure result、acceptance receipt、exact candidate/tree、shared Phase Contract 和 target handoff。任一
+输入缺失、互相矛盾或不属于同一 evidence epoch，Phase 1 保持 `blocked`。
 
 Phase 1 只建立一个很小但真实的同步 production execution closure。它不追求 opcode 数量，而是让 source、
 artifact、loader/linker、immutable image、VM、budget 和 request boundary 在同一支持面内只有一个 authority、
 一个执行入口和一个可重复证明。
 
 本 Phase 采用[大型重构实施原则](../large-change-execution-principles.md)、[项目总计划](../README.md)及 Phase 0
-accepted architecture/test outputs。若本文与 Phase 0 accepted CDEC0/CTST0 冲突，以 Phase 0 exact receipt 为准，
-并在启动实现前修订本文；不能由 leaf Agent 自行选择。
+accepted Contract/receipt。若本文与 Phase 0 exact receipt 冲突，以 receipt 为准，并在启动实现前修订本文；
+不能由 leaf Agent 自行选择。
 
 ## 1. 目标
 
@@ -26,7 +26,7 @@ Phase 1 完成时必须同时具备：
 
 1. 当前危险的非 Phase 1 capability 已在 production 唯一边界 containment；
 2. source scalar/local facts 经 compiler 和 artifact 无损传到 exact linker/image/VM；
-3. broad semantic verifier/seal 不再是 execution authority；保留的薄 proof stage 只能执行 CDEC0 明列职责；
+3. broad semantic verifier/seal 不再是 execution authority；保留的薄 proof stage 只能执行 Phase 0 handoff 明列职责；
 4. release/deployment/package/entry identity 沿 production route exact pin，不使用 ambient root 或 first-match；
 5. VM 只从 immutable executable image 的 pinned entry 进入；
 6. scalar slots、branch、exact non-generic local call、frame return 和 deterministic unary response 正确；
@@ -62,13 +62,12 @@ MAP1 v0 必须引用同一 accepted Phase 0 closure epoch 的：
 
 - `results/phase-0-closure.md`；
 - exact Phase 0 candidate commit/tree 和 post-acceptance merge commit；
-- 独立 Design Review 与 Acceptance receipts；
-- CDEC0 verifier/authority/containment disposition；
-- CTST0 scenario matrix、typed event schema 和 Gate contract；
-- CPLN1 exact target interface、K0 prerequisite 和 first ready frontier；
+- Phase 0 shared Phase Contract 和独立 Acceptance receipt；
+- verifier/image/entry、authority、containment 的唯一 accepted handoff；
 - accepted production composition seam；
 - durable Phase 0 Gate manifest/raw evidence hashes；
-- current capability ledger。
+- current capability ledger；
+- Development/Proof 两条线的 first ready task handoff。
 
 ### 3.2 Activation preflight
 
@@ -79,15 +78,17 @@ MAP1 v0 必须引用同一 accepted Phase 0 closure epoch 的：
 - Phase 0 后没有改变 compiler/artifact/linker/image/VM/request/Gate contract 的未审查 commit；
 - current production route 与 Phase 0 receipt 仍一致；
 - Phase 1 support surface 和 disabled surface 没有 unresolved item；
-- 所有 actual Agent、worktree 和 write set 已进入 MAP1；
+- 首批 Development/Proof Agent、worktree 和 write set 已进入 MAP1；
 - K0 containment 是第一个 production frontier；
 - Acceptance Agent 尚未参加任何 Phase 1 candidate 写入。
 
-任一项失败，先回到 Phase 0 closure 或 Phase 1 design，不启动 leaf implementation。
+Phase 0 receipt/identity 无效时整体 blocked。一个当前事实不清楚时按 §8 启动 Clarification；一个共享目标选择
+未决定时只阻塞其消费者并条件启动 Design。不能因为局部问题停止所有无关 ready task。
 
 ## 4. 精确支持面
 
-Phase 1 最低支持集合如下；Phase 0 accepted matrix 可以进一步缩小，但不能无新设计审查而扩大。
+Phase 1 最低支持集合如下；Phase 0 accepted matrix 可以进一步缩小，但扩大必须修改共享 Phase Contract，并在
+触发 §8.2 高风险条件时经过独立 review。
 
 | Dimension | Accepted target |
 | --- | --- |
@@ -123,7 +124,7 @@ source-owned scalar/local facts
   -> relocatable artifact
   -> bounded structural admission
   -> exact deployment linker
-  -> CDEC0-defined immutable executable image
+  -> Phase-0-defined immutable executable image
   -> exact deployment + operation entry pin
   -> synchronous VM core
   -> production request response
@@ -134,7 +135,7 @@ source-owned scalar/local facts
 | scalar type、direct-local target、effect、source site | source analysis/lowering |
 | opcode/operand/schema/index/resource limits | artifact model + structural validator |
 | deployment/package/registry/relocation resolution | exact deployment linker |
-| executable image identity、cache、entry pin | deployment image owner defined by CDEC0 |
+| executable image identity、cache、entry pin | deployment image owner defined by Phase 0 handoff |
 | frame、slot、PC、local call、return、dispatch | VM core |
 | raw fuel、deadline/internal-stop poll | trusted VM budget boundary + request policy |
 | unary route、terminal response、request cleanup | request/host production boundary |
@@ -142,44 +143,39 @@ source-owned scalar/local facts
 | PASS/FAIL manifest | Gate aggregator |
 
 Phase 1 不能拥有两套 image type、两种 request target constructor、两套 scalar executor 或两种 verifier seal。
-若 CDEC0 保留薄 proof stage，它是 executable-image construction 的内部步骤，不向 request/VM 暴露第二 authority。
+若 Phase 0 handoff 保留薄 proof stage，它是 executable-image construction 的内部步骤，不向 request/VM 暴露
+第二 authority。
 
-## 6. 角色合同
+## 6. 两条线和角色合同
 
-Phase 1 文档固定 role 和冲突约束；实际 Agent/task ID 由 MAP1 决定。
+Phase 1 稳定存在的是 Development Line 与 Proof Line；实际 Agent/task ID 由 MAP1 决定。
 
 | Role | Owns | Must not do |
 | --- | --- | --- |
-| 主 Agent | MAP1、最大安全并发、监控/接管、机械合流、freeze、receipt handoff | 设计、production/test/Gate 实现、review 或 acceptance |
-| Baseline Audit Agent | 一个 BAUD read-only slice | 修改 candidate、决定新语义 |
-| Phase Design Agent | D1 exact task/interface/containment confirmation | production 实现或审查自己的设计 |
-| Test Design Agent | T1D coverage/evidence/Gate matrix | production/harness/Gate 实现或 acceptance |
-| Design Review Agent | R1-D adversarial design review | 修改设计、参加 implementation/acceptance |
-| Containment Development Agent | 一个 K0 fail-closed lane | 扩大 accepted support surface |
-| Executable Kernel Agent | K1 exact linker-image-entry-VM admission kernel | 顺手实现所有 leaf behavior |
-| Production Development Agent | 一个不重叠 compiler/validator/loader/VM/budget/request lane | 修改 K1 authority 或 Gate contract |
-| Test Development Agent | 一个 canonical focused/contract/negative test lane | 修改 production 使测试通过、生成 acceptance verdict |
-| VCP Development Agent | VCP-1 fixture/harness using production seam | 手工构造 internals、生成最终 manifest |
-| Gate Development Agent | selector、aggregator、manifest/checker、Gate self-tests | 改 scenario semantics 或实现 execution path |
+| 主 Agent / Integrator | MAP1、critical-path 调度、监控/接管、机械合流、freeze、receipt handoff | production/Proof 写入、最终 verdict、merge-time 语义修复 |
+| Containment Development Agent | 一个 K0 fail-closed lane | 扩大 accepted support surface、修改 Gate 标准 |
+| Executable Kernel Agent | K1 exact linker-image-entry-VM admission kernel | 为并发拆出第二 authority、验收自己 |
+| Production Development Agent | 一个不重叠 compiler/validator/loader/VM/budget/request lane | 修改 K1 authority 或 Proof verdict |
+| Contract/Negative Proof Agent | T-C/T-R canonical expected-red、contract、negative scenarios | 修改 production 使测试通过 |
+| VCP Proof Agent | VCP-1 fixture/harness using production seam | 手工构造 internals、生成 PASS |
+| Gate Proof Agent | selector、aggregator、manifest/checker、Gate self-tests | 改 production execution 或硬编码 scenario verdict |
 | Acceptance Agent | frozen candidate read-only review、Gate execution、receipt | 修改 candidate、修复、合流或更新状态 |
 
-强制隔离：
+Clarification、Design 和专项 Design Reviewer 都是 §8 条件 task，不预建固定角色。设计者可以随后实现自己的
+决定；不能独立 review/accept 自己。强制隔离只有：
 
-- 主 Agent 不兼任其它角色；
-- Phase Design、Test Design、Design Review 是三个不同 Agent；
-- Executable Kernel 只有一个 write owner；
-- production Agent 可以写自己 lane 的 unit tests，但不能拥有对应 canonical contract/VCP/Gate verdict；
-- VCP Development 与 Gate Development 必须不同；
-- Design Review Agent 不转为 Development Agent；
-- Acceptance Agent 必须是此前没有写 Phase 1 candidate、test、Gate 或 design review 的全新 Agent；
-- 每个 Agent 从 exact commit 和 task contract 开始，不继承主 Agent/开发者的聊天结论；
-- 资源不足时降低并发，不合并冲突角色。
+- Acceptance Agent 必须是此前没有写 candidate production/test/Gate 的全新 Agent；
+- Proof Agent 不修改 production code 制造 PASS；
+- Executable Kernel 始终只有一个 write owner；
+- production Agent 可以写局部 unit tests，但不能拥有 canonical VCP/Gate verdict；
+- integrator 不在 merge 时补默认值、bypass、equivalence 或第二 API；
+- 资源不足时降低 leaf 并发，不取消独立 Acceptance。
 
 ## 7. MAP1、worktree 和调度
 
 ### 7.1 MAP1 first commit
 
-派发任何 BAUD/D1/T1D task 前，主 Agent 在独立 integration worktree 创建并单独提交：
+派发首批 Development/Proof task 前，主 Agent 在独立 integration worktree 创建并单独提交：
 
 ```text
 doc/implementation/bytecode-vm-convergence/tasks/phase-1-execution-map.md
@@ -188,10 +184,11 @@ doc/implementation/bytecode-vm-convergence/tasks/phase-1-execution-map.md
 MAP1 v0 至少记录：
 
 - exact baseline commit/tree、Phase 0 input hashes 和 clean receipt；
-- task DAG、当前 ready frontier 和 join condition；
+- Phase Contract identity、两条线首批 ready frontier 和 join condition；
 - 每个实际 Agent/task ID、role、input commit、branch/worktree 和 write/read set；
 - `started_at`、`status_after`、预计产物、splittability 和 takeover 方法；
-- integration order、focused evidence owner 和 candidate epoch。
+- first non-document commit、first executable proof attempt checkpoint；
+- conditional Clarification/Design 的触发条件、integration order 和 candidate epoch。
 
 main checkout 始终停在 `main`。每个并发 write owner 使用不同 worktree，直接建立在
 `/Users/geek/workspace` 下；只读 Agent 可以共享 detached baseline worktree。实际路径不写死在本文。
@@ -210,20 +207,20 @@ worktree clean 后，同一 role/owner 的后续串行 task 可以复用；发�
 3. 重算 ready frontier；
 4. 派发全部无依赖/写冲突的任务；
 5. 对满足 join 的 commit 机械合流；
-6. 必要时开始新 design/candidate/evidence epoch。
+6. 必要时开始新 decision/candidate/evidence epoch。
 
 不等待同一“批次”全部结束。只要某个 downstream 的全部依赖已经完成，就立即派发。
 
 ### 7.3 Watchdog and takeover
 
 超过 MAP1 `status_after` 且没有可信产物时，主 Agent 询问完成内容、当前假设、blocker、可提交部分和剩余步骤。
-根据回答自主选择：短 checkpoint、正常继续、退回设计、要求部分提交后结束、interrupt 或 takeover。
+根据回答自主选择：短 checkpoint、正常继续、条件澄清/设计、要求部分提交后结束、interrupt 或 takeover。
 
 - 同一 worktree 始终只有一个 write Agent；
 - takeover 可以是一个新 write owner 加多个 read-only diagnostic Agent；
 - 可拆任务只有在 write set 和 semantic owner 同时可分时才并行拆开；
 - 中央 K1、VM frame state machine 或 Gate verdict 不因 Agent 超时拆成多个 authority；
-- Agent replacement、并发调整和 worktree 变化只更新 MAP1；support/authority/VCP/Gate 变化退回 D1/T1D。
+- Agent replacement、并发调整和 worktree 变化只更新 MAP1；共享 support/authority/VCP/Gate 选择按 §8 处理。
 
 ### 7.4 Commands
 
@@ -233,6 +230,10 @@ worktree clean 后，同一 role/owner 的后续串行 task 可以复用；发�
 - 暂不强制所有 Cargo 命令使用统一 hard timeout；MAP1 记录观察和接管时间；
 - integration 可以运行最小 VCP/contract preflight，但不能产生 acceptance；
 - Acceptance Agent 必须完整运行 canonical Phase 1 Gate；中断等于未运行。
+
+MAP1 默认把 ordinary task 的首次 checkpoint 设在 30 分钟内，并以 45 分钟内出现首个非文档 commit、90 分钟
+内出现首次 executable VCP/Gate attempt 为重排信号。未达成时报告真实 blocker并重排，不能继续扩写文档满足
+进度。Clarification checkpoint 应更短。
 
 ### 7.5 Task handoff
 
@@ -244,74 +245,52 @@ worktree clean 后，同一 role/owner 的后续串行 task 可以复用；发�
 - 已运行的 focused commands、退出状态和日志位置；
 - 未运行项、已知 blocker、remaining risk 和建议的下一 ready task。
 
-只读 task 交付带 exact baseline 的报告，不提交 production 修改。主 Agent 只检查 handoff 完整性、write-set 和
-join condition；语义缺口退回原 role，不能在 integration worktree 临时补写。任何 Agent 不直接写其他 Agent 的
-worktree，也不把未提交修改作为下游 task 的隐式输入。
+任何 Agent 不直接写其他 Agent 的 worktree，也不把未提交修改作为下游 task 的隐式输入。Clarification 默认
+交付短 answer/citations，不要求 commit 或长报告。
 
-## 8. Baseline audit 和设计确认
+## 8. 问题路由：Clarification 与 Design
 
-### 8.1 Maximum-concurrency audit frontier
+Phase 1 不建立 BAUD1–BAUD7 全量审计 frontier。Phase 0 accepted receipt 已是共同 baseline；开发和 Proof owner
+只读取自己 task 所需代码并立即产出代码/expected-red。
 
-MAP1 v0 后以下七项全部 ready，尽量同时派发：
+### 8.1 Clarification 条件
 
-| Task | Scope | Required output |
-| --- | --- | --- |
-| BAUD1 | Phase 0 closure receipt、commit/tree、status、current diff | valid input receipt or blocker |
-| BAUD2 | production ingress 与 K0 containment drift | exact reachability and gate map |
-| BAUD3 | compiler/lowering/emitter scalar/local closure | exact constructs/opcodes/facts and hidden dependencies |
-| BAUD4 | artifact structural validator、linker、image/seal surface | exact current-to-target delta |
-| BAUD5 | VM frame/slot/local/return/budget implementation | supported handler and invariant delta |
-| BAUD6 | loader/cache/route/request response/terminal path | production composition and identity delta |
-| BAUD7 | CTST0/Gate selectors、events、regressions、baseline failures | executable evidence plan and gaps |
+只有一个明确当前事实无法从 accepted handoff 或当前 owner 的正常代码阅读中得到，并正在阻塞 task 时派发。
+可能的问题包括：某 current ingress 是否仍绕过 image pin、某 public constructor 的实际调用方、某 production
+event 是否已存在。任务必须包含一个 question、consumer、exact baseline、短 checkpoint 和 citations 输出；
+禁止目标 API、迁移顺序、Phase task 或 verdict。
 
-报告只读取证，必须引用 exact file/symbol/line/commit，区分 current correctness、structural blocker、completion
-gap 和已接受 Phase 0 fact。
+Clarification 只阻塞消费者，不形成全局 join；默认不写仓库长文档。
 
-### 8.2 Rolling design readiness
+### 8.2 Design 条件
 
-不等待全部 BAUD 才开始草案：
+只有存在尚未决定的目标选择，并且它影响多个 write owner、两条线共同合同、authority/ownership/failure
+语义、公共/持久边界或难以撤销时，才派一个 narrowly scoped Design task。
 
-- BAUD2/3/4/5/6 完成后，Phase Design Agent 可开始 D1；
-- BAUD3/4/5/6/7 完成后，Test Design Agent 可开始 T1D；
-- D1/T1D 只有在 BAUD1–7 全部 disposition 后才能冻结。
+Phase 1 的典型触发点是：Phase 0 handoff 无法唯一决定 executable image/entry 类型、K1 atomic boundary 或
+budget terminal owner。私有 helper、局部数据结构和容易撤销的 lane 实现由 Development Agent 自己决定；
+scenario/assertion/Gate carrier 由 Proof Line 决定；Agent/worktree 由主 Agent决定。
 
-D1 只能实例化 Phase 0 accepted CDEC0/CPLN1，不能重新发明 verifier、image 或 support surface。它至少冻结：
-
-- exact support/disabled opcode/type/target matrix；
-- K0 containment lanes 和 merge barrier；
-- K1 public/private interface、single owner 和迁移顺序；
-- leaf write-set boundaries 与 producer-consumer handoff；
-- failure/terminal/budget state transitions；
-- integration order 和 reverse-search obligations。
-
-T1D 从 CTST0 派生 exact scenario ledger，至少冻结：fixture、raw event、expected outcome、test level、failure
-injection、required selector、owner 和 evidence class。
-
-D1/T1D 冻结后，由全新 Design Review Agent 执行 R1-D。任何 blocker 使 Phase 1 回到 `design-blocked`；reviewer
-和主 Agent 不修改设计。
+高风险 shared decision 由一个未参与该决定的 reviewer 在 dependent join 前审查。`FAIL` 只阻塞消费者，其它
+K0/Proof task 继续。设计者可以随后实现，不得 review/accept 自己。
 
 ## 9. Implementation DAG
 
 ```text
-MAP1 -> BAUD1..BAUD7
-  -> D1 + T1D
-  -> R1-D
-  -> K0A compiler/source containment ─┐
-     K0B image/opcode containment ────┼-> K0 containment receipt
-     K0C request/route containment ───┘
-     T-C/T-R expected-red tests -------(parallel)
-     G1 Gate infrastructure -----------(parallel)
-  -> K1 executable-image/admission kernel
-     L1 compiler scalar lane ----------(parallel where D1 interface is sufficient)
-     L2 structural admission lane -----(parallel where D1 interface is sufficient)
-  -> L3 loader/linker/cache route ─────┐
-     K2 VM scalar/local core ──────────┤
-     L4 raw fuel/deadline/stop ────────┼-> integration joins + minimum VCP after each join
-     L5 unary request/terminal ────────┤
-     O1 typed observability (conditional)
-     T-C/T-R canonical tests ──────────┤
-     V1 VCP-1 harness ─────────────────┤
-     G1 Phase Gate ────────────────────┘
+MAP1 + Phase Contract preflight
+  ├─ Development Line
+  │    {K0A compiler, K0B image/opcode, K0C request/route containment}
+  │      -> K0 containment receipt
+  │      -> K1 executable-image/admission kernel
+  │      -> {L1 compiler, L2 structural admission}
+  │      -> {L3 loader/link/cache, K2 VM, L4 budget, L5 request, O1 conditional events}
+  │
+  └─ Proof Line（从第一批并行启动）
+       {T-C/T-R expected-red, V1 VCP harness, G1 Gate/checker self-tests}
+       -> rolling contract/negative/VCP/regression evidence
+
+conditional Clarification/Design feeds only affected nodes
+  -> rolling joins + minimum executable proof after each relevant join
   -> I1 merged integration proof
   -> F1 frozen candidate
   -> A1 independent acceptance
@@ -321,13 +300,13 @@ MAP1 -> BAUD1..BAUD7
 调度说明：
 
 - K0A/B/C 是 Phase 1 第一个 production frontier，三项 write set 独立时全部并发；
-- canonical test/Gate scaffolding 可以与 K0 并发，但不能增加 production capability；
+- T-C/T-R、V1 和 G1 与 K0 从第一批并行，不等待完整设计或审计；
 - K0 receipt 之前不得把任何 scalar expansion 合入 integration line；
 - K1 是单一 authority kernel，不为并发拆给多个 Agent；
-- L1/L2 若只依赖 D1 frozen artifact contract，可与 K1 并发开发，但合流必须满足 exact producer-consumer join；
+- L1/L2 若只依赖 Phase 0 accepted artifact contract，可与 K1 并发开发，但合流满足 exact producer-consumer join；
 - L3/K2/L4/L5 只有 K1 API 完整提交后才 ready；
-- O1 只有 T1D 证明 Phase 0 events 不足时启动；
-- V1/G1 可以早建 expected-red harness，但不得使用 placeholder 或 test-only seam；
+- O1 只有 executable Proof 表明 existing events 无法证明某个 required fact 时启动；
+- Proof Line 不得使用 placeholder、test-only seam 或硬编码 PASS；
 - integration 是串行 merge owner，不是最后补语义的 checkpoint。
 
 ## 10. Production task contracts
@@ -351,10 +330,11 @@ K0 receipt 必须由独立 negative test lane 证明每个 gate 的 exact error 
 
 ### K1 — Executable image and VM admission kernel
 
-一个 Agent 原子拥有 CDEC0 定义的 linker output、immutable image、entry pin 和 VM input 协议。必须：
+一个 Agent 原子拥有 Phase 0 accepted handoff 定义的 linker output、immutable image、entry pin 和 VM input
+协议。必须：
 
 - 删除 broad verifier/seal 的 execution-authority 角色；
-- 若有薄 proof stage，仅保留 CDEC0 明列 checks，且输出不成为第二事实源；
+- 若有薄 proof stage，仅保留 Phase 0 handoff 明列 checks，且输出不成为第二事实源；
 - exact deployment owner、package closure、operation entry 和 executable image 不可替换；
 - request/VM 不能读取 raw candidate、ambient artifact root 或 unchecked entry；
 - test crate 不能直接构造 linked/image/VM entry internals；
@@ -365,7 +345,7 @@ K1 允许跨 crate write set，因为这些类型必须作为一个原子协议�
 
 ### L1 — Compiler scalar/local producer
 
-- 只发射 D1 accepted source constructs/opcodes；
+- 只发射 Phase Contract accepted source constructs/opcodes；
 - exact direct-local target、arity、scalar type、frame/slot、source/statement facts由 source/lowering 提供；
 - unsupported shape/effect/target 在 emission 前 fail closed；
 - fixture 至少包含 helper local call、scalar slot、arithmetic、comparison/branch 和 return；
@@ -427,7 +407,7 @@ surface；不能提前实现 Phase 2 aggregate executor。
 
 ### 11.1 Canonical test lanes
 
-Test Development Agent 按 T1D 至少拆为：
+Proof Line 从第一批 task 起至少覆盖两个可独立写入的 lane：
 
 | Lane | Coverage |
 | --- | --- |
@@ -476,7 +456,7 @@ Gate 至少运行：
 
 ### 11.4 Phase 1 Gate
 
-唯一 canonical Gate command 由 T1D 冻结并注册进 `scripts/verify.mjs`。它聚合：
+唯一 canonical Gate command 由 Proof Line 实现并注册进 `scripts/verify.mjs`。它聚合：
 
 | Evidence class | Required proof |
 | --- | --- |
@@ -487,28 +467,29 @@ Gate 至少运行：
 | negative/lifecycle | malformed、mismatch、limit、terminal、cleanup |
 | structural/reverse search | 无 seal authority、fallback、alternate executor、public unchecked constructor |
 | budget/bounded work | raw fuel/poll/frame/scalar work limits |
-| regression | Phase 0 VCP/Gate 和 T1D 明列的既有 selectors |
+| regression | Phase 0 accepted VCP/Gate 和 Proof Line 滚动记录的既有 selectors |
 
 Gate 必须使用 Phase 0 accepted evidence infrastructure：detached clean worktree、exact commit/tree、binary hash、
 durable raw logs/events/manifest/receipt、非零 scenario、无 skip、无跨 epoch 拼接。Manifest 由 Gate aggregator
 从 raw evidence生成。
 
-不默认要求笼统 full repository verify。T1D 必须在实现前列出 required selectors；required command 中断或既有
-失败都是 FAIL，除非在 design review 前已有 exact baseline waiver、owner、expiry 和不受本 Phase 影响的证据。
+不默认要求笼统 full repository verify。Proof Line 在 candidate freeze 前闭合 required selector matrix；required
+command 中断或既有失败都是 FAIL，除非 freeze 前已有 exact baseline waiver、owner、expiry 和不受本 Phase
+影响的证据。测试矩阵随真实状态转移滚动补充，不能等 production 实现结束后才第一次建立。
 
 ## 12. Integration、freeze 和 acceptance
 
 ### 12.1 Integration order
 
-唯一 integration line 按 DAG 合流，默认顺序：
+唯一 integration line 按实际 ready frontier滚动合流，不等待两条线各自“全部完成”。默认依赖是：
 
-1. MAP1/design/test-design receipts；
-2. K0A/B/C + containment evidence；
-3. K1 kernel；
-4. L1/L2 已完成 producer/admission lanes；
-5. L3/K2/L4/L5/O1；
-6. T-C/T-R/V1/G1；
-7. merged-state VCP/Gate preflight；
+1. MAP1/Phase Contract receipt；
+2. K0A/B/C 与 T-C/T-R expected-red、V1/G1 skeleton 各自 ready 即合流；
+3. K0 containment receipt 后才合流 scalar expansion；
+4. K1 完整原子 commit；
+5. L1/L2 及其 contract evidence；
+6. L3/K2/L4/L5/O1 与对应 negative/VCP evidence滚动 join；
+7. merged-state full VCP/Gate preflight；
 8. frozen candidate。
 
 每个 join 后立即重算 ready frontier并运行受影响的最小 contract/VCP preflight。Integrator 不为合流增加 type
@@ -534,7 +515,7 @@ command 和 durable evidence output location。它不接收开发者的 PASS 总
 
 Acceptance 必须：
 
-1. 只读审查 candidate 是否满足 D1/T1D；
+1. 只读审查 candidate 是否满足 Phase Contract 和所有实际触发的 shared decision receipts；
 2. 专门寻找手工 image/target、硬编码 evidence、fallback 和 unsupported reachability；
 3. 在 detached clean worktree 运行完整 Gate；
 4. 核对 raw evidence 与 manifest，不只看 exit code；
@@ -548,9 +529,10 @@ Acceptance Agent 不修复。`FAIL` 由主 Agent退回对应 owner；修复后�
 Phase 1 只有全部成立才为 `accepted`：
 
 - [ ] Phase 0 closure inputs属于同一 valid epoch；
-- [ ] MAP1 在首次派发前单独提交并记录所有实际 Agent、worktree、完成、超时、接管和 join；
-- [ ] BAUD1–BAUD7 全部 disposition；
-- [ ] D1、T1D 和 R1-D 对 exact design commit PASS；
+- [ ] MAP1 在首次派发前单独提交并记录两条线、实际 Agent、worktree、超时、接管和 join；
+- [ ] Development/Proof 首批 task 并行启动并产生非文档 code/evidence；
+- [ ] Clarification 只回答具体事实问题，未形成全量审计 barrier；
+- [ ] 只有满足条件的共享目标选择才产生 Design/review receipt；
 - [ ] K0 containment receipt 先于任何 scalar expansion merge；
 - [ ] accepted/disabled support matrix 在 compiler、image 和 request 三个 owner 一致；
 - [ ] broad verifier/seal 不再是 execution authority；
@@ -578,7 +560,7 @@ Phase 1 只有全部成立才为 `accepted`：
 - K1 无法在一个原子 owner 中实现，必须形成长期双 image/seal；
 - hard fuel/deadline terminal 与 canonical error语义冲突；
 - required Gate 因外部权限/资源不可执行；
-- Design Review 连续拒绝同一选择且现有 authority 无法消解。
+- 一个 shared design choice 经独立 review 后仍无法由现有 authority 消解。
 
 不能通过扩大 Phase、降低 Gate、硬编码 manifest、合并冲突角色、保留 fallback 或“先跑起来以后再删”绕过。
 
@@ -592,7 +574,7 @@ doc/implementation/bytecode-vm-convergence/results/phase-1.md
 
 至少记录：
 
-- baseline、D1/T1D、candidate、merge commit 和 tree hashes；
+- baseline、Phase Contract、conditional clarification/design receipts、candidate、merge commit 和 tree hashes；
 - MAP1 final revision、实际 Agent/task ID、worktree 和 takeover；
 - K0/K1/L*/T*/V1/G1 commits；
 - exact accepted opcode/type/entry/support matrix；
@@ -601,7 +583,8 @@ doc/implementation/bytecode-vm-convergence/results/phase-1.md
 - durable raw evidence、manifest、acceptance receipt locator/hash；
 - raw fuel/deadline/internal-stop limits 和结果；
 - disabled capability ledger；
-- Phase 2 value-lifecycle producer/consumer seam、first ready audit frontier 和 unresolved risks。
+- Phase 2 value-lifecycle producer/consumer seam、first ready Development/Proof tasks、conditional questions 和
+  unresolved risks。
 
 只有 result commit 根据 valid acceptance receipt 合入 `main` 后，总计划才把 Phase 1 标为 `accepted` 并允许
 Phase 2 production implementation。
