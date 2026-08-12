@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 6; L1/L2 accepted, K1 hard cut validating
+> Status: active; revision 7; L1/L2/K1/L3 accepted, K2 and L4/L5 active
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -285,3 +285,31 @@ run the complete Phase 1 Gate and issue the final verdict.
   while K1 is forbidden to "fix" this by globally deduplicating specialization-owned rows;
 - L1 and L2 are now accepted producer/structural nodes. K1 hard-cut production crates compile and its full affected test
   targets compile; focused execution and independent authority review remain required before L3/K2/L4/L5 implementation.
+
+## 14. Revision 7 — single execution authority and L3 closure
+
+- the K1 hard cut joined as `c9da7b93`. Linker now sole-mints one immutable deployment-build
+  `DeploymentExecutionImage`; the same `Arc` is the cache value, route pin and VM authority. The former public verifier
+  seal/entry wrapper, generic deployment image/pin and pairable request target are deleted. Raw linking is crate-private,
+  and operation or HTTP entries can only be minted by exact image-owned lookup;
+- construction-boundary correction `c778e5e3` updates the canonical runtime DAG and lexically enforces that linker
+  `execution_image.rs` is the only external consumer of verifier `ExecutableFacts` and `verify_executable_facts`. Its
+  synthetic scanner rejects comment/string receipts and second consumers (`17/17`); the live checker passes all 21 promoted
+  runtime crates. Residual unused host dependency removal joined as `0e21cb72`;
+- entry regression `9537df4b` constructs one production image with two exact operations, proves A/B resolve distinct
+  functions, unknown operation is typed `OperationNotFound`, and both entries retain `Arc::ptr_eq` with the same image.
+  The independent K1 reviewer returned `PASS` after these two corrections;
+- merged-state T-C now uses only `link_deployment_execution_image` plus exact image-owned HTTP entry lookup. All six
+  compiler/artifact/store/loader/link/image scenarios pass; log `/tmp/skiff-p1-k1-integrated-contract.log`, SHA-256
+  `39591b526f78790be28f4f379f4acf6c1d1b9a97cf327d934b9d773b1ce9e342`;
+- K1 focused execution proved the production constructor, cache single-flight and owner-mismatch complete-or-none paths,
+  canonical host request, store-withdrawal pinning, Phase 0 VCP and VM scalar local-call (`1–8` green). This closes L3's
+  exact deployment closure, exact entry/signature, same-allocation cache pin, no ambient artifact reread and no first-match
+  fallback obligations. K2 remains proof-open: existing production code appears sufficient, but deep call/bounds and
+  lifecycle-sidecar absence need a dedicated production-image VM proof;
+- the final real test-runner batch case remains red before image construction because its independent `seed_canonical_std`
+  caller still requests bytecode for the disabled full std package. The compiler's canonical std seed is already
+  bytecode-free; a narrow caller-policy successor owns this remaining regression. It may not exempt `std` from K0A or expand
+  the Phase 1 capability surface;
+- the ready frontier is now K2 Proof and the single L4/L5 production writer. L4/L5 share VM/request/scheduler/host state and
+  therefore remain serialized under one owner. O1 starts only after their frozen settlement and inventory carriers exist.
