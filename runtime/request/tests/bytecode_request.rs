@@ -7,36 +7,44 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
 };
 
-use skiff_artifact_identity::ValidatedBytecodeArtifact;
+use skiff_artifact_identity::{gateway_entry_identity, ValidatedBytecodeArtifact};
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentRevision, IngressProtocol, IngressSelector,
-    PackageArtifact, ServiceContract, ServiceDeployment, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentOperationBinding,
+    DeploymentRevision, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan,
+    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
+    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifact,
+    PackageCallableId, PackageLocalAbiSymbol, ServiceContract, ServiceDeployment,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     compile_package, CompilerPlatformSources, ManifestOwner, ManifestProvenance,
     PackageCompileInput, PackageSourceInput, PublicationManifest, PublicationSourceGraph,
     SourceTree, SourceTreeFile,
 };
-use skiff_runtime_bytecode_verifier::{verify, VerificationLimits};
+use skiff_runtime_bytecode_verifier::{verify, VerificationLimits, VerifiedLinkedBytecodeImage};
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_deployment_image::DeploymentImage;
 use skiff_runtime_linker::{link_deployment, LinkLimits};
+use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
 use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
 use skiff_runtime_model::request_heap::RequestHeapLimits;
 use skiff_runtime_request::{
-    execute_runtime_bytecode_request, start_runtime_bytecode_request, BoundaryResponse,
-    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, BytecodeRequestRunOutcome,
-    BytecodeRequestTarget, ExecutionBudget, RequestEnvelope, ResponseEnd, ResponseEvent,
-    ResponseEventSink, ResponseStreamEvent,
+    execute_runtime_bytecode_request, start_runtime_bytecode_request, BinaryHttpRequest,
+    BinaryHttpRequestMetadata, BoundaryResponse, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, BytecodeRequestRunOutcome, BytecodeRequestTarget,
+    ExecutionBudget, GatewayAdapterArg as RequestGatewayAdapterArg,
+    GatewayAdapterSource as RequestGatewayAdapterSource, HttpAdapter, HttpAdapterCallable,
+    HttpAdapterKind, RequestEnvelope, RequestError, ResponseEnd, ResponseEvent, ResponseEventSink,
+    ResponseStreamEvent,
 };
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
@@ -217,6 +225,204 @@ fn service_deployment(
     (Arc::new(deployment), reference)
 }
 
+fn implementation_callable_id(package: &PackageArtifact, selector: &str) -> PackageCallableId {
+    let symbol = package
+        .package_local_abi
+        .implementation_symbols
+        .get(selector)
+        .unwrap_or_else(|| panic!("compiled scalar package has no callable {selector}"));
+    match symbol {
+        PackageLocalAbiSymbol::Callable { callable_id, .. } => callable_id.clone(),
+        _ => panic!("compiled scalar symbol {selector} is not callable"),
+    }
+}
+
+fn scalar_gateway_contract(package_id: &str) -> Arc<ServiceContract> {
+    let mut contract = ServiceContract {
+        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+        service_id: package_id.to_string(),
+        contract_version: "1.0.0".to_string(),
+        service_protocol_identity: skiff_artifact_model::ServiceProtocolIdentity::new("unassigned"),
+        operations: BTreeMap::new(),
+        public_instances: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
+        diagnostic_text: skiff_artifact_model::ContractDiagnosticText {
+            service: package_id.to_string(),
+            operations: BTreeMap::new(),
+            types: BTreeMap::new(),
+        },
+    };
+    skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
+    Arc::new(contract)
+}
+
+fn scalar_gateway_entry(
+    key: &str,
+    handler: PackageCallableId,
+    schema: GatewayExternalSchema,
+) -> (GatewayEntryKey, DeploymentGatewayEntry) {
+    let key = GatewayEntryKey::parse(key).unwrap();
+    let protocol_surface = GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+            adapter_kind: GatewayAdapterKind::TypedJson,
+            dispatch_mode: GatewayDispatchMode::Unary,
+            external_sources: vec![GatewayAdapterSource::HttpBody],
+            request_body_schema: Some(schema.clone()),
+            response_schema: Some(schema),
+            stream_item_schema: None,
+        }),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    };
+    let identity = gateway_entry_identity(&protocol_surface).unwrap();
+    let entry = DeploymentGatewayEntry {
+        gateway_entry_identity: identity,
+        protocol_surface,
+        handler: Some(handler),
+        pre: None,
+        guard: None,
+        adapter_plan: GatewayAdapterPlan {
+            kind: GatewayAdapterKind::TypedJson,
+            args: vec![GatewayAdapterArg {
+                param: "value".to_string(),
+                source: GatewayAdapterSource::HttpBody,
+            }],
+        },
+        close_handler: None,
+        close_adapter_plan: None,
+    };
+    (key, entry)
+}
+
+fn scalar_gateway_deployment(
+    package: &PackageArtifact,
+    contract: &ServiceContract,
+) -> (
+    Arc<ServiceDeployment>,
+    skiff_artifact_model::ServiceDeploymentRef,
+    BTreeMap<&'static str, GatewayEntryKey>,
+) {
+    let definitions = [
+        (
+            "number",
+            "main.numberBody",
+            GatewayExternalSchema::Number,
+        ),
+        ("bool", "main.boolBody", GatewayExternalSchema::Boolean),
+        ("null", "main.nullBody", GatewayExternalSchema::Null),
+        (
+            "string",
+            "main.stringBody",
+            GatewayExternalSchema::String,
+        ),
+    ];
+    let mut gateway_entries = BTreeMap::new();
+    let mut ingress = Vec::new();
+    let mut keys = BTreeMap::new();
+    for (name, selector, schema) in definitions {
+        let (key, entry) =
+            scalar_gateway_entry(name, implementation_callable_id(package, selector), schema);
+        ingress.push(DeploymentIngressBinding {
+            selector: IngressSelector {
+                protocol: IngressProtocol::Http,
+                method: Some("POST".to_string()),
+                path: format!("/{name}"),
+            },
+            gateway_entry_key: key.clone(),
+        });
+        keys.insert(name, key.clone());
+        gateway_entries.insert(key, entry);
+    }
+
+    let mut deployment = ServiceDeployment {
+        schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
+        contract: skiff_artifact_identity::service_contract_ref(contract).unwrap(),
+        deployment_revision: DeploymentRevision::new("revision:request-vm-scalar-gateways"),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new("unassigned"),
+        implementation: skiff_artifact_identity::package_artifact_ref(package).unwrap(),
+        operation_bindings: Vec::new(),
+        package_bindings: Vec::new(),
+        service_selectors: Vec::new(),
+        gateway_entries,
+        ingress,
+        diagnostic_text: DeploymentDiagnosticText {
+            display_name: "request vm scalar gateways".to_string(),
+            notes: BTreeMap::new(),
+        },
+    };
+    skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
+    let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
+    (Arc::new(deployment), reference, keys)
+}
+
+struct ScalarGatewayFixture {
+    image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
+    keys: BTreeMap<&'static str, GatewayEntryKey>,
+}
+
+impl ScalarGatewayFixture {
+    fn build() -> Self {
+        let (package, bytecode) = compile_scalar_package_with_source(
+            "function numberBody(value: number) -> number {
+  return value + 1.0
+}
+
+function boolBody(value: bool) -> bool {
+  return value
+}
+
+function nullBody(value: null) -> null {
+  return value
+}
+
+function stringBody(value: string) -> string {
+  return value
+}
+",
+        );
+        let contract = scalar_gateway_contract(package.package_id.as_str());
+        let (deployment, deployment_reference, keys) =
+            scalar_gateway_deployment(&package, &contract);
+        let resolver = TestResolver {
+            deployment,
+            contract,
+            package,
+            bytecode,
+        };
+        let hydrated = DeploymentBytecodeLoader::new(&resolver)
+            .load(&deployment_reference)
+            .unwrap();
+        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
+        let verified =
+            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
+        let image = Arc::new(DeploymentImage::try_new(verified).unwrap());
+        Self { image, keys }
+    }
+
+    fn target(&self, name: &str) -> BytecodeRequestTarget {
+        let key = self
+            .keys
+            .get(name)
+            .unwrap_or_else(|| panic!("unknown scalar gateway {name}"))
+            .clone();
+        let program = Arc::clone(self.image.program());
+        let entry = program
+            .gateway_entry(&key, LinkedGatewayCallableRole::Handler)
+            .unwrap();
+        BytecodeRequestTarget::try_new_gateway(
+            Arc::clone(&self.image),
+            entry,
+            key,
+            LinkedGatewayCallableRole::Handler,
+        )
+        .unwrap()
+    }
+}
+
+fn scalar_gateway_fixture() -> &'static ScalarGatewayFixture {
+    static FIXTURE: OnceLock<ScalarGatewayFixture> = OnceLock::new();
+    FIXTURE.get_or_init(ScalarGatewayFixture::build)
+}
+
 struct TestResolver {
     deployment: Arc<ServiceDeployment>,
     contract: Arc<ServiceContract>,
@@ -337,9 +543,215 @@ fn request_envelope() -> RequestEnvelope {
     }
 }
 
+fn scalar_gateway_request(
+    name: &str,
+    kind: HttpAdapterKind,
+    body: &[u8],
+    adapter_args: Vec<RequestGatewayAdapterArg>,
+) -> RequestEnvelope {
+    let mut request = request_envelope();
+    let path = format!("/{name}");
+    request.ingress_selector = Some(IngressSelector {
+        protocol: IngressProtocol::Http,
+        method: Some("POST".to_string()),
+        path: path.clone(),
+    });
+    request.binary_http = Some(BinaryHttpRequest {
+        metadata: BinaryHttpRequestMetadata {
+            method: "POST".to_string(),
+            url: format!("https://example.test{path}"),
+            path,
+            query: Vec::new(),
+            headers: Vec::new(),
+        },
+        body: body.to_vec(),
+    });
+    request.http_adapter = Some(HttpAdapter {
+        kind,
+        handler: HttpAdapterCallable::PackageFunction {
+            package_id: "example.com/vm-scalar".to_string(),
+            symbol_path: name.to_string(),
+        },
+        guard: None,
+        pre: None,
+        adapter_args,
+    });
+    request
+}
+
+fn http_body_argument() -> RequestGatewayAdapterArg {
+    RequestGatewayAdapterArg {
+        param: "value".to_string(),
+        source: RequestGatewayAdapterSource::HttpBody,
+    }
+}
+
+fn execute_scalar_gateway(
+    name: &str,
+    kind: HttpAdapterKind,
+    body: &[u8],
+    adapter_args: Vec<RequestGatewayAdapterArg>,
+) -> Result<BoundaryResponse, RequestError> {
+    execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+        target: scalar_gateway_fixture().target(name),
+        request: scalar_gateway_request(name, kind, body, adapter_args),
+        cancelled: Arc::new(AtomicBool::new(false)),
+        cancellation: CancellationToken::new(),
+        execution_budget: Arc::new(ExecutionBudget::disabled()),
+        handles: BytecodeRequestExecutionHandles {
+            request_heap_limits: RequestHeapLimits::default(),
+            http_executor: None,
+            self_ingress: None,
+        },
+    })
+}
+
+fn response_payload(response: BoundaryResponse) -> Vec<u8> {
+    let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) = response else {
+        panic!("scalar gateway returned a non-payload response: {response:?}");
+    };
+    payload
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_json_number_body_materializes_against_pinned_entry() {
+        let response = execute_scalar_gateway(
+            "number",
+            HttpAdapterKind::TypedJson,
+            b"2",
+            vec![http_body_argument()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&response_payload(response)).unwrap(),
+            serde_json::json!(3.0)
+        );
+    }
+
+    #[test]
+    fn typed_json_bool_and_null_bodies_materialize_as_immediates() {
+        for (name, body, expected) in [
+            ("bool", b"true".as_slice(), serde_json::json!(true)),
+            ("null", b"null".as_slice(), serde_json::Value::Null),
+        ] {
+            let response = execute_scalar_gateway(
+                name,
+                HttpAdapterKind::TypedJson,
+                body,
+                vec![http_body_argument()],
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&response_payload(response)).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn typed_json_malformed_body_fails_closed_before_vm_start() {
+        let error = execute_scalar_gateway(
+            "number",
+            HttpAdapterKind::TypedJson,
+            b"{",
+            vec![http_body_argument()],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestError::Decode(message) if message.contains("not valid JSON")
+        ));
+    }
+
+    #[test]
+    fn typed_json_body_must_match_exact_pinned_parameter_type() {
+        let error = execute_scalar_gateway(
+            "number",
+            HttpAdapterKind::TypedJson,
+            b"true",
+            vec![http_body_argument()],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestError::Decode(message)
+                if message.contains("exact pinned number type for parameter 0")
+        ));
+    }
+
+    #[test]
+    fn typed_json_non_scalar_bodies_fail_closed() {
+        for body in [b"[]".as_slice(), b"{\"value\":2}".as_slice()] {
+            let error = execute_scalar_gateway(
+                "number",
+                HttpAdapterKind::TypedJson,
+                body,
+                vec![http_body_argument()],
+            )
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                RequestError::Unsupported(message) if message.contains("is non-scalar")
+            ));
+        }
+    }
+
+    #[test]
+    fn typed_json_unsupported_pinned_scalar_plan_fails_closed() {
+        let error = execute_scalar_gateway(
+            "string",
+            HttpAdapterKind::TypedJson,
+            b"\"value\"",
+            vec![http_body_argument()],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestError::Unsupported(message)
+                if message.contains("unsupported exact pinned lifecycle plan")
+        ));
+    }
+
+    #[test]
+    fn typed_json_adapter_arity_must_match_exact_pinned_entry() {
+        let error = execute_scalar_gateway(
+            "number",
+            HttpAdapterKind::TypedJson,
+            b"2",
+            Vec::new(),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestError::Decode(message)
+                if message.contains("0 arguments") && message.contains("1 parameters")
+        ));
+    }
+
+    #[test]
+    fn raw_http_body_remains_heap_bytes() {
+        let error = execute_scalar_gateway(
+            "number",
+            HttpAdapterKind::RawHttp,
+            b"2",
+            vec![http_body_argument()],
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestError::Unsupported(message) if message.contains("expected number")
+        ));
+    }
 
     #[test]
     fn request_heap_scalar_returns_payload() {

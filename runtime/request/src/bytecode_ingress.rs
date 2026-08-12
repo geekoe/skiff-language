@@ -18,7 +18,9 @@ use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason}
 use skiff_runtime_deployment_image::{
     DeploymentImage, PinnedDeploymentEntry, PinnedDeploymentEntryError,
 };
-use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
+use skiff_runtime_linked_bytecode::{
+    LinkedGatewayCallableRole, LinkedValueDropPlan, LinkedValueTransferPlan,
+};
 use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
     vm_heap::{VmHeap, VmHeapError, VmRecordField},
@@ -1270,7 +1272,7 @@ pub fn start_runtime_bytecode_request_with_ports(
     let resource_table: ResourceTable = Default::default();
     let mut request_heap = RequestVmHeap::new(handles.request_heap_limits);
     request_heap.set_resource_table(resource_table.clone());
-    let arguments = gateway_entry_arguments(&request, &mut request_heap)?;
+    let arguments = gateway_entry_arguments(&request, &pinned, &mut request_heap)?;
     let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits())
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
 
@@ -1692,7 +1694,7 @@ pub fn execute_runtime_bytecode_request_with_ports(
     let resource_table: ResourceTable = Default::default();
     let mut heap = RequestVmHeap::new(handles.request_heap_limits);
     heap.set_resource_table(resource_table.clone());
-    let arguments = gateway_entry_arguments(&request, &mut heap)?;
+    let arguments = gateway_entry_arguments(&request, &pinned, &mut heap)?;
     let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits())
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let queue = Arc::new(InMemoryWakeQueue::new());
@@ -1938,6 +1940,7 @@ fn url_origin(url: &str) -> Option<String> {
 
 fn gateway_entry_arguments(
     request: &RequestEnvelope,
+    pinned: &PinnedDeploymentEntry<VerifiedLinkedBytecodeImage, VerifiedCodeEntry>,
     heap: &mut RequestVmHeap,
 ) -> RequestResult<Vec<ValueSlot>> {
     let Some(adapter) = &request.http_adapter else {
@@ -1946,18 +1949,127 @@ fn gateway_entry_arguments(
     let binary = request.binary_http.as_ref().ok_or_else(|| {
         RequestError::Decode("HTTP adapter request is missing binary HTTP metadata".to_string())
     })?;
+    let typed_json_body = match adapter.kind {
+        HttpAdapterKind::RawHttp => None,
+        HttpAdapterKind::TypedJson => {
+            let parameter_count = pinned.entry().signature().parameter_types().len();
+            if adapter.adapter_args.len() != parameter_count {
+                return Err(RequestError::Decode(format!(
+                    "typedJson HTTP adapter has {} arguments but the exact pinned entry has {parameter_count} parameters",
+                    adapter.adapter_args.len()
+                )));
+            }
+            if !adapter
+                .adapter_args
+                .iter()
+                .any(|arg| arg.source == GatewayAdapterSource::HttpBody)
+            {
+                return Err(RequestError::Decode(
+                    "typedJson HTTP adapter has no http.body argument".to_string(),
+                ));
+            }
+            Some(serde_json::from_slice::<serde_json::Value>(&binary.body).map_err(
+                |error| {
+                    RequestError::Decode(format!(
+                        "typedJson HTTP body is not valid JSON: {error}"
+                    ))
+                },
+            )?)
+        }
+    };
     let mut arguments = Vec::with_capacity(adapter.adapter_args.len());
-    for arg in &adapter.adapter_args {
+    for (ordinal, arg) in adapter.adapter_args.iter().enumerate() {
         let value = match arg.source {
             GatewayAdapterSource::HttpRequest => materialize_http_request(binary, heap)?,
-            GatewayAdapterSource::HttpBody => heap
-                .alloc_bytes(binary.body.clone())
-                .map_err(heap_error_to_request_error)?,
+            GatewayAdapterSource::HttpBody => match typed_json_body.as_ref() {
+                Some(body) => materialize_typed_json_scalar(body, pinned, ordinal)?,
+                None => heap
+                    .alloc_bytes(binary.body.clone())
+                    .map_err(heap_error_to_request_error)?,
+            },
             GatewayAdapterSource::HttpContext => ValueSlot::null(),
         };
         arguments.push(value);
     }
     Ok(arguments)
+}
+
+fn materialize_typed_json_scalar(
+    body: &serde_json::Value,
+    pinned: &PinnedDeploymentEntry<VerifiedLinkedBytecodeImage, VerifiedCodeEntry>,
+    ordinal: usize,
+) -> RequestResult<ValueSlot> {
+    if matches!(body, serde_json::Value::Array(_) | serde_json::Value::Object(_)) {
+        return Err(RequestError::Unsupported(format!(
+            "typedJson HTTP body for parameter {ordinal} is non-scalar; Phase 1 supports only number, bool, and null"
+        )));
+    }
+
+    let signature = pinned.entry().signature();
+    let expected_type = signature.parameter_types().get(ordinal).ok_or_else(|| {
+        RequestError::Decode(format!(
+            "typedJson HTTP body parameter {ordinal} is absent from the exact pinned entry signature"
+        ))
+    })?;
+    let expected_plan = signature.parameter_plans().get(ordinal).ok_or_else(|| {
+        RequestError::Decode(format!(
+            "typedJson HTTP body parameter {ordinal} has no exact pinned lifecycle plan"
+        ))
+    })?;
+    let type_entry = pinned
+        .image()
+        .program()
+        .candidate()
+        .types()
+        .get(expected_type.get() as usize)
+        .filter(|entry| entry.index() == *expected_type)
+        .ok_or_else(|| {
+            RequestError::Decode(format!(
+                "typedJson HTTP body parameter {ordinal} has no exact pinned concrete type"
+            ))
+        })?;
+
+    if !matches!(
+        expected_plan,
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial
+        }
+    ) {
+        return Err(RequestError::Unsupported(format!(
+            "typedJson HTTP body parameter {ordinal} has an unsupported exact pinned lifecycle plan"
+        )));
+    }
+
+    let TypeRefIr::Builtin { name, args } = type_entry.type_ref() else {
+        return Err(unsupported_typed_json_parameter_type(ordinal));
+    };
+    if !args.is_empty() {
+        return Err(unsupported_typed_json_parameter_type(ordinal));
+    }
+
+    match (name.as_str(), body) {
+        ("number", serde_json::Value::Number(number)) => number
+            .as_f64()
+            .filter(|number| number.is_finite())
+            .map(ValueSlot::number)
+            .ok_or_else(|| {
+                RequestError::Decode(format!(
+                    "typedJson HTTP body number for parameter {ordinal} cannot be represented by the VM"
+                ))
+            }),
+        ("bool", serde_json::Value::Bool(value)) => Ok(ValueSlot::bool(*value)),
+        ("null", serde_json::Value::Null) => Ok(ValueSlot::null()),
+        ("number" | "bool" | "null", _) => Err(RequestError::Decode(format!(
+            "typedJson HTTP body does not match the exact pinned {name} type for parameter {ordinal}"
+        ))),
+        _ => Err(unsupported_typed_json_parameter_type(ordinal)),
+    }
+}
+
+fn unsupported_typed_json_parameter_type(ordinal: usize) -> RequestError {
+    RequestError::Unsupported(format!(
+        "typedJson HTTP body parameter {ordinal} has an unsupported exact pinned type; Phase 1 supports only number, bool, and null"
+    ))
 }
 
 fn materialize_http_request(
