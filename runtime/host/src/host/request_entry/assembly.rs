@@ -1,9 +1,6 @@
 use std::sync::{Arc, Mutex};
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
-use skiff_runtime_model::bytecode_execution_observation::{
-    BytecodeExecutionEvent, RequestCleanupComplete,
-};
 use skiff_runtime_request::{
     self as request_runner, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
     BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, BytecodeSelfIngressContext,
@@ -715,11 +712,7 @@ impl RuntimeHost {
 
 impl RuntimeHost {
     pub(super) fn observe_bytecode_request_cleanup(&self, permit: CleanupPermit) {
-        permit
-            .into_observer()
-            .observe(BytecodeExecutionEvent::RequestCleanupComplete(
-                RequestCleanupComplete {},
-            ));
+        permit.observe_cleanup();
     }
 }
 
