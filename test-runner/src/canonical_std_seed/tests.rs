@@ -9,9 +9,7 @@ use std::{
 use skiff_artifact_identity::{
     assign_package_artifact_identities, package_artifact_ref, PackageArtifactPointerPath,
 };
-use skiff_compiler::authoring::{
-    author_official_std_package_with_bytecode, publish_package_artifact_records_with_bytecode,
-};
+use skiff_compiler::authoring::{author_official_std_package, publish_package_artifact_records};
 use skiff_deployment::storage::{CanonicalArtifactStore, PackageArtifactPointer};
 
 use super::*;
@@ -23,12 +21,16 @@ fn exact_candidate_is_idempotent_and_receipt_comes_from_the_f27a_writer() {
 
     let first = seed_canonical_std(&platform_sources, root.path()).unwrap();
     let repeated = seed_canonical_std(&platform_sources, root.path()).unwrap();
-    let authored = author_official_std_package_with_bytecode(&platform_sources).unwrap();
+    let authored = author_official_std_package(&platform_sources).unwrap();
 
     assert_eq!(first, repeated);
+    assert!(
+        authored.artifact.bytecode.is_none(),
+        "official std must remain a source/type-only dependency"
+    );
     assert_eq!(
         first.package.artifact,
-        package_artifact_ref(&authored.0.artifact).unwrap()
+        package_artifact_ref(&authored.artifact).unwrap()
     );
     assert_eq!(first.pointer.artifact, first.package.artifact);
     assert_eq!(first.pointer.record_path, first.package.record_path);
@@ -55,6 +57,20 @@ fn exact_candidate_is_idempotent_and_receipt_comes_from_the_f27a_writer() {
     let stored = store
         .read_package_artifact(&first.package.artifact)
         .unwrap();
+    assert!(
+        stored.bytecode.is_none(),
+        "seeded std PackageArtifact must not carry a bytecode identity"
+    );
+    let stored_value = serde_json::to_value(stored.as_ref()).unwrap();
+    assert!(
+        stored_value.get("bytecode").is_none(),
+        "bytecode-free std record must omit the bytecode field"
+    );
+    let package_record = root.path().join(&first.package.record_path);
+    assert!(
+        !package_record.parent().unwrap().join("bytecode").exists(),
+        "canonical std seed must not materialize a bytecode record directory"
+    );
     for file in &stored.files {
         store.read_file_ir(&first.package.artifact, file).unwrap();
     }
@@ -94,17 +110,11 @@ fn concurrent_same_candidate_seeds_converge() {
 #[test]
 fn orphan_records_recover_but_same_identity_different_bytes_never_install_pointer() {
     let platform_sources = repository_platform_sources();
-    let (authored, authored_bytecode) =
-        author_official_std_package_with_bytecode(&platform_sources).unwrap();
+    let authored = author_official_std_package(&platform_sources).unwrap();
 
     let orphan = TestRoot::new("orphan");
     let orphan_store = CanonicalArtifactStore::create(orphan.path()).unwrap();
-    let orphan_receipt = publish_package_artifact_records_with_bytecode(
-        orphan_store.root(),
-        &authored,
-        &authored_bytecode,
-    )
-    .unwrap();
+    let orphan_receipt = publish_package_artifact_records(orphan_store.root(), &authored).unwrap();
     assert!(orphan_store
         .read_package_artifact_pointer(
             &orphan_receipt.artifact.package_id,
@@ -154,8 +164,7 @@ fn orphan_records_recover_but_same_identity_different_bytes_never_install_pointe
 #[test]
 fn malformed_dangling_and_different_existing_pointers_fail_before_store_writes() {
     let platform_sources = repository_platform_sources();
-    let (expected, expected_bytecode) =
-        author_official_std_package_with_bytecode(&platform_sources).unwrap();
+    let expected = author_official_std_package(&platform_sources).unwrap();
     let expected_ref = package_artifact_ref(&expected.artifact).unwrap();
 
     let malformed = TestRoot::new("malformed-pointer");
@@ -226,12 +235,8 @@ fn malformed_dangling_and_different_existing_pointers_fail_before_store_writes()
             .remove(&first_public_symbol);
     }
     assign_package_artifact_identities(&mut alternative.artifact).unwrap();
-    let alternative_receipt = publish_package_artifact_records_with_bytecode(
-        different_store.root(),
-        &alternative,
-        &expected_bytecode,
-    )
-    .unwrap();
+    let alternative_receipt =
+        publish_package_artifact_records(different_store.root(), &alternative).unwrap();
     let alternative_pointer =
         PackageArtifactPointer::new(alternative_receipt.artifact.clone()).unwrap();
     different_store
