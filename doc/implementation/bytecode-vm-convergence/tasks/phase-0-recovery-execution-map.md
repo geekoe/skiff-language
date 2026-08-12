@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 6; P0-V/DEC0-S integrated; P0-G/D0-R/D0-M/REV0-S running
+> Status: active; revision 7; P0-V/DEC0-S integrated; P0-G/D0-R/D0-M/REV0-S running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -47,7 +47,7 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
 | REV0-S | Review | running as `/root/p0_seam_review`; started `2026-08-12T16:38:31Z` | 12–18 min | `2026-08-12T16:46:31Z` | read-only DEC0-S and cited production code | independently reject duplicate authority, infeasible propagation, mutable/fallible observer, or non-owner-minted events |
-| D0-R | Development | running as `/root/p0_route_identity`; started `2026-08-12T16:38:31Z` | 30–45 min | `2026-08-12T16:56:31Z` | exact DEC0-S D0-R write set | route identity derives from pinned image owner; no request-time artifact reread; focused cases green |
+| D0-R | Development | running as `/root/p0_route_identity`; started `2026-08-12T16:38:31Z` | 30–45 min | `2026-08-12T16:56:31Z` | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; focused cases green |
 | D0-M | Development | running as `/root/p0_typedjson_materialize`; started `2026-08-12T16:38:31Z` | 30–45 min | `2026-08-12T16:56:31Z` | exact DEC0-S D0-M write set | typedJson scalar materializes against pinned verified entry; malformed/wrong/non-scalar fail closed; rawHttp unchanged |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
@@ -172,3 +172,13 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   `fork_turns=none`, narrow contracts, explicit 8/18-minute status checkpoints and 12–45-minute elapsed expectations;
 - D0-R exclusively owns Cargo; D0-M must stop at a committed untested candidate until the lease is transferred;
 - P0-G remains an independent Node-only Proof writer and is producing its first detached checker/self-test commit.
+
+### Revision 7 — D0-R sealed-fact accessor expansion
+
+- D0-R stopped before edits after proving that host-only code cannot pin root service protocol, operation binding, ingress
+  binding and verified adapter plan facts without an artifact-root reread or second sidecar authority;
+- approved the DEC0-S conditional expansion to `runtime/bytecode-verifier/src/verifier.rs` for borrowed read-only accessors
+  over the already consumed and admitted hydration/entry maps: service protocol identity, ordered operation IDs, ingress
+  bindings and the verified gateway adapter plan;
+- the expansion adds no constructor, mutation, alternate verification path or raw hydration accessor. D0-R remains the
+  sole Cargo owner and must test these facts through the host route behavior rather than add verifier policy.
