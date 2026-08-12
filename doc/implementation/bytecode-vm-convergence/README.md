@@ -213,14 +213,14 @@ semantic support surface 累计，不按 crate 测试数量统计；同一 scena
 
 ## 7. 初步 Phase DAG
 
-下面只冻结依赖方向、Phase 目标和初步 VCP。除 Phase 0 外，具体接口、task DAG、Agent 和命令均在前一
-Phase 接受后滚动细化。审计发现一个 Phase 无法形成单一 Semantic Closure 时，可以拆分 Phase，但不能
-绕过前置 acceptance。
+下面只冻结依赖方向、Phase 目标和初步 VCP。除 Phase 0 外，具体接口、task DAG 和命令均在前一 Phase
+接受后滚动细化；实际 Agent、branch、worktree 和派发顺序在执行每个 Phase 时由滚动 Execution Map 决定。
+审计发现一个 Phase 无法形成单一 Semantic Closure 时，可以拆分 Phase，但不能绕过前置 acceptance。
 
 ### Phase 0 — Architecture reset and validation foundation
 
 关闭 verifier disposition、目标 pipeline、authority map、Phase 1 MVP、capability containment 和 Phase 1
-VCP。建立本项目的 exact baseline、Phase 1 task DAG 与 worktree map。
+VCP。建立本项目的 exact baseline、Phase 1 task DAG、执行约束和 Execution Map 建立条件。
 
 详细计划：[`phases/phase-0-architecture-reset.md`](./phases/phase-0-architecture-reset.md)。
 
@@ -287,10 +287,11 @@ throw；证明无 raw handle 穿越、parent 同步恢复和 Pending chain root 
 每个 Phase 使用：
 
 ```text
-baseline audit
+initial Execution Map for the ready frontier
+  -> baseline audit
   -> phase design
   -> independent design review
-  -> task DAG / worktree map
+  -> refresh Execution Map before each dispatch wave
   -> executable proof harness
   -> kernel
   -> leaves + evidence
@@ -303,9 +304,9 @@ baseline audit
 
 下一 Phase 可以提前做只读调查，不能在前一 Phase 未 `accepted` 时启动 production implementation。
 
-## 9. Worktree 和 Agent 默认拓扑
+## 9. Worktree 和 Agent 约束
 
-每个 Phase 默认拥有：
+实际拓扑由当前 Phase 的 Execution Map 决定。允许的典型形状是：
 
 ```text
 /Users/geek/workspace/skiff-bcvm-pN-integration
@@ -314,14 +315,16 @@ baseline audit
 ```
 
 - main checkout 始终留在 `main`；
-- read-only investigator 不建 worktree；
+- read-only investigator 不需要各自的 worktree；main 无法保持 exact baseline 时，共用一个 detached
+  baseline worktree；
 - 每个并发 write owner 一个 leaf worktree；
 - central kernel 不能为满足 crate 边界而拆给多个 owner；
 - integrator 串行合流，不在 merge 时发明兼容语义；
 - gate worktree 从 frozen commit 创建，由未参与生产实现的 acceptance owner 只读验收；
 - candidate 任意变化开启新 evidence epoch。
 
-Agent 角色、复用和 write set 以当前 accepted Phase plan 为准，不在总体计划中提前冻结。
+Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、worktree 数量、路径和复用方式不在总体
+计划中提前冻结。
 
 ## 10. 当前文档状态
 

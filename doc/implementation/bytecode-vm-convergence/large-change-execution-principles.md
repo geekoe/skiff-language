@@ -61,7 +61,7 @@ Phase 计划必须冻结：
 - ownership、outcome、failure、Pending、cancel、drop 等状态转移；
 - central kernel 和跨 owner API；
 - Semantic Closure 列表与 task DAG；
-- Agent 角色、write set 和 worktree map；
+- 必须保持的角色分离、write-set 边界和 worktree 隔离约束；
 - Test Design Specification、垂直闭环证明及 focused / negative / structural evidence；
 - proof harness 和唯一 canonical gate command；
 - frozen candidate 与独立验收方法；
@@ -69,7 +69,28 @@ Phase 计划必须冻结：
 
 Phase 设计未通过独立审查，不启动 production implementation。
 
-### 2.3 Task 任务书：派发 Agent 前决定
+Phase 计划不预先冻结实际 Agent、branch、worktree 数量、路径或派发顺序。这些取决于执行时的 repo state、
+ready frontier、可用 Agent 和已发现冲突，由 Execution Map 滚动决定。
+
+### 2.3 Execution Map：每次派发前滚动决定
+
+派发本 Phase 的任何子任务前，必须先建立 Execution Map。初始版本只细化当前已经 ready 的任务；审计、
+设计审查、合流或 Problem Signal 产生新事实后，必须先更新 Map，再派发下一批任务。
+
+Execution Map 至少记录：
+
+- exact baseline 和当前已合流 commit；
+- task ID、依赖、ready/blocked 状态和当前派发批次；
+- 实际 Agent、branch、worktree、write set 和只读范围；
+- 输入 commit、预期交付 commit、验证责任和合流顺序；
+- conditional task 的启用条件；
+- 每次调整的原因、影响范围和是否使 candidate/evidence epoch 失效。
+
+Execution Map 是可修改的 operational artifact，不是新的架构 authority。Agent 更换、串并行调整、worktree
+增减、leaf 拆并和合流顺序变化可以直接更新 Map；若调整会改变 support surface、Semantic Closure、semantic
+authority、中央接口、VCP 或 Gate，则 Map 无权决定，必须回到 Phase design 并重新审查。
+
+### 2.4 Task 任务书：派发 Agent 前决定
 
 每份任务书必须引用 Phase 计划，并写明：
 
@@ -117,10 +138,11 @@ kernel owner；其余 Agent 通过已审查的窄接口实现 leaf。
 Phase 内容不同，但生命周期固定：
 
 ```text
-B0  baseline audit
+M0  initial Execution Map for the ready frontier
+  -> B0  baseline audit
   -> D0  phase design
   -> R0  independent design review
-  -> P0  task DAG + worktree map
+  -> M*  refresh Execution Map before each dispatch wave
   -> T0  executable proof harness
   -> K0  semantic kernel
   -> L*  parallel leaves + E* evidence
@@ -344,7 +366,10 @@ canonical owner；其它层可以有必要的 focused case，但不能用多份�
 
 Worktree 按并发写入和版本隔离创建，而不是一任务一个。
 
-### 7.1 默认拓扑
+### 7.1 拓扑约束
+
+具体 worktree 由当前 Execution Map 创建和记录。下面是允许的典型形状，不是每个 Phase 必须预建的固定
+清单：
 
 ```text
 main checkout                       始终在 main，保持可构建、可运行
@@ -353,7 +378,8 @@ main checkout                       始终在 main，保持可构建、可运行
 <project>-pN-gate worktree          frozen candidate，只读验收
 ```
 
-- 只读调查不需要 worktree；
+- 只读调查不需要每个 Agent 各建 worktree；若 main 不能在调查窗口保持 exact baseline，Execution Map 应
+  分配一个共享的 detached baseline worktree；
 - 同一 Agent 串行完成的几个小 leaf 可复用一个 leaf worktree；
 - 多个 Agent 并发写代码时不得共享 worktree；
 - 修改同一中央文件的任务不并行，归一个 kernel / integrator owner；

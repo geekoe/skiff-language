@@ -23,9 +23,10 @@ Phase 0 完成时必须同时具备：
 5. Phase 1 最小支持面和所有 unsupported lane 的 fail-closed owner；
 6. Phase 1 Test Design Specification 和 semantic coverage matrix；
 7. 可执行的 Phase 1 VCP harness 与 canonical Phase Gate command，或对其缺失的明确 blocker 决议；
-8. Phase 1 Semantic Closure、task DAG、Agent、write set 和 worktree map；
-9. 独立设计审查 PASS；
-10. exact Phase 0 result 和 Phase 1 handoff。
+8. 从第一次派发起持续维护的 Phase 0 Execution Map 和 revision record；
+9. Phase 1 Semantic Closure、task DAG、write-set/角色分离/worktree 约束和 `MAP1` 建立条件；
+10. 独立设计审查 PASS；
+11. exact Phase 0 result 和 Phase 1 handoff。
 
 ## 2. 非目标
 
@@ -152,23 +153,38 @@ Phase 0 的目标是决定 containment 边界，不要求在本 Phase 完成所�
 ## 5. 设计与任务 DAG
 
 ```text
-AUD0 exact baseline
-  ├─ AUD1 pipeline audit ───────┐
-  ├─ AUD2 VM audit ─────────────┤
-  ├─ AUD3 runtime audit ────────┼─> DEC0 architecture decision packet
-  ├─ AUD4 validation audit ─────┤          |
-  └─ AUD5 containment audit ────┘          +-> TST0 Phase 1 Test Design Specification
-                                                     |
-                                                     +-> REV0-D independent design review
-                                                     |
-                                                     +-> HAR0 executable proof harness / gate
-                                                     |
-                                                     +-> PLN1 Phase 1 detailed plan
-                                                              |
-                                                              +-> REV0-F readiness review
-                                                                       |
-                                                                       +-> RES0 Phase 0 result
+MAP0 v0: baseline + ready audit frontier
+  -> {AUD0 baseline, AUD1 pipeline, AUD2 VM, AUD3 runtime,
+      AUD4 validation, AUD5 containment} parallel audit join
+  -> DEC0 architecture decision packet
+  -> TST0 Phase 1 Test Design Specification
+  -> REV0-D independent design review
+  -> MAP0 refresh for reviewed ready frontier
+  -> HAR0 executable proof harness / gate
+  -> MAP0 refresh before next dispatch
+  -> PLN1 Phase 1 detailed plan
+  -> REV0-F readiness review
+  -> RES0 Phase 0 result
 ```
+
+### MAP0 rolling Execution Map
+
+`MAP0` 不是派发给某个具名角色的实现任务，而是执行本 Phase 时的前置和持续义务。派发第一个调查任务前，
+必须创建 `tasks/phase-0-execution-map.md`；之后每次派发新的 ready frontier 前先更新它。本文只提供约束，
+不预先指定实际 Agent、branch、worktree 数量、路径或派发顺序。
+
+MAP0 初始版本只需要闭合 baseline 和 AUD0–AUD5 的当前派发批次。后续版本至少记录：
+
+- exact baseline/current integration commit；
+- ready、blocked、conditional 和已完成 task；
+- 每个已派发 task 的实际 Agent、输入 commit、write/read set、branch 和 worktree；
+- 合流顺序、交付 commit、验证责任和下一次可派发条件；
+- 每次调整的原因和受影响节点。
+
+Agent 更换、串并行调整、worktree 增减、leaf 拆并或合流顺序变化直接更新 MAP0。若新情况要求改变
+Phase 1 support surface、Semantic Closure、authority、中央接口、TST0、VCP 或 Gate，则停止派发，回到 DEC0
+或 TST0 并重新执行受影响的独立审查。冻结 candidate 后再调整 MAP0 会解冻 candidate，并开始新的 evidence
+epoch。
 
 ### DEC0 architecture decision packet
 
@@ -238,9 +254,10 @@ HAR0 的可执行交付至少包括：
 - Phase 1 Semantic Closure；
 - central kernel 和 leaf DAG；
 - exact interfaces，不接受 placeholder；
-- Agent/write-set/worktree map；
+- write-set 边界、必须保持的角色分离和 worktree 隔离约束；
+- Phase 1 启动时建立 `MAP1` 的条件和首个 ready frontier；实际 Agent、branch 和 worktree 留给 `MAP1`；
 - TST0 coverage matrix，以及 VCP、focused、negative、structural 和 regression gates；
-- frozen candidate 和 acceptance owner；
+- frozen candidate 和 acceptance independence 要求；
 - Phase 2 输入和 Phase 1 不得触及的文件/能力。
 
 ### REV0 independent reviews
@@ -260,7 +277,7 @@ HAR0 的可执行交付至少包括：
 - HAR0 是否真的落成 canonical executable selector，而不是文档命令清单；
 - task DAG 是否以 Semantic Closure 而非 crate 列表为核心；
 - containment 是否覆盖当前危险的 enabled-unaccepted path；
-- worktree 和 acceptance independence 是否可执行。
+- MAP0 是否只细化 ready frontier，且 worktree 和 acceptance independence 约束可执行。
 
 任一 blocker 使 Phase 0 `blocked`；修复后产生新的 design evidence epoch，并从受影响的 review checkpoint
 重新审查。
@@ -361,35 +378,32 @@ Phase 1 开始前要求的是**可执行、可信的验证方式已经存在**�
 
 若 harness 连目标边界都到不了、无法区分测试设施失败和产品失败，Phase 0 仍是 `blocked`。
 
-## 7. Agent 和 worktree 安排
+## 7. Execution Map 和 worktree 约束
 
 ### 7.1 Phase 0
 
-- AUD0–AUD5：只读 Agent，不建 worktree；
-- DEC0/PLN1：一个 design owner，在 Phase 0 integration worktree 修改文档；
-- TST0：一个 test design owner，拥有 coverage matrix 和 proof-harness contract；
-- HAR0：仅在需要写 validation infrastructure 时建立独立 leaf worktree；
-- REV0-D/REV0-F：独立 reviewer，在 exact DEC0/TST0 和 HAR0/PLN1 candidate 上只读；
-- RES0：integrator 汇总 result，不改变架构结论。
-
-默认路径：
-
-```text
-/Users/geek/workspace/skiff-bcvm-p0-integration
-/Users/geek/workspace/skiff-bcvm-p0-vcp       # conditional
-/Users/geek/workspace/skiff-bcvm-p0-gate
-```
+- 第一次派发前建立 MAP0；任何未出现在当前 MAP0 ready frontier 的任务不得启动；
+- main checkout 始终留在 `main`；Phase 0 使用唯一 integration line，实际 branch/path 由 MAP0 记录；
+- AUD0–AUD5 只读，不要求每个 Agent 各建 worktree；若 main 不能保持 exact baseline，MAP0 分配一个共享的
+  detached baseline worktree；
+- 并发 write owner 不得共享 worktree；串行且 write set 不冲突的任务可以在 MAP0 明确交接同一 worktree；
+- HAR0 只有在需要写 validation infrastructure 时才需要独立 leaf worktree；
+- REV0-D/REV0-F 在 MAP0 记录的 exact commit 上只读，不修改受审 candidate；
+- frozen gate 使用 detached、只读 worktree，且最终 acceptance 不得由本 Phase production 实现者完成；
+- 所有 worktree 直接建立在 `/Users/geek/workspace` 下，具体名称和数量由 MAP0 决定。
 
 ### 7.2 Phase 1 handoff
 
-Phase 1 的 leaf worktree 数量由 PLN1 的独立 write owner 决定，不在本文预先规定。至少有一个 integration
-worktree 和一个 frozen gate worktree；实现者不能担任最终 acceptance owner。
+PLN1 不预先分配 Phase 1 的实际 Agent 或 worktree。Phase 1 第一步是依据 accepted PLN1 建立 `MAP1`，当时再
+根据 exact baseline、ready frontier、可用 Agent 和写冲突决定具体拓扑。Phase 1 仍必须有唯一 integration
+line 和 frozen gate worktree；实现者不能担任最终 acceptance owner。
 
 ## 8. 验收
 
 Phase 0 只有在以下条件全部成立时才能 `accepted`：
 
 - [ ] exact baseline receipt 已记录；
+- [ ] MAP0 在第一次派发前建立，且 revision history 覆盖所有派发、调整和合流；
 - [ ] D0-01 至 D0-05 全部关闭；
 - [ ] capability ledger 覆盖所有 production ingress 和 review findings；
 - [ ] target pipeline 每个 fact 只有一个 owner；
@@ -400,7 +414,7 @@ Phase 0 只有在以下条件全部成立时才能 `accepted`：
 - [ ] Gate checker 拒绝 skip、零场景、缺 manifest 和 stale candidate evidence；
 - [ ] 没有 test-only execution bypass；
 - [ ] urgent containment 已成为 Phase 1 前置 task 或已完成；
-- [ ] Phase 1 detailed plan 含 task DAG、Agent、write set、worktree 和 gates；
+- [ ] Phase 1 detailed plan 含 task DAG、write-set/角色分离/worktree 约束、`MAP1` 建立条件和 gates；
 - [ ] REV0-D design review 和 REV0-F readiness review 均 PASS；
 - [ ] Phase 0 result 记录 exact candidate commit/tree 和 evidence epoch。
 
@@ -414,6 +428,7 @@ success surface、在 Phase 0 修复纯 validation seam，或将该 blocker 明�
 Phase 0 result 应创建在本项目后续 `results/phase-0.md`，至少包含：
 
 - baseline commit/tree 与 repo state；
+- MAP0 path、最终 revision 和重要调度变化；
 - audit task evidence links；
 - DEC0 decision record；
 - capability ledger；
