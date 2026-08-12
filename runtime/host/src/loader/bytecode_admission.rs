@@ -1,4 +1,7 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use skiff_artifact_model::{
     ContractOperationId, GatewayAdapterKind, GatewayAdapterSource, GatewayEntryIdentity,
@@ -16,6 +19,10 @@ use skiff_runtime_linker::{link_deployment, BytecodeLinkError, LinkLimits};
 use skiff_runtime_loader::{
     load_deployment_bytecode_from_store, DeploymentBytecodeContentResolver,
     FilesystemDeploymentBytecodeContentResolver,
+};
+use skiff_runtime_model::bytecode_execution_observation::{
+    BytecodeExecutionEvent, BytecodeExecutionObserver, BytecodeGatewayCallableRole,
+    BytecodeRouteEntrySelector, DeploymentImageSelected, RouteEntryPinned,
 };
 use skiff_runtime_request::{
     BytecodeRequestTarget, BytecodeRequestTargetError, GatewayAdapterArg as RequestGatewayAdapterArg,
@@ -80,11 +87,31 @@ impl BytecodeDeploymentRegistry {
         deployment: &ServiceDeploymentRef,
         artifact_root: &Path,
         selector: BytecodeRouteSelector,
+        observer: &BytecodeExecutionObserver,
     ) -> anyhow::Result<Option<BytecodeRoute>> {
         let Some(image) = self.get_or_load(deployment, artifact_root).await? else {
             return Ok(None);
         };
-        Ok(Some(BytecodeRoute::new(image, deployment, selector)?))
+        if image.owner().deployment() != deployment {
+            anyhow::bail!(
+                "bytecode route deployment {} does not match loaded image owner {}",
+                deployment.deployment_artifact_identity,
+                image.owner().build_id()
+            );
+        }
+        let selected = BytecodeExecutionEvent::DeploymentImageSelected(
+            DeploymentImageSelected {
+                deployment: image.owner().deployment().clone(),
+                deployment_build_id: image.owner().build_id().clone(),
+            },
+        );
+        Ok(Some(BytecodeRoute::new(
+            image,
+            deployment,
+            selector,
+            observer.clone(),
+            selected,
+        )?))
     }
 
     pub(crate) async fn get_or_load(
@@ -162,16 +189,25 @@ fn is_legacy_assembly(error: &DeploymentLoadError<BytecodeDeploymentLoadError>) 
 }
 
 /// Exact deployment image pinned to an operation or gateway entry.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct BytecodeRoute {
     image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
     target: BytecodeRouteTarget,
+    observer: BytecodeExecutionObserver,
+    admission_observations: Mutex<AdmissionObservations>,
+}
+
+#[derive(Debug)]
+struct AdmissionObservations {
+    deployment: Option<BytecodeExecutionEvent>,
+    entry: Option<BytecodeExecutionEvent>,
 }
 
 #[derive(Debug, Clone)]
 enum BytecodeRouteTarget {
     Operation(ContractOperationId),
     Gateway {
+        ingress: IngressSelector,
         gateway_entry_key: GatewayEntryKey,
         gateway_entry_identity: GatewayEntryIdentity,
         role: LinkedGatewayCallableRole,
@@ -184,6 +220,8 @@ impl BytecodeRoute {
         image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
         deployment: &ServiceDeploymentRef,
         selector: BytecodeRouteSelector,
+        observer: BytecodeExecutionObserver,
+        selected: BytecodeExecutionEvent,
     ) -> anyhow::Result<Self> {
         if image.owner().deployment() != deployment {
             anyhow::bail!(
@@ -267,6 +305,7 @@ impl BytecodeRoute {
                         )
                     })?;
                 BytecodeRouteTarget::Gateway {
+                    ingress,
                     gateway_entry_key,
                     gateway_entry_identity: admitted_identity.clone(),
                     role,
@@ -274,7 +313,15 @@ impl BytecodeRoute {
                 }
             }
         };
-        Ok(Self { image, target })
+        Ok(Self {
+            image,
+            target,
+            observer,
+            admission_observations: Mutex::new(AdmissionObservations {
+                deployment: Some(selected),
+                entry: None,
+            }),
+        })
     }
 
     pub(crate) fn deployment(&self) -> &ServiceDeploymentRef {
@@ -355,7 +402,7 @@ impl BytecodeRoute {
     pub(crate) fn request_target(&self) -> anyhow::Result<BytecodeRequestTarget> {
         let program = Arc::clone(self.image.program());
         let image = Arc::clone(&self.image);
-        match &self.target {
+        let target = match &self.target {
             BytecodeRouteTarget::Operation(operation_id) => {
                 let entry = program
                     .operation_entry(operation_id)
@@ -379,7 +426,72 @@ impl BytecodeRoute {
                 )
                 .map_err(bytecode_target_error)
             }
+        }?;
+        let (selector, gateway_key, gateway_identity, callable_role) = match &self.target {
+            BytecodeRouteTarget::Operation(operation_id) => (
+                BytecodeRouteEntrySelector::Operation(operation_id.clone()),
+                None,
+                None,
+                None,
+            ),
+            BytecodeRouteTarget::Gateway {
+                ingress,
+                gateway_entry_key,
+                gateway_entry_identity,
+                role,
+                ..
+            } => (
+                BytecodeRouteEntrySelector::Gateway(ingress.clone()),
+                Some(gateway_entry_key.clone()),
+                Some(gateway_entry_identity.clone()),
+                Some(observation_callable_role(*role)),
+            ),
+        };
+        let entry = BytecodeExecutionEvent::RouteEntryPinned(RouteEntryPinned {
+                image_owner: self.image.owner().deployment().clone(),
+                selector,
+                gateway_key,
+                gateway_identity,
+                callable_role,
+                verified_function_index: target.entry().function().get(),
+            });
+        self.admission_observations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry = Some(entry);
+        Ok(target)
+    }
+
+    /// Publishes owner-minted admission facts only after the supervisor row is
+    /// active. A route dropped on any pre-admission failure publishes nothing.
+    pub(crate) fn publish_admission_observations(&self) {
+        let observations = {
+            let mut staged = self
+                .admission_observations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let deployment = staged
+                .deployment
+                .take()
+                .expect("admitted route retains its deployment observation");
+            let entry = staged
+                .entry
+                .take()
+                .expect("admitted route retains its entry observation");
+            [deployment, entry]
+        };
+        for observation in observations {
+            self.observer.observe(observation);
         }
+    }
+}
+
+fn observation_callable_role(role: LinkedGatewayCallableRole) -> BytecodeGatewayCallableRole {
+    match role {
+        LinkedGatewayCallableRole::Handler => BytecodeGatewayCallableRole::Handler,
+        LinkedGatewayCallableRole::Pre => BytecodeGatewayCallableRole::Pre,
+        LinkedGatewayCallableRole::Guard => BytecodeGatewayCallableRole::Guard,
+        LinkedGatewayCallableRole::CloseHandler => BytecodeGatewayCallableRole::CloseHandler,
     }
 }
 

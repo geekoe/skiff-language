@@ -38,6 +38,9 @@ use skiff_compiler_input::PublicationApiSpec;
 use skiff_compiler_source::source_graph::CompilerSourceFile;
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver;
+use skiff_runtime_model::bytecode_execution_observation::{
+    BytecodeExecutionCorrelation, BytecodeExecutionObserver,
+};
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::{
     protocol::{decode_binary_frame, decode_response_end_frame, RUNTIME_FRAME_SCHEMA_VERSION},
@@ -723,6 +726,13 @@ fn test_host_with_bytecode_only(bytecode_only: bool) -> RuntimeHost {
     .expect("bytecode HTTP runtime host")
 }
 
+fn noop_observer() -> BytecodeExecutionObserver {
+    BytecodeExecutionObserver::noop(BytecodeExecutionCorrelation {
+        router_session_id: "bytecode-http-test-session".to_string(),
+        request_id: "bytecode-http-test-request".to_string(),
+    })
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
     let fixture = fixture();
@@ -733,6 +743,7 @@ async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
             &fixture.deployment,
             &fixture.artifact_root,
             BytecodeRouteSelector::Operation,
+            &noop_observer(),
         )
         .await
         .expect("bytecode route should load")
@@ -809,6 +820,7 @@ async fn admitted_route_and_adapter_remain_pinned_after_store_withdrawal() {
             &fixture.deployment,
             &fixture.artifact_root,
             selector.clone(),
+            &noop_observer(),
         )
         .await
         .expect("gateway route should load")
@@ -836,7 +848,7 @@ async fn admitted_route_and_adapter_remain_pinned_after_store_withdrawal() {
     );
     let cached_route = host
         .bytecode_deployments
-        .route(&fixture.deployment, &fixture.artifact_root, selector)
+        .route(&fixture.deployment, &fixture.artifact_root, selector, &noop_observer())
         .await
         .expect("cached route must not reopen the withdrawn store")
         .expect("cached deployment image should remain admitted");
@@ -890,6 +902,7 @@ async fn gateway_route_fails_closed_on_missing_or_mismatched_pinned_facts() {
                 gateway_entry_identity: fixture.http_gateway_identity.clone(),
                 role: skiff_runtime_linked_bytecode::LinkedGatewayCallableRole::Handler,
             },
+            &noop_observer(),
         )
         .await
         .expect_err("missing ingress must fail closed");
@@ -911,6 +924,7 @@ async fn gateway_route_fails_closed_on_missing_or_mismatched_pinned_facts() {
                 gateway_entry_identity: fixture.websocket_gateway_identity.clone(),
                 role: skiff_runtime_linked_bytecode::LinkedGatewayCallableRole::Handler,
             },
+            &noop_observer(),
         )
         .await
         .expect_err("mismatched gateway identity must fail closed");
@@ -932,6 +946,7 @@ async fn gateway_route_fails_closed_on_missing_or_mismatched_pinned_facts() {
                 gateway_entry_identity: fixture.http_gateway_identity.clone(),
                 role: skiff_runtime_linked_bytecode::LinkedGatewayCallableRole::CloseHandler,
             },
+            &noop_observer(),
         )
         .await
         .expect_err("missing callable role must fail closed");
@@ -950,6 +965,7 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
             &fixture.legacy_deployment,
             &fixture.artifact_root,
             BytecodeRouteSelector::Operation,
+            &noop_observer(),
         )
         .await
         .expect("legacy deployment bytecode lookup should succeed");

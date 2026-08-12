@@ -22,6 +22,7 @@ use skiff_runtime_linked_bytecode::{
     LinkedGatewayCallableRole, LinkedValueDropPlan, LinkedValueTransferPlan,
 };
 use skiff_runtime_model::{
+    bytecode_execution_observation::BytecodeExecutionObserver,
     request_heap::RequestHeapLimits,
     vm_heap::{VmHeap, VmHeapError, VmRecordField},
     vm_root::VmRootSource,
@@ -1118,6 +1119,7 @@ impl BytecodeChildExecutor<VmFiber> for RequestAdapterExecutor {
 pub struct BytecodeRequestExecutionInput {
     pub target: BytecodeRequestTarget,
     pub request: RequestEnvelope,
+    pub observer: BytecodeExecutionObserver,
     pub cancelled: Arc<AtomicBool>,
     pub cancellation: CancellationToken,
     pub execution_budget: Arc<ExecutionBudget>,
@@ -1255,6 +1257,7 @@ pub fn start_runtime_bytecode_request_with_ports(
     let BytecodeRequestExecutionInput {
         target,
         request,
+        observer,
         cancelled,
         cancellation,
         execution_budget,
@@ -1273,7 +1276,7 @@ pub fn start_runtime_bytecode_request_with_ports(
     let mut request_heap = RequestVmHeap::new(handles.request_heap_limits);
     request_heap.set_resource_table(resource_table.clone());
     let arguments = gateway_entry_arguments(&request, &pinned, &mut request_heap)?;
-    let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits())
+    let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits(), observer)
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
 
     let queue = Arc::new(InMemoryWakeQueue::new());
@@ -1674,6 +1677,7 @@ pub fn execute_runtime_bytecode_request_with_ports(
     let BytecodeRequestExecutionInput {
         target,
         request,
+        observer,
         cancelled,
         cancellation,
         execution_budget,
@@ -1695,7 +1699,7 @@ pub fn execute_runtime_bytecode_request_with_ports(
     let mut heap = RequestVmHeap::new(handles.request_heap_limits);
     heap.set_resource_table(resource_table.clone());
     let arguments = gateway_entry_arguments(&request, &pinned, &mut heap)?;
-    let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits())
+    let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits(), observer)
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let queue = Arc::new(InMemoryWakeQueue::new());
     let child_cancellation = cancellation.clone();

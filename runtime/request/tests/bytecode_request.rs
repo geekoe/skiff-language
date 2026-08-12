@@ -36,7 +36,10 @@ use skiff_runtime_deployment_image::DeploymentImage;
 use skiff_runtime_linker::{link_deployment, LinkLimits};
 use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
 use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
-use skiff_runtime_model::request_heap::RequestHeapLimits;
+use skiff_runtime_model::{
+    bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
+    request_heap::RequestHeapLimits,
+};
 use skiff_runtime_request::{
     execute_runtime_bytecode_request, start_runtime_bytecode_request, BinaryHttpRequest,
     BinaryHttpRequestMetadata, BoundaryResponse, BytecodeRequestExecutionHandles,
@@ -586,6 +589,13 @@ fn http_body_argument() -> RequestGatewayAdapterArg {
     }
 }
 
+fn noop_observer() -> BytecodeExecutionObserver {
+    BytecodeExecutionObserver::noop(BytecodeExecutionCorrelation {
+        router_session_id: "request-test-session".to_string(),
+        request_id: "request-test".to_string(),
+    })
+}
+
 fn execute_scalar_gateway(
     name: &str,
     kind: HttpAdapterKind,
@@ -595,6 +605,7 @@ fn execute_scalar_gateway(
     execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
         target: scalar_gateway_fixture().target(name),
         request: scalar_gateway_request(name, kind, body, adapter_args),
+        observer: noop_observer(),
         cancelled: Arc::new(AtomicBool::new(false)),
         cancellation: CancellationToken::new(),
         execution_budget: Arc::new(ExecutionBudget::disabled()),
@@ -778,6 +789,7 @@ mod tests {
         let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
             target,
             request: request_envelope(),
+            observer: noop_observer(),
             cancelled: Arc::new(AtomicBool::new(false)),
             cancellation: CancellationToken::new(),
             execution_budget: Arc::new(ExecutionBudget::disabled()),
@@ -823,6 +835,7 @@ mod tests {
             BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope(),
+                observer: noop_observer(),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 cancellation: CancellationToken::new(),
                 execution_budget: Arc::new(ExecutionBudget::disabled()),
@@ -883,6 +896,7 @@ function run() -> number {
             BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope(),
+                observer: noop_observer(),
                 cancelled: Arc::new(AtomicBool::new(false)),
                 cancellation: CancellationToken::new(),
                 execution_budget: Arc::new(ExecutionBudget::disabled()),
@@ -944,6 +958,7 @@ function run() -> number {
         let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
             target,
             request: request_envelope(),
+            observer: noop_observer(),
             cancelled: Arc::new(AtomicBool::new(false)),
             cancellation: CancellationToken::new(),
             execution_budget: Arc::new(ExecutionBudget::disabled()),
@@ -992,6 +1007,7 @@ function run() -> number {
         let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
             target,
             request: request_envelope(),
+            observer: noop_observer(),
             cancelled: Arc::new(AtomicBool::new(false)),
             cancellation: CancellationToken::new(),
             execution_budget: Arc::new(ExecutionBudget::disabled()),

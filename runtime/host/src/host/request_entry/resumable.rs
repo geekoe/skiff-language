@@ -39,12 +39,30 @@ impl ResumableBytecodeRequest for BytecodeRequestExecution {
     }
 }
 
+pub(super) struct DrivenBytecodeRequest {
+    pub(super) result: RequestResult<BoundaryResponse>,
+    pub(super) execution: Option<BytecodeRequestExecution>,
+}
+
 pub(super) async fn drive_bytecode_request(
     input: BytecodeRequestExecutionInput,
     response_events: Arc<dyn ResponseEventSink>,
-) -> RequestResult<BoundaryResponse> {
-    let mut execution = request_runner::start_runtime_bytecode_request(input, response_events)?;
-    drive_bytecode_request_with(&mut execution).await
+) -> DrivenBytecodeRequest {
+    let mut execution = match request_runner::start_runtime_bytecode_request(input, response_events)
+    {
+        Ok(execution) => execution,
+        Err(error) => {
+            return DrivenBytecodeRequest {
+                result: Err(error),
+                execution: None,
+            }
+        }
+    };
+    let result = drive_bytecode_request_with(&mut execution).await;
+    DrivenBytecodeRequest {
+        result,
+        execution: Some(execution),
+    }
 }
 
 async fn drive_bytecode_request_with<R>(execution: &mut R) -> RequestResult<BoundaryResponse>

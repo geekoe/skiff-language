@@ -362,6 +362,23 @@ impl TelemetryProducer {
         enqueued
     }
 
+    /// Best-effort producer path for synchronous observation sinks.
+    ///
+    /// Configuration and queue contention both drop the event immediately;
+    /// this path never waits for either lock and starts no background work.
+    pub fn try_emit(&self, event: TelemetryEvent) -> bool {
+        let Ok(config) = self.config.try_read() else {
+            return false;
+        };
+        let event = redact_event(event, config.string_max_chars, config.event_max_bytes);
+        drop(config);
+        let enqueued = self.queue.enqueue(event);
+        if enqueued {
+            self.notify.notify_one();
+        }
+        enqueued
+    }
+
     pub fn drain_batches(&self) -> Vec<TelemetryBatchEnvelope> {
         let config = self.config_snapshot();
         let mut events = self.queue.drain(config.batch_max_events);

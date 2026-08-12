@@ -1,4 +1,5 @@
 pub mod blob_store;
+mod bytecode_execution_observation;
 mod bytecode_http_executor;
 mod control_plane;
 pub mod file_runtime;
