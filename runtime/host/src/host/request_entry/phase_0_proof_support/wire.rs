@@ -17,14 +17,14 @@ use super::{Correlation, PublishedFixture};
 
 const REQUEST_BODY: &[u8] = b"2";
 
-pub(super) struct CanonicalSkbfRequest {
-    pub(super) frame: Vec<u8>,
-    pub(super) header: BytecodeRequestStartFrameWireHeader,
-    pub(super) body: Vec<u8>,
+pub(in crate::host::request_entry) struct CanonicalSkbfRequest {
+    pub(in crate::host::request_entry) frame: Vec<u8>,
+    pub(in crate::host::request_entry) header: BytecodeRequestStartFrameWireHeader,
+    pub(in crate::host::request_entry) body: Vec<u8>,
 }
 
 impl PublishedFixture {
-    pub(super) fn http_header(
+    fn http_header(
         &self,
         correlation: &Correlation,
         mode: &str,
@@ -76,7 +76,7 @@ impl PublishedFixture {
         }
     }
 
-    pub(super) fn canonical_request(
+    pub(in crate::host::request_entry) fn canonical_request(
         &self,
         correlation: &Correlation,
         mode: &str,
@@ -93,7 +93,7 @@ impl PublishedFixture {
     }
 }
 
-pub(super) enum CorrelatedResponse {
+pub(in crate::host::request_entry) enum CorrelatedResponse {
     End {
         frame: Vec<u8>,
         header: ResponseEndFrameHeader,
@@ -106,7 +106,7 @@ pub(super) enum CorrelatedResponse {
     },
 }
 
-pub(super) fn decode_typed_response(frame: Vec<u8>) -> CorrelatedResponse {
+pub(in crate::host::request_entry) fn decode_typed_response(frame: Vec<u8>) -> CorrelatedResponse {
     let decoded = decode_binary_frame(&frame).expect("decode terminal response SKBF");
     match decoded.header.get("type").and_then(Value::as_str) {
         Some("response.end") => {
@@ -131,7 +131,7 @@ pub(super) fn decode_typed_response(frame: Vec<u8>) -> CorrelatedResponse {
     }
 }
 
-pub(super) async fn receive_correlated_response(
+pub(in crate::host::request_entry) async fn receive_correlated_response(
     receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
     request_id: &str,
 ) -> CorrelatedResponse {

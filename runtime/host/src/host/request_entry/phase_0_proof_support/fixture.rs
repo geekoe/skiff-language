@@ -24,28 +24,28 @@ use skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver;
 
 use crate::host::router_session::ConnectionBootstrap;
 
-pub(super) const FIXTURE_RELATIVE: &str =
+pub(in crate::host::request_entry) const FIXTURE_RELATIVE: &str =
     "doc/implementation/bytecode-vm-convergence/fixtures/vcp1-trusted-scalar";
-pub(super) const PACKAGE_ID: &str = "test.skiff/bytecode-vm-phase-0";
-pub(super) const VERSION: &str = "1.0.0";
-pub(super) const PROFILE: &str = "skiff-test";
+pub(in crate::host::request_entry) const PACKAGE_ID: &str = "test.skiff/bytecode-vm-phase-0";
+pub(in crate::host::request_entry) const VERSION: &str = "1.0.0";
+pub(in crate::host::request_entry) const PROFILE: &str = "skiff-test";
 
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-pub(super) struct PublishedFixture {
-    pub(super) artifact_root: TempRoot,
-    pub(super) fixture_root: PathBuf,
-    pub(super) authoring_receipt: Value,
-    pub(super) package_ref: PackageArtifactRef,
-    pub(super) package_artifact: Arc<PackageArtifact>,
-    pub(super) release_pointer: ReleasePointer,
-    pub(super) deployment: ServiceDeploymentRef,
-    pub(super) deployment_artifact: Arc<ServiceDeployment>,
-    pub(super) gateway_identity: GatewayEntryIdentity,
+pub(in crate::host::request_entry) struct PublishedFixture {
+    pub(in crate::host::request_entry) artifact_root: TempRoot,
+    fixture_root: PathBuf,
+    authoring_receipt: Value,
+    pub(in crate::host::request_entry) package_ref: PackageArtifactRef,
+    pub(in crate::host::request_entry) package_artifact: Arc<PackageArtifact>,
+    pub(in crate::host::request_entry) release_pointer: ReleasePointer,
+    pub(in crate::host::request_entry) deployment: ServiceDeploymentRef,
+    pub(in crate::host::request_entry) deployment_artifact: Arc<ServiceDeployment>,
+    pub(in crate::host::request_entry) gateway_identity: GatewayEntryIdentity,
 }
 
 impl PublishedFixture {
-    pub(super) fn build(prefix: &str) -> Self {
+    pub(in crate::host::request_entry) fn build(prefix: &str) -> Self {
         let repo_root = repository_root();
         let fixture_root = repo_root.join(FIXTURE_RELATIVE);
         let artifact_root = TempRoot::create(prefix);
@@ -117,7 +117,7 @@ impl PublishedFixture {
         }
     }
 
-    pub(super) fn connection_bootstrap(&self) -> ConnectionBootstrap {
+    pub(in crate::host::request_entry) fn connection_bootstrap(&self) -> ConnectionBootstrap {
         ConnectionBootstrap {
             resolver: FilesystemDeploymentBytecodeContentResolver::open(self.artifact_root.path())
                 .expect("open production filesystem resolver"),
@@ -127,7 +127,9 @@ impl PublishedFixture {
         }
     }
 
-    pub(super) fn corrupt_bytecode_identity(&self) -> BytecodeIdentityCorruption {
+    pub(in crate::host::request_entry) fn corrupt_bytecode_identity(
+        &self,
+    ) -> BytecodeIdentityCorruption {
         let bytecode = self
             .package_artifact
             .bytecode
@@ -135,7 +137,10 @@ impl PublishedFixture {
             .expect("published fixture has bytecode");
         let record_path = PackageBytecodeRecordPath::new(&self.package_ref, bytecode)
             .expect("canonical bytecode record path");
-        let absolute_path = self.artifact_root.path().join(record_path.as_relative_path());
+        let absolute_path = self
+            .artifact_root
+            .path()
+            .join(record_path.as_relative_path());
         let before = fs::read(&absolute_path).expect("read immutable bytecode record");
         let value = serde_json::from_slice::<Value>(&before)
             .expect("canonical bytecode record remains JSON before corruption");
@@ -174,18 +179,18 @@ impl PublishedFixture {
     }
 }
 
-pub(super) struct BytecodeIdentityCorruption {
-    pub(super) record_path: String,
-    pub(super) before_sha256: String,
-    pub(super) after_sha256: String,
+pub(in crate::host::request_entry) struct BytecodeIdentityCorruption {
+    pub(in crate::host::request_entry) record_path: String,
+    pub(in crate::host::request_entry) before_sha256: String,
+    pub(in crate::host::request_entry) after_sha256: String,
 }
 
-pub(super) struct TempRoot {
+pub(in crate::host::request_entry) struct TempRoot {
     path: PathBuf,
 }
 
 impl TempRoot {
-    pub(super) fn create(prefix: &str) -> Self {
+    fn create(prefix: &str) -> Self {
         let ordinal = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
         let path = env::temp_dir().join(format!(
             "{prefix}-{}-{ordinal}-{}",
@@ -199,7 +204,7 @@ impl TempRoot {
         Self { path }
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(in crate::host::request_entry) fn path(&self) -> &Path {
         &self.path
     }
 }
