@@ -123,7 +123,7 @@ implementation subjects:
 quality and focused selectors:
   verify                       tests plus every non-live quality/check gate
   rust-quality                 workspace rustfmt + Rust file/function line gates
-  bytecode-vm-phase-0-gate     Phase 1 VCP validation readiness gate
+  bytecode-vm-phase-0-gate     Phase 0 exact-candidate closure gate
   type-check                   scripts and VS Code static checks
   checks                       repository architecture and policy checks
   scripts  vscode              focused tooling tests
