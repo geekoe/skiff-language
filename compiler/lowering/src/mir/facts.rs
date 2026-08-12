@@ -29,6 +29,7 @@ pub struct MirStreamResultFacts {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirExpressionBlockFact {
     pub body_block: u32,
+    pub continuation_block: u32,
     pub result: ExprRefIr,
     pub completion_targets: Vec<u32>,
 }

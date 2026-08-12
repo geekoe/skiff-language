@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     AssignTargetIr, BlockIr, ConcurrentLaneIr, ConcurrentPlanIr, ExprIr, InstructionSourceSite,
-    LiteralIr, SlotKind, StmtIr, SyntheticInstructionSiteReason, TypeRefIr,
+    SlotKind, StmtIr, SyntheticInstructionSiteReason, TypeRefIr,
 };
 use skiff_compiler_source::{
     ConcurrentLaneKind, ConcurrentSourcePlan, ExecutionSourceSite, TimeoutSourcePlan,
@@ -41,13 +41,14 @@ impl FunctionLowerer<'_> {
         condition: &Expr,
         then_expr: &Expr,
         else_expr: &Expr,
+        result_type: &TypeRefIr,
     ) -> Result<ExprIr> {
         let temp_name = format!("$ternary{}", self.slots.len());
         let temp_slot = self.declare_slot(&temp_name, SlotKind::Temp, true)?;
         let condition = self.lower_expr(condition)?;
         let then_value = self.lower_expr(then_expr)?;
         let else_value = self.lower_expr(else_expr)?;
-        self.set_slot_type(temp_slot, Some(self.expression_ir_type(then_value)));
+        self.set_slot_type(temp_slot, Some(result_type.clone()));
 
         let then_label = self.next_block_label("ternary_then");
         let else_label = self.next_block_label("ternary_else");
@@ -83,23 +84,6 @@ impl FunctionLowerer<'_> {
         });
 
         let body_label = self.next_block_label("ternary_body");
-        let init_value = self.push_expr(
-            ExprIr::Literal {
-                value: LiteralIr::Null,
-            },
-            TypeRefIr::builtin("null"),
-        );
-        let init_stmt = self.push_stmt(
-            StmtIr::InitSlot {
-                slot: temp_slot,
-                value: init_value,
-            },
-            None,
-        );
-        self.record_generated_statement_event(
-            init_stmt.statement,
-            SyntheticInstructionSiteReason::CompilerDesugaring,
-        )?;
         let body_stmt = self.push_stmt(
             StmtIr::If {
                 condition,
@@ -114,14 +98,11 @@ impl FunctionLowerer<'_> {
         )?;
         self.body.blocks.push(BlockIr {
             label: body_label.clone(),
-            statements: vec![init_stmt, body_stmt],
+            statements: vec![body_stmt],
         });
         Ok(ExprIr::ValueBlock {
             block: body_label,
-            result: self.push_expr(
-                ExprIr::LoadSlot { slot: temp_slot },
-                self.expression_ir_type(else_value),
-            ),
+            result: self.push_expr(ExprIr::LoadSlot { slot: temp_slot }, result_type.clone()),
         })
     }
 

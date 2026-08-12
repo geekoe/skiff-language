@@ -216,9 +216,20 @@ impl MirFunction {
                 });
             }
             self.block(fact.body_block)?;
+            self.block(fact.continuation_block)?;
             let mut previous = None;
             for target in &fact.completion_targets {
-                self.block(*target)?;
+                let target_block = self.block(*target)?;
+                if !target_block.successors.contains(&fact.continuation_block) {
+                    return Err(MirContractError::InvalidExpressionBlockFact {
+                        function: self.symbol.clone(),
+                        expression: expression.index,
+                        message: format!(
+                            "completion target {target} does not reach continuation {}",
+                            fact.continuation_block
+                        ),
+                    });
+                }
                 if let Some(previous) = previous {
                     if previous >= *target {
                         return Err(MirContractError::InvalidExpressionBlockFact {

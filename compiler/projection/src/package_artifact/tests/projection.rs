@@ -91,6 +91,11 @@ fn package_actor_declarations_project_into_local_abi_and_links() {
             .as_ref(),
         Some(implementation_actor)
     );
+    assert_eq!(
+        artifact.implementation_links.types["thread_actor.ThreadActor"].symbol,
+        "thread_actor.ThreadActor",
+        "implementation-only links retain their canonical source path"
+    );
 
     let wire = serde_json::to_string(&artifact).unwrap();
     assert!(

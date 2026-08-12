@@ -440,7 +440,7 @@ fn type_links(descriptor: TypeDescriptorIr) -> BTreeMap<String, TypeExport> {
     let private = TypeExport {
         file: file_ref(),
         type_index: 1,
-        symbol: "Private".to_string(),
+        symbol: PRIVATE_IMPLEMENTATION_PATH.to_string(),
         is_interface: false,
         descriptor: Some(descriptor),
         type_params: Vec::new(),

@@ -1900,6 +1900,7 @@ impl<'a> FunctionCfg<'a> {
             let completion_targets = self.completion_targets(body_block, continuation)?;
             let fact = MirExpressionBlockFact {
                 body_block,
+                continuation_block: continuation,
                 result,
                 completion_targets,
             };

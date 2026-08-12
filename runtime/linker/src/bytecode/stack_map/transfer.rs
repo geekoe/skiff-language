@@ -1,6 +1,5 @@
 use skiff_artifact_model::{
-    Arity, LiteralIr, SlotAction, SlotContract, TypeRefIr, TypedStackGroup, TypedTransition,
-    ValueSource,
+    Arity, LiteralIr, SlotAction, SlotContract, TypedStackGroup, TypedTransition, ValueSource,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackValue, LinkedValueDropPlan,
@@ -202,20 +201,23 @@ fn linked_values_match(
     actual: &[LinkedStackValue],
     context: &StackMapContext<'_, '_>,
 ) -> bool {
-    let ok = expected.len() == actual.len()
-        && expected.iter().zip(actual).all(|(expected, actual)| {
-            plans_match(expected, actual, context)
-                || (type_refs_match(expected.ty(), actual.ty(), context)
-                    && expected.plan() == actual.plan())
-        });
-    ok
+    expected.len() == actual.len()
+        && expected
+            .iter()
+            .zip(actual)
+            .all(|(expected, actual)| linked_value_matches(expected, actual, context))
 }
 
-fn plans_match(
+fn linked_value_matches(
     expected: &LinkedStackValue,
     actual: &LinkedStackValue,
     context: &StackMapContext<'_, '_>,
 ) -> bool {
+    type_refs_match(expected.ty(), actual.ty(), context)
+        && (expected.plan() == actual.plan() || plans_match(expected, actual))
+}
+
+fn plans_match(expected: &LinkedStackValue, actual: &LinkedStackValue) -> bool {
     matches!(
         expected.plan(),
         LinkedValueTransferPlan::SnapshotShare {
@@ -463,7 +465,7 @@ fn apply_slot_effects(
             SlotAction::Write => {
                 let value =
                     slot_write_value(instruction, effect.value, inputs, &before, location.clone())?;
-                validate_slot_write(context, slot, &value, location.clone())?;
+                let value = validate_slot_write(context, slot, &value, location.clone())?;
                 let next_slot = state.slots.get_mut(slot).ok_or_else(|| {
                     obligation_error(
                         location.clone(),
@@ -542,7 +544,7 @@ fn validate_slot_write(
     slot: usize,
     value: &LinkedStackValue,
     location: BytecodeLinkLocation,
-) -> Result<(), BytecodeLinkError> {
+) -> Result<LinkedStackValue, BytecodeLinkError> {
     let expected_type = context.frame.slot_types().get(slot).copied().ok_or_else(|| {
         obligation_error(
             location.clone(),
@@ -555,13 +557,14 @@ fn validate_slot_write(
             format!("frame slot plan {slot} is out of bounds"),
         )
     })?;
-    if value.plan() != &expected_plan || !type_refs_match(expected_type, value.ty(), context) {
+    let expected = LinkedStackValue::new(expected_type, expected_plan);
+    if !linked_value_matches(&expected, value, context) {
         return Err(obligation_error(
             location,
             format!("slot write type or lifecycle plan differs at slot {slot}"),
         ));
     }
-    Ok(())
+    Ok(expected)
 }
 
 fn resolve_arity(

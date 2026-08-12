@@ -149,6 +149,51 @@ fn merge_accepts_distinct_type_indices_in_one_semantic_class() {
 }
 
 #[test]
+fn branch_writes_are_canonicalized_to_the_declared_nullable_slot_type() {
+    let fixture = fixture(
+        vec![
+            TypeRefIr::builtin("bool"),
+            TypeRefIr::builtin("string"),
+            TypeRefIr::builtin("null"),
+            TypeRefIr::Nullable {
+                inner: Box::new(TypeRefIr::builtin("string")),
+            },
+        ],
+        spec(
+            vec![0, 1, 2, 3],
+            vec![
+                (0, ParamModeIr::Value),
+                (1, ParamModeIr::Value),
+                (2, ParamModeIr::Value),
+            ],
+            Vec::new(),
+            vec![
+                slot_instruction(Opcode::TakeSlot, 0),
+                branch(Opcode::JumpIfTrue, 5),
+                slot_instruction(Opcode::LoadSlot, 2),
+                slot_instruction(Opcode::StoreSlot, 3),
+                branch(Opcode::Jump, 7),
+                slot_instruction(Opcode::LoadSlot, 1),
+                slot_instruction(Opcode::StoreSlot, 3),
+                plain(Opcode::Return),
+            ],
+            1,
+        )
+        .with_hints(vec![
+            hint(&[], &[live(0), live(1), live(2), uninitialized()]),
+            hint(&[0], &[moved(), live(1), live(2), uninitialized()]),
+            hint(&[], &[moved(), live(1), live(2), uninitialized()]),
+            hint(&[2], &[moved(), live(1), live(2), uninitialized()]),
+            hint(&[], &[moved(), live(1), live(2), live(3)]),
+            hint(&[], &[moved(), live(1), live(2), uninitialized()]),
+            hint(&[1], &[moved(), live(1), live(2), uninitialized()]),
+            hint(&[], &[moved(), live(1), live(2), live(3)]),
+        ]),
+    );
+    prove(&fixture).expect("nullable branch writes converge through the declared slot type");
+}
+
+#[test]
 fn independently_computed_depth_rejects_a_low_declaration() {
     let fixture = fixture(
         vec![TypeRefIr::builtin("string")],

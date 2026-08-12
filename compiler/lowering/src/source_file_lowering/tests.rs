@@ -751,6 +751,10 @@ fn source_calls_and_throws_keep_real_sites_and_catch_type_is_required() {
                 return throw failure
               }
 
+              function constructed() -> Failure {
+                return throw Failure { message: "boom" }
+              }
+
               function caught(value: string) -> void {
                 final attempted = catch<Failure>(callee(value))
               }
@@ -799,6 +803,17 @@ fn source_calls_and_throws_keep_real_sites_and_catch_type_is_required() {
                 site: InstructionSourceSite::Source { span },
                 ..
             } if span.source_id == 0 && span.start.line > 0
+        )
+    }));
+
+    let constructed = executable(&unit, "constructed");
+    assert!(constructed.body.expressions.iter().any(|expression| {
+        matches!(
+            expression,
+            ExprIr::Throw {
+                payload_type: TypeRefIr::LocalType { type_index: 0 },
+                ..
+            }
         )
     }));
 
@@ -1315,6 +1330,14 @@ fn ternary_lowers_to_lazy_value_block_with_if_and_temp_slot() {
     else {
         panic!("expected ternary result to load the temp slot");
     };
+    assert_eq!(
+        executable.expression_types[result_ref.expression as usize],
+        TypeRefIr::builtin("string")
+    );
+    assert_eq!(
+        executable.slots.slots[*result_slot as usize].ty,
+        Some(TypeRefIr::builtin("string"))
+    );
 
     let body_block = executable
         .body
@@ -1322,25 +1345,20 @@ fn ternary_lowers_to_lazy_value_block_with_if_and_temp_slot() {
         .iter()
         .find(|block| &block.label == body_label)
         .expect("ternary body block should be emitted");
-    assert_eq!(body_block.statements.len(), 2);
-    let skiff_artifact_model::StmtIr::InitSlot {
-        slot: init_slot,
-        value: init_value,
-    } = &executable.body.statements[body_block.statements[0].statement as usize]
-    else {
-        panic!("expected InitSlot statement initializing the ternary temp slot");
-    };
-    assert_eq!(init_slot, result_slot);
-    assert!(matches!(
-        &executable.body.expressions[init_value.expression as usize],
-        ExprIr::Literal { .. }
-    ));
+    assert_eq!(body_block.statements.len(), 1);
+    assert!(
+        executable.body.statements.iter().all(|statement| !matches!(
+            statement,
+            skiff_artifact_model::StmtIr::InitSlot { slot, .. } if slot == result_slot
+        )),
+        "ternary temporary must stay uninitialized until the selected branch performs its first write"
+    );
 
     let skiff_artifact_model::StmtIr::If {
         condition,
         then_block,
         else_block,
-    } = &executable.body.statements[body_block.statements[1].statement as usize]
+    } = &executable.body.statements[body_block.statements[0].statement as usize]
     else {
         panic!("expected If statement inside the ternary body block");
     };
@@ -1374,6 +1392,64 @@ fn ternary_lowers_to_lazy_value_block_with_if_and_temp_slot() {
             &executable.body.expressions[value.expression as usize],
             ExprIr::LoadSlot { .. }
         ));
+    }
+}
+
+#[test]
+fn ternary_temp_uses_the_authoritative_joined_result_type() {
+    let unit = lowered_unit(
+        r#"
+          type TernaryJoinError { message: string }
+
+          function nullable(flag: bool, value: string) -> string? {
+            return flag ? value : null
+          }
+
+          function widened(flag: bool, count: integer, ratio: number) -> number {
+            return flag ? count : ratio
+          }
+
+          function lazy(flag: bool) -> string {
+            return flag ? throw TernaryJoinError { message: "boom" } : "fallback"
+          }
+        "#,
+    );
+
+    for (name, expected) in [
+        (
+            "nullable",
+            TypeRefIr::Nullable {
+                inner: Box::new(TypeRefIr::builtin("string")),
+            },
+        ),
+        ("widened", TypeRefIr::builtin("number")),
+        ("lazy", TypeRefIr::builtin("string")),
+    ] {
+        let executable = executable(&unit, name);
+        let (result, slot) = executable
+            .body
+            .expressions
+            .iter()
+            .enumerate()
+            .find_map(|(index, expression)| match expression {
+                ExprIr::ValueBlock { result, .. } => {
+                    let ExprIr::LoadSlot { slot } = executable
+                        .body
+                        .expressions
+                        .get(result.expression as usize)?
+                    else {
+                        return None;
+                    };
+                    Some((index, *slot))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{name} ternary ValueBlock"));
+        assert_eq!(executable.expression_types[result], expected);
+        assert_eq!(
+            executable.slots.slots[slot as usize].ty.as_ref(),
+            Some(&expected)
+        );
     }
 }
 

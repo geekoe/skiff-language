@@ -294,8 +294,15 @@ fn exact_package_symbol(owner: &HydratedBytecodePackage, symbol_path: String) ->
 }
 
 fn canonical_implementation_path(export: &TypeExport) -> Option<String> {
-    (!export.file.module_path.is_empty() && !export.symbol.is_empty())
-        .then(|| format!("{}.{}", export.file.module_path, export.symbol))
+    if export.file.module_path.is_empty() || export.symbol.is_empty() {
+        return None;
+    }
+    let prefix = format!("{}.", export.file.module_path);
+    Some(if export.symbol.starts_with(&prefix) {
+        export.symbol.clone()
+    } else {
+        format!("{}.{}", export.file.module_path, export.symbol)
+    })
 }
 
 fn same_type_semantics(left: &PackageLocalAbiSymbol, right: &PackageLocalAbiSymbol) -> bool {

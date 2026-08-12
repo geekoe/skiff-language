@@ -164,14 +164,14 @@ fn write_slot(
         "slot write",
     )?;
     let AbstractValue::Concrete(value_ty) = value;
-    let merged = context
+    context
         .facts
         .merge_coordinate(value_ty, declared)
         .map_err(|_| violation(context.location, "slot write has no exact class coordinate"))?;
     values::set_slot(
         slots,
         slot,
-        AbstractSlotState::Live(merged),
+        AbstractSlotState::Live(declared),
         context.location,
     )
 }

@@ -1704,6 +1704,19 @@ mod tests {
                 stream_result: None,
                 remote_interface: None,
             },
+            MirExpression {
+                index: 4,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::Number {
+                        value: serde_json::Number::from(2),
+                    },
+                },
+                ty: slot_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
         ];
         let writable = MirWritablePlace {
             root: MirWritableRoot::Slot { slot: 0 },
@@ -1736,23 +1749,43 @@ mod tests {
                 },
                 MirBlock {
                     id: 1,
-                    label: "pick".to_string(),
+                    label: "pick_body".to_string(),
                     statements: vec![MirStmt {
                         statement_index: 1,
                         span: None,
                         kind: MirStmtKind::If {
                             condition: expression(1),
-                            then_block: 2,
-                            else_block: Some(0),
+                            then_block: 4,
+                            else_block: Some(3),
                         },
                     }],
-                    successors: vec![0, 2],
+                    successors: vec![3, 4],
                 },
                 MirBlock {
                     id: 2,
-                    label: "pick".to_string(),
+                    label: "pick_body".to_string(),
+                    statements: Vec::new(),
+                    successors: vec![0],
+                },
+                MirBlock {
+                    id: 3,
+                    label: "pick_else".to_string(),
                     statements: vec![MirStmt {
                         statement_index: 2,
+                        span: None,
+                        kind: MirStmtKind::Assign {
+                            target: AssignTargetIr::Slot { slot: 0 },
+                            place: writable.clone(),
+                            value: expression(4),
+                        },
+                    }],
+                    successors: vec![2],
+                },
+                MirBlock {
+                    id: 4,
+                    label: "pick_then".to_string(),
+                    statements: vec![MirStmt {
+                        statement_index: 3,
                         span: None,
                         kind: MirStmtKind::Assign {
                             target: AssignTargetIr::Slot { slot: 0 },
@@ -1760,7 +1793,7 @@ mod tests {
                             value: expression(2),
                         },
                     }],
-                    successors: vec![0],
+                    successors: vec![2],
                 },
             ],
             vec![
@@ -1776,6 +1809,10 @@ mod tests {
                     statement_index: 2,
                     span: None,
                 },
+                MirStatementEntry {
+                    statement_index: 3,
+                    span: None,
+                },
             ],
             BTreeMap::new(),
             Vec::new(),
@@ -1785,8 +1822,9 @@ mod tests {
             0,
             MirExpressionBlockFact {
                 body_block: 1,
+                continuation_block: 0,
                 result: expression(3),
-                completion_targets: vec![1, 2],
+                completion_targets: vec![2],
             },
         );
         function.liveness = compute_liveness(&function).expect("ValueBlock liveness computes");
@@ -1812,6 +1850,47 @@ mod tests {
         assert!(function.instructions.iter().any(|instruction| {
             instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::Jump
         }));
+        let load_pc = function
+            .instructions
+            .iter()
+            .find(|instruction| {
+                instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::LoadSlot
+            })
+            .expect("ValueBlock result loads the branch slot")
+            .pc;
+        let branch_target = |instruction: &skiff_artifact_model::bytecode::DecodedInstruction| {
+            skiff_artifact_model::bytecode::decode_branch_target(
+                instruction.pc,
+                u32::try_from(instruction.operand_words.len()).unwrap(),
+                instruction.operand(0),
+            )
+            .expect("validated branch has a target")
+        };
+        let completion_jumps = function
+            .instructions
+            .iter()
+            .filter(|instruction| {
+                instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::Jump
+                    && branch_target(instruction) == load_pc
+            })
+            .collect::<Vec<_>>();
+        let [completion_jump] = completion_jumps.as_slice() else {
+            panic!("exactly one ValueBlock completion edge reaches the result load")
+        };
+        let stores = function
+            .instructions
+            .iter()
+            .enumerate()
+            .filter(|(_, instruction)| {
+                instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::StoreSlot
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(stores.len(), 2, "both ternary branches write the result slot");
+        for (index, _) in stores {
+            let jump = &function.instructions[index + 1];
+            assert_eq!(jump.descriptor.kind, skiff_artifact_model::bytecode::Opcode::Jump);
+            assert_eq!(branch_target(jump), completion_jump.pc);
+        }
     }
 
     #[test]

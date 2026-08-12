@@ -30,7 +30,7 @@ fn ternary_desugaring_has_exact_generated_statement_coverage() {
         })
         .collect::<Vec<_>>();
     generated.sort_by_key(|(ordinal, _)| *ordinal);
-    assert_eq!(generated.len(), 4);
+    assert_eq!(generated.len(), 3);
     for (expected, (ordinal, event)) in generated.iter().enumerate() {
         assert_eq!(*ordinal, u32::try_from(expected).unwrap());
         assert!(matches!(

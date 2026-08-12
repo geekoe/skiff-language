@@ -265,7 +265,7 @@ impl<'a> FunctionEmitter<'a> {
                 "expression completion target set is empty",
             ));
         }
-        let body_ids = value_block_body_ids(self.function, fact.body_block)?;
+        let body_ids = value_block_body_ids(self.function, fact)?;
         let body_depth = self.operand_depth;
         let mut completion_edges = Vec::new();
         for &block_id in &body_ids {
@@ -285,6 +285,8 @@ impl<'a> FunctionEmitter<'a> {
             let branch_start = self.pending_branches.len();
             self.emit_value_block_block(block)?;
             self.redirect_value_block_completions(
+                block_id,
+                fact,
                 branch_start,
                 &body_ids,
                 &mut completion_edges,
@@ -295,25 +297,39 @@ impl<'a> FunctionEmitter<'a> {
         for edge in &mut completion_edges {
             edge.target_instruction = resume_instruction;
         }
+        self.pending_pc_branches.extend(completion_edges);
         self.emit_expression(result)
     }
 
     fn redirect_value_block_completions(
         &mut self,
+        block_id: u32,
+        fact: &skiff_compiler_lowering::mir::MirExpressionBlockFact,
         start: usize,
         body_blocks: &BTreeSet<u32>,
         completion_edges: &mut Vec<PendingPcBranch>,
     ) -> Result<(), BytecodeEmissionError> {
         let mut retained = Vec::new();
         for branch in self.pending_branches.drain(start..) {
-            if body_blocks.contains(&branch.block) {
-                retained.push(branch);
-            } else {
+            if fact.completion_targets.contains(&block_id)
+                && branch.block == fact.continuation_block
+            {
                 completion_edges.push(PendingPcBranch {
                     instruction: branch.instruction,
                     operand: branch.operand,
                     target_instruction: 0,
                 });
+            } else if body_blocks.contains(&branch.block) {
+                retained.push(branch);
+            } else {
+                return Err(unsupported(
+                    &self.key,
+                    "ValueBlock CFG",
+                    &format!(
+                        "body block {block_id} escapes to unexpected block {}",
+                        branch.block
+                    ),
+                ));
             }
         }
         self.pending_branches.extend(retained);
@@ -469,9 +485,25 @@ impl<'a> FunctionEmitter<'a> {
         &mut self,
         block: &skiff_compiler_lowering::mir::MirBlock,
     ) -> Result<(), BytecodeEmissionError> {
+        let instruction_start = self.instructions.len();
         for statement in &block.statements {
             self.map_statement_events(statement.statement_index);
             self.emit_statement(statement)?;
+        }
+
+        if self.instructions[instruction_start..]
+            .last()
+            .is_some_and(|instruction| {
+                matches!(
+                    contract_for_opcode(instruction.opcode).control,
+                    skiff_artifact_model::ControlContract::Return
+                        | skiff_artifact_model::ControlContract::TailCall
+                        | skiff_artifact_model::ControlContract::Raise
+                        | skiff_artifact_model::ControlContract::Rethrow
+                )
+            })
+        {
+            return Ok(());
         }
 
         let has_budget_checkpoint = self.events.iter().any(|event| {
@@ -3896,25 +3928,25 @@ fn value_block_body_blocks(
 ) -> Result<BTreeSet<u32>, BytecodeEmissionError> {
     let mut bodies = BTreeSet::new();
     for fact in function.expression_blocks.values() {
-        bodies.extend(value_block_body_ids(function, fact.body_block)?);
+        bodies.extend(value_block_body_ids(function, fact)?);
     }
     Ok(bodies)
 }
 
 fn value_block_body_ids(
     function: &MirFunction,
-    body_block: u32,
+    fact: &skiff_compiler_lowering::mir::MirExpressionBlockFact,
 ) -> Result<BTreeSet<u32>, BytecodeEmissionError> {
+    let body_block = fact.body_block;
     let body_ordinal = usize::try_from(body_block)
         .map_err(|_| arithmetic("scalar emitter", "ValueBlock body block id conversion"))?;
-    let body = function.blocks.get(body_ordinal).ok_or_else(|| {
+    function.blocks.get(body_ordinal).ok_or_else(|| {
         unsupported(
             "scalar emitter",
             "ValueBlock CFG",
             &format!("body block {body_block} is absent"),
         )
     })?;
-    let seen_label = body.label.clone();
     let mut pending = vec![body_block];
     let mut seen = BTreeSet::new();
     while let Some(block_id) = pending.pop() {
@@ -3934,13 +3966,25 @@ fn value_block_body_ids(
                 &format!("body block {block_id} is non-canonical"),
             ));
         }
-        if block.label != seen_label {
-            continue;
-        }
         if !seen.insert(block_id) {
             continue;
         }
-        pending.extend(block.successors.iter().copied());
+        pending.extend(
+            block
+                .successors
+                .iter()
+                .copied()
+                .filter(|successor| *successor != fact.continuation_block),
+        );
+    }
+    for completion in &fact.completion_targets {
+        if !seen.contains(completion) {
+            return Err(unsupported(
+                "scalar emitter",
+                "ValueBlock CFG",
+                &format!("completion block {completion} is outside the ValueBlock body"),
+            ));
+        }
     }
     Ok(seen)
 }

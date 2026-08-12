@@ -1831,7 +1831,21 @@ impl<'a> FunctionLowerer<'a> {
                 condition,
                 then_expr,
                 else_expr,
-            } => self.lower_ternary_expr(condition, then_expr, else_expr)?,
+            } => {
+                let result_type = expression_key
+                    .as_ref()
+                    .and_then(|key| self.expression_types.and_then(|types| types.fact(key)))
+                    .and_then(|fact| fact.ty.as_ref())
+                    .map(|ty| ty.ir.clone())
+                    .or_else(|| expected_target.cloned())
+                    .ok_or_else(|| {
+                        CompileError::Semantic(
+                            "ternary lowering requires a concrete joined or expected result type"
+                                .to_string(),
+                        )
+                    })?;
+                self.lower_ternary_expr(condition, then_expr, else_expr, &result_type)?
+            }
             Expr::Binary { op, left, right } => ExprIr::Binary {
                 op: lower_binary_op(*op),
                 left: self.lower_expr(left)?,
@@ -3383,10 +3397,10 @@ impl<'a> FunctionLowerer<'a> {
     }
 
     fn throw_payload_type(&self, value: &Expr, offset: u32) -> Result<TypeRefIr> {
-        if let Some((_, ty)) = self.expression_type_at_offset(offset) {
+        if let Some(ty) = self.static_record_constructor_type(value) {
             return Ok(ty);
         }
-        if let Some(ty) = self.static_record_constructor_type(value) {
+        if let Some((_, ty)) = self.expression_type_at_offset(offset) {
             return Ok(ty);
         }
         if self.expression_types.is_some() {
