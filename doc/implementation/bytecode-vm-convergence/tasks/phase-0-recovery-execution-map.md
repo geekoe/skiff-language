@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 20; success VCP runtime diagnosis; negative proof awaiting Cargo
+> Status: active; revision 21; both host proofs accepted; final Gate freeze pending
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -364,3 +364,25 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   owner now moves the immutable response assertion first to reveal the actual production boundary error;
 - negative Cargo remains intentionally queued behind the success diagnosis to preserve the single shared Cargo lease. Its
   source reviewer otherwise confirmed the three mutation surfaces, error-code mapping and zero-observation ownership.
+
+### Revision 21 — production Proof acceptance and final Gate frontier
+
+- the success diagnostic exposed a fixture-only duplicate-root alias: the same `main.run` callable was registered both as the
+  HTTP gateway handler and as an unrelated service operation. The proof owner removed only that extra operation surface;
+  `main.run` still consumes typed JSON `2`, calls a local helper returning `7`, takes the `== 7` branch, subtracts `4` and
+  returns the externally decoded scalar `3.0`;
+- the exact success selector passed `1/1` with `175` filtered tests on the integrated candidate. It deterministically drains
+  the production writer channel before checking the exact five ordered, correlated production observations and the typed
+  response. Log `/tmp/p0-vcp-success-runtime.log` has SHA-256
+  `7a5cf49a0834ab6c50867dcfc1d86ea0aaf6f7f82aa885ef9abc6c2985329d1c`; an independent delta reviewer returned `PASS`;
+- the exact negative selector then passed `1/1` with `175` filtered tests. Its three sub-scenarios independently preserve the
+  canonical compiler/publication/store/bootstrap, production frame decode and sole `spawn_bytecode_request` entry while
+  changing only bytecode identity, gateway identity or request mode. Each asserts the exact correlated typed error, zero
+  observations and no second terminal through deterministic channel closure. Log
+  `/tmp/p0-vcp-negative-integrated-r2.log` has SHA-256
+  `74b137fbeb008400396f86b545ad033508540cf42f0301e5ffedda8354eb603a`; the independent reviewer returned `PASS`;
+- the earlier support-visibility, timeout-based quiet period and macOS `/var` canonical-path false greens are closed by the
+  narrow support/test deltas already in integration. The only remaining Phase 0 frontier is to freeze an exact clean
+  candidate, execute the canonical twenty-receipt Gate into a caller-designated durable directory, and obtain a new
+  candidate-level Acceptance verdict. Phase 1 production work remains blocked until that receipt and
+  `results/phase-0-closure.md` exist.
