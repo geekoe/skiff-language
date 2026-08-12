@@ -1,3 +1,4 @@
+mod capability;
 mod closure;
 mod constants;
 pub(super) mod dispatch;
@@ -73,6 +74,8 @@ impl<'a> DeploymentLinker<'a> {
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
+
+        self.admit_phase_1_capabilities(&functions)?;
 
         let operation_entries = self.link_operation_entries(&function_indices, &functions)?;
         let gateway_entries = self.link_gateway_entries(&function_indices, &functions)?;
