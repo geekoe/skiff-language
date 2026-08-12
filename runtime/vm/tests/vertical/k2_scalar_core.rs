@@ -49,6 +49,14 @@ fn production_image_executes_source_scalar_slot_branch_local_call_and_return_wit
     assert!(outcome.max_frames >= 2, "local call pushes a VM frame");
     assert!(outcome.max_value_slots > outcome.root_value_slots);
     assert_eq!(outcome.heap, SpyHeap::default());
+
+    let branch_taken = fixture.execute(
+        ValueSlot::number(3.0),
+        vm_limits(32, 512),
+        SpyHeap::default(),
+    );
+    assert_eq!(branch_taken.scalar_result, Some(0.0));
+    assert_eq!(branch_taken.heap, SpyHeap::default());
 }
 
 #[test]
@@ -96,14 +104,37 @@ fn verifier_owned_slot_transfer_fixture_executes_copy_and_move_without_heap_side
     fixture.republish_verifier_owned_artifact();
     assert_no_unwind_or_pending_opcode(&fixture.opcodes());
 
-    let outcome = fixture.execute(
-        ValueSlot::number(13.0),
-        vm_limits(8, 64),
-        SpyHeap::default(),
+    let mut fiber = fixture.start(ValueSlot::number(13.0), vm_limits_with_segment(8, 64, 2));
+    let mut heap = SpyHeap::default();
+    let mut budget = TestBudget::new();
+    let mut host = SegmentHost::default();
+    assert!(matches!(
+        host.run_segment(&mut fiber, &mut heap, &mut budget),
+        VmControl::Continue
+    ));
+    assert_eq!(host.call_count, 1);
+
+    let mut roots = RootCollector::default();
+    skiff_runtime_model::vm_root::VmRootSource::visit_roots(&fiber, &mut roots).unwrap();
+    let expected_roots = [ValueSlot::number(13.0), ValueSlot::number(13.0)];
+    assert_eq!(roots.values.len(), expected_roots.len());
+    assert!(
+        roots
+            .values
+            .iter()
+            .zip(expected_roots.iter())
+            .all(|(actual, expected)| actual == expected),
+        "MoveSlot leaves only the entry parameter and destination live"
     );
 
-    assert_eq!(outcome.scalar_result, Some(13.0));
-    assert_eq!(outcome.heap, SpyHeap::default());
+    let VmControl::Complete(Ok(values)) = host.run_segment(&mut fiber, &mut heap, &mut budget)
+    else {
+        panic!("slot transfer fixture must complete in its second segment")
+    };
+    assert_eq!(host.call_count, 2);
+    assert_eq!(values.len(), 1);
+    assert!(values.values()[0] == ValueSlot::number(13.0));
+    assert_eq!(heap, SpyHeap::default());
 }
 
 #[test]
@@ -123,27 +154,24 @@ fn source_deep_local_call_stays_in_dispatch_loop_and_hits_frame_and_value_bounds
     let child_segment = fixture.segment_len("main::dive");
     let frame_value_limit = root_segment + child_segment * 4095;
 
-    // vm_limits fixes every segment at one instruction. Reaching 4096 live VM
-    // frames therefore requires CallLocal to return to the same outer
-    // run_segment loop after each push; a recursively invoked native evaluator
-    // cannot manufacture this observable frame-vector progression.
-    let failure = fixture.execute_error(
+    let failure = fixture.execute_error_in_one_host_call(
         ValueSlot::number(1.0),
-        vm_limits(4096, frame_value_limit),
+        vm_limits_with_segment(4096, frame_value_limit, 65_536),
         SpyHeap::default(),
     );
     assert_eq!(
         failure.error,
         skiff_runtime_vm::VmError::FrameLimitExceeded { limit: 4096 }
     );
+    assert_eq!(failure.host_call_count, 1);
     assert_eq!(failure.max_frames, 4096);
     assert_eq!(failure.heap, SpyHeap::default());
 
     let value_limit = root_segment + child_segment;
     let requested = value_limit + child_segment;
-    let value_failure = fixture.execute_error(
+    let value_failure = fixture.execute_error_in_one_host_call(
         ValueSlot::number(1.0),
-        vm_limits(4096, value_limit),
+        vm_limits_with_segment(4096, value_limit, 65_536),
         SpyHeap::default(),
     );
     assert!(matches!(
@@ -153,6 +181,7 @@ fn source_deep_local_call_stays_in_dispatch_loop_and_hits_frame_and_value_bounds
             requested: actual,
         } if limit == value_limit && actual == requested
     ));
+    assert_eq!(value_failure.host_call_count, 1);
     assert_eq!(value_failure.max_frames, 2);
     assert_eq!(value_failure.max_value_slots, value_limit);
     assert_eq!(value_failure.heap, SpyHeap::default());
@@ -205,11 +234,19 @@ fn assert_no_unwind_or_pending_opcode(opcodes: &[Opcode]) {
 }
 
 fn vm_limits(max_frames: usize, max_value_slots: usize) -> VmLimits {
+    vm_limits_with_segment(max_frames, max_value_slots, 1)
+}
+
+fn vm_limits_with_segment(
+    max_frames: usize,
+    max_value_slots: usize,
+    max_segment_instructions: u32,
+) -> VmLimits {
     VmLimits::new(
         NonZeroUsize::new(max_frames).unwrap(),
         NonZeroUsize::new(max_value_slots).unwrap(),
         NonZeroU32::new(1024).unwrap(),
-        NonZeroU32::new(1).unwrap(),
+        NonZeroU32::new(max_segment_instructions).unwrap(),
     )
 }
 
@@ -393,7 +430,7 @@ impl ExecutionFixture {
         }
     }
 
-    fn execute_error(
+    fn execute_error_in_one_host_call(
         &self,
         argument: ValueSlot,
         limits: VmLimits,
@@ -401,26 +438,17 @@ impl ExecutionFixture {
     ) -> ExecutionFailure {
         let mut fiber = self.start(argument, limits);
         let mut budget = TestBudget::new();
-        let mut max_frames = fiber.active_frame_count();
-        let mut max_value_slots = fiber.allocated_value_slot_count();
-        loop {
-            max_frames = max_frames.max(fiber.active_frame_count());
-            max_value_slots = max_value_slots.max(fiber.allocated_value_slot_count());
-            match fiber.run_segment(&mut heap, &mut budget) {
-                VmControl::Continue => {}
-                VmControl::Complete(Err(error)) => {
-                    return ExecutionFailure {
-                        error,
-                        max_frames,
-                        max_value_slots,
-                        heap,
-                    }
-                }
-                VmControl::Complete(Ok(_)) => {
-                    panic!("deep recursive fixture unexpectedly completed")
-                }
-                _ => panic!("deep recursive fixture left the synchronous VM loop"),
-            }
+        let mut host = SegmentHost::default();
+        let control = host.run_segment(&mut fiber, &mut heap, &mut budget);
+        let VmControl::Complete(Err(error)) = control else {
+            panic!("deep recursive fixture must fail inside one VM segment")
+        };
+        ExecutionFailure {
+            error,
+            host_call_count: host.call_count,
+            max_frames: fiber.active_frame_count(),
+            max_value_slots: fiber.allocated_value_slot_count(),
+            heap,
         }
     }
 }
@@ -435,9 +463,39 @@ struct ExecutionOutcome {
 
 struct ExecutionFailure {
     error: skiff_runtime_vm::VmError,
+    host_call_count: usize,
     max_frames: usize,
     max_value_slots: usize,
     heap: SpyHeap,
+}
+
+#[derive(Default)]
+struct SegmentHost {
+    call_count: usize,
+}
+
+impl SegmentHost {
+    fn run_segment(
+        &mut self,
+        fiber: &mut skiff_runtime_vm::VmFiber,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> VmControl {
+        self.call_count += 1;
+        fiber.run_segment(heap, budget)
+    }
+}
+
+#[derive(Default)]
+struct RootCollector {
+    values: Vec<ValueSlot>,
+}
+
+impl skiff_runtime_model::vm_root::VmRootVisitor for RootCollector {
+    fn visit_root(&mut self, root: &ValueSlot) -> Result<(), VmHeapError> {
+        self.values.push(*root);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
