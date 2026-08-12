@@ -4,9 +4,10 @@ use super::*;
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
     current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
-    PackageBuildId, PackageCallableId, PackageCallableRef, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
-    PackageSchemaIndexRef, PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    InstructionSourceSite, PackageBuildId, PackageCallableId, PackageCallableRef,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageSymbolRef,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 mod phase_1_bytecode_admission;
@@ -174,6 +175,43 @@ fn phase_1_bytecode_admission_preserves_scalar_local_call_fixture() {
         );
     }
     assert!(!opcodes.contains(&skiff_artifact_model::Opcode::TailCallLocal));
+    let run = view
+        .functions()
+        .iter()
+        .find(|function| function.function_key == "main::run")
+        .expect("run function");
+    let call = run
+        .instructions
+        .iter()
+        .find(|instruction| instruction.descriptor.kind == skiff_artifact_model::Opcode::CallLocal)
+        .expect("run has one local call");
+    let call_entries = run
+        .statement_entries
+        .iter()
+        .filter(|entry| {
+            entry.pc == call.pc
+                && matches!(
+                    entry.attribution_id,
+                    skiff_artifact_model::StatementAttributionId::Expression { .. }
+                )
+        })
+        .collect::<Vec<_>>();
+    let [entry] = call_entries.as_slice() else {
+        panic!("CallLocal must retain exactly one lowering-owned expression attribution");
+    };
+    assert!(matches!(&entry.site, InstructionSourceSite::Source { .. }));
+    let call_source_rows = run
+        .source_map
+        .iter()
+        .filter(|row| row.start_pc <= call.pc && call.pc < row.end_pc)
+        .collect::<Vec<_>>();
+    let [call_source] = call_source_rows.as_slice() else {
+        panic!("CallLocal must have exactly one lowering-owned source-map row");
+    };
+    assert!(matches!(
+        &call_source.site,
+        InstructionSourceSite::Source { .. }
+    ));
 
     std::fs::remove_dir_all(temp).unwrap();
 }

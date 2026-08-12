@@ -8,9 +8,11 @@ use skiff_artifact_model::{
 use skiff_compiler_lowering::{mir::MirUnit, FrozenConstantBundle};
 
 use super::{
-    admission::AdmittedPhase1BytecodeMir, constants::build_constant_image,
-    functions::emit_functions, inputs::ValidatedEmissionInputs, BytecodeEmissionError,
-    BytecodeValueTransferPlans,
+    admission::AdmittedPhase1BytecodeMir,
+    constants::build_constant_image,
+    functions::{emit_functions, SourceAttributionMode},
+    inputs::ValidatedEmissionInputs,
+    BytecodeEmissionError, BytecodeValueTransferPlans,
 };
 
 /// Emits one canonical package bytecode image from admitted Phase 1 MIR.
@@ -27,7 +29,12 @@ pub fn emit_bytecode_artifact(
     constants: &[FrozenConstantBundle],
     transfer_plans: &BytecodeValueTransferPlans,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
-    emit_bytecode_artifact_unchecked(admitted.units(), constants, transfer_plans)
+    emit_bytecode_artifact_with_mode(
+        admitted.units(),
+        constants,
+        transfer_plans,
+        SourceAttributionMode::AdmittedPhase1,
+    )
 }
 
 /// Raw backend entry used only by crate-owned backend conformance tests.
@@ -39,10 +46,24 @@ pub(super) fn emit_bytecode_artifact_unchecked(
     constants: &[FrozenConstantBundle],
     transfer_plans: &BytecodeValueTransferPlans,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
+    emit_bytecode_artifact_with_mode(
+        units,
+        constants,
+        transfer_plans,
+        SourceAttributionMode::PrivateBackend,
+    )
+}
+
+fn emit_bytecode_artifact_with_mode(
+    units: &[MirUnit],
+    constants: &[FrozenConstantBundle],
+    transfer_plans: &BytecodeValueTransferPlans,
+    source_attribution: SourceAttributionMode,
+) -> Result<BytecodeArtifact, BytecodeEmissionError> {
     let inputs = ValidatedEmissionInputs::validate(units, constants, transfer_plans)?;
 
     let mut constants = build_constant_image(&inputs)?;
-    let emitted_functions = emit_functions(&inputs, &mut constants)?;
+    let emitted_functions = emit_functions(&inputs, &mut constants, source_attribution)?;
 
     let mut artifact = BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),

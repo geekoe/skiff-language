@@ -1,5 +1,8 @@
 use skiff_artifact_model::{bytecode::EncodeError, StructuralValidationError};
-use skiff_compiler_lowering::{mir::MirContractError, FrozenConstantLookupError};
+use skiff_compiler_lowering::{
+    mir::{MirContractError, MirSourceEventUnavailableReason},
+    FrozenConstantLookupError,
+};
 use thiserror::Error;
 
 /// A typed source capability rejected by the Phase 1 bytecode admission.
@@ -28,6 +31,21 @@ pub enum Phase1UnsupportedCapability {
     Writable,
 }
 
+/// One exact source-owned MIR relation that disagrees at Phase 1 admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase1MirFactMismatch {
+    ParameterSlotKind,
+    ParameterSlotCoverage,
+    LoadSlotType,
+    InitSlotType,
+    LocalCallParameterCount,
+    LocalCallParameterMode,
+    LocalCallArgument,
+    LocalCallArgumentType,
+    LocalCallResultType,
+    LocalCallSourceEvent,
+}
+
 /// A fail-closed bytecode emission failure.
 ///
 /// No variant carries a partial artifact. The public emitter returns a
@@ -42,6 +60,25 @@ pub enum BytecodeEmissionError {
         capability: Phase1UnsupportedCapability,
         module_path: String,
         function_key: Option<String>,
+        location: String,
+    },
+
+    #[error(
+        "Phase 1 bytecode admission requires available source events in module `{module_path}` function `{function_key}`; lowering reported {reason:?}"
+    )]
+    Phase1SourceEventsUnavailable {
+        module_path: String,
+        function_key: String,
+        reason: MirSourceEventUnavailableReason,
+    },
+
+    #[error(
+        "Phase 1 bytecode admission found {mismatch:?} in module `{module_path}` function `{function_key}` at {location}"
+    )]
+    Phase1MirFactMismatch {
+        mismatch: Phase1MirFactMismatch,
+        module_path: String,
+        function_key: String,
         location: String,
     },
 

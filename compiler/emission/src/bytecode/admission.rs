@@ -1,11 +1,18 @@
+use std::collections::BTreeSet;
+
 use skiff_artifact_model::{
-    BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, LiteralIr, TypeDescriptorIr, TypeRefIr,
+    BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, LiteralIr, StatementAttributionId,
+    TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
-    MirCallArgument, MirExecutableKind, MirFunction, MirParamMode, MirStmtKind, MirUnit,
+    MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
+    MirStmtKind, MirUnit,
 };
 
-use super::{inputs::canonical_function_key, BytecodeEmissionError, Phase1UnsupportedCapability};
+use super::{
+    inputs::canonical_function_key, BytecodeEmissionError, Phase1MirFactMismatch,
+    Phase1UnsupportedCapability,
+};
 
 /// Opaque proof that one exact MIR slice passed the Phase 1 bytecode boundary.
 ///
@@ -33,6 +40,7 @@ pub fn admit_phase_1_bytecode_mir(
     units: &[MirUnit],
 ) -> Result<AdmittedPhase1BytecodeMir<'_>, BytecodeEmissionError> {
     for unit in units {
+        unit.validate_executable_indices()?;
         if !unit.actor_declarations.is_empty() {
             return Err(rejected(
                 unit,
@@ -77,6 +85,8 @@ fn admit_function(
     function_key: &str,
     function: &MirFunction,
 ) -> Result<(), BytecodeEmissionError> {
+    function.validate_expression_indices()?;
+    function.validate_slot_types()?;
     if function.kind != MirExecutableKind::Function {
         return Err(rejected_function(
             unit,
@@ -116,6 +126,7 @@ fn admit_function(
         true,
         "return type",
     )?;
+    let mut parameter_slots = BTreeSet::new();
     for (parameter_index, parameter) in function.params.iter().enumerate() {
         if parameter.mode == MirParamMode::InOut {
             return Err(rejected_function(
@@ -132,8 +143,44 @@ fn admit_function(
             false,
             &format!("parameter {parameter_index} type"),
         )?;
+        if usize::try_from(parameter.slot).ok() != Some(parameter_index) {
+            return Err(fact_mismatch(
+                unit,
+                function_key,
+                Phase1MirFactMismatch::ParameterSlotCoverage,
+                &format!(
+                    "parameter {parameter_index} slot {} ordinal",
+                    parameter.slot
+                ),
+            ));
+        }
+        let slot = function.slot(parameter.slot)?;
+        if !parameter_slots.insert(parameter.slot) || slot.kind != MirSlotKind::Param {
+            return Err(fact_mismatch(
+                unit,
+                function_key,
+                Phase1MirFactMismatch::ParameterSlotKind,
+                &format!("parameter {parameter_index} slot {}", parameter.slot),
+            ));
+        }
+        if slot.ty.as_ref() != Some(&parameter.ty) {
+            return Err(fact_mismatch(
+                unit,
+                function_key,
+                Phase1MirFactMismatch::ParameterSlotCoverage,
+                &format!("parameter {parameter_index} slot {} type", parameter.slot),
+            ));
+        }
     }
     for slot in &function.slots {
+        if slot.kind == MirSlotKind::Param && !parameter_slots.contains(&slot.slot) {
+            return Err(fact_mismatch(
+                unit,
+                function_key,
+                Phase1MirFactMismatch::ParameterSlotCoverage,
+                &format!("unbound parameter slot {}", slot.slot),
+            ));
+        }
         if slot.writable_local {
             return Err(rejected_function(
                 unit,
@@ -184,12 +231,19 @@ fn admit_function(
     }
     admit_effects(unit, function_key, &function.effect_summary)?;
     for expression in &function.expressions {
-        admit_expression(unit, function_key, expression)?;
+        admit_expression(unit, function_key, function, expression)?;
     }
     for block in &function.blocks {
         for statement in &block.statements {
             admit_statement(unit, function_key, function, statement)?;
         }
+    }
+    if let Some(reason) = function.source_event_plan.unavailable_reason() {
+        return Err(BytecodeEmissionError::Phase1SourceEventsUnavailable {
+            module_path: unit.module_path.clone(),
+            function_key: function_key.to_string(),
+            reason,
+        });
     }
     Ok(())
 }
@@ -248,7 +302,19 @@ fn admit_statement(
     statement: &skiff_compiler_lowering::mir::MirStmt,
 ) -> Result<(), BytecodeEmissionError> {
     let capability = match &statement.kind {
-        MirStmtKind::InitSlot { .. } | MirStmtKind::Expr { .. } | MirStmtKind::If { .. } => None,
+        MirStmtKind::InitSlot { slot, value } => {
+            admit_slot_value_type(
+                unit,
+                function_key,
+                function,
+                *slot,
+                *value,
+                Phase1MirFactMismatch::InitSlotType,
+                &format!("statement {} init slot", statement.statement_index),
+            )?;
+            None
+        }
+        MirStmtKind::Expr { .. } | MirStmtKind::If { .. } => None,
         MirStmtKind::Return { value } => {
             if value
                 .as_ref()
@@ -306,6 +372,7 @@ fn is_tail_local_call(function: &MirFunction, expression_index: u32) -> bool {
 fn admit_expression(
     unit: &MirUnit,
     function_key: &str,
+    function: &MirFunction,
     expression: &skiff_compiler_lowering::mir::MirExpression,
 ) -> Result<(), BytecodeEmissionError> {
     admit_type(
@@ -344,13 +411,25 @@ fn admit_expression(
             LiteralIr::Null | LiteralIr::Bool { .. } | LiteralIr::Number { .. } => None,
             LiteralIr::String { .. } => Some(Phase1UnsupportedCapability::ValueShape),
         },
-        ExprIr::LoadSlot { .. } | ExprIr::Unary { .. } => None,
+        ExprIr::LoadSlot { slot } => {
+            let slot_type = function.slot_type(*slot)?;
+            if slot_type != &expression.ty {
+                return Err(fact_mismatch(
+                    unit,
+                    function_key,
+                    Phase1MirFactMismatch::LoadSlotType,
+                    &format!("expression {} load slot {slot}", expression.index),
+                ));
+            }
+            None
+        }
+        ExprIr::Unary { .. } => None,
         ExprIr::Binary { op, .. } => match op {
             BinaryOpIr::And | BinaryOpIr::Or => Some(Phase1UnsupportedCapability::ControlFlow),
             _ => None,
         },
         ExprIr::Call { call } => {
-            admit_call(unit, function_key, expression, call)?;
+            admit_call(unit, function_key, function, expression, call)?;
             None
         }
         ExprIr::LoadConst { .. } | ExprIr::LoadPackageConst { .. } => {
@@ -391,6 +470,7 @@ fn admit_expression(
 fn admit_call(
     unit: &MirUnit,
     function_key: &str,
+    function: &MirFunction,
     expression: &skiff_compiler_lowering::mir::MirExpression,
     call: &skiff_artifact_model::CallIr,
 ) -> Result<(), BytecodeEmissionError> {
@@ -426,37 +506,60 @@ fn admit_call(
             &format!("expression {} call metadata", expression.index),
         ));
     }
-    let target_capability = match &call.target {
-        CallTargetIr::LocalExecutable { executable_index } => {
-            if unit
-                .function_by_executable_index(*executable_index)
-                .is_err()
-            {
-                Some(Phase1UnsupportedCapability::NonLocalCallTarget)
-            } else {
-                None
-            }
-        }
+    let callee = match &call.target {
+        CallTargetIr::LocalExecutable { executable_index } => unit
+            .function_by_executable_index(*executable_index)
+            .map_err(|_| {
+                rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::NonLocalCallTarget,
+                    &format!("expression {} call target", expression.index),
+                )
+            })?,
         CallTargetIr::PublicationExecutable { .. } | CallTargetIr::PackageCallable { .. } => {
-            Some(Phase1UnsupportedCapability::NonLocalCallTarget)
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::NonLocalCallTarget,
+                &format!("expression {} call target", expression.index),
+            ));
         }
         CallTargetIr::ServiceDependencySymbol { .. } | CallTargetIr::ServiceCall { .. } => {
-            Some(Phase1UnsupportedCapability::ServiceTarget)
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::ServiceTarget,
+                &format!("expression {} call target", expression.index),
+            ));
         }
-        CallTargetIr::ActorMethod { .. } => Some(Phase1UnsupportedCapability::Actor),
+        CallTargetIr::ActorMethod { .. } => {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Actor,
+                &format!("expression {} call target", expression.index),
+            ));
+        }
         CallTargetIr::Native { .. }
         | CallTargetIr::Builtin { .. }
-        | CallTargetIr::ReceiverBuiltin { .. } => Some(Phase1UnsupportedCapability::HostTarget),
-        CallTargetIr::InterfaceMethod { .. } => Some(Phase1UnsupportedCapability::Interface),
+        | CallTargetIr::ReceiverBuiltin { .. } => {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::HostTarget,
+                &format!("expression {} call target", expression.index),
+            ));
+        }
+        CallTargetIr::InterfaceMethod { .. } => {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Interface,
+                &format!("expression {} call target", expression.index),
+            ));
+        }
     };
-    if let Some(capability) = target_capability {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            capability,
-            &format!("expression {} call target", expression.index),
-        ));
-    }
     let Some(facts) = expression.direct_call.as_ref() else {
         return Err(rejected_function(
             unit,
@@ -488,6 +591,156 @@ fn admit_call(
             Phase1UnsupportedCapability::InOut,
             &format!("expression {} direct-call ABI", expression.index),
         ));
+    }
+    function.direct_call_facts(skiff_artifact_model::ExprRefIr {
+        expression: expression.index,
+    })?;
+    admit_local_call_abi(
+        unit,
+        function_key,
+        function,
+        expression,
+        call,
+        facts,
+        callee,
+    )?;
+    admit_local_call_source_event(unit, function_key, function, expression, call)?;
+    Ok(())
+}
+
+fn admit_local_call_abi(
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    call: &skiff_artifact_model::CallIr,
+    facts: &skiff_compiler_lowering::mir::MirDirectCallFacts,
+    callee: &MirFunction,
+) -> Result<(), BytecodeEmissionError> {
+    let parameter_count = callee.params.len();
+    if facts.parameter_modes.len() != parameter_count
+        || facts.arguments.len() != parameter_count
+        || call.args.len() != parameter_count
+    {
+        return Err(fact_mismatch(
+            unit,
+            function_key,
+            Phase1MirFactMismatch::LocalCallParameterCount,
+            &format!("expression {} local call", expression.index),
+        ));
+    }
+    for (parameter_index, parameter) in callee.params.iter().enumerate() {
+        if facts.parameter_modes[parameter_index] != parameter.mode {
+            return Err(fact_mismatch(
+                unit,
+                function_key,
+                Phase1MirFactMismatch::LocalCallParameterMode,
+                &format!(
+                    "expression {} local call parameter {parameter_index}",
+                    expression.index
+                ),
+            ));
+        }
+        let MirCallArgument::Value { value } = &facts.arguments[parameter_index] else {
+            return Err(fact_mismatch(
+                unit,
+                function_key,
+                Phase1MirFactMismatch::LocalCallArgument,
+                &format!(
+                    "expression {} local call parameter {parameter_index}",
+                    expression.index
+                ),
+            ));
+        };
+        if call.args[parameter_index] != *value {
+            return Err(fact_mismatch(
+                unit,
+                function_key,
+                Phase1MirFactMismatch::LocalCallArgument,
+                &format!(
+                    "expression {} local call parameter {parameter_index}",
+                    expression.index
+                ),
+            ));
+        }
+        let argument = function.expression(*value)?;
+        if argument.ty != parameter.ty {
+            return Err(fact_mismatch(
+                unit,
+                function_key,
+                Phase1MirFactMismatch::LocalCallArgumentType,
+                &format!(
+                    "expression {} local call parameter {parameter_index}",
+                    expression.index
+                ),
+            ));
+        }
+    }
+    if expression.ty != callee.return_type {
+        return Err(fact_mismatch(
+            unit,
+            function_key,
+            Phase1MirFactMismatch::LocalCallResultType,
+            &format!("expression {} local call result", expression.index),
+        ));
+    }
+    Ok(())
+}
+
+fn admit_local_call_source_event(
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    call: &skiff_artifact_model::CallIr,
+) -> Result<(), BytecodeEmissionError> {
+    let Some(events) = function.source_event_plan.events() else {
+        return Ok(());
+    };
+    let mut matches = events.iter().filter(|event| {
+        matches!(
+            (event.attribution_id, event.anchor),
+            (
+                StatementAttributionId::Expression {
+                    expression_index,
+                    occurrence_ordinal: 0,
+                },
+                MirEmissionAnchor::LocalCall {
+                    expression_index: anchor_expression,
+                    occurrence_ordinal: 0,
+                }
+                | MirEmissionAnchor::TailLocalCallCandidate {
+                    expression_index: anchor_expression,
+                    occurrence_ordinal: 0,
+                    ..
+                },
+            ) if expression_index == expression.index && anchor_expression == expression.index
+        ) && event.site == call.site
+    });
+    if matches.next().is_none() || matches.next().is_some() {
+        return Err(fact_mismatch(
+            unit,
+            function_key,
+            Phase1MirFactMismatch::LocalCallSourceEvent,
+            &format!("expression {} local call source event", expression.index),
+        ));
+    }
+    Ok(())
+}
+
+fn admit_slot_value_type(
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    slot: u32,
+    value: skiff_artifact_model::ExprRefIr,
+    mismatch: Phase1MirFactMismatch,
+    location: &str,
+) -> Result<(), BytecodeEmissionError> {
+    let slot_type = function.slot_type(slot)?;
+    let value_type = &function.expression(value)?.ty;
+    if slot_type != value_type {
+        return Err(fact_mismatch(unit, function_key, mismatch, location));
     }
     Ok(())
 }
@@ -540,6 +793,20 @@ fn rejected_function(
     location: &str,
 ) -> BytecodeEmissionError {
     rejected(unit, Some(function_key), capability, location)
+}
+
+fn fact_mismatch(
+    unit: &MirUnit,
+    function_key: &str,
+    mismatch: Phase1MirFactMismatch,
+    location: &str,
+) -> BytecodeEmissionError {
+    BytecodeEmissionError::Phase1MirFactMismatch {
+        mismatch,
+        module_path: unit.module_path.clone(),
+        function_key: function_key.to_string(),
+        location: location.to_string(),
+    }
 }
 
 fn rejected(
