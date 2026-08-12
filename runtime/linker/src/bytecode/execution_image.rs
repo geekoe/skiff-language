@@ -5,8 +5,9 @@ use skiff_artifact_model::{
     GatewayEntryKey, IngressSelector, ServiceProtocolIdentity, ServiceRequirementKey,
 };
 use skiff_runtime_bytecode_verifier::{
-    verify_executable_facts, VerificationError, VerificationLimits, VerifiedCallableEffects,
-    VerifiedConstantHeap, VerifiedFunctionEffects, VerifiedResumeSites, VerifiedStatementSchedule,
+    verify_executable_facts, ExecutableFacts, VerificationError, VerificationLimits,
+    VerifiedCallableEffects, VerifiedConstantHeap, VerifiedFunctionEffects, VerifiedResumeSites,
+    VerifiedStatementSchedule,
 };
 use skiff_runtime_deployment_image::{
     DeploymentCacheValue, DeploymentOwnerIdentity, ServiceDependencySlot,
@@ -354,7 +355,8 @@ pub fn link_deployment_execution_image(
     limits: &DeploymentExecutionLimits,
 ) -> Result<DeploymentExecutionImage, DeploymentExecutionImageError> {
     let linked = link_deployment(&hydrated, limits.link())?;
-    let facts = verify_executable_facts(&hydrated, &linked, limits.verification())?;
+    let facts: ExecutableFacts =
+        verify_executable_facts(&hydrated, &linked, limits.verification())?;
     let owner = DeploymentOwnerIdentity::new(hydrated.reference().clone());
     let service_protocol_identity = hydrated
         .deployment()
