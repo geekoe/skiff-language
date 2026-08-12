@@ -313,3 +313,14 @@ fn unrepresentable_timeout_is_rejected_instead_of_disabling_the_deadline() {
 
     assert!(admit_request_deadline(&extra).is_err());
 }
+
+#[test]
+fn signed_i64_max_timeout_is_inside_the_canonical_millisecond_domain() {
+    let mut extra = Map::new();
+    extra.insert(
+        "deadline".to_string(),
+        serde_json::json!({ "timeoutMs": i64::MAX as u64 }),
+    );
+
+    assert!(admit_request_deadline(&extra).unwrap().is_some());
+}

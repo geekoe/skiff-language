@@ -529,9 +529,11 @@ pub fn admit_request_deadline(
         let timeout_ms = value
             .as_u64()
             .ok_or(RequestDeadlineAdmissionError::InvalidTimeout)?;
+        let timeout_ms = i64::try_from(timeout_ms)
+            .map_err(|_| RequestDeadlineAdmissionError::Unrepresentable)?;
         candidates.push(
             monotonic_now
-                .checked_add(Duration::from_millis(timeout_ms))
+                .checked_add(Duration::from_millis(timeout_ms as u64))
                 .ok_or(RequestDeadlineAdmissionError::Unrepresentable)?,
         );
     }
