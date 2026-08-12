@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 14; D0-O and P0-G rejected; bounded repair designs running
+> Status: active; revision 15; clean D0-O and P0-G takeovers running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -282,3 +282,18 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   satisfied by comments while a harness writes forged raw events. It did not join; a new owner must repair from the complete
   counterexample set rather than amend under self-review.
 - D0-M received a separate independent `PASS`; its pinned typedJson materialization remains accepted and integrated.
+
+### Revision 15 — bounded clean takeovers
+
+- two conditional Design investigations exceeded their explicit hard deadlines and were interrupted. Their useful decisions
+  were reduced to executable task constraints rather than allowing design work itself to block the critical path;
+- created `codex/bcvm-p0-observation-repair` at exact integration input `5137a892` and dispatched a clean D0-O takeover.
+  The repair contract freezes pre-observation duplicate reservation, bounded ordered/reentrant delivery, exact ingress facts,
+  winner-token/terminal/cleanup-permit sequencing, try-only production telemetry and real production-chain tests. It owns the
+  sole Cargo lease and has a 20-minute code checkpoint / 35-minute partial-commit watchdog;
+- created `codex/bcvm-p0-gate-takeover` at the same input and dispatched a Node-only Gate takeover. It deletes the rejected
+  JavaScript semantic/wire/source-regex authority: exact Rust production tests own typed semantic assertions, while the Gate
+  owns exact command execution, zero skip/zero test/interruption checks, candidate integrity and durable no-symlink evidence.
+  Independent Acceptance remains responsible for reviewing proof source and production sole mint ownership;
+- Phase 1 remains blocked until a fresh Phase 0 Gate and closure receipt pass. A read-only readiness clarification prepared
+  the ready-after-closure DAG but authorized no Phase 1 production writer.
