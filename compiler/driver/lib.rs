@@ -36,3 +36,4 @@ pub use skiff_compiler_contract::{
     ServiceContractDefinition, ServiceContractDefinitionDiagnosticText,
 };
 pub use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
+pub use skiff_compiler_emission::{BytecodeEmissionError, Phase1UnsupportedCapability};

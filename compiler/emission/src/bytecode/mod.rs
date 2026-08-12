@@ -11,6 +11,7 @@
 //! errors; the emitter never invents `SnapshotShare`, omits unsupported code,
 //! or returns a partial artifact.
 
+mod admission;
 mod constants;
 mod emitter;
 mod error;
@@ -18,8 +19,9 @@ mod functions;
 mod inputs;
 mod plans;
 
+pub use admission::admit_phase_1_bytecode_mir;
 pub use emitter::emit_bytecode_artifact;
-pub use error::BytecodeEmissionError;
+pub use error::{BytecodeEmissionError, Phase1UnsupportedCapability};
 pub use plans::{
     derive_bytecode_value_transfer_plans, BytecodeValueTransferPlans, FunctionValueTransferPlans,
 };

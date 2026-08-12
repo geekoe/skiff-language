@@ -2,6 +2,32 @@ use skiff_artifact_model::{bytecode::EncodeError, StructuralValidationError};
 use skiff_compiler_lowering::{mir::MirContractError, FrozenConstantLookupError};
 use thiserror::Error;
 
+/// A typed source capability rejected by the Phase 1 bytecode admission.
+///
+/// These categories are derived from MIR facts. They are deliberately not
+/// inferred from package ids, binding strings, or eventual opcode selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase1UnsupportedCapability {
+    Actor,
+    Callback,
+    Constant,
+    ControlFlow,
+    Effect,
+    Exception,
+    Generic,
+    HostTarget,
+    InOut,
+    Interface,
+    NonLocalCallTarget,
+    PendingEffect,
+    Receiver,
+    ServiceTarget,
+    Stream,
+    TailCall,
+    ValueShape,
+    Writable,
+}
+
 /// A fail-closed bytecode emission failure.
 ///
 /// No variant carries a partial artifact. The public emitter returns a
@@ -9,6 +35,16 @@ use thiserror::Error;
 /// coverage, structural validation and identity assignment all succeed.
 #[derive(Debug, Error)]
 pub enum BytecodeEmissionError {
+    #[error(
+        "Phase 1 bytecode admission rejected {capability:?} in module `{module_path}` function {function_key:?} at {location}"
+    )]
+    UnsupportedPhase1Capability {
+        capability: Phase1UnsupportedCapability,
+        module_path: String,
+        function_key: Option<String>,
+        location: String,
+    },
+
     #[error("bytecode emitter received duplicate MIR module `{module_path}`")]
     DuplicateMirModule { module_path: String },
 
