@@ -51,21 +51,13 @@ export function phase0WorkloadSpecs(root) {
 }
 
 export function phase0CandidateSpecs(root) {
-  return Object.freeze(['preflight', 'postflight', 'closure'].flatMap((phase) => [
+  return Object.freeze(['preflight', 'postflight', 'closure', 'fresh'].flatMap((phase) => [
     spec(root, `${phase}-head`, 'git', ['rev-parse', 'HEAD']),
     spec(root, `${phase}-tree`, 'git', ['rev-parse', 'HEAD^{tree}']),
     spec(root, `${phase}-status`, 'git', [
       'status', '--porcelain=v1', '--untracked-files=all',
     ]),
   ]));
-}
-
-export function phase0FreshCandidateSpecs(root) {
-  return Object.freeze([
-    spec(root, 'fresh-head', 'git', ['rev-parse', 'HEAD']),
-    spec(root, 'fresh-tree', 'git', ['rev-parse', 'HEAD^{tree}']),
-    spec(root, 'fresh-status', 'git', ['status', '--porcelain=v1', '--untracked-files=all']),
-  ]);
 }
 
 function spec(cwd, id, command, args, testFormat = null) {

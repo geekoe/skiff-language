@@ -13,7 +13,7 @@ import {
 test('checker accepts exact commands on one clean candidate', async () => {
   await withEvidenceBundle({}, async (bundle) => {
     assert.equal(bundle.manifest.verdict, 'PASS');
-    assert.deepEqual(bundle.manifest.counts.commands, { total: 17, passed: 17, failed: 0 });
+    assert.deepEqual(bundle.manifest.counts.commands, { total: 20, passed: 20, failed: 0 });
     assert.equal(bundle.manifest.counts.tests.declared, 11);
     assert.equal((await check(bundle)).verdict, 'PASS');
   });
@@ -23,6 +23,7 @@ for (const fixture of [
   { name: 'dirty candidate', options: { dirty: true }, code: 'candidate.dirty' },
   { name: 'stale candidate', options: { stale: true }, code: 'candidate.stale' },
   { name: 'missing command', options: { missingId: 'request-scalar-regression' }, code: 'command.missing' },
+  { name: 'missing fresh receipt', options: { missingId: 'fresh-head' }, code: 'command.missing' },
   { name: 'interrupted command', options: { interruptedId: 'host-production-composition' }, code: 'command.interrupted' },
   { name: 'candidate changed before closure', options: { closureChanged: true }, code: 'candidate.stale' },
 ]) {
@@ -53,6 +54,13 @@ test('checker rejects a command log changed after evidence closure', async () =>
   await withEvidenceBundle({}, async (bundle) => {
     await writeFile(join(bundle.outputDir, 'commands', 'request-scalar-regression.stdout.log'),
       'tampered\n');
+    await assert.rejects(check(bundle), /file hash closure/);
+  });
+});
+
+test('checker rejects a tampered final fresh receipt', async () => {
+  await withEvidenceBundle({}, async (bundle) => {
+    await writeFile(join(bundle.outputDir, 'commands', 'fresh-status.receipt.json'), '{}\n');
     await assert.rejects(check(bundle), /file hash closure/);
   });
 });

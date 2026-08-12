@@ -5,7 +5,6 @@ import { captureOwnedCommand } from './owned-command.mjs';
 import {
   assertGitObject,
   phase0CandidateSpecs,
-  phase0FreshCandidateSpecs,
   phase0WorkloadSpecs,
   snapshotCommandEnvironment,
 } from './bytecode-vm-phase-0-contract.mjs';
@@ -66,7 +65,6 @@ export async function runPhase0Gate(options, {
     [...candidateSpecs, ...workloadSpecs]
       .map((spec) => [spec.id, snapshotCommandEnvironment(env)]),
   );
-  const freshEnvironment = snapshotCommandEnvironment(env);
   const abortController = new AbortController();
   let interruptedBy = null;
   const handlers = new Map(['SIGINT', 'SIGTERM'].map((signal) => [signal, () => {
@@ -83,7 +81,7 @@ export async function runPhase0Gate(options, {
         if (interruptedBy !== null) break;
         outcomes.set(spec.id, await execute(spec));
       }
-      for (const spec of candidateSpecs.slice(3, 9)) {
+      for (const spec of candidateSpecs.slice(3)) {
         if (interruptedBy !== null) break;
         outcomes.set(spec.id, await execute(spec));
       }
@@ -107,12 +105,6 @@ export async function runPhase0Gate(options, {
       directoryIdentities: evidenceRoot.identities(),
       commandEnvironments,
     });
-    const fresh = await captureFreshCandidate(input.repoRoot, capture, freshEnvironment);
-    if (fresh.commit !== input.expectedCommit
-      || fresh.tree !== input.expectedTree
-      || fresh.status !== '') {
-      throw new Error('fresh live candidate is dirty or stale after evidence checking');
-    }
     await evidenceRoot.assertAll();
   } catch (error) {
     checkerError = error instanceof Error ? error.message : String(error);
@@ -190,19 +182,4 @@ function successfulText(outcome) {
   return outcome?.code === 0 && outcome?.signal === null && outcome?.error == null
     ? outcome.stdout
     : null;
-}
-
-async function captureFreshCandidate(repoRoot, capture, actualEnv) {
-  const values = [];
-  for (const spec of phase0FreshCandidateSpecs(repoRoot)) {
-    const outcome = await capture(spec.command, [...spec.args], { cwd: repoRoot, env: actualEnv });
-    values.push(outcome.code === 0 && outcome.signal === null && outcome.error == null
-      ? outcome.stdout
-      : null);
-  }
-  return {
-    commit: values[0]?.trim() ?? null,
-    tree: values[1]?.trim() ?? null,
-    status: values[2] ?? null,
-  };
 }

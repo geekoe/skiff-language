@@ -121,15 +121,17 @@ function deriveCandidate(records, expectedCommit, expectedTree) {
   const preflight = phase('preflight');
   const postflight = phase('postflight');
   const closure = phase('closure');
+  const fresh = phase('fresh');
   return {
     expectedCommit,
     expectedTree,
     preflight,
     postflight,
     closure,
-    exact: [preflight, postflight, closure]
+    fresh,
+    exact: [preflight, postflight, closure, fresh]
       .every(({ commit, tree }) => commit === expectedCommit && tree === expectedTree),
-    clean: [preflight, postflight, closure].every(({ status }) => status === ''),
+    clean: [preflight, postflight, closure, fresh].every(({ status }) => status === ''),
   };
 }
 

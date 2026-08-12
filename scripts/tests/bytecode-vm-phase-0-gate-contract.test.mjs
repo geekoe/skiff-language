@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   parseTestSummary,
+  phase0CandidateSpecs,
   phase0WorkloadSpecs,
 } from '../lib/bytecode-vm-phase-0-contract.mjs';
 
@@ -17,6 +18,14 @@ test('canonical workload fixes all eight exact commands', () => {
   assert.match(specs[1].args.join(' '), /phase_0_vcp_production_composition -- --exact/);
   assert.match(specs[2].args.join(' '), /phase_0_negative_production_boundaries -- --exact/);
   assert.equal(specs.slice(1).every(({ testFormat }) => testFormat === 'rust-exact'), true);
+});
+
+test('candidate closure fixes four receipt-backed identity snapshots', () => {
+  const specs = phase0CandidateSpecs(ROOT);
+  assert.equal(specs.length, 12);
+  assert.deepEqual(specs.slice(-3).map(({ id }) => id), [
+    'fresh-head', 'fresh-tree', 'fresh-status',
+  ]);
 });
 
 test('TAP summary requires declared positive total and every test passed', () => {

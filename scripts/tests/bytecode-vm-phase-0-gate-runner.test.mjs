@@ -126,6 +126,8 @@ test('runner snapshots and receipts the complete actual environment before ambie
     });
     assert.equal(result.manifest.verdict, 'PASS');
     assert.equal(result.checkerError, null);
+    assert.deepEqual(result.manifest.counts.commands, { total: 20, passed: 20, failed: 0 });
+    assert.equal(observed.length, 20);
     assert.equal(observed.every((value) => value === 'before'), true);
     const receipt = JSON.parse(await readFile(
       join(outputDir, 'commands', 'gate-self-tests.receipt.json'),
