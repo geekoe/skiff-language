@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 3; P0-V/P0-G/DEC0-S running
+> Status: active; revision 4; P0-V expected-red integrated; P0-G/DEC0-S running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -43,7 +43,7 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 
 | Task | Line | State | Expected elapsed | `status_after` | Initial write set | Join condition |
 | --- | --- | --- | --- | --- | --- | --- |
-| P0-V | Proof | running as `/root/p0_vcp`; started `2026-08-12T16:14:31Z` | 45–75 min | `2026-08-12T16:39:31Z` | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; Phase 0 fixture files; request test registration only if required | non-document commit; production-shaped expected-red/run evidence; no direct internal construction; exact blocker/event request if incomplete |
+| P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
 | P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
 | DEC0-S | Design | running as `/root/p0_seam_design`; started `2026-08-12T16:19:52Z` | 15–25 min | `2026-08-12T16:31:52Z` | `decisions/dec0-vcp-production-seam.md`; read-only production code | choose the existing production-owned VCP placement and minimum read-only observation contract without adding execution authority |
 
@@ -131,3 +131,18 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
 - dispatched `/root/p0_seam_design` with `fork_turns=none`, a single decision question, one-file write set, no Cargo/test
   permission, 15–25 minute expectation and `2026-08-12T16:31:52Z` status checkpoint;
 - P0-V remains owner of the expected-red carrier; P0-G remains independent and continues Node-only implementation.
+
+### Revision 4 — P0-V expected-red join
+
+- validated P0-V output `eb4645660f6a66baf1886916bdfd847ed10a6b80` / tree
+  `815b3da402f1897a4a2d9dd7e39e9a59f1d7dba1` and integrated it as `5d72cfe3`;
+- focused Cargo attempt exited `101` after canonical source compilation, authoring publication and exact release lookup, then
+  intentionally stopped at host-owned `RuntimeHost::spawn_bytecode_request`; log SHA-256
+  `16effdd9f9010f5efa64df3a2901f816c95236e4ce5ece586b241dc417e3d23d`;
+- raw JSONL contained five non-verdict facts and SHA-256
+  `968dc4f38a621c40c7914343ee4b4e5cd0ab4812f4da7f7f5b712edcb76cde09`;
+- scalar typed-JSON fixture now exercises input, local call, arithmetic, comparison/branch and return without raw-HTTP
+  aggregate/string/bytes workarounds;
+- removed direct linker/verifier/image/entry/target/request execution and harness-authored PASS/count/bypass fields;
+- newly exposed downstream prerequisite: typed-JSON `HttpBody` is currently materialized as bytes, so exact scalar entry
+  admission requires a narrow production repair after DEC0-S; this does not block P0-G.
