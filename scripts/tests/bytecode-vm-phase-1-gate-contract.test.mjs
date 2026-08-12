@@ -41,6 +41,10 @@ test('day-one matrix freezes eight commands and every required Proof lane', () =
     'scripts/tests/bytecode-vm-phase-0-gate-*.test.mjs',
     'scripts/tests/bytecode-vm-phase-1-gate-*.test.mjs',
   ]);
+  assert.deepEqual(specs[1].args, [
+    'test', '-p', 'skiff-compiler', '-p', 'skiff-compiler-emission', '--lib',
+    'phase_1_bytecode_admission',
+  ]);
   assert.equal(specs[2].id, 'k0b-tc-production-contract');
   assert.deepEqual(specs[2].lanes, ['K0B', 'T-C']);
   assert.equal(specs[4].id, 'tr-v1-production-proof');

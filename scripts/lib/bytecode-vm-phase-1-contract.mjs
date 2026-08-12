@@ -49,7 +49,7 @@ export function phase1WorkloadSpecs(root) {
       'scripts/tests/bytecode-vm-phase-1-gate-*.test.mjs',
     ], 'node-tap', ['G1', 'phase-0-regression']),
     spec(root, 'k0a-compiler-containment', 'cargo', [
-      'test', '--manifest-path', 'compiler/Cargo.toml', '--lib',
+      'test', '-p', 'skiff-compiler', '-p', 'skiff-compiler-emission', '--lib',
       'phase_1_bytecode_admission',
     ], 'rust-suite', ['K0A']),
     spec(root, 'k0b-tc-production-contract', 'cargo', [
