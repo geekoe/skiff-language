@@ -13,7 +13,7 @@ use super::super::{
 
 #[test]
 fn two_packages_rebase_local_zero_rows_and_relink_deterministically() {
-    let fixture = Fixture::two_package_constants(ConstantProgram::Number, ConstantProgram::String);
+    let fixture = Fixture::two_package_constants(ConstantProgram::Number, ConstantProgram::Bool);
     let hydrated = fixture.hydrate();
     let first = link_deployment(&hydrated, &generous_limits()).unwrap();
     let second = link_deployment(&hydrated, &generous_limits()).unwrap();
@@ -79,12 +79,10 @@ fn two_packages_rebase_local_zero_rows_and_relink_deterministically() {
         &first,
         dependency_constant,
         dependency_build,
-        &LiteralIr::String {
-            value: "ready".to_string(),
-        },
-        &TypeRefIr::builtin("string"),
+        &LiteralIr::Bool { value: true },
+        &TypeRefIr::builtin("bool"),
         &LinkedValueTransferPlan::SnapshotShare {
-            drop: LinkedValueDropPlan::SnapshotRelease,
+            drop: LinkedValueDropPlan::Trivial,
         },
     );
 

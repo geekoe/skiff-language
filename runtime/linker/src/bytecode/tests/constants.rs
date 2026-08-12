@@ -82,44 +82,20 @@ fn package_global_number_literal_links_exact_authority_and_const_use() {
 }
 
 #[test]
-fn exact_literal_type_carrier_is_retained_with_package_global_origin() {
+fn package_global_string_literal_is_rejected_at_exact_constant_node() {
     let fixture = Fixture::constant(ConstantProgram::LiteralString);
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
-    let constant = &candidate.constants()[0];
-    let type_position = usize::try_from(constant.ty().get()).unwrap();
-
-    assert_eq!(
-        candidate.types()[type_position].type_ref(),
-        &TypeRefIr::Literal {
-            value: LiteralIr::String {
-                value: "ready".to_string(),
-            },
-        }
-    );
-    assert!(candidate.types()[type_position]
-        .origin()
-        .specialization()
-        .is_none());
-    assert_eq!(
-        constant.plan(),
-        &LinkedValueTransferPlan::SnapshotShare {
-            drop: LinkedValueDropPlan::SnapshotRelease,
-        }
-    );
-    let function = candidate
-        .functions()
-        .iter()
-        .find(|function| function.key().artifact_function_key().as_str() == ROOT_FUNCTION)
-        .unwrap();
-    assert_eq!(
-        function.stack_map().entries()[1].stack_before()[0].plan(),
-        constant.plan()
-    );
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            location: BytecodeLinkLocation::Constant { node_index: 0, .. },
+            ..
+        })
+    ));
 }
 
 #[test]
-fn every_supported_builtin_literal_uses_its_exact_type_and_lifecycle() {
+fn every_supported_scalar_literal_uses_its_exact_type_and_lifecycle() {
     for (program, literal, name, drop) in [
         (
             ConstantProgram::Null,
@@ -140,14 +116,6 @@ fn every_supported_builtin_literal_uses_its_exact_type_and_lifecycle() {
             },
             "number",
             LinkedValueDropPlan::Trivial,
-        ),
-        (
-            ConstantProgram::String,
-            LiteralIr::String {
-                value: "ready".to_string(),
-            },
-            "string",
-            LinkedValueDropPlan::SnapshotRelease,
         ),
     ] {
         let fixture = Fixture::constant(program);

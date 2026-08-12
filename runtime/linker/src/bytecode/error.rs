@@ -1,7 +1,8 @@
 use std::fmt;
 
 use skiff_artifact_model::{
-    Opcode, PackageArtifactRef, PendingEffectCategory, ServiceDeploymentRef, ServiceRequirementKey,
+    ContractOperationId, GatewayEntryKey, Opcode, PackageArtifactRef, PendingEffectCategory,
+    ServiceDeploymentRef, ServiceRequirementKey,
 };
 
 /// Bounded resource whose configured link ceiling was exceeded.
@@ -129,6 +130,14 @@ pub enum BytecodeLinkLocation {
     ServiceDependency {
         key: ServiceRequirementKey,
     },
+    OperationEntry {
+        deployment: Box<ServiceDeploymentRef>,
+        contract_operation_id: ContractOperationId,
+    },
+    GatewayEntry {
+        deployment: Box<ServiceDeploymentRef>,
+        gateway_entry_key: GatewayEntryKey,
+    },
     Function {
         package: Box<PackageArtifactRef>,
         function_key: String,
@@ -166,6 +175,22 @@ impl fmt::Display for BytecodeLinkLocation {
                 formatter,
                 "service dependency ({}, slot {})",
                 key.caller_package_build_id, key.service_requirement_slot
+            ),
+            Self::OperationEntry {
+                deployment,
+                contract_operation_id,
+            } => write!(
+                formatter,
+                "deployment {} operation {contract_operation_id}",
+                deployment.deployment_artifact_identity
+            ),
+            Self::GatewayEntry {
+                deployment,
+                gateway_entry_key,
+            } => write!(
+                formatter,
+                "deployment {} gateway entry {gateway_entry_key}",
+                deployment.deployment_artifact_identity
             ),
             Self::Function {
                 package,

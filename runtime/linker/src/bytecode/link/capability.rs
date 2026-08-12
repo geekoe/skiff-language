@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
-    CallableEffectSummary, GatewayProtocolSurface, LiteralIr, Opcode, ParamModeIr, TypeRefIr,
+    BoundaryCallbackContract, BoundaryStreamContract, CallableEffectSummary, GatewayDispatchMode,
+    GatewayProtocolSurface, LiteralIr, Opcode, ParamModeIr, TypeRefIr,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedBytecodeCandidate, LinkedCallableSignature, LinkedConstantReference,
@@ -32,10 +33,13 @@ impl DeploymentLinker<'_> {
             for instruction in function.instructions() {
                 let location =
                     self.instruction_location(package, source, instruction.artifact_pc());
+                // The opcode owns the primary capability category at this
+                // exact PC; resolved operands then close every target fact
+                // for otherwise admitted opcodes.
+                admit_opcode(instruction.opcode(), location.clone())?;
                 for resolved in instruction.resolved_operands() {
-                    admit_resolved_target(resolved.target(), location.clone())?;
+                    admit_resolved_target(self, candidate, resolved.target(), location.clone())?;
                 }
-                admit_opcode(instruction.opcode(), location)?;
             }
 
             if !function.key().concrete_type_arguments().is_empty()
@@ -105,11 +109,25 @@ impl DeploymentLinker<'_> {
         // instructions above retain precedence for their exact PC-owned
         // capability diagnostic.
         for entry in candidate.operation_entries() {
-            admit_signature(candidate, entry.signature(), self.deployment_location())?;
+            admit_signature(
+                candidate,
+                entry.signature(),
+                BytecodeLinkLocation::OperationEntry {
+                    deployment: Box::new(self.deployment.reference().clone()),
+                    contract_operation_id: entry.contract_operation_id().clone(),
+                },
+            )?;
         }
         for entry in candidate.gateway_entries() {
             for callable in entry.callables() {
-                admit_signature(candidate, callable.signature(), self.deployment_location())?;
+                admit_signature(
+                    candidate,
+                    callable.signature(),
+                    BytecodeLinkLocation::GatewayEntry {
+                        deployment: Box::new(self.deployment.reference().clone()),
+                        gateway_entry_key: entry.gateway_entry_key().clone(),
+                    },
+                )?;
             }
         }
         self.admit_global_tables(candidate)
@@ -119,13 +137,45 @@ impl DeploymentLinker<'_> {
         &self,
         candidate: &LinkedBytecodeCandidate,
     ) -> Result<(), BytecodeLinkError> {
-        let location = self.deployment_location();
-        for entry in candidate.gateway_entries() {
+        let contract = self
+            .deployment
+            .contract_store()
+            .get(&self.deployment.deployment().contract)
+            .expect("hydrated deployment retains its exact validated contract");
+        for entry in candidate.operation_entries() {
+            let location = BytecodeLinkLocation::OperationEntry {
+                deployment: Box::new(self.deployment.reference().clone()),
+                contract_operation_id: entry.contract_operation_id().clone(),
+            };
+            let Some(operation) = contract.operations.get(entry.contract_operation_id()) else {
+                return rejected(Phase1LinkedCapability::ServiceTarget, location);
+            };
+            if !matches!(&operation.contract.stream, BoundaryStreamContract::Unary) {
+                return rejected(Phase1LinkedCapability::Stream, location);
+            }
             if !matches!(
-                &entry.protocol_surface().protocol,
-                GatewayProtocolSurface::Http(_)
+                &operation.contract.callbacks,
+                BoundaryCallbackContract::None
             ) {
-                return rejected(Phase1LinkedCapability::WebSocket, location);
+                return rejected(Phase1LinkedCapability::Callback, location);
+            }
+        }
+
+        for entry in candidate.gateway_entries() {
+            let location = BytecodeLinkLocation::GatewayEntry {
+                deployment: Box::new(self.deployment.reference().clone()),
+                gateway_entry_key: entry.gateway_entry_key().clone(),
+            };
+            match &entry.protocol_surface().protocol {
+                GatewayProtocolSurface::Http(http)
+                    if http.dispatch_mode == GatewayDispatchMode::Unary => {}
+                GatewayProtocolSurface::Http(_) => {
+                    return rejected(Phase1LinkedCapability::Stream, location);
+                }
+                GatewayProtocolSurface::WebSocketConnect(_)
+                | GatewayProtocolSurface::WebSocketJsonRpc(_) => {
+                    return rejected(Phase1LinkedCapability::WebSocket, location);
+                }
             }
             if entry.pre().is_some() || entry.guard().is_some() {
                 return rejected(Phase1LinkedCapability::HttpGuardOrPre, location);
@@ -150,61 +200,6 @@ impl DeploymentLinker<'_> {
         candidate: &LinkedBytecodeCandidate,
     ) -> Result<(), BytecodeLinkError> {
         let location = self.deployment_location();
-        for (present, capability) in [
-            (
-                !candidate.service_operations().is_empty(),
-                Phase1LinkedCapability::ServiceTarget,
-            ),
-            (
-                !candidate.actor_creates().is_empty(),
-                Phase1LinkedCapability::Actor,
-            ),
-            (
-                !candidate.actor_methods().is_empty(),
-                Phase1LinkedCapability::Actor,
-            ),
-            (
-                !candidate.interface_tables().is_empty(),
-                Phase1LinkedCapability::Interface,
-            ),
-            (
-                !candidate.synthetic_callbacks().is_empty(),
-                Phase1LinkedCapability::Callback,
-            ),
-            (
-                !candidate.callback_capture_layouts().is_empty(),
-                Phase1LinkedCapability::Callback,
-            ),
-            (
-                !candidate.host_effect_adapters().is_empty(),
-                Phase1LinkedCapability::HostTarget,
-            ),
-            (
-                !candidate.intrinsics().is_empty(),
-                Phase1LinkedCapability::IntrinsicTarget,
-            ),
-            (
-                !candidate.resume_sites().is_empty(),
-                Phase1LinkedCapability::Stream,
-            ),
-            (
-                !candidate.writable_paths().is_empty(),
-                Phase1LinkedCapability::InOut,
-            ),
-            (
-                !candidate.shapes().is_empty(),
-                Phase1LinkedCapability::Aggregate,
-            ),
-            (
-                !candidate.constant_roots().is_empty(),
-                Phase1LinkedCapability::Constant,
-            ),
-        ] {
-            if present {
-                return rejected(capability, location);
-            }
-        }
-
         for ty in candidate.types() {
             if ty.container_layout().is_some() {
                 return rejected(Phase1LinkedCapability::ValueShape, location);
@@ -212,16 +207,10 @@ impl DeploymentLinker<'_> {
             admit_type(ty.type_ref(), true, location.clone())?;
         }
         for constant in candidate.constants() {
-            if matches!(
-                constant.reference(),
-                LinkedConstantReference::PackageSymbol { .. }
-            ) {
-                return rejected(Phase1LinkedCapability::Constant, location);
-            }
-            admit_type_index(candidate, constant.ty(), false, location.clone())?;
-            admit_trivial_plan(constant.plan(), location.clone())?;
+            admit_constant(self, candidate, constant)?;
         }
         for node in candidate.frozen_constant_nodes() {
+            let location = frozen_node_location(self, node);
             let LinkedFrozenConstantValue::Literal(value) = node.value() else {
                 return rejected(Phase1LinkedCapability::Aggregate, location);
             };
@@ -231,6 +220,61 @@ impl DeploymentLinker<'_> {
         }
         Ok(())
     }
+}
+
+fn constant_location(
+    linker: &DeploymentLinker<'_>,
+    candidate: &LinkedBytecodeCandidate,
+    constant: &skiff_runtime_linked_bytecode::LinkedConstantEntry,
+) -> BytecodeLinkLocation {
+    candidate
+        .frozen_constant_nodes()
+        .get(constant.reference().node().get() as usize)
+        .map_or_else(
+            || BytecodeLinkLocation::Package {
+                package: Box::new(
+                    linker
+                        .deployment
+                        .packages()
+                        .get(constant.origin().package_build_id())
+                        .expect("linked constant retains its hydrated package")
+                        .reference()
+                        .clone(),
+                ),
+            },
+            |node| frozen_node_location(linker, node),
+        )
+}
+
+fn frozen_node_location(
+    linker: &DeploymentLinker<'_>,
+    node: &skiff_runtime_linked_bytecode::LinkedFrozenConstantNode,
+) -> BytecodeLinkLocation {
+    let package = linker
+        .deployment
+        .packages()
+        .get(node.origin().package_build_id())
+        .expect("linked constant node retains its hydrated package");
+    BytecodeLinkLocation::Constant {
+        package: Box::new(package.reference().clone()),
+        node_index: node.origin().artifact_index().get(),
+    }
+}
+
+fn admit_constant(
+    linker: &DeploymentLinker<'_>,
+    candidate: &LinkedBytecodeCandidate,
+    constant: &skiff_runtime_linked_bytecode::LinkedConstantEntry,
+) -> Result<(), BytecodeLinkError> {
+    let location = constant_location(linker, candidate, constant);
+    if matches!(
+        constant.reference(),
+        LinkedConstantReference::PackageSymbol { .. }
+    ) {
+        return rejected(Phase1LinkedCapability::Constant, location);
+    }
+    admit_type_index(candidate, constant.ty(), false, location.clone())?;
+    admit_trivial_plan(constant.plan(), location)
 }
 
 fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), BytecodeLinkError> {
@@ -306,14 +350,21 @@ fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), By
 }
 
 fn admit_resolved_target(
+    linker: &DeploymentLinker<'_>,
+    candidate: &LinkedBytecodeCandidate,
     target: LinkedInstructionTarget,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     let capability = match target {
         LinkedInstructionTarget::FrameSlot(_)
         | LinkedInstructionTarget::Branch(_)
-        | LinkedInstructionTarget::Function(_)
-        | LinkedInstructionTarget::Constant(_) => return Ok(()),
+        | LinkedInstructionTarget::Function(_) => return Ok(()),
+        LinkedInstructionTarget::Constant(index) => {
+            let Some(constant) = candidate.constants().get(index.get() as usize) else {
+                return rejected(Phase1LinkedCapability::Constant, location);
+            };
+            return admit_constant_reference(linker, candidate, constant, location);
+        }
         LinkedInstructionTarget::SwitchTable(_) | LinkedInstructionTarget::Shape(_) => {
             Phase1LinkedCapability::Aggregate
         }
@@ -334,6 +385,36 @@ fn admit_resolved_target(
         ),
     };
     rejected(capability, location)
+}
+
+fn admit_constant_reference(
+    linker: &DeploymentLinker<'_>,
+    candidate: &LinkedBytecodeCandidate,
+    constant: &skiff_runtime_linked_bytecode::LinkedConstantEntry,
+    fallback_location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let Some(node) = candidate
+        .frozen_constant_nodes()
+        .get(constant.reference().node().get() as usize)
+    else {
+        return rejected(Phase1LinkedCapability::Constant, fallback_location);
+    };
+    let location = frozen_node_location(linker, node);
+    if matches!(
+        constant.reference(),
+        LinkedConstantReference::PackageSymbol { .. }
+    ) {
+        return rejected(Phase1LinkedCapability::Constant, location);
+    }
+    admit_type_index(candidate, constant.ty(), false, location.clone())?;
+    admit_trivial_plan(constant.plan(), location.clone())?;
+    match node.value() {
+        LinkedFrozenConstantValue::Literal(value) if immediate_literal(value) => Ok(()),
+        LinkedFrozenConstantValue::Literal(_) => {
+            rejected(Phase1LinkedCapability::ValueShape, location)
+        }
+        _ => rejected(Phase1LinkedCapability::Aggregate, location),
+    }
 }
 
 fn admit_trivial_plan(

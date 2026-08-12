@@ -187,6 +187,39 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
 }
 
 #[test]
+fn production_entry_rejects_server_stream_gateway_at_exact_entry() {
+    let fixture = Fixture::gateway_server_stream();
+    let hydrated = fixture.hydrate();
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::Stream,
+            location: BytecodeLinkLocation::GatewayEntry {
+                gateway_entry_key,
+                ..
+            },
+        }) if gateway_entry_key.as_str() == "phase-1"
+    ));
+}
+
+#[test]
+fn production_entry_rejects_guard_or_pre_gateway_at_exact_entry() {
+    for fixture in [Fixture::gateway_guard(), Fixture::gateway_pre()] {
+        let hydrated = fixture.hydrate();
+        assert!(matches!(
+            link_deployment(&hydrated, &generous_limits()),
+            Err(BytecodeLinkError::UnsupportedPhase1Capability {
+                capability: Phase1LinkedCapability::HttpGuardOrPre,
+                location: BytecodeLinkLocation::GatewayEntry {
+                    gateway_entry_key,
+                    ..
+                },
+            }) if gateway_entry_key.as_str() == "phase-1"
+        ));
+    }
+}
+
+#[test]
 fn production_entry_rejects_entry_alias_to_canonical_effect_owner() {
     let fixture = Fixture::aliased_entry();
     let hydrated = fixture.hydrate();
@@ -217,10 +250,10 @@ fn production_entry_rejects_synthetic_callback_as_an_ordinary_local_target() {
 }
 
 #[test]
-fn backend_links_symbolic_service_authority() {
+fn production_entry_ignores_unreachable_symbolic_service_authority() {
     let fixture = Fixture::service_dependency();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
     assert_eq!(candidate.service_operations().len(), 1);
     assert_eq!(candidate.interface_tables().len(), 0);
 }
@@ -302,7 +335,15 @@ fn backend_links_stream_next_dual_resume_successors() {
 fn stream_for_in_loop_header_merges_item_slot_deadness() {
     let fixture = Fixture::stream_next_loop();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::Stream,
+            location: BytecodeLinkLocation::Instruction { artifact_pc: 3, .. },
+        })
+    ));
+
+    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
     let root = function(&candidate, ROOT_FUNCTION);
     assert_eq!(root.instructions().len(), 5);
     assert_eq!(root.instructions()[1].opcode(), Opcode::StreamNext);
@@ -334,7 +375,9 @@ fn backend_links_stream_producer_with_zero_ordinary_results() {
     assert_eq!(root.instructions()[1].opcode(), Opcode::EmitStream);
     assert!(root.frame().result_types().is_empty());
     assert!(root.frame().result_plans().is_empty());
-    let stream_type = root.stream_result_type_ref().expect("producer stream authority");
+    let stream_type = root
+        .stream_result_type_ref()
+        .expect("producer stream authority");
     assert!(matches!(
         candidate.types()[stream_type.get() as usize].type_ref(),
         TypeRefIr::Builtin { name, .. } if name == "Stream"

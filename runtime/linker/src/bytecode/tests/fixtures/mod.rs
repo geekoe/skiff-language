@@ -5,11 +5,18 @@ mod records;
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use skiff_artifact_identity::ValidatedBytecodeArtifact;
+use skiff_artifact_identity::{
+    assign_service_deployment_identity, gateway_entry_identity, service_deployment_ref,
+    ValidatedBytecodeArtifact,
+};
 use skiff_artifact_model::{
     BytecodeArtifact, BytecodeArtifactRef, BytecodePoolEntry, CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, ContractOperationId,
-    ContractTypeDescriptor, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    ContractTypeDescriptor, DeploymentGatewayEntry, DeploymentIngressBinding, GatewayAdapterArg,
+    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
+    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
+    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol,
+    IngressSelector, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
     PackageCallableId, PackageRequirement, PackageRequirementKey, PackageSchemaCanonicalDescriptor,
     PackageSchemaTypeRecord, ServiceContract, ServiceContractRef, ServiceDeployment,
     ServiceDeploymentRef, TypeRefIr,
@@ -148,6 +155,18 @@ impl Fixture {
         Self::new(RootProgram::ServiceDependency, false)
     }
 
+    pub(super) fn gateway_server_stream() -> Self {
+        Self::new_gateway(GatewayDispatchMode::ServerStream, false, false)
+    }
+
+    pub(super) fn gateway_guard() -> Self {
+        Self::new_gateway(GatewayDispatchMode::Unary, true, false)
+    }
+
+    pub(super) fn gateway_pre() -> Self {
+        Self::new_gateway(GatewayDispatchMode::Unary, false, true)
+    }
+
     pub(super) fn normalization() -> Self {
         Self::normalization_with(DependencyBuildPin::Exact, None, false)
     }
@@ -182,6 +201,59 @@ impl Fixture {
 
     fn new(program: RootProgram, entry_alias: bool) -> Self {
         Self::new_with_options(program, entry_alias, false, None, false)
+    }
+
+    fn new_gateway(dispatch_mode: GatewayDispatchMode, guard: bool, pre: bool) -> Self {
+        let mut fixture = Self::new(RootProgram::LocalCall, false);
+        let mut deployment = fixture.resolver.deployment.as_ref().clone();
+        let key = GatewayEntryKey::parse("phase-1").unwrap();
+        let protocol_surface = GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+                adapter_kind: GatewayAdapterKind::TypedJson,
+                dispatch_mode,
+                external_sources: vec![GatewayAdapterSource::HttpBody],
+                request_body_schema: Some(GatewayExternalSchema::Number),
+                response_schema: (dispatch_mode == GatewayDispatchMode::Unary)
+                    .then_some(GatewayExternalSchema::Number),
+                stream_item_schema: (dispatch_mode == GatewayDispatchMode::ServerStream)
+                    .then_some(GatewayExternalSchema::Number),
+            }),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        };
+        let callable = PackageCallableId::new(ROOT_CALLABLE);
+        deployment.gateway_entries.insert(
+            key.clone(),
+            DeploymentGatewayEntry {
+                gateway_entry_identity: gateway_entry_identity(&protocol_surface).unwrap(),
+                protocol_surface,
+                handler: Some(callable.clone()),
+                pre: pre.then_some(callable.clone()),
+                guard: guard.then_some(callable),
+                adapter_plan: GatewayAdapterPlan {
+                    kind: GatewayAdapterKind::TypedJson,
+                    args: vec![GatewayAdapterArg {
+                        param: "carrier".to_string(),
+                        source: GatewayAdapterSource::HttpBody,
+                    }],
+                },
+                close_handler: None,
+                close_adapter_plan: None,
+            },
+        );
+        deployment.ingress.push(DeploymentIngressBinding {
+            selector: IngressSelector {
+                protocol: IngressProtocol::Http,
+                method: Some("POST".to_string()),
+                path: "/phase-1".to_string(),
+            },
+            gateway_entry_key: key,
+        });
+        assign_service_deployment_identity(&mut deployment).unwrap();
+        let deployment = Arc::new(deployment);
+        fixture.deployment_reference = service_deployment_ref(&deployment);
+        fixture.resolver.deployment_reference = fixture.deployment_reference.clone();
+        fixture.resolver.deployment = deployment;
+        fixture
     }
 
     fn normalization_with(
