@@ -1130,6 +1130,14 @@ fn validate_capture_layout(
             layout.function_key
         )));
     };
+    if layout.captures.len() as u64 > limits::MAX_ARITY {
+        return Err(limit_error(
+            "MAX_ARITY",
+            limits::MAX_ARITY,
+            layout.captures.len() as u64,
+            &format!("{location}.captures"),
+        ));
+    }
     let mut target_slots = BTreeSet::new();
     for (capture_index, capture) in layout.captures.iter().enumerate() {
         if capture.target_slot >= function.frame_layout.slot_count {

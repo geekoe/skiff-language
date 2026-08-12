@@ -157,6 +157,50 @@ fn max_arity_boundary() {
     assert!(error.to_string().contains("MAX_ARITY"), "{error}");
 }
 
+/// Callback capture rows are a count-class schema input even when no
+/// instruction currently selects the pool row. Admission must apply the same
+/// production MAX_ARITY policy before iterating the artifact-owned captures.
+#[test]
+fn max_arity_bounds_callback_capture_layouts() {
+    let artifact_with_capture_count = |capture_count: u32| {
+        let mut artifact = canonical_artifact();
+        let callback = artifact
+            .image
+            .functions
+            .get_mut("module::main$callback0")
+            .unwrap();
+        callback.frame_layout.slot_count = capture_count;
+        callback.frame_layout.slot_type_refs = vec![0; capture_count as usize];
+        callback.frame_layout.slot_plans = vec![snapshot_share(); capture_count as usize];
+
+        let BytecodePoolEntry::CallbackCaptureLayout(layout) =
+            &mut artifact.image.pools.callback_capture[0]
+        else {
+            unreachable!()
+        };
+        layout.captures = (0..capture_count)
+            .map(|target_slot| CallbackCaptureDecl {
+                target_slot,
+                type_ref: 0,
+                plan: snapshot_share(),
+            })
+            .collect();
+        artifact
+    };
+
+    assert_validates(&artifact_with_capture_count(256));
+
+    let error = assert_rejected(&artifact_with_capture_count(257));
+    assert!(matches!(error, StructuralValidationError::Limits { .. }));
+    assert!(error.to_string().contains("MAX_ARITY"), "{error}");
+    assert!(
+        error
+            .to_string()
+            .contains("image.pools.callbackCapture[0].captures"),
+        "{error}"
+    );
+}
+
 /// ISA v4 accepts only zero or one result from a non-tail call before the
 /// semantic verifier cross-checks the linked callee signature.
 #[test]
