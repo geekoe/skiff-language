@@ -148,6 +148,39 @@ mod nested_dependency;
   });
 });
 
+test('emission accepts the frozen lowering crate but rejects monolith and other upstream stages', async () => {
+  await withFixture(async (root) => {
+    await write(
+      root,
+      'compiler/emission/src/lib.rs',
+      'use skiff_compiler_lowering::{mir::MirUnit, FrozenConstantBundle};\n',
+    );
+
+    const allowed = await runChecker(['--root', root]);
+    assert.equal(allowed.code, 0, allowed.stderr);
+    assert.match(allowed.stdout, /passed with no known violations/);
+
+    await write(
+      root,
+      'compiler/emission/src/forbidden.rs',
+      `use crate::lowering::MirUnit;
+use skiff_compiler_compiled::CompiledPackage;
+use skiff_compiler_input::CompilerInput;
+use skiff_compiler_source::SourceCompileModel;
+`,
+    );
+
+    const rejected = await runChecker(['--root', root]);
+    assert.notEqual(rejected.code, 0, rejected.stdout);
+    assert.equal((rejected.stderr.match(/^DENY /gm) ?? []).length, 5, rejected.stderr);
+    assert.match(rejected.stderr, /matched="crate::lowering::"/);
+    assert.match(rejected.stderr, /matched="skiff_compiler_compiled"/);
+    assert.match(rejected.stderr, /matched="skiff_compiler_input"/);
+    assert.match(rejected.stderr, /matched="skiff_compiler_source"/);
+    assert.match(rejected.stderr, /matched="SourceCompileModel"/);
+  });
+});
+
 test('projection-input permits arbitrary DTO methods on its frozen public aggregate', async () => {
   await withFixture(async (root) => {
     await write(

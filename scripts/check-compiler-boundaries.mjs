@@ -59,7 +59,7 @@ const emissionProductionForbiddenImports = regexpUnion([
   crateSharedSubmoduleImportRegexp('ast'),
   /\bskiff_syntax\b/,
   /\bskiff_compiler\b/,
-  /\bskiff_compiler_(?:input_model|input|source|lowering|compiled|emission)\b/,
+  /\bskiff_compiler_(?:input_model|input|source|compiled|emission)\b/,
   /\b(?:CompiledPublication|PackagePublication|SourceCompileModel)\b/,
 ]);
 const projectionInputForbiddenImports = regexpUnion([
@@ -177,10 +177,10 @@ const denyRules = [
     phase: '7.5',
     roots: ['compiler/emission/src'],
     pattern:
-      'compiled/source/source_compile/lowering/input/input-model/parser/AST production dependencies',
+      'crate::lowering or compiled/source/source_compile/input/input-model/parser/AST production dependencies',
     regexp: emissionProductionForbiddenImports,
     remove_when:
-      'Phase 9 extracts emission crate consuming projection output/context without upstream stage references',
+      'emission consumes the frozen lowering MIR crate plus projection output/context without monolith or other upstream stage references',
   },
   {
     id: 'projection_input_no_forbidden_stage_imports_phase_7_5',
