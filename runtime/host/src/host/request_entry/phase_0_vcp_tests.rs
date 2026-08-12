@@ -110,6 +110,21 @@ async fn phase_0_vcp_production_composition() {
 
     let response = receive_correlated_response(&mut receiver, &correlation.request_id).await;
     drain_until_router_writer_closes(&mut receiver, &correlation.request_id).await;
+    match response {
+        CorrelatedResponse::End { header, body, .. } => {
+            assert_eq!(header.request_id, correlation.request_id);
+            assert!(header.payload_present);
+            assert_eq!(body, b"3.0");
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                serde_json::json!(3.0)
+            );
+        }
+        CorrelatedResponse::Error { header, error, .. } => {
+            panic!("VCP returned correlated error {header:?}: {error:?}")
+        }
+    }
+
     let observations = sink.snapshot();
     assert_eq!(
         observations.len(),
@@ -176,19 +191,4 @@ async fn phase_0_vcp_production_composition() {
         &observations[4].event,
         BytecodeExecutionEvent::RequestCleanupComplete(_)
     ));
-
-    match response {
-        CorrelatedResponse::End { header, body, .. } => {
-            assert_eq!(header.request_id, correlation.request_id);
-            assert!(header.payload_present);
-            assert_eq!(body, b"3.0");
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-                serde_json::json!(3.0)
-            );
-        }
-        CorrelatedResponse::Error { header, error, .. } => {
-            panic!("VCP returned correlated error {header:?}: {error:?}")
-        }
-    }
 }
