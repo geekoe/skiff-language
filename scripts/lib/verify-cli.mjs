@@ -147,7 +147,14 @@ options:
 Loop-risk live selectors require one canonical --loop-risk-config path (or SKIFF_LOOP_RISK_CONFIG);
 the default plan runs only the hermetic health evaluator self-test, never a live loop-risk target.
 The checks selector includes compiler boundaries plus hermetic and actual configured public API
-checks; rustdoc falls back to the current toolchain when nightly is unavailable.`);
+checks; rustdoc falls back to the current toolchain when nightly is unavailable.
+
+The bytecode-vm-phase-0-gate selector requires all three caller-supplied environment variables:
+  SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_COMMIT   literal 40-hex commit from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_TREE     literal 40-hex tree from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE0_EVIDENCE_DIR       caller-chosen canonical absolute absent path
+The Gate checks those identities; it does not choose them from HEAD or choose a temporary evidence
+directory.`);
 }
 
 function splitSelectors(value) {

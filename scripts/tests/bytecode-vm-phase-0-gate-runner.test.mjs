@@ -33,6 +33,50 @@ test('runner argument parser requires explicit caller-designated identities', ()
   });
 });
 
+test('runner argument parser accepts the three caller-supplied environment inputs', () => {
+  assert.deepEqual(parsePhase0GateArgs([], { env: {
+    SKIFF_BYTECODE_VM_PHASE0_EVIDENCE_DIR: '/absolute/evidence',
+    SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_COMMIT: COMMIT,
+    SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_TREE: TREE,
+  } }), {
+    help: false,
+    outputDir: '/absolute/evidence',
+    expectedCommit: COMMIT,
+    expectedTree: TREE,
+  });
+});
+
+test('runner rejects each missing caller input before capturing any command', async () => {
+  const created = await mkdtemp(join(tmpdir(), 'skiff-phase0-required-inputs-'));
+  const temp = await realpath(created);
+  const repoRoot = join(temp, 'repo');
+  const outputDir = join(temp, 'evidence');
+  try {
+    await mkdir(repoRoot);
+    for (const { name, pattern } of [
+      { name: 'SKIFF_BYTECODE_VM_PHASE0_EVIDENCE_DIR', pattern: /--output-dir/ },
+      { name: 'SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_COMMIT', pattern: /--candidate/ },
+      { name: 'SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_TREE', pattern: /--tree/ },
+    ]) {
+      const env = {
+        SKIFF_BYTECODE_VM_PHASE0_EVIDENCE_DIR: outputDir,
+        SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_COMMIT: COMMIT,
+        SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_TREE: TREE,
+      };
+      delete env[name];
+      const options = parsePhase0GateArgs([], { env });
+      let calls = 0;
+      await assert.rejects(runPhase0Gate(options, {
+        repoRoot,
+        capture: async () => { calls += 1; },
+      }), pattern);
+      assert.equal(calls, 0, `${name} must fail before command capture`);
+    }
+  } finally {
+    await rm(created, { recursive: true, force: true });
+  }
+});
+
 test('runner refuses existing and symlink output paths before any command', async () => {
   const created = await mkdtemp(join(tmpdir(), 'skiff-phase0-runner-'));
   const temp = await realpath(created);

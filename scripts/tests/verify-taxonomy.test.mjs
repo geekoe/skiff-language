@@ -319,6 +319,10 @@ test('verify help explains subject-oriented test domains', async () => {
   assert.match(result.stdout, /implementation-tests\s+all implementation subjects/);
   assert.match(result.stdout, /foundation\s+shared artifact-model/);
   assert.match(result.stdout, /bytecode-vm-phase-0-gate\s+Phase 0 exact-candidate closure gate/);
+  assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_COMMIT\s+literal 40-hex commit/);
+  assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_TREE\s+literal 40-hex tree/);
+  assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE0_EVIDENCE_DIR\s+caller-chosen canonical absolute absent path/);
+  assert.match(result.stdout, /does not choose them from HEAD or choose a temporary evidence/);
   assert.doesNotMatch(result.stdout, /Phase 1 VCP validation readiness gate/);
   assert.doesNotMatch(result.stdout, /cargo test --workspace|Node\/TypeScript plan/);
 });
