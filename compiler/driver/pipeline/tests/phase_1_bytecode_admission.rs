@@ -29,6 +29,32 @@ fn phase_1_bytecode_admission_rejects_string_shape_with_typed_error() {
 }
 
 #[test]
+fn phase_1_bytecode_admission_blocks_public_emitter_array_bypass() {
+    let error = compile_phase_1_source(
+        "example.com/bytecode-phase1-array",
+        "function run() -> Array<number> { return [1, 2] }\n",
+    )
+    .unwrap_err();
+
+    let PackageCompileError::BytecodeEmission {
+        source:
+            crate::BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability,
+                module_path,
+                function_key,
+                location,
+            },
+    } = error
+    else {
+        panic!("expected typed Phase 1 aggregate rejection, got {error:?}");
+    };
+    assert_eq!(capability, crate::Phase1UnsupportedCapability::ValueShape);
+    assert_eq!(module_path, "main");
+    assert_eq!(function_key.as_deref(), Some("main::run"));
+    assert_eq!(location, "return type");
+}
+
+#[test]
 fn phase_1_bytecode_admission_rejects_tail_local_call_with_typed_error() {
     let error = compile_phase_1_source(
         "example.com/bytecode-phase1-tail",

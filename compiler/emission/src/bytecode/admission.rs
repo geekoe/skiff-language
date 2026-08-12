@@ -7,13 +7,31 @@ use skiff_compiler_lowering::mir::{
 
 use super::{inputs::canonical_function_key, BytecodeEmissionError, Phase1UnsupportedCapability};
 
+/// Opaque proof that one exact MIR slice passed the Phase 1 bytecode boundary.
+///
+/// The proof cannot be constructed and exposes no MIR accessor through the
+/// public API. Public planning and emission entry points therefore accept only
+/// source facts checked by [`admit_phase_1_bytecode_mir`].
+#[derive(Debug)]
+pub struct AdmittedPhase1BytecodeMir<'a> {
+    units: &'a [MirUnit],
+}
+
+impl<'a> AdmittedPhase1BytecodeMir<'a> {
+    pub(crate) fn units(&self) -> &'a [MirUnit] {
+        self.units
+    }
+}
+
 /// Admits only the Phase 1 immediate-scalar, synchronous local-call MIR surface.
 ///
 /// This is the production bytecode lane's source-owned capability boundary.
 /// It runs before constant evaluation, value-transfer derivation, or bytecode
 /// emission and returns no partially emitted state. The admission reads only
 /// typed MIR facts; package names and binding strings never grant capability.
-pub fn admit_phase_1_bytecode_mir(units: &[MirUnit]) -> Result<(), BytecodeEmissionError> {
+pub fn admit_phase_1_bytecode_mir(
+    units: &[MirUnit],
+) -> Result<AdmittedPhase1BytecodeMir<'_>, BytecodeEmissionError> {
     for unit in units {
         if !unit.actor_declarations.is_empty() {
             return Err(rejected(
@@ -51,7 +69,7 @@ pub fn admit_phase_1_bytecode_mir(units: &[MirUnit]) -> Result<(), BytecodeEmiss
             admit_function(unit, &function_key, function)?;
         }
     }
-    Ok(())
+    Ok(AdmittedPhase1BytecodeMir { units })
 }
 
 fn admit_function(

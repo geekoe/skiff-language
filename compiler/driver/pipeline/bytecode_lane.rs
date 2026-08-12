@@ -146,7 +146,7 @@ fn emit_enabled_bytecode(
 ) -> Result<BytecodeCompilationHandoff, PackageCompileError> {
     let package_id = compiled.compile_model().policy().package_id().to_string();
     let units = compiled.lowered().mir_units();
-    admit_phase_1_bytecode_mir(units)?;
+    let admitted = admit_phase_1_bytecode_mir(units)?;
     let mut bundles = Vec::new();
     for unit in compiled.lowered().file_ir_units() {
         let bundle = ConstEvaluator::new(Bounds::default())
@@ -156,8 +156,8 @@ fn emit_enabled_bytecode(
             })?;
         bundles.push(bundle);
     }
-    let plans = derive_bytecode_value_transfer_plans(units)?;
-    let artifact = emit_bytecode_artifact(units, &bundles, &plans)?;
+    let plans = derive_bytecode_value_transfer_plans(&admitted)?;
+    let artifact = emit_bytecode_artifact(&admitted, &bundles, &plans)?;
     let mut statement_manifest = artifact
         .image
         .functions

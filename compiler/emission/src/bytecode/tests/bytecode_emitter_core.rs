@@ -15,10 +15,11 @@ mod tests {
         SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
         TypeDescriptorIr, TypeRefIr, ResourceDropPlan, ValueTransferPlan,
     };
-    use skiff_compiler_emission::{
-        derive_bytecode_value_transfer_plans, emit_bytecode_artifact, BytecodeValueTransferPlans,
-        FunctionValueTransferPlans,
+    use crate::bytecode::{
+        emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact,
+        plans::derive_bytecode_value_transfer_plans_unchecked as derive_bytecode_value_transfer_plans,
     };
+    use crate::{BytecodeValueTransferPlans, FunctionValueTransferPlans};
     use skiff_compiler_lowering::{
         mir::{
             liveness::compute_liveness, MirBlock, MirExecutableKind, MirExpression,
@@ -358,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn array_literal_and_index_emit_builder_and_array_get() {
+    fn phase_1_bytecode_admission_keeps_array_emission_behind_the_private_backend() {
         let array_ty = TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![TypeRefIr::builtin("number")],
