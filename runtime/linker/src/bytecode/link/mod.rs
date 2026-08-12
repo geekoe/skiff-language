@@ -56,9 +56,9 @@ impl<'a> DeploymentLinker<'a> {
         self.reject_unsupported_global_authorities()?;
         let packages = self.link_package_provenance()?;
         let mut type_linker = TypeLinker::new(self.deployment, self.limits);
-        let mut roots = self.canonical_roots()?;
-        self.extend_target_roots(&mut roots, &mut type_linker)?;
-        let keys = self.discover_closure(roots)?;
+        let roots = self.canonical_roots()?;
+        let keys = self.discover_closure(roots, &mut type_linker)?;
+        let reachable_relocations = self.reachable_relocations(&keys)?;
         let function_indices = canonical_function_indices(&keys, deployment_location.clone())?;
         type_linker.set_function_indices(&function_indices);
 
@@ -67,7 +67,12 @@ impl<'a> DeploymentLinker<'a> {
             .iter()
             .map(|key| self.link_frame(key, &mut type_linker))
             .collect::<Result<Vec<_>, _>>()?;
-        let dispatch_tables = self.link_dispatch_tables(&function_indices, &frames, &mut type_linker)?;
+        let dispatch_tables = self.link_dispatch_tables(
+            &reachable_relocations,
+            &function_indices,
+            &frames,
+            &mut type_linker,
+        )?;
         let functions = keys
             .iter()
             .map(|key| {

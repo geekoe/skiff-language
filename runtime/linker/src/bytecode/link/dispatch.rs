@@ -26,7 +26,7 @@ use crate::bytecode::{
     BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
 };
 
-use super::{unsatisfied, DeploymentLinker};
+use super::{closure::ReachableRelocation, unsatisfied, DeploymentLinker};
 
 pub(in crate::bytecode) struct LinkedDispatchTables {
     pub(in crate::bytecode) service_operations: Vec<LinkedServiceOperationTarget>,
@@ -42,16 +42,17 @@ pub(in crate::bytecode) struct LinkedDispatchTables {
 impl DeploymentLinker<'_> {
     pub(super) fn link_dispatch_tables(
         &self,
+        reachable: &[ReachableRelocation],
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         frames: &[LinkedFrameLayout],
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<LinkedDispatchTables, BytecodeLinkError> {
-        let service_operations = self.link_service_operations(type_linker)?;
-        let (actor_creates, actor_methods) = self.link_actor_targets(indices, frames, type_linker)?;
-        let interface_tables = self.link_interface_tables(indices, frames, type_linker)?;
-        let synthetic_callbacks = self.link_synthetic_callbacks(indices, frames, type_linker)?;
+        let service_operations = self.link_service_operations(reachable, type_linker)?;
+        let (actor_creates, actor_methods) = self.link_actor_targets(reachable, indices, frames, type_linker)?;
+        let interface_tables = self.link_interface_tables(reachable, indices, frames, type_linker)?;
+        let synthetic_callbacks = self.link_synthetic_callbacks(reachable, indices, frames, type_linker)?;
         let (host_effect_adapters, intrinsics) =
-            self.link_host_and_intrinsics(indices, type_linker)?;
+            self.link_host_and_intrinsics(reachable, indices, type_linker)?;
 
         let synthetic_callback_origins = synthetic_callbacks
             .iter()
@@ -91,10 +92,23 @@ impl DeploymentLinker<'_> {
 
     fn link_service_operations(
         &self,
+        reachable: &[ReachableRelocation],
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<Vec<LinkedServiceOperationTarget>, BytecodeLinkError> {
         let mut rows = Vec::new();
         for (key, dependency) in self.deployment.service_dependencies() {
+            let has_reachable_operation = dependency.used_operations().iter().any(|operation| {
+                reachable.iter().any(|reference| matches!(
+                    &reference.relocation,
+                    BytecodeRelocation::ServiceOperationRef { service_call }
+                        if reference.specialization.package_build_id() == &key.caller_package_build_id
+                            && service_call.service_requirement_slot == key.service_requirement_slot
+                            && &service_call.contract_operation_id == operation
+                ))
+            });
+            if !has_reachable_operation {
+                continue;
+            }
             let contract = self
                 .deployment
                 .contract_store()
@@ -107,6 +121,16 @@ impl DeploymentLinker<'_> {
                     )
                 })?;
             for operation in dependency.used_operations() {
+                let referenced = reachable.iter().any(|reference| matches!(
+                    &reference.relocation,
+                    BytecodeRelocation::ServiceOperationRef { service_call }
+                        if reference.specialization.package_build_id() == &key.caller_package_build_id
+                            && service_call.service_requirement_slot == key.service_requirement_slot
+                            && &service_call.contract_operation_id == operation
+                ));
+                if !referenced {
+                    continue;
+                }
                 let descriptor = contract.operations.get(operation).ok_or_else(|| {
                     unsatisfied(
                         BytecodeLinkObligation::ConcreteTargetTables,
@@ -145,14 +169,29 @@ impl DeploymentLinker<'_> {
 
     fn link_actor_targets(
         &self,
+        reachable: &[ReachableRelocation],
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         frames: &[LinkedFrameLayout],
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<(Vec<LinkedActorCreateTarget>, Vec<LinkedActorMethodTarget>), BytecodeLinkError> {
-        let mut creates = Vec::new();
+        let creates = Vec::new();
         let mut methods = Vec::new();
         for package in self.deployment.packages().values() {
             for actor in &package.artifact().actor_implementations {
+                let has_reachable_method = reachable.iter().any(|reference| matches!(
+                    &reference.relocation,
+                    BytecodeRelocation::ActorMethodRef {
+                        actor: target_actor,
+                        actor_implementation_identity,
+                        ..
+                    } if reference.specialization.package_build_id()
+                        == &package.reference().package_build_id
+                        && target_actor == &actor.actor
+                        && actor_implementation_identity == &actor.actor_implementation_identity
+                ));
+                if !has_reachable_method {
+                    continue;
+                }
                 let actor_abi = package
                     .artifact()
                     .implementation_links
@@ -180,6 +219,22 @@ impl DeploymentLinker<'_> {
                     actor.actor_implementation_identity.clone(),
                 );
                 for (method_identity, callable) in &actor.methods {
+                    let referenced = reachable.iter().any(|reference| matches!(
+                        &reference.relocation,
+                        BytecodeRelocation::ActorMethodRef {
+                            actor: target_actor,
+                            actor_abi_identity,
+                            actor_implementation_identity,
+                            method_identity: target_method,
+                        } if reference.specialization.package_build_id() == &package.reference().package_build_id
+                            && target_actor == &actor.actor
+                            && actor_abi_identity == &actor_abi.actor_abi_identity
+                            && actor_implementation_identity == &actor.actor_implementation_identity
+                            && target_method == method_identity
+                    ));
+                    if !referenced {
+                        continue;
+                    }
                     let key = self.key_for_receiver_callable(package, callable, type_linker)?;
                     let function = indices.get(&key).copied().ok_or_else(|| {
                         unsatisfied(
@@ -207,38 +262,6 @@ impl DeploymentLinker<'_> {
                         signature,
                     ));
                 }
-                if let Some(create) = &actor.create {
-                    let key = self.key_for_receiver_callable(
-                        package,
-                        &create.package_callable_id,
-                        type_linker,
-                    )?;
-                    let function = indices.get(&key).copied().ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            self.package_location(package),
-                            format!("actor create {:?} is absent from the closure", create.method_identity),
-                        )
-                    })?;
-                    let signature = frame_signature(
-                        frames.get(function.get() as usize).ok_or_else(|| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                self.package_location(package),
-                                "actor create frame is absent".to_string(),
-                            )
-                        })?,
-                        package,
-                        package.function_key_for_callable(&create.package_callable_id),
-                    )?;
-                    creates.push(LinkedActorCreateTarget::new(
-                        skiff_runtime_linked_bytecode::ActorCreateIndex::new(creates.len() as u32),
-                        actor_ref,
-                        create.method_identity.clone(),
-                        function,
-                        signature,
-                    ));
-                }
             }
         }
         Ok((creates, methods))
@@ -262,6 +285,8 @@ enum InterfaceSource {
 
 #[derive(Debug, Clone, PartialEq)]
 struct InterfaceKey {
+    package_build_id: PackageBuildId,
+    specialization: SpecializationKey,
     interface: InterfaceInstantiationRef,
     kind: InterfaceKind,
     concrete_type: Option<TypeIndex>,
@@ -593,6 +618,7 @@ impl LinkedDispatchTables {
 impl DeploymentLinker<'_> {
     fn link_interface_tables(
         &self,
+        reachable: &[ReachableRelocation],
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         frames: &[LinkedFrameLayout],
         type_linker: &mut TypeLinker<'_>,
@@ -600,6 +626,11 @@ impl DeploymentLinker<'_> {
         let mut unique = Vec::<InterfaceKey>::new();
         for package in self.deployment.packages().values() {
             for function in package.bytecode().view().functions() {
+                let Some(source_specialization) = reachable.iter().find_map(|reference| {
+                    (reference.specialization.package_build_id() == &package.reference().package_build_id
+                        && reference.specialization.artifact_function_key().as_str() == function.function_key)
+                        .then_some(&reference.specialization)
+                }) else { continue; };
                 for instruction in &function.instructions {
                     let contract = skiff_artifact_model::contract_for_opcode(instruction.descriptor.kind);
                     for (ordinal, operand) in contract.operands.iter().enumerate() {
@@ -628,6 +659,8 @@ impl DeploymentLinker<'_> {
                                     InterfaceKind::Requirement
                                 };
                                 Some(InterfaceKey {
+                                    package_build_id: package.reference().package_build_id.clone(),
+                                    specialization: source_specialization.clone(),
                                     interface: interface.clone(),
                                     kind,
                                     concrete_type: None,
@@ -646,6 +679,8 @@ impl DeploymentLinker<'_> {
                                     self.instruction_location(package, function, instruction.pc),
                                 )?;
                                 Some(InterfaceKey {
+                                    package_build_id: package.reference().package_build_id.clone(),
+                                    specialization: source_specialization.clone(),
                                     interface: interface.interface.clone(),
                                     kind: InterfaceKind::Local,
                                     concrete_type: Some(concrete_type),
@@ -656,6 +691,8 @@ impl DeploymentLinker<'_> {
                             }
                             BytecodeRelocation::RemoteInterfaceRef { interface } => {
                                 Some(InterfaceKey {
+                                    package_build_id: package.reference().package_build_id.clone(),
+                                    specialization: source_specialization.clone(),
                                     interface: interface.interface.clone(),
                                     kind: InterfaceKind::Remote,
                                     concrete_type: None,
@@ -682,7 +719,7 @@ impl DeploymentLinker<'_> {
         let mut rows = Vec::new();
         for key in unique {
             let index = skiff_runtime_linked_bytecode::InterfaceTableIndex::new(rows.len() as u32);
-            let package = self.deployment.packages().values().next().ok_or_else(|| {
+            let package = self.deployment.packages().get(&key.package_build_id).ok_or_else(|| {
                 unsatisfied(
                     BytecodeLinkObligation::ConcreteTargetTables,
                     self.deployment_location(),
@@ -704,7 +741,7 @@ impl DeploymentLinker<'_> {
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<LinkedInterfaceTable, BytecodeLinkError> {
         let location = self.package_location(package);
-        let specialization = self.specialization_for_package_linked(package, indices, &location)?;
+        let specialization = &key.specialization;
         let instantiation = linked_instantiation(&key.interface, package, specialization, type_linker, &location)?;
         let kind = match &key.kind {
             InterfaceKind::Requirement | InterfaceKind::Callback => {
@@ -897,6 +934,7 @@ impl DeploymentLinker<'_> {
 
     fn link_synthetic_callbacks(
         &self,
+        reachable: &[ReachableRelocation],
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         frames: &[LinkedFrameLayout],
         type_linker: &mut TypeLinker<'_>,
@@ -906,6 +944,11 @@ impl DeploymentLinker<'_> {
         for package in self.deployment.packages().values() {
             for function in package.bytecode().view().functions() {
                 for relocation in &function.relocations {
+                    if !reachable.iter().any(|reference| {
+                        reference.specialization.package_build_id() == &package.reference().package_build_id
+                            && reference.specialization.artifact_function_key().as_str() == function.function_key
+                            && &reference.relocation == relocation
+                    }) { continue; }
                     let BytecodeRelocation::SyntheticCallbackRef { function_key } = relocation else {
                         continue;
                     };
@@ -996,6 +1039,7 @@ impl DeploymentLinker<'_> {
 
     fn link_host_and_intrinsics(
         &self,
+        reachable: &[ReachableRelocation],
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<(Vec<LinkedHostEffectAdapterTarget>, Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>), BytecodeLinkError> {
@@ -1012,6 +1056,11 @@ impl DeploymentLinker<'_> {
                     continue;
                 }
                 for relocation in &function.relocations {
+                    if !reachable.iter().any(|reference| {
+                        reference.specialization.package_build_id() == &package.reference().package_build_id
+                            && reference.specialization.artifact_function_key().as_str() == function.function_key
+                            && &reference.relocation == relocation
+                    }) { continue; }
                     let location = self.function_location(package, function);
                     match relocation {
                         BytecodeRelocation::HostEffectRef(effect) => {
@@ -1104,7 +1153,7 @@ impl DeploymentLinker<'_> {
         Ok((host, intrinsics))
     }
 
-    fn key_for_receiver_callable(
+    pub(super) fn key_for_receiver_callable(
         &self,
         package: &HydratedBytecodePackage,
         callable: &skiff_artifact_model::PackageCallableId,
@@ -1140,7 +1189,7 @@ impl DeploymentLinker<'_> {
         ))
     }
 
-    fn key_for_synthetic_callback(
+    pub(super) fn key_for_synthetic_callback(
         &self,
         package: &HydratedBytecodePackage,
         function_key: &str,
@@ -1169,24 +1218,6 @@ impl DeploymentLinker<'_> {
         }).ok_or_else(|| {
             unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, self.package_location(package), format!("function {function_key} has no linked specialization"))
         })
-    }
-
-    fn specialization_for_package_linked<'b>(
-        &self,
-        package: &HydratedBytecodePackage,
-        indices: &'b BTreeMap<SpecializationKey, FunctionIndex>,
-        location: &BytecodeLinkLocation,
-    ) -> Result<&'b SpecializationKey, BytecodeLinkError> {
-        indices
-            .keys()
-            .find(|key| key.package_build_id() == &package.reference().package_build_id)
-            .ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "package has no linked specialization for interface target".to_string(),
-                )
-            })
     }
 
     fn resolve_package_symbol_owner(
@@ -1576,48 +1607,59 @@ fn resolver_error(message: impl Into<String>) -> ValueLifecycleResolverError {
 }
 
 impl DeploymentLinker<'_> {
-    pub(super) fn extend_target_roots(
+    pub(super) fn key_for_actor_method(
         &self,
-        roots: &mut Vec<SpecializationKey>,
+        package: &HydratedBytecodePackage,
+        actor: &skiff_artifact_model::ServiceSymbolRef,
+        actor_abi_identity: &skiff_artifact_model::ActorAbiIdentity,
+        actor_implementation_identity: &skiff_artifact_model::ActorImplementationIdentity,
+        method_identity: &skiff_artifact_model::ActorMethodIdentity,
         type_linker: &mut TypeLinker<'_>,
-    ) -> Result<(), BytecodeLinkError> {
-        for package in self.deployment.packages().values() {
-            for actor in &package.artifact().actor_implementations {
-                for callable in actor.methods.values() {
-                    roots.push(self.key_for_receiver_callable(package, callable, type_linker)?);
-                }
-                if let Some(create) = &actor.create {
-                    roots.push(self.key_for_receiver_callable(
-                        package,
-                        &create.package_callable_id,
-                        type_linker,
-                    )?);
-                }
-            }
-            for function in package.bytecode().view().functions() {
-                for relocation in &function.relocations {
-                    match relocation {
-                        BytecodeRelocation::SyntheticCallbackRef { function_key } => {
-                            roots.push(self.key_for_synthetic_callback(package, function_key)?);
-                        }
-                        BytecodeRelocation::LocalInterfaceRef { interface } => {
-                            for method in &interface.methods {
-                                roots.push(self.key_for_receiver_function(
-                                    package,
-                                    &method.function_key,
-                                    type_linker,
-                                )?);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
+    ) -> Result<SpecializationKey, BytecodeLinkError> {
+        let location = self.package_location(package);
+        let implementation = package
+            .artifact()
+            .actor_implementations
+            .iter()
+            .find(|candidate| {
+                candidate.actor == *actor
+                    && candidate.actor_implementation_identity == *actor_implementation_identity
+            })
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "actor relocation has no exact implementation authority".to_string(),
+                )
+            })?;
+        let exact_abi = package
+            .artifact()
+            .implementation_links
+            .types
+            .values()
+            .find(|export| {
+                export.file.module_path == actor.module_path && export.symbol == actor.symbol
+            })
+            .and_then(|export| export.actor.as_ref())
+            .is_some_and(|abi| abi.actor_abi_identity == *actor_abi_identity);
+        if !exact_abi {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location,
+                "actor relocation ABI identity differs from package authority".to_string(),
+            ));
         }
-        Ok(())
+        let callable = implementation.methods.get(method_identity).ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                self.package_location(package),
+                format!("actor relocation method {method_identity:?} is absent"),
+            )
+        })?;
+        self.key_for_receiver_callable(package, callable, type_linker)
     }
 
-    fn key_for_receiver_function(
+    pub(super) fn key_for_receiver_function(
         &self,
         package: &HydratedBytecodePackage,
         function_key: &str,

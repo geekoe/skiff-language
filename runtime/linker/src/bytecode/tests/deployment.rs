@@ -20,8 +20,8 @@ use crate::bytecode::{
 
 use super::{
     fixtures::{
-        corrupt_relocation_artifact, corrupt_relocation_index_artifact, Fixture, HELPER_FUNCTION,
-        ROOT_FUNCTION,
+        corrupt_relocation_artifact, corrupt_relocation_index_artifact, Fixture, CALLBACK_FUNCTION,
+        HELPER_FUNCTION, ROOT_FUNCTION,
     },
     generous_limits,
 };
@@ -254,8 +254,30 @@ fn production_entry_ignores_unreachable_symbolic_service_authority() {
     let fixture = Fixture::service_dependency();
     let hydrated = fixture.hydrate();
     let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
-    assert_eq!(candidate.service_operations().len(), 1);
+    assert_eq!(candidate.service_operations().len(), 0);
     assert_eq!(candidate.interface_tables().len(), 0);
+}
+
+#[test]
+fn production_entry_prunes_unreachable_private_interface_and_callback_authority() {
+    // A reachable MakeCallback currently fails earlier in ControlFlowAndStackMap:
+    // the artifact has no callback-interface correlation from which the linker
+    // could populate LinkedSyntheticCallbackTarget::interface_method. This test
+    // deliberately proves only that unreachable private callback authority is
+    // excluded; the reachable interface case below supplies the K0B rejection.
+    for fixture in [Fixture::unreachable_interface(), Fixture::unreachable_callback()] {
+        let hydrated = fixture.hydrate();
+        let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+        assert_eq!(candidate.functions().len(), 1);
+        assert!(candidate.functions().iter().all(|function| {
+            !matches!(
+                function.key().artifact_function_key().as_str(),
+                HELPER_FUNCTION | CALLBACK_FUNCTION
+            )
+        }));
+        assert!(candidate.interface_tables().is_empty());
+        assert!(candidate.synthetic_callbacks().is_empty());
+    }
 }
 
 #[test]

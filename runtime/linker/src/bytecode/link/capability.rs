@@ -200,12 +200,6 @@ impl DeploymentLinker<'_> {
         candidate: &LinkedBytecodeCandidate,
     ) -> Result<(), BytecodeLinkError> {
         let location = self.deployment_location();
-        for ty in candidate.types() {
-            if ty.container_layout().is_some() {
-                return rejected(Phase1LinkedCapability::ValueShape, location);
-            }
-            admit_type(ty.type_ref(), true, location.clone())?;
-        }
         for constant in candidate.constants() {
             admit_constant(self, candidate, constant)?;
         }
@@ -217,6 +211,12 @@ impl DeploymentLinker<'_> {
             if !immediate_literal(value) {
                 return rejected(Phase1LinkedCapability::ValueShape, location);
             }
+        }
+        for ty in candidate.types() {
+            if ty.container_layout().is_some() {
+                return rejected(Phase1LinkedCapability::ValueShape, location);
+            }
+            admit_type(ty.type_ref(), true, location.clone())?;
         }
         Ok(())
     }

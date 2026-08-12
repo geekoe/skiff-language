@@ -4,7 +4,7 @@ use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeFunctionOrigin,
     BytecodeImage, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodePools, BytecodeRelocation,
-    BytecodeSpecialization, FrameLayout, FrozenConstantGraph, HostEffectReference,
+    BytecodeSpecialization, CallbackCaptureLayout, FrameLayout, FrozenConstantGraph, HostEffectReference,
     HostEffectSignature, InstructionSourceSite, IntrinsicReference, NativeTarget,
     PackageCallableId, PackageExecutableCoordinate, ParameterSlotDecl, RelocatableBytecodeFunction,
     ResumeDescriptor, ResumeErrorMode, SourceMapEntry, SourcePosition, SourceSpanRef,
@@ -14,7 +14,7 @@ use skiff_artifact_model::{
 };
 
 use super::{
-    constants, synthetic_callback_callable, RootProgram, CALLBACK_FUNCTION, HELPER_CALLABLE,
+    constants, synthetic_callback_callable_for, RootProgram, CALLBACK_FUNCTION, HELPER_CALLABLE,
     HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
 };
 
@@ -45,9 +45,10 @@ pub(super) fn constant_only_admitted_bytecode(
 pub(super) fn bytecode_artifact(program: RootProgram) -> BytecodeArtifact {
     let mut functions = BTreeMap::new();
     functions.insert(ROOT_FUNCTION.to_string(), root_function(program));
-    functions.insert(HELPER_FUNCTION.to_string(), helper_function());
-    if program == RootProgram::SyntheticTarget {
-        functions.insert(CALLBACK_FUNCTION.to_string(), callback_function());
+    functions.insert(HELPER_FUNCTION.to_string(), helper_function(program));
+    if matches!(program, RootProgram::SyntheticTarget | RootProgram::UnreachableCallback) {
+        let owner = u32::from(program == RootProgram::UnreachableCallback);
+        functions.insert(CALLBACK_FUNCTION.to_string(), callback_function(owner));
     }
     let mut artifact = BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
@@ -172,7 +173,13 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
     }
 }
 
-fn helper_function() -> RelocatableBytecodeFunction {
+fn helper_function(program: RootProgram) -> RelocatableBytecodeFunction {
+    if program == RootProgram::UnreachableInterface {
+        return private_interface_function();
+    }
+    if program == RootProgram::UnreachableCallback {
+        return callback_maker_function(HELPER_FUNCTION, HELPER_CALLABLE, coordinate(1));
+    }
     RelocatableBytecodeFunction {
         function_key: HELPER_FUNCTION.to_string(),
         origin: BytecodeFunctionOrigin::Executable {
@@ -194,11 +201,11 @@ fn helper_function() -> RelocatableBytecodeFunction {
     }
 }
 
-fn callback_function() -> RelocatableBytecodeFunction {
+fn callback_function(owner_index: u32) -> RelocatableBytecodeFunction {
     RelocatableBytecodeFunction {
         function_key: CALLBACK_FUNCTION.to_string(),
         origin: BytecodeFunctionOrigin::SyntheticCallback {
-            owner: coordinate(0),
+            owner: coordinate(owner_index),
             site_ordinal: 0,
         },
         type_parameters: Vec::new(),
@@ -208,7 +215,76 @@ fn callback_function() -> RelocatableBytecodeFunction {
         call_loan_layouts: Vec::new(),
         frame_layout: empty_frame(),
         max_operand_depth: 0,
-        effect_summary_ref: synthetic_callback_callable(),
+        effect_summary_ref: synthetic_callback_callable_for(if owner_index == 0 {
+            ROOT_CALLABLE
+        } else {
+            HELPER_CALLABLE
+        }),
+        exception_regions: Vec::new(),
+        active_regions: Vec::new(),
+        switch_tables: Vec::new(),
+        statement_entries: Vec::new(),
+        source_map: Vec::new(),
+    }
+}
+
+fn private_interface_function() -> RelocatableBytecodeFunction {
+    RelocatableBytecodeFunction {
+        function_key: HELPER_FUNCTION.to_string(),
+        origin: BytecodeFunctionOrigin::Executable { executable: coordinate(1) },
+        type_parameters: Vec::new(),
+        self_type_ref: None,
+        words: vec![0x06, 0, 0x24, 0, 0, 0, 1, 0, 0x08, 0x25],
+        relocations: vec![BytecodeRelocation::InterfaceRequirementRef {
+            interface: skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: interface_identity(),
+                canonical_type_args: Vec::new(),
+            },
+        }],
+        call_loan_layouts: Vec::new(),
+        frame_layout: FrameLayout {
+            slot_count: 1,
+            slot_type_refs: vec![1],
+            parameter_slots: vec![ParameterSlotDecl {
+                slot: 0,
+                mode: skiff_artifact_model::ParamModeIr::Value,
+                plan: snapshot_plan(),
+            }],
+            writable_local_slots: Vec::new(),
+            result_count: 0,
+            result_type_refs: Vec::new(),
+            result_plans: Vec::new(),
+            stream_result_type_ref: None,
+            slot_plans: vec![snapshot_plan()],
+        },
+        max_operand_depth: 1,
+        effect_summary_ref: PackageCallableId::new(HELPER_CALLABLE),
+        exception_regions: Vec::new(),
+        active_regions: Vec::new(),
+        switch_tables: Vec::new(),
+        statement_entries: Vec::new(),
+        source_map: vec![source_map(2, 8)],
+    }
+}
+
+fn callback_maker_function(
+    function_key: &str,
+    effect_summary: &str,
+    executable: PackageExecutableCoordinate,
+) -> RelocatableBytecodeFunction {
+    RelocatableBytecodeFunction {
+        function_key: function_key.to_string(),
+        origin: BytecodeFunctionOrigin::Executable { executable },
+        type_parameters: Vec::new(),
+        self_type_ref: None,
+        words: vec![0x32, 0, 0, 0, 0x08, 0x25],
+        relocations: vec![BytecodeRelocation::SyntheticCallbackRef {
+            function_key: CALLBACK_FUNCTION.to_string(),
+        }],
+        call_loan_layouts: Vec::new(),
+        frame_layout: empty_frame(),
+        max_operand_depth: 1,
+        effect_summary_ref: PackageCallableId::new(effect_summary),
         exception_regions: Vec::new(),
         active_regions: Vec::new(),
         switch_tables: Vec::new(),
@@ -327,6 +403,12 @@ fn root_body(
             None,
             vec![source_map(0, 4)],
         ),
+        RootProgram::UnreachableCallback | RootProgram::UnreachableInterface => (
+            vec![0x25],
+            Vec::new(),
+            None,
+            Vec::new(),
+        ),
         RootProgram::Interface => (
             vec![0x06, 0, 0x24, 0, 0, 0, 1, 0, 0x08, 0x25],
             vec![BytecodeRelocation::InterfaceRequirementRef {
@@ -335,7 +417,7 @@ fn root_body(
                     canonical_type_args: Vec::new(),
                 },
             }],
-            Some(interface_resume_descriptor()),
+            Some(interface_resume_descriptor(ROOT_FUNCTION)),
             vec![source_map(2, 8)],
         ),
         RootProgram::Host => (
@@ -415,7 +497,7 @@ fn pools(program: RootProgram) -> BytecodePools {
                     ty: TypeRefIr::builtin("string"),
                 },
             ],
-            RootProgram::Interface => vec![
+            RootProgram::Interface | RootProgram::UnreachableInterface => vec![
                 BytecodePoolEntry::TypeRef {
                     ty: TypeRefIr::builtin("string"),
                 },
@@ -479,11 +561,21 @@ fn pools(program: RootProgram) -> BytecodePools {
             _ => Vec::new(),
         },
         effects: Vec::new(),
-        resume: match root_body(program).2 {
-            Some(descriptor) => vec![BytecodePoolEntry::ResumeDescriptor(descriptor)],
-            None => Vec::new(),
+        resume: if program == RootProgram::UnreachableInterface {
+            vec![BytecodePoolEntry::ResumeDescriptor(interface_resume_descriptor(HELPER_FUNCTION))]
+        } else {
+            root_body(program).2
+                .map(BytecodePoolEntry::ResumeDescriptor)
+                .into_iter()
+                .collect()
         },
-        callback_capture: Vec::new(),
+        callback_capture: (program == RootProgram::UnreachableCallback)
+            .then(|| BytecodePoolEntry::CallbackCaptureLayout(CallbackCaptureLayout {
+                function_key: CALLBACK_FUNCTION.to_string(),
+                captures: Vec::new(),
+            }))
+            .into_iter()
+            .collect(),
         writable_paths: Vec::new(),
     }
 }
@@ -543,9 +635,9 @@ fn valid_intrinsic() -> IntrinsicReference {
     }
 }
 
-fn interface_resume_descriptor() -> ResumeDescriptor {
+fn interface_resume_descriptor(function_key: &str) -> ResumeDescriptor {
     ResumeDescriptor {
-        function_key: ROOT_FUNCTION.to_string(),
+        function_key: function_key.to_string(),
         site_pc: 2,
         resume_pc: 8,
         end_resume_pc: None,

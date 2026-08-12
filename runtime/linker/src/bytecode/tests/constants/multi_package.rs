@@ -4,7 +4,10 @@ use skiff_runtime_linked_bytecode::{
     LinkedValueDropPlan, LinkedValueTransferPlan,
 };
 
-use crate::bytecode::{link_deployment, BytecodeLinkError, BytecodeLinkLimit};
+use crate::bytecode::{
+    link_deployment, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
+    Phase1LinkedCapability,
+};
 
 use super::super::{
     fixtures::{ConstantProgram, Fixture, DEPENDENCY_PACKAGE_ID, ROOT_FUNCTION},
@@ -99,6 +102,22 @@ fn two_packages_rebase_local_zero_rows_and_relink_deterministically() {
     let stack_value = &root_function.stack_map().entries()[1].stack_before()[0];
     assert_eq!(stack_value.ty(), primary.ty());
     assert_eq!(stack_value.plan(), primary.plan());
+}
+
+#[test]
+fn unreferenced_dependency_string_reports_its_exact_constant_node() {
+    let fixture = Fixture::two_package_constants(ConstantProgram::Number, ConstantProgram::String);
+    let hydrated = fixture.hydrate();
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::ValueShape,
+            location: BytecodeLinkLocation::Constant {
+                package,
+                node_index: 0,
+            },
+        }) if package.package_id == DEPENDENCY_PACKAGE_ID
+    ));
 }
 
 #[test]

@@ -68,8 +68,10 @@ struct NormalizationDependency {
 pub(super) enum RootProgram {
     LocalCall,
     SyntheticTarget,
+    UnreachableCallback,
     ServiceDependency,
     Interface,
+    UnreachableInterface,
     Host,
     Intrinsic,
     FromType,
@@ -117,6 +119,14 @@ impl Fixture {
 
     pub(super) fn interface() -> Self {
         Self::new(RootProgram::Interface, false)
+    }
+
+    pub(super) fn unreachable_interface() -> Self {
+        Self::new(RootProgram::UnreachableInterface, false)
+    }
+
+    pub(super) fn unreachable_callback() -> Self {
+        Self::new(RootProgram::UnreachableCallback, false)
     }
 
     pub(super) fn host() -> Self {
@@ -557,10 +567,10 @@ fn analyzed_facts() -> CallableSemanticFacts {
     }
 }
 
-pub(super) fn synthetic_callback_callable() -> PackageCallableId {
+pub(super) fn synthetic_callback_callable_for(owner: &str) -> PackageCallableId {
     skiff_artifact_model::derive_synthetic_callback_callable_id(
         "example.bytecode-link",
-        &PackageCallableId::new(ROOT_CALLABLE),
+        &PackageCallableId::new(owner),
         0,
     )
     .unwrap()

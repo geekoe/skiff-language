@@ -10,11 +10,18 @@ use skiff_runtime_linked_bytecode::{
 use skiff_runtime_loader::HydratedBytecodePackage;
 
 use crate::bytecode::{
-    worklist::CanonicalWorklist, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
-    BytecodeLinkObligation,
+    types::TypeLinker, worklist::CanonicalWorklist, BytecodeLinkError, BytecodeLinkLimit,
+    BytecodeLinkLocation, BytecodeLinkObligation,
 };
 
 use super::{unsatisfied, DeploymentLinker};
+
+#[derive(Debug, Clone)]
+pub(super) struct ReachableRelocation {
+    pub(super) specialization: SpecializationKey,
+    pub(super) pc: u32,
+    pub(super) relocation: BytecodeRelocation,
+}
 
 impl<'a> DeploymentLinker<'a> {
     pub(super) fn validate_exact_package_closure(&self) -> Result<(), BytecodeLinkError> {
@@ -176,61 +183,107 @@ impl<'a> DeploymentLinker<'a> {
     pub(super) fn discover_closure(
         &self,
         roots: Vec<SpecializationKey>,
+        type_linker: &mut TypeLinker<'_>,
     ) -> Result<Vec<SpecializationKey>, BytecodeLinkError> {
         let location = self.deployment_location();
         let mut worklist = CanonicalWorklist::try_from_roots(roots, self.limits, location.clone())?;
         while let Some((_, key)) = worklist.pop_next() {
-            let (package, function) = self.source_function(&key)?;
             let mut discoveries = Vec::new();
-            for instruction in &function.instructions {
-                let contract = contract_for_opcode(instruction.descriptor.kind);
-                for (ordinal, operand) in contract.operands.iter().enumerate() {
-                    if operand.kind != OperandKind::Reloc {
-                        continue;
-                    }
-                    let relocation_index =
-                        *instruction.operand_words.get(ordinal).ok_or_else(|| {
-                            unsatisfied(
-                                BytecodeLinkObligation::RelocationResolution,
-                                self.instruction_location(package, function, instruction.pc),
-                                format!("decoded operand ordinal {ordinal} is absent"),
-                            )
-                        })?;
-                    let relocation = function
-                        .relocations
-                        .get(relocation_index as usize)
-                        .ok_or_else(|| {
-                            unsatisfied(
-                                BytecodeLinkObligation::RelocationResolution,
-                                self.instruction_location(package, function, instruction.pc),
-                                format!("validated relocation row {relocation_index} is absent"),
-                            )
-                        })?;
-                    match relocation {
-                        BytecodeRelocation::LocalExecutableRef { .. }
-                        | BytecodeRelocation::PackageCallableRef { .. } => {
+            for reference in self.relocations_for_specialization(&key)? {
+                let (package, function) = self.source_function(&reference.specialization)?;
+                match &reference.relocation {
+                    relocation @ (BytecodeRelocation::LocalExecutableRef { .. }
+                    | BytecodeRelocation::PackageCallableRef { .. }) => discoveries.push((
+                        reference.pc,
+                        self.resolve_direct_target(package, relocation, function)?,
+                    )),
+                    BytecodeRelocation::ActorMethodRef {
+                        actor,
+                        actor_abi_identity,
+                        actor_implementation_identity,
+                        method_identity,
+                    } => discoveries.push((
+                        reference.pc,
+                        self.key_for_actor_method(
+                            package,
+                            actor,
+                            actor_abi_identity,
+                            actor_implementation_identity,
+                            method_identity,
+                            type_linker,
+                        )?,
+                    )),
+                    BytecodeRelocation::LocalInterfaceRef { interface } => {
+                        for method in &interface.methods {
                             discoveries.push((
-                                instruction.pc,
-                                self.resolve_direct_target(package, relocation, function)?,
+                                reference.pc,
+                                self.key_for_receiver_function(
+                                    package,
+                                    &method.function_key,
+                                    type_linker,
+                                )?,
                             ));
                         }
-                        BytecodeRelocation::ServiceOperationRef { .. }
-                        | BytecodeRelocation::ActorMethodRef { .. }
-                        | BytecodeRelocation::InterfaceRequirementRef { .. }
-                        | BytecodeRelocation::RemoteInterfaceRef { .. }
-                        | BytecodeRelocation::LocalInterfaceRef { .. }
-                        | BytecodeRelocation::SyntheticCallbackRef { .. }
-                        | BytecodeRelocation::HostEffectRef(..)
-                        | BytecodeRelocation::IntrinsicRef { .. }
-                        | BytecodeRelocation::TypeRef { .. }
-                        | BytecodeRelocation::ShapeRef { .. }
-                        | BytecodeRelocation::FrozenConstantRef { .. } => {}
                     }
+                    BytecodeRelocation::SyntheticCallbackRef { function_key } => {
+                        discoveries.push((
+                            reference.pc,
+                            self.key_for_synthetic_callback(package, function_key)?,
+                        ))
+                    }
+                    _ => {}
                 }
             }
             worklist.enqueue_discovered(discoveries, self.limits, location.clone())?;
         }
         Ok(worklist.canonical_keys().cloned().collect())
+    }
+
+    pub(super) fn reachable_relocations(
+        &self,
+        keys: &[SpecializationKey],
+    ) -> Result<Vec<ReachableRelocation>, BytecodeLinkError> {
+        let mut result = Vec::new();
+        for key in keys {
+            result.extend(self.relocations_for_specialization(key)?);
+        }
+        Ok(result)
+    }
+
+    fn relocations_for_specialization(
+        &self,
+        key: &SpecializationKey,
+    ) -> Result<Vec<ReachableRelocation>, BytecodeLinkError> {
+        let (package, function) = self.source_function(key)?;
+        let mut result = Vec::new();
+        for instruction in &function.instructions {
+            let contract = contract_for_opcode(instruction.descriptor.kind);
+            for (ordinal, operand) in contract.operands.iter().enumerate() {
+                if operand.kind != OperandKind::Reloc {
+                    continue;
+                }
+                let raw = *instruction.operand_words.get(ordinal).ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        self.instruction_location(package, function, instruction.pc),
+                        format!("decoded operand ordinal {ordinal} is absent"),
+                    )
+                })?;
+                let relocation = function.relocations.get(raw as usize).ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        self.instruction_location(package, function, instruction.pc),
+                        format!("validated relocation row {raw} is absent"),
+                    )
+                })?;
+                result.push(ReachableRelocation {
+                    specialization: key.clone(),
+                    pc: instruction.pc,
+                    relocation: relocation.clone(),
+                });
+            }
+        }
+        Ok(result)
     }
 
     pub(super) fn source_function(
