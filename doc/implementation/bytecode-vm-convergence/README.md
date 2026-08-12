@@ -232,6 +232,8 @@ VCP。建立本项目的 exact baseline、Phase 1 task DAG、执行约束和 Exe
 scalar/local-call VM -> unary response。删除这条链上的 fake seal、type/target fallback 和手写 admission
 bypass。Phase 1 以外的 lane 必须 fail closed。
 
+详细计划：[`phases/phase-1-trusted-synchronous-core.md`](./phases/phase-1-trusted-synchronous-core.md)。
+
 初步 VCP：一份真实 `.skiff` unary fixture 经 production compiler、artifact store、loader/linker、VM 和
 request response 返回确定 scalar 结果；manifest 同时证明 exact build、entry 和 VM dispatch，损坏 artifact
 在真实 admission boundary 被拒绝。
@@ -336,7 +338,8 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 | project plan | active |
 | Phase 0 | integrated; acceptance blocked |
 | Phase 0 supplemental closure | ready |
-| Phase 1–7 | outline only; Phase 1 production tasks blocked |
+| Phase 1 | detailed plan written; activation blocked on Phase 0 closure |
+| Phase 2–7 | outline only; not implementation-ready |
 
 在 Phase 0 supplemental closure 获得 valid independent acceptance 之前，任何 Phase 1–7 的 production code
 任务都没有获得本计划授权。

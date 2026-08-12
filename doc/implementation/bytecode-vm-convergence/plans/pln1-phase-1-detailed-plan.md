@@ -1,6 +1,9 @@
-# PLN1: Phase 1 detailed plan
+# PLN1: Phase 1 detailed plan (historical pre-closure draft)
 
-> Status: completed
+> Status: superseded as an execution plan by
+> [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
+>
+> This file is retained as Phase 0 historical input. It must not control MAP1 or Phase 1 acceptance.
 
 ## 1. Semantic closure
 
