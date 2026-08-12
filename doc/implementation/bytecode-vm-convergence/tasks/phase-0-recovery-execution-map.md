@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 8; P0-V/DEC0-S integrated; P0-G/D0-R/D0-M running; REV0-S corrected
+> Status: active; revision 9; D0-M integrated; P0-G/D0-R takeover running; REV0-S corrected
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -47,8 +47,8 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
 | REV0-S | Review | `FAIL`, complete in 8 min; corrections recorded in rev8 | actual 8 min | on checkpoint | read-only DEC0-S and cited production code | found omitted event-owner/test files and confirmed D0-R sealed-fact expansion; no new authority found |
-| D0-R | Development | running as `/root/p0_route_identity`; started `2026-08-12T16:38:31Z` | 30–45 min | `2026-08-12T16:56:31Z` | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; focused cases green |
-| D0-M | Development | running as `/root/p0_typedjson_materialize`; started `2026-08-12T16:38:31Z` | 30–45 min | `2026-08-12T16:56:31Z` | exact DEC0-S D0-M write set | typedJson scalar materializes against pinned verified entry; malformed/wrong/non-scalar fail closed; rawHttp unchanged |
+| D0-R | Development | initial writer interrupted; takeover `/root/p0_route_takeover` started `2026-08-12T16:50:00Z` | takeover 20–30 min | `2026-08-12T17:02:00Z` | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; focused cases green |
+| D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -75,7 +75,7 @@ Revision 0 只预留首批 writer；实际 Agent ID 在 dispatch revision 中记
 | P0-V | `codex/bcvm-p0-vcp` | `/Users/geek/workspace/skiff-bcvm-p0-vcp` | revision-0 MAP commit | yes; one focused command at a time, output redirected if >30s |
 | P0-G | `codex/bcvm-p0-gate` | `/Users/geek/workspace/skiff-bcvm-p0-gate` | revision-0 MAP commit | no during initial parallel frontier |
 | REV0-S | none; read-only | DEC0-S integration checkout | revision-5 MAP commit | no |
-| D0-R | `codex/bcvm-p0-route` | `/Users/geek/workspace/skiff-bcvm-p0-route` | revision-5 MAP commit | yes; exclusive first Development lease |
+| D0-R | `codex/bcvm-p0-route-takeover` | `/Users/geek/workspace/skiff-bcvm-p0-route-takeover` | corrected revision-8 integration commit | yes after D0-M validation completed |
 | D0-M | `codex/bcvm-p0-materialize` | `/Users/geek/workspace/skiff-bcvm-p0-materialize` | revision-5 MAP commit | no until D0-R releases the lease |
 
 同一 worktree 一个 writer。Agent 使用 `fork_turns=none`，只接收 exact task contract。Acceptance Agent 尚未创建，
@@ -192,3 +192,16 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
 - the review's second blocker is satisfied by revision 7's narrow sealed-fact accessor expansion; D0-R is implementing it;
 - D0-O is not ready until D0-R and D0-M join. Its cleanup proof must query the matching supervised request row, not infer
   correctness from a global active count.
+
+### Revision 9 — D0-R containment/takeover and D0-M join
+
+- watchdog inspection found the initial D0-R worktree dirty across 186 files after the writer ran `cargo fmt --all`; the
+  Agent was interrupted immediately, the worktree was frozen, and no commit or non-target diff was accepted;
+- the writer confirmed only three target-file patches were intentional and that no Cargo/rustfmt process remained. A clean
+  `codex/bcvm-p0-route-takeover` worktree at `4f16bc35` was assigned to `/root/p0_route_takeover` with a 20–30 minute
+  contract and 12-minute checkpoint; it may use the frozen target diff only as reviewed source material;
+- validated D0-M output `4a440017ec45206d4873302a8cae7044aaed4da5` and integrated it as `e15bad88`;
+- `cargo test --manifest-path runtime/request/Cargo.toml --test bytecode_request typed_json` passed 7/7, and exact
+  `tests::raw_http_body_remains_heap_bytes` passed 1/1. The whole test file passed 12/13; its unrelated sleep fixture failed
+  because the compile graph lacks canonical `skiff.run/std`, reproduced unchanged on the pre-D0-M integration candidate;
+- sole Cargo ownership is now transferred to the D0-R takeover for its focused host test after the candidate is ready.
