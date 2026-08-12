@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 5; P0-V/DEC0-S integrated; P0-G running; D0-R/D0-M/review ready
+> Status: active; revision 6; P0-V/DEC0-S integrated; P0-G/D0-R/D0-M/REV0-S running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -46,9 +46,9 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
 | P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
-| REV0-S | Review | ready | 12–18 min | 8 min | read-only DEC0-S and cited production code | independently reject duplicate authority, infeasible propagation, mutable/fallible observer, or non-owner-minted events |
-| D0-R | Development | ready | 30–45 min | 18 min | exact DEC0-S D0-R write set | route identity derives from pinned image owner; no request-time artifact reread; focused cases green |
-| D0-M | Development | ready | 30–45 min | 18 min | exact DEC0-S D0-M write set | typedJson scalar materializes against pinned verified entry; malformed/wrong/non-scalar fail closed; rawHttp unchanged |
+| REV0-S | Review | running as `/root/p0_seam_review`; started `2026-08-12T16:38:31Z` | 12–18 min | `2026-08-12T16:46:31Z` | read-only DEC0-S and cited production code | independently reject duplicate authority, infeasible propagation, mutable/fallible observer, or non-owner-minted events |
+| D0-R | Development | running as `/root/p0_route_identity`; started `2026-08-12T16:38:31Z` | 30–45 min | `2026-08-12T16:56:31Z` | exact DEC0-S D0-R write set | route identity derives from pinned image owner; no request-time artifact reread; focused cases green |
+| D0-M | Development | running as `/root/p0_typedjson_materialize`; started `2026-08-12T16:38:31Z` | 30–45 min | `2026-08-12T16:56:31Z` | exact DEC0-S D0-M write set | typedJson scalar materializes against pinned verified entry; malformed/wrong/non-scalar fail closed; rawHttp unchanged |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -164,3 +164,11 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   proceed in parallel, but a review rejection must be resolved before either Development commit joins;
 - transferred the sole Cargo lease to D0-R. D0-M may write and commit a reviewable candidate but cannot run Cargo until the
   Map records lease transfer after D0-R's command completes.
+
+### Revision 6 — production repair and review dispatch
+
+- created D0-R and D0-M worktrees directly under `/Users/geek/workspace` at exact input `afc79c12`;
+- dispatched `/root/p0_route_identity`, `/root/p0_typedjson_materialize`, and read-only `/root/p0_seam_review` with
+  `fork_turns=none`, narrow contracts, explicit 8/18-minute status checkpoints and 12–45-minute elapsed expectations;
+- D0-R exclusively owns Cargo; D0-M must stop at a committed untested candidate until the lease is transferred;
+- P0-G remains an independent Node-only Proof writer and is producing its first detached checker/self-test commit.
