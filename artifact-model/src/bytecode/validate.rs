@@ -1855,6 +1855,8 @@ fn validate_local_interface_methods(
 ) -> Result<(), StructuralValidationError> {
     let mut previous_slot = None;
     for (index, method) in methods.iter().enumerate() {
+        let method_location = format!("{location}.interface.methods[{index}]");
+        validate_interface_method_bounds(method.slot, &method.signature, &method_location)?;
         if previous_slot.is_some_and(|slot| slot >= method.slot)
             || method.method_name.is_empty()
             || method.method_abi_id.is_empty()
@@ -1862,7 +1864,7 @@ fn validate_local_interface_methods(
         {
             return Err(table_error(
                 key,
-                format!("{location}.interface.methods[{index}] is not canonical or complete"),
+                format!("{method_location} is not canonical or complete"),
             ));
         }
         previous_slot = Some(method.slot);
@@ -1877,18 +1879,53 @@ fn validate_remote_interface_methods(
 ) -> Result<(), StructuralValidationError> {
     let mut previous_slot = None;
     for (index, method) in methods.iter().enumerate() {
+        let method_location = format!("{location}.interface.methods[{index}]");
+        validate_interface_method_bounds(method.slot, &method.signature, &method_location)?;
         if previous_slot.is_some_and(|slot| slot >= method.slot)
             || method.method_abi_id.is_empty()
             || method.contract_operation_id.as_str().is_empty()
         {
             return Err(table_error(
                 key,
-                format!("{location}.interface.methods[{index}] is not canonical or complete"),
+                format!("{method_location} is not canonical or complete"),
             ));
         }
         previous_slot = Some(method.slot);
     }
     Ok(())
+}
+
+fn validate_interface_method_bounds(
+    slot: u32,
+    signature: &crate::InterfaceMethodSlotSignatureIr,
+    location: &str,
+) -> Result<(), StructuralValidationError> {
+    if u64::from(slot) >= limits::MAX_ARITY {
+        return Err(limit_error(
+            "MAX_ARITY",
+            limits::MAX_ARITY,
+            u64::from(slot) + 1,
+            &format!("{location}.slot"),
+        ));
+    }
+    if signature.params.len() as u64 > limits::MAX_ARITY {
+        return Err(limit_error(
+            "MAX_ARITY",
+            limits::MAX_ARITY,
+            signature.params.len() as u64,
+            &format!("{location}.signature.params"),
+        ));
+    }
+    for (index, parameter) in signature.params.iter().enumerate() {
+        validate_inline_type_depth(
+            &parameter.ty,
+            &format!("{location}.signature.params[{index}].ty"),
+        )?;
+    }
+    validate_inline_type_depth(
+        &signature.return_type,
+        &format!("{location}.signature.returnType"),
+    )
 }
 
 /// C5: every declared frame slot/result type is a checked reference into the
