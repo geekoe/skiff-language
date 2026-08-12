@@ -90,6 +90,10 @@ impl RuntimeHost {
             }
             BytecodeRequestStartFrameWireHeader::Task(header) => header.request_id.clone(),
         };
+        if let Err(error) = admit_synchronous_unary_http_lane(&header) {
+            self.send_bytecode_wire_admission_error(&request_id, &error, &sender);
+            return;
+        }
         let observer = BytecodeExecutionObserver::new(
             Arc::clone(&self.bytecode_execution_event_sink),
             BytecodeExecutionCorrelation {
@@ -125,12 +129,9 @@ impl RuntimeHost {
             }
             BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
                 self.websocket_connection_closed_request_from_wire(
-                    header,
-                    body,
-                    bootstrap,
-                    &observer,
+                    header, body, bootstrap, &observer,
                 )
-                    .await
+                .await
             }
             BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
                 self.websocket_jsonrpc_request_from_wire(header, body, bootstrap, &observer)
@@ -197,21 +198,30 @@ impl RuntimeHost {
             }
             Err(runtime_error) => {
                 drop(reservation);
-                error!(
-                    event = "runtime.assembly_wire_rejected",
-                    request_id,
-                    error = %runtime_error
-                );
-                let response_event = OrdinaryResponseEvent::try_error(&runtime_error)
-                    .expect("wire admission rejection is ordinary");
-                match response_event_into_transport_message(request_id, response_event) {
-                    Ok(message) => {
-                        let _ = sender.send(message);
-                    }
-                    Err(encode_error) => {
-                        error!(event = "runtime.response_encode_error", error = %encode_error);
-                    }
-                }
+                self.send_bytecode_wire_admission_error(&request_id, &runtime_error, &sender);
+            }
+        }
+    }
+
+    fn send_bytecode_wire_admission_error(
+        &self,
+        request_id: &str,
+        runtime_error: &RuntimeError,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        error!(
+            event = "runtime.assembly_wire_rejected",
+            request_id,
+            error = %runtime_error
+        );
+        let response_event = OrdinaryResponseEvent::try_error(runtime_error)
+            .expect("wire admission rejection is ordinary");
+        match response_event_into_transport_message(request_id.to_string(), response_event) {
+            Ok(message) => {
+                let _ = sender.send(message);
+            }
+            Err(encode_error) => {
+                error!(event = "runtime.response_encode_error", error = %encode_error);
             }
         }
     }
@@ -344,7 +354,6 @@ impl RuntimeHost {
         bootstrap: &ConnectionBootstrap,
         observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
-        validate_http_header(&header)?;
         let route = self
             .resolve_bytecode_request_route(
                 &header.routing.deployment,
@@ -520,6 +529,24 @@ fn wire_routing_build_id(header: &BytecodeRequestStartFrameWireHeader) -> Option
     Some(deployment.deployment_artifact_identity.as_str().to_string())
 }
 
+fn admit_synchronous_unary_http_lane(header: &BytecodeRequestStartFrameWireHeader) -> Result<()> {
+    match header {
+        BytecodeRequestStartFrameWireHeader::Http(header) => validate_http_header(header),
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(_)
+        | BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(_)
+        | BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(_) => Err(
+            RuntimeError::Unsupported(
+                "bytecode request admission supports only exact unary HTTP gateway requests; the WebSocket request lane is disabled"
+                    .to_string(),
+            ),
+        ),
+        BytecodeRequestStartFrameWireHeader::Task(_) => Err(RuntimeError::Unsupported(
+            "bytecode request admission supports only exact unary HTTP gateway requests; the task request lane is disabled"
+                .to_string(),
+        )),
+    }
+}
+
 fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> {
     if header.request_id.is_empty() {
         return Err(RuntimeError::Decode(
@@ -551,6 +578,24 @@ fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> 
     if header.test_case_parent_request_id.is_some() && header.test_case_capability.is_none() {
         return Err(RuntimeError::Decode(
             "canonical HTTP testCaseParentRequestId requires testCaseCapability".to_string(),
+        ));
+    }
+    if header.client_session.is_some() {
+        return Err(RuntimeError::Unsupported(
+            "bytecode request admission supports only the synchronous unary HTTP gateway lane; client-session requests are disabled"
+                .to_string(),
+        ));
+    }
+    if header.test_case_parent_request_id.is_some() {
+        return Err(RuntimeError::Unsupported(
+            "bytecode request admission supports only the synchronous unary HTTP gateway lane; child requests are disabled"
+                .to_string(),
+        ));
+    }
+    if header.test_effects_enabled {
+        return Err(RuntimeError::Unsupported(
+            "bytecode request admission supports only the synchronous unary HTTP gateway lane; host test-effect requests are disabled"
+                .to_string(),
         ));
     }
     let ingress = &header.routing.ingress;

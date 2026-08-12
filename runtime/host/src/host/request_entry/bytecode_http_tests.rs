@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -39,11 +39,15 @@ use skiff_compiler_source::source_graph::CompilerSourceFile;
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver;
 use skiff_runtime_model::bytecode_execution_observation::{
-    BytecodeExecutionCorrelation, BytecodeExecutionObserver,
+    BytecodeExecutionCorrelation, BytecodeExecutionEventSink, BytecodeExecutionObservation,
+    BytecodeExecutionObserver,
 };
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::{
-    protocol::{decode_binary_frame, decode_response_end_frame, RUNTIME_FRAME_SCHEMA_VERSION},
+    protocol::{
+        decode_binary_frame, decode_response_end_frame, decode_response_error_frame,
+        ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
+    },
     protocol::{
         BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
         BytecodeRequestIngressFrameHeader, BytecodeRequestIngressProtocol,
@@ -64,6 +68,31 @@ use crate::host::{router_session::ConnectionBootstrap, RuntimeConfig, RuntimeHos
 const PACKAGE_ID: &str = "example.com/host-bytecode-scalar";
 const VERSION: &str = "1.0.0";
 const OPERATION: &str = "run";
+
+#[derive(Default)]
+struct RecordingExecutionSink(Mutex<Vec<BytecodeExecutionObservation>>);
+
+impl BytecodeExecutionEventSink for RecordingExecutionSink {
+    fn observe(&self, observation: BytecodeExecutionObservation) {
+        self.0
+            .lock()
+            .expect("bytecode request-lane recording sink lock")
+            .push(observation);
+    }
+}
+
+impl RecordingExecutionSink {
+    fn assert_empty(&self, scenario: &str) {
+        let observations = self
+            .0
+            .lock()
+            .expect("bytecode request-lane recording sink lock");
+        assert!(
+            observations.is_empty(),
+            "{scenario} must be rejected before route observation or VM dispatch: {observations:?}"
+        );
+    }
+}
 
 struct CompiledFixture {
     artifact_root: PathBuf,
@@ -669,6 +698,29 @@ async fn assert_bytecode_response_error(
     }
 }
 
+async fn assert_bytecode_control_error(
+    receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
+    expected_request_id: &str,
+    expected_code: &str,
+    expected_message: &str,
+) {
+    let message = timeout(Duration::from_secs(10), receiver.recv())
+        .await
+        .expect("bytecode control failure response timeout")
+        .expect("bytecode control failure response channel closed");
+    let RouterWriterMessage::Binary(frame) = message else {
+        panic!("bytecode control failure must be a binary transport frame")
+    };
+    let (header, error) =
+        decode_response_error_frame(&frame).expect("typed bytecode response.error");
+    assert_eq!(header.request_id(), expected_request_id);
+    let ValidatedResponseErrorFrame::Control(error) = error else {
+        panic!("bytecode request-lane admission must return a typed control error")
+    };
+    assert_eq!(error.code, expected_code);
+    assert_eq!(error.message, expected_message);
+}
+
 fn connection_bootstrap(fixture: &CompiledFixture) -> ConnectionBootstrap {
     ConnectionBootstrap {
         resolver: FilesystemDeploymentBytecodeContentResolver::open(&fixture.artifact_root)
@@ -724,6 +776,53 @@ fn test_host_with_bytecode_only(bytecode_only: bool) -> RuntimeHost {
         http_egress_proxy: None,
     })
     .expect("bytecode HTTP runtime host")
+}
+
+async fn assert_disabled_request_lane(
+    fixture: &CompiledFixture,
+    scenario: &str,
+    request_id: &str,
+    header: BytecodeRequestStartFrameWireHeader,
+    body: Vec<u8>,
+    expected_message: &str,
+) {
+    let mut host = test_host();
+    let sink = Arc::new(RecordingExecutionSink::default());
+    host.bytecode_execution_event_sink = sink.clone();
+    let build_id = fixture.deployment.deployment_artifact_identity.as_str();
+    assert!(
+        !host.bytecode_deployments.is_loaded_build_id(build_id).await,
+        "{scenario} starts with an unloaded deployment"
+    );
+    let bootstrap = connection_bootstrap(fixture);
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+
+    host.spawn_bytecode_request(
+        "phase-1-request-lane-session",
+        header,
+        body,
+        &bootstrap,
+        sender,
+    )
+    .await;
+
+    assert_bytecode_control_error(
+        &mut receiver,
+        request_id,
+        "UnsupportedRuntimeFeature",
+        expected_message,
+    )
+    .await;
+    sink.assert_empty(scenario);
+    assert!(
+        !host.bytecode_deployments.is_loaded_build_id(build_id).await,
+        "{scenario} must fail before deployment load"
+    );
+    let next = timeout(Duration::from_secs(1), receiver.recv())
+        .await
+        .expect("disabled request lane must close its response channel");
+    assert!(next.is_none(), "{scenario} emitted a second response frame");
+    sink.assert_empty(scenario);
 }
 
 fn noop_observer() -> BytecodeExecutionObserver {
@@ -848,7 +947,12 @@ async fn admitted_route_and_adapter_remain_pinned_after_store_withdrawal() {
     );
     let cached_route = host
         .bytecode_deployments
-        .route(&fixture.deployment, &fixture.artifact_root, selector, &noop_observer())
+        .route(
+            &fixture.deployment,
+            &fixture.artifact_root,
+            selector,
+            &noop_observer(),
+        )
         .await
         .expect("cached route must not reopen the withdrawn store")
         .expect("cached deployment image should remain admitted");
@@ -999,67 +1103,69 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
 #[tokio::test(flavor = "current_thread")]
 async fn canonical_http_server_stream_with_scalar_operation_fails_closed() {
     let fixture = fixture();
-    let host = test_host();
-    let bootstrap = connection_bootstrap(fixture);
     let mut header = canonical_header(fixture, "bytecode-http-server-stream");
     header.mode = "serverStream".to_string();
-    let body = b"2".to_vec();
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_bytecode_request(
-        "bytecode-http-server-stream-session",
-        BytecodeRequestStartFrameWireHeader::Http(header.clone()),
-        body,
-        &bootstrap,
-        sender,
-    )
-    .await;
-    assert_bytecode_response_error(
-        &mut receiver,
+    assert_disabled_request_lane(
+        fixture,
+        "server-stream HTTP",
         &header.request_id,
+        BytecodeRequestStartFrameWireHeader::Http(header.clone()),
+        b"2".to_vec(),
         "bytecode HTTP ingress only supports unary request.start, got serverStream",
     )
     .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn canonical_task_bytecode_request_reaches_bytecode_admission_and_fails_closed_without_legacy(
-) {
+async fn phase_1_request_lane_containment() {
     let fixture = fixture();
-    let host = test_host();
-    let bootstrap = connection_bootstrap(fixture);
+
     let header = task_header(fixture, "bytecode-task-42");
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_bytecode_request(
-        "bytecode-task-session",
+    assert_disabled_request_lane(
+        fixture,
+        "task",
+        &header.request_id,
         BytecodeRequestStartFrameWireHeader::Task(header.clone()),
         b"{}".to_vec(),
-        &bootstrap,
-        sender,
+        "bytecode request admission supports only exact unary HTTP gateway requests; the task request lane is disabled",
     )
     .await;
-    assert_bytecode_response_error(&mut receiver, &header.request_id, "ingress_selector").await;
-}
 
-#[tokio::test(flavor = "current_thread")]
-async fn canonical_websocket_connect_bytecode_request_executes_scalar_vm_then_fails_closed_without_legacy(
-) {
-    let fixture = fixture();
-    let host = test_host();
-    let bootstrap = connection_bootstrap(fixture);
     let header = websocket_connect_header(fixture, "bytecode-websocket-connect-42");
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    host.spawn_bytecode_request(
-        "bytecode-websocket-connect-session",
+    assert_disabled_request_lane(
+        fixture,
+        "WebSocket connect",
+        &header.request_id,
         BytecodeRequestStartFrameWireHeader::WebSocketConnect(header.clone()),
         Vec::new(),
-        &bootstrap,
-        sender,
+        "bytecode request admission supports only exact unary HTTP gateway requests; the WebSocket request lane is disabled",
     )
     .await;
-    assert_bytecode_response_error(
-        &mut receiver,
+
+    let mut header = canonical_header(fixture, "bytecode-host-test-effect");
+    header.test_effects_enabled = true;
+    header.test_case_capability = Some("test-case:phase_1_host_lane".to_string());
+    assert_disabled_request_lane(
+        fixture,
+        "host test effect",
         &header.request_id,
-        "bytecode WebSocket connect response mapping is not supported",
+        BytecodeRequestStartFrameWireHeader::Http(header.clone()),
+        b"2".to_vec(),
+        "bytecode request admission supports only the synchronous unary HTTP gateway lane; host test-effect requests are disabled",
+    )
+    .await;
+
+    let mut header = canonical_header(fixture, "bytecode-child-request");
+    header.test_effects_enabled = true;
+    header.test_case_capability = Some("test-case:phase_1_child_lane".to_string());
+    header.test_case_parent_request_id = Some("request:phase_1_parent".to_string());
+    assert_disabled_request_lane(
+        fixture,
+        "child request",
+        &header.request_id,
+        BytecodeRequestStartFrameWireHeader::Http(header.clone()),
+        b"2".to_vec(),
+        "bytecode request admission supports only the synchronous unary HTTP gateway lane; child requests are disabled",
     )
     .await;
 }
