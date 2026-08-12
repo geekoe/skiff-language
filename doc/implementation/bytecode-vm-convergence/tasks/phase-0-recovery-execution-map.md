@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 9; D0-M integrated; P0-G/D0-R takeover running; REV0-S corrected
+> Status: active; revision 10; D0-M/D0-R integrated; D0-O running; P0-G correction running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -44,11 +44,12 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | Task | Line | State | Expected elapsed | `status_after` | Initial write set | Join condition |
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
-| P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
+| P0-G | Proof | first candidate `e17c3c35` rejected by receive review; correction running as `/root/p0_gate` | correction 20–30 min | 12 min after redispatch | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | exact production event/store facts; full image owner; exact process env; sole-mint structural proof; durable candidate-bound evidence; no harness-authored PASS |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
 | REV0-S | Review | `FAIL`, complete in 8 min; corrections recorded in rev8 | actual 8 min | on checkpoint | read-only DEC0-S and cited production code | found omitted event-owner/test files and confirmed D0-R sealed-fact expansion; no new authority found |
-| D0-R | Development | initial writer interrupted; takeover `/root/p0_route_takeover` started `2026-08-12T16:50:00Z` | takeover 20–30 min | `2026-08-12T17:02:00Z` | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; focused cases green |
+| D0-R | Development | takeover complete as `d12a9471`; integrated as `dd1399bc`; independent receive review PASS | actual 10 min takeover + focused validation | complete | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; 7 focused host cases green |
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
+| D0-O | Development | running as `/root/p0_observation`; started `2026-08-12T17:03:00Z` | 60–85 min | 20 min, then 45 min | exact corrected DEC0-S D0-O write set | dependency-neutral failure-isolated observer; five sole mint points; full deployment owner; request-local terminal/cleanup proof; focused tests |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -77,6 +78,7 @@ Revision 0 只预留首批 writer；实际 Agent ID 在 dispatch revision 中记
 | REV0-S | none; read-only | DEC0-S integration checkout | revision-5 MAP commit | no |
 | D0-R | `codex/bcvm-p0-route-takeover` | `/Users/geek/workspace/skiff-bcvm-p0-route-takeover` | corrected revision-8 integration commit | yes after D0-M validation completed |
 | D0-M | `codex/bcvm-p0-materialize` | `/Users/geek/workspace/skiff-bcvm-p0-materialize` | revision-5 MAP commit | no until D0-R releases the lease |
+| D0-O | `codex/bcvm-p0-observation` | `/Users/geek/workspace/skiff-bcvm-p0-observation` | `dd1399bc` after D0-M/D0-R join | yes; one focused command after implementation, no workspace fmt |
 
 同一 worktree 一个 writer。Agent 使用 `fork_turns=none`，只接收 exact task contract。Acceptance Agent 尚未创建，
 且必须与所有 candidate writer 独立。
@@ -205,3 +207,19 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   `tests::raw_http_body_remains_heap_bytes` passed 1/1. The whole test file passed 12/13; its unrelated sleep fixture failed
   because the compile graph lacks canonical `skiff.run/std`, reproduced unchanged on the pre-D0-M integration candidate;
 - sole Cargo ownership is now transferred to the D0-R takeover for its focused host test after the candidate is ready.
+
+### Revision 10 — route join, observation dispatch and Gate receive rejection
+
+- validated D0-R takeover output `d12a9471251a04a9c9d45d63434b72a999dab6f1` and integrated it as `dd1399bc`;
+- the takeover changed exactly the three approved files. Four exact cases each passed once and the complete focused host module
+  passed 7/7; an independent receive reviewer returned `PASS`, confirming cache hits do not reopen the store, route facts derive
+  only from the admitted image, and the typed legacy sentinel cannot swallow other load failures;
+- created `codex/bcvm-p0-observation` at exact input `dd1399bc` and dispatched `/root/p0_observation` with the corrected
+  DEC0-S D0-O write set, one central writer, 60–85 minute expectation and 20/45-minute checkpoints;
+- froze D0-O event serialization to full `ServiceDeploymentRef` image owners, typed route selector/role, canonical `Opcode`,
+  shared root-request VM one-shot and exact request-local terminal/cleanup ownership;
+- P0-G produced candidate `e17c3c35` and 11/11 green Node self-tests, but receive review rejected it before integration:
+  bytecode identity was optional, image owner evidence was truncated, production-source strings and harness regexes could
+  manufacture sole-mint evidence, and the recorded raw-output environment differed from the executed process;
+- returned P0-G to its Proof owner for a bounded correction with new negative self-tests. No P0-G commit has joined the
+  integration branch, and D0-O remains independent of the Gate verdict implementation.
