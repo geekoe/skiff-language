@@ -32,6 +32,7 @@ const selectorGraph = {
     'scripts',
     'vscode',
     'rust-quality',
+    'bytecode-vm-phase-0-gate',
     'scripts-dev-sync',
     'scripts-syntax',
     'checks',

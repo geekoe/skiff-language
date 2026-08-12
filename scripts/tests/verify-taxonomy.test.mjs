@@ -94,6 +94,36 @@ test('Skiff source tests have one canonical command and remain deduplicated', as
   assert.equal(new Set(combined.tasks.map(({ id }) => id)).size, combined.tasks.length);
 });
 
+test('bytecode VM phase 0 gate is independently selectable and excluded from defaults', async () => {
+  const focused = await buildVerifyPlan({
+    root,
+    selectors: ['bytecode-vm-phase-0-gate'],
+  });
+  assert.deepEqual(
+    focused.tasks.map(({ id, kind, command, args, cwd }) => ({
+      id,
+      kind,
+      command,
+      args,
+      cwd,
+    })),
+    [{
+      id: 'bytecode-vm-phase-0:gate',
+      kind: 'implementation:runtime',
+      command: 'node',
+      args: ['scripts/run-bytecode-vm-phase-0-gate.mjs'],
+      cwd: root,
+    }],
+  );
+  for (const selectors of [['tests'], ['verify']]) {
+    const plan = await buildVerifyPlan({ root, selectors });
+    assert.equal(
+      plan.tasks.some((task) => task.id === 'bytecode-vm-phase-0:gate'),
+      false,
+    );
+  }
+});
+
 test('implementation tests expand by subject without static or live tasks', async () => {
   const plan = await buildVerifyPlan({ root, selectors: ['implementation-tests'] });
   for (const id of [
