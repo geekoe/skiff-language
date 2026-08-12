@@ -57,6 +57,6 @@ impl ExternalNativeDispatch {
             .collect::<Result<Vec<_>>>()?;
         let value = NativeRegistry.dispatch(binding_key, &wire_args)?;
         let value = value.ok_or_else(|| unsupported_native_target(binding_key))?;
-        native_boundary.from_wire_return(&value, &format!("{diagnostic_target} response"), heap)
+        native_boundary.decode_wire_return(&value, &format!("{diagnostic_target} response"), heap)
     }
 }

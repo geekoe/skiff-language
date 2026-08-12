@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
+use skiff_artifact_model::current_platform_error_projection_registry_ref;
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_deployment::fixtures::service_deployment_fixture;
 use skiff_deployment::projection::actor_routing::{
@@ -237,6 +238,7 @@ pub fn capabilities_bytes(replica_id: &str) -> Vec<u8> {
             artifact_root: None,
             lazy_load: false,
             loaded_build_ids: Vec::new(),
+            platform_error_projection_registry: current_platform_error_projection_registry_ref().clone(),
         },
     };
     encode_binary_frame(&header, &[]).expect("capabilities encodes")

@@ -283,9 +283,9 @@ Postfix `object[index]` 是 strict collection access。Ordinary read 始终先�
 
 | receiver | selector | result | failure |
 | --- | --- | --- | --- |
-| `Array<T>` | `integer` | `T` | `index < 0` 或 `index >= length` 抛 `std.collection.IndexOutOfBoundsError { index, length }` |
-| `Map<K,V>` | 精确 `K` | `V` | missing 抛 `std.collection.MissingKeyError { container: "Map" }` |
-| `JsonObject` | `string` | `Json` | missing 抛 `std.collection.MissingKeyError { container: "JsonObject" }` |
+| `Array<T>` | `integer` | `T` | `index < 0` 或 `index >= length` 抛 `std.collection.ArrayIndexOutOfBoundsError { index, length }` |
+| `Map<K,V>` | 精确 `K` | `V` | missing 抛 `std.collection.MapKeyNotFoundError {}` |
+| `JsonObject` | `string` | `Json` | missing 抛 `std.collection.JsonObjectPropertyNotFoundError {}` |
 
 `string`、record/object 和未收窄 `Json` 不进入该 runtime path。`Map<K,V>.get(key: K) -> V?`
 仍是独立 receiver API；missing 返回 `null`，不执行 strict bracket throw。
@@ -318,9 +318,10 @@ loan 且 callee 不进入。Callee 进入后的写入是 write-through；ordinar
 
 每个可失败 bracket/path segment 都必须保留自己的 source attribution。生成的 collection error
 使用失败 segment 的 source site 创建 exception envelope；`Array.set` 越界使用该 receiver call
-site；missing key 不进入 payload、message、trace 或
-telemetry。该分类只用于 source-visible collection access，不把 artifact/VM 内部 index 失败映射成可捕获
-collection error。
+site；Map key与JsonObject property不进入payload、message、trace或telemetry，也不新增`operation`、
+`container`或同义字段。Array writable segment使用Array error，Map writable segment使用Map error，
+future JsonObject typed segment使用JsonObject error。该分类只用于source-visible collection access；
+`MapEntryAt`等artifact/VM内部index失败保持internal terminal，不映射成可捕获collection error。
 
 每个request owner（包括service boundary创建的provider owner）都创建fresh request-local managed heap。
 Request参数、DB/HTTP/service/external边界物化值、literal、COW node、需要heap表达的nominal wrapper与
@@ -378,9 +379,17 @@ caller-writable reference；identity-bearing resource仍按其effect/conflict-ke
 
 Block 的退出结果属于普通完成、正常控制退出、错误退出、timeout退出或runtime内部停止。`return` / `break` / `continue` 是正常控制退出；`throw` / `rethrow` 是错误退出；block-level `timeout(...)` 产生 timeout退出。内部停止不是用户可触发或捕获的普通异常。
 
-同一个 `concurrent` block 中，用户可见错误选择必须确定：外层 `timeout(...)` 或 request deadline 形成的有效 timeout 优先于 lane error；多个 sibling lane error 同时成为候选时，源码位置靠前的直属 lane 获胜；嵌套 timeout 同时到达时，只最外层 timeout 产生可观察事件。当前 `timeout(...)` 不能出现在 `concurrent` surface 内。
+同一个 `concurrent` block 中，结果选择必须确定：词法`timeout(...)`deadline或request/root/inherited deadline
+先到都优先于lane error；前者由被终止scope之外仍active的continuation观察
+`std.error.TimeoutError`，后者只形成request terminal，不向dying frame注入异常。多个sibling lane error同时
+成为候选时，源码位置靠前的直属lane获胜；嵌套词法timeout同时到达时，只当前胜出的scope owner产生可观察
+事件。当前`timeout(...)`不能出现在`concurrent` surface内。
 
-外部 API operation timeout 是该 API 所在 lane 的 lane error，不享受 block-level timeout 的最高优先级。用户手工抛出的 `TimeoutError` 也是普通 lane error。
+HTTP或Actor primitive timeout只有在其deadline先于current execution deadline、且caller continuation仍active
+时才是该API所在lane的ordinary error，分别使用`std.http.RequestTimeoutError`、
+`std.actor.MethodInvocationTimeoutError`或`std.actor.ActivationTimeoutError`。Current lexical scope deadline
+先到必须使用`std.error.TimeoutError`；root/inherited deadline先到保持terminal。用户手工抛出的短名
+`TimeoutError`绑定`std.error.TimeoutError`，也是普通lane error。
 
 获胜事件确定后，外层 `catch` 只能捕获该事件对应的 exception envelope。其他 lane 后续错误只能进入平台日志 / trace。
 
@@ -410,12 +419,24 @@ Ingress decode在进入external handler前失败时，业务代码尚未运行�
 
 ## 8. Timeout and internal stop
 
-每次 request 在一个有效 deadline 下执行。`timeout(...)` block 只能收紧当前代码块和其中远程 / host 调用的有效 deadline。
+每次request在一个effective deadline下执行，但deadline owner决定结果类型：
 
-一次远程调用或host operation的可见deadline，是调用点current execution deadline与该operation已有的
-primitive operation timeout中最先到达者；current execution deadline已经包含caller request deadline
-和外层`timeout(...)`的收紧。第一版service call不另外定义consumer dependency timeout或callee
-operation timeout；需要更短调用预算时由caller显式使用`timeout(...)`。Service业务配置不拥有
+- 词法`timeout(timeoutMs) { ... }`只收紧当前代码块及其中remote/host调用。该scope deadline先到时生成
+  `std.error.TimeoutError { timeoutMs }`；短名`TimeoutError`绑定这个类型。只有scope之外仍active的
+  continuation可以catch，已经被该scope终止的frame不能接收异常。
+- Request root或从caller继承的deadline先到时，结果是request terminal；runtime不得为了让业务catch而向
+  dying frame注入`TimeoutError`或任一primitive timeout。
+- HTTP primitive operation timeout先到时，在仍active caller call site生成
+  `std.http.RequestTimeoutError { timeoutMs }`。Actor method invocation与activation的primitive timeout分别
+  生成`std.actor.MethodInvocationTimeoutError { timeoutMs }`和
+  `std.actor.ActivationTimeoutError { timeoutMs }`。三者的effect/outcome都是unknown，catch不会触发自动retry。
+- WebSocket与service call第一版没有独立primitive timeout type。WebSocket wait或service call只能由local
+  lexical owner产生`std.error.TimeoutError`，或由request/root/inherited deadline形成terminal。
+
+一次remote/host operation的winner是current execution deadline与其确实拥有的primitive operation timeout中
+最先到达者；current execution deadline已经包含request/root/inherited deadline和外层词法scope的收紧。
+Current scope winner不能伪装成primitive timeout。第一版service call不另外定义consumer dependency timeout或
+callee operation timeout；需要更短调用预算时由caller显式使用`timeout(...)`。Service业务配置不拥有
 deployment timeout。
 
 Router `requestTimeoutMs`是external business request的平台上限，不是所有Router工作的通用timeout。
@@ -423,15 +444,24 @@ Deployment image lazy-load/preload和WebSocket connection drain使用各自opera
 它们不能继承或覆盖`requestTimeoutMs`或用户代码`timeout(...)`。反过来，load/drain budget也不能改变普通
 dispatch deadline。Skiff没有assembly prepare/commit/abort或generation release事务。
 
-Runtime 使用单调时钟计算内部 absolute deadline。该 absolute deadline 不暴露给用户代码；用户可见的是 `TimeoutError` 的 budget / source 语义。
+Runtime使用单调时钟计算内部absolute deadline。Absolute instant不暴露给用户；public payload只保存对应owner
+声明的`timeoutMs`。
 
-Deadline 到达且 block / request 尚未结束时，对应语义结果立即固定为 `TimeoutError` 或平台 timeout error，未完成 work item 收到runtime内部停止信号。外层代码不等待尽力清理完成，清理或底层operation晚到的值、错误和 Skiff 可见写入被丢弃。“立即”表示语义结果立即确定，不表示 OS socket、数据库请求或纯 CPU 指令在同一个机器指令内物理停止。
+Deadline到达且scope/request尚未结束时，runtime立即按上述owner固定结果，并向未完成work item发送内部停止
+信号。外层代码不等待尽力清理完成，清理或底层operation晚到的值、错误和Skiff可见写入被丢弃。“立即”表示
+语义结果立即确定，不表示OS socket、数据库请求或纯CPU指令在同一个机器指令内物理停止。
+
+Hard instruction limit与deadline分离。Limit耗尽固定
+`std.error.InstructionLimitExceededError { instructionCount, limit }`，但耗尽budget的同一frame不可catch或
+继续执行。若该failure到达service request root，runtime可以固定typed platform carrier；只有仍active的remote
+service caller才能在自己的call site按closed admission恢复并catch。External root、无active caller或本地dying
+frame只观察terminal。
 
 Runtime / compiler 必须让纯 Skiff CPU 代码可被有界停止。停止检查至少出现在函数入口、loop 条件求值前、loop backedge、每个 lane 开始前和完成后、`concurrent value` tail lane 开始前，以及可能长时间运行的生成代码片段中。
 
 内部停止是request/lane生命周期控制，不生成用户可捕获的错误，也不存在`CancelError` public type、
-用户源码cancel API、按request id取消API或runtime stop inspection API。Deadline与内部停止不同：
-有效deadline到达产生可捕获的`TimeoutError`；内部停止本身没有业务payload。
+用户源码cancel API、按request id取消API或runtime stop inspection API。Cancellation，以及task、lease、
+idle、handshake、drain、Router ingress、artifact load/preload等control timeout都没有public registry payload。
 
 Internal transport的`request.cancel`、`connection.request.cancel`等既有命名可以暂时保留为
 best-effort stop hint。发送方不得依赖peer接收hint才释放本地pending，接收方必须幂等处理；
@@ -539,9 +569,10 @@ handler只能unary return。Platform parse/invalid/method/params/internal错误�
 
 Service端主动推送必须显式调用`std.websocket.send*`；需要peer结果时显式调用
 `requestJsonToConnection`。后者是潜在suspension point，并继承当前execution deadline与内部停止状态。
-本地deadline或内部停止会删除pending并丢弃晚到response；第一版不向peer发送JSON-RPC取消notification。
-deadline仍产生`TimeoutError`。平台transport correlation不取代业务幂等、durable run或tool attempt
-identity，也不提供自动retry。
+WebSocket没有独立primitive timeout；local lexical`timeout(...)`deadline先到时产生
+`std.error.TimeoutError { timeoutMs }`，request/root/inherited deadline或内部停止只形成terminal。所有winner
+都会删除pending并丢弃晚到response；第一版不向peer发送JSON-RPC取消notification。平台transport correlation
+不取代业务幂等、durable run或tool attempt identity，也不提供自动retry。
 
 WebSocket连接按已冻结的connection protocol identity、deployment build与socket generation路由；
 request/response不能跨connection、build或socket generation恢复。第一版不接受peer request cancellation；

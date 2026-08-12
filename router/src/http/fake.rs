@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use serde_json::{json, Value};
+use serde_json::Value;
 use skiff_runtime_request_contract::OpaqueServiceError;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
@@ -221,16 +221,8 @@ fn protocol_error(
 }
 
 fn fixed_service_error(trace_id: &str, error_id: &str) -> OpaqueServiceError {
-    let envelope = json!({
-        "kind": "internalError",
-        "payload": {
-            "message": "boom",
-            "traceId": trace_id,
-            "errorId": error_id
-        }
-    });
-    let bytes = serde_json::to_vec(&envelope).expect("fixed service envelope must serialize");
-    OpaqueServiceError::decode(bytes).expect("fixed service envelope must decode")
+    OpaqueServiceError::internal_error("boom", trace_id, error_id)
+        .expect("fixed service envelope must encode")
 }
 
 fn http_headers(headers: &[(String, String)]) -> Vec<RuntimeHttpNameValueFrameHeader> {

@@ -26,6 +26,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use skiff_canonical_json::canonical_json_bytes;
+use skiff_artifact_model::current_platform_error_projection_registry_ref;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
 };
@@ -277,6 +278,7 @@ fn capabilities_frame(live: &LiveProfile, replica_id: &str) -> Vec<u8> {
         envelope_type: "runtime.capabilities".to_string(),
         runtime_id: replica_id.to_string(),
         capabilities: RuntimeCapabilitiesFrameHeaderMetadata {
+            platform_error_projection_registry: current_platform_error_projection_registry_ref().clone(),
             artifact_root: Some(live.artifact_root.to_string_lossy().into_owned()),
             lazy_load: true,
             loaded_build_ids: Vec::new(),

@@ -113,6 +113,7 @@ pub fn fence(runtime_id: &str, epoch: u64, lease_expires_at: u64) -> ActorOwnerF
         epoch,
         owner_runtime_id: runtime_id.to_string(),
         owner_lease_id: "owner-lease-test".to_string(),
+        build_id: ROUTE_BUILD_ID.to_string(),
         lease_expires_at,
         actor_abi_identity: abi(),
         actor_implementation_identity: actor_implementation_identity(),

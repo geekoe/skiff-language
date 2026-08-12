@@ -5,7 +5,7 @@ use std::{
 
 use skiff_artifact_model::{
     ContractOperationId, GatewayAdapterKind, GatewayAdapterSource, GatewayEntryIdentity,
-    GatewayEntryKey, ServiceDeploymentRef,
+    GatewayEntryKey, IngressSelector, ServiceDeploymentRef,
 };
 use skiff_runtime_bytecode_verifier::{verify, VerificationLimits, VerifiedLinkedBytecodeImage};
 use skiff_runtime_deployment_image::{
@@ -42,6 +42,7 @@ pub(crate) enum BytecodeDeploymentLoadError {
 pub(crate) enum BytecodeRouteSelector {
     Operation,
     Gateway {
+        ingress: IngressSelector,
         gateway_entry_identity: GatewayEntryIdentity,
         role: LinkedGatewayCallableRole,
     },
@@ -193,21 +194,47 @@ impl BytecodeRoute {
                     })?,
             ),
             BytecodeRouteSelector::Gateway {
+                ingress,
                 gateway_entry_identity,
                 role,
             } => {
-                let gateway_entry_key = deployment_record
-                    .gateway_entries
+                let mut matching_bindings = deployment_record
+                    .ingress
                     .iter()
-                    .find(|(_, entry)| entry.gateway_entry_identity == gateway_entry_identity)
-                    .map(|(key, _)| key.clone())
+                    .filter(|binding| binding.selector == ingress);
+                let binding = matching_bindings.next().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "bytecode deployment {} has no ingress binding for {:?}",
+                        deployment.deployment_artifact_identity,
+                        ingress
+                    )
+                })?;
+                if matching_bindings.next().is_some() {
+                    anyhow::bail!(
+                        "bytecode deployment {} has duplicate ingress bindings for {:?}",
+                        deployment.deployment_artifact_identity,
+                        ingress
+                    );
+                }
+                let gateway_entry_key = binding.gateway_entry_key.clone();
+                let entry = deployment_record
+                    .gateway_entries
+                    .get(&gateway_entry_key)
                     .ok_or_else(|| {
                         anyhow::anyhow!(
-                            "bytecode deployment {} has no gateway entry {}",
+                            "bytecode deployment {} ingress references missing gateway entry {}",
                             deployment.deployment_artifact_identity,
-                            gateway_entry_identity
+                            gateway_entry_key
                         )
                     })?;
+                if entry.gateway_entry_identity != gateway_entry_identity {
+                    anyhow::bail!(
+                        "bytecode deployment {} ingress entry {} does not match routed gateway identity {}",
+                        deployment.deployment_artifact_identity,
+                        gateway_entry_key,
+                        gateway_entry_identity
+                    );
+                }
                 BytecodeRouteTarget::Gateway {
                     gateway_entry_key,
                     gateway_entry_identity,

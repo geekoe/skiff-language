@@ -14,8 +14,8 @@ use skiff_artifact_model::{
 };
 
 use super::{
-    constants, synthetic_callback_callable, RootProgram, CALLBACK_FUNCTION,
-    HELPER_CALLABLE, HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
+    constants, synthetic_callback_callable, RootProgram, CALLBACK_FUNCTION, HELPER_CALLABLE,
+    HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
 };
 
 const MODULE: &str = "fixture";
@@ -59,6 +59,8 @@ pub(super) fn bytecode_artifact(program: RootProgram) -> BytecodeArtifact {
         value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
         host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
         intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         bytecode_identity: "unassigned".to_string(),
         image: BytecodeImage {
             functions,

@@ -49,7 +49,7 @@ fn official_std_authoring_and_record_writer_are_fixed_and_deterministic() {
     assert_eq!(published.artifact.package_version, "1.0.0");
     assert_framed_sha256_identity(
         published.artifact.package_build_id.as_str(),
-        "skiff-package-build-v13:sha256",
+        "skiff-package-build-v14:sha256",
     );
     assert_framed_sha256_identity(&prelude_identity(), "skiff-prelude-v1:sha256");
     assert!(published
@@ -494,6 +494,11 @@ impl MinimalPlatformFixture {
         fs::write(
             root.join("std/package.yml"),
             "id: skiff.run/std\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        fs::copy(
+            repository_platform_sources().error_projection_catalog_path(),
+            root.join("std/error-projections.yml"),
         )
         .unwrap();
         fs::write(root.join("std/api.yml"), "http:\n  request: http.request\n").unwrap();

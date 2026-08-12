@@ -253,7 +253,10 @@ mod tests {
         let scheduler = ActorLeaseExpiryScheduler::new(
             Arc::clone(&registry),
             control,
-            LeaseSchedulerOptions::default(),
+            LeaseSchedulerOptions {
+                idle_ttl_ms: u64::MAX,
+                ..LeaseSchedulerOptions::default()
+            },
         );
         scheduler.mark_live(&key, 0, "conn-b");
         scheduler.sweep(30_000);

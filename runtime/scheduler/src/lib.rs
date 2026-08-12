@@ -27,7 +27,7 @@ mod stream_driver;
 mod trampoline;
 
 pub use bytecode::{
-    BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeHandoff, BytecodeScheduler,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeHandoff, BytecodeScheduler,
     BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
     BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
 };

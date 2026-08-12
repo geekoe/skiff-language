@@ -1,10 +1,14 @@
 pub mod actor_invocation;
 pub mod actor_ref;
 pub mod addr;
+mod diagnostic;
 pub mod envelope;
 pub mod error;
 pub mod outbound;
 pub mod outbound_control;
+mod platform_error_projection;
+mod projection;
+mod projection_admission;
 pub mod response;
 pub mod response_event;
 pub mod service_error;
@@ -18,6 +22,10 @@ pub use actor_ref::ActorRef;
 pub use addr::{
     ConstAddr, ExecutableAddr, ExecutableIndex, FileAddr, LoadedFileIndex, PackageSlot, TypeAddr,
     TypeIndex, UnitAddr,
+};
+pub use diagnostic::{
+    DiagnosticAttributeRecordOutcome, DiagnosticAttributes, DiagnosticCode, DiagnosticFieldKey,
+    DiagnosticFieldValue, RuntimeDiagnostic, StaticDiagnosticToken, MAX_DIAGNOSTIC_ATTRIBUTES,
 };
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
@@ -39,6 +47,25 @@ pub use outbound_control::{
     RuntimeClientSessionControl, WebSocketConnectionPolicyControl,
     WebSocketConnectionPolicyOverflowControl,
 };
+pub use platform_error_projection::{
+    encode_platform_error_projection_payload, ConfigDecodeErrorPayload,
+    EncodedPlatformErrorProjectionPayload, PlatformErrorProjectionCodecError,
+    PlatformErrorProjectionPayload, StdActorActivationTimeoutErrorPayload,
+    StdActorMethodInvocationTimeoutErrorPayload, StdBytesDecodeErrorPayload,
+    StdCollectionArrayIndexOutOfBoundsErrorPayload,
+    StdCollectionJsonObjectPropertyNotFoundErrorPayload, StdCollectionMapKeyNotFoundErrorPayload,
+    StdDbConflictErrorPayload, StdDbConstraintErrorPayload, StdDbDecodeErrorPayload,
+    StdErrorInstructionLimitExceededErrorPayload, StdErrorTimeoutErrorPayload,
+    StdFileFileErrorPayload, StdHttpHttpErrorPayload, StdHttpRequestTimeoutErrorPayload,
+    StdJsonDecodeErrorPayload, StdNumberDecodeErrorPayload, StdServiceProtocolErrorPayload,
+    StdServiceProviderUnavailableErrorPayload, StdTimeDecodeErrorPayload,
+    StdWebsocketWebSocketRequestErrorPayload, ValidatedKnownPlatformErrorProjection,
+};
+pub use projection::ProjectableDiagnostic;
+pub use projection_admission::{
+    admit_projection, AdmittedProjection, ProjectionCandidate, ProjectionDenied, ProjectionEffect,
+    ProjectionOperation, ProjectionPhase, ProjectionSemanticClass,
+};
 pub use response::{
     FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource, ResponseError,
 };
@@ -47,6 +74,8 @@ pub use service_error::{
     CatchIdentity, InstantiatedTypeArgumentIdentity, InternalErrorPayload, LiteralIdentity,
     LocalExecutionTypeIdentity, NamedUnionBranchIdentity, NamedUnionOwnerIdentity,
     NominalTypeIdentity, OpaqueServiceError, PackageSchemaTypeIdentity,
-    PlatformBuiltinErrorIdentity, ServiceErrorEnvelope, WebSocketRequestError,
-    WebSocketRequestErrorKind,
+    PlatformBuiltinErrorIdentity, ServiceErrorDecodeError, ServiceErrorEncodeError,
+    ServiceErrorEnvelope, ServiceErrorOuterValidationError, ServiceErrorTextField,
+    ServiceErrorTextViolation, WebSocketRequestError, WebSocketRequestErrorKind,
+    MAX_PLATFORM_ERROR_ENCODED_PAYLOAD_BYTES, MAX_PLATFORM_ERROR_PROJECTION_KEY_BYTES,
 };

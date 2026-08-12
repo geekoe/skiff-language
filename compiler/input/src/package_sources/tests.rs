@@ -224,6 +224,11 @@ impl PlatformFixture {
         )
         .unwrap();
         fs::write(root.join("std/api.yml"), "http:\n  request: http.request\n").unwrap();
+        fs::write(
+            root.join("std/error-projections.yml"),
+            "schemaVersion: skiff-platform-error-projection-catalog-v1\nentries:\n  - projectionKey: test.Error\n    producerFamily: test\n    semanticAdapterOwner: runtime.test\n    publicMessagePolicy: semanticAdapterSanitized\n    envelopeKind: platformError\n    fallbackPolicy: fixedInternalErrorBeforeEnvelope\n",
+        )
+        .unwrap();
         fs::write(root.join("prelude/error.skiff"), "").unwrap();
         Self { root }
     }

@@ -153,17 +153,27 @@ ISA（Instruction Set Architecture）是持久化 bytecode 的语义契约，包
 ISA 不包括 runtime 内存地址、decoded Rust enum 大小、dispatch optimization、superinstruction 或 JIT machine
 code。
 
-当前持久化 envelope 是 bytecode schema `skiff-bytecode-v6`、ISA
-`skiff-bytecode-isa-v4` 与 bytecode identity generation v4（schema marker
-`skiff-bytecode-artifact-v4`，identity prefix `skiff-bytecode-image-v4:sha256`）。v6 header 除
-magic/schema/ISA/declared identity 外，必须携带并精确钉住以下五个 semantic authority：
+M3 hard-cut后的持久化 envelope 是 bytecode schema `skiff-bytecode-v7`、ISA
+`skiff-bytecode-isa-v4` 与 bytecode identity generation v5（schema marker
+`skiff-bytecode-artifact-v5`，identity prefix `skiff-bytecode-image-v5:sha256`）。v7 header 除
+magic/schema/ISA/declared identity 外，必须携带并精确钉住以下六个 semantic authority：
 
 - opcode contract：`opcodeTableFingerprint`，覆盖 numeric/semantic opcode identity、operand role、stack
   effect、允许的 relocation kind，以及default/frame-entry/per-opcode statement charging rule；
 - native lifecycle registry：`nativeValueLifecycleRegistry` 的 exact registry id、version 与 fingerprint；
 - value lifecycle policy：`valueLifecyclePolicy` 的 exact version 与 fingerprint；
 - host effect registry：`hostEffectRegistry` 的 exact registry id、version 与 fingerprint；
-- intrinsic registry：`intrinsicRegistry` 的 exact registry id、version 与 fingerprint。
+- intrinsic registry：`intrinsicRegistry` 的 exact registry id、version 与 fingerprint；
+- platform error projection registry：`platformErrorProjectionRegistry` 的 exact
+  `PlatformErrorProjectionRegistryRef`：
+
+  ```text
+  {
+    registryId: "skiff-platform-error-projections",
+    registryVersion: 1,
+    fingerprint: "sha256:<64 lowercase hex>",
+  }
+  ```
 
 这些字段是必填 pin，不是可选的 provenance note。Structural admission 必须把每个 pin 与当前 reader 的
 compile-time authority 做 exact equality；缺失、未知或任何 identity/fingerprint mismatch 都在 link 前拒绝，
@@ -171,17 +181,27 @@ compile-time authority 做 exact equality；缺失、未知或任何 identity/fi
 linked candidate 与 verifier 必须成组保留这些 pin，后续层不得从 ambient registry 重建、替换或只比较
 display id/version。
 
-v6 在 v5 的 required authority header 上，把 source-event attribution 改成 typed、placement-bearing rows，并把
-default attribution charge、rowless function-entry charge 和 per-opcode reclassification rule 纳入同一个
-`opcodeTableFingerprint`。它没有改变 opcode number、operand layout 或 operand-stack semantics，因此 ISA 保持
-v4；persisted rows、fingerprint preimage 与完整 image 都改变，所以 bytecode identity 升级到 generation v4。
-同一 wordcode 若带不同 authority pin、source-event placement 或 statement charge contract，不是同一个
-executable artifact，并必须产生不同 bytecode identity 与上层 build identity。
+`platformErrorProjectionRegistry`只能来自compiler-owned checked-in generator输出的singleton或其validated typed
+handoff；public emitter不得接受调用方任选的descriptor。Structural admission必须将它与Runtime binary的
+generated singleton exact-match。PackageArtifact root还要保存同一exact descriptor；PackageArtifact、bytecode与
+Runtime三方任一不一致都在执行前拒绝。
 
-承载 bytecode ref 的 PackageArtifact 当前 schema 是 `skiff-package-artifact-v14`，Package build identity prefix
-是 `skiff-package-build-v13:sha256`。必填的 package-owned statement manifest identity 进入 build preimage，但
-不进入 Package Local ABI preimage；因此 attribution、placement 或 bytecode 内容变化必须产生新 Package build，
-同时不能无意改变 Package Local ABI identity。
+Registry内每个generated projection key逐字等于canonical public symbol、没有版本后缀，且registry中出现的
+每个key恰有一个active entry、不得重复。Bytecode catch/failure plan只能引用该generated key与payload
+builder；schema/codec/policy变化保持key并更换entry/whole-registry fingerprint，通过本节既有
+artifact/runtime hard cut传播，不能让VM按key或payload shape猜另一fingerprint的codec。
+
+v7 在 v6 的五个required authority基础上增加该第六pin。它没有改变opcode number、operand layout或
+operand-stack semantics，因此ISA保持v4；required header、identity preimage与完整image改变，所以bytecode
+identity升级到generation v5。同一wordcode若带不同authority pin、source-event placement或statement charge
+contract，不是同一个executable artifact，并必须产生不同bytecode identity与上层build identity。
+
+承载bytecode ref的PackageArtifact hard cut到`skiff-package-artifact-v15`，其root
+`platformErrorProjectionRegistry`为必填字段。Package build identity projection同时加入该exact descriptor，
+preimage marker为`skiff-package-artifact-build-identity-v13`，identity prefix为
+`skiff-package-build-v14:sha256`。必填的package-owned statement manifest identity与registry descriptor都进入
+build preimage，但不进入Package Local ABI preimage；Package Local ABI与ServiceProtocol identity generation
+保持不变。
 
 ### 3.2 Wordcode
 
@@ -357,10 +377,13 @@ Host effect
   invoke_host
 ```
 
-`array_get` 是 source-visible `Array[index]` 的 strict read；`map_get` 是 source-visible
-`Map[key]` / `JsonObject[key]` 的 strict read。它们分别在越界或 missing 时构造
-`std.collection.IndexOutOfBoundsError` / `std.collection.MissingKeyError`。`map_get` 不得用来
-实现 optional `Map.get(key) -> V?`；后者必须经过独立 intrinsic/receiver-call semantic path。
+`array_get`是source-visible`Array[index]`的strict read；越界时构造
+`std.collection.ArrayIndexOutOfBoundsError { index, length }`。`map_get`只表示source-visible`Map[key]`
+strict read；missing时构造`std.collection.MapKeyNotFoundError {}`。它不得实现`JsonObject[key]`，也不得
+实现optional`Map.get(key) -> V?`；后者必须经过独立intrinsic/receiver-call semantic path。
+`JsonObject[key]`将来必须由receiver-kind明确的`JsonObjectGet`/typed-segment producer构造
+`std.collection.JsonObjectPropertyNotFoundError {}`。当前initial instruction family尚无该producer；补齐它是
+M4 collection migration prerequisite，不属于M3 registry hard cut，本次不新增opcode或升级ISA。
 `map_put_owned` 是 internal upsert mnemonic，可承接 source `Map.set` 或 terminal indexed assignment；
 它不向 source surface 公开 `Map.put`。
 
@@ -371,7 +394,7 @@ error path：
 - `Trap(Assertion)` 的 false 结果、divide-by-zero 和产生非有限值的 arithmetic 是不可捕获
   terminal；当前不存在公开 `ArithmeticError`，也不得借 collection error 替代；
 - `MapEntryAt` 是遍历等 runtime-internal canonical snapshot access，其 ordinal 越界是
-  VM/generated terminal，不是 source bracket missing，不生成 `MissingKeyError`。
+  VM/generated terminal，不是 source bracket missing，不生成任何public collection error。
 
 `copy_slot`、`dup`、container store 和普通 by-value argument preparation 按 linked `ValueTransferPlan`执行；
 ordinary aggregate 才做 semantic share transition。它们不能只复制16 bytes后留下两个“唯一”edit token，
@@ -410,7 +433,8 @@ statement profiling、safepoint 或 source attribution；内部含无界循环�
 Bounded decoder 和 structural validator 在 linker 读取任何 artifact-controlled index 前执行。至少验证：
 
 - magic/schema/ISA version 已知，且 opcode contract、native lifecycle registry、value lifecycle policy、host
-  effect registry 与 intrinsic registry 五个 required header pin 都与 reader 的 compile-time authority 精确一致；
+  effect registry、intrinsic registry与platform error projection registry六个required header pin都与reader的
+  compile-time authority精确一致；
 - artifact、function、word、table、string、constant graph、nesting depth 和单对象大小在配置上限内，所有
   count/offset arithmetic 无溢出；
 - instruction word 边界完整，opcode operand 数正确；
@@ -703,9 +727,11 @@ ResolvedIndexSegment
 
 VM 只消费 semantic verifier 证明过的 concrete plan，不根据 raw runtime tag 尝试 string/record/
 unsnarrowed `Json` fallback。Strict read 先求值 receiver，再求值 selector，各一次；返回值按
-`resultTransferPlan` 形成 logical snapshot，不暴露 writable handle。Array 越界与 Map/JsonObject missing
-在当前 segment source site 构造公开 collection exception；`MissingKeyError` 的 plan 不得保留 key
-到 payload、message、trace 或 telemetry。
+`resultTransferPlan`形成logical snapshot，不暴露writable handle。ArrayGet及array writable segment构造
+`std.collection.ArrayIndexOutOfBoundsError`，MapGet及map writable segment构造
+`std.collection.MapKeyNotFoundError`，future JsonObjectGet及typed JsonObject segment构造
+`std.collection.JsonObjectPropertyNotFoundError`，都使用当前segment source site。Map key与JsonObject
+property不得进入payload、message、trace或telemetry；错误类型也不携带`operation`、`container`或同义字段。
 
 Indexed assignment 先只求值并缓存 writable root 与从外到内的 selector，同时解析全部
 intermediate path；随后只求值一次 RHS，再按 linked COW/transfer plan 执行一次 atomic
@@ -1099,8 +1125,10 @@ UnwindState
 - normal transaction exit先commit；commit成功后才选择return。commit失败以commit error选择failure，
   再按policy尽力abort；abort failure只进`cleanupFailure`/telemetry，不覆盖commit error；
 - ordinary throw在发布前等待语义要求的abort，并保留原throw；abort失败不把同一request变成第二个terminal；
-- timeout立即选择当前timeout scope的`TimeoutError`，仍可由外层Skiff `catch`处理；request deadline
-  逃出root时才投影为response terminal。internal stop直接选择不可捕获的platform terminal。两者的
+- 词法timeout立即选择当前scope的`std.error.TimeoutError { timeoutMs }`，仍可由scope之外的Skiff
+  `catch`处理；request/root/inherited deadline只选择response/request terminal，不向dying frame注入error。
+  HTTP或Actor primitive timeout只有在对应caller continuation仍active且其deadline先到时，才选择各自typed
+  error；internal stop直接选择不可捕获的platform terminal。这些winner的
   best-effort cleanup可以在bounded owner中继续，但不延迟已固定语义结果，也不能把late result写回
   已结束的scope/request heap；
 - cleanup自身调用child/host时继续使用同一 trampoline/actual-Pending协议。
@@ -1192,8 +1220,11 @@ decode到当前owner的fresh value；不能把image-local const index当durable 
 
 Artifact semantic charge metadata不能单独承担安全性。VM dispatch对每条semantic instruction从受信raw-op
 quantum扣1；quantum为0时无条件poll deadline/internal stop，并从execution policy拥有的finite instruction
-limit扣除已执行数量。总limit耗尽立即产生结构化resource terminal；继续执行时只能由VM按固定、非零、受信
-上限补充下一个quantum。Artifact不能设置、关闭、跳过或重置quantum/总limit，也不能用metadata扩大预算。
+limit扣除已执行数量。总limit耗尽立即固定
+`std.error.InstructionLimitExceededError { instructionCount, limit }`并终止当前frame；该frame没有剩余budget
+执行catch。Failure到达service request root后可以固定为typed carrier，供仍active remote caller按admission
+捕获；本地dying frame不可恢复执行。继续执行时只能由VM按固定、非零、受信上限补充下一个quantum。
+Artifact不能设置、关闭、跳过或重置quantum/总limit，也不能用metadata扩大预算。
 
 Post-link verifier另证明每个CFG cycle经过`budget_checkpoint`，以保持语言级loop/backedge semantic charging与
 source attribution；checkpoint本身有固定非零raw-op成本，但不是唯一interrupt poll。两层同时存在：raw hard

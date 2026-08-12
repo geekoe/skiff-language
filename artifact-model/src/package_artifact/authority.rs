@@ -90,7 +90,8 @@ pub fn derive_synthetic_callback_callable_id(
 }
 
 /// Validates PackageArtifact-local authority only. Exact cover against a
-/// hydrated BytecodeArtifact remains a paired attach/loader responsibility.
+/// hydrated BytecodeArtifact and registry consistency across a deployment
+/// closure remain paired attach/deployment/loader responsibilities.
 pub fn validate_package_build_authority(
     artifact: &PackageArtifact,
 ) -> Result<(), PackageBuildAuthorityValidationError> {
@@ -100,6 +101,14 @@ pub fn validate_package_build_authority(
             artifact.schema_version
         ));
     }
+    crate::validate_platform_error_projection_registry_ref_shape(
+        &artifact.platform_error_projection_registry,
+    )
+    .map_err(|error| {
+        PackageBuildAuthorityValidationError::new(format!(
+            "invalid platformErrorProjectionRegistry: {error}"
+        ))
+    })?;
     validate_lexical("packageId", &artifact.package_id)?;
     validate_bytecode_statement_manifest_identity_lexical(
         &artifact.bytecode_statement_manifest_identity,

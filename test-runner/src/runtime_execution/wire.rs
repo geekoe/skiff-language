@@ -4,7 +4,7 @@ use skiff_runtime_model::service_error::{OpaqueServiceError, ServiceErrorEnvelop
 
 use crate::canonical_fixture::CanonicalFixtureError;
 
-const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v4";
+const RUNTIME_FRAME_SCHEMA_VERSION: &str = "skiff-runtime-frame-v5";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TestDispatchOutcome {
@@ -206,10 +206,9 @@ fn decode_fixed_dispatch_failure(
             ..
         } => format!("fixed service error {package_id}::{stable_schema_key}"),
         ServiceErrorEnvelope::InternalError { payload } => payload.message.clone(),
-        ServiceErrorEnvelope::PlatformError {
-            builtin_error_identity,
-            ..
-        } => format!("fixed service error {}", builtin_error_identity.symbol()),
+        ServiceErrorEnvelope::PlatformError { projection_key, .. } => {
+            format!("fixed service error {projection_key}")
+        }
     };
     Ok(TestDispatchOutcome::Failed(message))
 }

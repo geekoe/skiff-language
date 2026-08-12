@@ -14,11 +14,11 @@ fn built_in_identity_and_entries_are_deterministic() {
     let registry = native_value_lifecycle_registry();
     assert_eq!(
         NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION,
-        "skiff-native-value-lifecycle-v2"
+        "skiff-native-value-lifecycle-v4"
     );
     assert_eq!(
         NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT,
-        "f3822f537091ee8f3faf444043016d881c1274b1ca48f211a62b5f7dfe345b81"
+        "bd03a9f3550ec1ee1356e429abbf1bb58a314add0b2692a5b3cae822c700e4b3"
     );
     assert_eq!(
         registry.identity().registry_id,
@@ -32,7 +32,7 @@ fn built_in_identity_and_entries_are_deterministic() {
         registry.identity().fingerprint,
         NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT
     );
-    assert_eq!(registry.entries().len(), 12);
+    assert_eq!(registry.entries().len(), 17);
 
     let reversed = NativeValueLifecycleRegistry::new(
         NATIVE_VALUE_LIFECYCLE_REGISTRY_ID,
@@ -62,7 +62,9 @@ fn initial_registry_contains_audited_scalars_snapshots_and_stream() {
             })
         );
     }
-    for name in ["string", "bytes", "Json", "JsonObject"] {
+    for name in [
+        "string", "bytes", "Json", "JsonObject", "TaskRef", "TaskStatus", "TaskCancelResult",
+    ] {
         assert_eq!(
             native_value_lifecycle_registry().lookup(&builtin(name, Vec::new())),
             Ok(NativeValueLifecycleResolution {
@@ -78,6 +80,11 @@ fn initial_registry_contains_audited_scalars_snapshots_and_stream() {
         builtin(
             "Map",
             vec![builtin("string", Vec::new()), builtin("Json", Vec::new())],
+        ),
+        builtin("Exception", vec![builtin("string", Vec::new())]),
+        builtin(
+            "CatchResult",
+            vec![builtin("bool", Vec::new()), builtin("string", Vec::new())],
         ),
     ] {
         assert_eq!(
@@ -102,6 +109,10 @@ fn initial_registry_contains_audited_scalars_snapshots_and_stream() {
     );
     assert!(matches!(
         native_value_lifecycle_registry().lookup(&builtin("uuid", Vec::new())),
+        Err(NativeValueLifecycleLookupError::Missing { .. })
+    ));
+    assert!(matches!(
+        native_value_lifecycle_registry().lookup(&builtin("void", Vec::new())),
         Err(NativeValueLifecycleLookupError::Missing { .. })
     ));
 }

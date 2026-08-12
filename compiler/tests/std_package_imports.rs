@@ -285,11 +285,13 @@ function truncate(value: string, maxBytes: number) -> string {
 
         let project =
             compile_package_project(temp.path()).expect("truncate wrapper should compile");
-        let std = project
-            .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
-            .expect("std should be in the canonical dependency closure");
-        let truncate_callable_id = public_callable_id(std, "std.string.truncateUtf8Bytes");
         let callable_id = public_callable_id(&project.package, "truncate");
+        let truncate_callable_id =
+            PackageCallableId::new("pkg-callable:skiff.run/std:std.string.truncateUtf8Bytes");
+        assert!(
+            project.package.artifact.package_requirements.is_empty(),
+            "native-only std helpers must not materialize a std package requirement"
+        );
         let facts = &project.package.artifact.callable_semantic_facts[&callable_id];
         assert_eq!(
             facts.effects,
@@ -336,10 +338,8 @@ function truncate(value: string, maxBytes: number) -> string {
         assert!(file_contains_call(main, &|target| {
             matches!(
                 target,
-                CallTargetIr::PackageCallable {
-                    package_ref: PackageRefIr::Dependency { dependency_ref },
-                    package_callable_id,
-                } if dependency_ref == "std" && package_callable_id == &truncate_callable_id
+                CallTargetIr::Native { target }
+                    if target.binding_key.as_deref() == Some("std.string.truncateUtf8Bytes")
             )
         }));
     }
@@ -411,15 +411,22 @@ function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
         ));
 
         let main = module_artifact(&project.package, "main");
-        for public_path in ["std.http.headers", "std.http.cookie"] {
-            let package_callable_id = public_callable_id(std, public_path);
+        for (public_path, binding_key) in [
+            ("std.http.headers", "std.http.request.headers"),
+            ("std.http.cookie", "std.http.request.cookie"),
+        ] {
+            assert!(
+                std.artifact
+                    .package_local_abi
+                    .public_symbols
+                    .contains_key(public_path),
+                "std local ABI should contain {public_path}"
+            );
             assert!(file_contains_call(main, &|target| {
                 matches!(
                     target,
-                    CallTargetIr::PackageCallable {
-                        package_ref: PackageRefIr::Dependency { dependency_ref },
-                        package_callable_id: actual_callable_id,
-                    } if dependency_ref == "std" && actual_callable_id == &package_callable_id
+                    CallTargetIr::Native { target }
+                        if target.binding_key.as_deref() == Some(binding_key)
                 )
             }));
         }
@@ -543,7 +550,8 @@ type Marker { request: std.http.HttpRequest }
         assert!(file_contains_call(log, &|target| {
             matches!(
                 target,
-                CallTargetIr::Builtin { op } if op == "root.telemetry.emit"
+                CallTargetIr::Native { target }
+                    if target.binding_key.as_deref() == Some("std.telemetry.emit")
             )
         }));
 

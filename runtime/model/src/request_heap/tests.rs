@@ -4,10 +4,8 @@ use crate::{
     addr::{ExecutableAddr, FileAddr, TypeAddr, UnitAddr},
     error::RuntimeModelError,
     service_error::{
-        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, InternalErrorPayload,
-        LocalExecutionTypeIdentity, NominalTypeIdentity, OpaqueServiceError,
-        PlatformBuiltinErrorIdentity, RequestException, RequestExceptionCause,
-        ServiceErrorEnvelope,
+        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, LocalExecutionTypeIdentity,
+        NominalTypeIdentity, OpaqueServiceError, RequestException, RequestExceptionCause,
     },
     value::{
         CallbackCapabilityCarrier, HeapHandle, HeapNode, InterfaceCarrier, InterfaceMethodSlot,
@@ -17,6 +15,7 @@ use crate::{
     },
 };
 use skiff_artifact_model::{InstructionSourceSite, SourcePosition, SourceSpanRef};
+use skiff_runtime_request_contract::{PlatformErrorProjectionPayload, StdDbConflictErrorPayload};
 
 use super::{
     deep_clone_runtime_value, deep_clone_runtime_value_between_heaps,
@@ -214,16 +213,22 @@ fn exception_heap_clone_preserves_exact_local_cause_and_metadata() {
 #[test]
 fn imported_exception_heap_edges_are_reachable_and_remapped_by_both_clone_modes() {
     let identity = local_identity(21);
-    let envelope = ServiceErrorEnvelope::PlatformError {
-        builtin_error_identity: PlatformBuiltinErrorIdentity::DbConflict,
-        encoded_payload: br#"{"retryable":true}"#.to_vec(),
-        trace_id: "trace-imported".to_string(),
-        error_id: "error-imported".to_string(),
-    };
-    let opaque = OpaqueServiceError::decode(
-        serde_json::to_vec(&envelope).expect("test service envelope should encode"),
-    )
-    .expect("test service envelope should decode strictly");
+    let projection =
+        PlatformErrorProjectionPayload::StdDbConflictError(StdDbConflictErrorPayload {
+            message: "The database operation conflicted.".to_string(),
+            retryable: true,
+            target: "catalog".to_string(),
+        });
+    let opaque =
+        OpaqueServiceError::platform_error(&projection, "trace-imported", "error-imported")
+            .expect("generated exact-known platform fixture should encode");
+    assert_eq!(
+        opaque
+            .known_platform_projection()
+            .expect("exact generated pair should retain typed evidence")
+            .payload(),
+        &projection
+    );
     let mut source = RequestHeap::default();
     let payload = source
         .alloc_array(vec![RuntimeValue::String("imported-local".to_string())])
@@ -313,6 +318,12 @@ fn assert_imported_exception_payload(
         panic!("cloned exception should preserve its imported cause")
     };
     assert_eq!(error, expected_opaque);
+    assert_eq!(error.encoded_bytes(), expected_opaque.encoded_bytes());
+    assert_eq!(
+        error.known_platform_projection(),
+        expected_opaque.known_platform_projection(),
+        "heap cloning must preserve exact-known typed projection evidence"
+    );
     assert_eq!(local_value.catch_identity(), Some(expected_identity));
     let RuntimeValue::Heap(payload) = local_value.value() else {
         panic!("cloned imported projection should remain heap-backed")
@@ -1288,17 +1299,8 @@ fn rollback_rebase_preserves_aliases_across_prefix_and_multiple_explicit_roots()
     let array_root = heap
         .alloc_array(vec![RuntimeValue::Heap(shared), RuntimeValue::Heap(shared)])
         .unwrap();
-    let opaque = OpaqueServiceError::decode(
-        serde_json::to_vec(&ServiceErrorEnvelope::InternalError {
-            payload: InternalErrorPayload {
-                message: "sanitized".to_string(),
-                trace_id: "trace-rebase".to_string(),
-                error_id: "error-rebase".to_string(),
-            },
-        })
-        .unwrap(),
-    )
-    .unwrap();
+    let opaque = OpaqueServiceError::internal_error("sanitized", "trace-rebase", "error-rebase")
+        .expect("internal fixture should encode canonically");
     let exception = RequestException::imported(
         opaque,
         Some(RuntimeValueCarrier::identified(

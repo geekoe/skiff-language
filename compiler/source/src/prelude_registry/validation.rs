@@ -191,7 +191,12 @@ impl PreludeRegistry {
         known.extend(
             skiff_compiler_core::prelude_registry::COMPILER_BUILTIN_TYPES
                 .iter()
-                .flat_map(|builtin| [builtin.name.to_string(), builtin.symbol.to_string()]),
+                .flat_map(|builtin| {
+                    [
+                        builtin.name.to_string(),
+                        builtin.canonical_symbol().into_owned(),
+                    ]
+                }),
         );
         known.extend(self.type_decls.keys().cloned());
         known.extend(self.type_aliases.keys().cloned());

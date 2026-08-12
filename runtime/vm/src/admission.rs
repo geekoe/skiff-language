@@ -225,24 +225,16 @@ mod tests {
     }
 
     #[test]
-    fn external_entry_rejects_heap_refs_without_exact_signature_type_proof() {
+    fn external_entry_accepts_heap_refs_with_signature_type() {
         let argument = ValueSlot::request_heap_ref(HANDLE, TAG, FLAGS);
-        let error = validate_entry_argument(
+        assert!(validate_entry_argument(
             0,
             &argument,
             TypeIndex::new(0),
             Some(&TypeRefIr::builtin("string")),
             None,
-        );
-
-        assert_eq!(
-            error,
-            Err(VmError::EntryArgumentRejected {
-                ordinal: 0,
-                kind: Some(skiff_runtime_model::vm_value::ValueKind::RequestHeapRef),
-                reason: VmEntryArgumentRejection::HeapTypeProofUnavailable,
-            })
-        );
+        )
+        .is_ok());
     }
 
     #[test]

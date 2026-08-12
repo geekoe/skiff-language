@@ -3,8 +3,9 @@ use std::sync::{Arc, Mutex};
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
     self as request_runner, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
-    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, HttpNameValue,
-    RequestEnvelope, RequestError, ResponseEventSink, ResponseStreamEvent, RouterWriterMessage,
+    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, BytecodeSelfIngressContext,
+    HttpNameValue, RequestEnvelope, RequestError, ResponseEventSink, ResponseStreamEvent,
+    RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -16,6 +17,7 @@ use skiff_runtime_transport::{
 };
 use tokio::sync::mpsc;
 use tracing::error;
+use url::Url;
 
 use super::{
     assembly_wire::{
@@ -27,8 +29,13 @@ use super::{
     resumable::{drive_bytecode_request, RejectingResponseEventSink},
 };
 use crate::{
+    capability_context::{
+        EffectDispatchContext, HttpClientCapabilityContext, HttpEffectContext, StreamRuntime,
+        TelemetryCapabilityContext, TestEffectDoubleContext,
+    },
     error::RuntimeError,
     host::{
+        build_bytecode_http_executor,
         http_response_ceiling::HttpResponseCeiling,
         request_supervisor::{CompletionTrace, SupervisedRequest},
         RuntimeHost,
@@ -71,8 +78,49 @@ impl RuntimeHost {
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
+        let http_context = HttpEffectContext::new(
+            header.deadline.as_ref().map(|deadline| deadline.timeout_ms),
+            http_response_max_bytes,
+            cancellation.clone(),
+        );
+        let http_client = HttpClientCapabilityContext::new(
+            EffectDispatchContext::new(
+                http_context,
+                TelemetryCapabilityContext::new(None),
+                self.http_runtime_options.clone(),
+            ),
+            self.http_runtime_options.clone(),
+            StreamRuntime::default(),
+            TestEffectDoubleContext::reusable(
+                std::collections::HashMap::new(),
+                StreamRuntime::default(),
+                request_envelope.test_effects_enabled,
+            ),
+        );
+        let self_ingress_origin = Url::parse(&header.http_request.url)
+            .ok()
+            .map(|url| format!("{}://{}", url.scheme(), url.authority()))
+            .unwrap_or_default();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
+            http_executor: Some(build_bytecode_http_executor(
+                http_client,
+                self.http_runtime_options.clone(),
+            )),
+            self_ingress: Some(BytecodeSelfIngressContext {
+                origin: self_ingress_origin,
+                service_id: header.routing.deployment.service_id.clone(),
+                contract_version: header.routing.deployment.contract_version.clone(),
+                test_case_capability: header.test_case_capability.clone(),
+                test_case_parent_request_id: header.test_case_parent_request_id.clone().or_else(
+                    || {
+                        header
+                            .test_case_capability
+                            .as_ref()
+                            .map(|_| header.request_id.clone())
+                    },
+                ),
+            }),
         };
         let response_sink = Arc::new(HostHttpGatewayResponseSink::new(
             sender.clone(),
@@ -135,6 +183,8 @@ impl RuntimeHost {
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
+            http_executor: None,
+            self_ingress: None,
         };
         let request_id = header.request_id.clone();
         let host = self.clone();
@@ -202,6 +252,8 @@ impl RuntimeHost {
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
+            http_executor: None,
+            self_ingress: None,
         };
         let request_id = header.request_id.clone();
         let host = self.clone();
@@ -261,6 +313,8 @@ impl RuntimeHost {
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
+            http_executor: None,
+            self_ingress: None,
         };
         let host = self.clone();
         tokio::spawn(async move {
@@ -595,6 +649,7 @@ fn bytecode_http_request_envelope(
             value: item.value.clone(),
         })
         .collect::<Vec<_>>();
+    let adapter = route.http_adapter()?;
     Ok(RequestEnvelope {
         request_id: header.request_id.clone(),
         mode: header.mode.clone(),
@@ -621,7 +676,7 @@ fn bytecode_http_request_envelope(
             },
             body,
         }),
-        http_adapter: Some(route.http_adapter()?),
+        http_adapter: Some(adapter),
         test_effects_enabled: header.test_effects_enabled || header.test_case_capability.is_some(),
         test_effect_doubles: Default::default(),
         payload_bytes: Vec::new(),

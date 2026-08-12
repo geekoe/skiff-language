@@ -5,18 +5,25 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::loader::bytecode_admission::BytecodeRouteSelector;
 use skiff_artifact_identity::{
-    contract_operation_id, package_artifact_ref, service_contract_ref, service_deployment_ref,
-    ValidatedBytecodeArtifact,
+    contract_operation_id, gateway_entry_identity, package_artifact_ref, service_contract_ref,
+    service_deployment_ref, ValidatedBytecodeArtifact,
 };
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BoundaryCallbackContract, BoundaryEffectGuarantee,
     BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
     BoundaryValuePlan, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity, ServiceContract,
-    ServiceDeployment, WebSocketEntryId, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    DeploymentGatewayEntry, DeploymentOperationBinding, DeploymentRevision, GatewayAdapterArg,
+    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
+    GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayHttpProtocolSurface, GatewayProtocolSurface,
+    GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
+    GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion, PackageBinding, PackageCallableId,
+    PackageLocalAbiSymbol, PackageRequirementKey, ServiceContract, ServiceDeployment,
+    WebSocketEntryId,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     compile_package, CompilerPlatformSources, ManifestOwner, ManifestProvenance,
@@ -56,6 +63,8 @@ struct CompiledFixture {
     artifact_root: PathBuf,
     deployment: skiff_artifact_model::ServiceDeploymentRef,
     legacy_deployment: skiff_artifact_model::ServiceDeploymentRef,
+    http_gateway_identity: GatewayEntryIdentity,
+    websocket_gateway_identity: GatewayEntryIdentity,
 }
 
 static FIXTURE: OnceLock<CompiledFixture> = OnceLock::new();
@@ -70,6 +79,107 @@ fn fixture() -> &'static CompiledFixture {
             .join()
             .expect("bytecode fixture compiler thread should not panic")
     })
+}
+
+fn implementation_callable_id(
+    package: &skiff_artifact_model::PackageArtifact,
+    selector: &str,
+) -> PackageCallableId {
+    let symbol = package
+        .package_local_abi
+        .implementation_symbols
+        .get(selector)
+        .unwrap_or_else(|| panic!("package fixture has no implementation callable {selector}"));
+    match symbol {
+        PackageLocalAbiSymbol::Callable { callable_id, .. } => callable_id.clone(),
+        _ => panic!("package fixture callable {selector} is not a function"),
+    }
+}
+
+fn http_gateway_entry(
+    handler: PackageCallableId,
+) -> (
+    GatewayEntryKey,
+    DeploymentGatewayEntry,
+    GatewayEntryIdentity,
+) {
+    let key = GatewayEntryKey::parse("run").expect("HTTP gateway entry key");
+    let protocol_surface = GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+            adapter_kind: GatewayAdapterKind::RawHttp,
+            dispatch_mode: GatewayDispatchMode::Unary,
+            external_sources: vec![GatewayAdapterSource::HttpRequest],
+            request_body_schema: None,
+            response_schema: None,
+            stream_item_schema: None,
+        }),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    };
+    let identity = gateway_entry_identity(&protocol_surface).expect("HTTP gateway entry identity");
+    let entry = DeploymentGatewayEntry {
+        gateway_entry_identity: identity.clone(),
+        protocol_surface,
+        handler: Some(handler),
+        pre: None,
+        guard: None,
+        adapter_plan: GatewayAdapterPlan {
+            kind: GatewayAdapterKind::RawHttp,
+            args: vec![GatewayAdapterArg {
+                param: "request".to_string(),
+                source: GatewayAdapterSource::HttpRequest,
+            }],
+        },
+        close_handler: None,
+        close_adapter_plan: None,
+    };
+    (key, entry, identity)
+}
+
+fn websocket_gateway_entry(
+    handler: PackageCallableId,
+) -> (
+    GatewayEntryKey,
+    DeploymentGatewayEntry,
+    GatewayEntryIdentity,
+) {
+    let key = GatewayEntryKey::parse("websocket").expect("WebSocket gateway entry key");
+    let protocol_surface = GatewayEntryProtocolSurface {
+        protocol: GatewayProtocolSurface::WebSocketConnect(
+            GatewayWebSocketConnectProtocolSurface {
+                connect_request_shape: GatewayWebSocketShapeVersion::V1,
+                connect_result_shape: GatewayWebSocketShapeVersion::V1,
+                connection_policy_shape: GatewayWebSocketShapeVersion::V1,
+                external_sources: vec![
+                    GatewayAdapterSource::WebSocketConnectRequest,
+                    GatewayAdapterSource::WebSocketConnectionId,
+                ],
+                downlink_frames: vec![
+                    GatewayWebSocketDownlinkFrame::Binary,
+                    GatewayWebSocketDownlinkFrame::Text,
+                ],
+                rpc_profiles: vec![GatewayWebSocketRpcProfile::JsonRpc2_0Text],
+                connection_close_shape: GatewayWebSocketShapeVersion::V1,
+                close_external_sources: Vec::new(),
+            },
+        ),
+        external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+    };
+    let identity =
+        gateway_entry_identity(&protocol_surface).expect("WebSocket gateway entry identity");
+    let entry = DeploymentGatewayEntry {
+        gateway_entry_identity: identity.clone(),
+        protocol_surface,
+        handler: Some(handler),
+        pre: None,
+        guard: None,
+        adapter_plan: GatewayAdapterPlan {
+            kind: GatewayAdapterKind::WebSocketConnect,
+            args: Vec::new(),
+        },
+        close_handler: None,
+        close_adapter_plan: None,
+    };
+    (key, entry, identity)
 }
 
 fn compile_fixture() -> CompiledFixture {
@@ -90,8 +200,29 @@ fn compile_fixture() -> CompiledFixture {
             .as_nanos()
     ));
     std::fs::create_dir_all(&temp).expect("bytecode source dir");
+    let artifact_root = std::env::temp_dir().join(format!(
+        "skiff-host-bytecode-artifacts-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    ));
+    skiff_compiler::authoring::seed_official_std_package(&platform_sources, &artifact_root)
+        .expect("seed compiler-owned std");
     let source_path = temp.join("main.skiff");
-    let text = "function run() -> number { return 42 }\n";
+    let text = r#"import std
+
+function run() -> number { return 42 }
+
+function runHttp(request: std.http.HttpRequest) -> std.http.HttpResponse {
+  return std.http.HttpResponse {
+    status: 200,
+    headers: Array.empty<std.http.HttpHeader>(),
+    body: bytes.fromUtf8("42.0"),
+  }
+}
+"#;
     std::fs::write(&source_path, text).expect("bytecode source");
     let source_tree = SourceTree {
         root: temp.clone(),
@@ -128,7 +259,15 @@ fn compile_fixture() -> CompiledFixture {
         Vec::new(),
     );
     let aliases = BTreeMap::new();
-    let input = PackageCompileInput::new(&platform_sources, &package, &aliases, PACKAGE_ID, true);
+    let (published_std, _) =
+        skiff_compiler::authoring::author_official_std_package_with_bytecode(&platform_sources)
+            .expect("author compiler-owned std with bytecode");
+    let std_package = published_std.artifact;
+    let std_package_ref = package_artifact_ref(&std_package).expect("compiler-owned std ref");
+    let available_packages = [std_package];
+    let input = PackageCompileInput::new(&platform_sources, &package, &aliases, PACKAGE_ID, true)
+        .with_available_canonical_packages(&available_packages)
+        .with_canonical_artifact_root(&artifact_root);
     let compiled = compile_package(input).expect("compile bytecode package");
     let handoff = compiled.bytecode_handoff().expect("bytecode handoff");
     let package = Arc::new(compiled.package().artifact.clone());
@@ -184,14 +323,36 @@ fn compile_fixture() -> CompiledFixture {
 
     let package_ref = package_artifact_ref(&package).expect("package ref");
     let contract_ref = service_contract_ref(&contract).expect("contract ref");
-    let callable_id = package
-        .callable_links
-        .keys()
-        .next()
-        .expect("compiled scalar package callable")
-        .clone();
+    let callable_id = implementation_callable_id(&package, "main.run");
+    let http_callable_id = implementation_callable_id(&package, "main.runHttp");
     let legacy_callable_id = callable_id.clone();
     let legacy_operation_id = operation_id.clone();
+    let (http_gateway_key, http_gateway_entry, http_gateway_identity) =
+        http_gateway_entry(http_callable_id);
+    let (websocket_gateway_key, websocket_gateway_entry, websocket_gateway_identity) =
+        websocket_gateway_entry(callable_id.clone());
+    let gateway_entries = BTreeMap::from([
+        (http_gateway_key.clone(), http_gateway_entry),
+        (websocket_gateway_key.clone(), websocket_gateway_entry),
+    ]);
+    let ingress = vec![
+        skiff_artifact_model::DeploymentIngressBinding {
+            selector: skiff_artifact_model::IngressSelector {
+                protocol: skiff_artifact_model::IngressProtocol::Http,
+                method: Some("POST".to_string()),
+                path: "/run".to_string(),
+            },
+            gateway_entry_key: http_gateway_key.clone(),
+        },
+        skiff_artifact_model::DeploymentIngressBinding {
+            selector: skiff_artifact_model::IngressSelector {
+                protocol: skiff_artifact_model::IngressProtocol::WebSocket,
+                method: None,
+                path: "/run".to_string(),
+            },
+            gateway_entry_key: websocket_gateway_key.clone(),
+        },
+    ];
     let mut deployment = ServiceDeployment {
         schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
         contract: contract_ref,
@@ -202,10 +363,16 @@ fn compile_fixture() -> CompiledFixture {
             contract_operation_id: operation_id,
             package_callable_id: callable_id,
         }],
-        package_bindings: Vec::new(),
+        package_bindings: vec![PackageBinding {
+            key: PackageRequirementKey {
+                caller_package_build_id: package.package_build_id.clone(),
+                package_requirement_alias: "std".to_string(),
+            },
+            package: std_package_ref,
+        }],
         service_selectors: Vec::new(),
-        gateway_entries: BTreeMap::new(),
-        ingress: Vec::new(),
+        gateway_entries: gateway_entries.clone(),
+        ingress: ingress.clone(),
         diagnostic_text: DeploymentDiagnosticText {
             display_name: "host bytecode HTTP".to_string(),
             notes: BTreeMap::new(),
@@ -215,14 +382,6 @@ fn compile_fixture() -> CompiledFixture {
         .expect("deployment identity");
     let deployment_ref = service_deployment_ref(&deployment);
 
-    let artifact_root = std::env::temp_dir().join(format!(
-        "skiff-host-bytecode-artifacts-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock")
-            .as_nanos()
-    ));
     let store = CanonicalArtifactStore::create(&artifact_root).expect("artifact store");
     store
         .write_package_bytecode(&package_ref, bytecode.artifact())
@@ -282,6 +441,8 @@ fn compile_fixture() -> CompiledFixture {
         artifact_root,
         deployment: deployment_ref,
         legacy_deployment: legacy_deployment_ref,
+        http_gateway_identity,
+        websocket_gateway_identity,
     }
 }
 
@@ -289,12 +450,17 @@ fn canonical_header(
     fixture: &CompiledFixture,
     request_id: &str,
 ) -> BytecodeRequestStartFrameHeader {
-    canonical_header_for_deployment(&fixture.deployment, request_id)
+    canonical_header_for_deployment(
+        &fixture.deployment,
+        request_id,
+        &fixture.http_gateway_identity,
+    )
 }
 
 fn canonical_header_for_deployment(
     deployment: &skiff_artifact_model::ServiceDeploymentRef,
     request_id: &str,
+    gateway_entry_identity: &GatewayEntryIdentity,
 ) -> BytecodeRequestStartFrameHeader {
     BytecodeRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -310,11 +476,7 @@ fn canonical_header_for_deployment(
             assembly_generation: None,
             deployment: deployment.clone(),
             build_id: None,
-            gateway_entry_identity: GatewayEntryIdentity::parse(format!(
-                "skiff-gateway-entry-v2:sha256:{}",
-                "a".repeat(64)
-            ))
-            .expect("gateway identity"),
+            gateway_entry_identity: gateway_entry_identity.clone(),
             ingress: BytecodeRequestIngressFrameHeader {
                 protocol: BytecodeRequestIngressProtocol::Http,
                 method: "POST".to_string(),
@@ -386,9 +548,7 @@ fn websocket_connect_header(
     fixture: &CompiledFixture,
     request_id: &str,
 ) -> BytecodeWebSocketConnectRequestStartFrameHeader {
-    let gateway_entry_identity =
-        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "b".repeat(64)))
-            .expect("gateway identity");
+    let gateway_entry_identity = fixture.websocket_gateway_identity.clone();
     BytecodeWebSocketConnectRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
@@ -544,7 +704,11 @@ async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
     let host = test_host_with_bytecode_only(true);
     let route = host
         .bytecode_deployments
-        .route(&fixture.deployment, &fixture.artifact_root)
+        .route(
+            &fixture.deployment,
+            &fixture.artifact_root,
+            BytecodeRouteSelector::Operation,
+        )
         .await
         .expect("bytecode route should load");
     assert!(route.is_some(), "fixture must carry a bytecode deployment");
@@ -578,7 +742,11 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
     let host = test_host_with_bytecode_only(true);
     let legacy_route = host
         .bytecode_deployments
-        .route(&fixture.legacy_deployment, &fixture.artifact_root)
+        .route(
+            &fixture.legacy_deployment,
+            &fixture.artifact_root,
+            BytecodeRouteSelector::Operation,
+        )
         .await
         .expect("legacy deployment bytecode lookup should succeed");
     assert!(
@@ -586,8 +754,11 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
         "fixture must carry a deployment without a bytecode record"
     );
     let bootstrap = connection_bootstrap(fixture);
-    let header =
-        canonical_header_for_deployment(&fixture.legacy_deployment, "bytecode-only-legacy-http");
+    let header = canonical_header_for_deployment(
+        &fixture.legacy_deployment,
+        "bytecode-only-legacy-http",
+        &fixture.http_gateway_identity,
+    );
     let (sender, mut receiver) = mpsc::unbounded_channel();
     host.spawn_bytecode_request(
         "bytecode-only-legacy-session",

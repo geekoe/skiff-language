@@ -15,6 +15,7 @@ mod error;
 mod fiber;
 mod frame;
 mod limits;
+mod projection;
 mod statement;
 
 pub use budget::{VmBudget, VmBudgetError, VmSemanticCharge, VmSemanticChargeKind};
@@ -26,3 +27,4 @@ pub use control::{
 pub use error::{VmEntryArgumentRejection, VmError, VmValueLocation, VmVerifiedInvariant};
 pub use fiber::{VerifiedVmEntry, Vm, VmFiber, VmFiberState};
 pub use limits::VmLimits;
+pub use projection::VmProjectionHandoff;

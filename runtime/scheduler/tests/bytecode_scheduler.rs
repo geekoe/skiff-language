@@ -12,7 +12,8 @@ use skiff_runtime_model::{
     vm_value::ValueSlot,
 };
 use skiff_runtime_scheduler::{
-    BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeHandoff, BytecodeScheduler,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
+    BytecodeHandoff, BytecodeScheduler,
     BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
     BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, RootDisposition, RootEscrow,
     RootEscrowBacking, SuspendedTrampoline,
@@ -146,7 +147,7 @@ impl BytecodeChildExecutor<ChainUnit> for ChainExecutor {
         _invocation: usize,
         _heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeHandoff<ChainUnit>, BytecodeSchedulerError> {
+    ) -> Result<BytecodeAdapterHandoff<ChainUnit>, BytecodeSchedulerError> {
         Err(BytecodeSchedulerError::UnsupportedAdapter)
     }
 }
@@ -489,7 +490,7 @@ mod tests {
             _invocation: usize,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeHandoff<NextUnit>, BytecodeSchedulerError> {
+        ) -> Result<BytecodeAdapterHandoff<NextUnit>, BytecodeSchedulerError> {
             Err(BytecodeSchedulerError::UnsupportedAdapter)
         }
 

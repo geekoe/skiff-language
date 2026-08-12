@@ -172,7 +172,7 @@ fn external_file_wire_operation<'a>(
     wait: impl std::future::Future<Output = Result<Value>> + Send + 'a,
 ) -> PreparedExternalNativeOperation<'a> {
     PreparedExternalNativeOperation::new(wait, move |output, heap| {
-        invocation.native_boundary()?.from_wire_return(
+        invocation.native_boundary()?.decode_wire_return(
             &output,
             &format!("{diagnostic_target} response"),
             heap,

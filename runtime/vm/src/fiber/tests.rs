@@ -4,11 +4,14 @@ use skiff_runtime_linked_bytecode::{
     LinkedExceptionRegion, TypeIndex,
 };
 use skiff_runtime_model::vm_heap::VmHeap;
-use skiff_runtime_model::vm_value::ValueSlot;
+use skiff_runtime_model::vm_value::{
+    CompactTypeTag, ValueFlags, ValueSlot, VmHandle,
+};
 
 use super::{
-    catch_matches, comparable_equality, find_exception_region, nominal_tag_index, opcode_supported,
-    DispatchOutcome, VerifiedVmEntry, Vm, VmFiber,
+    catch_matches, comparable_equality, comparable_equality_with_string_resolver,
+    find_exception_region, nominal_tag_index, opcode_supported, DispatchOutcome, VerifiedVmEntry,
+    Vm, VmFiber,
 };
 use crate::{VmError, VmLimits};
 
@@ -190,14 +193,18 @@ fn exception_region(
 }
 
 #[test]
-fn comparable_equality_matches_only_same_immediate_kind() {
+fn comparable_equality_matches_same_kind_and_numeric_equality() {
     assert_eq!(
         comparable_equality(&ValueSlot::integer(3), &ValueSlot::integer(3)),
         Some(true)
     );
     assert_eq!(
         comparable_equality(&ValueSlot::integer(3), &ValueSlot::number(3.0)),
-        None
+        Some(true)
+    );
+    assert_eq!(
+        comparable_equality(&ValueSlot::integer(3), &ValueSlot::number(4.0)),
+        Some(false)
     );
     assert_eq!(
         comparable_equality(&ValueSlot::bool(false), &ValueSlot::bool(true)),
@@ -206,5 +213,61 @@ fn comparable_equality_matches_only_same_immediate_kind() {
     assert_eq!(
         comparable_equality(&ValueSlot::null(), &ValueSlot::null()),
         Some(true)
+    );
+}
+
+#[test]
+fn comparable_equality_resolves_const_and_request_heap_strings() {
+    let const_left = ValueSlot::const_ref(
+        VmHandle::new(1),
+        CompactTypeTag::new(0),
+        ValueFlags::new(0),
+    );
+    let const_right = ValueSlot::const_ref(
+        VmHandle::new(2),
+        CompactTypeTag::new(0),
+        ValueFlags::new(0),
+    );
+    let heap_same = ValueSlot::request_heap_ref(
+        VmHandle::new(3),
+        CompactTypeTag::new(0),
+        ValueFlags::new(0),
+    );
+    let heap_different = ValueSlot::request_heap_ref(
+        VmHandle::new(4),
+        CompactTypeTag::new(0),
+        ValueFlags::new(0),
+    );
+    let resolve_string = |value: &ValueSlot| match value.as_handle()?.get() {
+        1 | 2 | 3 => Some("same".to_string()),
+        4 => Some("different".to_string()),
+        _ => None,
+    };
+
+    assert_eq!(
+        comparable_equality_with_string_resolver(&const_left, &const_right, resolve_string),
+        Some(true)
+    );
+    assert_eq!(
+        comparable_equality_with_string_resolver(&const_left, &heap_same, resolve_string),
+        Some(true)
+    );
+    assert_eq!(
+        comparable_equality_with_string_resolver(&const_left, &heap_different, resolve_string),
+        Some(false)
+    );
+    assert_eq!(
+        comparable_equality_with_string_resolver(&heap_same, &heap_same, resolve_string),
+        Some(true)
+    );
+
+    let unresolved = ValueSlot::const_ref(
+        VmHandle::new(9),
+        CompactTypeTag::new(0),
+        ValueFlags::new(0),
+    );
+    assert_eq!(
+        comparable_equality_with_string_resolver(&const_left, &unresolved, resolve_string),
+        None
     );
 }

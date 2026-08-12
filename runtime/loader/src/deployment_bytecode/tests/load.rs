@@ -8,11 +8,9 @@ use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractRequirement, ContractTypeRef, DeploymentOperationBinding, FileIrRef, FileIrUnit,
-    PackageCallableId, PackageRequirement, PackageSchemaIndexEntry, PackageSchemaTypeRecord,
-    PackageSchemaTypeRecordRef, PublicationResourceRef, ServiceCallRef, ServiceRequirement,
+    ContractRequirement, ContractTypeRef, DeploymentOperationBinding, PackageCallableId,
+    PackageRequirement, PackageSchemaIndexEntry, ServiceCallRef, ServiceRequirement,
 };
-
 
 use super::*;
 

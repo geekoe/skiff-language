@@ -19,7 +19,7 @@ use skiff_runtime_transport::protocol::{
     encode_task_status_error_frame, encode_task_status_request_frame,
     encode_task_status_response_frame, encode_task_submit_error_frame,
     encode_task_submit_request_frame, encode_task_submit_response_frame,
-    TaskSubmitRequestFrameHeaderV2,
+    TaskSubmitRequestFrameHeaderV2, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_runtime_transport::protocol::{
     decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
@@ -159,7 +159,7 @@ mod tests {
                 "{name}: payloadPresence"
             );
             assert_eq!(
-                entry.header["schemaVersion"], "skiff-runtime-frame-v4",
+                entry.header["schemaVersion"], RUNTIME_FRAME_SCHEMA_VERSION,
                 "{name}: header schemaVersion"
             );
             assert_eq!(

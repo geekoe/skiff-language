@@ -32,6 +32,8 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
         value_lifecycle_policy: skiff_artifact_model::value_lifecycle_policy_identity().clone(),
         host_effect_registry: skiff_artifact_model::host_effect_registry_identity().clone(),
         intrinsic_registry: skiff_artifact_model::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         bytecode_identity: "unassigned".to_string(),
         image: BytecodeImage {
             functions: BTreeMap::new(),
@@ -65,6 +67,21 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
     };
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+}
+
+fn historical_platform_error_projection_registry_ref(
+    fingerprint_character: char,
+) -> skiff_artifact_model::PlatformErrorProjectionRegistryRef {
+    let current = skiff_artifact_model::current_platform_error_projection_registry_ref();
+    serde_json::from_value(serde_json::json!({
+        "registryId": current.registry_id(),
+        "registryVersion": current.registry_version(),
+        "fingerprint": format!(
+            "sha256:{}",
+            fingerprint_character.to_string().repeat(64)
+        ),
+    }))
+    .unwrap()
 }
 
 fn assert_header_pin_drift_rejected(seed: &str, field: &str, mutate: fn(&mut BytecodeArtifact)) {
@@ -134,6 +151,8 @@ fn package_artifact(
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new(build_id),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         bytecode,
@@ -334,6 +353,7 @@ fn callable_bytecode(
                 writable_local_slots: Vec::new(),
                 result_count: 0,
                 result_type_refs: Vec::new(),
+                stream_result_type_ref: None,
                 result_plans: Vec::new(),
                 slot_plans: self_bound.then_some(plan).into_iter().collect(),
             },
@@ -561,8 +581,8 @@ fn package_checked_constructor_admits_only_exact_token_and_exposes_opaque_getter
 }
 
 #[test]
-fn package_checked_constructor_pins_exact_v6_header_view_and_reference() {
-    let bytecode = admitted_bytecode("v6-header");
+fn package_checked_constructor_pins_exact_v7_header_view_reference_and_registry() {
+    let bytecode = admitted_bytecode("v7-header");
     let artifact = package_artifact(
         "example.package",
         "build:package",
@@ -633,6 +653,17 @@ fn package_checked_constructor_pins_exact_v6_header_view_and_reference() {
         view.bytecode_identity(),
         admitted.reference().bytecode_identity.as_str()
     );
+    let registry = hydrated.platform_error_projection_registry();
+    assert_eq!(
+        registry,
+        &hydrated.artifact().platform_error_projection_registry
+    );
+    assert_eq!(registry, &artifact.platform_error_projection_registry);
+    assert_eq!(registry, view.platform_error_projection_registry());
+    assert_eq!(
+        registry,
+        skiff_artifact_model::current_platform_error_projection_registry_ref()
+    );
 }
 
 #[test]
@@ -675,6 +706,83 @@ fn bytecode_admission_rejects_intrinsic_registry_pin_drift_before_loader() {
     assert_header_pin_drift_rejected("intrinsic-drift", "intrinsicRegistry", |artifact| {
         artifact.intrinsic_registry.fingerprint.push_str(":drift")
     });
+}
+
+#[test]
+fn bytecode_admission_rejects_historical_platform_error_registry_before_loader() {
+    assert_header_pin_drift_rejected(
+        "platform-error-registry-drift",
+        "platformErrorProjectionRegistry",
+        |artifact| {
+            artifact.platform_error_projection_registry =
+                historical_platform_error_projection_registry_ref('0');
+        },
+    );
+}
+
+#[test]
+fn package_hydration_rejects_legal_historical_platform_error_registry() {
+    let bytecode = admitted_bytecode("historical-package-registry");
+    let mut artifact = package_artifact(
+        "example.historical",
+        "unassigned",
+        Some(bytecode.reference().clone()),
+    )
+    .as_ref()
+    .clone();
+    let historical = historical_platform_error_projection_registry_ref('1');
+    artifact.platform_error_projection_registry = historical.clone();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
+    skiff_artifact_identity::validate_package_artifact_identities(&artifact).unwrap();
+    let artifact = Arc::new(artifact);
+    let reference = package_reference(&artifact);
+
+    let error =
+        HydratedBytecodePackage::checked(reference.clone(), artifact, Arc::clone(&bytecode))
+            .expect_err("a legal historical PackageArtifact must not join the current runtime");
+    assert!(matches!(
+        error,
+        DeploymentBytecodeHydrationError::PlatformErrorProjectionRegistryMismatch {
+            package,
+            package_artifact,
+            bytecode_header,
+            structurally_validated_view,
+            runtime,
+        } if package.as_ref() == &reference
+            && package_artifact.as_ref() == &historical
+            && bytecode_header.as_ref()
+                == &bytecode.artifact().platform_error_projection_registry
+            && structurally_validated_view.as_ref()
+                == bytecode.view().platform_error_projection_registry()
+            && runtime.as_ref()
+                == skiff_artifact_model::current_platform_error_projection_registry_ref()
+    ));
+}
+
+#[test]
+fn platform_error_registry_mismatch_precedes_reference_and_manifest_mismatches() {
+    let bytecode = admitted_bytecode("registry-precedence");
+    let mut artifact = package_artifact(
+        "example.precedence",
+        "unassigned",
+        Some(bytecode.reference().clone()),
+    )
+    .as_ref()
+    .clone();
+    let stale_reference = package_reference(&artifact);
+    artifact.platform_error_projection_registry =
+        historical_platform_error_projection_registry_ref('2');
+    artifact.bytecode_statement_manifest_identity =
+        derive_bytecode_statement_manifest_identity("example.other", &[]).unwrap();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
+    skiff_artifact_identity::validate_package_artifact_identities(&artifact).unwrap();
+    let artifact = Arc::new(artifact);
+    assert_ne!(stale_reference, package_reference(&artifact));
+
+    assert!(matches!(
+        HydratedBytecodePackage::checked(stale_reference, artifact, bytecode),
+        Err(DeploymentBytecodeHydrationError::PlatformErrorProjectionRegistryMismatch { .. })
+    ));
 }
 
 #[test]
@@ -1192,6 +1300,72 @@ fn deployment_checked_constructor_canonicalizes_consumer_facts() {
             PackageBuildId::new("build:b")
         ]
     );
+    assert_eq!(
+        hydrated.platform_error_projection_registry(),
+        skiff_artifact_model::current_platform_error_projection_registry_ref()
+    );
+    assert!(hydrated.packages().values().all(|package| {
+        let descriptor = hydrated.platform_error_projection_registry();
+        package.platform_error_projection_registry() == descriptor
+            && &package.artifact().platform_error_projection_registry == descriptor
+            && &package
+                .bytecode()
+                .artifact()
+                .platform_error_projection_registry
+                == descriptor
+            && package
+                .bytecode()
+                .view()
+                .platform_error_projection_registry()
+                == descriptor
+    }));
+}
+
+#[test]
+fn deployment_registry_join_rejects_mixed_closure_before_manifest_validation() {
+    let bytecode = admitted_bytecode("mixed-registry-closure");
+    let implementation = hydrated_package("example.a", "build:a", &bytecode);
+    let implementation_reference = implementation.reference().clone();
+    let mut dependency = hydrated_package("example.b", "build:b", &bytecode);
+    let historical = historical_platform_error_projection_registry_ref('3');
+    dependency.platform_error_projection_registry = historical.clone();
+
+    let own_contract = contract_reference("example.consumer");
+    let mut deployment_record = deployment(
+        implementation_reference.clone(),
+        own_contract.clone(),
+        Vec::new(),
+    );
+    Arc::make_mut(&mut deployment_record)
+        .operation_bindings
+        .push(skiff_artifact_model::DeploymentOperationBinding {
+            contract_operation_id: ContractOperationId::new("operation:missing"),
+            package_callable_id: PackageCallableId::new("callable:missing"),
+        });
+    let reference = deployment_reference(&deployment_record);
+    let contracts = BTreeMap::from([(own_contract.clone(), contract(&own_contract))]);
+
+    let error = HydratedDeploymentBytecode::checked(
+        reference,
+        deployment_record,
+        contracts,
+        Vec::new(),
+        vec![implementation, dependency],
+    )
+    .expect_err("mixed registry closure must fail before the missing callable manifest");
+    assert!(matches!(
+        error,
+        DeploymentBytecodeHydrationError::MixedPlatformErrorProjectionRegistry {
+            implementation,
+            implementation_registry,
+            package,
+            package_registry,
+        } if implementation.as_ref() == &implementation_reference
+            && implementation_registry.as_ref()
+                == skiff_artifact_model::current_platform_error_projection_registry_ref()
+            && package.package_id == "example.b"
+            && package_registry.as_ref() == &historical
+    ));
 }
 
 #[test]

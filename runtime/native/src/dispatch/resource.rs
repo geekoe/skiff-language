@@ -82,7 +82,7 @@ impl ResourceNativeDispatch {
                     "sha256": &resource.meta.sha256,
                     "contentType": &resource.meta.content_type,
                 });
-                invocation.native_boundary()?.from_wire_return(
+                invocation.native_boundary()?.decode_wire_return(
                     &value,
                     &format!("{diagnostic_target} response for {path}"),
                     heap,

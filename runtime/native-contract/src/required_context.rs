@@ -20,6 +20,7 @@ impl NativeRequiredContext {
         Some(match binding_key {
             "std.actor.get" => Self::Actor,
             "core.array.empty"
+            | "core.array.push"
             | "core.map.empty"
             | "core.date.fromEpochMilliseconds"
             | "core.date.parse"
@@ -61,6 +62,7 @@ impl NativeRequiredContext {
             | "core.bytes.fromBase64"
             | "core.bytes.fromHex"
             | "core.bytes.fromUtf8"
+            | "core.bytes.toUtf8String"
             | "core.bytes.concat"
             | "std.http.request.header"
             | "std.http.request.headers"

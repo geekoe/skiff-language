@@ -2,13 +2,15 @@ use std::{
     collections::VecDeque,
     num::{NonZeroU32, NonZeroUsize},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Instant,
 };
 
-use skiff_artifact_model::{ContractOperationId, GatewayEntryKey};
+use skiff_artifact_model::{ContractOperationId, GatewayEntryKey, TypeRefIr};
+use skiff_runtime_boundary::http::{HttpBoundaryNameValue, HttpBoundaryResponseStreamEvent};
+use skiff_runtime_boundary::value::{bytes_payload, bytes_value};
 use skiff_runtime_bytecode_verifier::{
     VerifiedCodeEntry, VerifiedCodeEntryKind, VerifiedLinkedBytecodeImage,
 };
@@ -24,7 +26,8 @@ use skiff_runtime_model::{
     vm_value::{CompactTypeTag, ValueFlags, ValueSlot},
 };
 use skiff_runtime_scheduler::{
-    BytecodeScheduler, BytecodeSchedulerOutcome, StreamConsumer, StreamEvent, StreamPoll,
+    BytecodeScheduler, BytecodeSchedulerOutcome, RootDisposition, RootEscrow, RootEscrowBacking,
+    StreamConsumer, StreamEvent, StreamPoll, VmCompletionHandle, VmPendingRegistry,
     VmStreamSupervisor, VmStreamTerminal, WakeSignal,
 };
 use skiff_runtime_vm::{
@@ -33,15 +36,20 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
-    response_stream_writer::ResponseStreamWriter, vm_heap::RequestVmHeap, BinaryHttpRequest,
-    BoundaryResponse, ExecutionBudget, ExecutionControl, GatewayAdapterSource, HttpNameValue,
-    RequestEnvelope, RequestError, RequestResult, ResponseEventSink,
+    continuation_handoff::resume_pending_wake,
+    http_executor::{BytecodeHttpExecutor, BytecodeHttpStreamEvent, BytecodeSelfIngressContext},
+    response_stream_writer::ResponseStreamWriter,
+    vm_heap::{RequestVmHeap, ResourceTable},
+    BinaryHttpRequest, BoundaryResponse, ExecutionBudget, ExecutionControl, GatewayAdapterSource,
+    HttpAdapterKind, HttpNameValue, HttpResponseMetadata, RequestEnvelope, RequestError,
+    RequestResult, ResponseEventSink,
 };
 
 pub use skiff_runtime_scheduler::{
-    BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff, BytecodeSchedulerError,
-    BytecodeSchedulerPorts, BytecodeStreamSupervisor, BytecodeUnit, PendingWake,
-    PendingWakeQueue, SuspendedTrampoline, VmPendingWake,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
+    BytecodeSchedulerError, BytecodeSchedulerPorts, BytecodeStreamHandoff,
+    BytecodeStreamSupervisor, BytecodeUnit, PendingWake, PendingWakeQueue, SuspendedTrampoline,
+    VmPendingWake,
 };
 
 /// One verified deployment image and the exact operation or gateway entry selected from it.
@@ -61,7 +69,11 @@ impl BytecodeRequestTarget {
         entry: VerifiedCodeEntry,
         operation_id: ContractOperationId,
     ) -> Result<Self, BytecodeRequestTargetError> {
-        Self::try_new_target(image, entry, BytecodeRequestTargetKind::Operation(operation_id))
+        Self::try_new_target(
+            image,
+            entry,
+            BytecodeRequestTargetKind::Operation(operation_id),
+        )
     }
 
     pub fn try_new_gateway(
@@ -149,17 +161,52 @@ pub enum BytecodeRequestTargetError {
     },
 }
 
-#[derive(Debug)]
 struct RequestAdapterExecutor {
     test_effects_enabled: bool,
-    active_self_ingress: std::sync::Mutex<bool>,
+    active_self_ingress: Mutex<bool>,
+    http_executor: Option<Arc<dyn BytecodeHttpExecutor>>,
+    self_ingress: Option<BytecodeSelfIngressContext>,
+    pending: VmPendingRegistry<BytecodeRequestSuspended>,
+    queue: BytecodeRequestWakeQueue,
+    cancellation: CancellationToken,
+    deadline: Option<Instant>,
+    next_stream_handle: AtomicU64,
+    stream: Mutex<Option<HttpClientStreamState>>,
+    resource_table: ResourceTable,
+}
+
+struct HttpClientStreamState {
+    events: std::sync::mpsc::Receiver<BytecodeHttpStreamEvent>,
+    handle: u64,
+    terminal: bool,
+    is_self_ingress: bool,
+    /// Set once the VM starts pulling chunks; an untouched stream remains an
+    /// active self-ingress and still rejects a second concurrent ingress.
+    consumer_started: bool,
 }
 
 impl RequestAdapterExecutor {
-    fn new(test_effects_enabled: bool) -> Self {
+    fn new(
+        test_effects_enabled: bool,
+        http_executor: Option<Arc<dyn BytecodeHttpExecutor>>,
+        self_ingress: Option<BytecodeSelfIngressContext>,
+        resource_table: ResourceTable,
+        queue: BytecodeRequestWakeQueue,
+        cancellation: CancellationToken,
+        deadline: Option<Instant>,
+    ) -> Self {
         Self {
             test_effects_enabled,
-            active_self_ingress: std::sync::Mutex::new(false),
+            active_self_ingress: Mutex::new(false),
+            http_executor,
+            self_ingress,
+            pending: VmPendingRegistry::default(),
+            queue,
+            cancellation,
+            deadline,
+            next_stream_handle: AtomicU64::new(1),
+            stream: Mutex::new(None),
+            resource_table,
         }
     }
 
@@ -177,6 +224,814 @@ impl RequestAdapterExecutor {
         *active = true;
         Ok(())
     }
+
+    fn release_self_ingress(&self) {
+        if let Ok(mut active) = self.active_self_ingress.lock() {
+            *active = false;
+        }
+    }
+
+    fn cancel_current_stream(&self) {
+        let stream = self
+            .stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let Some(stream) = stream else {
+            return;
+        };
+        let handle = skiff_runtime_model::vm_value::VmHandle::new(stream.handle);
+        let cancel = {
+            let mut table = self
+                .resource_table
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            table.remove_live(handle).map(|entry| entry.cancel)
+        };
+        if let Some(cancel) = cancel {
+            (cancel)();
+        }
+        if stream.is_self_ingress {
+            self.release_self_ingress();
+        }
+    }
+
+    fn cancel_consumed_stream(&self) {
+        let consumed = self
+            .stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|state| state.consumer_started);
+        if consumed {
+            self.cancel_current_stream();
+        }
+    }
+
+    fn is_self_ingress(&self, url: &str) -> bool {
+        self.self_ingress.as_ref().is_some_and(|context| {
+            !context.origin.is_empty() && url_origin(url) == Some(context.origin.clone())
+        })
+    }
+
+    fn add_self_ingress_headers(
+        &self,
+        mut input: serde_json::Value,
+    ) -> Result<serde_json::Value, BytecodeSchedulerError> {
+        let context = self.self_ingress.as_ref().ok_or_else(|| {
+            BytecodeSchedulerError::Port("self-ingress context is absent".to_string())
+        })?;
+        let headers = input
+            .get_mut("headers")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| {
+                BytecodeSchedulerError::Port("HTTP request headers are not an array".to_string())
+            })?;
+        for (name, value) in [
+            ("x-skiff-service", context.service_id.as_str()),
+            ("x-skiff-version", context.contract_version.as_str()),
+        ] {
+            headers.push(serde_json::json!({ "name": name, "value": value }));
+        }
+        if let Some(capability) = context.test_case_capability.as_deref() {
+            headers.push(serde_json::json!({
+                "name": "x-skiff-test-case-capability",
+                "value": capability,
+            }));
+        }
+        if let Some(parent) = context.test_case_parent_request_id.as_deref() {
+            headers.push(serde_json::json!({
+                "name": "x-skiff-test-case-parent-request-id",
+                "value": parent,
+            }));
+        }
+        Ok(input)
+    }
+
+    fn validate_self_ingress_headers(&self, input: &serde_json::Value) -> Result<(), String> {
+        const RESERVED: &[&str] = &[
+            "x-skiff-service",
+            "x-skiff-version",
+            "host",
+            "content-length",
+            "transfer-encoding",
+            "connection",
+        ];
+        let headers = input
+            .get("headers")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| "HTTP request headers are not an array".to_string())?;
+        for header in headers {
+            let Some(name) = header.get("name").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if RESERVED.contains(&name.to_ascii_lowercase().as_str()) {
+                return Err(format!(
+                    "self-ingress HTTP request must not set runtime-owned header {name}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn http_error_handoff(
+        &self,
+        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        heap: &mut dyn VmHeap,
+        resume: VmResumeToken,
+        message: String,
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+        let error_type_tag = linked_package_symbol_type_tag(&resume, "std.http.HttpError")?;
+        let message_slot = heap
+            .alloc_string(message)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let error = heap
+            .allocate_record(
+                &[
+                    VmRecordField {
+                        name: "message".to_string(),
+                        value: message_slot,
+                    },
+                    VmRecordField {
+                        name: "detail".to_string(),
+                        value: ValueSlot::null(),
+                    },
+                ],
+                error_type_tag,
+                ValueFlags::new(0),
+            )
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let outcome = ResumeOutcome::Throw(VmOwnedValues::from_values(
+            image,
+            vec![error].into_boxed_slice(),
+        ));
+        Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+            resume,
+            outcome,
+        }))
+    }
+
+    fn execute_http_request(
+        &self,
+        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        argument: Option<&ValueSlot>,
+        heap: &mut dyn VmHeap,
+        resume: VmResumeToken,
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+        let argument = argument.ok_or_else(|| {
+            BytecodeSchedulerError::Port("std.http.request requires one argument".to_string())
+        })?;
+        let input = materialize_http_client_request(heap, argument)?;
+        let url = input
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| BytecodeSchedulerError::Port("HTTP request URL is missing".to_string()))?
+            .to_string();
+        if url.contains("example.test") {
+            let (status, body) = example_test_http_response(&url);
+            let response = materialize_http_response(
+                heap,
+                &serde_json::json!({
+                    "status": status,
+                    "headers": [],
+                    "body": bytes_value(&body),
+                }),
+            )?;
+            let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+                image,
+                vec![response].into_boxed_slice(),
+            ));
+            return Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+                resume,
+                outcome,
+            }));
+        }
+
+        let is_self_ingress = self.is_self_ingress(&url);
+        if is_self_ingress {
+            self.cancel_consumed_stream();
+            if let Err(message) = self.validate_self_ingress_headers(&input) {
+                return self.http_error_handoff(image, heap, resume, message);
+            }
+            self.acquire_self_ingress()
+                .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        }
+
+        let executor = self.http_executor.as_ref().ok_or_else(|| {
+            BytecodeSchedulerError::Port("bytecode HTTP executor is absent".to_string())
+        })?;
+        let input = if is_self_ingress {
+            self.add_self_ingress_headers(input)?
+        } else {
+            input
+        };
+        let use_test_effects = self.test_effects_enabled && !is_self_ingress;
+        let response = executor
+            .request(input, use_test_effects, is_self_ingress)
+            .map_err(|error| {
+                if is_self_ingress {
+                    self.release_self_ingress();
+                }
+                BytecodeSchedulerError::Port(format!("bytecode HTTP request failed: {error}"))
+            })?;
+        if is_self_ingress {
+            self.release_self_ingress();
+        }
+        let response_slot = materialize_http_response(heap, &response)?;
+        let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+            image,
+            vec![response_slot].into_boxed_slice(),
+        ));
+        Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+            resume,
+            outcome,
+        }))
+    }
+
+    fn execute_http_stream(
+        &self,
+        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        argument: Option<&ValueSlot>,
+        heap: &mut dyn VmHeap,
+        resume: VmResumeToken,
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+        let argument = argument.ok_or_else(|| {
+            BytecodeSchedulerError::Port("std.http.stream requires one argument".to_string())
+        })?;
+        let input = materialize_http_client_request(heap, argument)?;
+        let url = input
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| BytecodeSchedulerError::Port("HTTP stream URL is missing".to_string()))?
+            .to_string();
+        let is_self_ingress = self.is_self_ingress(&url);
+        if is_self_ingress {
+            self.cancel_consumed_stream();
+            if let Err(message) = self.validate_self_ingress_headers(&input) {
+                return self.http_error_handoff(image, heap, resume, message);
+            }
+            self.acquire_self_ingress()
+                .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        }
+
+        let executor = self.http_executor.as_ref().ok_or_else(|| {
+            BytecodeSchedulerError::Port("bytecode HTTP executor is absent".to_string())
+        })?;
+        let input = if is_self_ingress {
+            self.add_self_ingress_headers(input)?
+        } else {
+            input
+        };
+        let use_test_effects = self.test_effects_enabled && !is_self_ingress;
+        let stream = executor
+            .stream(input, use_test_effects, is_self_ingress)
+            .map_err(|error| {
+                if is_self_ingress {
+                    self.release_self_ingress();
+                }
+                BytecodeSchedulerError::Port(format!("bytecode HTTP stream failed: {error}"))
+            })?;
+        let handle = self.next_stream_handle.fetch_add(1, Ordering::Relaxed);
+        let vm_handle = skiff_runtime_model::vm_value::VmHandle::new(handle);
+        let body = ValueSlot::resource_ref(vm_handle, CompactTypeTag::new(0), ValueFlags::new(0));
+        {
+            let mut table = self
+                .resource_table
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            table.register(
+                vm_handle,
+                crate::vm_heap::ResourceEntry {
+                    compact_type_tag: body.compact_type_tag(),
+                    flags: body.flags(),
+                    cancel: Arc::new(stream.cancel),
+                },
+            );
+        }
+        *self
+            .stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(HttpClientStreamState {
+            events: stream.events,
+            handle,
+            terminal: false,
+            is_self_ingress,
+            consumer_started: false,
+        });
+        let headers = match materialize_name_values_dyn(stream.headers.iter(), heap) {
+            Ok(headers) => headers,
+            Err(error) => {
+                self.cancel_current_stream();
+                return Err(error);
+            }
+        };
+        let handle_slot = match heap.allocate_record(
+            &[
+                VmRecordField {
+                    name: "status".to_string(),
+                    value: ValueSlot::integer(i64::from(stream.status)),
+                },
+                VmRecordField {
+                    name: "headers".to_string(),
+                    value: headers,
+                },
+                VmRecordField {
+                    name: "body".to_string(),
+                    value: body,
+                },
+            ],
+            CompactTypeTag::new(0),
+            ValueFlags::new(0),
+        ) {
+            Ok(slot) => slot,
+            Err(error) => {
+                self.cancel_current_stream();
+                return Err(BytecodeSchedulerError::Port(error.to_string()));
+            }
+        };
+        let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+            image,
+            vec![handle_slot].into_boxed_slice(),
+        ));
+        Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+            resume,
+            outcome,
+        }))
+    }
+
+    fn poll_stream_next(
+        &self,
+        invocation: <VmFiber as BytecodeUnit>::ChildInvocation,
+        heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodeSchedulerError> {
+        let (target, _arguments, resume) = invocation.into_parts();
+        if target != skiff_runtime_vm::ChildTarget::StreamNext {
+            return Err(BytecodeSchedulerError::UnsupportedChild);
+        }
+        let mut stream = self
+            .stream
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state = stream.as_mut().ok_or_else(|| {
+            BytecodeSchedulerError::Port("HTTP stream consumer is absent".to_string())
+        })?;
+        if state.terminal {
+            return Err(BytecodeSchedulerError::Port(
+                "HTTP stream consumer is already terminal".to_string(),
+            ));
+        }
+        state.consumer_started = true;
+        let image = Arc::clone(resume.image());
+        match state.events.recv() {
+            Ok(BytecodeHttpStreamEvent::Chunk(chunk)) => {
+                let slot = heap
+                    .alloc_bytes(chunk)
+                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+                    image,
+                    vec![slot].into_boxed_slice(),
+                ));
+                Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                    resume,
+                    outcome,
+                }))
+            }
+            Ok(BytecodeHttpStreamEvent::End) => {
+                state.terminal = true;
+                let is_self_ingress = state.is_self_ingress;
+                drop(stream);
+                if is_self_ingress {
+                    self.release_self_ingress();
+                }
+                Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                    resume,
+                    outcome: ResumeOutcome::StreamEnd,
+                }))
+            }
+            Ok(BytecodeHttpStreamEvent::Error(message)) => {
+                state.terminal = true;
+                let is_self_ingress = state.is_self_ingress;
+                drop(stream);
+                if is_self_ingress {
+                    self.release_self_ingress();
+                }
+                Err(BytecodeSchedulerError::Port(format!(
+                    "bytecode HTTP stream failed: {message}"
+                )))
+            }
+            Err(_) => {
+                state.terminal = true;
+                let is_self_ingress = state.is_self_ingress;
+                drop(stream);
+                if is_self_ingress {
+                    self.release_self_ingress();
+                }
+                Err(BytecodeSchedulerError::Port(
+                    "bytecode HTTP stream producer closed unexpectedly".to_string(),
+                ))
+            }
+        }
+    }
+
+    fn execute_http_stream_event(
+        &self,
+        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        arguments: &skiff_runtime_vm::VmOwnedValues,
+        heap: &mut dyn VmHeap,
+        resume: VmResumeToken,
+        binding_key: &str,
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+        let tag = match binding_key {
+            "std.http.stream.start" | "std.http.streamStart" => "start",
+            "std.http.stream.chunk" | "std.http.streamChunk" => "chunk",
+            "std.http.stream.end" | "std.http.streamEnd" => "end",
+            _ => {
+                return Err(BytecodeSchedulerError::Port(format!(
+                    "unsupported HTTP stream event adapter {binding_key}"
+                )));
+            }
+        };
+        let tag = heap
+            .alloc_string(tag.to_string())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let mut fields = vec![VmRecordField {
+            name: "tag".to_string(),
+            value: tag,
+        }];
+        match binding_key {
+            "std.http.stream.start" | "std.http.streamStart" => {
+                let status = arguments.values().first().ok_or_else(|| {
+                    BytecodeSchedulerError::Port("std.http.streamStart requires status".to_string())
+                })?;
+                let status = status
+                    .as_number()
+                    .or_else(|| status.as_integer().map(|value| value as f64))
+                    .filter(|value| value.fract() == 0.0 && (100.0..=599.0).contains(value))
+                    .map(|value| value as u16)
+                    .ok_or_else(|| {
+                        BytecodeSchedulerError::Port("std.http.streamStart status must be an integer".to_string())
+                    })?;
+                fields.push(VmRecordField {
+                    name: "status".to_string(),
+                    value: ValueSlot::integer(i64::from(status)),
+                });
+                let headers = arguments.values().get(1).ok_or_else(|| {
+                    BytecodeSchedulerError::Port("std.http.streamStart requires headers".to_string())
+                })?;
+                fields.push(VmRecordField {
+                    name: "headers".to_string(),
+                    value: *headers,
+                });
+            }
+            "std.http.stream.chunk" | "std.http.streamChunk" => {
+                let value = arguments.values().first().ok_or_else(|| {
+                    BytecodeSchedulerError::Port("std.http.streamChunk requires value".to_string())
+                })?;
+                fields.push(VmRecordField {
+                    name: "value".to_string(),
+                    value: *value,
+                });
+            }
+            "std.http.stream.end" | "std.http.streamEnd" => {}
+            _ => unreachable!("tag match guarantees adapter match"),
+        }
+        let event = heap
+            .allocate_record(&fields, CompactTypeTag::new(0), ValueFlags::new(0))
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+            image,
+            vec![event].into_boxed_slice(),
+        ));
+        Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+            resume,
+            outcome,
+        }))
+    }
+
+    fn execute_bytes_from_utf8(
+        &self,
+        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        argument: Option<&ValueSlot>,
+        heap: &mut dyn VmHeap,
+        resume: VmResumeToken,
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+        let argument = argument.ok_or_else(|| {
+            BytecodeSchedulerError::Port("core.bytes.fromUtf8 requires one argument".to_string())
+        })?;
+        let text = string_argument_value(heap, &image, argument)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let bytes = heap
+            .alloc_bytes(text.into_bytes())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+            image,
+            vec![bytes].into_boxed_slice(),
+        ));
+        Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+            resume,
+            outcome,
+        }))
+    }
+
+    fn execute_duration_milliseconds(
+        &self,
+        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        argument: Option<&ValueSlot>,
+        heap: &mut dyn VmHeap,
+        resume: VmResumeToken,
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+        let argument = argument.ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "core.duration.milliseconds requires one argument".to_string(),
+            )
+        })?;
+        let millis = argument
+            .as_integer()
+            .or_else(|| {
+                argument
+                    .as_number()
+                    .filter(|value| value.fract() == 0.0)
+                    .map(|value| value as i64)
+            })
+            .ok_or_else(|| {
+                BytecodeSchedulerError::Port(
+                    "core.duration.milliseconds requires an integer millisecond value"
+                        .to_string(),
+                )
+            })?;
+        let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+            image,
+            vec![ValueSlot::integer(millis)].into_boxed_slice(),
+        ));
+        Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+            resume,
+            outcome,
+        }))
+    }
+
+    fn execute_config_require(
+        &self,
+        arguments: &skiff_runtime_vm::VmOwnedValues,
+        heap: &mut dyn VmHeap,
+        resume: VmResumeToken,
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+        let key = arguments
+            .values()
+            .first()
+            .and_then(|value| string_argument_value(heap, arguments.image(), value).ok());
+        let value = if key.as_deref() == Some("skiff.test.ingressUrl") {
+            self.self_ingress
+                .as_ref()
+                .map(|context| context.origin.clone())
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let value = heap
+            .alloc_string(value)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
+            arguments.image().clone(),
+            vec![value].into_boxed_slice(),
+        ));
+        Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+            resume,
+            outcome,
+        }))
+    }
+
+    fn execute_sleep(
+        &self,
+        image: Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+        argument: Option<&ValueSlot>,
+        heap: &mut dyn VmHeap,
+        resume: VmResumeToken,
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+        let argument = argument.ok_or_else(|| {
+            BytecodeSchedulerError::Port("std.time.sleep requires one argument".to_string())
+        })?;
+        let millis = sleep_millis_argument(heap, &image, argument)?;
+        if millis == 0 {
+            return Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+                resume,
+                outcome: ResumeOutcome::Empty,
+            }));
+        }
+
+        let completion = self
+            .pending
+            .begin(RootEscrow::new(Box::new(BytecodeRequestEmptyRoots)))
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let operation = resume.into_pending(completion.ticket());
+        spawn_sleep_timer(completion, self.cancellation.clone(), self.deadline, millis)?;
+        Ok(BytecodeAdapterHandoff::Pending(operation))
+    }
+
+    fn publish_pending(
+        &self,
+        operation: skiff_runtime_vm::PendingOperation,
+        suspended: BytecodeRequestSuspended,
+    ) -> Result<(), BytecodeSchedulerError> {
+        self.pending
+            .publish_operation(operation, suspended, Arc::clone(&self.queue))
+            .map(|_| ())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))
+    }
+}
+
+fn linked_package_symbol_type_tag(
+    resume: &VmResumeToken,
+    symbol_path: &str,
+) -> Result<CompactTypeTag, BytecodeSchedulerError> {
+    let function = resume
+        .image()
+        .functions()
+        .get(resume.function().get() as usize)
+        .filter(|function| function.index() == resume.function())
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "bytecode HTTP error site has no exact linked function".to_string(),
+            )
+        })?;
+    let mut matches = resume
+        .image()
+        .candidate()
+        .types()
+        .iter()
+        .filter(|entry| entry.origin().specialization() == Some(function.key()))
+        .filter(|entry| {
+            matches!(
+                entry.type_ref(),
+                TypeRefIr::PackageSymbol { symbol } if symbol.symbol_path == symbol_path
+            )
+        });
+    let entry = matches.next().ok_or_else(|| {
+        BytecodeSchedulerError::Port(
+            "bytecode HTTP error type is absent from the exact linked function".to_string(),
+        )
+    })?;
+    if matches.next().is_some() {
+        return Err(BytecodeSchedulerError::Port(
+            "bytecode HTTP error type is ambiguous in the exact linked function".to_string(),
+        ));
+    }
+    Ok(CompactTypeTag::new(entry.index().get()))
+}
+
+fn string_argument_value(
+    heap: &mut dyn VmHeap,
+    image: &Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+    value: &ValueSlot,
+) -> Result<String, VmHeapError> {
+    if let Some(handle) = value.as_const_ref() {
+        let index = skiff_runtime_linked_bytecode::FrozenConstantNodeIndex::new(
+            u32::try_from(handle.get()).map_err(|_| VmHeapError::InvalidValueMetadata)?,
+        );
+        let node = image
+            .candidate()
+            .frozen_constant_nodes()
+            .get(index.get() as usize)
+            .filter(|node| node.index() == index)
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        if let skiff_runtime_linked_bytecode::LinkedFrozenConstantValue::Literal(
+            skiff_artifact_model::LiteralIr::String { value },
+        ) = node.value()
+        {
+            return Ok(value.clone());
+        }
+        return Err(VmHeapError::InvalidValueMetadata);
+    }
+    heap.string_value(value)
+}
+
+const TIME_SLEEP_MAX_MILLIS: u64 = 60_000;
+
+struct BytecodeRequestEmptyRoots;
+
+impl VmRootSource for BytecodeRequestEmptyRoots {
+    fn visit_roots(
+        &self,
+        _visitor: &mut dyn skiff_runtime_model::vm_root::VmRootVisitor,
+    ) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+}
+
+impl RootEscrowBacking for BytecodeRequestEmptyRoots {
+    fn root_count(&self) -> usize {
+        0
+    }
+
+    fn restore_roots(self: Box<Self>) {}
+
+    fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {}
+}
+
+fn sleep_millis_argument(
+    heap: &mut dyn VmHeap,
+    image: &Arc<skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage>,
+    value: &ValueSlot,
+) -> Result<u64, BytecodeSchedulerError> {
+    let millis = if let Some(handle) = value.as_const_ref() {
+        let index = skiff_runtime_linked_bytecode::FrozenConstantNodeIndex::new(
+            u32::try_from(handle.get()).map_err(|_| {
+                BytecodeSchedulerError::Port(
+                    "std.time.sleep duration must be an integer millisecond payload".to_string(),
+                )
+            })?,
+        );
+        let node = image
+            .candidate()
+            .frozen_constant_nodes()
+            .get(index.get() as usize)
+            .filter(|node| node.index() == index)
+            .ok_or_else(|| {
+                BytecodeSchedulerError::Port(
+                    "std.time.sleep duration must be an integer millisecond payload".to_string(),
+                )
+            })?;
+        let skiff_runtime_linked_bytecode::LinkedFrozenConstantValue::Literal(
+            skiff_artifact_model::LiteralIr::Number { value },
+        ) = node.value()
+        else {
+            return Err(BytecodeSchedulerError::Port(
+                "std.time.sleep duration must be an integer millisecond payload".to_string(),
+            ));
+        };
+        value.as_i64().ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "std.time.sleep duration must be an integer millisecond payload".to_string(),
+            )
+        })?
+    } else {
+        value.as_integer().ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "std.time.sleep duration must be an integer millisecond payload".to_string(),
+            )
+        })?
+    };
+    let _ = heap;
+    Ok(clamp_sleep_millis(millis))
+}
+
+fn clamp_sleep_millis(millis: i64) -> u64 {
+    if millis <= 0 {
+        0
+    } else {
+        (millis as u64).min(TIME_SLEEP_MAX_MILLIS)
+    }
+}
+
+fn spawn_sleep_timer(
+    completion: VmCompletionHandle<BytecodeRequestSuspended>,
+    cancellation: CancellationToken,
+    deadline: Option<Instant>,
+    millis: u64,
+) -> Result<(), BytecodeSchedulerError> {
+    let handle = tokio::runtime::Handle::try_current().map_err(|_| {
+        BytecodeSchedulerError::Port(
+            "std.time.sleep requires a Tokio runtime for pending wake publication".to_string(),
+        )
+    })?;
+    let _ = handle.spawn(async move {
+        let sleep = tokio::time::sleep(std::time::Duration::from_millis(millis));
+        tokio::pin!(sleep);
+        let cancel = cancellation.wait_cancelled();
+        tokio::pin!(cancel);
+
+        if let Some(deadline) = deadline {
+            let deadline_sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(deadline));
+            tokio::pin!(deadline_sleep);
+            tokio::select! {
+                _ = &mut sleep => {
+                    let _ = completion.complete(ResumeOutcome::Empty);
+                }
+                _ = &mut cancel => {
+                    let _ = completion.cancel(ResumeOutcome::InternalTerminal(
+                        VmInternalTerminal::OwnerStopped,
+                    ));
+                }
+                _ = &mut deadline_sleep => {
+                    let _ = completion.deadline(ResumeOutcome::Failure(VmError::Budget(
+                        VmBudgetError::DeadlineExceeded,
+                    )));
+                }
+            }
+        } else {
+            tokio::select! {
+                _ = &mut sleep => {
+                    let _ = completion.complete(ResumeOutcome::Empty);
+                }
+                _ = &mut cancel => {
+                    let _ = completion.cancel(ResumeOutcome::InternalTerminal(
+                        VmInternalTerminal::OwnerStopped,
+                    ));
+                }
+            }
+        }
+    });
+    Ok(())
 }
 
 impl BytecodeChildExecutor<VmFiber> for RequestAdapterExecutor {
@@ -194,16 +1049,7 @@ impl BytecodeChildExecutor<VmFiber> for RequestAdapterExecutor {
         invocation: <VmFiber as BytecodeUnit>::AdapterInvocation,
         heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeHandoff<VmFiber>, BytecodeSchedulerError> {
-        let request_url = invocation
-            .arguments()
-            .values()
-            .first()
-            .and_then(|value| {
-                heap.record_field(value, "url")
-                    .ok()
-                    .and_then(|url| heap.string_value(&url).ok())
-            });
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
         let (adapter_index, arguments, resume) = invocation.into_parts();
         let image = Arc::clone(arguments.image());
         let adapter = image
@@ -211,113 +1057,59 @@ impl BytecodeChildExecutor<VmFiber> for RequestAdapterExecutor {
             .host_effect_adapters()
             .get(adapter_index.get() as usize)
             .filter(|row| row.index() == adapter_index)
-            .ok_or_else(|| BytecodeSchedulerError::Port("host adapter is out of bounds".to_string()))?;
+            .ok_or_else(|| {
+                BytecodeSchedulerError::Port("host adapter is out of bounds".to_string())
+            })?;
         match adapter.binding_key().as_str() {
             "std.http.client.stream" => {
-                self.acquire_self_ingress()
-                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-                let headers = heap
-                    .allocate_array(&[], CompactTypeTag::new(0), ValueFlags::new(0))
-                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-                let handle = heap
-                    .allocate_record(
-                        &[
-                            VmRecordField {
-                                name: "status".to_string(),
-                                value: ValueSlot::integer(200),
-                            },
-                            VmRecordField {
-                                name: "headers".to_string(),
-                                value: headers,
-                            },
-                            VmRecordField {
-                                name: "body".to_string(),
-                                value: ValueSlot::null(),
-                            },
-                        ],
-                        CompactTypeTag::new(0),
-                        ValueFlags::new(0),
-                    )
-                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-                let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
-                    image,
-                    vec![handle].into_boxed_slice(),
-                ));
-                Ok(BytecodeHandoff { resume, outcome })
+                self.execute_http_stream(image, arguments.values().first(), heap, resume)
             }
             "std.http.client.request" => {
-                if let Some(url) = request_url {
-                    if url.contains("example.test") {
-                        let body = if url.contains("/from-entry") {
-                            b"double-body".to_vec()
-                        } else if url.contains("/direct") {
-                            b"direct-double".to_vec()
-                        } else {
-                            b"response".to_vec()
-                        };
-                        let headers = heap
-                            .allocate_array(&[], CompactTypeTag::new(0), ValueFlags::new(0))
-                            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-                        let body = heap
-                            .alloc_bytes(body)
-                            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-                        let response = heap
-                            .allocate_record(
-                                &[
-                                    VmRecordField {
-                                        name: "status".to_string(),
-                                        value: ValueSlot::integer(200),
-                                    },
-                                    VmRecordField {
-                                        name: "headers".to_string(),
-                                        value: headers,
-                                    },
-                                    VmRecordField {
-                                        name: "body".to_string(),
-                                        value: body,
-                                    },
-                                ],
-                                CompactTypeTag::new(0),
-                                ValueFlags::new(0),
-                            )
-                            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-                        let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
-                            image,
-                            vec![response].into_boxed_slice(),
-                        ));
-                        return Ok(BytecodeHandoff { resume, outcome });
-                    }
-                }
-                self.acquire_self_ingress()
-                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-                let result = VmOwnedValues::from_values(image, Box::new([]));
-                Ok(BytecodeHandoff {
+                self.execute_http_request(image, arguments.values().first(), heap, resume)
+            }
+            "std.time.sleep" => self.execute_sleep(image, arguments.values().first(), heap, resume),
+            "std.config.require" => self.execute_config_require(&arguments, heap, resume),
+            "core.bytes.fromUtf8" => {
+                self.execute_bytes_from_utf8(image, arguments.values().first(), heap, resume)
+            }
+            "core.duration.milliseconds" => {
+                self.execute_duration_milliseconds(image, arguments.values().first(), heap, resume)
+            }
+            "std.http.stream.start"
+            | "std.http.streamStart"
+            | "std.http.stream.chunk"
+            | "std.http.streamChunk"
+            | "std.http.stream.end"
+            | "std.http.streamEnd" => {
+                self.execute_http_stream_event(
+                    Arc::clone(&image),
+                    &arguments,
+                    heap,
                     resume,
-                    outcome: ResumeOutcome::Values(result),
-                })
+                    adapter.binding_key().as_str(),
+                )
             }
-            "std.config.require" => {
-                let value = heap
-                    .alloc_string(String::new())
-                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-                let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
-                    image,
-                    vec![value].into_boxed_slice(),
-                ));
-                Ok(BytecodeHandoff { resume, outcome })
-            }
-            _ => {
-                let result_count = adapter.signature().result_types().len();
-                let values = (0..result_count)
-                    .map(|_| ValueSlot::null())
-                    .collect::<Vec<_>>();
-                let outcome = ResumeOutcome::Values(VmOwnedValues::from_values(
-                    image,
-                    values.into_boxed_slice(),
-                ));
-                Ok(BytecodeHandoff { resume, outcome })
-            }
+            _ => Err(BytecodeSchedulerError::UnsupportedAdapter),
         }
+    }
+
+    fn park_adapter(
+        &self,
+        operation: skiff_runtime_vm::PendingOperation,
+        suspended: BytecodeRequestSuspended,
+        _heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<(), BytecodeSchedulerError> {
+        self.publish_pending(operation, suspended)
+    }
+
+    fn execute_stream_next(
+        &self,
+        invocation: <VmFiber as BytecodeUnit>::ChildInvocation,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodeSchedulerError> {
+        self.poll_stream_next(invocation, heap, budget)
     }
 }
 
@@ -332,6 +1124,8 @@ pub struct BytecodeRequestExecutionInput {
 
 pub struct BytecodeRequestExecutionHandles {
     pub request_heap_limits: RequestHeapLimits,
+    pub http_executor: Option<Arc<dyn BytecodeHttpExecutor>>,
+    pub self_ingress: Option<BytecodeSelfIngressContext>,
 }
 
 /// Execution ports supplied to the bytecode scheduler.
@@ -361,6 +1155,7 @@ pub enum BytecodeRequestRunOutcome {
 pub struct BytecodeRequestExecution {
     driver: BytecodeRequestDriver<VmFiber>,
     mode: String,
+    raw_http_adapter: bool,
     execution_budget: Arc<ExecutionBudget>,
 }
 
@@ -385,6 +1180,11 @@ impl BytecodeRequestExecution {
         self.driver.take_pending_wake()
     }
 
+    /// Waits for the response bridge or a host adapter to publish a wake.
+    pub async fn wait_pending_wake(&mut self) -> RequestResult<BytecodeRequestPendingWake> {
+        self.driver.wait_pending_wake().await
+    }
+
     pub fn is_parked(&self) -> bool {
         self.driver.state == BytecodeRequestDriverState::Parked
     }
@@ -394,19 +1194,26 @@ impl BytecodeRequestExecution {
         outcome: BytecodeRequestDriverOutcome<VmFiber>,
     ) -> RequestResult<BytecodeRequestRunOutcome> {
         match outcome {
-            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+            BytecodeRequestDriverOutcome::Complete {
+                result,
+                stream_sent,
+            } => {
                 if stream_sent {
                     return Ok(BytecodeRequestRunOutcome::Complete(
                         BoundaryResponse::StreamSent,
                     ));
                 }
-                let values = result.map_err(|error| {
-                    vm_error_to_request_error(&self.execution_budget, error)
-                })?;
+                let values = result
+                    .map_err(|error| vm_error_to_request_error(&self.execution_budget, error))?;
                 if self.mode == "serverStream" {
                     return Err(RequestError::Decode(
                         "serverStream request completed without a response stream".to_string(),
                     ));
+                }
+                if self.raw_http_adapter {
+                    let response =
+                        http_response_from_vm_values(&mut *self.driver.heap, values.values())?;
+                    return Ok(BytecodeRequestRunOutcome::Complete(response));
                 }
                 let payload = json_payload_from_value_slots(values.values())?;
                 Ok(BytecodeRequestRunOutcome::Complete(
@@ -435,7 +1242,7 @@ pub fn start_runtime_bytecode_request(
 pub fn start_runtime_bytecode_request_with_ports(
     input: BytecodeRequestExecutionInput,
     response_events: Arc<dyn ResponseEventSink>,
-    ports: BytecodeRequestExecutionPorts,
+    _ports: BytecodeRequestExecutionPorts,
 ) -> RequestResult<BytecodeRequestExecution> {
     let request_id = input.request.request_id.clone();
     let mode = input.request.mode.clone();
@@ -460,7 +1267,9 @@ pub fn start_runtime_bytecode_request_with_ports(
     let owner_pin = Arc::clone(&image);
     let pinned = PinnedDeploymentEntry::try_new(image, entry)
         .map_err(pinned_entry_error_to_request_error)?;
+    let resource_table: ResourceTable = Default::default();
     let mut request_heap = RequestVmHeap::new(handles.request_heap_limits);
+    request_heap.set_resource_table(resource_table.clone());
     let arguments = gateway_entry_arguments(&request, &mut request_heap)?;
     let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits())
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
@@ -478,6 +1287,12 @@ pub fn start_runtime_bytecode_request_with_ports(
     let stream_supervisor: Arc<dyn BytecodeStreamSupervisor<VmFiber>> = supervisor.clone();
     let child_executor = Some(Arc::new(RequestAdapterExecutor::new(
         request.test_effects_enabled,
+        handles.http_executor.clone(),
+        handles.self_ingress.clone(),
+        resource_table,
+        queue.clone(),
+        cancellation.clone(),
+        execution_budget.deadline(),
     )) as Arc<dyn BytecodeChildExecutor<VmFiber>>);
     let scheduler = BytecodeScheduler::new(
         fiber,
@@ -488,8 +1303,11 @@ pub fn start_runtime_bytecode_request_with_ports(
     );
 
     let heap: Box<dyn VmHeap + Send> = Box::new(request_heap);
-    let budget: Box<dyn VmBudget + Send> =
-        Box::new(BytecodeVmBudget::new(execution_budget.clone(), cancelled, cancellation));
+    let budget: Box<dyn VmBudget + Send> = Box::new(BytecodeVmBudget::new(
+        execution_budget.clone(),
+        cancelled,
+        cancellation,
+    ));
     let driver = BytecodeRequestDriver::new(
         scheduler,
         child_executor,
@@ -504,6 +1322,10 @@ pub fn start_runtime_bytecode_request_with_ports(
     Ok(BytecodeRequestExecution {
         driver,
         mode,
+        raw_http_adapter: request
+            .http_adapter
+            .as_ref()
+            .is_some_and(|adapter| adapter.kind == HttpAdapterKind::RawHttp),
         execution_budget,
     })
 }
@@ -524,7 +1346,7 @@ enum BytecodeRequestDrainState {
 }
 
 trait BytecodeRequestStreamDrain<U: BytecodeUnit>: Send {
-    fn drain(&mut self) -> RequestResult<BytecodeRequestDrainState>;
+    fn drain(&mut self, heap: &mut dyn VmHeap) -> RequestResult<BytecodeRequestDrainState>;
 }
 
 struct NoopWake;
@@ -545,11 +1367,10 @@ struct RequestResponseStream {
 }
 
 impl BytecodeRequestStreamDrain<VmFiber> for RequestResponseStream {
-    fn drain(&mut self) -> RequestResult<BytecodeRequestDrainState> {
+    fn drain(&mut self, heap: &mut dyn VmHeap) -> RequestResult<BytecodeRequestDrainState> {
         let mut state = BytecodeRequestDrainState::Empty;
-        loop {
-            match self.consumer.poll_next(Arc::new(NoopWake)) {
-                StreamPoll::Pending => break,
+        while let Some(poll) = self.consumer.poll_next_ready() {
+            match poll {
                 StreamPoll::Rejected(reason) => {
                     return Err(RequestError::Decode(format!(
                         "bytecode response stream consumer rejected: {reason:?}"
@@ -562,9 +1383,8 @@ impl BytecodeRequestStreamDrain<VmFiber> for RequestResponseStream {
                                 .to_string(),
                         ));
                     }
-                    self.writer.start_runtime_stream()?;
-                    let payload = json_payload_from_value_slots(values.values())?;
-                    self.writer.send_chunk(payload)?;
+                    let event = http_stream_event_from_vm_values(heap, values.values())?;
+                    self.writer.send_binary_http_event(event)?;
                     state = BytecodeRequestDrainState::Delivered;
                 }
                 StreamPoll::Ready(StreamEvent::End) => {
@@ -574,8 +1394,7 @@ impl BytecodeRequestStreamDrain<VmFiber> for RequestResponseStream {
                                 .to_string(),
                         ));
                     }
-                    self.writer.start_runtime_stream()?;
-                    self.writer.finish()?;
+                    self.writer.require_exact_http_terminal()?;
                     return Ok(BytecodeRequestDrainState::Terminal);
                 }
                 StreamPoll::Ready(StreamEvent::Error(error)) => {
@@ -593,6 +1412,7 @@ impl BytecodeRequestStreamDrain<VmFiber> for RequestResponseStream {
                 StreamPoll::Ready(StreamEvent::Cancelled) => {
                     return Err(RequestError::Cancelled);
                 }
+                StreamPoll::Pending => break,
             }
         }
         Ok(state)
@@ -607,12 +1427,14 @@ type DriverPendingWake<U> = PendingWake<
 
 struct InMemoryWakeQueue<U: BytecodeUnit> {
     wakes: Mutex<VecDeque<DriverPendingWake<U>>>,
+    notify: tokio::sync::Notify,
 }
 
 impl<U: BytecodeUnit> InMemoryWakeQueue<U> {
     fn new() -> Self {
         Self {
             wakes: Mutex::new(VecDeque::new()),
+            notify: tokio::sync::Notify::new(),
         }
     }
 
@@ -621,6 +1443,24 @@ impl<U: BytecodeUnit> InMemoryWakeQueue<U> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop_front()
+    }
+
+    async fn take_async(&self) -> Option<DriverPendingWake<U>>
+    where
+        U: Send,
+    {
+        loop {
+            if let Some(wake) = self.take() {
+                return Some(wake);
+            }
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Some(wake) = self.take() {
+                return Some(wake);
+            }
+            notified.await;
+        }
     }
 }
 
@@ -637,6 +1477,7 @@ where
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push_back(wake);
+        self.notify.notify_one();
     }
 }
 
@@ -662,7 +1503,7 @@ where
         // includes `ResumeOutcome::StreamEnd`; restoring it through the scheduler
         // reaches the VM's independent end resume PC instead of an item path or a
         // producer backpressure `Empty`.
-        BytecodeScheduler::resume_from_pending_wake(self, ports)
+        resume_pending_wake(self, ports)
     }
 }
 
@@ -750,18 +1591,26 @@ where
                 "bytecode request is not parked".to_string(),
             ));
         }
-        let scheduler = resume
-            .into_scheduler(self.ports())
-            .map_err(|error| {
-                let error = (self.error_map)(error);
-                self.state = BytecodeRequestDriverState::Failed;
-                error
-            })?;
+        let scheduler = resume.into_scheduler(self.ports()).map_err(|error| {
+            let error = (self.error_map)(error);
+            self.state = BytecodeRequestDriverState::Failed;
+            error
+        })?;
         self.advance(scheduler)
     }
 
     fn take_pending_wake(&self) -> Option<DriverPendingWake<U>> {
         self.queue.take()
+    }
+
+    async fn wait_pending_wake(&mut self) -> RequestResult<DriverPendingWake<U>>
+    where
+        U: Send,
+    {
+        self.queue
+            .take_async()
+            .await
+            .ok_or_else(|| RequestError::Decode("bytecode request wake queue closed".to_string()))
     }
 
     fn advance(
@@ -777,7 +1626,7 @@ where
             }
         };
         let drain_state = match self.stream_drain.as_mut() {
-            Some(drain) => match drain.drain() {
+            Some(drain) => match drain.drain(&mut *self.heap) {
                 Ok(state) => state,
                 Err(error) => {
                     self.state = BytecodeRequestDriverState::Failed;
@@ -807,7 +1656,6 @@ fn scheduler_error_map(
 ) -> Box<dyn Fn(BytecodeSchedulerError) -> RequestError + Send + Sync> {
     Box::new(move |error| scheduler_error_to_request_error(&execution_budget, error))
 }
-
 
 /// Executes one scalar bytecode request against a verified deployment image.
 pub fn execute_runtime_bytecode_request(
@@ -841,14 +1689,24 @@ pub fn execute_runtime_bytecode_request_with_ports(
     } = target;
     let pinned = PinnedDeploymentEntry::try_new(image, entry)
         .map_err(pinned_entry_error_to_request_error)?;
+    let resource_table: ResourceTable = Default::default();
     let mut heap = RequestVmHeap::new(handles.request_heap_limits);
+    heap.set_resource_table(resource_table.clone());
     let arguments = gateway_entry_arguments(&request, &mut heap)?;
     let fiber = Vm::start(pinned, arguments.into_boxed_slice(), vm_limits())
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
+    let queue = Arc::new(InMemoryWakeQueue::new());
+    let child_cancellation = cancellation.clone();
     let mut budget = BytecodeVmBudget::new(execution_budget.clone(), cancelled, cancellation);
 
     let child_executor = Some(Arc::new(RequestAdapterExecutor::new(
         request.test_effects_enabled,
+        handles.http_executor.clone(),
+        handles.self_ingress.clone(),
+        resource_table,
+        queue.clone(),
+        child_cancellation,
+        execution_budget.deadline(),
     )) as Arc<dyn BytecodeChildExecutor<VmFiber>>);
     let outcome = BytecodeScheduler::new(
         fiber,
@@ -867,6 +1725,215 @@ pub fn execute_runtime_bytecode_request_with_ports(
     let values = result.map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let payload = json_payload_from_value_slots(values.values())?;
     Ok(BoundaryResponse::payload(payload))
+}
+
+fn example_test_http_response(url: &str) -> (u16, Vec<u8>) {
+    if url.contains("/from-entry") {
+        (200, b"double-body".to_vec())
+    } else if url.contains("/direct") {
+        (202, b"direct-double".to_vec())
+    } else {
+        (200, b"response".to_vec())
+    }
+}
+
+fn materialize_http_client_request(
+    heap: &mut dyn VmHeap,
+    input: &ValueSlot,
+) -> Result<serde_json::Value, BytecodeSchedulerError> {
+    let string_field = |field: &str| -> Result<String, BytecodeSchedulerError> {
+        let value = heap
+            .record_field(input, field)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        heap.string_value(&value)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))
+    };
+    let method = string_field("method")?;
+    let url = string_field("url")?;
+
+    let headers_slot = heap
+        .record_field(input, "headers")
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let mut headers = Vec::new();
+    for index in 0..heap
+        .array_len(&headers_slot)
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?
+    {
+        let item = heap
+            .array_get(&headers_slot, index)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let name = heap
+            .record_field(&item, "name")
+            .and_then(|slot| heap.string_value(&slot))
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let value = heap
+            .record_field(&item, "value")
+            .and_then(|slot| heap.string_value(&slot))
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        headers.push(serde_json::json!({ "name": name, "value": value }));
+    }
+
+    let body_slot = heap
+        .record_field(input, "body")
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let body = if body_slot.is_null() {
+        serde_json::Value::Null
+    } else {
+        let bytes = heap
+            .bytes_value(&body_slot)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        bytes_value(&bytes)
+    };
+
+    let timeout_slot = heap
+        .record_field(input, "timeoutMs")
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let timeout_ms = if timeout_slot.is_null() {
+        serde_json::Value::Null
+    } else {
+        timeout_slot
+            .as_integer()
+            .map_or(serde_json::Value::Null, |value| serde_json::json!(value))
+    };
+
+    Ok(serde_json::json!({
+        "method": method,
+        "url": url,
+        "headers": headers,
+        "body": body,
+        "timeoutMs": timeout_ms,
+    }))
+}
+
+fn materialize_name_values_dyn<'a>(
+    items: impl IntoIterator<Item = &'a HttpNameValue>,
+    heap: &mut dyn VmHeap,
+) -> Result<ValueSlot, BytecodeSchedulerError> {
+    let mut records = Vec::new();
+    for item in items {
+        let name = heap
+            .alloc_string(item.name.clone())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let value = heap
+            .alloc_string(item.value.clone())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let record = heap
+            .allocate_record(
+                &[
+                    VmRecordField {
+                        name: "name".to_string(),
+                        value: name,
+                    },
+                    VmRecordField {
+                        name: "value".to_string(),
+                        value,
+                    },
+                ],
+                CompactTypeTag::new(0),
+                ValueFlags::new(0),
+            )
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        records.push(record);
+    }
+    heap.allocate_array(&records, CompactTypeTag::new(0), ValueFlags::new(0))
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))
+}
+
+fn materialize_http_response(
+    heap: &mut dyn VmHeap,
+    value: &serde_json::Value,
+) -> Result<ValueSlot, BytecodeSchedulerError> {
+    let status = value
+        .get("status")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port("HTTP response status is missing".to_string())
+        })?;
+    let headers_value = value
+        .get("headers")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port("HTTP response headers are not an array".to_string())
+        })?;
+    let mut header_slots = Vec::with_capacity(headers_value.len());
+    for header in headers_value {
+        let name = header
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                BytecodeSchedulerError::Port("HTTP response header name is missing".to_string())
+            })?;
+        let value = header
+            .get("value")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                BytecodeSchedulerError::Port("HTTP response header value is missing".to_string())
+            })?;
+        let name = heap
+            .alloc_string(name.to_string())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let value = heap
+            .alloc_string(value.to_string())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let record = heap
+            .allocate_record(
+                &[
+                    VmRecordField {
+                        name: "name".to_string(),
+                        value: name,
+                    },
+                    VmRecordField {
+                        name: "value".to_string(),
+                        value,
+                    },
+                ],
+                CompactTypeTag::new(0),
+                ValueFlags::new(0),
+            )
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        header_slots.push(record);
+    }
+    let headers = heap
+        .allocate_array(&header_slots, CompactTypeTag::new(0), ValueFlags::new(0))
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let body_value = value
+        .get("body")
+        .and_then(bytes_payload)
+        .ok_or_else(|| BytecodeSchedulerError::Port("HTTP response body is missing".to_string()))?;
+    let body = heap
+        .alloc_bytes(body_value)
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    heap.allocate_record(
+        &[
+            VmRecordField {
+                name: "status".to_string(),
+                value: ValueSlot::integer(status as i64),
+            },
+            VmRecordField {
+                name: "headers".to_string(),
+                value: headers,
+            },
+            VmRecordField {
+                name: "body".to_string(),
+                value: body,
+            },
+        ],
+        CompactTypeTag::new(0),
+        ValueFlags::new(0),
+    )
+    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))
+}
+
+fn url_origin(url: &str) -> Option<String> {
+    let scheme_end = url.find("://")?;
+    let authority_start = scheme_end + 3;
+    let rest = &url[authority_start..];
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    Some(format!(
+        "{}{}",
+        &url[..authority_start],
+        &rest[..authority_end]
+    ))
 }
 
 fn gateway_entry_arguments(
@@ -976,7 +2043,9 @@ fn materialize_name_values(
 }
 
 fn heap_error_to_request_error(error: VmHeapError) -> RequestError {
-    RequestError::Decode(format!("bytecode gateway heap materialization failed: {error}"))
+    RequestError::Decode(format!(
+        "bytecode gateway heap materialization failed: {error}"
+    ))
 }
 
 fn scheduler_error_to_request_error(
@@ -1082,6 +2151,127 @@ fn json_bytes_from_value(value: &ValueSlot) -> RequestResult<Vec<u8>> {
         "scalar bytecode VM returned unsupported value kind {:?}",
         value.kind()
     )))
+}
+
+fn http_response_from_vm_values(
+    heap: &mut dyn VmHeap,
+    values: &[ValueSlot],
+) -> RequestResult<BoundaryResponse> {
+    let [record] = values else {
+        return Err(RequestError::Unsupported(
+            "HTTP gateway VM must return exactly one HTTP response record".to_string(),
+        ));
+    };
+    let status_slot = heap
+        .record_field(record, "status")
+        .map_err(heap_error_to_request_error)?;
+    let status = http_status_from_vm_slot(&status_slot)
+        .ok_or_else(|| {
+            RequestError::Unsupported(
+                "HTTP gateway response status must be an integer".to_string(),
+            )
+        })?;
+    let headers = http_headers_from_vm(heap, record, "headers")?
+        .into_iter()
+        .map(|header| HttpNameValue {
+            name: header.name,
+            value: header.value,
+        })
+        .collect();
+    let body_slot = heap
+        .record_field(record, "body")
+        .map_err(heap_error_to_request_error)?;
+    let body = heap
+        .bytes_value(&body_slot)
+        .map_err(heap_error_to_request_error)?;
+    Ok(BoundaryResponse::http(
+        body,
+        HttpResponseMetadata::new(status, headers),
+    ))
+}
+
+fn http_stream_event_from_vm_values(
+    heap: &mut dyn VmHeap,
+    values: &[ValueSlot],
+) -> RequestResult<HttpBoundaryResponseStreamEvent> {
+    let [record] = values else {
+        return Err(RequestError::Unsupported(
+            "HTTP stream VM must emit exactly one stream event record".to_string(),
+        ));
+    };
+    let tag_slot = heap
+        .record_field(record, "tag")
+        .map_err(heap_error_to_request_error)?;
+    let tag = heap
+        .string_value(&tag_slot)
+        .map_err(heap_error_to_request_error)?;
+    match tag.as_str() {
+        "start" => {
+            let status_slot = heap
+                .record_field(record, "status")
+                .map_err(heap_error_to_request_error)?;
+            let status = http_status_from_vm_slot(&status_slot).ok_or_else(|| {
+                RequestError::Unsupported(
+                    "HTTP stream start status must be an integer".to_string(),
+                )
+            })?;
+            let headers = http_headers_from_vm(heap, record, "headers")?;
+            Ok(HttpBoundaryResponseStreamEvent::Start { status, headers })
+        }
+        "chunk" => {
+            let value_slot = heap
+                .record_field(record, "value")
+                .map_err(heap_error_to_request_error)?;
+            let bytes = heap
+                .bytes_value(&value_slot)
+                .map_err(heap_error_to_request_error)?;
+            Ok(HttpBoundaryResponseStreamEvent::Chunk(bytes))
+        }
+        "end" => Ok(HttpBoundaryResponseStreamEvent::End),
+        _ => Err(RequestError::Unsupported(format!(
+            "unsupported HTTP stream event tag {tag}"
+        ))),
+    }
+}
+
+fn http_status_from_vm_slot(slot: &ValueSlot) -> Option<u16> {
+    slot.as_integer()
+        .and_then(|value| u16::try_from(value).ok())
+        .or_else(|| {
+            slot.as_number().and_then(|value| {
+                (value.fract() == 0.0 && (0.0..=65535.0).contains(&value))
+                    .then_some(value as u16)
+            })
+        })
+}
+
+fn http_headers_from_vm(
+    heap: &mut dyn VmHeap,
+    record: &ValueSlot,
+    field: &str,
+) -> RequestResult<Vec<HttpBoundaryNameValue>> {
+    let headers_slot = heap
+        .record_field(record, field)
+        .map_err(heap_error_to_request_error)?;
+    let header_count = heap
+        .array_len(&headers_slot)
+        .map_err(heap_error_to_request_error)?;
+    let mut headers = Vec::with_capacity(header_count);
+    for index in 0..header_count {
+        let header = heap
+            .array_get(&headers_slot, index)
+            .map_err(heap_error_to_request_error)?;
+        let name = heap
+            .record_field(&header, "name")
+            .and_then(|slot| heap.string_value(&slot))
+            .map_err(heap_error_to_request_error)?;
+        let value = heap
+            .record_field(&header, "value")
+            .and_then(|slot| heap.string_value(&slot))
+            .map_err(heap_error_to_request_error)?;
+        headers.push(HttpBoundaryNameValue { name, value });
+    }
+    Ok(headers)
 }
 
 struct BytecodeVmBudget {
@@ -1199,21 +2389,17 @@ mod tests {
     use skiff_artifact_model::{IngressProtocol, IngressSelector};
     use skiff_runtime_model::vm_value::ValueSlot;
 
-    use skiff_runtime_model::{
-        vm_heap::VmHeapError,
-        vm_root::VmRootVisitor,
-    };
+    use skiff_runtime_model::{vm_heap::VmHeapError, vm_root::VmRootVisitor};
     use skiff_runtime_scheduler::{
-        BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeStreamHandoff,
-        RootDisposition, RootEscrow, RootEscrowBacking,
+        BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
+        BytecodeStreamHandoff, RootDisposition, RootEscrow, RootEscrowBacking,
     };
 
     use super::*;
     use crate::{
         BinaryHttpRequest, BinaryHttpRequestMetadata, HttpAdapter, HttpAdapterCallable,
-        HttpAdapterKind, RequestEnvelope,
+        HttpAdapterKind, RequestEnvelope, ResponseEnd, ResponseEvent,
     };
-
 
     type TestControl = BytecodeControl<usize, usize, usize, usize, usize>;
     type TestSuspended = SuspendedTrampoline<TestUnit, usize>;
@@ -1273,11 +2459,7 @@ mod tests {
             }
         }
 
-        fn resume(
-            &mut self,
-            token: usize,
-            outcome: usize,
-        ) -> Result<(), BytecodeSchedulerError> {
+        fn resume(&mut self, token: usize, outcome: usize) -> Result<(), BytecodeSchedulerError> {
             if outcome == ERROR_OUTCOME {
                 return Err(BytecodeSchedulerError::UnsupportedPark);
             }
@@ -1364,7 +2546,7 @@ mod tests {
     }
 
     impl BytecodeRequestStreamDrain<TestUnit> for TestDrain {
-        fn drain(&mut self) -> RequestResult<BytecodeRequestDrainState> {
+        fn drain(&mut self, _heap: &mut dyn VmHeap) -> RequestResult<BytecodeRequestDrainState> {
             let items: Vec<usize> = self.stream.emitted.lock().unwrap().drain(..).collect();
             self.stream
                 .delivered
@@ -1461,10 +2643,7 @@ mod tests {
         }
     }
 
-    fn driver_for(
-        unit: TestUnit,
-        stream: Arc<FakeStream>,
-    ) -> BytecodeRequestDriver<TestUnit> {
+    fn driver_for(unit: TestUnit, stream: Arc<FakeStream>) -> BytecodeRequestDriver<TestUnit> {
         let queue = Arc::new(InMemoryWakeQueue::new());
         let supervisor: Arc<dyn BytecodeStreamSupervisor<TestUnit>> = stream.clone();
         let scheduler = BytecodeScheduler::new(
@@ -1513,9 +2692,15 @@ mod tests {
         let stream = Arc::new(FakeStream::new(TestStreamMode::Ready));
         let mut driver = driver_for(TestUnit::parked(7), Arc::clone(&stream));
 
-        assert!(matches!(driver.run().unwrap(), BytecodeRequestDriverOutcome::Parked));
+        assert!(matches!(
+            driver.run().unwrap(),
+            BytecodeRequestDriverOutcome::Parked
+        ));
         match resume_after_park(&mut driver, &stream, 42).unwrap() {
-            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+            BytecodeRequestDriverOutcome::Complete {
+                result,
+                stream_sent,
+            } => {
                 assert_eq!(result, 42);
                 assert!(!stream_sent);
             }
@@ -1528,10 +2713,16 @@ mod tests {
         let stream = Arc::new(FakeStream::new(TestStreamMode::Backpressure));
         let mut driver = driver_for(TestUnit::emit(7, 99), Arc::clone(&stream));
 
-        assert!(matches!(driver.run().unwrap(), BytecodeRequestDriverOutcome::Parked));
+        assert!(matches!(
+            driver.run().unwrap(),
+            BytecodeRequestDriverOutcome::Parked
+        ));
         assert_eq!(*stream.delivered.lock().unwrap(), [7]);
         match resume_after_park(&mut driver, &stream, 0).unwrap() {
-            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+            BytecodeRequestDriverOutcome::Complete {
+                result,
+                stream_sent,
+            } => {
                 assert_eq!(result, 99);
                 assert!(stream_sent);
             }
@@ -1546,7 +2737,10 @@ mod tests {
         let stream = Arc::new(FakeStream::new(TestStreamMode::Backpressure));
         let mut driver = driver_for(TestUnit::emit(7, 99), Arc::clone(&stream));
 
-        assert!(matches!(driver.run().unwrap(), BytecodeRequestDriverOutcome::Parked));
+        assert!(matches!(
+            driver.run().unwrap(),
+            BytecodeRequestDriverOutcome::Parked
+        ));
         let error = match resume_after_park(&mut driver, &stream, ERROR_OUTCOME) {
             Err(error) => error,
             Ok(_) => panic!("error resume must fail closed"),
@@ -1564,7 +2758,10 @@ mod tests {
         let mut driver = driver_for(TestUnit::emit(7, 99), Arc::clone(&stream));
 
         match driver.run().unwrap() {
-            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+            BytecodeRequestDriverOutcome::Complete {
+                result,
+                stream_sent,
+            } => {
                 assert_eq!(result, 99);
                 assert!(stream_sent);
             }
@@ -1596,13 +2793,8 @@ mod tests {
         },
     }
 
-    type StreamNextControl = BytecodeControl<
-        StreamNextOutcome,
-        StreamNextInvocation,
-        usize,
-        usize,
-        StreamNextResume,
-    >;
+    type StreamNextControl =
+        BytecodeControl<StreamNextOutcome, StreamNextInvocation, usize, usize, StreamNextResume>;
     type StreamNextSuspended = SuspendedTrampoline<StreamNextUnit, StreamNextResume>;
 
     struct StreamNextUnit {
@@ -1697,7 +2889,7 @@ mod tests {
             _invocation: usize,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeHandoff<StreamNextUnit>, BytecodeSchedulerError> {
+        ) -> Result<BytecodeAdapterHandoff<StreamNextUnit>, BytecodeSchedulerError> {
             Err(BytecodeSchedulerError::UnsupportedAdapter)
         }
 
@@ -1712,27 +2904,23 @@ mod tests {
                 end_resume,
             } = invocation;
             match self.mode {
-                StreamNextExecutorMode::Item => {
-                    Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
-                        resume: item_resume,
-                        outcome: StreamNextOutcome::Item(7),
-                    }))
-                }
-                StreamNextExecutorMode::End => {
-                    Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
-                        resume: end_resume,
-                        outcome: StreamNextOutcome::End,
-                    }))
-                }
+                StreamNextExecutorMode::Item => Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                    resume: item_resume,
+                    outcome: StreamNextOutcome::Item(7),
+                })),
+                StreamNextExecutorMode::End => Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                    resume: end_resume,
+                    outcome: StreamNextOutcome::End,
+                })),
                 StreamNextExecutorMode::Error => {
                     Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
                         resume: item_resume,
                         outcome: StreamNextOutcome::Failure("stream failed"),
                     }))
                 }
-                StreamNextExecutorMode::Pending => Ok(BytecodeStreamHandoff::Pending(
-                    StreamNextResume::Pending,
-                )),
+                StreamNextExecutorMode::Pending => {
+                    Ok(BytecodeStreamHandoff::Pending(StreamNextResume::Pending))
+                }
             }
         }
 
@@ -1807,7 +2995,10 @@ mod tests {
         let mut driver = stream_next_driver(executor);
 
         match driver.run().unwrap() {
-            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+            BytecodeRequestDriverOutcome::Complete {
+                result,
+                stream_sent,
+            } => {
                 assert_eq!(result, StreamNextOutcome::Item(7));
                 assert!(!stream_sent);
             }
@@ -1824,7 +3015,10 @@ mod tests {
         let mut driver = stream_next_driver(executor);
 
         match driver.run().unwrap() {
-            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+            BytecodeRequestDriverOutcome::Complete {
+                result,
+                stream_sent,
+            } => {
                 assert_eq!(result, StreamNextOutcome::End);
                 assert!(!stream_sent);
             }
@@ -1840,7 +3034,10 @@ mod tests {
         });
         let mut driver = stream_next_driver(Arc::clone(&executor));
 
-        assert!(matches!(driver.run().unwrap(), BytecodeRequestDriverOutcome::Parked));
+        assert!(matches!(
+            driver.run().unwrap(),
+            BytecodeRequestDriverOutcome::Parked
+        ));
         let (operation, suspended) = executor
             .pending
             .lock()
@@ -1855,7 +3052,10 @@ mod tests {
         };
 
         match driver.resume(resume).unwrap() {
-            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+            BytecodeRequestDriverOutcome::Complete {
+                result,
+                stream_sent,
+            } => {
                 assert_eq!(result, StreamNextOutcome::End);
                 assert!(!stream_sent);
             }
@@ -1872,7 +3072,10 @@ mod tests {
         let mut driver = stream_next_driver(executor);
 
         match driver.run().unwrap() {
-            BytecodeRequestDriverOutcome::Complete { result, stream_sent } => {
+            BytecodeRequestDriverOutcome::Complete {
+                result,
+                stream_sent,
+            } => {
                 assert_eq!(result, StreamNextOutcome::Failure("stream failed"));
                 assert!(!stream_sent);
             }
@@ -1912,6 +3115,91 @@ mod tests {
     }
 
     #[test]
+    fn sleep_millis_clamps_non_positive_and_max_duration() {
+        assert_eq!(clamp_sleep_millis(-1), 0);
+        assert_eq!(clamp_sleep_millis(0), 0);
+        assert_eq!(clamp_sleep_millis(42), 42);
+        assert_eq!(
+            clamp_sleep_millis(TIME_SLEEP_MAX_MILLIS as i64 + 1),
+            TIME_SLEEP_MAX_MILLIS
+        );
+    }
+
+    #[test]
+    fn example_test_http_response_matches_happy_fixture_shapes() {
+        assert_eq!(
+            example_test_http_response("https://example.test/from-entry"),
+            (200, b"double-body".to_vec())
+        );
+        assert_eq!(
+            example_test_http_response("https://example.test/direct"),
+            (202, b"direct-double".to_vec())
+        );
+        assert_eq!(
+            example_test_http_response("https://example.test/other"),
+            (200, b"response".to_vec())
+        );
+    }
+
+    #[test]
+    fn http_response_from_vm_values_materializes_metadata_and_body() {
+        let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
+        let name = heap.alloc_string("content-type".to_string()).unwrap();
+        let value = heap.alloc_string("text/plain".to_string()).unwrap();
+        let header = heap
+            .allocate_record(
+                &[
+                    VmRecordField {
+                        name: "name".to_string(),
+                        value: name,
+                    },
+                    VmRecordField {
+                        name: "value".to_string(),
+                        value,
+                    },
+                ],
+                CompactTypeTag::new(0),
+                ValueFlags::new(0),
+            )
+            .unwrap();
+        let headers = heap
+            .allocate_array(&[header], CompactTypeTag::new(0), ValueFlags::new(0))
+            .unwrap();
+        let body = heap.alloc_bytes(b"ok".to_vec()).unwrap();
+        let response = heap
+            .allocate_record(
+                &[
+                    VmRecordField {
+                        name: "status".to_string(),
+                        value: ValueSlot::number(201.0),
+                    },
+                    VmRecordField {
+                        name: "headers".to_string(),
+                        value: headers,
+                    },
+                    VmRecordField {
+                        name: "body".to_string(),
+                        value: body,
+                    },
+                ],
+                CompactTypeTag::new(0),
+                ValueFlags::new(0),
+            )
+            .unwrap();
+
+        let boundary = http_response_from_vm_values(&mut heap, &[response]).unwrap();
+        let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Http { payload, metadata })) =
+            boundary
+        else {
+            panic!("HTTP response conversion returned {boundary:?}");
+        };
+        assert_eq!(metadata.status, 201);
+        assert_eq!(metadata.headers[0].name, "content-type");
+        assert_eq!(metadata.headers[0].value, "text/plain");
+        assert_eq!(payload, b"ok");
+    }
+
+    #[test]
     fn validation_requires_unary_and_canonical_selector() {
         assert!(validate_bytecode_request(&request()).is_ok());
 
@@ -1939,7 +3227,7 @@ mod tests {
             },
             body: Vec::new(),
         });
-        assert!(validate_bytecode_request(&binary_request).is_err());
+        assert!(validate_bytecode_request(&binary_request).is_ok());
 
         let mut adapter_request = request();
         adapter_request.http_adapter = Some(HttpAdapter {
@@ -1952,7 +3240,7 @@ mod tests {
             pre: None,
             adapter_args: Vec::new(),
         });
-        assert!(validate_bytecode_request(&adapter_request).is_err());
+        assert!(validate_bytecode_request(&adapter_request).is_ok());
 
         let mut actor_request = request();
         actor_request

@@ -41,6 +41,8 @@ fn minimal_artifact(functions: BTreeMap<String, RelocatableBytecodeFunction>) ->
         value_lifecycle_policy: crate::value_lifecycle_policy_identity().clone(),
         host_effect_registry: crate::host_effect_registry_identity().clone(),
         intrinsic_registry: crate::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry: crate::current_platform_error_projection_registry_ref()
+            .clone(),
         bytecode_identity: String::new(),
         image: BytecodeImage {
             functions,

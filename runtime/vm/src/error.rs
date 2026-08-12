@@ -26,6 +26,7 @@ pub enum VmVerifiedInvariant {
     ParameterSlotCount,
     DuplicateParameterSlot,
     FrameSlotPlanCount,
+    ProgramPointSlotCount,
     ParameterMode,
     ParameterTransferPlan,
     ParameterType,
@@ -150,6 +151,8 @@ pub enum VmError {
         location: VmValueLocation,
     },
     LiveDestination {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
         location: VmValueLocation,
     },
     OperandStackUnderflow {
@@ -374,9 +377,15 @@ impl fmt::Display for VmError {
             Self::DeadValueRead { location } => {
                 write!(formatter, "VM attempted to read dead value at {location:?}")
             }
-            Self::LiveDestination { location } => write!(
+            Self::LiveDestination {
+                function,
+                instruction,
+                location,
+            } => write!(
                 formatter,
-                "VM instruction requires a dead destination at {location:?}"
+                "VM function {} instruction {} requires a dead destination at {location:?}",
+                function.get(),
+                instruction.get()
             ),
             Self::OperandStackUnderflow {
                 function,

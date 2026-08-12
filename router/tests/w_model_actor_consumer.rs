@@ -22,7 +22,7 @@ use skiff_runtime_transport::protocol::{
     ActorGetOrCreateResponseFrameHeader, ActorRemoveRequestFrameHeader,
     ActorRemoveResponseFrameHeader, ActorReplaceRequestFrameHeader,
     ActorReplaceResponseFrameHeader, ActorTaskRuntimeErrorFrameHeader, FrameDirection,
-    PayloadPresenceRule, RuntimeFrameFamily,
+    PayloadPresenceRule, RuntimeFrameFamily, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 const REQUIRED_FRAMES: [&str; 20] = [
@@ -260,7 +260,7 @@ mod tests {
                 "{name}: direction"
             );
             assert_eq!(
-                entry.header["schemaVersion"], "skiff-runtime-frame-v4",
+                entry.header["schemaVersion"], RUNTIME_FRAME_SCHEMA_VERSION,
                 "{name}: header schemaVersion"
             );
             assert_eq!(

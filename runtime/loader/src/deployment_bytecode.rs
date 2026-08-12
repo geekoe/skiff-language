@@ -6,10 +6,11 @@ use std::{
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    BytecodeArtifactRef, ContractOperationId, PackageArtifact, PackageArtifactRef, PackageBinding,
-    PackageBuildId, PackageCallableId, PackageExecutableCoordinate, PackageRequirement,
-    PackageRequirementKey, PackageSchemaTypeId, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentRef, ServiceRequirementKey,
+    current_platform_error_projection_registry_ref, BytecodeArtifactRef, ContractOperationId,
+    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageCallableId,
+    PackageExecutableCoordinate, PackageRequirement, PackageRequirementKey, PackageSchemaTypeId,
+    PlatformErrorProjectionRegistryRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentRef, ServiceRequirementKey,
 };
 
 mod manifests;
@@ -94,6 +95,19 @@ pub enum DeploymentBytecodeHydrationError {
         kind: DeploymentBytecodeManifestKind,
         detail: String,
     },
+    PlatformErrorProjectionRegistryMismatch {
+        package: Box<PackageArtifactRef>,
+        package_artifact: Box<PlatformErrorProjectionRegistryRef>,
+        bytecode_header: Box<PlatformErrorProjectionRegistryRef>,
+        structurally_validated_view: Box<PlatformErrorProjectionRegistryRef>,
+        runtime: Box<PlatformErrorProjectionRegistryRef>,
+    },
+    MixedPlatformErrorProjectionRegistry {
+        implementation: Box<PackageArtifactRef>,
+        implementation_registry: Box<PlatformErrorProjectionRegistryRef>,
+        package: Box<PackageArtifactRef>,
+        package_registry: Box<PlatformErrorProjectionRegistryRef>,
+    },
     MissingBytecode {
         package: Box<PackageArtifactRef>,
     },
@@ -167,6 +181,27 @@ impl fmt::Display for DeploymentBytecodeHydrationError {
                 formatter,
                 "package {} has an invalid {kind:?} bytecode manifest: {detail}",
                 package.package_build_id
+            ),
+            Self::PlatformErrorProjectionRegistryMismatch {
+                package,
+                package_artifact,
+                bytecode_header,
+                structurally_validated_view,
+                runtime,
+            } => write!(
+                formatter,
+                "package {} does not join one platform error projection registry: PackageArtifact {package_artifact:?}, BytecodeArtifact header {bytecode_header:?}, structurally validated view {structurally_validated_view:?}, runtime {runtime:?}",
+                package.package_build_id
+            ),
+            Self::MixedPlatformErrorProjectionRegistry {
+                implementation,
+                implementation_registry,
+                package,
+                package_registry,
+            } => write!(
+                formatter,
+                "deployment package closure mixes platform error projection registries: implementation package {} uses {implementation_registry:?}, package {} uses {package_registry:?}",
+                implementation.package_build_id, package.package_build_id
             ),
             Self::MissingBytecode { package } => write!(
                 formatter,
@@ -257,6 +292,7 @@ pub struct HydratedBytecodePackage {
     reference: PackageArtifactRef,
     artifact: Arc<PackageArtifact>,
     bytecode: Arc<ValidatedBytecodeArtifact>,
+    platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
     manifests: HydratedPackageManifests,
 }
 
@@ -266,6 +302,8 @@ impl HydratedBytecodePackage {
         artifact: Arc<PackageArtifact>,
         bytecode: Arc<ValidatedBytecodeArtifact>,
     ) -> Result<Self, DeploymentBytecodeHydrationError> {
+        let platform_error_projection_registry =
+            join_package_platform_error_projection_registry(&reference, &artifact, &bytecode)?;
         let actual_reference = exact_package_reference(&artifact);
         if reference != actual_reference {
             return Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
@@ -295,6 +333,7 @@ impl HydratedBytecodePackage {
             reference,
             artifact,
             bytecode,
+            platform_error_projection_registry,
             manifests,
         })
     }
@@ -309,6 +348,10 @@ impl HydratedBytecodePackage {
 
     pub fn bytecode(&self) -> &Arc<ValidatedBytecodeArtifact> {
         &self.bytecode
+    }
+
+    pub fn platform_error_projection_registry(&self) -> &PlatformErrorProjectionRegistryRef {
+        &self.platform_error_projection_registry
     }
 
     /// Returns the admitted artifact function key for one exact path-free
@@ -444,6 +487,7 @@ pub struct HydratedDeploymentBytecode {
     contract_store: BTreeMap<ServiceContractRef, Arc<ServiceContract>>,
     service_dependencies: BTreeMap<ServiceRequirementKey, HydratedServiceDependency>,
     packages: BTreeMap<PackageBuildId, HydratedBytecodePackage>,
+    platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
 }
 
 impl HydratedDeploymentBytecode {
@@ -465,6 +509,8 @@ impl HydratedDeploymentBytecode {
         }
         validate_contract_store(&contract_store)?;
         let packages = canonical_packages(packages)?;
+        let platform_error_projection_registry =
+            join_deployment_platform_error_projection_registry(&deployment, &packages)?;
         let service_dependencies =
             canonical_service_dependencies(&deployment, service_dependencies)?;
         validate_required_contracts(&deployment, &contract_store, &service_dependencies)?;
@@ -480,6 +526,7 @@ impl HydratedDeploymentBytecode {
             contract_store,
             service_dependencies,
             packages,
+            platform_error_projection_registry,
         })
     }
 
@@ -503,6 +550,10 @@ impl HydratedDeploymentBytecode {
 
     pub fn packages(&self) -> &BTreeMap<PackageBuildId, HydratedBytecodePackage> {
         &self.packages
+    }
+
+    pub fn platform_error_projection_registry(&self) -> &PlatformErrorProjectionRegistryRef {
+        &self.platform_error_projection_registry
     }
 }
 
@@ -876,6 +927,35 @@ fn validate_package_requirement(
     Ok(())
 }
 
+fn join_package_platform_error_projection_registry(
+    reference: &PackageArtifactRef,
+    artifact: &PackageArtifact,
+    bytecode: &ValidatedBytecodeArtifact,
+) -> Result<PlatformErrorProjectionRegistryRef, DeploymentBytecodeHydrationError> {
+    let package_artifact = &artifact.platform_error_projection_registry;
+    let bytecode_header = &bytecode.artifact().platform_error_projection_registry;
+    let structurally_validated_view = bytecode.view().platform_error_projection_registry();
+    let runtime = current_platform_error_projection_registry_ref();
+    if package_artifact != bytecode_header
+        || package_artifact != structurally_validated_view
+        || package_artifact != runtime
+        || bytecode_header != structurally_validated_view
+        || bytecode_header != runtime
+        || structurally_validated_view != runtime
+    {
+        return Err(
+            DeploymentBytecodeHydrationError::PlatformErrorProjectionRegistryMismatch {
+                package: Box::new(reference.clone()),
+                package_artifact: Box::new(package_artifact.clone()),
+                bytecode_header: Box::new(bytecode_header.clone()),
+                structurally_validated_view: Box::new(structurally_validated_view.clone()),
+                runtime: Box::new(runtime.clone()),
+            },
+        );
+    }
+    Ok(package_artifact.clone())
+}
+
 fn exact_package_reference(artifact: &PackageArtifact) -> PackageArtifactRef {
     PackageArtifactRef {
         package_id: artifact.package_id.clone(),
@@ -938,6 +1018,35 @@ fn canonical_packages(
         }
     }
     Ok(canonical)
+}
+
+fn join_deployment_platform_error_projection_registry(
+    deployment: &ServiceDeployment,
+    packages: &BTreeMap<PackageBuildId, HydratedBytecodePackage>,
+) -> Result<PlatformErrorProjectionRegistryRef, DeploymentBytecodeHydrationError> {
+    let implementation = packages
+        .get(&deployment.implementation.package_build_id)
+        .filter(|package| package.reference() == &deployment.implementation)
+        .ok_or_else(|| DeploymentBytecodeHydrationError::ManifestMismatch {
+            package: Box::new(deployment.implementation.clone()),
+            kind: DeploymentBytecodeManifestKind::PackageReference,
+            detail: "implementation package is absent from the exact hydrated closure".to_string(),
+        })?;
+    let implementation_registry = implementation.platform_error_projection_registry().clone();
+    for package in packages.values() {
+        let package_registry = package.platform_error_projection_registry();
+        if package_registry != &implementation_registry {
+            return Err(
+                DeploymentBytecodeHydrationError::MixedPlatformErrorProjectionRegistry {
+                    implementation: Box::new(implementation.reference().clone()),
+                    implementation_registry: Box::new(implementation_registry.clone()),
+                    package: Box::new(package.reference().clone()),
+                    package_registry: Box::new(package_registry.clone()),
+                },
+            );
+        }
+    }
+    Ok(implementation_registry)
 }
 
 fn canonical_service_dependencies(

@@ -4,9 +4,9 @@ use sha2::Digest;
 
 use super::contract::ValueLifecyclePolicyIdentity;
 
-pub const VALUE_LIFECYCLE_POLICY_VERSION: &str = "skiff-bytecode-value-lifecycle-policy-v1";
+pub const VALUE_LIFECYCLE_POLICY_VERSION: &str = "skiff-bytecode-value-lifecycle-policy-v3";
 pub const VALUE_LIFECYCLE_POLICY_FINGERPRINT: &str =
-    "2d478cdc3e2226f41b98dfa6cfbed5712b1587987e49c278f887e45486b3ec8a";
+    "1e86b11ab2f5362c81ba357a896654786ff569b8d752f24b5d474dd2f0c0e1ca";
 
 static VALUE_LIFECYCLE_POLICY_IDENTITY: LazyLock<ValueLifecyclePolicyIdentity> =
     LazyLock::new(|| {

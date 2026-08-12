@@ -265,9 +265,10 @@ fn frame_and_opcode_statement_charge_rules_are_exact() {
 
 #[test]
 fn canonical_projection_contains_the_decided_runtime_semantics() {
-    let projection: Value =
-        serde_json::from_slice(&opcode_contract_canonical_json()).expect("canonical JSON");
-    assert_eq!(projection["contractFormat"], 2);
+    let canonical = opcode_contract_canonical_json();
+    let canonical_text = std::str::from_utf8(&canonical).expect("canonical JSON is UTF-8");
+    let projection: Value = serde_json::from_slice(&canonical).expect("canonical JSON");
+    assert_eq!(projection["contractFormat"], 3);
     assert_eq!(projection["attributionCharges"]["statement"], "statement");
     assert_eq!(projection["attributionCharges"]["expression"], "expression");
     assert_eq!(
@@ -315,19 +316,34 @@ fn canonical_projection_contains_the_decided_runtime_semantics() {
 
     let array_get = opcode("array_get");
     assert_eq!(
-        array_get["exception"]["failures"][0]["disposition"]["identity"],
-        COLLECTION_INDEX_OUT_OF_BOUNDS_ERROR
+        array_get["exception"]["failures"][0]["disposition"]["projectionKey"],
+        crate::PlatformErrorProjectionKey::StdCollectionArrayIndexOutOfBoundsError.as_str()
     );
     let map_get = opcode("map_get");
     assert_eq!(
-        map_get["exception"]["failures"][0]["disposition"]["identity"],
-        COLLECTION_MISSING_KEY_ERROR
+        map_get["exception"]["failures"][0]["disposition"]["projectionKey"],
+        crate::PlatformErrorProjectionKey::StdCollectionMapKeyNotFoundError.as_str()
     );
+
+    assert!(canonical_text.contains("\"projectionKey\""));
+    assert!(!canonical_text.contains("\"identity\""));
+    let retired_index_symbol = ["std.collection.", "IndexOutOfBoundsError"].concat();
+    let retired_missing_key_symbol = ["std.collection.", "MissingKeyError"].concat();
+    assert!(!canonical_text.contains(&retired_index_symbol));
+    assert!(!canonical_text.contains(&retired_missing_key_symbol));
 
     let path = opcode("set_writable_path");
     assert_eq!(
         path["exception"]["failures"][1]["trigger"],
         "intermediateMissingKey"
+    );
+    assert_eq!(
+        path["exception"]["failures"][0]["disposition"]["projectionKey"],
+        crate::PlatformErrorProjectionKey::StdCollectionArrayIndexOutOfBoundsError.as_str()
+    );
+    assert_eq!(
+        path["exception"]["failures"][1]["disposition"]["projectionKey"],
+        crate::PlatformErrorProjectionKey::StdCollectionMapKeyNotFoundError.as_str()
     );
     assert!(path["capabilities"]
         .as_array()
@@ -374,6 +390,87 @@ fn canonical_projection_contains_the_decided_runtime_semantics() {
     );
     assert_eq!(inout["typed"]["slots"]["kind"], "inOutCallLoans");
     assert_eq!(inout["pending"]["kind"], "noPendingTarget");
+}
+
+#[test]
+fn catchable_opcode_failures_are_an_exact_current_cover() {
+    let catchable = OPCODE_CONTRACTS
+        .iter()
+        .flat_map(|contract| {
+            contract
+                .exception
+                .failures
+                .iter()
+                .filter_map(move |failure| {
+                    let FailureDisposition::Catchable { projection_key } = failure.disposition
+                    else {
+                        return None;
+                    };
+                    Some((contract.kind, failure.kind, failure.trigger, projection_key))
+                })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        catchable,
+        vec![
+            (
+                Opcode::SetWritablePath,
+                FailureKind::CollectionIndexOutOfBounds,
+                FailureTrigger::IndexOutOfBounds,
+                crate::PlatformErrorProjectionKey::StdCollectionArrayIndexOutOfBoundsError,
+            ),
+            (
+                Opcode::SetWritablePath,
+                FailureKind::WritablePathIntermediateMissingKey,
+                FailureTrigger::IntermediateMissingKey,
+                crate::PlatformErrorProjectionKey::StdCollectionMapKeyNotFoundError,
+            ),
+            (
+                Opcode::ArrayGet,
+                FailureKind::CollectionIndexOutOfBounds,
+                FailureTrigger::IndexOutOfBounds,
+                crate::PlatformErrorProjectionKey::StdCollectionArrayIndexOutOfBoundsError,
+            ),
+            (
+                Opcode::MapGet,
+                FailureKind::CollectionMissingKey,
+                FailureTrigger::MissingKey,
+                crate::PlatformErrorProjectionKey::StdCollectionMapKeyNotFoundError,
+            ),
+        ]
+    );
+
+    for (opcode, kind, trigger, disposition) in [
+        (
+            Opcode::SetWritablePath,
+            FailureKind::WritablePathTypeInvariant,
+            FailureTrigger::InternalTypeInvariant,
+            FailureDisposition::InvariantTerminal,
+        ),
+        (
+            Opcode::SetWritablePath,
+            FailureKind::WritablePathCowInvariant,
+            FailureTrigger::InternalCowInvariant,
+            FailureDisposition::InvariantTerminal,
+        ),
+        (
+            Opcode::MapEntryAt,
+            FailureKind::MapEntryIndexOutOfBounds,
+            FailureTrigger::IndexOutOfBounds,
+            FailureDisposition::UncatchableTerminal,
+        ),
+    ] {
+        let failure = contract_for_opcode(opcode)
+            .exception
+            .failures
+            .iter()
+            .find(|failure| failure.kind == kind && failure.trigger == trigger)
+            .unwrap_or_else(|| panic!("{opcode:?} is missing {kind:?}/{trigger:?}"));
+        assert_eq!(
+            failure.disposition, disposition,
+            "{opcode:?} {kind:?}/{trigger:?} must not become a public catchable failure"
+        );
+    }
 }
 
 #[test]
@@ -468,6 +565,6 @@ fn every_top_level_contract_field_changes_the_fingerprint() {
 fn opcode_contract_fingerprint_is_frozen() {
     assert_eq!(
         opcode_table_fingerprint(),
-        "89d4d4d42abe321353bb4377bdbfa4f641eb82e0d23ed288e03d0da7a4103509"
+        "b71229465799eebd70f2521001e7d41622aca7ef8397151adacc122f659c5b24"
     );
 }

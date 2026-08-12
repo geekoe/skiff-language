@@ -330,9 +330,12 @@ mod tests {
         for entry in &beta_projection.methods {
             assert_eq!(
                 entry.deployment, beta_deployment,
-                "exact deployment binding"
+                "replacement must use the exact deployment binding"
             );
-            assert_eq!(entry.package, beta_package, "exact owning package binding");
+            assert_eq!(
+                entry.package, beta_package,
+                "replacement must use the exact owning package binding"
+            );
         }
 
         fs::remove_dir_all(temp).unwrap();

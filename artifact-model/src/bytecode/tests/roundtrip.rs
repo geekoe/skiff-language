@@ -422,7 +422,7 @@ fn typed_scalar_opcode_stack_contracts_are_fixed() {
 fn opcode_table_fingerprint_with_operand_roles_is_frozen() {
     assert_eq!(
         opcode_table_fingerprint(),
-        "89d4d4d42abe321353bb4377bdbfa4f641eb82e0d23ed288e03d0da7a4103509"
+        "b71229465799eebd70f2521001e7d41622aca7ef8397151adacc122f659c5b24"
     );
 }
 
@@ -444,6 +444,8 @@ fn validated_view_retains_linker_facts_after_raw_artifact_is_dropped() {
         .debug_table
         .clone()
         .expect("canonical debug table");
+    let expected_platform_error_projection_registry =
+        artifact.platform_error_projection_registry.clone();
     let view = structurally_validate(&artifact).expect("canonical artifact validates");
     drop(artifact);
 
@@ -484,6 +486,14 @@ fn validated_view_retains_linker_facts_after_raw_artifact_is_dropped() {
         view.intrinsic_registry(),
         crate::intrinsic_registry_identity()
     );
+    assert_eq!(
+        view.platform_error_projection_registry(),
+        &expected_platform_error_projection_registry
+    );
+    assert!(!std::ptr::eq(
+        view.platform_error_projection_registry(),
+        crate::current_platform_error_projection_registry_ref()
+    ));
     assert_eq!(view.constant_roots()["module.implementation"], 2);
     assert_eq!(view.resume_sites().len(), 1);
     assert_eq!(view.resume_sites()[0].site_pc, 20);

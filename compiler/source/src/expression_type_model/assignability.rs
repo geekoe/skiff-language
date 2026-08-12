@@ -370,13 +370,15 @@ impl<'a> OwnerChecker<'a> {
             .sources
             .get(value_key);
         if let Some(diagnostics) = assignability.object_literal_assignability_diagnostics(
-            annotation,
-            value,
-            value_key,
-            actual,
-            expected,
-            context,
-            object_source,
+            ObjectLiteralAssignabilityContext {
+                annotation,
+                value,
+                value_key,
+                actual,
+                expected,
+                diagnostic_context: context,
+                source: object_source,
+            },
         ) {
             if !diagnostics.is_empty() {
                 self.outputs.diagnostics.extend(diagnostics);

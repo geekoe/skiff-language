@@ -116,6 +116,11 @@ fn concrete_value_plan(
             drop: ValueDropPlan::Trivial,
         });
     }
+    if is_void(ty) {
+        return Ok(ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::Trivial,
+        });
+    }
     if is_type_param_type(ty) {
         return Ok(snapshot_release_plan());
     }
@@ -604,6 +609,32 @@ mod tests {
                 drop: ResourceDropPlan::ResourceTableRelease,
             }
         );
+    }
+
+    #[test]
+    fn void_is_non_value_and_std_task_builtins_are_explicit_snapshots() {
+        assert_eq!(
+            concrete_value_plan(&[], "m", "f", " slot `void`", &TypeRefIr::builtin("void"))
+                .unwrap(),
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
+            }
+        );
+        for name in ["TaskRef", "TaskStatus", "TaskCancelResult"] {
+            assert_eq!(
+                concrete_value_plan(
+                    &[],
+                    "m",
+                    "f",
+                    &format!(" slot `{name}`"),
+                    &TypeRefIr::builtin(name),
+                )
+                .unwrap(),
+                ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::SnapshotRelease,
+                }
+            );
+        }
     }
 
     #[test]

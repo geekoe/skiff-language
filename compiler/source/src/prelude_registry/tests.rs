@@ -5,6 +5,7 @@ use std::{
 };
 
 use skiff_artifact_model::STD_NATIVE_SIGNATURES;
+use skiff_compiler_core::prelude_registry::{compiler_builtin_type, CompilerBuiltinTypeKind};
 use skiff_compiler_input::CompilerPlatformSources;
 
 use crate::shared::type_syntax::generic_parts;
@@ -80,6 +81,72 @@ fn builtin_type_helper_includes_prelude_date_and_language_aliases() {
 }
 
 #[test]
+fn timeout_builtin_lookup_is_source_backed_and_exact() {
+    let registry = prelude_registry();
+    let builtin = compiler_builtin_type("TimeoutError").expect("TimeoutError builtin");
+
+    assert_eq!(builtin.kind, CompilerBuiltinTypeKind::Error);
+    assert_eq!(builtin.canonical_symbol(), "std.error.TimeoutError");
+    assert_eq!(
+        registry.known_type_symbol("TimeoutError").as_deref(),
+        Some("std.error.TimeoutError")
+    );
+    assert_eq!(
+        registry
+            .known_type_symbol("std.error.TimeoutError")
+            .as_deref(),
+        Some("std.error.TimeoutError")
+    );
+    assert_eq!(registry.type_decl_module("TimeoutError"), Some("std.error"));
+    assert_eq!(
+        registry.type_decl("TimeoutError"),
+        registry.type_decl("std.error.TimeoutError")
+    );
+    assert!(registry.type_decl("TimeoutError").is_some());
+}
+
+#[test]
+fn platform_error_declarations_resolve_and_only_std_owned_timeout_is_exported() {
+    let registry = prelude_registry();
+
+    for symbol in [
+        "std.collection.ArrayIndexOutOfBoundsError",
+        "std.collection.JsonObjectPropertyNotFoundError",
+        "std.collection.MapKeyNotFoundError",
+        "std.error.InstructionLimitExceededError",
+        "std.error.TimeoutError",
+        "std.http.RequestTimeoutError",
+        "std.actor.ActivationTimeoutError",
+        "std.actor.MethodInvocationTimeoutError",
+    ] {
+        assert_eq!(registry.known_type_symbol(symbol).as_deref(), Some(symbol));
+        assert!(
+            registry.type_decl(symbol).is_some(),
+            "{symbol} must resolve to its source declaration"
+        );
+    }
+
+    assert!(
+        registry.package_public_paths.contains(&(
+            "skiff.run/std".to_string(),
+            "std.http.RequestTimeoutError".to_string()
+        )),
+        "std/api.yml must expose std-owned std.http.RequestTimeoutError"
+    );
+    for prelude_owned_path in [
+        "std.actor.ActivationTimeoutError",
+        "std.actor.MethodInvocationTimeoutError",
+    ] {
+        assert!(
+            !registry
+                .package_public_paths
+                .contains(&("skiff.run/std".to_string(), prelude_owned_path.to_string())),
+            "std/api.yml must not re-export prelude-owned {prelude_owned_path}"
+        );
+    }
+}
+
+#[test]
 fn duplicate_std_type_names_are_resolved_by_qualified_symbol() {
     let registry = prelude_registry();
 
@@ -117,7 +184,10 @@ fn platform_source_context_pins_current_prelude_identity() {
         let Some((prefix, digest)) = identity.rsplit_once(':') else {
             panic!("identity {identity} is not framed");
         };
-        assert!(prefix.starts_with("skiff-prelude-"), "unexpected prefix {prefix}");
+        assert!(
+            prefix.starts_with("skiff-prelude-"),
+            "unexpected prefix {prefix}"
+        );
         assert_eq!(digest.len(), 64, "identity digest must be sha256 hex");
     }
     assert_eq!(registry.schema_identity(), prelude_schema_identity());
@@ -431,6 +501,15 @@ fn canonical_shared_declared_native_bindings(
 }
 
 fn shared_native_shape(signature: &skiff_artifact_model::NativeSignatureDef) -> NativeBindingShape {
+    // Source impl receiver shapes keep the generic root and receiver type args
+    // implicit; the shared signature spells the receiver as Array<T0>.
+    if signature.target == "Array.push" {
+        return NativeBindingShape {
+            type_params: Vec::new(),
+            params: vec!["Array".to_string(), "T".to_string()],
+            return_type: "void".to_string(),
+        };
+    }
     NativeBindingShape {
         type_params: (0..signature.type_param_count)
             .map(|index| format!("T{index}"))
@@ -527,7 +606,16 @@ impl MinimalPlatformFixture {
             "id: skiff.run/std\nversion: 1.0.0\n",
         )
         .unwrap();
-        fs::write(root.join("prelude/error.skiff"), "").unwrap();
+        fs::write(
+            root.join("std/error-projections.yml"),
+            "schemaVersion: skiff-platform-error-projection-catalog-v1\nentries: []\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("prelude/error.skiff"),
+            "type TimeoutError { timeoutMs: integer }\n",
+        )
+        .unwrap();
         Self { root }
     }
 

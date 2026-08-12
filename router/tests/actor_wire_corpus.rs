@@ -33,7 +33,7 @@ use skiff_runtime_transport::protocol::{
     ActorGetOrCreateResponseFrameHeader, ActorRemoveRequestFrameHeader,
     ActorRemoveResponseFrameHeader, ActorReplaceRequestFrameHeader,
     ActorReplaceResponseFrameHeader, ActorTaskRuntimeErrorFrameHeader, FrameDirection,
-    PayloadPresenceRule, RuntimeFrameFamily,
+    PayloadPresenceRule, RuntimeFrameFamily, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 use actor_support::{actor_wire_dir, hex_bytes, ROUTE_BUILD_ID};
@@ -130,6 +130,7 @@ fn fence_from_owner_frame(
         epoch: fence.epoch,
         owner_runtime_id: fence.owner_runtime_id.clone(),
         owner_lease_id: fence.owner_lease_id.clone(),
+        build_id: ROUTE_BUILD_ID.to_string(),
         lease_expires_at: 40_000,
         actor_abi_identity: fence.actor_abi_identity.clone(),
         actor_implementation_identity: fence.actor_implementation_identity.clone(),
@@ -144,6 +145,7 @@ fn fence_from_control_frame(
         epoch: fence.epoch,
         owner_runtime_id: "runtime-b".to_string(),
         owner_lease_id: fence.owner_lease_id.clone(),
+        build_id: ROUTE_BUILD_ID.to_string(),
         lease_expires_at: 40_000,
         actor_abi_identity: fence.actor_abi_identity.clone(),
         actor_implementation_identity: fence.actor_implementation_identity.clone(),
@@ -299,7 +301,7 @@ mod tests {
                 "{name}: decodeAs"
             );
             assert_eq!(
-                entry.header["schemaVersion"], "skiff-runtime-frame-v4",
+                entry.header["schemaVersion"], RUNTIME_FRAME_SCHEMA_VERSION,
                 "{name}"
             );
             assert_eq!(

@@ -22,6 +22,7 @@ fn callable_semantics_registry_is_sparse_exact_and_safe() {
         "receiver:Map.set@1",
         "receiver:bytes.length@1",
         "receiver:bytes.toHex@1",
+        "receiver:bytes.toUtf8String@1",
         "receiver:number.ceil@1",
         "receiver:number.floor@1",
         "receiver:number.round@1",

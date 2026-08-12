@@ -142,7 +142,7 @@
       "id": "canonical",
       "valid": true,
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
+        "schemaVersion": "skiff-runtime-frame-v5",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -161,7 +161,7 @@
       "valid": false,
       "expectErrorContains": "invalid router.bootstrap frame header: activation.profile",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
+        "schemaVersion": "skiff-runtime-frame-v5",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -180,7 +180,7 @@
       "valid": false,
       "expectErrorContains": "typed decode failed",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
+        "schemaVersion": "skiff-runtime-frame-v5",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -206,7 +206,7 @@
       "valid": false,
       "expectErrorContains": "type must be router.bootstrap",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
+        "schemaVersion": "skiff-runtime-frame-v5",
         "type": "router.capabilities",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -225,7 +225,7 @@
       "valid": false,
       "expectErrorContains": "schemaVersion must be",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -244,7 +244,7 @@
       "valid": false,
       "expectErrorContains": "typed decode failed",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
+        "schemaVersion": "skiff-runtime-frame-v5",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -264,7 +264,7 @@
       "valid": false,
       "expectErrorContains": "typed decode failed",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
+        "schemaVersion": "skiff-runtime-frame-v5",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {
@@ -280,7 +280,7 @@
       "valid": false,
       "expectErrorContains": "typed decode failed",
       "json": {
-        "schemaVersion": "skiff-runtime-frame-v4",
+        "schemaVersion": "skiff-runtime-frame-v5",
         "type": "router.bootstrap",
         "artifactsPath": "/opt/skiff/artifacts",
         "serviceDb": {

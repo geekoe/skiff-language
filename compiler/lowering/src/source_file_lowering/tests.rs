@@ -11,10 +11,13 @@ use crate::{
     source_unit_lowering::symbol,
 };
 use skiff_artifact_model::{
-    validate_file_ir_service_calls, ContractOperationId, ContractRequirement,
-    InstructionSourceSite, LiteralIr, NamedUnionBranchIr, NominalTypeRefBaseIr, PackageCallableId,
-    PackageLocalAbiIdentity, PatternIr, ReceiverCallAbi, ServiceProtocolIdentity, SlotKind,
-    SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr,
+    current_platform_error_projection_registry_ref,
+    validate_current_platform_error_projection_registry_ref, validate_file_ir_service_calls,
+    validate_platform_error_projection_registry_ref_shape, ContractOperationId,
+    ContractRequirement, InstructionSourceSite, LiteralIr, NamedUnionBranchIr,
+    NominalTypeRefBaseIr, PackageCallableId, PackageLocalAbiIdentity, PatternIr, ReceiverCallAbi,
+    ServiceProtocolIdentity, SlotKind, SyntheticInstructionSiteReason, TypeDeclIr,
+    TypeDescriptorIr,
 };
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::{
@@ -3389,6 +3392,8 @@ fn provider_contract_artifact() -> (
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: skiff_artifact_model::PackageBuildId::new("unassigned"),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         files: vec![file_ref.clone()],
         static_resources: Vec::new(),
         package_local_abi: skiff_artifact_model::PackageLocalAbi {
@@ -3453,6 +3458,7 @@ fn provider_contract_artifact() -> (
         skiff_artifact_identity::package_schema_index_identity(package_id, &BTreeMap::new())
             .unwrap();
     skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
+    assert_current_package_artifact_fixture(&artifact);
     (artifact, file)
 }
 
@@ -3514,6 +3520,8 @@ fn provider_object_artifact() -> (
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: skiff_artifact_model::PackageBuildId::new("unassigned"),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         files: vec![file_ref.clone()],
         static_resources: Vec::new(),
         package_local_abi: skiff_artifact_model::PackageLocalAbi {
@@ -3578,7 +3586,29 @@ fn provider_object_artifact() -> (
         skiff_artifact_identity::package_schema_index_identity(package_id, &BTreeMap::new())
             .unwrap();
     skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
+    assert_current_package_artifact_fixture(&artifact);
     (artifact, file)
+}
+
+fn assert_current_package_artifact_fixture(artifact: &skiff_artifact_model::PackageArtifact) {
+    assert_eq!(
+        artifact.schema_version,
+        skiff_artifact_model::PACKAGE_ARTIFACT_SCHEMA_VERSION
+    );
+    assert_eq!(artifact.schema_version, "skiff-package-artifact-v15");
+    skiff_artifact_identity::validate_package_artifact_identities(artifact).unwrap();
+    assert_eq!(
+        &artifact.platform_error_projection_registry,
+        current_platform_error_projection_registry_ref()
+    );
+    validate_platform_error_projection_registry_ref_shape(
+        &artifact.platform_error_projection_registry,
+    )
+    .unwrap();
+    validate_current_platform_error_projection_registry_ref(
+        &artifact.platform_error_projection_registry,
+    )
+    .unwrap();
 }
 
 fn provider_file_ref(file: &skiff_artifact_model::FileIrUnit) -> skiff_artifact_model::FileIrRef {

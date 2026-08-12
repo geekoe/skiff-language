@@ -1,14 +1,15 @@
 use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
-    host_effect_registry_identity, intrinsic_registry_identity,
-    native_value_lifecycle_registry_identity, opcode_table_fingerprint,
-    value_lifecycle_policy_identity, BytecodeArtifactRef, CallableEffectSummary,
-    CallableMayEffects, GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource,
-    GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
-    GatewayExternalErrorProjection, GatewayHttpProtocolSurface, GatewayProtocolSurface, Opcode,
-    PackageBuildId, PackageCallableId, ParamModeIr, TypeRefIr, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, GATEWAY_ENTRY_IDENTITY_PREFIX,
+    current_platform_error_projection_registry_ref, host_effect_registry_identity,
+    intrinsic_registry_identity, native_value_lifecycle_registry_identity,
+    opcode_table_fingerprint, value_lifecycle_policy_identity, BytecodeArtifactRef,
+    CallableEffectSummary, CallableMayEffects, GatewayAdapterKind, GatewayAdapterPlan,
+    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
+    GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayHttpProtocolSurface,
+    GatewayProtocolSurface, Opcode, PackageBuildId, PackageCallableId, ParamModeIr,
+    PlatformErrorProjectionRegistryRef, TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION, GATEWAY_ENTRY_IDENTITY_PREFIX,
 };
 
 use crate::{
@@ -215,18 +216,52 @@ pub(super) fn function_with_statement_entries(
 }
 
 pub(super) fn authority_pins() -> LinkedBytecodeAuthorityPins {
+    authority_pins_with_platform_error_registry(
+        current_platform_error_projection_registry_ref().clone(),
+    )
+}
+
+pub(super) fn authority_pins_with_platform_error_registry(
+    platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
+) -> LinkedBytecodeAuthorityPins {
     LinkedBytecodeAuthorityPins::new(
         native_value_lifecycle_registry_identity().clone(),
         value_lifecycle_policy_identity().clone(),
         host_effect_registry_identity().clone(),
         intrinsic_registry_identity().clone(),
+        platform_error_projection_registry,
     )
     .expect("compile-time authority identities are canonical")
+}
+
+pub(super) fn historical_platform_error_projection_registry_ref(
+) -> PlatformErrorProjectionRegistryRef {
+    let current = current_platform_error_projection_registry_ref();
+    let zero_fingerprint = format!("sha256:{}", "0".repeat(64));
+    let fingerprint = if zero_fingerprint == current.fingerprint() {
+        format!("sha256:{}", "1".repeat(64))
+    } else {
+        zero_fingerprint
+    };
+    serde_json::from_value(serde_json::json!({
+        "registryId": current.registry_id(),
+        "registryVersion": current.registry_version(),
+        "fingerprint": fingerprint,
+    }))
+    .expect("historical registry descriptor satisfies the strict general shape")
 }
 
 pub(super) fn package(
     index: u32,
     package_build_id: PackageBuildId,
+) -> LinkedPackageBytecodeProvenance {
+    package_with_authority_pins(index, package_build_id, authority_pins())
+}
+
+pub(super) fn package_with_authority_pins(
+    index: u32,
+    package_build_id: PackageBuildId,
+    authorities: LinkedBytecodeAuthorityPins,
 ) -> LinkedPackageBytecodeProvenance {
     let bytecode_identity = format!("bytecode:{}", package_build_id.as_str());
     LinkedPackageBytecodeProvenance::new(
@@ -238,7 +273,7 @@ pub(super) fn package(
         BYTECODE_SCHEMA_VERSION,
         BYTECODE_ISA_VERSION,
         opcode_table_fingerprint(),
-        authority_pins(),
+        authorities,
     )
     .expect("fixture package provenance has a coherent exact header")
 }

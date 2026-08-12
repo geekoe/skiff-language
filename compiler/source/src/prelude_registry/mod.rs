@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet},
+};
 
 #[cfg(test)]
 use std::path::PathBuf;
@@ -49,6 +52,8 @@ pub struct PreludeRegistry {
     type_aliases_by_symbol: BTreeMap<String, AliasDecl>,
     type_symbols: BTreeMap<String, String>,
     package_public_paths: BTreeSet<(String, String)>,
+    package_exact_public_symbols: BTreeSet<(String, String)>,
+    public_type_declaration_symbols: BTreeSet<String>,
     source_modules: Vec<String>,
     builtin_type_names: BTreeSet<String>,
     prelude_identity_parts: Vec<String>,
@@ -85,13 +90,15 @@ impl PreludeRegistry {
             type_aliases_by_symbol: BTreeMap::new(),
             type_symbols: BTreeMap::new(),
             package_public_paths: BTreeSet::new(),
+            package_exact_public_symbols: BTreeSet::new(),
+            public_type_declaration_symbols: BTreeSet::new(),
             source_modules: Vec::new(),
             builtin_type_names: BTreeSet::new(),
             prelude_identity_parts: Vec::new(),
         }
     }
 
-    fn try_from_platform_sources(
+    pub(crate) fn try_from_platform_sources(
         platform_sources: &skiff_compiler_input::CompilerPlatformSources,
         source_snapshot: &skiff_compiler_input::platform_sources::CompilerPlatformSourceSnapshot,
     ) -> Result<Self, String> {
@@ -119,6 +126,25 @@ impl PreludeRegistry {
         self.type_decls.get(name)
     }
 
+    pub(crate) fn exact_type_decl(&self, symbol: &str) -> Option<&TypeDecl> {
+        self.type_decls_by_symbol.get(symbol.trim())
+    }
+
+    pub(crate) fn exact_type_alias(&self, symbol: &str) -> Option<&AliasDecl> {
+        self.type_aliases_by_symbol.get(symbol.trim())
+    }
+
+    pub fn is_public_type_declaration(&self, symbol: &str) -> bool {
+        self.public_type_declaration_symbols.contains(symbol.trim())
+    }
+
+    pub fn public_type_decl(&self, symbol: &str) -> Option<&TypeDecl> {
+        if !self.is_public_type_declaration(symbol) {
+            return None;
+        }
+        self.exact_type_decl(symbol)
+    }
+
     pub fn type_alias(&self, name: &str) -> Option<&AliasDecl> {
         let name = name.trim();
         if let Some(alias) = self.type_aliases_by_symbol.get(name) {
@@ -130,7 +156,13 @@ impl PreludeRegistry {
 
     pub fn type_decl_module(&self, name: &str) -> Option<&str> {
         if let Some(builtin) = compiler_builtin_type(name) {
-            return builtin.symbol.rsplit_once('.').map(|(module, _)| module);
+            if let Some(module) = builtin.prelude_declaration_module() {
+                return Some(module);
+            }
+            return match builtin.canonical_symbol() {
+                Cow::Borrowed(symbol) => symbol.rsplit_once('.').map(|(module, _)| module),
+                Cow::Owned(_) => None,
+            };
         }
         let symbol = self.known_type_symbol(name)?;
         let symbol = self.type_symbols.get(&symbol)?;
@@ -153,7 +185,7 @@ impl PreludeRegistry {
     pub fn known_type_symbol(&self, name: &str) -> Option<String> {
         let name = name.trim();
         if let Some(builtin) = compiler_builtin_type(name) {
-            return Some(builtin.symbol.to_string());
+            return Some(builtin.canonical_symbol().into_owned());
         }
         if self
             .type_symbols
@@ -236,11 +268,12 @@ impl PreludeRegistry {
 
     fn install_compiler_builtin_types(&mut self) {
         for builtin in COMPILER_BUILTIN_TYPES {
+            let canonical_symbol = builtin.canonical_symbol().into_owned();
             self.builtin_type_names.insert(builtin.name.to_string());
             self.type_symbols
-                .insert(builtin.name.to_string(), builtin.symbol.to_string());
+                .insert(builtin.name.to_string(), canonical_symbol.clone());
             self.type_symbols
-                .insert(builtin.symbol.to_string(), builtin.symbol.to_string());
+                .insert(canonical_symbol.clone(), canonical_symbol);
         }
     }
 

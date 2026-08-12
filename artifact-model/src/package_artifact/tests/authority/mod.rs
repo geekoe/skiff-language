@@ -57,6 +57,8 @@ fn authority_artifact() -> PackageArtifact {
         package_id: PACKAGE_ID.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry: crate::current_platform_error_projection_registry_ref()
+            .clone(),
         files: vec![file.clone()],
         static_resources: Vec::new(),
         bytecode: None,

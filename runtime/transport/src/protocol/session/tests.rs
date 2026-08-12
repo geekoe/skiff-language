@@ -5,16 +5,22 @@
 //! corpus tests (`runtime/transport/tests/w_model_*_corpus.rs` and the
 //! contracts-session/contracts-bootstrap tests).
 
+use serde_json::{json, Value};
+use skiff_artifact_model::{
+    current_platform_error_projection_registry_ref, PLATFORM_ERROR_PROJECTION_REGISTRY_ID,
+    PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION,
+};
+
 use crate::protocol::{
-    decode_router_bootstrap_frame, decode_runtime_capabilities_frame, decode_runtime_health_frame,
-    decode_runtime_registered_frame, encode_router_bootstrap_frame,
+    decode_binary_frame, decode_router_bootstrap_frame, decode_runtime_capabilities_frame,
+    decode_runtime_health_frame, decode_runtime_registered_frame, encode_router_bootstrap_frame,
     encode_runtime_capabilities_frame, encode_runtime_health_frame,
-    encode_runtime_registered_frame, RouterBootstrapFrameHeader,
-    RouterBootstrapHttpFrameHeader, RouterBootstrapServiceDbFrameHeader, RouterBootstrapSource,
-    RuntimeBootstrapProvider, RuntimeCapabilitiesFrameHeader,
-    RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDispatchModeCapability,
-    RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeRegisteredFrameHeader,
-    StatelessRuntimeBootstrapProvider, RUNTIME_FRAME_SCHEMA_VERSION,
+    encode_runtime_registered_frame, RouterBootstrapFrameHeader, RouterBootstrapHttpFrameHeader,
+    RouterBootstrapServiceDbFrameHeader, RouterBootstrapSource, RuntimeBootstrapProvider,
+    RuntimeCapabilitiesFrameHeader, RuntimeCapabilitiesFrameHeaderMetadata,
+    RuntimeDispatchModeCapability, RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader,
+    RuntimeRegisteredFrameHeader, StatelessRuntimeBootstrapProvider, BINARY_FRAME_VERSION,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 fn bootstrap_header() -> RouterBootstrapFrameHeader {
@@ -40,13 +46,18 @@ fn capabilities_header() -> RuntimeCapabilitiesFrameHeader {
         envelope_type: "runtime.capabilities".to_string(),
         runtime_id: "runtime-a".to_string(),
         capabilities: RuntimeCapabilitiesFrameHeaderMetadata {
+            platform_error_projection_registry: current_platform_error_projection_registry_ref()
+                .clone(),
             dispatch_modes: vec![
                 RuntimeDispatchModeCapability::Unary,
                 RuntimeDispatchModeCapability::ServerStream,
             ],
             package_test_dispatch: true,
             request_cancel: true,
-            ..RuntimeCapabilitiesFrameHeaderMetadata::default()
+            runtime_program: false,
+            artifact_root: None,
+            lazy_load: false,
+            loaded_build_ids: Vec::new(),
         },
     }
 }
@@ -96,12 +107,132 @@ fn router_bootstrap_frame_roundtrips_and_enforces_empty_payload() {
 fn capabilities_frame_roundtrips_and_enforces_empty_payload() {
     let header = capabilities_header();
     let frame = encode_runtime_capabilities_frame(&header).expect("capabilities must encode");
+    assert_eq!(BINARY_FRAME_VERSION, 1);
+    assert_eq!(frame[4], BINARY_FRAME_VERSION);
     let decoded = decode_runtime_capabilities_frame(&frame).expect("capabilities must decode");
     assert_eq!(decoded, header);
+
+    let raw = decode_binary_frame(&frame).expect("capabilities binary frame");
+    let capabilities = raw.header["capabilities"]
+        .as_object()
+        .expect("capabilities metadata must be an object");
+    assert_eq!(
+        capabilities
+            .get("platformErrorProjectionRegistry")
+            .expect("exact registry field name"),
+        &serde_json::to_value(current_platform_error_projection_registry_ref())
+            .expect("current registry serializes")
+    );
+    assert!(!capabilities.contains_key("platform_error_projection_registry"));
 
     let with_payload =
         crate::protocol::encode_binary_frame(&header, b"x").expect("raw frame must encode");
     assert!(decode_runtime_capabilities_frame(&with_payload).is_err());
+}
+
+#[test]
+fn capabilities_registry_accepts_valid_historical_fingerprint_without_current_pin() {
+    let historical_fingerprint = format!("sha256:{}", "0".repeat(64));
+    let mut value = serde_json::to_value(capabilities_header()).expect("header serializes");
+    value["capabilities"]["platformErrorProjectionRegistry"]["fingerprint"] =
+        Value::String(historical_fingerprint.clone());
+
+    let frame = crate::protocol::encode_binary_frame(&value, &[]).expect("raw frame must encode");
+    let decoded = decode_runtime_capabilities_frame(&frame)
+        .expect("general-shape historical registry must decode");
+    assert_eq!(
+        decoded
+            .capabilities
+            .platform_error_projection_registry
+            .fingerprint(),
+        historical_fingerprint
+    );
+
+    let reencoded =
+        encode_runtime_capabilities_frame(&decoded).expect("historical descriptor must re-encode");
+    let roundtrip = decode_runtime_capabilities_frame(&reencoded)
+        .expect("historical descriptor must roundtrip");
+    assert_eq!(roundtrip, decoded);
+}
+
+#[test]
+fn capabilities_registry_is_required_and_strictly_validated() {
+    let valid_fingerprint = format!("sha256:{}", "0".repeat(64));
+    let invalid_descriptors = [
+        (
+            "invalid registry id",
+            Some(json!({
+                "registryId": "other",
+                "registryVersion": PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION,
+                "fingerprint": valid_fingerprint.clone(),
+            })),
+        ),
+        (
+            "invalid registry version",
+            Some(json!({
+                "registryId": PLATFORM_ERROR_PROJECTION_REGISTRY_ID,
+                "registryVersion": PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION + 1,
+                "fingerprint": valid_fingerprint.clone(),
+            })),
+        ),
+        (
+            "uppercase fingerprint",
+            Some(json!({
+                "registryId": PLATFORM_ERROR_PROJECTION_REGISTRY_ID,
+                "registryVersion": PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION,
+                "fingerprint": format!("sha256:{}", "A".repeat(64)),
+            })),
+        ),
+        (
+            "malformed fingerprint",
+            Some(json!({
+                "registryId": PLATFORM_ERROR_PROJECTION_REGISTRY_ID,
+                "registryVersion": PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION,
+                "fingerprint": "sha256:not-a-digest",
+            })),
+        ),
+        (
+            "unknown descriptor field",
+            Some(json!({
+                "registryId": PLATFORM_ERROR_PROJECTION_REGISTRY_ID,
+                "registryVersion": PLATFORM_ERROR_PROJECTION_REGISTRY_VERSION,
+                "fingerprint": valid_fingerprint.clone(),
+                "unexpected": true,
+            })),
+        ),
+        ("missing descriptor", None),
+    ];
+
+    for (name, descriptor) in invalid_descriptors {
+        let mut value = serde_json::to_value(capabilities_header()).expect("header serializes");
+        let capabilities = value["capabilities"]
+            .as_object_mut()
+            .expect("capabilities metadata must be an object");
+        match descriptor {
+            Some(descriptor) => {
+                capabilities.insert("platformErrorProjectionRegistry".to_string(), descriptor);
+            }
+            None => {
+                capabilities.remove("platformErrorProjectionRegistry");
+            }
+        }
+        let frame =
+            crate::protocol::encode_binary_frame(&value, &[]).expect("raw frame must encode");
+        assert!(
+            decode_runtime_capabilities_frame(&frame).is_err(),
+            "{name} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn capabilities_rejects_runtime_frame_v4_without_a_dual_reader() {
+    let mut value = serde_json::to_value(capabilities_header()).expect("header serializes");
+    value["schemaVersion"] = Value::String("skiff-runtime-frame-v4".to_string());
+    let frame = crate::protocol::encode_binary_frame(&value, &[]).expect("raw frame must encode");
+    let error = decode_runtime_capabilities_frame(&frame)
+        .expect_err("runtime-frame-v4 capabilities must be rejected");
+    assert!(error.to_string().contains("skiff-runtime-frame-v5"));
 }
 
 #[test]

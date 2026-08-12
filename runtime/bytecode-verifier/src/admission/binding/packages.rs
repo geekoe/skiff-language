@@ -1,7 +1,9 @@
 use skiff_artifact_model::{
-    bytecode::opcodes::opcode_table_fingerprint, host_effect_registry_identity,
-    intrinsic_registry_identity, native_value_lifecycle_registry_identity,
-    value_lifecycle_policy_identity, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    bytecode::opcodes::opcode_table_fingerprint, current_platform_error_projection_registry_ref,
+    host_effect_registry_identity, intrinsic_registry_identity,
+    native_value_lifecycle_registry_identity, value_lifecycle_policy_identity,
+    PlatformErrorProjectionRegistryRef, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{CandidateTable, LinkedBytecodeCandidate};
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
@@ -44,7 +46,12 @@ pub(super) fn prove_owner_and_packages(
                 "candidate, hydration map, and package reference build ids disagree",
             ));
         }
-        prove_package_header(candidate_package, hydrated_package, location)?;
+        prove_package_header(
+            candidate_package,
+            hydrated_package,
+            hydrated.platform_error_projection_registry(),
+            location,
+        )?;
     }
     Ok(())
 }
@@ -79,6 +86,7 @@ fn prove_owner(hydrated: &HydratedDeploymentBytecode) -> Result<(), Verification
 fn prove_package_header(
     candidate: &skiff_runtime_linked_bytecode::LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
+    deployment_registry_receipt: &PlatformErrorProjectionRegistryRef,
     location: VerificationLocation,
 ) -> Result<(), VerificationError> {
     let admitted = package.bytecode();
@@ -112,7 +120,7 @@ fn prove_package_header(
         return Err(semantic_violation(
             location,
             format!(
-                "package {} candidate header is not the exact admitted v5 header/reference",
+                "package {} candidate header is not the exact admitted v7 header/reference",
                 package.reference().package_build_id
             ),
         ));
@@ -153,6 +161,13 @@ fn prove_package_header(
         expected_intrinsic_registry,
         location,
     )?;
+    prove_platform_error_projection_registry_pin(
+        package.reference().package_build_id.as_str(),
+        candidate,
+        deployment_registry_receipt,
+        package,
+        location,
+    )?;
     if candidate.artifact_ref().artifact_path.is_some() {
         return Err(semantic_violation(
             location,
@@ -160,6 +175,37 @@ fn prove_package_header(
         ));
     }
     Ok(())
+}
+
+fn prove_platform_error_projection_registry_pin(
+    package_build_id: &str,
+    candidate: &skiff_runtime_linked_bytecode::LinkedPackageBytecodeProvenance,
+    deployment_registry_receipt: &PlatformErrorProjectionRegistryRef,
+    package: &HydratedBytecodePackage,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    let admitted = package.bytecode();
+    let artifact = admitted.artifact();
+    let view = admitted.view();
+    let pins = [
+        candidate.authorities().platform_error_projection_registry(),
+        deployment_registry_receipt,
+        package.platform_error_projection_registry(),
+        &package.artifact().platform_error_projection_registry,
+        &artifact.platform_error_projection_registry,
+        view.platform_error_projection_registry(),
+        current_platform_error_projection_registry_ref(),
+    ];
+    if pins.windows(2).all(|pair| pair[0] == pair[1]) {
+        return Ok(());
+    }
+
+    Err(semantic_violation(
+        location,
+        format!(
+            "package {package_build_id} platform error projection registry pin is not exact across candidate, deployment hydration receipt, package hydration receipt, PackageArtifact root, BytecodeArtifact header, validated view, and runtime authority"
+        ),
+    ))
 }
 
 fn prove_authority_pin<T: Eq>(

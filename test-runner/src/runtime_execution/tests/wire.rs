@@ -1,5 +1,6 @@
 use super::super::test_support::*;
 use super::*;
+use skiff_runtime_request_contract::{PlatformErrorProjectionPayload, StdFileFileErrorPayload};
 
 #[test]
 fn test_dispatch_response_requires_canonical_response_end_and_null_payload() {
@@ -87,15 +88,12 @@ fn test_dispatch_typed_control_error_is_a_business_failure() {
 
 #[test]
 fn test_dispatch_typed_fixed_error_is_a_business_failure() {
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "kind": "internalError",
-        "payload": {
-            "message": "Internal service error",
-            "traceId": "trace-package-test",
-            "errorId": "error-package-test",
-        },
-    }))
-    .unwrap();
+    let error = OpaqueServiceError::internal_error(
+        "Internal service error",
+        "trace-package-test",
+        "error-package-test",
+    )
+    .expect("internal error fixture should encode canonically");
     let response = serde_json::json!({
         "ok": true,
         "header": {
@@ -104,12 +102,41 @@ fn test_dispatch_typed_fixed_error_is_a_business_failure() {
             "requestId": "package-test-request-fixed-error",
             "errorKind": "fixedService",
         },
-        "payloadBase64": BASE64_STANDARD.encode(payload),
+        "payloadBase64": BASE64_STANDARD.encode(error.encoded_bytes()),
     });
 
     assert_eq!(
         decode_test_dispatch_response(&response.to_string()).unwrap(),
         TestDispatchOutcome::Failed("Internal service error".to_string())
+    );
+}
+
+#[test]
+fn test_dispatch_typed_platform_error_reports_the_projection_key() {
+    let payload = PlatformErrorProjectionPayload::StdFileFileError(StdFileFileErrorPayload {
+        message: "provider detail must stay opaque".to_string(),
+    });
+    let projection_key = payload.key();
+    let error = OpaqueServiceError::platform_error(
+        &payload,
+        "trace-package-test-platform-error",
+        "error-package-test-platform-error",
+    )
+    .unwrap();
+    let response = serde_json::json!({
+        "ok": true,
+        "header": {
+            "schemaVersion": RUNTIME_FRAME_SCHEMA_VERSION,
+            "type": "response.error",
+            "requestId": "package-test-request-platform-error",
+            "errorKind": "fixedService",
+        },
+        "payloadBase64": BASE64_STANDARD.encode(error.encoded_bytes()),
+    });
+
+    assert_eq!(
+        decode_test_dispatch_response(&response.to_string()).unwrap(),
+        TestDispatchOutcome::Failed(format!("fixed service error {projection_key}"))
     );
 }
 

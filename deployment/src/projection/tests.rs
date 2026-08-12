@@ -1,9 +1,13 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use sha2::{Digest, Sha256};
 use skiff_artifact_identity::{
     assign_package_artifact_identities, assign_service_contract_identities, contract_operation_id,
-    package_schema_index_identity, package_schema_type_id, DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
+    package_schema_index_identity, package_schema_type_id, service_deployment_ref,
+    DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::*;
 
@@ -102,6 +106,8 @@ impl ProjectionFixture {
             package_id: package_id.to_string(),
             package_version: "2.0.0".to_string(),
             package_build_id: PackageBuildId::new("unassigned"),
+            platform_error_projection_registry: current_platform_error_projection_registry_ref()
+                .clone(),
             files: vec![file.clone()],
             static_resources: Vec::new(),
             bytecode: None,
@@ -960,12 +966,273 @@ fn every_package_in_the_resolved_closure_gets_boundary_admission() {
     }
 }
 
+#[test]
+fn strict_routing_view_derives_single_package_authority_without_mutating_deployment() {
+    let fixture = ProjectionFixture::new();
+    let deployment = fixture.project().unwrap();
+    let reference = service_deployment_ref(&deployment);
+    let original_identity = deployment.deployment_artifact_identity.clone();
+    let original_bytes = skiff_canonical_json::canonical_json_bytes(&deployment).unwrap();
+    let package = Arc::new(fixture.implementation.clone());
+
+    let view = crate::routing_view::validate_strict_deployment_routing_view(
+        &reference,
+        Arc::new(deployment),
+        &[package],
+    )
+    .unwrap();
+
+    assert_eq!(view.reference(), &reference);
+    assert_eq!(view.authority().build_id(), &original_identity);
+    assert_eq!(
+        view.authority().registry_descriptor(),
+        current_platform_error_projection_registry_ref()
+    );
+    assert_eq!(
+        skiff_canonical_json::canonical_json_bytes(view.deployment().as_ref()).unwrap(),
+        original_bytes,
+        "the ephemeral view must not change ServiceDeployment bytes"
+    );
+    assert_eq!(
+        view.deployment().deployment_artifact_identity,
+        original_identity,
+        "the ephemeral authority must not change deployment identity"
+    );
+}
+
+#[test]
+fn strict_routing_view_accepts_multi_package_closure_with_one_descriptor() {
+    let (deployment, implementation, dependency) = routing_closure_with_registries(
+        current_platform_error_projection_registry_ref().clone(),
+        current_platform_error_projection_registry_ref().clone(),
+    );
+    let reference = service_deployment_ref(&deployment);
+    let packages = [Arc::new(implementation), Arc::new(dependency)];
+
+    let view = crate::routing_view::validate_strict_deployment_routing_view(
+        &reference,
+        Arc::new(deployment),
+        &packages,
+    )
+    .unwrap();
+
+    assert_eq!(
+        view.authority().registry_descriptor(),
+        current_platform_error_projection_registry_ref()
+    );
+}
+
+#[test]
+fn strict_routing_view_rejects_mixed_registry_fingerprints() {
+    let (deployment, implementation, dependency) = routing_closure_with_registries(
+        current_platform_error_projection_registry_ref().clone(),
+        historical_registry_descriptor('0'),
+    );
+    let reference = service_deployment_ref(&deployment);
+    let packages = [Arc::new(implementation), Arc::new(dependency)];
+
+    assert!(matches!(
+        crate::routing_view::validate_strict_deployment_routing_view(
+            &reference,
+            Arc::new(deployment),
+            &packages,
+        ),
+        Err(RoutingViewError::MixedRegistryDescriptors { .. })
+    ));
+}
+
+#[test]
+fn strict_routing_view_reuses_exact_package_closure_failures() {
+    let fixture = ProjectionFixture::new();
+    let deployment = fixture.project().unwrap();
+    let reference = service_deployment_ref(&deployment);
+    let implementation = Arc::new(fixture.implementation.clone());
+    assert!(matches!(
+        crate::routing_view::validate_strict_deployment_routing_view(
+            &reference,
+            Arc::new(deployment.clone()),
+            &[],
+        ),
+        Err(RoutingViewError::PackageClosure(
+            ProjectionError::MissingImplementation { .. }
+        ))
+    ));
+
+    let unreachable = Arc::new(dependency_artifact("unreachable"));
+    assert!(matches!(
+        crate::routing_view::validate_strict_deployment_routing_view(
+            &reference,
+            Arc::new(deployment.clone()),
+            &[implementation.clone(), unreachable.clone()],
+        ),
+        Err(RoutingViewError::PackageClosure(
+            ProjectionError::UnreachablePackage { .. }
+        ))
+    ));
+
+    let mut extra_binding = deployment;
+    extra_binding.package_bindings.push(PackageBinding {
+        key: PackageRequirementKey {
+            caller_package_build_id: extra_binding.implementation.package_build_id.clone(),
+            package_requirement_alias: "extra".to_string(),
+        },
+        package: package_ref(&unreachable),
+    });
+    skiff_artifact_identity::assign_service_deployment_identity(&mut extra_binding).unwrap();
+    let extra_reference = service_deployment_ref(&extra_binding);
+    assert!(matches!(
+        crate::routing_view::validate_strict_deployment_routing_view(
+            &extra_reference,
+            Arc::new(extra_binding),
+            &[implementation, unreachable],
+        ),
+        Err(RoutingViewError::PackageClosure(
+            ProjectionError::ExtraRequirementBinding { .. }
+        ))
+    ));
+}
+
+#[test]
+fn strict_routing_view_rejects_missing_dependency_and_exact_ref_mismatch() {
+    let (deployment, implementation, dependency) = routing_closure_with_registries(
+        current_platform_error_projection_registry_ref().clone(),
+        current_platform_error_projection_registry_ref().clone(),
+    );
+    let reference = service_deployment_ref(&deployment);
+    assert!(matches!(
+        crate::routing_view::validate_strict_deployment_routing_view(
+            &reference,
+            Arc::new(deployment.clone()),
+            &[Arc::new(implementation.clone())],
+        ),
+        Err(RoutingViewError::PackageClosure(
+            ProjectionError::MissingRequirementBinding {
+                kind: "package artifact",
+                ..
+            }
+        ))
+    ));
+
+    let mut mismatched = deployment;
+    mismatched.package_bindings[0].package.package_version = "9.9.9".to_string();
+    skiff_artifact_identity::assign_service_deployment_identity(&mut mismatched).unwrap();
+    let mismatched_ref = service_deployment_ref(&mismatched);
+    assert!(matches!(
+        crate::routing_view::validate_strict_deployment_routing_view(
+            &mismatched_ref,
+            Arc::new(mismatched),
+            &[Arc::new(implementation), Arc::new(dependency)],
+        ),
+        Err(RoutingViewError::PackageClosure(
+            ProjectionError::PackageReferenceMismatch {
+                field: "packageVersion",
+                ..
+            }
+        ))
+    ));
+}
+
+#[test]
+fn strict_routing_view_rejects_invalid_identities_but_accepts_historical_descriptor() {
+    let fixture = ProjectionFixture::new();
+    let deployment = fixture.project().unwrap();
+    let reference = service_deployment_ref(&deployment);
+    let mut stale_package = fixture.implementation;
+    stale_package.platform_error_projection_registry = historical_registry_descriptor('1');
+    assert!(matches!(
+        crate::routing_view::validate_strict_deployment_routing_view(
+            &reference,
+            Arc::new(deployment.clone()),
+            &[Arc::new(stale_package)],
+        ),
+        Err(RoutingViewError::PackageClosure(
+            ProjectionError::InvalidTypedArtifact { .. }
+        ))
+    ));
+
+    let mut stale_deployment = deployment;
+    stale_deployment.deployment_artifact_identity =
+        DeploymentArtifactIdentity::new("stale-deployment-identity");
+    assert!(matches!(
+        crate::routing_view::validate_strict_deployment_routing_view(
+            &reference,
+            Arc::new(stale_deployment),
+            &[],
+        ),
+        Err(RoutingViewError::InvalidDeployment { .. })
+    ));
+
+    let historical = historical_registry_descriptor('2');
+    assert_ne!(
+        &historical,
+        current_platform_error_projection_registry_ref(),
+        "fixture must prove routing admission is not a current-singleton check"
+    );
+    let (deployment, implementation, dependency) =
+        routing_closure_with_registries(historical.clone(), historical.clone());
+    let reference = service_deployment_ref(&deployment);
+    let view = crate::routing_view::validate_strict_deployment_routing_view(
+        &reference,
+        Arc::new(deployment),
+        &[Arc::new(implementation), Arc::new(dependency)],
+    )
+    .unwrap();
+    assert_eq!(view.authority().registry_descriptor(), &historical);
+}
+
+fn routing_closure_with_registries(
+    implementation_registry: PlatformErrorProjectionRegistryRef,
+    dependency_registry: PlatformErrorProjectionRegistryRef,
+) -> (ServiceDeployment, PackageArtifact, PackageArtifact) {
+    let mut fixture = ProjectionFixture::new();
+    fixture.implementation.platform_error_projection_registry = implementation_registry;
+    fixture.refresh_implementation_ref();
+
+    let mut dependency = dependency_artifact("routing-closure");
+    dependency.platform_error_projection_registry = dependency_registry;
+    assign_package_artifact_identities(&mut dependency).unwrap();
+    fixture.implementation.package_requirements = vec![PackageRequirement {
+        alias: "util".to_string(),
+        package_id: dependency.package_id.clone(),
+        exact_version: dependency.package_version.clone(),
+        expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+        expected_package_build: Some(dependency.package_build_id.clone()),
+    }];
+    fixture.refresh_implementation_ref();
+    fixture.input.package_bindings = vec![PackageBinding {
+        key: PackageRequirementKey {
+            caller_package_build_id: fixture.implementation.package_build_id.clone(),
+            package_requirement_alias: "util".to_string(),
+        },
+        package: package_ref(&dependency),
+    }];
+    let deployment = project_service_deployment(
+        fixture.input,
+        &fixture.contract,
+        &[fixture.implementation.clone(), dependency.clone()],
+        &fixture.package_schema_records,
+    )
+    .unwrap();
+    (deployment, fixture.implementation, dependency)
+}
+
+fn historical_registry_descriptor(character: char) -> PlatformErrorProjectionRegistryRef {
+    serde_json::from_value(serde_json::json!({
+        "registryId": current_platform_error_projection_registry_ref().registry_id(),
+        "registryVersion": current_platform_error_projection_registry_ref().registry_version(),
+        "fingerprint": format!("sha256:{}", character.to_string().repeat(64)),
+    }))
+    .unwrap()
+}
+
 fn dependency_artifact(resource_hash: &str) -> PackageArtifact {
     let mut artifact = PackageArtifact {
         schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
         package_id: "example.util".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         files: Vec::new(),
         static_resources: vec![PublicationResourceRef {
             path: "data.txt".to_string(),

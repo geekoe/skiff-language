@@ -583,6 +583,8 @@ fn signature_rehydration_artifact() -> PackageArtifact {
         package_id: "example.com/provider".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("provider-build"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: vec![file.clone()],
         static_resources: Vec::new(),
         package_local_abi: PackageLocalAbi {
@@ -2565,6 +2567,8 @@ fn artifact_exported_interface_facts_preserve_classification_and_methods() {
         package_id: "llm-api".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("build"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: vec![file.clone()],
         static_resources: Vec::new(),
         package_local_abi: PackageLocalAbi {
@@ -3327,6 +3331,8 @@ fn actor_artifact() -> PackageArtifact {
         package_id: "example.com/actor-provider".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("build"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: vec![file.clone()],
         static_resources: Vec::new(),
         package_local_abi: PackageLocalAbi {

@@ -4,12 +4,13 @@ use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BoundaryCallableProjection,
     BoundaryImplementationRequirements, BytecodeFunctionStatementManifest, ExecutableExport,
-    ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature, OperationCallableKind, OperationTargetRef, PackageArtifact,
-    PackageBuildId, PackageCallableId, PackageCallableLinkFact, PackageCallableSignature,
-    PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
-    PackageSchemaIndexIdentity, PackageSchemaIndexRef, PackageSyntheticCallbackOwner,
-    PackageTypeRef, TypeDescriptorIr, TypeExport, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature, OperationCallableKind,
+    OperationTargetRef, PackageArtifact, PackageBuildId, PackageCallableId,
+    PackageCallableLinkFact, PackageCallableSignature, PackageExecutableCoordinate,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
+    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
+    PackageSyntheticCallbackOwner, PackageTypeRef, TypeDescriptorIr, TypeExport, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::{
@@ -155,6 +156,8 @@ pub(super) fn package(
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: vec![file],
         static_resources: Vec::new(),
         bytecode: Some(bytecode.reference().clone()),
@@ -311,6 +314,8 @@ pub(super) fn dependency_type_owner_package(
         package_id: DEPENDENCY_PACKAGE_ID.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: vec![file_ref()],
         static_resources: Vec::new(),
         bytecode: Some(bytecode.reference().clone()),

@@ -105,7 +105,7 @@ struct ConnectWireMutation {
 
 fn canonical_task_header(test_effects_enabled: bool) -> Value {
     let mut header = json!({
-        "schemaVersion": "skiff-runtime-frame-v4",
+        "schemaVersion": "skiff-runtime-frame-v5",
         "type": "request.start",
         "requestId": "task-request-1",
         "mode": "unary",
@@ -348,7 +348,10 @@ fn bytecode_routing_build_id_round_trips_and_defaults_to_absent() {
 #[test]
 fn bytecode_task_routing_build_id_round_trips() {
     let mut value = canonical_task_header(false);
-    assert!(value.get("routing").and_then(|r| r.get("buildId")).is_none());
+    assert!(value
+        .get("routing")
+        .and_then(|r| r.get("buildId"))
+        .is_none());
     let build_id = "skiff-deployment-artifact-v4:sha256:task";
     value["routing"]["buildId"] = json!(build_id);
     let frame = encode_binary_frame(&value, br#"{"args":[]}"#).unwrap();
@@ -958,7 +961,7 @@ fn bytecode_websocket_jsonrpc_response_mutations_fail_closed() {
 #[test]
 fn bytecode_websocket_jsonrpc_response_rejects_duplicate_json_keys() {
     let frame = raw_json_frame_with_payload(
-        br#"{"schemaVersion":"skiff-runtime-frame-v4","type":"response.end","requestId":"one","requestId":"two","payloadPresent":true,"websocketJsonRpc":{"outcome":"success"}}"#,
+        br#"{"schemaVersion":"skiff-runtime-frame-v5","type":"response.end","requestId":"one","requestId":"two","payloadPresent":true,"websocketJsonRpc":{"outcome":"success"}}"#,
         b"null",
     );
     assert!(decode_bytecode_websocket_jsonrpc_response_end_frame(&frame).is_err());
@@ -1034,7 +1037,7 @@ fn bytecode_websocket_connect_response_mutations_fail_closed() {
 #[test]
 fn bytecode_websocket_connect_response_rejects_duplicate_json_keys() {
     let frame = raw_json_frame(
-        br#"{"schemaVersion":"skiff-runtime-frame-v4","type":"response.end","requestId":"one","requestId":"two","payloadPresent":false,"websocketConnect":{"result":"accept"}}"#,
+        br#"{"schemaVersion":"skiff-runtime-frame-v5","type":"response.end","requestId":"one","requestId":"two","payloadPresent":false,"websocketConnect":{"result":"accept"}}"#,
     );
     assert!(decode_bytecode_websocket_connect_response_end_frame(&frame).is_err());
 }
@@ -1103,7 +1106,10 @@ fn websocket_connection_closed_header() -> Value {
     header["requestId"] = Value::String("request-websocket-connection-closed-1".to_string());
     // The close ingress carries no method field; entryKind selects the
     // connectionClosed sibling (mirroring the router's wire shape).
-    header["routing"]["ingress"].as_object_mut().expect("ingress").remove("method");
+    header["routing"]["ingress"]
+        .as_object_mut()
+        .expect("ingress")
+        .remove("method");
     header["routing"]["ingress"]["entryKind"] = Value::String("connectionClosed".to_string());
     let websocket_connect = header
         .as_object_mut()
@@ -1132,7 +1138,7 @@ fn websocket_connection_closed_header() -> Value {
 
 fn websocket_jsonrpc_response_header(outcome: &str, payload_present: bool) -> Value {
     serde_json::json!({
-        "schemaVersion": "skiff-runtime-frame-v4",
+        "schemaVersion": "skiff-runtime-frame-v5",
         "type": "response.end",
         "requestId": "request-websocket-jsonrpc-1",
         "payloadPresent": payload_present,

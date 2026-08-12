@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     bytecode::{ResourceDropPlan, ValueDropPlan, ValueTransferPlan},
-    NativeValueDropPlan, NativeValueLifecycleConcrete,
+    NativeValueDropPlan, NativeValueLifecycleConcrete, NativeValueLifecycleResolution,
 };
 
 #[test]
@@ -21,6 +21,70 @@ fn nullable_has_a_fixed_snapshot_root_drop() {
             drop: NativeValueDropPlan::SnapshotRelease,
         }
     );
+}
+
+#[test]
+fn std_task_builtins_are_ordinary_snapshots_and_void_stays_fail_closed() {
+    for name in ["TaskRef", "TaskStatus", "TaskCancelResult"] {
+        let resolution = classify_value_lifecycle(
+            &TypeRefIr::builtin(name),
+            &PositionalTypeEnvironment::empty(),
+            &mut RejectingResolver,
+            &mut budget(),
+        )
+        .unwrap();
+        assert_eq!(
+            resolution,
+            NativeValueLifecycleResolution {
+                lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::SnapshotRelease,
+                },
+                embedding: crate::NativeValueEmbedding::Ordinary,
+            }
+        );
+    }
+
+    assert!(matches!(
+        classify_value_lifecycle(
+            &TypeRefIr::builtin("void"),
+            &PositionalTypeEnvironment::empty(),
+            &mut RejectingResolver,
+            &mut budget(),
+        ),
+        Err(ValueLifecyclePolicyError::UnsupportedType {
+            kind: "unregisteredBuiltin"
+        })
+    ));
+}
+
+#[test]
+fn exception_and_catch_result_are_ordinary_snapshot_roots() {
+    for ty in [
+        TypeRefIr::Builtin {
+            name: "Exception".to_string(),
+            args: vec![TypeRefIr::builtin("string")],
+        },
+        TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![TypeRefIr::builtin("bool"), TypeRefIr::builtin("string")],
+        },
+    ] {
+        assert_eq!(
+            classify_value_lifecycle(
+                &ty,
+                &PositionalTypeEnvironment::empty(),
+                &mut RejectingResolver,
+                &mut budget(),
+            )
+            .unwrap(),
+            NativeValueLifecycleResolution {
+                lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::SnapshotRelease,
+                },
+                embedding: crate::NativeValueEmbedding::Ordinary,
+            }
+        );
+    }
 }
 
 #[test]

@@ -7,9 +7,9 @@ use super::{
 use serde_json::json;
 use skiff_artifact_identity::package_schema_index_identity;
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity, PackageArtifact, PackageArtifactRef,
-    PackageBinding, PackageBuildId, PackageLocalAbiIdentity, PackageRequirement,
-    PackageRequirementKey,
+    current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
+    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageLocalAbiIdentity,
+    PackageRequirement, PackageRequirementKey,
 };
 use skiff_compiler_input::{package_config::read_user_package_manifest, CompilerPlatformSources};
 use skiff_compiler_source::prelude_registry::{
@@ -225,10 +225,11 @@ fn package(
     let bytecode_statement_manifest_identity =
         derive_bytecode_statement_manifest_identity(id, &[]).unwrap();
     serde_json::from_value(json!({
-        "schemaVersion": "skiff-package-artifact-v14",
+        "schemaVersion": "skiff-package-artifact-v15",
         "packageId": id,
         "packageVersion": version,
         "packageBuildId": format!("build:{id}:{version}:{local_abi}"),
+        "platformErrorProjectionRegistry": current_platform_error_projection_registry_ref(),
         "files": [],
         "staticResources": [],
         "bytecodeStatementManifestIdentity": bytecode_statement_manifest_identity,
@@ -325,6 +326,11 @@ impl MinimalPlatformFixture {
         fs::write(
             root.join("std/package.yml"),
             "id: skiff.run/std\nversion: 1.0.0\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("std/error-projections.yml"),
+            "schemaVersion: skiff-platform-error-projection-catalog-v1\nentries: []\n",
         )
         .unwrap();
         fs::write(root.join("prelude/error.skiff"), "").unwrap();

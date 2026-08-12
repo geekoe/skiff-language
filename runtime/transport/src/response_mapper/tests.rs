@@ -16,10 +16,10 @@ use crate::protocol::{
     BytecodeWebSocketJsonRpcResponseFrameHeader,
     BytecodeWebSocketJsonRpcResponseOutcome,
 };
-use skiff_runtime_request_contract::OpaqueServiceError;
 use skiff_runtime_request_contract::{
-    FixedServiceResponseFailure, HttpResponseMetadata, OrdinaryResponseErrorSource, ResponseEnd,
-    ResponseError, ResponseEvent, ResponseStreamEvent,
+    FixedServiceResponseFailure, HttpResponseMetadata, OpaqueServiceError,
+    OrdinaryResponseErrorSource, PlatformErrorProjectionPayload, ResponseEnd, ResponseError,
+    ResponseEvent, ResponseStreamEvent, ServiceErrorEnvelope,
 };
 
 struct TestOrdinaryError(ResponseError);
@@ -107,7 +107,7 @@ fn service_error_response_v2_mapper_round_trip_preserves_fixed_payload_bytes() {
         .as_array()
         .expect("validCases must be an array")
         .iter()
-        .take(3)
+        .filter(|test_case| test_case["expected"]["kind"] != "control")
     {
         let payload = test_case["payloadUtf8"]
             .as_str()
@@ -126,11 +126,38 @@ fn service_error_response_v2_mapper_round_trip_preserves_fixed_payload_bytes() {
         .expect("fixed service response must encode");
         let (header, decoded_body) =
             decode_response_error_frame(&encoded).expect("fixed service response must decode");
-        assert!(matches!(
-            decoded_body,
-            ValidatedResponseErrorFrame::FixedService(ref decoded)
-                if decoded.encoded_bytes() == payload
-        ));
+        let decoded = match decoded_body {
+            ValidatedResponseErrorFrame::FixedService(decoded) => decoded,
+            ValidatedResponseErrorFrame::Control(_) => {
+                panic!("{} must stay a fixed service error", test_case["name"])
+            }
+        };
+        assert_eq!(decoded.encoded_bytes(), payload);
+
+        if let ServiceErrorEnvelope::PlatformError {
+            encoded_payload, ..
+        } = decoded.envelope()
+        {
+            let known = test_case["expected"]["known"]
+                .as_bool()
+                .expect("platform fixture known flag");
+            if known {
+                let evidence = decoded
+                    .known_platform_projection()
+                    .expect("exact-known platform error must expose typed evidence");
+                assert!(matches!(
+                    evidence.payload(),
+                    PlatformErrorProjectionPayload::StdCollectionMapKeyNotFoundError(_)
+                ));
+                assert_eq!(encoded_payload.as_slice(), b"{}");
+            } else {
+                assert!(decoded.known_platform_projection().is_none());
+                assert!(
+                    serde_json::from_slice::<Value>(encoded_payload).is_err(),
+                    "unknown payload fixture must prove transport never requires JSON"
+                );
+            }
+        }
 
         let raw = decode_binary_frame(&encoded).expect("fixed service binary frame");
         assert_eq!(raw.payload_bytes, payload);

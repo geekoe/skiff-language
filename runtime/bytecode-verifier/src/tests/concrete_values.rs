@@ -35,6 +35,32 @@ fn package_global_string_and_array_with_exact_plans_complete_empty_effect_proof(
 }
 
 #[test]
+fn void_is_non_value_and_std_task_builtins_are_explicit_snapshots() {
+    let facts = concrete_facts(vec![
+        TypeRefIr::builtin("void"),
+        TypeRefIr::builtin("TaskRef"),
+        TypeRefIr::builtin("TaskStatus"),
+        TypeRefIr::builtin("TaskCancelResult"),
+    ]);
+
+    assert_eq!(
+        facts.type_fact(TypeIndex::new(0)).unwrap().lifecycle(),
+        &NativeValueLifecycleResolution {
+            lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+                drop: NativeValueDropPlan::Trivial,
+            },
+            embedding: NativeValueEmbedding::Ordinary,
+        }
+    );
+    for index in 1..4 {
+        assert_eq!(
+            facts.type_fact(TypeIndex::new(index)).unwrap().lifecycle(),
+            &snapshot_resolution(NativeValueEmbedding::Ordinary)
+        );
+    }
+}
+
+#[test]
 fn array_element_with_same_kind_but_trivial_drop_is_rejected() {
     let wrong = LinkedValueTransferPlan::SnapshotShare {
         drop: LinkedValueDropPlan::Trivial,

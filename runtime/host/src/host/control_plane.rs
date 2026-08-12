@@ -4,6 +4,7 @@ use std::{collections::HashSet, sync::Arc};
 use serde_json::Value;
 #[cfg(any())]
 use serde_json::{json, Map};
+use skiff_artifact_model::current_platform_error_projection_registry_ref;
 #[cfg(any())]
 use skiff_artifact_model::ConfigShape;
 use skiff_runtime_request::{self as request_runner, RequestEnvelope, RouterWriterMessage};
@@ -120,18 +121,21 @@ impl RuntimeHost {
         let dispatch_modes = engine_dispatch_modes();
         let loaded_build_ids = Vec::new();
         let artifact_root = self.bootstrap_artifact_root();
+        let platform_error_projection_registry =
+            current_platform_error_projection_registry_ref().clone();
         let header = RuntimeCapabilitiesFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             envelope_type: "runtime.capabilities".to_string(),
             runtime_id: self.base_runtime_id.clone(),
             capabilities: RuntimeCapabilitiesFrameHeaderMetadata {
+                platform_error_projection_registry,
                 dispatch_modes,
                 package_test_dispatch: false,
                 request_cancel: true,
+                runtime_program: false,
                 artifact_root,
                 lazy_load: true,
                 loaded_build_ids,
-                ..RuntimeCapabilitiesFrameHeaderMetadata::default()
             },
         };
         let frame = encode_binary_frame(&header, &[])
@@ -235,7 +239,7 @@ mod tests {
     use crate::host::runtime_host::RuntimeConfig;
 
     #[test]
-    fn capabilities_frame_advertises_engine_modes_without_admitted_assembly() {
+    fn initial_and_refresh_capabilities_advertise_current_registry_and_engine_facts() {
         let host = RuntimeHost::new(RuntimeConfig {
             db_provider: skiff_runtime_capability_context::DbProviderSource::unavailable(),
             router_url: "ws://127.0.0.1:4001/runtime".to_string(),
@@ -247,25 +251,81 @@ mod tests {
             http_egress_proxy: None,
         })
         .expect("runtime host");
+        let artifact_root = std::env::temp_dir()
+            .join("skiff-runtime-capabilities-artifacts")
+            .display()
+            .to_string();
+        host.set_bootstrap_artifact_root(artifact_root.clone());
+
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        host.queue_connection_registration(sender.clone())
+            .expect("queue initial capabilities");
         host.queue_runtime_capabilities(sender)
-            .expect("queue capabilities");
-        let message = receiver.blocking_recv().expect("capabilities frame");
+            .expect("queue capabilities refresh");
+
+        let headers = [
+            decode_queued_capabilities(
+                receiver
+                    .blocking_recv()
+                    .expect("initial capabilities frame"),
+            ),
+            decode_queued_capabilities(
+                receiver
+                    .blocking_recv()
+                    .expect("refresh capabilities frame"),
+            ),
+        ];
+        for header in &headers {
+            assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v5");
+            assert_eq!(header.schema_version, RUNTIME_FRAME_SCHEMA_VERSION);
+            assert_eq!(header.envelope_type, "runtime.capabilities");
+            assert_eq!(header.runtime_id, "runtime-no-admit");
+
+            let registry = &header.capabilities.platform_error_projection_registry;
+            assert_eq!(
+                registry,
+                current_platform_error_projection_registry_ref(),
+                "host must advertise the exact compiler-generated registry singleton"
+            );
+            skiff_artifact_model::validate_platform_error_projection_registry_ref_shape(registry)
+                .expect("advertised registry descriptor has valid general shape");
+            skiff_artifact_model::validate_current_platform_error_projection_registry_ref(registry)
+                .expect("advertised registry descriptor is current");
+
+            assert_eq!(
+                header.capabilities.dispatch_modes,
+                engine_dispatch_modes(),
+                "cold-start lazy-load holder advertises every engine-supported mode"
+            );
+            assert!(!header.capabilities.package_test_dispatch);
+            assert!(header.capabilities.request_cancel);
+            assert!(!header.capabilities.runtime_program);
+            assert_eq!(
+                header.capabilities.artifact_root.as_deref(),
+                Some(artifact_root.as_str())
+            );
+            assert!(header.capabilities.lazy_load);
+            assert!(header.capabilities.loaded_build_ids.is_empty());
+        }
+        assert_eq!(
+            headers[0].capabilities.platform_error_projection_registry,
+            headers[1].capabilities.platform_error_projection_registry,
+            "a capabilities refresh must repeat the connection's registry descriptor"
+        );
+    }
+
+    fn decode_queued_capabilities(message: RouterWriterMessage) -> RuntimeCapabilitiesFrameHeader {
         let RouterWriterMessage::Binary(bytes) = message else {
             panic!("capabilities must be a binary frame");
         };
-        let (header, _) = skiff_runtime_transport::protocol::decode_typed_binary_frame::<
-            RuntimeCapabilitiesFrameHeader,
-        >(&bytes)
-        .expect("decode capabilities frame");
-        assert_eq!(header.runtime_id, "runtime-no-admit");
-        assert_eq!(
-            header.capabilities.dispatch_modes,
-            engine_dispatch_modes(),
-            "cold-start lazy-load holder advertises every engine-supported mode"
-        );
-        assert!(header.capabilities.lazy_load);
-        assert!(header.capabilities.loaded_build_ids.is_empty());
-        assert!(header.capabilities.request_cancel);
+        let (typed, payload): (RuntimeCapabilitiesFrameHeader, Vec<u8>) =
+            skiff_runtime_transport::protocol::decode_typed_binary_frame(&bytes)
+                .expect("decode typed capabilities frame");
+        assert!(payload.is_empty(), "capabilities payload must be empty");
+        let validated =
+            skiff_runtime_transport::protocol::decode_runtime_capabilities_frame(&bytes)
+                .expect("decode canonical capabilities frame");
+        assert_eq!(validated, typed);
+        validated
     }
 }

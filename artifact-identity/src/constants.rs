@@ -1,6 +1,6 @@
 pub const FILE_IR_IDENTITY_PREFIX: &str = "skiff-file-ir-v15:sha256";
-pub const BYTECODE_IDENTITY_SCHEMA_MARKER: &str = "skiff-bytecode-artifact-v4";
-pub const BYTECODE_IDENTITY_PREFIX: &str = "skiff-bytecode-image-v4:sha256";
+pub const BYTECODE_IDENTITY_SCHEMA_MARKER: &str = "skiff-bytecode-artifact-v5";
+pub const BYTECODE_IDENTITY_PREFIX: &str = "skiff-bytecode-image-v5:sha256";
 pub const ACTOR_ABI_IDENTITY_SCHEMA_MARKER: &str = "skiff-actor-abi-identity-v1";
 pub const ACTOR_ABI_IDENTITY_PREFIX: &str = "skiff-actor-abi-v1:sha256";
 pub const ACTOR_METHOD_IDENTITY_SCHEMA_MARKER: &str = "skiff-actor-method-identity-v1";
@@ -9,10 +9,10 @@ pub const ACTOR_IMPLEMENTATION_IDENTITY_SCHEMA_MARKER: &str =
     "skiff-actor-implementation-identity-v1";
 pub const ACTOR_IMPLEMENTATION_IDENTITY_PREFIX: &str = "skiff-actor-implementation-v1:sha256";
 pub const PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER: &str =
-    "skiff-package-artifact-build-identity-v12";
+    "skiff-package-artifact-build-identity-v13";
 pub const PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER: &str =
     "skiff-package-artifact-local-abi-identity-v6";
-pub const PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v13:sha256";
+pub const PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX: &str = "skiff-package-build-v14:sha256";
 pub const PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX: &str = "skiff-package-local-abi-v7:sha256";
 pub use skiff_artifact_model::{
     PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX, PACKAGE_SCHEMA_TYPE_IDENTITY_SCHEMA_MARKER,

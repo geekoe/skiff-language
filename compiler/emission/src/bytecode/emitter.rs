@@ -1,9 +1,9 @@
 use skiff_artifact_identity::{assign_bytecode_identity, validate_bytecode_identity};
 use skiff_artifact_model::{
-    host_effect_registry_identity, intrinsic_registry_identity,
-    native_value_lifecycle_registry_identity, opcode_table_fingerprint,
-    value_lifecycle_policy_identity, BytecodeArtifact, BytecodeImage, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    current_platform_error_projection_registry_ref, host_effect_registry_identity,
+    intrinsic_registry_identity, native_value_lifecycle_registry_identity,
+    opcode_table_fingerprint, value_lifecycle_policy_identity, BytecodeArtifact, BytecodeImage,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use skiff_compiler_lowering::{mir::MirUnit, FrozenConstantBundle};
 
@@ -40,6 +40,8 @@ pub fn emit_bytecode_artifact(
         value_lifecycle_policy: value_lifecycle_policy_identity().clone(),
         host_effect_registry: host_effect_registry_identity().clone(),
         intrinsic_registry: intrinsic_registry_identity().clone(),
+        platform_error_projection_registry: current_platform_error_projection_registry_ref()
+            .clone(),
         bytecode_identity: String::new(),
         image: BytecodeImage {
             functions: emitted_functions,
@@ -58,10 +60,11 @@ pub fn emit_bytecode_artifact(
 mod tests {
     use skiff_artifact_identity::{validate_bytecode_identity, BYTECODE_IDENTITY_PREFIX};
     use skiff_artifact_model::{
-        host_effect_registry_identity, intrinsic_registry_identity,
-        native_value_lifecycle_registry_identity, opcode_table_fingerprint,
-        value_lifecycle_policy_identity, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-        BYTECODE_SCHEMA_VERSION,
+        current_platform_error_projection_registry_ref, host_effect_registry_identity,
+        intrinsic_registry_identity, native_value_lifecycle_registry_identity,
+        opcode_table_fingerprint, validate_current_platform_error_projection_registry_ref,
+        validate_platform_error_projection_registry_ref_shape, value_lifecycle_policy_identity,
+        ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
     };
 
     use super::*;
@@ -72,9 +75,9 @@ mod tests {
         let artifact =
             emit_bytecode_artifact(&[], &[], &BytecodeValueTransferPlans::empty()).unwrap();
 
-        assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v6");
+        assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v7");
         assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v4");
-        assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v4:sha256");
+        assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v5:sha256");
         assert_eq!(artifact.magic, BYTECODE_MAGIC);
         assert_eq!(artifact.schema_version, BYTECODE_SCHEMA_VERSION);
         assert_eq!(artifact.isa_version, BYTECODE_ISA_VERSION);
@@ -95,9 +98,26 @@ mod tests {
             host_effect_registry_identity()
         );
         assert_eq!(&artifact.intrinsic_registry, intrinsic_registry_identity());
+        assert_eq!(
+            &artifact.platform_error_projection_registry,
+            current_platform_error_projection_registry_ref()
+        );
+        validate_platform_error_projection_registry_ref_shape(
+            &artifact.platform_error_projection_registry,
+        )
+        .unwrap();
+        validate_current_platform_error_projection_registry_ref(
+            &artifact.platform_error_projection_registry,
+        )
+        .unwrap();
+        let wire = serde_json::to_value(&artifact).unwrap();
+        assert_eq!(
+            wire.get("platformErrorProjectionRegistry"),
+            Some(&serde_json::to_value(current_platform_error_projection_registry_ref()).unwrap())
+        );
         assert!(artifact
             .bytecode_identity
-            .starts_with("skiff-bytecode-image-v4:sha256:"));
+            .starts_with("skiff-bytecode-image-v5:sha256:"));
         assert!(artifact.image.functions.is_empty());
         assert!(artifact.image.constant_roots.is_empty());
         validate_bytecode_identity(&artifact).unwrap();

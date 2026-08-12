@@ -2,8 +2,7 @@ mod common;
 use common::{artifacts::module_artifact, package_project::compile_package_project, TestDir};
 use skiff_artifact_model::{
     ExprIr, InstructionSourceSite, StmtIr, FILE_IR_FORMAT_VERSION, FILE_IR_OPCODE_TABLE_VERSION,
-    FILE_IR_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION,
+    FILE_IR_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 
 fn executable<'a>(
@@ -157,7 +156,7 @@ function sequentialValue() -> string {
     fn timeout_file_ir_upgrade_does_not_change_unrelated_top_level_schemas() {
         assert_eq!(
             PACKAGE_ARTIFACT_SCHEMA_VERSION,
-            "skiff-package-artifact-v14"
+            "skiff-package-artifact-v15"
         );
         assert_eq!(SERVICE_CONTRACT_SCHEMA_VERSION, "skiff-service-contract-v6");
     }

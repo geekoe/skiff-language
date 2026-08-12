@@ -10,7 +10,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use serde::Deserialize;
-use skiff_artifact_identity::ArtifactRelativePath;
+use serde_json::Value;
+use skiff_artifact_identity::{ArtifactRelativePath, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX};
 use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity};
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingMethod, ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_RECORD_PATH,
@@ -129,6 +130,42 @@ fn a3_record(name: &str) -> String {
         .expect("record content")
 }
 
+fn model_corpus() -> ModelCorpus {
+    let mut value: Value = serde_json::from_str(
+        &std::fs::read_to_string(MODEL_CORPUS).expect("model corpus"),
+    )
+    .expect("model corpus decode");
+    for case in value
+        .get_mut("positive")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        let Some(methods) = case
+            .get_mut("json")
+            .and_then(|json| json.get_mut("methods"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        for method in methods {
+            if let Some(build) = method
+                .get_mut("package")
+                .and_then(|package| package.get_mut("packageBuildId"))
+            {
+                if let Some(text) = build.as_str() {
+                    if let Some(rest) = text.strip_prefix("skiff-package-build-v11:sha256:") {
+                        *build = Value::String(format!(
+                            "{PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX}:{rest}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    serde_json::from_value(value).expect("model corpus decode")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,9 +270,7 @@ mod tests {
 
     #[test]
     fn model_corpus_positive_projections_resolve_through_the_view() {
-        let corpus: ModelCorpus =
-            serde_json::from_str(&std::fs::read_to_string(MODEL_CORPUS).expect("model corpus"))
-                .expect("model corpus decode");
+        let corpus = model_corpus();
         assert_eq!(
             corpus.schema_version,
             "skiff-router-rust-actor-routing-corpus-v1"

@@ -24,7 +24,7 @@ impl Drop for DropProbe {
 #[tokio::test]
 async fn database_reconciliation_is_bounded_and_drains_every_database() {
     assert_eq!(DATABASE_RECONCILIATION_CONCURRENCY, 8);
-    assert!(DATABASE_RECONCILIATION_CONCURRENCY <= 10);
+    assert!(std::hint::black_box(DATABASE_RECONCILIATION_CONCURRENCY) <= 10);
 
     const DATABASES: usize = 17;
     const TEST_LIMIT: usize = 3;

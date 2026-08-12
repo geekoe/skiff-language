@@ -100,13 +100,13 @@ fn unknown_and_unregistered_builtins_never_receive_guessed_plans() {
             name: "MysteryHandle".to_string(),
         })
     );
-    assert!(matches!(
-        plan(&facts, &builtin("TaskRef")),
-        Err(SourceValueTransferError::NativeLifecycleLookup {
-            source,
-            ..
-        }) if matches!(source.as_ref(), NativeValueLifecycleLookupError::Missing { .. })
-    ));
+    for name in ["TaskRef", "TaskStatus", "TaskCancelResult"] {
+        assert_eq!(
+            plan(&facts, &builtin(name)),
+            Ok(snapshot_release()),
+            "registered native snapshot root {name} must have an exact lifecycle plan"
+        );
+    }
 }
 
 #[test]

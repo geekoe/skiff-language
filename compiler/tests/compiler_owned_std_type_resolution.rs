@@ -91,23 +91,19 @@ fn public_callable_id(
     callable_id.clone()
 }
 
-fn package_call<'a>(
+fn native_call<'a>(
     file: &'a skiff_compiler_emission::PublishedFileIrArtifact,
-    callable_id: &skiff_artifact_model::PackageCallableId,
+    binding_key: &str,
 ) -> Option<&'a CallIr> {
     file.unit.executables.iter().find_map(|executable| {
         executable.body.expressions.iter().find_map(|expression| {
             let ExprIr::Call { call } = expression else {
                 return None;
             };
-            matches!(
-                &call.target,
-                CallTargetIr::PackageCallable {
-                    package_ref: PackageRefIr::Dependency { dependency_ref },
-                    package_callable_id,
-                } if dependency_ref == "std" && package_callable_id == callable_id
-            )
-            .then_some(call)
+            let CallTargetIr::Native { target } = &call.target else {
+                return None;
+            };
+            (target.binding_key.as_deref() == Some(binding_key)).then_some(call)
         })
     })
 }
@@ -172,8 +168,8 @@ function run(connectionId: string) -> void {
         for public_path in ["std.time.sleep", "std.websocket.sendTextToConnection"] {
             let callable_id = public_callable_id(std, public_path);
             assert!(
-                package_call(main, &callable_id).is_some(),
-                "lowering must retain the compiler-owned std call {public_path}"
+                native_call(main, public_path).is_some(),
+                "lowering must retain the compiler-owned std native call {public_path} ({callable_id})"
             );
         }
     }
@@ -192,9 +188,8 @@ function run(input: string) -> std.websocket.WebSocketConnectResult {
         let std = project
             .dependency(SKIFF_STD_PUBLICATION_ID, "1.0.0")
             .expect("canonical std artifact must remain in the package closure");
-        let decode_id = public_callable_id(std, "std.json.decode");
-        let call = package_call(module_artifact(&project.package, "main"), &decode_id)
-            .expect("generic std call must lower through the selected artifact");
+        let call = native_call(module_artifact(&project.package, "main"), "std.json.decode")
+            .expect("generic std call must lower through the selected native registry");
         let ty = call.type_args.get("T0").unwrap_or_else(|| {
             panic!(
                 "the exact std generic binder must survive lowering: {:?}",
@@ -257,10 +252,17 @@ function run(input: std.http.HttpClientRequest) -> integer {
             "fresh official std public symbols must not contain ownerless LocalType values"
         );
 
-        let stream_id = public_callable_id(std, "std.http.stream");
-        assert!(
-        package_call(module_artifact(&project.package, "main"), &stream_id).is_some(),
-        "the exact std.http.stream signature must rehydrate and lower through the real package compiler"
-    );
+        let stream_call = native_call(module_artifact(&project.package, "main"), "std.http.client.stream")
+            .expect("the exact std.http.stream signature must lower through the canonical native registry binding");
+        let CallTargetIr::Native { target } = &stream_call.target else {
+            panic!("std.http.stream must lower through a native target")
+        };
+        assert_eq!(target.namespace, "std.http");
+        assert_eq!(target.symbol, "stream");
+        assert_eq!(
+            target.binding_key.as_deref(),
+            Some("std.http.client.stream")
+        );
+        assert!(stream_call.type_args.is_empty());
     }
 }

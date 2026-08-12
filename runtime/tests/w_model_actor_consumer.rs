@@ -260,7 +260,7 @@ mod tests {
                 "{name}: direction"
             );
             assert_eq!(
-                entry.header["schemaVersion"], "skiff-runtime-frame-v4",
+                entry.header["schemaVersion"], "skiff-runtime-frame-v5",
                 "{name}: header schemaVersion"
             );
             assert_eq!(

@@ -159,7 +159,7 @@ mod tests {
                 "{name}: payloadPresence"
             );
             assert_eq!(
-                entry.header["schemaVersion"], "skiff-runtime-frame-v4",
+                entry.header["schemaVersion"], "skiff-runtime-frame-v5",
                 "{name}: header schemaVersion"
             );
             assert_eq!(
@@ -307,7 +307,7 @@ mod tests {
         );
 
         let invalid_kind = serde_json::json!({
-            "schemaVersion": "skiff-runtime-frame-v4",
+            "schemaVersion": "skiff-runtime-frame-v5",
             "type": "task.submit.request",
             "rpcId": "rpc:probe-1",
             "runtimeId": "runtime-a",

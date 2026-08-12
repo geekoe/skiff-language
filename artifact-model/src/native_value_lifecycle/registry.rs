@@ -8,9 +8,9 @@ use crate::{PackageRefIr, TypeRefIr};
 use super::contract::*;
 
 pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_ID: &str = "skiff-native-value-lifecycle";
-pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION: &str = "skiff-native-value-lifecycle-v2";
+pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION: &str = "skiff-native-value-lifecycle-v4";
 pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT: &str =
-    "f3822f537091ee8f3faf444043016d881c1274b1ca48f211a62b5f7dfe345b81";
+    "bd03a9f3550ec1ee1356e429abbf1bb58a314add0b2692a5b3cae822c700e4b3";
 pub const MAX_NATIVE_VALUE_LIFECYCLE_ARGUMENTS: usize = 64;
 
 #[derive(Debug, Clone)]
@@ -458,8 +458,12 @@ fn initial_entries() -> Vec<NativeValueLifecycleEntry> {
         .into_iter()
         .map(|name| builtin_entry(name, Vec::new(), scalar(), NativeValueEmbedding::Ordinary))
         .collect::<Vec<_>>();
+    // `TaskRef` is the opaque canonical handle described by
+    // `RuntimeTypeNode::TaskRef`; it is not a resource and follows the same
+    // ordinary snapshot-root policy as string-backed handles. `TaskStatus` and
+    // `TaskCancelResult` are ordinary snapshot union values.
     entries.extend(
-        ["string", "bytes", "Json", "JsonObject"]
+        ["string", "bytes", "Json", "JsonObject", "TaskRef", "TaskStatus", "TaskCancelResult"]
             .into_iter()
             .map(|name| {
                 builtin_entry(
@@ -478,6 +482,21 @@ fn initial_entries() -> Vec<NativeValueLifecycleEntry> {
     ));
     entries.push(builtin_entry(
         "Map",
+        vec![
+            NativeValueArgumentPolicy::RequireSnapshotShare,
+            NativeValueArgumentPolicy::RequireSnapshotShare,
+        ],
+        snapshot_root(),
+        NativeValueEmbedding::Ordinary,
+    ));
+    entries.push(builtin_entry(
+        "Exception",
+        vec![NativeValueArgumentPolicy::RequireSnapshotShare],
+        snapshot_root(),
+        NativeValueEmbedding::Ordinary,
+    ));
+    entries.push(builtin_entry(
+        "CatchResult",
         vec![
             NativeValueArgumentPolicy::RequireSnapshotShare,
             NativeValueArgumentPolicy::RequireSnapshotShare,

@@ -12,8 +12,9 @@
 
 本计划完成以下目标：
 
-1. 保留专门 Rust error type，只把纯诊断信息统一为 `code + message + diagnostic frames /
-   correlation`，不引入全局穷举 `RuntimeFaultData`。
+1. 保留各owner专门Rust error type与字段，只通过capability形成逻辑
+   `code + message + diagnostic frames / correlation` view，不引入共享字段基类或全局穷举
+   `RuntimeFaultData`。
 2. 把 diagnostic formatting 与 Skiff projection 拆成独立能力。
 3. 建立 compiler-owned platform error projection catalog，以 canonical Skiff type IR 为唯一字段 schema，
    生成 Rust typed payload、catch identity、materializer 和 service codec。
@@ -151,6 +152,11 @@ Display message prefix -> retry/catch class
 
 先建立当前 error owner 和 observable behavior 矩阵，不修改 production 语义。
 
+“Behavior freeze”只冻结可复现baseline，不把已被canonical architecture明确禁止的行为升级成长期开约。
+若当前实现把`task.submit` rejection投影为catchable error、把internal terminal折叠进ordinary error，或存在其它
+明确contract violation，M0必须把它记录为violation并以canonical negative作为修复验收；不得新增一个把错误
+现状永久钉住的正例。修复可以作为独立前置任务，不要求M0顺手扩张production写界。
+
 工作：
 
 1. 枚举以下路径的 error type、diagnostic mapping、catch projection、request terminal 和 service
@@ -178,7 +184,7 @@ Display message prefix -> retry/catch class
    Skiff call site、semantic failure owner和当前 canonical admission。
 4. 枚举 opcode/VM 中的 hand-written catch symbol、payload field builder 与 invariant-terminal，特别是
    collection access failure。
-5. 记录 service `PlatformError` 对 known-valid、known-malformed 和 unknown identity/payload 的当前行为。
+5. 记录service `PlatformError`对exact-known-valid、exact-known-malformed和unknown-pair的当前行为。
 6. 把当前正负行为写成测试，不把临时审计表新增到 architecture 文档。
 
 完成标准：
@@ -187,7 +193,7 @@ Display message prefix -> retry/catch class
 - 所有 artifact/opcode/VM catch producer 和手写 symbol 都有明确 owner。
 - 所有 `RuntimeErrorPayload.code` 与 catch identity 不一致的有意案例有负测试。
 - cancellation、scope terminal、fixed service failure、collection failure 和 generic DB/JSON decode 的
-  现状被测试冻结。
+  baseline被测试刻画；明确违反canonical contract的现状被标为待修复，而不是长期正例。
 - 没有 production 改动。
 
 ### M1 — Box recoverable leaf error
@@ -211,9 +217,15 @@ Display message prefix -> retry/catch class
 
 ### M2 — Separate diagnostic capability from projectability
 
-状态：Pending。
+状态：Completed。
 
-工作：
+已落接口与首批消费：`runtime/request-contract`提供typed `DiagnosticCode`、bounded
+`DiagnosticAttributes`与`RuntimeDiagnostic` capability，并以sealed `ProjectableDiagnostic`把投影资格从
+diagnostic code彻底分开；`runtime/model`与`runtime/boundary`是首批model→boundary consumer，已经通过
+delegation记录diagnostic code/message/attributes，并有负例证明相同diagnostic/wire code不会授予catch
+identity。Transitional `WirePayload`仍为未迁移consumer保留，M3不得把它重新当成projection authority。
+
+已完成工作：
 
 1. 在 `runtime/request-contract` 定义最小 diagnostic capability：
    - typed/constant diagnostic code；
@@ -237,21 +249,25 @@ Display message prefix -> retry/catch class
 
 ### M3 — Canonical platform error projection catalog and codegen
 
-状态：Pending。
+状态：Pending；canonical contract已冻结，catalog/schema/code尚未落地。
 
-M3 的第一个提交是原子 canonical cutover contract，不修改 production code。它必须同时更新：
+M3先以一个不修改production code的canonical cutover checkpoint同时收敛全部owner：
 
 - `doc/architecture/bytecode-vm.md` §3.1：增加第六个
   `PlatformErrorProjectionRegistryRef` authority，固定其 bytecode/PackageArtifact carrier、identity preimage
-  与 v7/generation-v5/PackageArtifact-v15/Package-build-v14 hard cut；
+  与 v7/generation-v5/PackageArtifact-v15/Package-build-v14 hard cut，包括Package build preimage marker
+  `skiff-package-artifact-build-identity-v13`；
 - `doc/architecture/package-service-contract-deployment.md` §6.3：把 closed
   `builtinErrorIdentity` 改为 `{ projectionKey, entryFingerprint, encodedPayload, traceId, errorId }`，固定
   token/fingerprint/64-KiB payload bounds、unknown opaque与known malformed规则；
 - runtime session/router contract：`skiff-runtime-frame-v5` 的 `runtime.capabilities` 携带 exact registry
-  descriptor，Router route admission与PackageArtifact descriptor exact-match。
+  descriptor，Router route admission与PackageArtifact descriptor exact-match；同一session descriptor不可变，
+  且deployment closure与所有HTTP/WebSocket/Actor/task route使用同一authority。
 
-这三项与本文 §5.3 必须在同一提交一致。未完成这个 contract commit 时，不得开始 catalog/schema/code
-改动；不能留到 M8 补文档。
+上述事项与本文 §5.3、runtime lazy-load、Router architecture及Router README必须在同一catch-up commit一致。
+未完成这个contract checkpoint时，任何catalog/schema/code改动仍不得先行；不能留到M8补文档。该checkpoint
+只能修复当前文档状态，不能倒改既有Git历史；后续production hard cut仍必须整体落地，不能把实现lag解释为
+dual-format过渡期。
 
 新增一份 machine-readable、compiler-owned catalog，建议路径：
 
@@ -259,10 +275,9 @@ M3 的第一个提交是原子 canonical cutover contract，不修改 production
 std/error-projections.yml
 ```
 
-Catalog entry 至少包含：
+Catalog entry固定包含以下policy facts；public type facts由compiler解析后加入fingerprint preimage：
 
-- stable projection key；
-- exact public symbol；
+- projection key；它必须逐字等于exact canonical public symbol，禁止任何版本后缀；
 - producer family / semantic adapter owner；
 - public message policy；
 - service envelope kind；
@@ -270,7 +285,71 @@ Catalog entry 至少包含：
 
 Catalog 不包含 public field list、field type 或 field order。`.skiff` type declaration 和
 `std/api.yml` 是 public symbol/schema surface 的唯一事实源；generator 必须通过 compiler 解析 exact
-symbol 取得 canonical type IR，catalog 只把 projection policy关联到该 IR。
+symbol取得canonical type IR，catalog只把projection policy关联到该IR。`canonicalPublicTypeIr`必须是
+path/address-free、normalized完整IR，不能由catalog复制字段。
+
+Fingerprint算法是contract而不是实现选择。每个entry的exact preimage为repository canonical JSON：
+
+```text
+entryBytes = canonicalJson({
+  schema: "skiff-platform-error-projection-entry-v1",
+  projectionKey,
+  nominalIdentity,
+  canonicalPublicTypeIr,
+  codecVersion,
+  producerFamily,
+  semanticAdapterOwner,
+  publicMessagePolicy,
+  envelopeKind,
+  fallbackPolicy,
+})
+entryFingerprint = "sha256:" + lowercaseHex(SHA-256(entryBytes))
+```
+
+Whole registry的exact preimage为：
+
+```text
+registryBytes = canonicalJson({
+  schema: "skiff-platform-error-projection-registry-v1",
+  registryId: "skiff-platform-error-projections",
+  registryVersion: 1,
+  entries: [{ projectionKey, entryFingerprint }],
+})
+fingerprint = "sha256:" + lowercaseHex(SHA-256(registryBytes))
+```
+
+`entries`按`projectionKey`ASCII严格升序且唯一；registry中出现的每个key恰有一个active entry、不得重复。
+Schema、codec或任一policy输入变化保持canonical symbol key不变，但必须生成new
+entry/whole-registry fingerprint并触发artifact/runtime hard cut。
+
+首次catalog共21个entry，key按ASCII升序如下：
+
+```text
+config.DecodeError
+std.actor.ActivationTimeoutError
+std.actor.MethodInvocationTimeoutError
+std.bytes.DecodeError
+std.collection.ArrayIndexOutOfBoundsError
+std.collection.JsonObjectPropertyNotFoundError
+std.collection.MapKeyNotFoundError
+std.db.ConflictError
+std.db.ConstraintError
+std.db.DecodeError
+std.error.InstructionLimitExceededError
+std.error.TimeoutError
+std.file.FileError
+std.http.HttpError
+std.http.RequestTimeoutError
+std.json.DecodeError
+std.number.DecodeError
+std.service.ProtocolError
+std.service.ProviderUnavailableError
+std.time.DecodeError
+std.websocket.WebSocketRequestError
+```
+
+`std.service.InternalError`是fixed fallback，`std.resource.ResourceError`是Package-owned public typed error，
+二者都不进入catalog；deferred `std.recoverable.BoundaryError`也不计入首次21项。
 
 仓库固定使用一个 generator 和 checked-in generated source，不使用各 crate 的 Cargo `OUT_DIR` generator。
 Generator 一次生成：
@@ -282,26 +361,43 @@ Generator 一次生成：
 - service `PlatformError` codec dispatch；
 - whole-registry / per-entry fingerprint 与 surface checker assertions。
 
+Generated `PlatformErrorProjectionRegistryRef`是compiler-owned singleton，exact JSON field name统一为
+`platformErrorProjectionRegistry`。Public compiler/emitter API只能消费该typed authority或validated handoff，
+不能接受调用方任选的descriptor。
+
+Generated platform error唯一统一的public/wire shape是`PlatformError` envelope。各crate的Rust error不统一
+字段；每个public payload字段只来自exact `.skiff` type IR，diagnostic message/source/attributes永远不作为
+catalog或Rust反射产生的public schema。
+
 实现可使用 derive attribute连接 internal Rust error 和 generated DTO。直接同名字段由生成代码读取；
 需要脱敏/归并时，source owner 只负责生成 typed DTO，不能手写 Skiff field map。
 
 Artifact/wire 演进同时完成：
 
-1. Compiler 把 `{ registryId, registryVersion, fingerprint }` exact descriptor写进PackageArtifact root和
-   bytecode v7 header，并纳入architecture规定的identity preimage；Package Local ABI与ServiceProtocol
-   identity不变。
-2. Runtime binary/session registration声明自身 fingerprint；loader拒绝不匹配 artifact，Router只把 build
-   路由给 matching runtime session。
-3. `PlatformError` wire按canonical exact shape改为generated projection key + entry fingerprint +
-   nonempty、至多64-KiB canonical payload，runtime frame hard cut到v5且无dual reader。
-4. Outer envelope 合法但 key/fingerprint 未知时固定为 opaque service cause；本地不能 catch，仍可原样
-   forward。
-5. 本地已知 key/fingerprint 但 payload codec失败时产生 protocol failure；provider/local encode 在 envelope
-   固定前失败时才生成固定 `InternalError`。
-6. 同 key/identity 不原地修改 schema；字段 contract变化使用新 key/identity或显式全栈 hard cut。
+1. Compiler 把 `{ registryId, registryVersion, fingerprint }` exact descriptor写进PackageArtifact v15 root和
+   bytecode v7 header，并纳入architecture规定的identity preimage；Package build preimage marker/prefix hard
+   cut到`skiff-package-artifact-build-identity-v13` / `skiff-package-build-v14:sha256`，Package Local ABI与
+   ServiceProtocol identity不变。
+2. Exact deployment PackageArtifact closure中的descriptor必须唯一一致。Runtime binary/session registration
+   声明自身descriptor；loader拒绝PackageArtifact/bytecode/binary任意mismatch，Router strict routing view输出
+   `{ buildId, registryDescriptor }`等价typed authority，只把所有HTTP/WebSocket/Actor/task execution route发给
+   matching runtime session。
+3. `PlatformError` wire按canonical exact shape改为canonical-public-symbol projection key + entry fingerprint +
+   nonempty、至多64-KiB canonical payload，runtime frame hard cut到v5且无dual reader。Key禁止任何版本后缀。
+4. Request-contract拥有outer variant/字段、grammar、bounds、correlation和canonical bytes validation；只有raw
+   bytes等于validated envelope的canonical re-encoding才可固定。Generated codec只拥有exact-known-pair payload
+   validation。
+5. 只有当前registry的exact `(projectionKey, entryFingerprint)` pair是known。Outer-valid但pair unknown时
+   固定为opaque service cause；同key不同fingerprint也不可catch、原样forward，禁止调用current-key codec或
+   shape guessing。Exact known pair的payload codec失败时产生protocol failure；provider/local encode在envelope
+   固定前失败时才生成固定`InternalError`。
+6. Schema/codec/policy变化保留canonical symbol key，生成new entry/whole-registry fingerprint，并执行显式
+   artifact/runtime hard cut；不得通过带版本后缀的新key规避hard cut。
 7. Rolling upgrade允许不同whole-registry fingerprint的runtime session并存；release/artifact仍引用旧
    fingerprint时保留matching runtime，Router不得把它路由到新registry session。没有release/artifact引用后
    才能回收旧runtime/registry。
+8. `runtime.capabilities.capabilities.platformErrorProjectionRegistry`在v5中required strict；同一session refresh
+   只能重复相同descriptor，冲突值终止session，更换fingerprint必须建立new incarnation。
 
 唯一 compiler-owned generator command 提供 `--check` gate。Generated projection key、entry descriptor 和
 fingerprint 放在 compiler/runtime 已共同依赖的 `artifact-model`；runtime typed DTO 与 wire codec 放在
@@ -313,20 +409,25 @@ fingerprint 放在 compiler/runtime 已共同依赖的 `artifact-model`；runtim
 - 修改 `.skiff` type 后未刷新 generated source时 `--check` 失败；catalog没有可供双写的 field schema。
 - Catalog 引用不存在、未公开或不满足 platform payload closure 的 type时 generator失败。
 - Runtime 不再通过手写 string symbol重建 generated identity。
+- Canonical preimage golden覆盖21个ASCII-sorted unique key、exact entry/registry JSON与lowercase SHA-256；同key
+  schema/codec/policy变化生成new fingerprint而不是new versioned key。
 - Artifact/runtime fingerprint不匹配在 load/route前拒绝。
-- Bytecode v7、identity generation 5、PackageArtifact v15/build v14和runtime-frame v5的schema snapshot、
-  identity preimage与old-version reject测试通过。
-- Unknown-valid projection变 opaque；known-malformed payload变 protocol failure；local/provider encode failure
-  变 fixed `InternalError`，三条路径有互斥测试。
+- Bytecode v7、identity generation 5、PackageArtifact v15、Package build preimage marker v13/build prefix v14和
+  runtime-frame v5的schema snapshot、identity preimage与old-version reject测试通过。
+- Unknown-valid exact pair（含same-key/different-fingerprint）变opaque；exact-known malformed payload变protocol
+  failure；local/provider encode failure变fixed `InternalError`，三条路径有互斥测试。
 
 ### M4 — Migrate existing platform errors
 
 状态：Pending。
 
-按现有 user-visible behavior 分批迁移：
+按已冻结的canonical user-visible behavior分批迁移：
 
-1. collection index/missing-key opcode failure；
-2. `TimeoutError`；
+1. collection family：`std.collection.ArrayIndexOutOfBoundsError`、
+   `std.collection.MapKeyNotFoundError`与`std.collection.JsonObjectPropertyNotFoundError`；
+2. timeout/budget family：`std.error.TimeoutError`、`std.error.InstructionLimitExceededError`、
+   `std.http.RequestTimeoutError`、`std.actor.MethodInvocationTimeoutError`与
+   `std.actor.ActivationTimeoutError`；
 3. config/bytes/number/JSON/time decode；
 4. DB conflict/constraint/decode；
 5. file/HTTP/WebSocket；
@@ -334,10 +435,33 @@ fingerprint 放在 compiler/runtime 已共同依赖的 `artifact-model`；runtim
 7. Package-owned `std.resource.ResourceError` 保持 Package public typed path，不错误迁入 builtin
    platform registry。
 
+`std.service.InternalError`继续是fixed fallback，不生成catalog entry；所有generated platform error只统一为
+`PlatformError` envelope，不要求各Rust producer统一字段。
+
+Collection family启动前必须先补齐独立VM prerequisite：真实collection opcode execution与value-lifecycle plan、
+instruction-level source site，以及internal terminal/budget cancellation不经ordinary `VmError`折叠的控制接口。
+当前`FullValueLifecyclePlanUnavailable` placeholder只作为M0 negative baseline，不能冒充“已有collection error
+producer”直接迁移。ArrayGet/array writable segment只能生成Array error；MapGet/map writable segment只能生成
+Map error；`MapEntryAt`越界保持internal。JsonObject bytecode producer当前不存在，M4必须先补
+receiver-kind明确的future `JsonObjectGet`/typed segment producer再迁移该entry；这不是M3工作，也不授权在M3
+新增opcode或升级ISA。
+
+Timeout/budget family必须按owner准入：词法scope仅`std.error.TimeoutError`；instruction limit耗尽的同一frame
+不可catch，但root可固定typed carrier供仍active remote service caller按admission捕获；HTTP primitive与Actor
+method/activation timeout只在active caller投影，outcome unknown且不自动retry。Current lexical scope deadline
+胜出时不能伪装成primitive timeout，request/root/inherited deadline不向dying frame注入error；WebSocket无独立
+primitive timeout。Cancellation及task/lease/idle/handshake/drain/Router ingress等control timeout不进registry。
+
+任何M4 family都必须在同批具备其最小closed
+`(operation, projection key, semantic failure class, phase)` admission，或先落M5共享guard/admission core；不得让
+generated materializer继续经旧的“projectable + source site即自动投影”路径进入production。
+
 每批工作：
 
-- 在 catalog 登记 projection key 到 exact public type 的关联，不复制字段 schema。
+- 在catalog以逐字等于canonical public symbol的projection key登记entry，不复制字段schema，且不得添加版本后缀。
 - source operation产生 dedicated typed projection DTO。
+- 为该family冻结closed operation/class/phase admission并要求runtime-owned continuation guard；若共享core尚未
+  落地，该family不得启用production projection。
 - eval使用统一 generated materializer创建 `RequestException`。
 - service channel使用 generated codec导入/导出。
 - collection/opcode 路径把 hand-written `Catchable { identity: &'static str }` 改为 generated
@@ -351,7 +475,7 @@ fingerprint 放在 compiler/runtime 已共同依赖的 `artifact-model`；runtim
 
 - 同类 payload在所有 crate都引用canonical Skiff type IR生成的同一DTO/materializer，不存在第二份
   field/schema owner。
-- 当前 exact catch正例、错类型不匹配负例与已定义 user-visible behavior不变；service wire fallback按
+- Canonical exact catch正例、错类型不匹配负例与owner-specific timeout/collection行为成立；service wire fallback按
   M3 明确收敛为 local/internal、inbound protocol、unknown opaque三条路径。
 - Collection errors覆盖 source site、exact catch、service round-trip和VM invariant/index错误不得伪装成
   public collection error的负例。
@@ -360,6 +484,9 @@ fingerprint 放在 compiler/runtime 已共同依赖的 `artifact-model`；runtim
 ### M5 — Explicit failure-site routing and operation admission
 
 状态：Pending。
+
+本节的共享接口/core可以作为M4前置先行落地；里程碑编号不授权M4先发布无guard的projection。后续M5仍负责
+补齐完整site matrix、所有operation migration与负例。
 
 工作：
 
@@ -381,7 +508,7 @@ fingerprint 放在 compiler/runtime 已共同依赖的 `artifact-model`；runtim
    明确 no-effect、effect-already-visible或outcome-unknown；catchability不额外承诺rollback/safe retry。
 6. Egress/service export不能对从未在 active call site投影的 provider-internal Rust error进行“补投影”。
 7. Ingress/control/background owner即使拿到 generated DTO也不能构造 request-local exception。
-8. Timeout winner之后的late response、concurrent loser、已结束stream consumer和过期async resume只进入
+8. Deadline/primitive-timeout winner之后的late response、concurrent loser、已结束stream consumer和过期async resume只进入
    bounded diagnostic/terminal path，不借仍存活的request heap创建exception。
 
 完成标准：
@@ -391,8 +518,9 @@ fingerprint 放在 compiler/runtime 已共同依赖的 `artifact-model`；runtim
 - 只有 source site/request heap但 guard缺失、generation/lane不匹配或continuation已settled时，
   materializer fail closed且不创建 `UserException`。
 - Operation policy不能用开放 bool/string从外部输入；必须来自 compiler/runtime closed metadata。
-- Existing HTTP/service/WebSocket timeout/transport errors在其reference允许时仍可catch，即使remote effect
-  outcome unknown；测试同时证明catch后不会自动retry或声称rollback。
+- HTTP primitive与Actor method/activation timeout只在active caller按exact type catch，且outcome unknown；
+  service/WebSocket没有独立primitive timeout。Lexical scope、request/root/inherited deadline与instruction-limit
+  carrier分别遵守M4 owner规则；所有测试同时证明catch后不会自动retry或声称rollback。
 - `task.submit` definite rejection与ambiguous acceptance继续不可catch。
 - Internal cancellation在所有 site保持 terminal。
 
@@ -440,7 +568,7 @@ M1–M5 不需要等待本里程碑。现有 platform errors 已足以验证 cat
 - 所有未准入 production call site仍不可捕获。
 - 同一 Rust error/code 的 integrity failure负例保持不可捕获。
 - 未捕获 admitted error可以跨 service保留 exact platform identity；provider encode失败、inbound
-  known-malformed和unknown-valid分别走InternalError、ProtocolError和opaque forwarding。
+  exact-known malformed和unknown-pair-valid分别走InternalError、ProtocolError和opaque forwarding。
 
 ### M7 — Deep source error conversion cleanup
 
@@ -498,7 +626,8 @@ M1–M5 不需要等待本里程碑。现有 platform errors 已足以验证 cat
 - PackageArtifact/bytecode、runtime binary/session的registry fingerprint匹配；load/route mismatch fail closed。
 - Runtime capabilities缺失/非法descriptor、Router跨fingerprint route与PackageArtifact/bytecode descriptor
   不一致都在dispatch前拒绝。
-- Collection opcode只保存generated projection key，compiler/verifier/VM不含hand-written catch symbol。
+- Collection opcode只保存canonical-symbol generated projection key，compiler/verifier/VM不含hand-written catch
+  symbol；JsonObject producer仍是M4 prerequisite，不借M3升级ISA。
 
 ### 6.2 Runtime projection
 
@@ -506,7 +635,7 @@ M1–M5 不需要等待本里程碑。现有 platform errors 已足以验证 cat
 - Projectable capability + denied site不能构造 exception。
 - Guard有效的admitted active call site产生source/stack/correlation。
 - Guard缺失、request generation/lane不匹配、continuation已settled时不创建exception。
-- Local/provider encode failure、inbound known-malformed payload和unknown-valid projection分别进入
+- Local/provider encode failure、inbound exact-known malformed payload和unknown-pair-valid projection分别进入
   internal、protocol和opaque路径，均不泄露detail。
 
 ### 6.3 Site matrix
@@ -516,9 +645,11 @@ M1–M5 不需要等待本里程碑。现有 platform errors 已足以验证 cat
 - Handler active call site按 admission投影。
 - Provider egress不补投影内部 error。
 - Background/scheduler error不回投旧 request。
-- Timeout后late response、concurrent loser、stream consumer结束和expired async resume不回投旧
+- Deadline/primitive-timeout winner后的late response、concurrent loser、stream consumer结束和expired async resume不回投旧
   continuation。
-- HTTP/service/WebSocket outcome-unknown error按reference仍可catch，但不自动retry或承诺rollback。
+- HTTP primitive与Actor method/activation timeout在active caller按exact type捕获且outcome unknown；lexical
+  timeout使用`std.error.TimeoutError`；request/root/inherited deadline保持terminal；WebSocket/service没有独立
+  primitive timeout。任一路径都不自动retry或承诺rollback。
 - Cancellation/scope stop没有 ordinary payload。
 
 ### 6.4 Source conversion
@@ -542,10 +673,12 @@ M1–M5 不需要等待本里程碑。现有 platform errors 已足以验证 cat
 ### 6.6 Service channel and observability
 
 - `PublicTypedError`、`PlatformError`、`InternalError` 三variant strict round-trip。
-- `PlatformError` projection-key grammar/长度、fingerprint format、nonempty/64-KiB payload limit和unknown field
-  strict reject；old `builtinErrorIdentity` shape在runtime-frame-v5 hard cut后拒绝。
-- Unknown-valid platform projection与其它opaque fixed error bit-equivalent forwarding。
-- Known-malformed platform payload投影为caller-side protocol failure，不改写成provider InternalError。
+- `PlatformError` projection-key必须逐字等于canonical public symbol，grammar/长度、fingerprint format、
+  nonempty/64-KiB payload limit和unknown field strict reject；任何版本后缀与old `builtinErrorIdentity` shape在
+  runtime-frame-v5 hard cut后拒绝。
+- Unknown-valid platform pair（特别是same-key/different-fingerprint）与其它opaque fixed error bit-equivalent
+  forwarding，且不会调用current-key codec或shape guessing。
+- Exact-known malformed platform payload投影为caller-side protocol failure，不改写成provider InternalError。
 - Provider local fallback保留当前cause correlation；caller-side protocol failure分配本地error correlation；
   unknown opaque保留原canonical trace/error bytes。三条路径都不得信任或泄露未验证metadata。
 - Caller新建本地栈，provider完整栈只在 restricted telemetry。
@@ -582,7 +715,7 @@ worktree 的稳定 `.skiff-dev` 配置。
 1. M0 tests/audit freeze；
 2. M1 recoverable boxing；
 3. M2 diagnostic/projectability split；
-4. M3 canonical carrier/version contract（docs only，原子更新三份architecture contract）；
+4. M3 canonical carrier/version contract（docs-only catch-up，原子更新全部architecture owner与文档镜像）；
 5. M3 catalog/generated schema与hard-cut carrier实现；
 6. M4 existing errors migration（可按 error family再拆）；
 7. M5 site/admission；
@@ -608,9 +741,10 @@ worktree 的稳定 `.skiff-dev` 配置。
 4. `RecoverableBoundaryError` 已缩小，且 projectable capability与production admission分离。
 5. Generic deep source error不能自动取得 Skiff identity。
 6. Internal terminal、user exception、fixed service failure没有被 generic diagnostic扁平化破坏。
-7. Artifact/runtime registry fingerprint、unknown opaque forwarding和known malformed protocol path全部通过。
-8. `bytecode-vm.md`、`package-service-contract-deployment.md` 与本文对registry authority、carrier、version和
-   preimage的canonical描述一致，且是在M3 code前原子更新。
+7. Artifact/runtime registry fingerprint、unknown-pair opaque forwarding和exact-known malformed protocol path全部通过。
+8. `runtime-error-to-skiff.md`、`bytecode-vm.md`、`package-service-contract-deployment.md`、
+   `runtime-lazy-load-deployment.md`、`router-rust.md`与本文对registry authority、carrier、version和preimage的
+   canonical描述一致，且catch-up checkpoint在M3 code前完成。
 9. Service channel、ingress、background和observability负例全部通过。
 10. 重复的手写 projection owner（包括opcode/VM symbol）已删除，无旧registry compatibility fallback。
 11. 对应 reference surface与最终代码一致；若M6仍deferred，reference不提前出现reserved type。

@@ -20,7 +20,10 @@ mod tests {
 
     use skiff_artifact_identity::{package_artifact_ref, PackageArtifactPointerPath};
     use skiff_compiler::{
-        authoring::{author_official_std_package, seed_official_std_package},
+        authoring::{
+            author_official_std_package, author_official_std_package_with_bytecode,
+            seed_official_std_package,
+        },
         CompilerPlatformSources,
     };
     use skiff_deployment::storage::CanonicalArtifactStore;
@@ -34,7 +37,9 @@ mod tests {
         let repeated = seed_official_std_package(&platform_sources, root.path()).unwrap();
         assert_eq!(first, repeated);
 
-        let authored = author_official_std_package(&platform_sources).unwrap();
+        let authored = author_official_std_package_with_bytecode(&platform_sources)
+            .unwrap()
+            .0;
         let exact = package_artifact_ref(&authored.artifact).unwrap();
         assert_eq!(
             first["package"]["artifact"],

@@ -1,12 +1,16 @@
 use skiff_artifact_model::{
-    host_effect_registry_identity, intrinsic_registry_identity,
-    native_value_lifecycle_registry_identity, value_lifecycle_policy_identity,
+    current_platform_error_projection_registry_ref, host_effect_registry_identity,
+    intrinsic_registry_identity, native_value_lifecycle_registry_identity,
+    validate_current_platform_error_projection_registry_ref, value_lifecycle_policy_identity,
+    PlatformErrorProjectionRegistryRefValidationError,
 };
 
 use crate::{
     LinkedBytecodeAuthority, LinkedBytecodeAuthorityField, LinkedBytecodeAuthorityPins,
     LinkedBytecodeAuthorityPinsError,
 };
+
+use super::fixtures::historical_platform_error_projection_registry_ref;
 
 #[derive(Clone, Copy)]
 enum AuthorityFixtureField {
@@ -107,22 +111,30 @@ impl AuthorityFixtureField {
             Self::IntrinsicVersion => intrinsic.version = value.to_string(),
             Self::IntrinsicFingerprint => intrinsic.fingerprint = value.to_string(),
         }
-        LinkedBytecodeAuthorityPins::new(native, policy, host, intrinsic)
+        LinkedBytecodeAuthorityPins::new(
+            native,
+            policy,
+            host,
+            intrinsic,
+            current_platform_error_projection_registry_ref().clone(),
+        )
     }
 }
 
 #[test]
-fn authority_pins_retain_all_four_exact_identities() {
+fn authority_pins_retain_all_five_exact_identities() {
     let native = native_value_lifecycle_registry_identity().clone();
     let policy = value_lifecycle_policy_identity().clone();
     let host = host_effect_registry_identity().clone();
     let intrinsic = intrinsic_registry_identity().clone();
+    let platform_errors = current_platform_error_projection_registry_ref().clone();
 
     let pins = LinkedBytecodeAuthorityPins::new(
         native.clone(),
         policy.clone(),
         host.clone(),
         intrinsic.clone(),
+        platform_errors.clone(),
     )
     .expect("canonical authority identities are valid pins");
 
@@ -130,6 +142,32 @@ fn authority_pins_retain_all_four_exact_identities() {
     assert_eq!(pins.value_lifecycle_policy(), &policy);
     assert_eq!(pins.host_effect_registry(), &host);
     assert_eq!(pins.intrinsic_registry(), &intrinsic);
+    assert_eq!(pins.platform_error_projection_registry(), &platform_errors);
+}
+
+#[test]
+fn authority_pins_retain_historical_platform_error_registry_without_substitution() {
+    let historical = historical_platform_error_projection_registry_ref();
+    let current = current_platform_error_projection_registry_ref();
+    assert_ne!(&historical, current);
+    assert_eq!(historical.registry_id(), current.registry_id());
+    assert_eq!(historical.registry_version(), current.registry_version());
+    assert_eq!(
+        validate_current_platform_error_projection_registry_ref(&historical),
+        Err(PlatformErrorProjectionRegistryRefValidationError::CurrentFingerprintMismatch)
+    );
+
+    let pins = LinkedBytecodeAuthorityPins::new(
+        native_value_lifecycle_registry_identity().clone(),
+        value_lifecycle_policy_identity().clone(),
+        host_effect_registry_identity().clone(),
+        intrinsic_registry_identity().clone(),
+        historical.clone(),
+    )
+    .expect("linked authority construction validates general shape, not current exactness");
+
+    assert_eq!(pins.platform_error_projection_registry(), &historical);
+    assert_ne!(pins.platform_error_projection_registry(), current);
 }
 
 #[test]
@@ -186,6 +224,10 @@ fn authority_error_labels_name_the_exact_authority_and_field() {
         "intrinsic registry"
     );
     assert_eq!(
+        LinkedBytecodeAuthority::PlatformErrorProjectionRegistry.name(),
+        "platform error projection registry"
+    );
+    assert_eq!(
         LinkedBytecodeAuthorityField::RegistryId.name(),
         "registry id"
     );
@@ -194,4 +236,35 @@ fn authority_error_labels_name_the_exact_authority_and_field() {
         LinkedBytecodeAuthorityField::Fingerprint.name(),
         "fingerprint"
     );
+}
+
+#[test]
+fn platform_error_registry_validation_errors_remain_typed_and_sanitized() {
+    // Malformed typed descriptors cannot be created through the safe public
+    // surface: artifact-model's strict Deserialize tests own that rejection.
+    // This crate freezes the constructor's typed, value-free error mapping.
+    for error in [
+        PlatformErrorProjectionRegistryRefValidationError::RegistryId,
+        PlatformErrorProjectionRegistryRefValidationError::RegistryVersion,
+        PlatformErrorProjectionRegistryRefValidationError::FingerprintGrammar,
+    ] {
+        let mapped = LinkedBytecodeAuthorityPinsError::from(error.clone());
+        assert_eq!(
+            mapped,
+            LinkedBytecodeAuthorityPinsError::InvalidPlatformErrorProjectionRegistry {
+                error: error.clone(),
+            }
+        );
+        assert_eq!(
+            mapped.to_string(),
+            format!("bytecode platform error projection registry descriptor is invalid: {error}")
+        );
+        assert!(!mapped
+            .to_string()
+            .contains(current_platform_error_projection_registry_ref().fingerprint()));
+        assert_eq!(
+            std::error::Error::source(&mapped).map(ToString::to_string),
+            Some(error.to_string())
+        );
+    }
 }

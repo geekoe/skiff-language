@@ -131,6 +131,16 @@ pub struct BytecodeHandoff<U: BytecodeUnit> {
     pub outcome: U::ResumeOutcome,
 }
 
+/// Result of one adapter invocation.
+///
+/// `Ready` gives the scheduler a continuation handoff to inject immediately.
+/// `Pending` means the adapter owns a real host operation and must publish the
+/// returned actual-`Pending` operation through [`BytecodeChildExecutor::park_adapter`].
+pub enum BytecodeAdapterHandoff<U: BytecodeUnit> {
+    Ready(BytecodeHandoff<U>),
+    Pending(U::PendingOperation),
+}
+
 /// Result of handing one stream item to the supervisor.
 ///
 /// `Ready` gives the scheduler a continuation handoff to inject immediately.
@@ -155,7 +165,22 @@ pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
         invocation: U::AdapterInvocation,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeHandoff<U>, BytecodeSchedulerError>;
+    ) -> Result<BytecodeAdapterHandoff<U>, BytecodeSchedulerError>;
+
+    /// Publishes an adapter-owned actual-`Pending` operation.
+    ///
+    /// Implementations that never return `BytecodeAdapterHandoff::Pending`
+    /// may leave this default in place.
+    fn park_adapter(
+        &self,
+        operation: U::PendingOperation,
+        suspended: SuspendedTrampoline<U, U::ResumeToken>,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<(), BytecodeSchedulerError> {
+        let _ = (operation, suspended, heap, budget);
+        Err(BytecodeSchedulerError::UnsupportedPark)
+    }
 
     /// Polls one `StreamNext` consumer child.
     ///
@@ -364,10 +389,18 @@ where
                         .child_executor
                         .as_ref()
                         .ok_or(BytecodeSchedulerError::UnsupportedAdapter)?;
-                    let handoff = executor.execute_adapter(invocation, heap, budget)?;
-                    self.trampoline
-                        .active_mut()
-                        .resume(handoff.resume, handoff.outcome)?;
+                    match executor.execute_adapter(invocation, heap, budget)? {
+                        BytecodeAdapterHandoff::Ready(handoff) => {
+                            self.trampoline
+                                .active_mut()
+                                .resume(handoff.resume, handoff.outcome)?;
+                        }
+                        BytecodeAdapterHandoff::Pending(operation) => {
+                            let suspended = self.trampoline.suspend();
+                            executor.park_adapter(operation, suspended, heap, budget)?;
+                            return Ok(BytecodeSchedulerOutcome::Parked);
+                        }
+                    }
                 }
                 BytecodeControl::EmitStream(item) => {
                     let supervisor = self
@@ -773,4 +806,84 @@ mod tests {
         let outcome = scheduler.run(&mut heap, &mut budget).unwrap();
         assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(99)));
     }
+
+    #[test]
+    fn adapter_pending_parks_then_resume_completes() {
+        struct AdapterExecutor {
+            parked: Mutex<Option<(usize, TestSuspended)>>,
+        }
+
+        impl BytecodeChildExecutor<TestUnit> for AdapterExecutor {
+            fn execute_child(
+                &self,
+                _invocation: usize,
+                _heap: &mut dyn VmHeap,
+                _budget: &mut dyn VmBudget,
+            ) -> Result<BytecodeChildStart<TestUnit>, BytecodeSchedulerError> {
+                Err(BytecodeSchedulerError::UnsupportedChild)
+            }
+
+            fn execute_adapter(
+                &self,
+                _invocation: usize,
+                _heap: &mut dyn VmHeap,
+                _budget: &mut dyn VmBudget,
+            ) -> Result<BytecodeAdapterHandoff<TestUnit>, BytecodeSchedulerError> {
+                Ok(BytecodeAdapterHandoff::Pending(7))
+            }
+
+            fn park_adapter(
+                &self,
+                operation: usize,
+                suspended: TestSuspended,
+                _heap: &mut dyn VmHeap,
+                _budget: &mut dyn VmBudget,
+            ) -> Result<(), BytecodeSchedulerError> {
+                *self.parked.lock().unwrap() = Some((operation, suspended));
+                Ok(())
+            }
+        }
+
+        let mut heap = NoopHeap;
+        let mut budget = NoopBudget;
+        let executor = Arc::new(AdapterExecutor {
+            parked: Mutex::new(None),
+        });
+        let ports = BytecodeSchedulerPorts {
+            child_executor: Some(
+                executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>
+            ),
+            stream_supervisor: None,
+        };
+        let outcome = BytecodeScheduler::new(
+            TestUnit {
+                control: Some(TestControl::EnterAdapter(7)),
+                resumed: None,
+                finish_after_resume: Some(99),
+            },
+            ports,
+        )
+        .run(&mut heap, &mut budget)
+        .unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
+
+        let (operation, suspended) = executor.parked.lock().unwrap().take().unwrap();
+        assert_eq!(operation, 7);
+        let scheduler = BytecodeScheduler::<TestUnit>::resume_from_suspended(
+            suspended,
+            operation,
+            42,
+            RootEscrow::new(Box::new(EmptyRoots)),
+            BytecodeSchedulerPorts {
+                child_executor: Some(
+                    executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>
+                ),
+                stream_supervisor: None,
+            },
+        )
+        .unwrap();
+        let outcome = scheduler.run(&mut heap, &mut budget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(99)));
+    }
+
 }

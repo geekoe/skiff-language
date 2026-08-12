@@ -650,7 +650,7 @@ mod tests {
         // this frame; the frozen contract forbids that reader.
         let header_json: Value = serde_json::from_str(
             r#"{
-                "schemaVersion":"skiff-runtime-frame-v4",
+                "schemaVersion":"skiff-runtime-frame-v5",
                 "type":"task.submit.request",
                 "rpcId":"rpc:probe-1",
                 "runtimeId":"runtime-a",

@@ -1,0 +1,128 @@
+schemaVersion: skiff-platform-error-projection-catalog-v1
+entries:
+  - projectionKey: config.DecodeError
+    producerFamily: configDecode
+    semanticAdapterOwner: runtime.boundary.config
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.actor.ActivationTimeoutError
+    producerFamily: actorActivationTimeout
+    semanticAdapterOwner: runtime.host.actor
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.actor.MethodInvocationTimeoutError
+    producerFamily: actorMethodInvocationTimeout
+    semanticAdapterOwner: runtime.host.actor
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.bytes.DecodeError
+    producerFamily: bytesDecode
+    semanticAdapterOwner: runtime.boundary.bytes
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.collection.ArrayIndexOutOfBoundsError
+    producerFamily: collectionArrayIndex
+    semanticAdapterOwner: runtime.vm.collection
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.collection.JsonObjectPropertyNotFoundError
+    producerFamily: collectionJsonObjectProperty
+    semanticAdapterOwner: runtime.vm.collection
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.collection.MapKeyNotFoundError
+    producerFamily: collectionMapKey
+    semanticAdapterOwner: runtime.vm.collection
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.db.ConflictError
+    producerFamily: dbConflict
+    semanticAdapterOwner: runtime.serviceDb
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.db.ConstraintError
+    producerFamily: dbConstraint
+    semanticAdapterOwner: runtime.serviceDb
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.db.DecodeError
+    producerFamily: dbDecode
+    semanticAdapterOwner: runtime.serviceDb
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.error.InstructionLimitExceededError
+    producerFamily: instructionLimit
+    semanticAdapterOwner: runtime.vm.executionBudget
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.error.TimeoutError
+    producerFamily: lexicalTimeout
+    semanticAdapterOwner: runtime.eval.timeout
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.file.FileError
+    producerFamily: file
+    semanticAdapterOwner: runtime.host.file
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.http.HttpError
+    producerFamily: http
+    semanticAdapterOwner: runtime.host.http
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.http.RequestTimeoutError
+    producerFamily: httpRequestTimeout
+    semanticAdapterOwner: runtime.host.http
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.json.DecodeError
+    producerFamily: jsonDecode
+    semanticAdapterOwner: runtime.boundary.json
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.number.DecodeError
+    producerFamily: numberDecode
+    semanticAdapterOwner: runtime.boundary.number
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.service.ProtocolError
+    producerFamily: serviceProtocol
+    semanticAdapterOwner: runtime.eval.service
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.service.ProviderUnavailableError
+    producerFamily: serviceProviderUnavailable
+    semanticAdapterOwner: runtime.eval.service
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.time.DecodeError
+    producerFamily: timeDecode
+    semanticAdapterOwner: runtime.boundary.time
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope
+  - projectionKey: std.websocket.WebSocketRequestError
+    producerFamily: webSocketRequest
+    semanticAdapterOwner: runtime.host.websocket
+    publicMessagePolicy: semanticAdapterSanitized
+    envelopeKind: platformError
+    fallbackPolicy: fixedInternalErrorBeforeEnvelope

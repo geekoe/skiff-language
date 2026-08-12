@@ -111,6 +111,7 @@ struct PendingExceptionRegion {
 
 #[derive(Clone)]
 struct LoopBackedge {
+    header_block: u32,
     header_instruction: usize,
     iterable_slot: u32,
     index_slot: u32,
@@ -493,8 +494,10 @@ impl<'a> FunctionEmitter<'a> {
 
         if !block.successors.is_empty() {
             if let Some(backedge) = self.loop_backedges.get(&block.id).cloned() {
-                self.emit_loop_backedge(block.id, &backedge)?;
-                return Ok(());
+                if block.successors.as_slice() == [backedge.header_block] {
+                    self.emit_loop_backedge(block.id, &backedge)?;
+                    return Ok(());
+                }
             }
         }
         {
@@ -2617,6 +2620,7 @@ impl<'a> FunctionEmitter<'a> {
             self.loop_backedges.insert(
                 body,
                 LoopBackedge {
+                    header_block: self.current_block,
                     header_instruction,
                     iterable_slot,
                     index_slot,
@@ -2651,6 +2655,7 @@ impl<'a> FunctionEmitter<'a> {
         self.loop_backedges.insert(
             body,
             LoopBackedge {
+                header_block: self.current_block,
                 header_instruction,
                 iterable_slot,
                 index_slot,

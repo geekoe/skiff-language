@@ -158,17 +158,81 @@ impl Date {
 }
 
 #[test]
-fn platform_source_cannot_spoof_compiler_builtin_type() {
+fn source_backed_builtin_requires_one_exact_type_declaration() {
     let mut registry = PreludeRegistry::empty();
     registry.install_compiler_builtin_types();
-    let error = registry
-        .add_source("fake", "type Array<T> { value: T }")
+
+    let missing = registry
+        .validate_source_backed_builtin_declarations()
         .unwrap_err();
-    assert_eq!(
-        error,
-        "standard_library source must not declare compiler builtin type Array"
+    assert!(missing.contains("std.error.TimeoutError"), "{missing}");
+
+    registry
+        .add_source("error", "type TimeoutError { timeoutMs: integer }")
+        .expect("exact source-backed type declaration should load");
+    registry
+        .validate_source_backed_builtin_declarations()
+        .expect("exact source-backed type declaration should satisfy the registry");
+    assert!(registry.type_decl("std.error.TimeoutError").is_some());
+
+    let duplicate = registry
+        .add_source("error", "type TimeoutError {}")
+        .unwrap_err();
+    assert!(
+        duplicate.contains("exactly one type declaration"),
+        "{duplicate}"
     );
-    assert!(registry.type_decl("Array").is_none());
+}
+
+#[test]
+fn source_backed_builtin_rejects_wrong_module_kind_and_arity() {
+    for (module, source, expected) in [
+        (
+            "collection",
+            "type TimeoutError {}",
+            "must be declared in exact module std.error",
+        ),
+        (
+            "error",
+            "alias TimeoutError = integer",
+            "must be declared as type, found alias",
+        ),
+        (
+            "error",
+            "interface TimeoutError {}",
+            "must be declared as type, found interface",
+        ),
+        (
+            "error",
+            "type TimeoutError<T> {}",
+            "expects 0 type parameters, found 1",
+        ),
+    ] {
+        let mut registry = PreludeRegistry::empty();
+        registry.install_compiler_builtin_types();
+        let error = registry.add_source(module, source).unwrap_err();
+        assert!(error.contains(expected), "unexpected error: {error}");
+        assert!(registry.type_decl("std.error.TimeoutError").is_none());
+    }
+}
+
+#[test]
+fn platform_source_cannot_spoof_compiler_intrinsic_builtin_type() {
+    for source in [
+        "type Array<T> { value: T }",
+        "alias Array = integer",
+        "interface Array {}",
+    ] {
+        let mut registry = PreludeRegistry::empty();
+        registry.install_compiler_builtin_types();
+        let error = registry.add_source("fake", source).unwrap_err();
+        assert!(
+            error.contains("compiler intrinsic builtin type std.collection.Array"),
+            "unexpected error: {error}"
+        );
+        assert!(registry.type_decl("Array").is_none());
+        assert!(registry.type_alias("Array").is_none());
+    }
 }
 
 fn temp_test_dir(label: &str) -> PathBuf {

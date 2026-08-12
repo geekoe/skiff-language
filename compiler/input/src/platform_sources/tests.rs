@@ -23,6 +23,12 @@ fn platform_sources_require_absolute_root_and_canonicalize_it() {
     assert_eq!(context.std_dir(), context.root().join("std"));
     assert_eq!(context.prelude_dir(), context.root().join("prelude"));
     assert_eq!(
+        context.error_projection_catalog_path(),
+        context
+            .std_dir()
+            .join(PLATFORM_ERROR_PROJECTION_CATALOG_FILE)
+    );
+    assert_eq!(
         context.prelude_error_path(),
         context.prelude_dir().join("error.skiff")
     );
@@ -44,7 +50,7 @@ fn platform_sources_accept_absolute_symlink_to_same_canonical_root() {
 }
 
 #[test]
-fn platform_sources_fail_closed_on_missing_registry_or_prelude_error() {
+fn platform_sources_fail_closed_on_missing_required_files() {
     let missing_registry = PlatformFixture::new("missing-registry");
     fs::remove_file(missing_registry.root().join("std/registry.yml")).unwrap();
     assert!(matches!(
@@ -58,6 +64,29 @@ fn platform_sources_fail_closed_on_missing_registry_or_prelude_error() {
         missing_error.context(),
         Err(CompilerPlatformSourcesError::Inspect { .. })
     ));
+
+    let missing_catalog = PlatformFixture::new("missing-error-projection-catalog");
+    fs::remove_file(missing_catalog.root().join("std/error-projections.yml")).unwrap();
+    assert!(matches!(
+        missing_catalog.context(),
+        Err(CompilerPlatformSourcesError::Inspect { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn platform_sources_revalidate_error_projection_catalog_provenance() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = PlatformFixture::new("catalog-provenance-change");
+    let context = fixture.context().unwrap();
+    let catalog_path = fixture.root().join("std/error-projections.yml");
+    let replacement_path = fixture.root().join("std/replacement-error-projections.yml");
+    fs::rename(&catalog_path, &replacement_path).unwrap();
+    symlink(&replacement_path, &catalog_path).unwrap();
+
+    let error = context.revalidate().unwrap_err().to_string();
+    assert!(error.contains("platform source provenance changed after validation"));
 }
 
 #[test]
@@ -254,6 +283,120 @@ fn platform_sources_read_canonical_prelude_content_in_stable_order() {
     );
 }
 
+#[test]
+fn repository_error_projection_catalog_has_exact_policy_entries() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let catalog = CompilerPlatformSources::new(&root)
+        .unwrap()
+        .read_platform_error_projection_catalog()
+        .unwrap();
+    let expected = [
+        (
+            "config.DecodeError",
+            "configDecode",
+            "runtime.boundary.config",
+        ),
+        (
+            "std.actor.ActivationTimeoutError",
+            "actorActivationTimeout",
+            "runtime.host.actor",
+        ),
+        (
+            "std.actor.MethodInvocationTimeoutError",
+            "actorMethodInvocationTimeout",
+            "runtime.host.actor",
+        ),
+        (
+            "std.bytes.DecodeError",
+            "bytesDecode",
+            "runtime.boundary.bytes",
+        ),
+        (
+            "std.collection.ArrayIndexOutOfBoundsError",
+            "collectionArrayIndex",
+            "runtime.vm.collection",
+        ),
+        (
+            "std.collection.JsonObjectPropertyNotFoundError",
+            "collectionJsonObjectProperty",
+            "runtime.vm.collection",
+        ),
+        (
+            "std.collection.MapKeyNotFoundError",
+            "collectionMapKey",
+            "runtime.vm.collection",
+        ),
+        ("std.db.ConflictError", "dbConflict", "runtime.serviceDb"),
+        (
+            "std.db.ConstraintError",
+            "dbConstraint",
+            "runtime.serviceDb",
+        ),
+        ("std.db.DecodeError", "dbDecode", "runtime.serviceDb"),
+        (
+            "std.error.InstructionLimitExceededError",
+            "instructionLimit",
+            "runtime.vm.executionBudget",
+        ),
+        (
+            "std.error.TimeoutError",
+            "lexicalTimeout",
+            "runtime.eval.timeout",
+        ),
+        ("std.file.FileError", "file", "runtime.host.file"),
+        ("std.http.HttpError", "http", "runtime.host.http"),
+        (
+            "std.http.RequestTimeoutError",
+            "httpRequestTimeout",
+            "runtime.host.http",
+        ),
+        (
+            "std.json.DecodeError",
+            "jsonDecode",
+            "runtime.boundary.json",
+        ),
+        (
+            "std.number.DecodeError",
+            "numberDecode",
+            "runtime.boundary.number",
+        ),
+        (
+            "std.service.ProtocolError",
+            "serviceProtocol",
+            "runtime.eval.service",
+        ),
+        (
+            "std.service.ProviderUnavailableError",
+            "serviceProviderUnavailable",
+            "runtime.eval.service",
+        ),
+        (
+            "std.time.DecodeError",
+            "timeDecode",
+            "runtime.boundary.time",
+        ),
+        (
+            "std.websocket.WebSocketRequestError",
+            "webSocketRequest",
+            "runtime.host.websocket",
+        ),
+    ];
+
+    assert_eq!(catalog.entries().len(), expected.len());
+    for (entry, (key, producer, owner)) in catalog.entries().iter().zip(expected) {
+        assert_eq!(entry.projection_key(), key);
+        assert!(!entry.projection_key().ends_with(".v1"));
+        assert_eq!(entry.producer_family(), producer);
+        assert_eq!(entry.semantic_adapter_owner(), owner);
+        assert_eq!(entry.public_message_policy(), "semanticAdapterSanitized");
+        assert_eq!(entry.envelope_kind(), "platformError");
+        assert_eq!(entry.fallback_policy(), "fixedInternalErrorBeforeEnvelope");
+    }
+}
+
 struct PlatformFixture {
     base: PathBuf,
     root: PathBuf,
@@ -281,6 +424,11 @@ impl PlatformFixture {
         .unwrap();
         fs::write(root.join("std/api.yml"), "http:\n  request: http.request\n").unwrap();
         fs::write(
+            root.join("std/error-projections.yml"),
+            minimal_error_projection_catalog(),
+        )
+        .unwrap();
+        fs::write(
             root.join("std/http.skiff"),
             "function request() -> string { return \"ok\" }\n",
         )
@@ -304,6 +452,10 @@ impl PlatformFixture {
     fn write_registry(&self, contents: &str) {
         fs::write(self.root.join("std/registry.yml"), contents).unwrap();
     }
+}
+
+fn minimal_error_projection_catalog() -> &'static str {
+    "schemaVersion: skiff-platform-error-projection-catalog-v1\nentries:\n  - projectionKey: test.Error\n    producerFamily: test\n    semanticAdapterOwner: runtime.test\n    publicMessagePolicy: semanticAdapterSanitized\n    envelopeKind: platformError\n    fallbackPolicy: fixedInternalErrorBeforeEnvelope\n"
 }
 
 impl Drop for PlatformFixture {

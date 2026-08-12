@@ -342,6 +342,53 @@ impl<P, T, E> StreamConsumer<P, T, E> {
         poll
     }
 
+    /// Pumps one already-available event without installing a pending waiter.
+    ///
+    /// This is used by synchronous external stream drains that are resumed by
+    /// the VM scheduler wake path instead of by a consumer-side wake signal.
+    pub fn poll_next_ready(&mut self) -> Option<StreamPoll<T, E>> {
+        let (poll, producer_wake) = {
+            let mut state = lock_unpoisoned(&self.shared.state);
+            if state.consumer_waiter.is_some() {
+                return None;
+            }
+
+            if let Some(item) = state.buffer.pop_front() {
+                let producer_wake = refill_from_blocked(&mut state);
+                (
+                    Some(StreamPoll::Ready(StreamEvent::Item(item))),
+                    producer_wake,
+                )
+            } else if let Some(blocked) = state.blocked_emit.take() {
+                (
+                    Some(StreamPoll::Ready(StreamEvent::Item(blocked.item))),
+                    Some(blocked.wake),
+                )
+            } else {
+                match std::mem::replace(&mut state.terminal, Terminal::Exhausted) {
+                    Terminal::Open => {
+                        state.terminal = Terminal::Open;
+                        return None;
+                    }
+                    Terminal::End | Terminal::Exhausted => {
+                        self.terminal_seen = true;
+                        (Some(StreamPoll::Ready(StreamEvent::End)), None)
+                    }
+                    Terminal::Error(error) => {
+                        self.terminal_seen = true;
+                        (Some(StreamPoll::Ready(StreamEvent::Error(error))), None)
+                    }
+                    Terminal::Cancelled => {
+                        self.terminal_seen = true;
+                        (Some(StreamPoll::Ready(StreamEvent::Cancelled)), None)
+                    }
+                }
+            }
+        };
+        wake(producer_wake);
+        poll
+    }
+
     pub fn cancel(mut self) {
         cancel_stream(&self.shared);
         self.terminal_seen = true;

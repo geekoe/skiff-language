@@ -23,12 +23,12 @@ fn current_identity_generations_are_atomic() {
     assert_eq!(FILE_IR_IDENTITY_PREFIX, "skiff-file-ir-v15:sha256");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
-        "skiff-bytecode-artifact-v4"
+        "skiff-bytecode-artifact-v5"
     );
-    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v4:sha256");
+    assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v5:sha256");
     assert_eq!(
         skiff_artifact_model::BYTECODE_SCHEMA_VERSION,
-        "skiff-bytecode-v6"
+        "skiff-bytecode-v7"
     );
     assert_eq!(
         skiff_artifact_model::BYTECODE_ISA_VERSION,
@@ -36,7 +36,7 @@ fn current_identity_generations_are_atomic() {
     );
     assert_eq!(
         skiff_artifact_model::bytecode::opcodes::OPCODE_CONTRACT_FORMAT,
-        2
+        3
     );
     assert_eq!(
         skiff_artifact_model::BYTECODE_STATEMENT_MANIFEST_SCHEMA_MARKER,
@@ -48,15 +48,15 @@ fn current_identity_generations_are_atomic() {
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_SCHEMA_MARKER,
-        "skiff-package-artifact-build-identity-v12"
+        "skiff-package-artifact-build-identity-v13"
     );
     assert_eq!(
         skiff_artifact_model::PACKAGE_ARTIFACT_SCHEMA_VERSION,
-        "skiff-package-artifact-v14"
+        "skiff-package-artifact-v15"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-        "skiff-package-build-v13:sha256"
+        "skiff-package-build-v14:sha256"
     );
     assert_eq!(
         PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_SCHEMA_MARKER,

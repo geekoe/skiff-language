@@ -1,4 +1,4 @@
-use skiff_artifact_model::ServiceDeploymentRef;
+use skiff_artifact_model::{IngressProtocol, IngressSelector, ServiceDeploymentRef};
 use skiff_runtime_capability_context::ExecutionBudgetReason;
 use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
 use skiff_runtime_request::{BytecodeRequestTarget, RequestError, RouterWriterMessage};
@@ -210,6 +210,11 @@ impl RuntimeHost {
                 &header.routing.deployment,
                 bootstrap,
                 BytecodeRouteSelector::Gateway {
+                    ingress: IngressSelector {
+                        protocol: IngressProtocol::WebSocket,
+                        method: None,
+                        path: header.routing.ingress.path.clone(),
+                    },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
                     role: LinkedGatewayCallableRole::Handler,
                 },
@@ -252,6 +257,11 @@ impl RuntimeHost {
                 &header.routing.deployment,
                 bootstrap,
                 BytecodeRouteSelector::Gateway {
+                    ingress: IngressSelector {
+                        protocol: IngressProtocol::WebSocket,
+                        method: None,
+                        path: header.routing.ingress.path.clone(),
+                    },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
                     role: LinkedGatewayCallableRole::CloseHandler,
                 },
@@ -294,6 +304,11 @@ impl RuntimeHost {
                 &header.routing.deployment,
                 bootstrap,
                 BytecodeRouteSelector::Gateway {
+                    ingress: IngressSelector {
+                        protocol: IngressProtocol::Http,
+                        method: Some(header.routing.ingress.method.clone()),
+                        path: header.routing.ingress.path.clone(),
+                    },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
                     role: LinkedGatewayCallableRole::Handler,
                 },
@@ -371,6 +386,11 @@ impl RuntimeHost {
                 &header.routing.deployment,
                 bootstrap,
                 BytecodeRouteSelector::Gateway {
+                    ingress: IngressSelector {
+                        protocol: IngressProtocol::WebSocket,
+                        method: Some(header.routing.ingress.method.clone()),
+                        path: header.routing.ingress.path.clone(),
+                    },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
                     role: LinkedGatewayCallableRole::Handler,
                 },

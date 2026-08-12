@@ -2728,6 +2728,7 @@ dependencies = [
 name = "skiff-runtime-linked-bytecode"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "skiff-artifact-model",
 ]
 
@@ -2854,6 +2855,7 @@ dependencies = [
  "skiff-runtime-vm",
  "thiserror 2.0.18",
  "time",
+ "tokio",
 ]
 
 [[package]]
@@ -2863,6 +2865,7 @@ dependencies = [
  "serde",
  "serde_json",
  "skiff-artifact-model",
+ "skiff-canonical-json",
 ]
 
 [[package]]
@@ -2981,6 +2984,7 @@ dependencies = [
  "skiff-runtime-linker",
  "skiff-runtime-loader",
  "skiff-runtime-model",
+ "skiff-runtime-request-contract",
  "skiff-syntax",
  "thiserror 2.0.18",
 ]

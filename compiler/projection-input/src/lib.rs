@@ -985,22 +985,25 @@ mod resolved_package_schema_tests {
     use super::*;
     use serde_json::{json, Value};
     use skiff_artifact_model::{
-        derive_bytecode_statement_manifest_identity, ContractTypeDescriptor, ContractTypeRef,
-        PackageSchemaCanonicalDescriptor, PackageSchemaIndexEntry,
+        current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
+        ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor,
+        PackageSchemaIndexEntry,
     };
 
     const PACKAGE_ID: &str = "example.com/models";
 
     fn package_build_id(hex_digit: char) -> PackageBuildId {
         PackageBuildId::new(format!(
-            "skiff-package-build-v13:sha256:{}",
+            "skiff-package-build-v14:sha256:{}",
             hex_digit.to_string().repeat(64)
         ))
     }
 
     fn package_artifact_wire() -> Value {
         json!({
-            "schemaVersion": "skiff-package-artifact-v14",
+            "schemaVersion": "skiff-package-artifact-v15",
+            "platformErrorProjectionRegistry":
+                current_platform_error_projection_registry_ref(),
             "packageId": PACKAGE_ID,
             "packageVersion": "1.2.3",
             "packageBuildId": package_build_id('b'),
@@ -1201,11 +1204,11 @@ mod resolved_package_schema_tests {
     }
 
     #[test]
-    fn package_artifact_wire_requires_v14_authority_fields_and_roundtrips() {
+    fn package_artifact_wire_requires_v15_authority_fields_and_roundtrips() {
         let wire = package_artifact_wire();
         let artifact = serde_json::from_value::<PackageArtifact>(wire.clone()).unwrap();
 
-        assert_eq!(artifact.schema_version, "skiff-package-artifact-v14");
+        assert_eq!(artifact.schema_version, "skiff-package-artifact-v15");
         assert_eq!(artifact.package_build_id, package_build_id('b'));
         assert_eq!(
             artifact.bytecode_statement_manifest_identity,
@@ -1216,6 +1219,7 @@ mod resolved_package_schema_tests {
         assert_eq!(serde_json::to_value(artifact).unwrap(), wire);
 
         for field in [
+            "platformErrorProjectionRegistry",
             "bytecodeStatementManifestIdentity",
             "syntheticCallbackOwners",
             "bytecodeSchemaRecords",

@@ -1,8 +1,9 @@
 use skiff_artifact_model::{
-    BytecodeArtifactRef, CallableEffectSummary, ContractOperationId, InstructionSourceSite,
-    LinkedOperandKind, LiteralIr, NativeValueAdapterRole, NativeValueLifecycleAdapter, Opcode,
-    PackageCallableId, PackageRefIr, PackageSymbolRef, ParamModeIr, ResumeErrorMode,
-    StatementAttributionId, SyntheticInstructionSiteReason, TypeRefIr, OPCODE_CONTRACTS,
+    current_platform_error_projection_registry_ref, opcode_table_fingerprint, BytecodeArtifactRef,
+    CallableEffectSummary, ContractOperationId, InstructionSourceSite, LinkedOperandKind,
+    LiteralIr, NativeValueAdapterRole, NativeValueLifecycleAdapter, Opcode, PackageCallableId,
+    PackageRefIr, PackageSymbolRef, ParamModeIr, ResumeErrorMode, StatementAttributionId,
+    SyntheticInstructionSiteReason, TypeRefIr, OPCODE_CONTRACTS,
 };
 
 use crate::{
@@ -31,17 +32,23 @@ use crate::{
 };
 
 use super::fixtures::{
-    authority_pins, build_id, function, function_with_key, minimal_parts, package, signature,
-    snapshot_plan, snapshot_release_plan, specialization_for, type_origin,
+    authority_pins, authority_pins_with_platform_error_registry, build_id, function,
+    function_with_key, historical_platform_error_projection_registry_ref, minimal_parts, package,
+    package_with_authority_pins, signature, snapshot_plan, snapshot_release_plan,
+    specialization_for, type_origin,
 };
 
 #[test]
-fn package_provenance_retains_v6_header_identity_and_authority_pins() {
+fn package_provenance_retains_v7_header_identity_and_five_authority_pins() {
     let package = package(0, build_id());
 
     assert_eq!(package.package_build_id(), &build_id());
-    assert_eq!(package.schema_version(), "skiff-bytecode-v6");
+    assert_eq!(package.schema_version(), "skiff-bytecode-v7");
     assert_eq!(package.isa_version(), "skiff-bytecode-isa-v4");
+    assert_eq!(
+        package.opcode_table_fingerprint(),
+        opcode_table_fingerprint()
+    );
     assert_eq!(
         package.declared_bytecode_identity(),
         package.artifact_ref().bytecode_identity.as_str()
@@ -62,6 +69,50 @@ fn package_provenance_retains_v6_header_identity_and_authority_pins() {
         package.authorities().intrinsic_registry(),
         skiff_artifact_model::intrinsic_registry_identity()
     );
+    assert_eq!(
+        package.authorities().platform_error_projection_registry(),
+        current_platform_error_projection_registry_ref()
+    );
+}
+
+#[test]
+fn provenance_and_candidate_retain_historical_platform_error_registry_pin() {
+    let historical = historical_platform_error_projection_registry_ref();
+    let historical_package = package_with_authority_pins(
+        0,
+        build_id(),
+        authority_pins_with_platform_error_registry(historical.clone()),
+    );
+    assert_eq!(
+        historical_package
+            .authorities()
+            .platform_error_projection_registry(),
+        &historical
+    );
+    assert_ne!(
+        historical_package
+            .authorities()
+            .platform_error_projection_registry(),
+        current_platform_error_projection_registry_ref()
+    );
+
+    let mut parts = minimal_parts(Vec::new());
+    parts.packages[0] = historical_package;
+    let candidate = LinkedBytecodeCandidate::try_from_parts(parts)
+        .expect("base linked model admits any generally valid registry generation-v1 pin");
+
+    assert_eq!(
+        candidate.packages()[0]
+            .authorities()
+            .platform_error_projection_registry(),
+        &historical
+    );
+    assert_ne!(
+        candidate.packages()[0]
+            .authorities()
+            .platform_error_projection_registry(),
+        current_platform_error_projection_registry_ref()
+    );
 }
 
 #[test]
@@ -72,7 +123,7 @@ fn package_provenance_rejects_header_reference_identity_mismatch() {
         BytecodeArtifactRef::new("bytecode:referenced"),
         "bytecode:declared",
         "skiff-bytecode",
-        "skiff-bytecode-v6",
+        "skiff-bytecode-v7",
         "skiff-bytecode-isa-v4",
         "opcode-table-fingerprint:fixture",
         authority_pins(),
@@ -103,7 +154,7 @@ fn package_provenance_rejects_artifact_locator_paths() {
         artifact_ref,
         "bytecode:fixture",
         "skiff-bytecode",
-        "skiff-bytecode-v6",
+        "skiff-bytecode-v7",
         "skiff-bytecode-isa-v4",
         "opcode-table-fingerprint:fixture",
         authority_pins(),
@@ -926,7 +977,7 @@ fn candidate_getters_retain_nominal_data_resume_and_root_facts() {
 
     assert_eq!(
         candidate.packages()[0].schema_version(),
-        "skiff-bytecode-v6"
+        "skiff-bytecode-v7"
     );
     assert_eq!(candidate.functions().len(), 1);
     assert_eq!(candidate.operation_entries().len(), 1);

@@ -190,6 +190,16 @@ impl ActorOwnershipRegistry {
             inner.counters.conflicts += 1;
             return Err(OwnershipError::ReservationInFlight);
         }
+        if inner
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.eviction_request_id.is_some())
+        {
+            inner.counters.conflicts += 1;
+            return Err(OwnershipError::ClaimConflict {
+                current_fence: inner.entries.get(key).and_then(|entry| entry.owner.clone()),
+            });
+        }
         let valid_owner = inner
             .entries
             .get(key)
@@ -264,6 +274,7 @@ impl ActorOwnershipRegistry {
             epoch: token.expected_epoch,
             owner_runtime_id: token.owner_runtime_id.clone(),
             owner_lease_id: facts.owner_lease_id.clone(),
+            build_id: token.route_authority.build_id.clone(),
             lease_expires_at: now.saturating_add(lease_ttl_ms),
             actor_abi_identity: facts.actor_abi_identity.clone(),
             actor_implementation_identity: facts.actor_implementation_identity.clone(),
@@ -361,6 +372,9 @@ impl ActorOwnershipRegistry {
                 continue;
             };
             if let Some(fence) = &entry.owner {
+                if entry.eviction_request_id.is_some() {
+                    continue;
+                }
                 if fence.lease_expires_at <= now {
                     let fence = fence.clone();
                     entry.owner = None;
@@ -507,6 +521,7 @@ fn fence_identity_matches(current: &ActorOwnerFence, candidate: &ActorOwnerFence
     current.epoch == candidate.epoch
         && current.owner_runtime_id == candidate.owner_runtime_id
         && current.owner_lease_id == candidate.owner_lease_id
+        && current.build_id == candidate.build_id
         && current.actor_abi_identity == candidate.actor_abi_identity
         && current.actor_implementation_identity == candidate.actor_implementation_identity
         && current.declaration_owner == candidate.declaration_owner
@@ -587,11 +602,10 @@ mod tests {
     // before completing/acknowledging `IdleEvict`. A new owner cannot be
     // opened while the old Runtime instance may still exist."
     //
-    // `LeaseScheduler::sweep` runs `registry.expire(now)` (ownership.rs) ahead
-    // of the idle-eviction branch, so with both clocks at 30s the fence is
-    // silently dropped at the first due tick and `IdleEvict` is never sent or
-    // acknowledged; the registry then admits a new owner although the old
-    // Runtime incarnation may still exist. This test FAILS today.
+    // With both clocks at 30s, one sweep must first send `IdleEvict` and keep
+    // the fence until the eviction is acknowledged. Lease expiry must not
+    // silently open a new owner while the old Runtime incarnation may still
+    // exist.
     #[test]
     fn sweep_must_not_open_new_owner_while_idle_evict_is_unacked() {
         // Precondition of the hazard: both clocks are 30s (C-actor §4/§8).
@@ -698,10 +712,9 @@ mod tests {
             .expect("first owner commits");
 
         // A stale continuation for the same lease, re-issued by an older
-        // build within the lease window, differs from the live fence in no
-        // field the registry compares (no build identity exists today). It
-        // must be rejected as FenceMismatch.
+        // build within the lease window, must be rejected as FenceMismatch.
         let stale_continuation = ActorOwnerFence {
+            build_id: "sha256:build-v0".to_string(),
             lease_expires_at: 15_000,
             ..fence.clone()
         };

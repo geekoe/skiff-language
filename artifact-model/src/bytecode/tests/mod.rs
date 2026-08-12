@@ -546,6 +546,8 @@ pub(crate) fn canonical_artifact() -> BytecodeArtifact {
         value_lifecycle_policy: crate::value_lifecycle_policy_identity().clone(),
         host_effect_registry: crate::host_effect_registry_identity().clone(),
         intrinsic_registry: crate::intrinsic_registry_identity().clone(),
+        platform_error_projection_registry: crate::current_platform_error_projection_registry_ref()
+            .clone(),
         bytecode_identity: "opaque-structural-bytecode-identity".to_string(),
         image: BytecodeImage {
             functions,

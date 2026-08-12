@@ -505,12 +505,12 @@ macro_rules! opcode_rows {
                     FailureContract::catchable(
                         FailureKind::CollectionIndexOutOfBounds,
                         FailureTrigger::IndexOutOfBounds,
-                        COLLECTION_INDEX_OUT_OF_BOUNDS_ERROR
+                        crate::PlatformErrorProjectionKey::StdCollectionArrayIndexOutOfBoundsError
                     ),
                     FailureContract::catchable(
                         FailureKind::WritablePathIntermediateMissingKey,
                         FailureTrigger::IntermediateMissingKey,
-                        COLLECTION_MISSING_KEY_ERROR
+                        crate::PlatformErrorProjectionKey::StdCollectionMapKeyNotFoundError
                     ),
                     FailureContract::invariant(
                         FailureKind::WritablePathTypeInvariant,
@@ -583,7 +583,7 @@ macro_rules! opcode_rows {
                     FailureContract::catchable(
                         FailureKind::CollectionIndexOutOfBounds,
                         FailureTrigger::IndexOutOfBounds,
-                        COLLECTION_INDEX_OUT_OF_BOUNDS_ERROR
+                        crate::PlatformErrorProjectionKey::StdCollectionArrayIndexOutOfBoundsError
                     )
                 ]),
                 statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::InstructionFailure, origin: SourceOriginConstraint::SourceOrSynthetic },
@@ -649,7 +649,7 @@ macro_rules! opcode_rows {
                     FailureContract::catchable(
                         FailureKind::CollectionMissingKey,
                         FailureTrigger::MissingKey,
-                        COLLECTION_MISSING_KEY_ERROR
+                        crate::PlatformErrorProjectionKey::StdCollectionMapKeyNotFoundError
                     )
                 ]),
                 statement: StatementContract::None, source: SourceContract::Required { use_kind: SourceUse::InstructionFailure, origin: SourceOriginConstraint::SourceOrSynthetic },

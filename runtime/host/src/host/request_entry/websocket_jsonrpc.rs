@@ -67,6 +67,8 @@ impl RuntimeHost {
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
+            http_executor: None,
+            self_ingress: None,
         };
         let request_id = header.request_id.clone();
         let host = self.clone();

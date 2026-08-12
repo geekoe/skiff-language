@@ -509,7 +509,7 @@ fn business_failure_response(code: &str, message: &str) -> String {
     serde_json::json!({
         "ok": true,
         "header": {
-            "schemaVersion": "skiff-runtime-frame-v4",
+            "schemaVersion": "skiff-runtime-frame-v5",
             "type": "response.error",
             "requestId": "package-test-failure",
             "errorKind": "control",
@@ -527,7 +527,7 @@ fn valid_business_success_response() -> String {
     serde_json::json!({
         "ok": true,
         "header": {
-            "schemaVersion": "skiff-runtime-frame-v4",
+            "schemaVersion": "skiff-runtime-frame-v5",
             "type": "response.end",
             "requestId": "package-test-success",
             "payloadPresent": true,

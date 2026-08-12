@@ -8,7 +8,7 @@ fn identity_and_positional_environment_are_frozen() {
     );
     assert_eq!(
         VALUE_LIFECYCLE_POLICY_FINGERPRINT,
-        "2d478cdc3e2226f41b98dfa6cfbed5712b1587987e49c278f887e45486b3ec8a"
+        "1e86b11ab2f5362c81ba357a896654786ff569b8d752f24b5d474dd2f0c0e1ca"
     );
     let environment = PositionalTypeEnvironment::new(
         vec!["T10".to_string(), "T2".to_string()],

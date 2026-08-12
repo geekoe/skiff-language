@@ -51,7 +51,7 @@ use contract_call_typing::{
     ContractCallOutcome, ContractCallTyping, ContractProjectionState,
 };
 use db_projection::DbProjectionTypeResolver;
-use expression_assignability::ExpressionAssignability;
+use expression_assignability::{ExpressionAssignability, ObjectLiteralAssignabilityContext};
 pub use object_materialization::{
     MaterializedObjectField, MaterializedObjectSourceField, ObjectFieldValueSource,
     ObjectMaterializationKind, TargetTypedObjectMaterialization,

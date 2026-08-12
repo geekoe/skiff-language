@@ -48,7 +48,7 @@ pub enum HttpBoundaryResponseStreamEvent {
 #[allow(clippy::large_enum_variant)]
 pub enum HttpBoundaryPlanInput<'a> {
     Borrowed(&'a BoundaryConversionPlan),
-    Owned(BoundaryConversionPlan),
+    Owned(Box<BoundaryConversionPlan>),
 }
 
 impl<'a> HttpBoundaryPlanInput<'a> {
@@ -84,10 +84,12 @@ impl<'a> IntoHttpBoundaryPlan<'a> for &'a RuntimeTypePlan {
         use_case: BoundaryUse,
         direction: BoundaryDirection,
     ) -> HttpBoundaryPlanInput<'a> {
-        HttpBoundaryPlanInput::Owned(RuntimeBoundaryContract::default().conversion_plan(
-            self.clone(),
-            use_case,
-            direction,
+        HttpBoundaryPlanInput::Owned(Box::new(
+            RuntimeBoundaryContract::default().conversion_plan(
+                self.clone(),
+                use_case,
+                direction,
+            ),
         ))
     }
 }

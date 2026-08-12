@@ -47,7 +47,7 @@ fn native_adapter_materializes_returns_with_native_return_use() {
     let mut heap = RequestHeap::default();
 
     let value = adapter
-        .from_wire_return(&Value::Null, "return", &mut heap)
+        .decode_wire_return(&Value::Null, "return", &mut heap)
         .expect("native return should materialize");
 
     assert_eq!(value, RuntimeValue::Null);

@@ -69,6 +69,7 @@ fn native_callable_semantics_registry_is_sparse_exact_and_safe() {
         "core.bytes.fromBase64",
         "core.bytes.fromHex",
         "core.bytes.fromUtf8",
+        "core.bytes.toUtf8String",
         "core.date.fromEpochMilliseconds",
         "core.date.now",
         "core.date.parse",

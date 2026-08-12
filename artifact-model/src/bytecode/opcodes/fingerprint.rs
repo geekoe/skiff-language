@@ -1,6 +1,8 @@
 use serde::Serialize;
 use sha2::Digest;
 
+use crate::PlatformErrorProjectionKey;
+
 use super::*;
 
 mod attribution;
@@ -16,7 +18,7 @@ use execution::{ControlProjection, PendingProjection};
 /// deliberately independent from both the artifact schema and ISA versions:
 /// changing projection shape increments this number, while changing any
 /// projected contract fact changes only the fingerprint.
-pub const OPCODE_CONTRACT_FORMAT: u8 = 2;
+pub const OPCODE_CONTRACT_FORMAT: u8 = 3;
 
 /// Canonical JSON bytes whose SHA-256 digest is persisted in the existing
 /// `opcodeTableFingerprint` artifact header field.
@@ -414,23 +416,23 @@ impl From<&FailureContract> for FailureProjection {
 #[serde(rename_all = "camelCase")]
 struct FailureDispositionProjection {
     kind: &'static str,
-    identity: Option<&'static str>,
+    projection_key: Option<PlatformErrorProjectionKey>,
 }
 
 impl From<FailureDisposition> for FailureDispositionProjection {
     fn from(disposition: FailureDisposition) -> Self {
         match disposition {
-            FailureDisposition::Catchable { identity } => Self {
+            FailureDisposition::Catchable { projection_key } => Self {
                 kind: "catchable",
-                identity: Some(identity),
+                projection_key: Some(projection_key),
             },
             FailureDisposition::UncatchableTerminal => Self {
                 kind: "uncatchableTerminal",
-                identity: None,
+                projection_key: None,
             },
             FailureDisposition::InvariantTerminal => Self {
                 kind: "invariantTerminal",
-                identity: None,
+                projection_key: None,
             },
         }
     }

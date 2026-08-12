@@ -14,7 +14,8 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
-    BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff, BytecodeSchedulerError,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
+    BytecodeSchedulerError,
     BytecodeStreamHandoff, BytecodeStreamSupervisor, PendingWakeQueue, RootDisposition, RootEscrow,
     RootEscrowBacking, StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll,
     StreamProducer, StreamSupervisor, SuspendedTrampoline, VmCompletionHandle, VmPendingRegistry,
@@ -199,7 +200,7 @@ where
         _invocation: skiff_runtime_vm::AdapterInvocation,
         _heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeHandoff<VmFiber>, BytecodeSchedulerError> {
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
         Err(BytecodeSchedulerError::UnsupportedAdapter)
     }
 

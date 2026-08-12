@@ -204,7 +204,9 @@ PackageArtifact至少包含：
 
 ```text
 PackageArtifact
+  schemaVersion: skiff-package-artifact-v15
   packageId / packageVersion / packageBuildId
+  platformErrorProjectionRegistry: PlatformErrorProjectionRegistryRef
   FileIrUnit refs
   PackageLocalAbi
   PackageSchemaIndex ref
@@ -217,6 +219,14 @@ PackageArtifact
   boundary callable projections
   unresolved ServiceCallRefs
 ```
+
+`platformErrorProjectionRegistry`是required root authority，exact shape为
+`{ registryId: "skiff-platform-error-projections", registryVersion: 1,
+fingerprint: "sha256:<64 lowercase hex>" }`。它必须与附着bytecode header中的同名authority exact-match，
+并进入Package build identity preimage；对应preimage marker是
+`skiff-package-artifact-build-identity-v13`，build prefix是`skiff-package-build-v14:sha256`。该字段不进入
+Package Local ABI或ServiceProtocol identity。Compiler只能写入compiler-owned generated singleton或其
+validated typed handoff，public emitter/projection API不得接收调用方任选的descriptor。
 
 PackageArtifact不保存`serviceCallRoots`或其它service selection字段，也不读取`service.yml`、
 `http.yml`或`websocket.yml`。
@@ -356,14 +366,17 @@ provenance和link facts，使deployment无需读取源码。
 在该body外增加稳定operation key/id，不把Package类型重写成`ContractTypeId`。service operation统一拥有
 §6.3定义的开放错误通道，不在operation contract中列出可能抛出的类型集合。
 
-Service call的pending wait统一参与caller request deadline与ancestor内部停止；这是调用种类本身的
-语义，不是operation descriptor从provider body推断出的承诺。`BoundaryOperationContract`不得携带
+Service call的pending wait统一参与caller execution deadline与ancestor内部停止；这是调用种类本身的
+语义，不是operation descriptor从provider body推断出的承诺。Local lexical`timeout(...)`scope先到时由scope
+owner产生`std.error.TimeoutError { timeoutMs }`；caller request/root/inherited deadline先到时只形成terminal，
+不得向dying frame注入error。`BoundaryOperationContract`不得携带
 provider concrete `maySuspend`，也不得保留由该位机械映射出的`NotCancellable`/`Cooperative`类别。
 caller停止等待后provider是否、何时观察internal stop hint是runtime/deployment执行机制，不承诺callee
 业务工作已经停止。Stream关闭等已由stream contract定义的内部停止语义不依赖callee内部summary。
 
-第一版不另外定义consumer dependency timeout或callee operation timeout。Service call的可见deadline
-就是调用点effective execution deadline，已经包含caller request deadline和外层`timeout(...)`的收紧；
+第一版不另外定义consumer dependency timeout、callee operation timeout或service-call primitive timeout type。
+Service call的可见deadline就是调用点effective execution deadline，已经包含caller request deadline和外层
+`timeout(...)`的收紧；
 需要更短调用预算时由caller显式使用`timeout(...)`。Service业务配置与ServiceDeployment都不拥有
 request timeout override。
 
@@ -515,10 +528,15 @@ Router必须严格解析`x-skiff-service`与`x-skiff-version`，并通过release
 请求的原始Host、URL、headers等继续作为标准HTTP envelope传给业务代码，但Host不能改变已选择的deployment
 或gateway entry。
 
-Router到Runtime的dispatch必须携带精确`ServiceDeploymentRef`、buildId与gateway entry事实。Router只选择
-已注册该buildId或具备对应lazy-load能力的session；Runtime按frame中的exact build执行load/verify，二者都
-禁止用同service的另一revision、同path的另一service或ambient registration替换。WebSocket upgrade先执行
-同一deployment选择，再把exact build固定到connection；连接内JSON-RPC method只在该pin内解析。
+Router到Runtime的dispatch必须携带精确`ServiceDeploymentRef`、buildId、registry descriptor与gateway entry
+事实。Deployment的exact PackageArtifact closure必须只有一个一致的
+`platformErrorProjectionRegistry`；mixed-fingerprint closure在strict routing view构造时fail closed。该view向
+Router提供等价于`{ buildId, registryDescriptor }`的typed authority，Router不因此解析Package executable。
+Router只选择已注册该buildId或具备对应lazy-load能力、且session registry descriptor与该authority
+exact-match的session；Runtime按frame中的exact build执行load/verify，并最终复验PackageArtifact、bytecode与
+binary registry三方一致。二者都禁止用同service的另一revision、同path的另一service或ambient registration
+替换。WebSocket upgrade先执行同一deployment选择，再把exact build与registry descriptor固定到connection；
+连接内JSON-RPC method只在该pin内解析。同一规则适用于Actor和task等其它Runtime execution route。
 
 Artifact模型允许多个selector绑定同一个key，但第一版`http.yml`和`websocket.yml.jsonRpc`不暴露独立
 entry引用或复用语法：named entry同时声明唯一selector与entry definition。该限制只简化authoring，不得把selector并入
@@ -540,18 +558,21 @@ server-stream shape。WebSocket JSON-RPC handler第一版也只能unary return�
 selector和policy只由ServiceDeployment及其revision覆盖。只替换实现且external protocol不变时，
 `GatewayEntryIdentity`保持不变而deployment revision改变；改变external wire surface时两者都改变。
 
-本次service-scoped ingress是未发布格式的hard cut。代际固定为：
+Service-scoped ingress仍使用其已冻结的deployment/gateway代际；M3 platform-error projection在其上另做
+未发布格式hard cut，并把共享Runtime frame推进到v5。合并后的canonical target为：
 
 | 记录 / wire | 新代际 |
 | --- | --- |
 | ServiceDeploymentInput | `skiff-service-deployment-input-v5` |
 | ServiceDeployment schema | `skiff-service-deployment-v4` |
 | DeploymentArtifact identity marker / prefix | `skiff-deployment-artifact-identity-v4` / `skiff-deployment-artifact-v4:sha256` |
-| Router↔Runtime frame schema | `skiff-runtime-frame-v4` |
+| Router↔Runtime frame schema | `skiff-runtime-frame-v5` |
 
-`GatewayEntryIdentity`/GatewayEntry保持v2；ServiceContract/ServiceProtocol、Package artifact/build/local
-ABI/schema与WebSocketEntryId不变。可选`ReleaseBundle`的schema不进入runtime frame代际。
-Reader只接受上述代际的service-scoped ingress与exact-build frame，不为更早shape提供dual-read。
+`GatewayEntryIdentity`/GatewayEntry保持v2；ServiceContract/ServiceProtocol、Package Local ABI与
+WebSocketEntryId不变。M3同时把PackageArtifact hard cut到v15、Package build preimage marker/prefix hard cut到
+`skiff-package-artifact-build-identity-v13` / `skiff-package-build-v14:sha256`，但不改变上述service或local ABI
+identity。可选`ReleaseBundle`的schema不进入runtime frame代际。Reader只接受上述M3 target的exact-build frame；
+runtime-frame-v5不为v4或更早shape提供dual-read。
 
 Package source中的service dependency alias使用现有qualified namespace，不新增另一套type/import语法：
 
@@ -749,12 +770,36 @@ ServiceErrorEnvelope
       payload: std.service.InternalError
     }
   | PlatformError {
-      builtinErrorIdentity
+      projectionKey
+      entryFingerprint
       encodedPayload
       traceId
       errorId
     }
 ```
+
+`PlatformError`是generated platform error唯一统一的public/wire envelope；各Rust error不因此共享字段，
+`encodedPayload`的public field set只来自该exact `.skiff` type IR，diagnostic message/source/attributes不进入
+public schema。它在runtime-frame-v5中是exact hard cut：旧`builtinErrorIdentity`字段、缺失字段或额外字段都
+拒绝，不提供dual reader。字段contract为：
+
+- `projectionKey`逐字等于generated entry的canonical public symbol，并匹配`[A-Za-z0-9._-]`且长度为
+  1–128 bytes；禁止任何版本后缀；
+- `entryFingerprint`精确匹配`sha256:<64 lowercase hex>`；
+- `encodedPayload`非空且不超过64 KiB；
+- `traceId`/`errorId`继续使用canonical correlation validation；
+- outer object strict deny unknown fields。
+
+Request-contract拥有outer envelope的variant/字段、grammar、bounds、correlation与canonical bytes验证。只有raw
+bytes与validated envelope的canonical re-encoding完全相同，才能建立fixed/opaque carrier；transport只承载
+bounded bytes，不复制service semantic validation。Generated registry codec只把当前registry中的exact
+`(projectionKey, entryFingerprint)` pair视为known并执行identity-specific payload decode/validation：known pair
+的malformed payload是caller-side protocol failure，不能改写为provider `InternalError`。Outer-valid但本地
+unknown的pair固定为opaque service cause，本地不可catch且未捕获时原样转发；同key不同fingerprint仍是unknown，
+禁止使用当前key的codec或payload shape猜测。Registry中出现的每个key恰有一个active entry、不得重复；
+schema/codec/policy变化保持canonical symbol key不变，但产生new entry/whole-registry fingerprint并要求
+artifact/runtime hard cut。
+Provider/local payload encode在envelope固定前失败时，才以当前canonical correlation生成固定`InternalError`。
 
 只有同时满足以下条件的用户错误才能以原始名义类型进入`PublicTypedError`：
 
@@ -885,9 +930,10 @@ native function requestJsonToConnection<TRequest, TResponse>(
 
 它只允许精确connection target，不提供business-identity fan-out版本，因为多个socket不能共同拥有一个
 unary response。调用受当前execution deadline与runtime内部停止约束；等待尚未完成时是真实suspension
-point。当前有效deadline到达时抛`TimeoutError`；ancestor内部停止只结束当前request/lane且不可被用户
-`catch`。二者都先删除pending state并丢弃late response；第一版不向peer发送request cancellation
-notification。目标不存在或
+point。WebSocket没有独立primitive timeout；local lexical`timeout(...)`deadline先到时抛
+`std.error.TimeoutError { timeoutMs }`，request/root/inherited deadline或ancestor内部停止只结束当前
+request/lane且不可被用户`catch`。这些winner都先删除pending state并丢弃late response；第一版不向peer发送
+request cancellation notification。目标不存在或
 已关闭、发送后transport丢失、response协议错误、平台容量拒绝和peer JSON-RPC error分别投影为
 `std.websocket.WebSocketRequestError`的封闭分支；本地分支只暴露固定、脱敏信息，remote分支保留经过
 大小和shape校验的JSON-RPC integer `code`、`message`与可选`data`。

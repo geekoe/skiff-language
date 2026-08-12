@@ -193,6 +193,8 @@ fn provider(package_id: &str) -> (PackageArtifact, FileIrUnit) {
         package_id: package_id.to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: vec![file_ref.clone()],
         static_resources: Vec::new(),
         package_local_abi: PackageLocalAbi {

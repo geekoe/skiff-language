@@ -78,34 +78,36 @@ async fn service_db_runtime_create_and_find_runtime_roundtrips_local_interface()
 
     let mut page_heap = RequestHeap::default();
     let page = runtime
-        .find_many_page_runtime(
+        .prepare_find_many_page_runtime_command(
             "ProviderBinding",
             db_query(Value::Null),
             ServiceDbFindOptions::default(),
             None,
-            &mut page_heap,
             context.clone(),
-            None,
         )
+        .expect("production service DB runtime find many should prepare")
+        .execute(&runtime, None)
         .await
+        .expect("production service DB runtime find many should execute")
+        .finalize(&runtime, &mut page_heap)
         .expect("production service DB runtime find many should decode local interface");
     assert_eq!(page.len(), 1);
     assert_decoded_provider_runtime_value(&page[0], &page_heap, "binding-1", "openai");
 
     let replaced = runtime
-        .replace_one_runtime(
+        .prepare_replace_one_runtime_command(
             "ProviderBinding",
             DbOneSelector::Key(db_key(json!("binding-1"))),
             &read,
-            &mut read_heap,
+            &read_heap,
             context.clone(),
-            &[],
-            None,
         )
+        .expect("production service DB runtime replace should prepare")
+        .execute(&runtime, &[], None)
         .await
-        .expect(
-            "production service DB runtime replace should re-encode the decoded local interface",
-        )
+        .expect("production service DB runtime replace should execute against the local interface")
+        .finalize(&runtime, &mut read_heap)
+        .expect("production service DB runtime replace should decode the local interface result")
         .expect("created provider binding should be replaced");
 
     assert_decoded_provider_runtime_value(&replaced, &read_heap, "binding-1", "openai");

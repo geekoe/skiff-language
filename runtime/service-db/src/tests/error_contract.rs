@@ -88,10 +88,10 @@ fn service_db_duplicate_key_is_a_non_retryable_sanitized_constraint_error() {
     );
     assert!(!payload.message.contains("DuplicateKey"));
     assert!(!payload.message.contains("physical-index"));
-    assert!(!payload
+    assert!(payload
         .details
         .as_ref()
-        .is_some_and(|details| details.get("retryable").is_some()));
+        .is_none_or(|details| details.get("retryable").is_none()));
     assert_eq!(
         WirePayload::catch_projection(&error),
         Some((

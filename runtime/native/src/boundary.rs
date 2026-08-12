@@ -99,8 +99,7 @@ impl<'a> NativeBoundaryAdapter<'a> {
             .coerce_runtime_value(value, heap)?)
     }
 
-    #[allow(clippy::wrong_self_convention)]
-    pub(crate) fn from_wire_return(
+    pub(crate) fn decode_wire_return(
         &self,
         value: &Value,
         label: &str,
@@ -113,8 +112,7 @@ impl<'a> NativeBoundaryAdapter<'a> {
             .from_wire_json(value, heap)?)
     }
 
-    #[allow(clippy::wrong_self_convention)]
-    pub(crate) fn from_wire_internal_handle_return(
+    pub(crate) fn decode_wire_internal_handle_return(
         &self,
         value: &Value,
         label: &str,

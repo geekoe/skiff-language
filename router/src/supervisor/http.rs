@@ -17,7 +17,7 @@ use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
     decode_request_cancel_frame, decode_response_chunk_frame, decode_response_end_frame,
     decode_response_error_frame, decode_response_start_frame, ResponseErrorFrameHeader,
-    RuntimeHttpResponseFrameHeader,
+    RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
 };
 use skiff_runtime_transport::protocol::{
     decode_bytecode_websocket_connect_response_end_frame,
@@ -42,6 +42,10 @@ use crate::session::identity::RuntimeSessionEpoch;
 use crate::session::TerminalKind;
 use crate::supervisor::ws::{ConnectOutcome, WsDispatchStore};
 use crate::ws::OverflowPolicy;
+
+const TEST_DISPATCH_RESPONSE_STATUS: u16 = 200;
+const TEST_DISPATCH_CONTENT_TYPE_NAME: &str = "content-type";
+const TEST_DISPATCH_CONTENT_TYPE_VALUE: &str = "application/json; charset=utf-8";
 
 /// Default per-request dispatch event channel capacity. The inbound runtime
 /// frame budget is 64 frames per session (C-session §5.3), so a channel that
@@ -202,9 +206,9 @@ impl InboundFrameSink for RequestFrameSink {
                             ..
                         } => payload.message.clone(),
                         skiff_runtime_request_contract::service_error::ServiceErrorEnvelope::PlatformError {
-                            builtin_error_identity,
+                            projection_key,
                             ..
-                        } => format!("platform error {builtin_error_identity:?}"),
+                        } => format!("platform error {projection_key:?}"),
                     },
                     skiff_runtime_transport::protocol::ValidatedResponseErrorFrame::Control(
                         payload,
@@ -809,8 +813,9 @@ impl HttpDispatchPort for DispatcherHttpPort {
                 match event {
                     Some(HttpDispatchEvent::Frame {
                         frame: DispatchedFrame::End { payload, .. },
-                        http: Some(http),
+                        http,
                     }) => {
+                        let http = canonical_test_dispatch_http_response(http);
                         self.router.unregister(&request_id);
                         Ok(TestDispatchOutcome::End(UnaryHttpResponse {
                             status: http.status,
@@ -890,4 +895,76 @@ pub fn dispatch_submit_from_request(request: &DispatchRequest) -> DispatchSubmit
 /// Terminal-source cancel conversion exposed for composition tests.
 pub fn cancel_reason(source: PendingTerminalSource) -> Option<RequestCancelReason> {
     cancel_reason_for_terminal(source)
+}
+
+/// Test dispatch is a control envelope, not a business HTTP response. The
+/// runtime may emit `response.end` without HTTP metadata, or with metadata
+/// copied from a stream/HTTP surface that is not valid for the test-runner
+/// wire contract. Normalize it here so every successful test dispatch is a
+/// canonical 200 JSON control response regardless of what the runtime emitted.
+fn canonical_test_dispatch_http_response(
+    _http: Option<RuntimeHttpResponseFrameHeader>,
+) -> RuntimeHttpResponseFrameHeader {
+    RuntimeHttpResponseFrameHeader {
+        status: TEST_DISPATCH_RESPONSE_STATUS,
+        headers: vec![RuntimeHttpNameValueFrameHeader {
+            name: TEST_DISPATCH_CONTENT_TYPE_NAME.to_string(),
+            value: TEST_DISPATCH_CONTENT_TYPE_VALUE.to_string(),
+        }],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn canonical_header() -> RuntimeHttpNameValueFrameHeader {
+        RuntimeHttpNameValueFrameHeader {
+            name: TEST_DISPATCH_CONTENT_TYPE_NAME.to_string(),
+            value: TEST_DISPATCH_CONTENT_TYPE_VALUE.to_string(),
+        }
+    }
+
+    #[test]
+    fn missing_test_dispatch_http_metadata_gets_canonical_json_header() {
+        let http = canonical_test_dispatch_http_response(None);
+
+        assert_eq!(http.status, TEST_DISPATCH_RESPONSE_STATUS);
+        assert_eq!(http.headers, vec![canonical_header()]);
+    }
+
+    #[test]
+    fn empty_test_dispatch_http_metadata_gets_canonical_json_header() {
+        let http = canonical_test_dispatch_http_response(Some(RuntimeHttpResponseFrameHeader {
+            status: 206,
+            headers: Vec::new(),
+        }));
+
+        assert_eq!(http.status, TEST_DISPATCH_RESPONSE_STATUS);
+        assert_eq!(http.headers, vec![canonical_header()]);
+    }
+
+    #[test]
+    fn noncanonical_and_duplicate_test_dispatch_headers_are_replaced() {
+        let http = canonical_test_dispatch_http_response(Some(RuntimeHttpResponseFrameHeader {
+            status: 503,
+            headers: vec![
+                RuntimeHttpNameValueFrameHeader {
+                    name: "Content-Type".to_string(),
+                    value: "text/plain".to_string(),
+                },
+                RuntimeHttpNameValueFrameHeader {
+                    name: "content-type".to_string(),
+                    value: "application/json; charset=utf-8".to_string(),
+                },
+                RuntimeHttpNameValueFrameHeader {
+                    name: "x-extra".to_string(),
+                    value: "discarded".to_string(),
+                },
+            ],
+        }));
+
+        assert_eq!(http.status, TEST_DISPATCH_RESPONSE_STATUS);
+        assert_eq!(http.headers, vec![canonical_header()]);
+    }
 }

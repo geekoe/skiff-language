@@ -240,6 +240,10 @@ pub struct PackageArtifact {
     pub package_id: String,
     pub package_version: String,
     pub package_build_id: PackageBuildId,
+    /// Required registry descriptor pinned by this package build. A single
+    /// artifact validates its general descriptor shape; exact closure
+    /// consistency is owned by deployment construction and loading.
+    pub platform_error_projection_registry: crate::PlatformErrorProjectionRegistryRef,
     pub files: Vec<FileIrRef>,
     pub static_resources: Vec<PublicationResourceRef>,
     /// Bytecode image record reference (D11: one image per package; `None`

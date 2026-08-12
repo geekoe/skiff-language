@@ -30,3 +30,6 @@ pub trait WirePayload: std::error::Error + Send + Sync + 'static {
 
     fn as_any(&self) -> &dyn std::any::Any;
 }
+
+#[cfg(test)]
+mod tests;

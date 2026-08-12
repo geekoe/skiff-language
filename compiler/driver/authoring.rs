@@ -46,7 +46,8 @@ pub use actor_routing::{
 use package_publication::publish_package_artifact_records_to_store;
 pub use package_publication::{
     author_official_std_package, author_official_std_package_with_bytecode,
-    publish_package_artifact_records_with_bytecode, PublishedPackageArtifactReceipt,
+    publish_package_artifact_records, publish_package_artifact_records_with_bytecode,
+    PublishedPackageArtifactReceipt,
 };
 
 pub type AuthoringResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;

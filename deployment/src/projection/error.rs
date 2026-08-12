@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     BoundaryUnavailableReason, ContractOperationId, PackageBuildId, PackageCallableId,
-    PackageSchemaTypeId,
+    PackageSchemaTypeId, PlatformErrorProjectionRegistryRefValidationError,
 };
 use thiserror::Error;
 
@@ -117,3 +117,30 @@ pub enum ProjectionError {
 }
 
 pub type ProjectionResult<T> = std::result::Result<T, ProjectionError>;
+
+#[derive(Debug, Error)]
+pub enum RoutingViewError {
+    #[error("invalid exact ServiceDeployment routing input: {identity_error}")]
+    InvalidDeployment {
+        identity_error: Box<skiff_artifact_identity::ArtifactIdentityError>,
+    },
+    #[error("invalid deployment package closure: {0}")]
+    PackageClosure(#[from] ProjectionError),
+    #[error(
+        "package build {build_id} has an invalid platform error projection registry descriptor: {source}"
+    )]
+    InvalidRegistryDescriptor {
+        build_id: PackageBuildId,
+        #[source]
+        source: PlatformErrorProjectionRegistryRefValidationError,
+    },
+    #[error(
+        "deployment package closure mixes platform error projection registries: implementation build {implementation_build_id} uses {implementation_fingerprint}, package build {package_build_id} uses {package_fingerprint}"
+    )]
+    MixedRegistryDescriptors {
+        implementation_build_id: PackageBuildId,
+        implementation_fingerprint: String,
+        package_build_id: PackageBuildId,
+        package_fingerprint: String,
+    },
+}

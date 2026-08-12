@@ -40,6 +40,17 @@ use skiff_runtime_request::{
 };
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
+    compile_scalar_package_with_source(
+        "function run() -> number {
+  return 2.0
+}
+",
+    )
+}
+
+fn compile_scalar_package_with_source(
+    text: &str,
+) -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
     let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
@@ -61,10 +72,6 @@ fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtif
     ));
     std::fs::create_dir_all(&temp).unwrap();
     let source_path = temp.join("main.skiff");
-    let text = "function run() -> number {
-  return 2.0
-}
-";
     std::fs::write(&source_path, text).unwrap();
     let source_tree = SourceTree {
         root: temp.clone(),
@@ -364,6 +371,8 @@ mod tests {
             execution_budget: Arc::new(ExecutionBudget::disabled()),
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
+                http_executor: None,
+                self_ingress: None,
             },
         })
         .unwrap();
@@ -407,6 +416,8 @@ mod tests {
                 execution_budget: Arc::new(ExecutionBudget::disabled()),
                 handles: BytecodeRequestExecutionHandles {
                     request_heap_limits: RequestHeapLimits::default(),
+                    http_executor: None,
+                    self_ingress: None,
                 },
             },
             sink,
@@ -424,6 +435,167 @@ mod tests {
             }
             BytecodeRequestRunOutcome::Parked => panic!("scalar request must not park"),
         }
+    }
+
+    #[tokio::test]
+    async fn resumable_sleep_adapter_parks_then_real_timer_wakes() {
+        let (package, bytecode) = compile_scalar_package_with_source(
+            "import std
+function run() -> number {
+  std.time.sleep(Duration.milliseconds(1))
+  return 1.0
+}
+",
+        );
+        let (contract, operation_id) = service_contract(package.package_id.as_str());
+        let (deployment, deployment_reference) =
+            service_deployment(&package, &contract, operation_id.clone());
+        let resolver = TestResolver {
+            deployment,
+            contract,
+            package,
+            bytecode,
+        };
+        let hydrated = DeploymentBytecodeLoader::new(&resolver)
+            .load(&deployment_reference)
+            .unwrap();
+        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
+        let verified =
+            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
+        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
+        let entry = verified.operation_entry(&operation_id).unwrap();
+        let target =
+            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
+        let sink = Arc::new(RecordingSink::default());
+        let mut execution = start_runtime_bytecode_request(
+            BytecodeRequestExecutionInput {
+                target,
+                request: request_envelope(),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                cancellation: CancellationToken::new(),
+                execution_budget: Arc::new(ExecutionBudget::disabled()),
+                handles: BytecodeRequestExecutionHandles {
+                    request_heap_limits: RequestHeapLimits::default(),
+                    http_executor: None,
+                    self_ingress: None,
+                },
+            },
+            sink,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            execution.run().unwrap(),
+            BytecodeRequestRunOutcome::Parked
+        ));
+        let wake = execution.wait_pending_wake().await.unwrap();
+        match execution.resume(wake).unwrap() {
+            BytecodeRequestRunOutcome::Complete(BoundaryResponse::Event(ResponseEvent::End(
+                ResponseEnd::Payload(payload),
+            ))) => {
+                assert_eq!(serde_json::from_slice::<f64>(&payload).unwrap(), 1.0);
+            }
+            BytecodeRequestRunOutcome::Complete(other) => {
+                panic!("sleep request returned a stream response: {other:?}")
+            }
+            BytecodeRequestRunOutcome::Parked => panic!("sleep wake must complete"),
+        }
+    }
+
+    #[test]
+    fn string_concat_equality_through_request_vm() {
+        let (package, bytecode) = compile_scalar_package_with_source(
+            "function run() -> boolean {
+  return \"a\".concat(\"b\") == \"ab\"
+}
+",
+        );
+        let (contract, operation_id) = service_contract(package.package_id.as_str());
+        let (deployment, deployment_reference) =
+            service_deployment(&package, &contract, operation_id.clone());
+        let resolver = TestResolver {
+            deployment,
+            contract,
+            package,
+            bytecode,
+        };
+        let hydrated = DeploymentBytecodeLoader::new(&resolver)
+            .load(&deployment_reference)
+            .unwrap();
+        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
+        let verified =
+            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
+        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
+        let entry = verified.operation_entry(&operation_id).unwrap();
+        let target =
+            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
+        let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            target,
+            request: request_envelope(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            cancellation: CancellationToken::new(),
+            execution_budget: Arc::new(ExecutionBudget::disabled()),
+            handles: BytecodeRequestExecutionHandles {
+                request_heap_limits: RequestHeapLimits::default(),
+                http_executor: None,
+                self_ingress: None,
+            },
+        })
+        .unwrap();
+
+        let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) = response
+        else {
+            panic!("string equality request returned a non-payload response: {response:?}");
+        };
+        assert_eq!(serde_json::from_slice::<bool>(&payload).unwrap(), true);
+    }
+
+    #[test]
+    fn bytes_from_utf8_round_trips_through_request_vm() {
+        let (package, bytecode) = compile_scalar_package_with_source(
+            "function run() -> boolean {
+  return bytes.fromUtf8(\"abc\").toUtf8String() == \"abc\"
+}
+",
+        );
+        let (contract, operation_id) = service_contract(package.package_id.as_str());
+        let (deployment, deployment_reference) =
+            service_deployment(&package, &contract, operation_id.clone());
+        let resolver = TestResolver {
+            deployment,
+            contract,
+            package,
+            bytecode,
+        };
+        let hydrated = DeploymentBytecodeLoader::new(&resolver)
+            .load(&deployment_reference)
+            .unwrap();
+        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
+        let verified =
+            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
+        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
+        let entry = verified.operation_entry(&operation_id).unwrap();
+        let target =
+            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
+        let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            target,
+            request: request_envelope(),
+            cancelled: Arc::new(AtomicBool::new(false)),
+            cancellation: CancellationToken::new(),
+            execution_budget: Arc::new(ExecutionBudget::disabled()),
+            handles: BytecodeRequestExecutionHandles {
+                request_heap_limits: RequestHeapLimits::default(),
+                http_executor: None,
+                self_ingress: None,
+            },
+        })
+        .unwrap();
+
+        let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) = response
+        else {
+            panic!("bytes round-trip request returned a non-payload response: {response:?}");
+        };
+        assert_eq!(serde_json::from_slice::<bool>(&payload).unwrap(), true);
     }
 }
 

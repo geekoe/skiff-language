@@ -47,23 +47,46 @@ HTTP 类型不是 prelude，而是 `std.http.*` 模块类型，包括 `std.http.
 
 当前 platform error surface 包括 `std.json.DecodeError`、`std.bytes.DecodeError`、`std.db.DecodeError`、
 `std.db.ConflictError`、`std.db.ConstraintError`、`std.file.FileError`、`std.number.DecodeError`、
-`std.time.DecodeError`、`std.collection.IndexOutOfBoundsError`、`std.collection.MissingKeyError`、
+`std.time.DecodeError`、`std.collection.ArrayIndexOutOfBoundsError`、
+`std.collection.MapKeyNotFoundError`、`std.collection.JsonObjectPropertyNotFoundError`、
 `config.DecodeError`、`std.service.ProviderUnavailableError`、`std.service.ProtocolError`、
 `std.service.InternalError`、`std.http.HttpError`、`std.websocket.WebSocketRequestError`、
-`TimeoutError`。
+`std.error.TimeoutError`、`std.error.InstructionLimitExceededError`、
+`std.http.RequestTimeoutError`、`std.actor.MethodInvocationTimeoutError`和
+`std.actor.ActivationTimeoutError`。短名`TimeoutError`始终绑定`std.error.TimeoutError`；该schema的source
+owner是`prelude/error.skiff`，wire/projection identity仍使用完整canonical symbol。
 
 Collection access 错误的 public payload 固定为：
 
 ```skiff
-std.collection.IndexOutOfBoundsError { index: integer, length: integer }
-std.collection.MissingKeyError { container: string }
+std.collection.ArrayIndexOutOfBoundsError { index: integer, length: integer }
+std.collection.MapKeyNotFoundError {}
+std.collection.JsonObjectPropertyNotFoundError {}
 ```
 
-`IndexOutOfBoundsError` 保留失败时的 selector 与 array length。`MissingKeyError.container` 只会是
-稳定值 `"Map"` 或 `"JsonObject"`；错误 payload、公开 message、trace 和 telemetry 都不得泄露
-missing key。这两种错误只表示用户代码进入当前 request 后的 strict collection access
-失败，是 ordinary catchable exception；artifact 验证、VM 内部 index 与其它 terminal 不得伪装成这两类
-错误。
+`ArrayIndexOutOfBoundsError`保留失败时的selector与array length。Map key与JsonObject property完全不公开；
+两个not-found payload都是空record，也不得增加`operation`、`container`或同义字段。公开message、trace和
+telemetry同样不得泄露key/property。这三种错误只表示用户代码进入当前request后的对应strict collection
+access失败，是ordinary catchable exception；artifact验证、`MapEntryAt`等VM内部index与其它terminal不得
+伪装成这些类型。
+
+Timeout与instruction-limit payload固定为：
+
+```skiff
+std.error.TimeoutError { timeoutMs: integer }
+std.error.InstructionLimitExceededError { instructionCount: integer, limit: integer }
+std.http.RequestTimeoutError { timeoutMs: integer }
+std.actor.MethodInvocationTimeoutError { timeoutMs: integer }
+std.actor.ActivationTimeoutError { timeoutMs: integer }
+```
+
+`std.error.TimeoutError`只表示词法`timeout(...)`scope到期；request/root/inherited deadline不会向dying frame
+注入该错误。Instruction limit耗尽的同一frame不能catch或继续执行；到达service request root后，runtime可把
+它固定为typed carrier，供仍active的remote caller按其call-site admission捕获。HTTP primitive、Actor method
+invocation与Actor activation timeout只在原caller仍active时可catch，outcome均为unknown且不会自动retry；若
+current lexical scope deadline先到，必须抛`std.error.TimeoutError`，不能伪装成某个primitive timeout。
+WebSocket没有独立primitive timeout type。Cancellation以及task、lease、idle、handshake、drain、Router
+ingress等control timeout不属于platform projection surface。
 
 decode 类错误按所属模块命名，用于用户代码发起的 JSON、bytes、DB、file、number、time 和 config 转换失败。runtime 内部 decode / artifact / transport 不变量失败不暴露为用户可 catch 的 decode 类型。错误消息必须脱敏，不能包含 secret 或原始敏感值。
 
@@ -80,8 +103,9 @@ provider unavailable 类错误表示目标服务、网络连接、DNS、TLS 或 
 protocol 类错误表示跨服务、HTTP/SSE 或 gateway/runtime 协议不匹配、无法恢复 identity 或 payload 与 lock / schema 不一致。
 
 `std.websocket.WebSocketRequestError`表示Skiff主动发起的WebSocket request因connection、transport、
-RPC配置协议、平台容量或peer显式error而失败。Deadline仍使用`TimeoutError`；runtime内部停止不生成用户可
-捕获错误。JSON编码、非法JSON-RPC params shape和typed response decode失败仍使用
+RPC配置协议、平台容量或peer显式error而失败。WebSocket没有自己的primitive timeout：local lexical
+`timeout(...)`到期使用`std.error.TimeoutError`，request/root/inherited deadline形成terminal；runtime内部停止
+不生成用户可捕获错误。JSON编码、非法JSON-RPC params shape和typed response decode失败仍使用
 `std.json.DecodeError`。
 
 `std.service.InternalError`用于隐藏不能安全保留原始类型的跨服务错误。用户错误为私有类型、不可name、
@@ -126,7 +150,7 @@ name/member/index writable path，其root只允许局部`var`、有效`inout` lo
 `Array<T>`提供长度读取、`push`、`set`、`pop`、`map`和`filter`等基础surface。
 `Array<T>.set(index: integer, item: T) -> void` 是 replace-only receiver mutator；它只接受上述
 writable path，并要求 `0 <= index < length`。负 index 或 `index >= length` 抛
-`std.collection.IndexOutOfBoundsError { index, length }`；`index == length` 不表示 append。`push`/`pop`
+`std.collection.ArrayIndexOutOfBoundsError { index, length }`；`index == length` 不表示 append。`push`/`pop`
 也是receiver mutator，`map`/`filter`是pure transform。
 `Array.concat(left, right)`是type-namespace static transform，返回两个输入的拼接值。例如：
 
@@ -138,7 +162,7 @@ final ys = Array.concat(xs, [4])
 
 `Map<K,V>`提供长度读取、`keys`、`get`、`has`、`set`和`delete`。
 `Map<K,V>.get(key: K) -> V?` 是可选 lookup；missing 返回 `null`，不抛
-`std.collection.MissingKeyError`。`Map<K,V>.set(key: K, value: V) -> void` 是receiver mutator，对 terminal
+`std.collection.MapKeyNotFoundError`。`Map<K,V>.set(key: K, value: V) -> void` 是receiver mutator，对 terminal
 key 执行 upsert。`set`/`delete`只接受上述writable path；其它操作是local read。
 `Map.merge(base, updates)`是type-namespace static transform，在返回值中用`updates`覆盖同名key，
 不修改任一输入。
@@ -150,11 +174,14 @@ transform。
 
 Bracket 是另一个语言操作，不是上述 receiver API 的别名：
 
-- `array[index]` 要求 `index: integer`，越界抛 `std.collection.IndexOutOfBoundsError`；
+- `array[index]` 要求 `index: integer`，越界抛
+  `std.collection.ArrayIndexOutOfBoundsError { index, length }`；
 - `map[key]` 要求 key 精确为 `K`，missing 抛
-  `std.collection.MissingKeyError { container: "Map" }`，不等于 `map.get(key)`；
+  `std.collection.MapKeyNotFoundError {}`，不等于 `map.get(key)`；
 - `jsonObject[key]` 要求 `key: string`，missing 抛
-  `std.collection.MissingKeyError { container: "JsonObject" }`。
+  `std.collection.JsonObjectPropertyNotFoundError {}`。
+
+Map key与JsonObject property不进入任何public payload，三种类型也不携带`operation`或`container`字段。
 
 Bracket read 返回 ordinary logical snapshot。Indexed assignment 的 terminal Array 操作只能 replace，terminal
 Map/JsonObject 操作是 upsert；嵌套路径的所有 intermediate element/key 必须已存在。完整的求值顺序、
@@ -299,7 +326,10 @@ HTTP status code 本身不是 throw；调用方必须检查 response status。
 
 DNS、连接失败、TLS、payload decode 或协议错误抛标准平台错误，例如 provider unavailable、protocol 或 decode error。
 
-`std.http.HttpClientRequest.body: null` 或缺失表示空 body。`timeoutMs: null` 表示只受当前 request deadline、外层 `timeout` 和平台默认 operation timeout 约束。HTTP proxy 是 runtime/operator 本地资源，只能通过 runtime config 的 `http.egress.proxy` 配置；service 不能在 `std.http.HttpClientRequest` 中声明或覆盖 proxy。runtime 不读取环境代理配置。
+`std.http.HttpClientRequest.body: null` 或缺失表示空 body。`timeoutMs: null` 表示只受当前 request deadline、外层 `timeout` 和平台默认 operation timeout 约束。HTTP primitive operation timeout先到、且caller continuation仍active时抛
+`std.http.RequestTimeoutError { timeoutMs }`；其outcome unknown且runtime不自动retry。Current lexical
+`timeout(...)`deadline先到时改由该scope抛`std.error.TimeoutError`；request/root/inherited deadline先到时只
+结束request，不把HTTP primitive error注入dying frame。HTTP proxy 是 runtime/operator 本地资源，只能通过 runtime config 的 `http.egress.proxy` 配置；service 不能在 `std.http.HttpClientRequest` 中声明或覆盖 proxy。runtime 不读取环境代理配置。
 
 `std.http.request` 返回完整 response body bytes。`std.http.stream` 返回一次性 HTTP stream handle，`status` / `headers` 同步可读，`body` 是 `Stream<bytes>`。`std.http.sse` 返回一次性 SSE event stream。
 
@@ -431,9 +461,10 @@ Peer发起request时，id可以是非空string或safe integer，业务handler看
 
 `requestJsonToConnection`只接受精确connection id，不提供business identity fan-out版本。多个socket不能
 共同拥有一个unary response。调用受当前execution deadline与内部停止状态约束；等待response时是真实
-suspension point。有效deadline抛`TimeoutError`；ancestor内部停止终止当前request/lane且不可被用户
-`catch`。二者都先原子删除pending state并丢弃晚到response；第一版不向peer发送request cancellation
-notification。
+suspension point。WebSocket没有独立primitive timeout：local lexical`timeout(...)`deadline先到时抛
+`std.error.TimeoutError { timeoutMs }`，request/root/inherited deadline或ancestor内部停止只终止当前
+request/lane且不可被用户`catch`。这些terminal都先原子删除pending state并丢弃晚到response；第一版不向
+peer发送request cancellation notification。
 
 目标解析失败或发送前已关闭映射为`connectionUnavailable`；request已接纳后socket或runtime/router
 transport丢失映射为`transportUnavailable`，但不承诺peer未执行；畸形或伪造response映射为

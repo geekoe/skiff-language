@@ -6,7 +6,9 @@
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use skiff_artifact_identity::ArtifactRelativePath;
+use skiff_artifact_identity::{
+    ArtifactRelativePath, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+};
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingMethod, ActorRoutingProjection, ActorRoutingRef,
     ACTOR_ROUTING_PROJECTION_RECORD_PATH, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,
@@ -78,7 +80,7 @@ fn fixture_root() -> (
             package_id: "example.com/actors".to_string(),
             package_version: "0.1.0".to_string(),
             package_build_id: skiff_artifact_model::PackageBuildId::new(format!(
-                "skiff-package-build-v11:sha256:{}",
+                "{PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX}:{}",
                 digest("pkg")
             )),
             package_local_abi_identity: skiff_artifact_model::PackageLocalAbiIdentity::new(

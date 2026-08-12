@@ -4,6 +4,7 @@ pub mod compile_policy;
 pub mod contract_dependencies;
 pub mod dependencies;
 pub mod error;
+pub mod error_projection_catalog;
 pub mod export_config;
 pub mod manifest;
 pub mod package_config;
@@ -32,6 +33,10 @@ pub use dependencies::{
     is_valid_source_import_alias, PackageDependency, ResolvedPackage, ResolvedPackageGraph,
 };
 pub use error::InputAssemblyError;
+pub use error_projection_catalog::{
+    PlatformErrorProjectionCatalog, PlatformErrorProjectionCatalogEntry,
+    PLATFORM_ERROR_PROJECTION_CATALOG_SCHEMA_VERSION,
+};
 pub use manifest::{
     parse_publication_id_field, validate_publication_version_field, ManifestOwner,
     ManifestProvenance, PublicationManifest,

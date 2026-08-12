@@ -323,13 +323,15 @@ impl<'a> OwnerChecker<'a> {
             .sources
             .get(value_key);
         let plan = match assignability.object_literal_materialization_plan(
-            annotation,
-            value,
-            value_key,
-            actual,
-            expected,
-            context,
-            object_source,
+            ObjectLiteralAssignabilityContext {
+                annotation,
+                value,
+                value_key,
+                actual,
+                expected,
+                diagnostic_context: context,
+                source: object_source,
+            },
         ) {
             Ok(plan) => plan,
             Err(diagnostics) => {

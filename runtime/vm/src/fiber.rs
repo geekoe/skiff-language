@@ -1,5 +1,7 @@
 mod entry_admission;
 #[cfg(test)]
+mod projection_tests;
+#[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
@@ -12,7 +14,8 @@ use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedCallableSignature, LinkedCatchMatcher, LinkedExceptionRegion,
     LinkedFunction, LinkedInstruction, LinkedInstructionTarget, LinkedInterfaceTableKind,
     LinkedFrozenConstantValue, LinkedIntrinsicKind, LinkedNativeCallableSignature,
-    LinkedResumeSite, LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
+    LinkedResourceDropPlan, LinkedResumeSite, LinkedSlotState, LinkedValueTransferPlan,
+    LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_model::{
     service_error::CatchIdentity,
@@ -29,6 +32,7 @@ use crate::{
     },
     fiber::entry_admission::validate_entry_contract,
     frame::VmFrame,
+    projection::VmProjectionHandoff,
     statement::{charge_frame_entry, charge_instruction_events},
     ResumeOutcome, VmBudget, VmControl, VmError, VmLimits, VmResumeToken, VmValueLocation,
     VmVerifiedInvariant,
@@ -82,6 +86,7 @@ pub struct VmFiber {
     unwind: Option<UnwindState>,
     pending_resume: Option<PendingResume>,
     resume_sequence: u64,
+    projection_sequence: u64,
 }
 
 #[derive(Clone)]
@@ -178,6 +183,7 @@ impl VmFiber {
             unwind: None,
             pending_resume: None,
             resume_sequence: 0,
+            projection_sequence: 0,
         })
     }
 
@@ -195,6 +201,131 @@ impl VmFiber {
 
     pub fn allocated_value_slot_count(&self) -> usize {
         self.values.len()
+    }
+
+    /// Dormant VM-only mint seam for one exact inline projection point.
+    ///
+    /// All authority-bearing coordinates and dynamic shape facts come from
+    /// this fiber. A caller cannot supply an image, function, PC, stack shape,
+    /// or source site. Production dispatch intentionally has no consumer yet.
+    #[allow(dead_code)]
+    pub(crate) fn mint_projection_handoff(&mut self) -> Result<VmProjectionHandoff, VmError> {
+        let result = self.mint_projection_handoff_inner();
+        if result.is_err() {
+            self.state = VmFiberState::Terminal;
+        }
+        result
+    }
+
+    fn mint_projection_handoff_inner(&mut self) -> Result<VmProjectionHandoff, VmError> {
+        if self.state != VmFiberState::Runnable {
+            return Err(VmError::FiberNotRunnable { state: self.state });
+        }
+
+        let frame_depth = self.frames.len();
+        if self.region_depths.len() != frame_depth {
+            return Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            });
+        }
+        let frame = self.current_frame()?.clone();
+        let function_index = frame.function();
+        let instruction_index = frame.instruction();
+        let function = self.function(function_index)?;
+        let instruction = function
+            .instructions()
+            .get(instruction_index.get() as usize)
+            .ok_or(VmError::InstructionPointerOutOfBounds {
+                function: function_index,
+                instruction: instruction_index,
+            })?;
+        let descriptor = descriptor_for_opcode(instruction.opcode());
+        if instruction.operands().len() != descriptor.operand_layout.len() {
+            return Err(VmError::MalformedInstruction {
+                function: function_index,
+                instruction: instruction_index,
+                opcode: instruction.opcode(),
+                expected_operands: descriptor.operand_layout.len(),
+                actual_operands: instruction.operands().len(),
+            });
+        }
+
+        let program_point = function
+            .stack_map()
+            .entries()
+            .get(instruction_index.get() as usize)
+            .filter(|entry| entry.instruction() == instruction_index)
+            .ok_or(VmError::InstructionPointerOutOfBounds {
+                function: function_index,
+                instruction: instruction_index,
+            })?;
+        let operand_height = frame.operand_height();
+        let expected_operand_height = program_point.stack_before().len();
+        if operand_height != expected_operand_height {
+            return Err(VmError::OperandStackShapeMismatch {
+                function: function_index,
+                expected: expected_operand_height,
+                actual: operand_height,
+            });
+        }
+
+        let frame_region_base =
+            *self
+                .region_depths
+                .last()
+                .ok_or(VmError::VerifiedEntryInvariant {
+                    invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+                })?;
+        let active_frame_regions = self.active_regions.get(frame_region_base..).ok_or(
+            VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            },
+        )?;
+        if active_frame_regions != program_point.active_regions() {
+            let mismatch = active_frame_regions
+                .iter()
+                .copied()
+                .zip(program_point.active_regions().iter().copied())
+                .find(|(actual, expected)| actual != expected);
+            let (actual, expected) = mismatch.unwrap_or_else(|| {
+                let common = active_frame_regions
+                    .len()
+                    .min(program_point.active_regions().len());
+                (
+                    active_frame_regions
+                        .get(common)
+                        .copied()
+                        .unwrap_or(ActiveRegionIndex::new(u32::MAX)),
+                    program_point
+                        .active_regions()
+                        .get(common)
+                        .copied()
+                        .unwrap_or(ActiveRegionIndex::new(u32::MAX)),
+                )
+            });
+            return Err(VmError::RegionLeaveMismatch {
+                function: function_index,
+                instruction: instruction_index,
+                expected,
+                actual,
+            });
+        }
+
+        let projection_sequence = self.projection_sequence;
+        let next_projection_sequence = projection_sequence
+            .checked_add(1)
+            .ok_or(VmError::ResumeTokenMismatch)?;
+        let handoff = VmProjectionHandoff::new(
+            Arc::clone(self.entry.image().program()),
+            function_index,
+            instruction_index,
+            frame_depth,
+            operand_height,
+            self.active_regions.len(),
+            projection_sequence,
+        );
+        self.projection_sequence = next_projection_sequence;
+        Ok(handoff)
     }
 
     pub fn run_segment(&mut self, heap: &mut dyn VmHeap, budget: &mut dyn VmBudget) -> VmControl {
@@ -357,13 +488,26 @@ impl VmFiber {
             });
         }
         let payload = values.values()[0];
-        let payload_type = self
-            .program()
-            .candidate()
-            .resume_sites()
-            .get(pending.resume_site.get() as usize)
-            .filter(|row| row.index() == pending.resume_site)
-            .and_then(|row| row.result_types().first().copied());
+        let payload_type = match payload.kind() {
+            Some(
+                ValueKind::RequestHeapRef
+                | ValueKind::ActorStateRef
+                | ValueKind::ConstRef
+                | ValueKind::ResourceRef
+                | ValueKind::CallbackClosureRef,
+            ) => Some(TypeIndex::new(payload.compact_type_tag().get())),
+            _ => None,
+        };
+        if payload_type.is_none_or(|payload_type| {
+            self.program()
+                .candidate()
+                .types()
+                .get(payload_type.get() as usize)
+                .is_none_or(|row| row.index() != payload_type)
+        }) {
+            self.state = VmFiberState::Terminal;
+            return Err(VmError::ResumeTokenMismatch);
+        }
         self.begin_unwind(payload, payload_type)?;
         self.state = VmFiberState::Runnable;
         Ok(())
@@ -422,6 +566,13 @@ impl VmFiber {
     }
 
     fn dispatch_one(&mut self, heap: &mut dyn VmHeap) -> Result<DispatchOutcome, VmError> {
+        let frame = self.current_frame()?.clone();
+        self.reconcile_frame_slots_at(
+            Some(heap),
+            &frame,
+            frame.instruction(),
+            None,
+        )?;
         let (function_index, instruction_index, instruction) = {
             let frame = self.current_frame()?;
             let function = self.function(frame.function())?;
@@ -580,7 +731,7 @@ impl VmFiber {
                 instruction.opcode(),
             ),
             Opcode::Equal | Opcode::NotEqual => {
-                self.execute_equality(function_index, instruction_index, instruction.opcode())
+                self.execute_equality(heap, function_index, instruction_index, instruction.opcode())
             }
             _ => Err(VmError::UnsupportedOpcode {
                 function: function_index,
@@ -679,7 +830,6 @@ impl VmFiber {
         };
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        self.ensure_slot_dead(&frame, slot_count, destination)?;
         let value = self.pop_operands(1, false)?.remove(0);
         self.write_slot(&frame, slot_count, destination, value)?;
         self.advance_current_instruction()?;
@@ -1025,6 +1175,12 @@ impl VmFiber {
         payload: ValueSlot,
     ) -> Result<(), VmError> {
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
+        self.reconcile_frame_slots_at(
+            None,
+            frame,
+            region.handler(),
+            Some(region.catch_slot()),
+        )?;
         let handler_height = usize::try_from(region.handler_stack_height()).map_err(|_| {
             VmError::OperandStackOverflow {
                 function: frame.function(),
@@ -2716,19 +2872,20 @@ impl VmFiber {
 
     fn execute_equality(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         opcode: Opcode,
     ) -> Result<DispatchOutcome, VmError> {
         let operands = self.pop_operands(2, false)?;
-        let equal = comparable_equality(&operands[0], &operands[1]).ok_or(
-            VmError::ExpectedComparablePair {
+        let equal = self
+            .comparable_equality(heap, &operands[0], &operands[1])
+            .ok_or(VmError::ExpectedComparablePair {
                 function,
                 instruction,
                 left: operands[0].kind(),
                 right: operands[1].kind(),
-            },
-        )?;
+            })?;
         let result = if opcode == Opcode::Equal {
             equal
         } else {
@@ -2737,6 +2894,17 @@ impl VmFiber {
         self.push_operand(ValueSlot::bool(result))?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
+    }
+
+    fn comparable_equality(
+        &self,
+        heap: &mut dyn VmHeap,
+        left: &ValueSlot,
+        right: &ValueSlot,
+    ) -> Option<bool> {
+        comparable_equality_with_string_resolver(left, right, |value| {
+            self.string_slot_value(heap, value).ok()
+        })
     }
 
     fn linked_resume_site(
@@ -2951,21 +3119,6 @@ impl VmFiber {
         Ok(self.values[index])
     }
 
-    fn ensure_slot_dead(
-        &self,
-        frame: &VmFrame,
-        slot_count: usize,
-        slot: FrameSlotIndex,
-    ) -> Result<(), VmError> {
-        let index = Self::slot_index(frame, slot_count, slot, frame.function())?;
-        if self.live_values[index] {
-            return Err(VmError::LiveDestination {
-                location: VmValueLocation::FrameSlot(slot),
-            });
-        }
-        Ok(())
-    }
-
     fn write_slot(
         &mut self,
         frame: &VmFrame,
@@ -2975,12 +3128,108 @@ impl VmFiber {
     ) -> Result<(), VmError> {
         let index = Self::slot_index(frame, slot_count, slot, frame.function())?;
         if self.live_values[index] {
-            return Err(VmError::LiveDestination {
-                location: VmValueLocation::FrameSlot(slot),
-            });
+            let writable = self
+                .function(frame.function())?
+                .frame()
+                .writable_local_slots()
+                .binary_search(&slot)
+                .is_ok();
+            if !writable {
+                return Err(VmError::LiveDestination {
+                    function: frame.function(),
+                    instruction: frame.instruction(),
+                    location: VmValueLocation::FrameSlot(slot),
+                });
+            }
+            self.clear_value(index);
         }
         self.values[index] = value;
         self.live_values[index] = true;
+        Ok(())
+    }
+
+    fn reconcile_frame_slots_at(
+        &mut self,
+        mut heap: Option<&mut dyn VmHeap>,
+        frame: &VmFrame,
+        instruction: InstructionIndex,
+        replacement_slot: Option<FrameSlotIndex>,
+    ) -> Result<(), VmError> {
+        let (slot_facts, opcode) = {
+            let function = self.function(frame.function())?;
+            let entry = function
+                .stack_map()
+                .entries()
+                .get(instruction.get() as usize)
+                .filter(|entry| entry.instruction() == instruction)
+                .ok_or(VmError::InstructionPointerOutOfBounds {
+                    function: frame.function(),
+                    instruction,
+                })?;
+            if entry.slots_before().len() != function.frame().slot_types().len() {
+                return Err(VmError::VerifiedEntryInvariant {
+                    invariant: VmVerifiedInvariant::ProgramPointSlotCount,
+                });
+            }
+            let opcode = function
+                .instructions()
+                .get(instruction.get() as usize)
+                .map(LinkedInstruction::opcode)
+                .ok_or(VmError::InstructionPointerOutOfBounds {
+                    function: frame.function(),
+                    instruction,
+                })?;
+            let slot_facts = entry
+                .slots_before()
+                .iter()
+                .zip(function.frame().slot_plans())
+                .map(|(state, plan)| {
+                    (
+                        matches!(state, LinkedSlotState::Live(_)),
+                        plan.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (slot_facts, opcode)
+        };
+
+        let slot_count = slot_facts.len();
+        for (ordinal, (expected_live, plan)) in slot_facts.into_iter().enumerate() {
+            let ordinal = u32::try_from(ordinal).map_err(|_| VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            })?;
+            let slot = FrameSlotIndex::new(ordinal);
+            let index = Self::slot_index(frame, slot_count, slot, frame.function())?;
+            if self.live_values[index] && (!expected_live || replacement_slot == Some(slot)) {
+                let value = self.values[index];
+                if value.kind() == Some(ValueKind::ResourceRef) {
+                    if !matches!(
+                        plan,
+                        LinkedValueTransferPlan::AffineResource {
+                            drop: LinkedResourceDropPlan::ResourceTableRelease,
+                        } | LinkedValueTransferPlan::ExplicitCloneLease {
+                            drop: LinkedResourceDropPlan::ResourceTableRelease,
+                            ..
+                        }
+                    ) {
+                        return Err(VmError::FullValueLifecyclePlanUnavailable {
+                            function: frame.function(),
+                            instruction,
+                            opcode,
+                        });
+                    }
+                    let heap = heap.as_deref_mut().ok_or(
+                        VmError::FullValueLifecyclePlanUnavailable {
+                            function: frame.function(),
+                            instruction,
+                            opcode,
+                        },
+                    )?;
+                    heap.release_resource(&value).map_err(VmError::Heap)?;
+                }
+                self.clear_value(index);
+            }
+        }
         Ok(())
     }
 
@@ -3069,6 +3318,8 @@ impl VmFiber {
         let index = frame.operand_base() + frame.operand_height();
         if self.live_values.get(index).copied() == Some(true) {
             return Err(VmError::LiveDestination {
+                function: frame.function(),
+                instruction: frame.instruction(),
                 location: VmValueLocation::Operand(frame.operand_height()),
             });
         }
@@ -3267,9 +3518,25 @@ fn validate_native_signature_counts(
     Ok(())
 }
 
+#[cfg(test)]
 fn comparable_equality(left: &ValueSlot, right: &ValueSlot) -> Option<bool> {
+    comparable_equality_with_string_resolver(left, right, |_| None)
+}
+
+fn comparable_equality_with_string_resolver(
+    left: &ValueSlot,
+    right: &ValueSlot,
+    mut resolve_string: impl FnMut(&ValueSlot) -> Option<String>,
+) -> Option<bool> {
     let kind = left.kind()?;
     let right_kind = right.kind()?;
+    if matches!(kind, ValueKind::ConstRef | ValueKind::RequestHeapRef)
+        || matches!(right_kind, ValueKind::ConstRef | ValueKind::RequestHeapRef)
+    {
+        let left = resolve_string(left)?;
+        let right = resolve_string(right)?;
+        return Some(left == right);
+    }
     if right_kind != kind {
         match (kind, right_kind) {
             (ValueKind::Number, ValueKind::Integer) | (ValueKind::Integer, ValueKind::Number) => {

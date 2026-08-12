@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use skiff_artifact_identity::PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX;
 use skiff_artifact_model::{
     DeploymentArtifactIdentity, DeploymentRevision, GatewayEntryIdentity, PackageArtifactRef,
     PackageBuildId, PackageLocalAbiIdentity, ServiceDeploymentRef,
@@ -753,9 +754,10 @@ mod tests {
                     package: PackageArtifactRef {
                         package_id: "example.com/docs".to_string(),
                         package_version: "0.1.0".to_string(),
-                        package_build_id: PackageBuildId::new(
-                            "skiff-package-build-v11:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-                        ),
+                        package_build_id: PackageBuildId::new(format!(
+                            "{PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX}:{}",
+                            "e".repeat(64)
+                        )),
                         package_local_abi_identity: PackageLocalAbiIdentity::new(
                             "skiff-package-local-abi-v7:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
                         ),
@@ -884,6 +886,7 @@ mod tests {
             epoch: 7,
             owner_runtime_id: "runtime-a".to_string(),
             owner_lease_id: "owner-lease-1".to_string(),
+            build_id: deployment().deployment_artifact_identity.to_string(),
             lease_expires_at: u64::MAX,
             actor_abi_identity: actor_abi(),
             actor_implementation_identity: actor_implementation(),

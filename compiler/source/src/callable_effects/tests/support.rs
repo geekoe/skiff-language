@@ -263,6 +263,8 @@ pub(super) fn exact_signature_dependency_artifact() -> PackageArtifact {
         package_id: "example.com/dep".to_string(),
         package_version: "1.0.0".to_string(),
         package_build_id: PackageBuildId::new("build:dep"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
         files: Vec::new(),
         static_resources: Vec::new(),
         package_local_abi: PackageLocalAbi {

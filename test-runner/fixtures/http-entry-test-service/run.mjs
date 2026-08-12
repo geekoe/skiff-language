@@ -13,6 +13,7 @@ const skiffRoot = requiredAbsolutePath('SKIFF_HTTP_ENTRY_PROBE_ROOT');
 const testRunner = requiredAbsolutePath('SKIFF_HTTP_ENTRY_PROBE_TEST_RUNNER');
 const bootstrap = requiredAbsolutePath('SKIFF_HTTP_ENTRY_PROBE_BOOTSTRAP');
 const fixtureRoot = resolve(skiffRoot, 'test-runner/fixtures/http-entry-test-service');
+const probeMode = requiredProbeMode(process.env.SKIFF_HTTP_ENTRY_PROBE_MODE);
 
 const cleanup = await runInIsolatedTestRuntime({
   skiffRoot,
@@ -21,7 +22,7 @@ const cleanup = await runInIsolatedTestRuntime({
       signal.throwIfAborted();
       const result = await captureCheckedCommand(
         bootstrap,
-        seedCommittedArgs(artifactRoot, profile),
+        seedCommittedArgs(seedRootForMode(probeMode), artifactRoot, profile),
         { cwd: skiffRoot, env },
       );
       signal.throwIfAborted();
@@ -36,52 +37,15 @@ const cleanup = await runInIsolatedTestRuntime({
       { cwd: skiffRoot, env: isolatedEnv },
     );
 
-    const rejected = await captureAttachedCommand(
-      testRunner,
-      testRunnerArgs(
-        join(fixtureRoot, 'active'),
-        stack.sourceArtifactRoot,
-      ),
-      {
-        cwd: skiffRoot,
-        env: isolatedEnv,
-      },
-    );
-    const rejectionOutput = `${rejected.stdout}\n${rejected.stderr}`;
-    if (
-      rejected.code !== 1
-      || rejected.signal !== null
-      || !rejectionOutput.includes('already has an active self-ingress')
-    ) {
-      throw new Error(
-        `second active self-ingress did not fail with the canonical rejection:\n${rejectionOutput}`,
-      );
+    if (probeMode === 'active') {
+      await runActivePhase(isolatedEnv, stack);
+    } else if (probeMode === 'happy') {
+      await runHappyPhase(isolatedEnv, stack);
+    } else {
+      await runActivePhase(isolatedEnv, stack);
+      signal.throwIfAborted();
+      await runHappyPhase(isolatedEnv, stack);
     }
-    console.log(`EXPECTED_CONCURRENCY_REJECTION\n${rejectionOutput.trim()}`);
-    await assertAssemblyReady(stack.controlUrl, 'expected-rejection');
-
-    signal.throwIfAborted();
-    const happy = await captureAttachedCommand(
-      testRunner,
-      testRunnerArgs(
-        join(fixtureRoot, 'happy'),
-        stack.sourceArtifactRoot,
-      ),
-      {
-        cwd: skiffRoot,
-        env: isolatedEnv,
-      },
-    );
-    if (happy.code !== 0 || happy.signal !== null) {
-      throw new Error(
-        `happy HTTP entry fixture failed:\n${happy.stdout}\n${happy.stderr}`,
-      );
-    }
-    if (!happy.stdout.includes('test result: ok. 5 passed; 0 failed')) {
-      throw new Error(`happy HTTP entry fixture omitted exact pass count:\n${happy.stdout}`);
-    }
-    console.log(`HAPPY_HTTP_ENTRY_PASS\n${happy.stdout.trim()}`);
-    await assertAssemblyReady(stack.controlUrl, 'happy');
 
     return {
       ports: [...stack.ports],
@@ -116,10 +80,60 @@ function bootstrapArgs(artifactRoot, profile) {
   ];
 }
 
-function seedCommittedArgs(artifactRoot, profile) {
+async function runActivePhase(isolatedEnv, stack) {
+  const rejected = await captureAttachedCommand(
+    testRunner,
+    testRunnerArgs(
+      join(fixtureRoot, 'active'),
+      stack.sourceArtifactRoot,
+    ),
+    {
+      cwd: skiffRoot,
+      env: isolatedEnv,
+    },
+  );
+  const rejectionOutput = `${rejected.stdout}\n${rejected.stderr}`;
+  if (
+    rejected.code !== 1
+    || rejected.signal !== null
+    || !rejectionOutput.includes('already has an active self-ingress')
+  ) {
+    throw new Error(
+      `second active self-ingress did not fail with the canonical rejection:\n${rejectionOutput}`,
+    );
+  }
+  console.log(`EXPECTED_CONCURRENCY_REJECTION\n${rejectionOutput.trim()}`);
+  await assertAssemblyReady(stack.controlUrl, 'expected-rejection');
+}
+
+async function runHappyPhase(isolatedEnv, stack) {
+  const happy = await captureAttachedCommand(
+    testRunner,
+    testRunnerArgs(
+      join(fixtureRoot, 'happy'),
+      stack.sourceArtifactRoot,
+    ),
+    {
+      cwd: skiffRoot,
+      env: isolatedEnv,
+    },
+  );
+  if (happy.code !== 0 || happy.signal !== null) {
+    throw new Error(
+      `happy HTTP entry fixture failed:\n${happy.stdout}\n${happy.stderr}`,
+    );
+  }
+  if (!happy.stdout.includes('test result: ok. 5 passed; 0 failed')) {
+    throw new Error(`happy HTTP entry fixture omitted exact pass count:\n${happy.stdout}`);
+  }
+  console.log(`HAPPY_HTTP_ENTRY_PASS\n${happy.stdout.trim()}`);
+  await assertAssemblyReady(stack.controlUrl, 'happy');
+}
+
+function seedCommittedArgs(seedRoot, artifactRoot, profile) {
   return [
     '--seed-committed',
-    join(fixtureRoot, 'active'),
+    seedRoot,
     '--artifact-root',
     artifactRoot,
     '--profile',
@@ -127,6 +141,12 @@ function seedCommittedArgs(artifactRoot, profile) {
     '--platform-source-root',
     skiffRoot,
   ];
+}
+
+function seedRootForMode(mode) {
+  return mode === 'happy'
+    ? join(fixtureRoot, 'happy')
+    : join(fixtureRoot, 'active');
 }
 
 function testRunnerArgs(root, artifactRoot) {
@@ -205,4 +225,16 @@ function requiredText(name) {
     throw new Error(`${name} must be a non-empty trimmed string`);
   }
   return value;
+}
+
+function requiredProbeMode(raw) {
+  if (raw === undefined) return 'all';
+  if (
+    typeof raw !== 'string'
+    || raw.trim() !== raw
+    || !['active', 'happy', 'all'].includes(raw)
+  ) {
+    throw new Error('SKIFF_HTTP_ENTRY_PROBE_MODE must be active, happy, or all');
+  }
+  return raw;
 }

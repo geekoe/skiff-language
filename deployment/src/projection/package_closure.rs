@@ -1,12 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::Arc,
+};
 
 use super::{ProjectionError, ProjectionResult};
 use skiff_artifact_model::{
-    PackageArtifact, PackageArtifactRef, PackageBuildId, PackageRequirementKey,
-    ServiceDeploymentInput,
+    PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageRequirementKey,
+    ServiceDeployment, ServiceDeploymentInput,
 };
 
-pub(super) struct PackageClosure<'a> {
+pub(crate) struct PackageClosure<'a> {
     by_build: BTreeMap<PackageBuildId, &'a PackageArtifact>,
 }
 
@@ -15,39 +18,54 @@ impl<'a> PackageClosure<'a> {
         input: &ServiceDeploymentInput,
         artifacts: &'a [PackageArtifact],
     ) -> ProjectionResult<Self> {
-        let mut by_build = BTreeMap::new();
-        for artifact in artifacts {
-            skiff_artifact_identity::validate_package_artifact_identities(artifact).map_err(
-                |error| ProjectionError::InvalidTypedArtifact {
-                    artifact: "PackageArtifact",
-                    identity_error: Box::new(error),
-                },
-            )?;
-            if by_build
-                .insert(artifact.package_build_id.clone(), artifact)
-                .is_some()
-            {
-                return Err(ProjectionError::DuplicatePackageBuild {
-                    build_id: artifact.package_build_id.clone(),
-                });
-            }
-        }
-        Self::finish_resolve(input, by_build)
+        Self::resolve_iter(
+            &input.implementation,
+            &input.package_bindings,
+            artifacts,
+            true,
+        )
     }
 
     pub(super) fn resolve_after_validation(
         input: &ServiceDeploymentInput,
         artifacts: &'a [PackageArtifact],
     ) -> ProjectionResult<Self> {
-        Self::resolve_inner(input, artifacts)
+        Self::resolve_iter(
+            &input.implementation,
+            &input.package_bindings,
+            artifacts,
+            false,
+        )
     }
 
-    fn resolve_inner(
-        input: &ServiceDeploymentInput,
-        artifacts: &'a [PackageArtifact],
+    pub(crate) fn resolve_for_routing(
+        deployment: &ServiceDeployment,
+        artifacts: &'a [Arc<PackageArtifact>],
+    ) -> ProjectionResult<Self> {
+        Self::resolve_iter(
+            &deployment.implementation,
+            &deployment.package_bindings,
+            artifacts.iter().map(|artifact| artifact.as_ref()),
+            true,
+        )
+    }
+
+    fn resolve_iter(
+        implementation_ref: &PackageArtifactRef,
+        package_bindings: &[PackageBinding],
+        artifacts: impl IntoIterator<Item = &'a PackageArtifact>,
+        validate_identities: bool,
     ) -> ProjectionResult<Self> {
         let mut by_build = BTreeMap::new();
         for artifact in artifacts {
+            if validate_identities {
+                skiff_artifact_identity::validate_package_artifact_identities(artifact).map_err(
+                    |error| ProjectionError::InvalidTypedArtifact {
+                        artifact: "PackageArtifact",
+                        identity_error: Box::new(error),
+                    },
+                )?;
+            }
             if by_build
                 .insert(artifact.package_build_id.clone(), artifact)
                 .is_some()
@@ -57,23 +75,24 @@ impl<'a> PackageClosure<'a> {
                 });
             }
         }
-        Self::finish_resolve(input, by_build)
+        Self::finish_resolve(implementation_ref, package_bindings, by_build)
     }
 
     fn finish_resolve(
-        input: &ServiceDeploymentInput,
+        implementation_ref: &PackageArtifactRef,
+        package_bindings: &[PackageBinding],
         by_build: BTreeMap<PackageBuildId, &'a PackageArtifact>,
     ) -> ProjectionResult<Self> {
         let implementation = by_build
-            .get(&input.implementation.package_build_id)
+            .get(&implementation_ref.package_build_id)
             .copied()
             .ok_or_else(|| ProjectionError::MissingImplementation {
-                build_id: input.implementation.package_build_id.clone(),
+                build_id: implementation_ref.package_build_id.clone(),
             })?;
-        validate_package_ref(&input.implementation, implementation)?;
+        validate_package_ref(implementation_ref, implementation)?;
 
         let mut bindings = BTreeMap::new();
-        for binding in &input.package_bindings {
+        for binding in package_bindings {
             if bindings.insert(binding.key.clone(), binding).is_some() {
                 return Err(ProjectionError::ConflictingRequirement {
                     kind: "package",
@@ -171,10 +190,17 @@ impl<'a> PackageClosure<'a> {
     }
 
     pub(super) fn implementation(&self, input: &ServiceDeploymentInput) -> &'a PackageArtifact {
-        self.by_build[&input.implementation.package_build_id]
+        self.implementation_for_ref(&input.implementation)
     }
 
-    pub(super) fn artifacts(&self) -> impl Iterator<Item = &'a PackageArtifact> + '_ {
+    pub(crate) fn implementation_for_ref(
+        &self,
+        reference: &PackageArtifactRef,
+    ) -> &'a PackageArtifact {
+        self.by_build[&reference.package_build_id]
+    }
+
+    pub(crate) fn artifacts(&self) -> impl Iterator<Item = &'a PackageArtifact> + '_ {
         self.by_build.values().copied()
     }
 }

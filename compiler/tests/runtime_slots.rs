@@ -230,15 +230,22 @@ fn has_native_call(
     })
 }
 
-fn assert_package_callable(executable: &Value, dependency_ref: &str, package_callable_id: &str) {
+fn has_builtin_call(calls: &[&Value], op: &str) -> bool {
+    calls
+        .iter()
+        .any(|call| call["target"]["kind"] == "builtin" && call["target"]["op"] == op)
+}
+
+fn assert_native_call(
+    executable: &Value,
+    namespace: &str,
+    symbol_name: &str,
+    binding_key: &str,
+) {
+    let calls = call_exprs(executable);
     assert!(
-        call_exprs(executable).into_iter().any(|call| {
-            call["target"]["kind"] == "packageCallable"
-                && call["target"]["packageRef"]["kind"] == "dependency"
-                && call["target"]["packageRef"]["dependencyRef"] == dependency_ref
-                && call["target"]["packageCallableId"] == package_callable_id
-        }),
-        "package callable {dependency_ref}/{package_callable_id} should be present in {executable}"
+        has_native_call(&calls, namespace, symbol_name, binding_key),
+        "native call {namespace}.{symbol_name} ({binding_key}) should be present in {executable}"
     );
 }
 
@@ -517,8 +524,8 @@ mod tests {
         "unqualified and same-module-qualified local calls should lower to typed localExecutable targets"
     );
         assert!(
-            has_native_call(&calls, "Array", "empty", "core.array.empty"),
-            "Array.empty should lower to a shared native target with a stable binding key"
+            has_builtin_call(&calls, "Array.empty"),
+            "Array.empty should lower to the compiler builtin op"
         );
 
         let list_slot = slot_index(run, "list", "local");
@@ -782,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn std_http_json_lowers_to_exact_std_package_callables() {
+    fn std_http_json_lowers_to_exact_std_native_targets() {
         let artifact = compile_package_file_ir(
             r#"
             import std
@@ -817,11 +824,12 @@ mod tests {
         let plain = executable_entry(&artifact_value, "plain");
         let with_headers = executable_entry(&artifact_value, "withHeaders");
 
-        assert_package_callable(plain, "std", "pkg-callable:skiff.run/std:std.http.json");
-        assert_package_callable(
+        assert_native_call(plain, "std.http", "json", "std.http.response.json");
+        assert_native_call(
             with_headers,
-            "std",
-            "pkg-callable:skiff.run/std:std.http.jsonWithHeaders",
+            "std.http",
+            "jsonWithHeaders",
+            "std.http.response.jsonWithHeaders",
         );
     }
 

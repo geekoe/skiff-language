@@ -28,6 +28,7 @@ http:
   HttpClientStreamHandle: http.HttpClientStreamHandle
   HttpSseEvent: http.HttpSseEvent
   HttpError: http.HttpError
+  RequestTimeoutError: http.RequestTimeoutError
   request: http.request
   stream: http.stream
   sse: http.sse

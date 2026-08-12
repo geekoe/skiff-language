@@ -1,21 +1,24 @@
 use std::fmt;
 
 use skiff_artifact_model::{
-    HostEffectRegistryIdentity, IntrinsicRegistryIdentity, NativeValueLifecycleRegistryIdentity,
+    validate_platform_error_projection_registry_ref_shape, HostEffectRegistryIdentity,
+    IntrinsicRegistryIdentity, NativeValueLifecycleRegistryIdentity,
+    PlatformErrorProjectionRegistryRef, PlatformErrorProjectionRegistryRefValidationError,
     ValueLifecyclePolicyIdentity,
 };
 
 /// Exact semantic authorities used to interpret one package bytecode image.
 ///
-/// The four identities remain grouped so linked provenance cannot retain the
+/// The five identities remain grouped so linked provenance cannot retain the
 /// native lifecycle table while accidentally dropping the classifier, host,
-/// or intrinsic authority pins retained by bytecode schema v6.
+/// intrinsic, or platform-error authority pins retained by bytecode schema v7.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedBytecodeAuthorityPins {
     native_value_lifecycle_registry: NativeValueLifecycleRegistryIdentity,
     value_lifecycle_policy: ValueLifecyclePolicyIdentity,
     host_effect_registry: HostEffectRegistryIdentity,
     intrinsic_registry: IntrinsicRegistryIdentity,
+    platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
 }
 
 impl LinkedBytecodeAuthorityPins {
@@ -24,6 +27,7 @@ impl LinkedBytecodeAuthorityPins {
         value_lifecycle_policy: ValueLifecyclePolicyIdentity,
         host_effect_registry: HostEffectRegistryIdentity,
         intrinsic_registry: IntrinsicRegistryIdentity,
+        platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
     ) -> Result<Self, LinkedBytecodeAuthorityPinsError> {
         validate_identity_fields(
             LinkedBytecodeAuthority::NativeValueLifecycleRegistry,
@@ -89,12 +93,15 @@ impl LinkedBytecodeAuthorityPins {
                 ),
             ],
         )?;
+        validate_platform_error_projection_registry_ref_shape(&platform_error_projection_registry)
+            .map_err(LinkedBytecodeAuthorityPinsError::from)?;
 
         Ok(Self {
             native_value_lifecycle_registry,
             value_lifecycle_policy,
             host_effect_registry,
             intrinsic_registry,
+            platform_error_projection_registry,
         })
     }
 
@@ -112,6 +119,10 @@ impl LinkedBytecodeAuthorityPins {
 
     pub const fn intrinsic_registry(&self) -> &IntrinsicRegistryIdentity {
         &self.intrinsic_registry
+    }
+
+    pub const fn platform_error_projection_registry(&self) -> &PlatformErrorProjectionRegistryRef {
+        &self.platform_error_projection_registry
     }
 }
 
@@ -145,6 +156,7 @@ pub enum LinkedBytecodeAuthority {
     ValueLifecyclePolicy,
     HostEffectRegistry,
     IntrinsicRegistry,
+    PlatformErrorProjectionRegistry,
 }
 
 impl LinkedBytecodeAuthority {
@@ -154,6 +166,7 @@ impl LinkedBytecodeAuthority {
             Self::ValueLifecyclePolicy => "value lifecycle policy",
             Self::HostEffectRegistry => "host effect registry",
             Self::IntrinsicRegistry => "intrinsic registry",
+            Self::PlatformErrorProjectionRegistry => "platform error projection registry",
         }
     }
 }
@@ -187,6 +200,15 @@ pub enum LinkedBytecodeAuthorityPinsError {
         value: String,
         character_index: usize,
     },
+    InvalidPlatformErrorProjectionRegistry {
+        error: PlatformErrorProjectionRegistryRefValidationError,
+    },
+}
+
+impl From<PlatformErrorProjectionRegistryRefValidationError> for LinkedBytecodeAuthorityPinsError {
+    fn from(error: PlatformErrorProjectionRegistryRefValidationError) -> Self {
+        Self::InvalidPlatformErrorProjectionRegistry { error }
+    }
 }
 
 impl fmt::Display for LinkedBytecodeAuthorityPinsError {
@@ -209,8 +231,19 @@ impl fmt::Display for LinkedBytecodeAuthorityPinsError {
                 authority.name(),
                 field.name()
             ),
+            Self::InvalidPlatformErrorProjectionRegistry { error } => write!(
+                formatter,
+                "bytecode platform error projection registry descriptor is invalid: {error}"
+            ),
         }
     }
 }
 
-impl std::error::Error for LinkedBytecodeAuthorityPinsError {}
+impl std::error::Error for LinkedBytecodeAuthorityPinsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidPlatformErrorProjectionRegistry { error } => Some(error),
+            Self::EmptyField { .. } | Self::InvalidField { .. } => None,
+        }
+    }
+}

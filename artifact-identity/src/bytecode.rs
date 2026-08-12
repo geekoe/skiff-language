@@ -18,8 +18,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
     BytecodeArtifact, BytecodeArtifactRef, BytecodeImage, HostEffectRegistryIdentity,
-    IntrinsicRegistryIdentity, NativeValueLifecycleRegistryIdentity, StructurallyValidatedView,
-    ValidatedFunctionStreamItem, ValidatedIntrinsicContract, ValueLifecyclePolicyIdentity,
+    IntrinsicRegistryIdentity, NativeValueLifecycleRegistryIdentity,
+    PlatformErrorProjectionRegistryRef, StructurallyValidatedView, ValidatedFunctionStreamItem,
+    ValidatedIntrinsicContract, ValueLifecyclePolicyIdentity,
 };
 
 use crate::framing::{canonical_ir_bytes, framed_identity, sha256_hex};
@@ -43,6 +44,7 @@ struct BytecodeIdentityPayload<'a> {
     value_lifecycle_policy: &'a ValueLifecyclePolicyIdentity,
     host_effect_registry: &'a HostEffectRegistryIdentity,
     intrinsic_registry: &'a IntrinsicRegistryIdentity,
+    platform_error_projection_registry: &'a PlatformErrorProjectionRegistryRef,
     image: &'a BytecodeImage,
     intrinsic_contracts: Option<&'a [ValidatedIntrinsicContract]>,
     function_stream_items: Option<&'a [ValidatedFunctionStreamItem]>,
@@ -62,6 +64,7 @@ impl<'a> BytecodeIdentityPayload<'a> {
             value_lifecycle_policy: &artifact.value_lifecycle_policy,
             host_effect_registry: &artifact.host_effect_registry,
             intrinsic_registry: &artifact.intrinsic_registry,
+            platform_error_projection_registry: &artifact.platform_error_projection_registry,
             image: &artifact.image,
             intrinsic_contracts: view.map(StructurallyValidatedView::intrinsic_contracts),
             function_stream_items: view.map(StructurallyValidatedView::function_stream_items),
@@ -121,7 +124,7 @@ fn validated_bytecode_view(artifact: &BytecodeArtifact) -> Result<StructurallyVa
 }
 
 /// Validates that `identity` is a well-formed framed bytecode identity
-/// (`skiff-bytecode-image-v4:sha256:<64 lowercase hex>`). Used when a
+/// (`skiff-bytecode-image-v5:sha256:<64 lowercase hex>`). Used when a
 /// `PackageArtifact` carries a `BytecodeArtifactRef` (C9 linkage check at the
 /// package surface level, before the build projection is computed).
 pub fn validate_bytecode_identity_format(identity: &str) -> Result<()> {

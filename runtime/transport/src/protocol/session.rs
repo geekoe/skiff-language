@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use skiff_artifact_model::validate_activation_profile;
+use skiff_artifact_model::{validate_activation_profile, PlatformErrorProjectionRegistryRef};
 
 use crate::{
     protocol::{
@@ -25,9 +25,10 @@ pub struct RuntimeCapabilitiesFrameHeader {
     pub capabilities: RuntimeCapabilitiesFrameHeaderMetadata,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeCapabilitiesFrameHeaderMetadata {
+    pub platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dispatch_modes: Vec<RuntimeDispatchModeCapability>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -45,6 +46,21 @@ pub struct RuntimeCapabilitiesFrameHeaderMetadata {
     /// All currently loaded deployment build ids (empty = nothing loaded yet).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loaded_build_ids: Vec<String>,
+}
+
+impl Default for RuntimeCapabilitiesFrameHeaderMetadata {
+    fn default() -> Self {
+        Self {
+            platform_error_projection_registry: skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
+            dispatch_modes: Vec::new(),
+            package_test_dispatch: false,
+            request_cancel: false,
+            runtime_program: false,
+            artifact_root: None,
+            lazy_load: false,
+            loaded_build_ids: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -18,6 +18,7 @@ const requiredStdSurface = {
       'HttpClientStreamHandle',
       'HttpSseEvent',
       'HttpError',
+      'RequestTimeoutError',
     ],
     nativeFunctions: [
       'request',
@@ -63,6 +64,11 @@ const requiredStdSurface = {
       'requestJsonToConnection',
     ],
     sourceFunctions: ['sendJsonToConnection', 'sendJsonToBusinessIdentity'],
+  },
+  actor: {
+    types: ['ActivationTimeoutError', 'MethodInvocationTimeoutError'],
+    nativeFunctions: ['get'],
+    sourceFunctions: [],
   },
 };
 
@@ -324,6 +330,13 @@ function checkKnownSource(relPath, source) {
       }
       return;
     case 'prelude/collection.skiff':
+      for (const typeName of [
+        'ArrayIndexOutOfBoundsError',
+        'MapKeyNotFoundError',
+        'JsonObjectPropertyNotFoundError',
+      ]) {
+        expectExportedType(source, typeName, relPath);
+      }
       for (const typeName of ['Array', 'Map']) {
         expectContains(source, `impl ${typeName}`, `${relPath} must define impl ${typeName}`);
       }
@@ -331,11 +344,17 @@ function checkKnownSource(relPath, source) {
     case 'prelude/stream.skiff':
       return;
     case 'prelude/actor.skiff':
+      for (const typeName of requiredStdSurface.actor.types) {
+        expectExportedType(source, typeName, relPath);
+      }
       expectMatches(source, nativeFunctionPattern('get'), `${relPath} must define native function get`);
       return;
     case 'prelude/session.skiff':
       return;
     case 'prelude/error.skiff':
+      for (const typeName of ['TimeoutError', 'InstructionLimitExceededError']) {
+        expectExportedType(source, typeName, relPath);
+      }
       return;
     case 'prelude/json.skiff':
       return;

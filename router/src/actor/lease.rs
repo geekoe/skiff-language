@@ -132,14 +132,6 @@ impl ActorLeaseExpiryScheduler {
         let mut inner = self.lock();
         inner.counters.sweep_count += 1;
 
-        let expired = self.registry.expire(now);
-        inner.counters.expired += expired.len() as u64;
-        for expired_owner in expired {
-            inner.idle_since.remove(&expired_owner.actor_key);
-            inner.connections.remove(&expired_owner.actor_key);
-            inner.evictions.remove(&expired_owner.actor_key);
-        }
-
         let owned_keys = self.registry.owned_keys();
         for key in owned_keys {
             let Some(fence) = self.registry.current_owner(&key) else {
@@ -188,6 +180,14 @@ impl ActorLeaseExpiryScheduler {
                 },
             );
             inner.counters.eviction_requests += 1;
+        }
+
+        let expired = self.registry.expire(now);
+        inner.counters.expired += expired.len() as u64;
+        for expired_owner in expired {
+            inner.idle_since.remove(&expired_owner.actor_key);
+            inner.connections.remove(&expired_owner.actor_key);
+            inner.evictions.remove(&expired_owner.actor_key);
         }
     }
 

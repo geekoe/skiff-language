@@ -203,9 +203,10 @@ The current `std.websocket` source names are:
 
 `std/websocket.skiff` is the source of truth for this API.
 
-## Target Artifact and Wire Identities
+## Current Implementation and M3 Target Identities
 
-The service-scoped ingress cutover requires these generations:
+The current production implementation still uses the service-scoped ingress
+generations below:
 
 - GatewayEntry v2: `skiff-gateway-entry-v2`
 - ServiceProtocol v5: `skiff-service-protocol-v5`
@@ -218,6 +219,22 @@ Runtime registration and request dispatch bind exact current identities. The
 Router fails closed when the exact deployment buildId, ingress binding,
 gateway entry, service protocol, or Runtime replica does not match.
 
-These versions describe the service-scoped ingress target state. Production
-code must hard-cut to them as one checkpoint; the old Host-bearing route,
-assembly-global ingress, and v1 frame are not compatibility inputs.
+The canonical M3 platform-error projection contract is frozen ahead of its
+production implementation. Its target is a separate hard cut:
+
+- Bytecode v7 with identity generation v5:
+  `skiff-bytecode-artifact-v5` / `skiff-bytecode-image-v5:sha256`
+- PackageArtifact v15 with required `platformErrorProjectionRegistry`
+- Package build preimage marker/prefix:
+  `skiff-package-artifact-build-identity-v13` /
+  `skiff-package-build-v14:sha256`
+- Runtime frame v5: `skiff-runtime-frame-v5`
+- Required strict
+  `runtime.capabilities.capabilities.platformErrorProjectionRegistry`
+
+The M3 target does not change Package Local ABI or ServiceProtocol identity.
+Runtime-frame-v5 sessions bind the registry descriptor immutably and every
+HTTP, WebSocket, Actor, and task dispatch exact-matches it against the selected
+build's strict routing authority. The implementation remains v4 until the M3
+schema/code checkpoint lands; that lag is not a dual-reader promise, and no
+production path may mix v4 and v5 fields.

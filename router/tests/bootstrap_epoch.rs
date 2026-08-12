@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use skiff_artifact_identity::ArtifactRelativePath;
+use skiff_artifact_identity::{
+    ArtifactRelativePath, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+};
 use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, DeploymentArtifactIdentity,
     DeploymentRevision, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
@@ -164,7 +166,7 @@ mod tests {
                     package_id: service.clone(),
                     package_version: "0.1.0".to_string(),
                     package_build_id: PackageBuildId::new(format!(
-                        "skiff-package-build-v11:sha256:{build}"
+                        "{PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX}:{build}"
                     )),
                     package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
                         "skiff-package-local-abi-v7:sha256:{build}"

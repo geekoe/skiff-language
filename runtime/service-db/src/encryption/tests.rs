@@ -514,10 +514,7 @@ fn keyring_loader_rejects_fifo_without_blocking() {
 
     let (sender, receiver) = mpsc::channel();
     let loader = std::thread::spawn(move || {
-        let error = match DbEncryptionKeyring::load(&path) {
-            Ok(_) => None,
-            Err(error) => Some(error),
-        };
+        let error = DbEncryptionKeyring::load(&path).err();
         sender.send(error).expect("FIFO test receiver remains live");
     });
 

@@ -5,11 +5,13 @@ use skiff_artifact_identity::{
     validate_package_artifact_identities,
 };
 use skiff_artifact_model::{
-    config_shape_from_package_requirements, ActorMethodIdentity, BoundaryCallableProjection,
-    BoundaryOperationDescriptor, BoundaryUnavailableReason, CallableEffectSummary,
-    CallableProvenanceSummary, ContractDiagnosticText, PackageLocalAbiSymbol, ServiceContract,
-    ServiceProtocolIdentity, ValueProjectionPath, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
-    SERVICE_CONTRACT_SCHEMA_VERSION,
+    config_shape_from_package_requirements, current_platform_error_projection_registry_ref,
+    validate_current_platform_error_projection_registry_ref,
+    validate_platform_error_projection_registry_ref_shape, ActorMethodIdentity,
+    BoundaryCallableProjection, BoundaryOperationDescriptor, BoundaryUnavailableReason,
+    CallableEffectSummary, CallableProvenanceSummary, ContractDiagnosticText, PackageArtifact,
+    PackageLocalAbiSymbol, ServiceContract, ServiceProtocolIdentity, ValueProjectionPath,
+    ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::{implementation_package_callable_id, ImplementationCallableKind};
 
@@ -138,15 +140,21 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
     let artifact = project_fixture(SignatureSet::Complete).unwrap();
     validate_package_artifact_identities(&artifact).unwrap();
     assert_eq!(artifact.schema_version, PACKAGE_ARTIFACT_SCHEMA_VERSION);
-    assert_eq!(artifact.schema_version, "skiff-package-artifact-v14");
+    assert_eq!(artifact.schema_version, "skiff-package-artifact-v15");
     assert!(artifact
         .package_build_id
         .as_str()
-        .starts_with("skiff-package-build-v13:sha256:"));
-    assert_eq!(
+        .starts_with("skiff-package-build-v14:sha256:"));
+    let build_projection =
         serde_json::to_value(package_artifact_build_identity_projection(&artifact).unwrap())
-            .unwrap()["schema"],
-        "skiff-package-artifact-build-identity-v12"
+            .unwrap();
+    assert_eq!(
+        build_projection["schema"],
+        "skiff-package-artifact-build-identity-v13"
+    );
+    assert_eq!(
+        build_projection["platformErrorProjectionRegistry"],
+        serde_json::to_value(current_platform_error_projection_registry_ref()).unwrap()
     );
     assert_eq!(
         serde_json::to_value(package_artifact_local_abi_identity_projection(&artifact).unwrap())
@@ -299,6 +307,17 @@ fn package_api_callables_have_exact_local_abi_and_boundary_coverage() {
 }
 
 #[test]
+fn every_compiler_projection_pins_the_required_current_registry_descriptor() {
+    for artifact in [
+        project_fixture(SignatureSet::Complete).unwrap(),
+        project_fixture(SignatureSet::ExactTyped).unwrap(),
+        project_actor_fixture().unwrap(),
+    ] {
+        assert_compiler_owned_registry(&artifact);
+    }
+}
+
+#[test]
 fn package_implementation_projection_includes_exact_impl_method_callable() {
     let artifact = project_fixture(SignatureSet::Complete).unwrap();
     let PackageLocalAbiSymbol::Callable {
@@ -379,11 +398,11 @@ fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimme
 }
 
 #[test]
-fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
+fn stale_package_artifact_schema_identity_prefixes_and_registry_mutation_fail_closed() {
     let base = project_fixture(SignatureSet::Complete).unwrap();
 
     let mut stale_schema = base.clone();
-    stale_schema.schema_version = "skiff-package-artifact-v13".to_string();
+    stale_schema.schema_version = "skiff-package-artifact-v14".to_string();
     assert!(validate_package_artifact_identities(&stale_schema).is_err());
 
     let mut stale_local = base.clone();
@@ -401,14 +420,33 @@ fn stale_package_artifact_schema_and_identity_prefixes_fail_closed() {
         );
     assert!(validate_package_artifact_identities(&stale_local).is_err());
 
-    let mut stale_build = base;
+    let mut stale_build = base.clone();
     stale_build.package_build_id =
         skiff_artifact_model::PackageBuildId::new(stale_build.package_build_id.as_str().replacen(
+            "skiff-package-build-v14:sha256",
             "skiff-package-build-v13:sha256",
-            "skiff-package-build-v12:sha256",
             1,
         ));
     assert!(validate_package_artifact_identities(&stale_build).is_err());
+
+    let current_registry = current_platform_error_projection_registry_ref();
+    let mut historical_registry = base;
+    historical_registry.platform_error_projection_registry =
+        serde_json::from_value(serde_json::json!({
+            "registryId": current_registry.registry_id(),
+            "registryVersion": current_registry.registry_version(),
+            "fingerprint": format!("sha256:{}", "0".repeat(64)),
+        }))
+        .unwrap();
+    validate_platform_error_projection_registry_ref_shape(
+        &historical_registry.platform_error_projection_registry,
+    )
+    .unwrap();
+    assert!(validate_current_platform_error_projection_registry_ref(
+        &historical_registry.platform_error_projection_registry
+    )
+    .is_err());
+    assert!(validate_package_artifact_identities(&historical_registry).is_err());
 }
 
 #[test]
@@ -677,5 +715,31 @@ fn caller_projection_path_changes_build_identity_but_not_local_abi() {
         package_artifact_build_identity(&state_projection).unwrap(),
         package_artifact_build_identity(&direct_only_projection).unwrap(),
         "directReturnOrigins is part of package implementation identity"
+    );
+}
+
+fn assert_compiler_owned_registry(artifact: &PackageArtifact) {
+    let current_registry = current_platform_error_projection_registry_ref();
+    assert_eq!(
+        &artifact.platform_error_projection_registry,
+        current_registry
+    );
+    validate_platform_error_projection_registry_ref_shape(
+        &artifact.platform_error_projection_registry,
+    )
+    .unwrap();
+    validate_current_platform_error_projection_registry_ref(
+        &artifact.platform_error_projection_registry,
+    )
+    .unwrap();
+
+    let wire = serde_json::to_value(artifact).unwrap();
+    let projected_registry = wire
+        .get("platformErrorProjectionRegistry")
+        .expect("compiler projection must emit the required registry descriptor");
+    assert_eq!(
+        projected_registry,
+        &serde_json::to_value(current_registry).unwrap(),
+        "an exact current-value assertion excludes changed and historical fingerprints"
     );
 }

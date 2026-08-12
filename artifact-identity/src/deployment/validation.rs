@@ -4,8 +4,8 @@ use skiff_artifact_model::{
     validate_gateway_adapter_args, DeploymentGatewayEntry, DeploymentIngressBinding,
     DeploymentRevision, GatewayAdapterSource, GatewayEntryKey, GatewayProtocolSurface,
     PackageArtifactRef, PackageBinding, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentInput, ServiceSelectorBinding,
-    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    ServiceDeploymentInput, ServiceSelectorBinding, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use crate::{gateway_entry_identity, ArtifactIdentityError, Result};

@@ -25,6 +25,8 @@ pub enum EcosystemStorageError {
     InvalidRecord { path: PathBuf, message: String },
     #[error("compare-and-swap failed for {path}: {message}")]
     CasMismatch { path: PathBuf, message: String },
+    #[error(transparent)]
+    RoutingView(#[from] crate::routing_view::RoutingViewError),
 }
 
 pub type StorageResult<T> = Result<T, EcosystemStorageError>;

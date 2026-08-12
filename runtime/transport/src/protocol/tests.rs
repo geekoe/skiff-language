@@ -12,17 +12,17 @@ use crate::protocol::{
     RequestStartFrameHeader, RequestTestEffectDouble, ResponseEndFrameHeader,
     ResponseErrorFrameHeader, ResponseStartFrameHeader, RouterControlEnvelope,
     RuntimeCallerFrameHeader, RuntimeCapabilitiesFrameHeader,
-    RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDeadlineFrameHeader,
-    RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
-    RuntimeHealthFrameHeader, RuntimeHttpAdapterArgFrameHeader,
+    RuntimeCapabilitiesFrameHeaderMetadata, RuntimeDeadlineFrameHeader, RuntimeErrorFramePayload,
+    RuntimeHealthCountersFrameHeader, RuntimeHealthFrameHeader, RuntimeHttpAdapterArgFrameHeader,
     RuntimeHttpAdapterCallableFrameHeader, RuntimeHttpAdapterFrameHeader,
     RuntimeHttpAdapterKindFrameHeader, RuntimeHttpAdapterSourceFrameHeader,
     RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
     RuntimeTraceContextFrameHeader, TaskSubmitRequestFrameHeader, TelemetryBatchEnvelope,
-    TelemetryProtocol, TelemetryVisibility, ValidatedResponseErrorFrame,
+    TelemetryProtocol, TelemetryVisibility, ValidatedResponseErrorFrame, BINARY_FRAME_VERSION,
     RESPONSE_ERROR_FRAME_SCHEMA_VERSION, RUNTIME_FRAME_SCHEMA_VERSION,
 };
-use skiff_runtime_request_contract::ServiceErrorEnvelope;
+use skiff_artifact_model::current_platform_error_projection_registry_ref;
+use skiff_runtime_request_contract::{PlatformErrorProjectionPayload, ServiceErrorEnvelope};
 
 const SERVICE_PROTOCOL_A: &str =
     "skiff-service-protocol-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -365,9 +365,15 @@ fn runtime_capabilities_frame_header_round_trips_empty_payload() {
         envelope_type: "runtime.capabilities".to_string(),
         runtime_id: "runtime-base-1".to_string(),
         capabilities: RuntimeCapabilitiesFrameHeaderMetadata {
+            platform_error_projection_registry: current_platform_error_projection_registry_ref()
+                .clone(),
+            dispatch_modes: Vec::new(),
             package_test_dispatch: true,
             request_cancel: true,
-            ..RuntimeCapabilitiesFrameHeaderMetadata::default()
+            runtime_program: false,
+            artifact_root: None,
+            lazy_load: false,
+            loaded_build_ids: Vec::new(),
         },
     };
 
@@ -383,9 +389,15 @@ fn runtime_capabilities_frame_header_round_trips_empty_payload() {
     assert_eq!(
         decoded.capabilities,
         RuntimeCapabilitiesFrameHeaderMetadata {
+            platform_error_projection_registry: current_platform_error_projection_registry_ref()
+                .clone(),
+            dispatch_modes: Vec::new(),
             package_test_dispatch: true,
             request_cancel: true,
-            ..RuntimeCapabilitiesFrameHeaderMetadata::default()
+            runtime_program: false,
+            artifact_root: None,
+            lazy_load: false,
+            loaded_build_ids: Vec::new(),
         }
     );
 }
@@ -968,6 +980,8 @@ fn runtime_binary_frame_round_trips_typed_header_and_payload_bytes() {
     let payload = [0, 1, 2, 123, 34, 255];
 
     let frame = encode_binary_frame(&header, &payload).expect("binary frame should encode");
+    assert_eq!(BINARY_FRAME_VERSION, 1);
+    assert_eq!(frame[4], 1, "M3 must not change binary frame version");
     let decoded = decode_binary_frame(&frame).expect("binary frame should decode");
     assert_eq!(decoded.payload_bytes, payload);
 
@@ -1122,7 +1136,7 @@ fn service_error_response_v2_shared_corpus_is_strict_and_byte_preserving() {
     ))
     .expect("service error response v2 corpus must decode");
     assert_eq!(corpus.schema_version, 1);
-    assert_eq!(corpus.valid_cases.len(), 4);
+    assert_eq!(corpus.valid_cases.len(), 6);
     assert!(corpus.invalid_cases.len() >= 20);
 
     for test_case in &corpus.valid_cases {
@@ -1187,13 +1201,35 @@ fn service_error_response_v2_shared_corpus_is_strict_and_byte_preserving() {
                     (
                         "platformError",
                         ServiceErrorEnvelope::PlatformError {
-                            builtin_error_identity,
+                            projection_key,
+                            entry_fingerprint,
                             ..
                         },
-                    ) => assert_eq!(
-                        builtin_error_identity.symbol(),
-                        test_case.expected["builtinErrorIdentity"].as_str().unwrap()
-                    ),
+                    ) => {
+                        assert_eq!(
+                            projection_key,
+                            test_case.expected["projectionKey"].as_str().unwrap()
+                        );
+                        assert_eq!(
+                            entry_fingerprint,
+                            test_case.expected["entryFingerprint"].as_str().unwrap()
+                        );
+                        if test_case.expected["known"].as_bool().unwrap() {
+                            let known = error
+                                .known_platform_projection()
+                                .expect("exact pair must carry typed known evidence");
+                            assert_eq!(known.projection_key().as_str(), projection_key.as_str());
+                            assert!(matches!(
+                                known.payload(),
+                                PlatformErrorProjectionPayload::StdCollectionMapKeyNotFoundError(_)
+                            ));
+                        } else {
+                            assert!(
+                                error.known_platform_projection().is_none(),
+                                "unknown exact pair must stay opaque"
+                            );
+                        }
+                    }
                     (expected, actual) => {
                         panic!("{} expected {expected}, got {actual:?}", test_case.name)
                     }
@@ -1224,29 +1260,55 @@ fn service_error_response_v2_shared_corpus_is_strict_and_byte_preserving() {
 
     assert_eq!(
         RESPONSE_ERROR_FRAME_SCHEMA_VERSION,
-        "skiff-runtime-frame-v4"
+        "skiff-runtime-frame-v5"
     );
-    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v4");
+    assert_eq!(RUNTIME_FRAME_SCHEMA_VERSION, "skiff-runtime-frame-v5");
+}
+
+#[test]
+fn platform_error_hard_cut_distinguishes_legacy_outer_shape_and_known_bad_payload() {
+    let corpus: ServiceErrorResponseV2Corpus = serde_json::from_str(include_str!(
+        "../../testdata/service-error-response-v2.json"
+    ))
+    .expect("service error response v2 corpus must decode");
+
+    for (name, expected_error) in [
+        (
+            "fixed-platform-old-builtin-shape",
+            "invalid service error envelope shape",
+        ),
+        (
+            "fixed-platform-exact-known-malformed-payload",
+            "exact-known platform error payload failed generated validation",
+        ),
+    ] {
+        let test_case = corpus
+            .invalid_cases
+            .iter()
+            .find(|test_case| test_case.name == name)
+            .expect("required hard-cut case");
+        let frame = encode_binary_frame(&test_case.header, test_case.payload_utf8.as_bytes())
+            .expect("binary frame must encode");
+        let error = decode_response_error_frame(&frame)
+            .expect_err("legacy/malformed platform carrier must fail closed");
+        assert!(
+            error.to_string().contains(expected_error),
+            "{name} must report {expected_error:?}, got {error}"
+        );
+    }
 }
 
 #[test]
 fn router_bootstrap_rejects_previous_runtime_frame_generation() {
     let stale = json!({
-        "schemaVersion": "skiff-runtime-frame-v2",
+        "schemaVersion": "skiff-runtime-frame-v4",
         "type": "router.bootstrap",
         "artifactsPath": "/tmp/skiff-artifacts",
         "serviceDb": {
             "mongoUrl": "mongodb://127.0.0.1:27017/?replicaSet=rs0"
         },
         "activation": {
-            "profile": "test",
-            "generation": 7,
-            "assembly": {
-                "assemblyIdentity": format!(
-                    "skiff-runtime-assembly-v3:sha256:{}",
-                    "a".repeat(64)
-                )
-            }
+            "profile": "test"
         },
         "http": {
             "maxResponseBytes": 1024

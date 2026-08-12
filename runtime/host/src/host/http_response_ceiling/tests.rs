@@ -66,11 +66,12 @@ fn non_http_responses_do_not_consume_http_budget() {
 
 #[test]
 fn fixed_service_failure_is_a_legal_terminal_not_an_http_body() {
-    let fixed = OpaqueServiceError::decode(
-            br#"{"kind":"internalError","payload":{"message":"The service could not complete the request.","traceId":"trace-fixed","errorId":"error-fixed"}}"#
-                .to_vec(),
-        )
-        .expect("fixed fixture");
+    let fixed = OpaqueServiceError::internal_error(
+        "The service could not complete the request.",
+        "trace-fixed",
+        "error-fixed",
+    )
+    .expect("fixed fixture");
     let response = BoundaryResponse::Event(ResponseEvent::FixedServiceFailure(
         FixedServiceResponseFailure::new(fixed),
     ));

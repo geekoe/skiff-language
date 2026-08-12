@@ -1,0 +1,8 @@
+type TimeoutError {
+  timeoutMs: integer,
+}
+
+type InstructionLimitExceededError {
+  instructionCount: integer,
+  limit: integer,
+}

@@ -1,10 +1,10 @@
 mod effect_facts;
 
 use skiff_artifact_model::{
-    host_effect_registry_identity, intrinsic_registry_identity,
-    native_value_lifecycle_registry_identity, opcode_table_fingerprint,
-    value_lifecycle_policy_identity, BytecodeArtifactRef, CallableEffectSummary,
-    NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete,
+    current_platform_error_projection_registry_ref, host_effect_registry_identity,
+    intrinsic_registry_identity, native_value_lifecycle_registry_identity,
+    opcode_table_fingerprint, value_lifecycle_policy_identity, BytecodeArtifactRef,
+    CallableEffectSummary, NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete,
     NativeValueLifecycleResolution, Opcode, PackageBuildId, PackageCallableId, ParamModeIr,
     TypeRefIr, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
@@ -457,6 +457,7 @@ fn linked_package(build: PackageBuildId) -> LinkedPackageBytecodeProvenance {
             value_lifecycle_policy_identity().clone(),
             host_effect_registry_identity().clone(),
             intrinsic_registry_identity().clone(),
+            current_platform_error_projection_registry_ref().clone(),
         )
         .unwrap(),
     )

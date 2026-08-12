@@ -210,6 +210,8 @@ pub struct ActorOwnerFence {
     pub epoch: u64,
     pub owner_runtime_id: String,
     pub owner_lease_id: String,
+    /// Exact deployment build id pinned by this actor incarnation.
+    pub build_id: String,
     pub lease_expires_at: u64,
     pub actor_abi_identity: ActorAbiIdentity,
     pub actor_implementation_identity: ActorImplementationIdentity,

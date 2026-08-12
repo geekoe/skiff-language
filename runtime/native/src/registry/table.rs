@@ -239,6 +239,7 @@ pub(super) fn native_route_matches_required_context(
         | (NativeRequiredContext::None, RuntimeNativeRoute::Bytes)
         | (NativeRequiredContext::None, RuntimeNativeRoute::Json)
         | (NativeRequiredContext::None, RuntimeNativeRoute::Builtin)
+        | (NativeRequiredContext::None, RuntimeNativeRoute::ReceiverMethod)
         | (NativeRequiredContext::None, RuntimeNativeRoute::TaskControl)
         | (NativeRequiredContext::None, RuntimeNativeRoute::NativeRegistry)
         | (NativeRequiredContext::Time, RuntimeNativeRoute::Time) => true,
