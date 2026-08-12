@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 mod bytecode;
+mod owner_inventory;
 mod pending;
 mod root_escrow;
 mod stream;
@@ -30,6 +31,12 @@ pub use bytecode::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeHandoff, BytecodeScheduler,
     BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
     BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
+};
+pub use owner_inventory::{
+    ChildOwnerLease, ChildOwnerRegistration, FrozenOwnerDomain, OwnerCreationError,
+    PendingOwnerLease, PendingOwnerRegistration, RequestExecutionOwnerInventory,
+    RequestExecutionOwnerInventoryFreezePermit, RequestExecutionOwnerInventorySnapshot,
+    RequestExecutionOwnerRegistrations, ResourceOwnerLease, ResourceOwnerRegistration,
 };
 pub use pending::{
     BeginPendingError, CompletionHandle, PendingCellState, PendingOwner, PendingOwnerDraft,
