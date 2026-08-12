@@ -26,9 +26,9 @@ test('Phase 1 schemas are independent from the accepted Phase 0 epoch', () => {
   assert.equal(PHASE1_DIRECTORY_IDENTITY_FILE, 'phase-1-directory-identities.json');
 });
 
-test('day-one matrix freezes eight commands and every required Proof lane', () => {
+test('day-one matrix freezes nine commands and every required Proof lane', () => {
   const specs = phase1WorkloadSpecs(ROOT);
-  assert.equal(specs.length, 8);
+  assert.equal(specs.length, 9);
   assert.doesNotThrow(() => assertPhase1LaneCoverage(specs));
   assert.deepEqual(
     [...new Set(specs.flatMap(({ lanes }) => lanes))]
@@ -42,18 +42,23 @@ test('day-one matrix freezes eight commands and every required Proof lane', () =
     'scripts/tests/bytecode-vm-phase-1-gate-*.test.mjs',
   ]);
   assert.deepEqual(specs[1].args, [
-    'test', '-p', 'skiff-compiler', '-p', 'skiff-compiler-emission', '--lib',
+    'test', '-p', 'skiff-compiler', '--lib',
     'phase_1_bytecode_admission',
   ]);
-  assert.equal(specs[1].testFormat, 'rust-suite-2');
-  assert.equal(specs[2].id, 'k0b-tc-production-contract');
-  assert.deepEqual(specs[2].lanes, ['K0B', 'T-C']);
-  assert.equal(specs[4].id, 'tr-v1-production-proof');
-  assert.deepEqual(specs[4].lanes, ['T-R', 'V1']);
+  assert.deepEqual(specs[2].args, [
+    'test', '-p', 'skiff-compiler-emission', '--lib',
+    'phase_1_bytecode_admission',
+  ]);
+  assert.equal(specs[1].testFormat, 'rust-suite');
+  assert.equal(specs[2].testFormat, 'rust-suite');
+  assert.equal(specs[3].id, 'k0b-tc-production-contract');
+  assert.deepEqual(specs[3].lanes, ['K0B', 'T-C']);
+  assert.equal(specs[5].id, 'tr-v1-production-proof');
+  assert.deepEqual(specs[5].lanes, ['T-R', 'V1']);
   assert.equal(specs.filter(({ lanes }) => lanes.includes('phase-0-regression')).length, 4);
   assert.equal(specs.some(({ args }) => args.includes('scripts/verify.mjs')), false);
   assert.equal(
-    specs.slice(5).filter(({ lanes }) => lanes.includes('phase-0-regression'))
+    specs.slice(6).filter(({ lanes }) => lanes.includes('phase-0-regression'))
       .every(({ command, testFormat }) => command === 'cargo' && testFormat === 'rust-exact'),
     true,
   );
@@ -78,22 +83,8 @@ test('test summaries reject zero, skip, todo, cancel, ignore, and imprecise exac
   assert.equal(parsePhase1TestSummary('rust-suite', rust({ ignored: 1 })).valid, false);
   assert.equal(parsePhase1TestSummary('rust-exact', rust({ passed: 1 })).valid, true);
   assert.equal(parsePhase1TestSummary('rust-exact', rust({ passed: 2 })).valid, false);
-  const twoGreen = `${rust({ passed: 3 })}${rust({ passed: 4, filtered: 7 })}`;
-  assert.deepEqual(parsePhase1TestSummary('rust-suite-2', twoGreen), {
-    format: 'rust',
-    summaries: 2,
-    total: 7,
-    passed: 7,
-    failed: 0,
-    ignored: 0,
-    measured: 0,
-    filtered: 49,
-    valid: true,
-  });
-  assert.equal(parsePhase1TestSummary('rust-suite-2', rust({ passed: 3 })).valid, false);
   assert.equal(
-    parsePhase1TestSummary('rust-suite-2',
-      `${rust({ passed: 3 })}${rust({ passed: 0 })}`).valid,
+    parsePhase1TestSummary('rust-suite', `${rust({ passed: 3 })}${rust({ passed: 4 })}`).valid,
     false,
   );
 });

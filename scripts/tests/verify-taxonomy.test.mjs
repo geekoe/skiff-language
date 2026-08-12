@@ -357,7 +357,7 @@ test('verify help explains subject-oriented test domains', async () => {
   assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE1_CANDIDATE_COMMIT\s+literal 40-hex commit/);
   assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE1_CANDIDATE_TREE\s+literal 40-hex tree/);
   assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE1_EVIDENCE_DIR\s+caller-chosen canonical absolute absent path/);
-  assert.match(result.stdout, /fixed 20-receipt K0\/T-C\/T-R\/V1\/Phase-0-regression matrix/);
+  assert.match(result.stdout, /fixed 21-receipt K0\/T-C\/T-R\/V1\/Phase-0-regression matrix/);
   assert.doesNotMatch(result.stdout, /Phase 1 VCP validation readiness gate/);
   assert.doesNotMatch(result.stdout, /cargo test --workspace|Node\/TypeScript plan/);
 });

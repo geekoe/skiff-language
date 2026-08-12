@@ -60,7 +60,7 @@ test('runner rejects each missing caller input before capturing any command', as
   }
 });
 
-test('runner receipts all twenty commands and freezes the actual environment', async () => {
+test('runner receipts all twenty-one commands and freezes the actual environment', async () => {
   const created = await mkdtemp(join(tmpdir(), 'skiff-phase1-runner-'));
   const temp = await realpath(created);
   const repoRoot = join(temp, 'repo');
@@ -86,15 +86,14 @@ test('runner receipts all twenty commands and freezes the actual environment', a
     });
     assert.equal(result.manifest.verdict, 'PASS');
     assert.equal(result.checkerError, null);
-    assert.deepEqual(result.manifest.counts.commands, { total: 20, passed: 20, failed: 0 });
-    assert.deepEqual(
-      result.manifest.commands.find(({ id }) => id === 'k0a-compiler-containment')?.testSummary,
-      {
-        format: 'rust', summaries: 2, total: 6, passed: 6, failed: 0,
-        ignored: 0, measured: 0, filtered: 84, valid: true,
-      },
-    );
-    assert.equal(observed.length, 20);
+    assert.deepEqual(result.manifest.counts.commands, { total: 21, passed: 21, failed: 0 });
+    for (const id of ['k0a-compiler-admission', 'k0a-emission-admission']) {
+      assert.deepEqual(result.manifest.commands.find((command) => command.id === id)?.testSummary, {
+        format: 'rust', total: 3, passed: 3, failed: 0,
+        ignored: 0, measured: 0, filtered: 42, valid: true,
+      });
+    }
+    assert.equal(observed.length, 21);
     assert.equal(observed.every((value) => value === 'before'), true);
     const receipt = JSON.parse(await readFile(
       join(outputDir, 'commands', 'gate-self-tests.receipt.json'),
@@ -118,7 +117,6 @@ function successfulOutcome(command, args) {
     const exact = args.includes('--exact');
     const passed = exact ? 1 : 3;
     stdout = `test result: ok. ${passed} passed; 0 failed; 0 ignored; 0 measured; 42 filtered out; finished in 0.01s\n`;
-    if (args.includes('skiff-compiler-emission')) stdout += stdout;
   }
   return { code: 0, signal: null, error: null, stdout, stderr: '' };
 }

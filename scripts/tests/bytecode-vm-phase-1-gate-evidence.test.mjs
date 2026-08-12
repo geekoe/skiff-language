@@ -10,10 +10,10 @@ import {
   withPhase1EvidenceBundle,
 } from './bytecode-vm-phase-1-gate-fixture.mjs';
 
-test('checker accepts exactly twenty receipts on one clean candidate', async () => {
+test('checker accepts exactly twenty-one receipts on one clean candidate', async () => {
   await withPhase1EvidenceBundle({}, async (bundle) => {
     assert.equal(bundle.manifest.verdict, 'PASS');
-    assert.deepEqual(bundle.manifest.counts.commands, { total: 20, passed: 20, failed: 0 });
+    assert.deepEqual(bundle.manifest.counts.commands, { total: 21, passed: 21, failed: 0 });
     assert.equal(bundle.manifest.counts.tests.declared > 0, true);
     assert.equal((await check(bundle)).verdict, 'PASS');
   });
@@ -52,7 +52,7 @@ for (const fixture of [
 
 test('checker rejects a command log changed after evidence closure', async () => {
   await withPhase1EvidenceBundle({}, async (bundle) => {
-    await writeFile(join(bundle.outputDir, 'commands', 'k0a-compiler-containment.stdout.log'),
+    await writeFile(join(bundle.outputDir, 'commands', 'k0a-compiler-admission.stdout.log'),
       'tampered\n');
     await assert.rejects(check(bundle), /file hash closure/);
   });

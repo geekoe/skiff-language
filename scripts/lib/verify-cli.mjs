@@ -161,7 +161,7 @@ The bytecode-vm-phase-1-gate selector uses an independent evidence epoch and req
   SKIFF_BYTECODE_VM_PHASE1_CANDIDATE_COMMIT   literal 40-hex commit from the freeze receipt
   SKIFF_BYTECODE_VM_PHASE1_CANDIDATE_TREE     literal 40-hex tree from the freeze receipt
   SKIFF_BYTECODE_VM_PHASE1_EVIDENCE_DIR       caller-chosen canonical absolute absent path
-It checks a fixed 20-receipt K0/T-C/T-R/V1/Phase-0-regression matrix and never selects
+It checks a fixed 21-receipt K0/T-C/T-R/V1/Phase-0-regression matrix and never selects
 its own candidate or evidence directory.`);
 }
 
