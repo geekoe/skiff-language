@@ -65,7 +65,11 @@ test('runner receipts all twenty commands and freezes the actual environment', a
   const temp = await realpath(created);
   const repoRoot = join(temp, 'repo');
   const outputDir = join(temp, 'evidence');
-  const ambient = { PATH: '/usr/bin:/bin', PHASE1_UNRECORDED_ENV: 'before' };
+  const ambient = {
+    PATH: '/usr/bin:/bin',
+    GIT_PAGER: 'cat',
+    PHASE1_UNRECORDED_ENV: 'before',
+  };
   const observed = [];
   try {
     await mkdir(repoRoot);
@@ -90,7 +94,7 @@ test('runner receipts all twenty commands and freezes the actual environment', a
       'utf8',
     ));
     assert.deepEqual(receipt.identity.environment, commandEnvironmentIdentity({
-      PATH: '/usr/bin:/bin', PHASE1_UNRECORDED_ENV: 'before',
+      PATH: '/usr/bin:/bin', GIT_PAGER: 'cat', PHASE1_UNRECORDED_ENV: 'before',
     }));
   } finally {
     await rm(created, { recursive: true, force: true });

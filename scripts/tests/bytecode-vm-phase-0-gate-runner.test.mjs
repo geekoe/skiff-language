@@ -153,7 +153,11 @@ test('runner snapshots and receipts the complete actual environment before ambie
   const temp = await realpath(created);
   const repoRoot = join(temp, 'repo');
   const outputDir = join(temp, 'evidence');
-  const ambient = { PATH: '/usr/bin:/bin', P0_UNRECORDED_ENV: 'before' };
+  const ambient = {
+    PATH: '/usr/bin:/bin',
+    GIT_PAGER: 'cat',
+    P0_UNRECORDED_ENV: 'before',
+  };
   const observed = [];
   try {
     await mkdir(repoRoot);
@@ -179,7 +183,9 @@ test('runner snapshots and receipts the complete actual environment before ambie
     ));
     assert.deepEqual(
       receipt.identity.environment,
-      commandEnvironmentIdentity({ PATH: '/usr/bin:/bin', P0_UNRECORDED_ENV: 'before' }),
+      commandEnvironmentIdentity({
+        PATH: '/usr/bin:/bin', GIT_PAGER: 'cat', P0_UNRECORDED_ENV: 'before',
+      }),
     );
   } finally {
     await rm(created, { recursive: true, force: true });

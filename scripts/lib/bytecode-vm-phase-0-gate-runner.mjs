@@ -2,6 +2,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { captureOwnedCommand } from './owned-command.mjs';
+import { assertBytecodeVmGateEnvironment } from './bytecode-vm-gate-environment.mjs';
 import {
   assertGitObject,
   phase0CandidateSpecs,
@@ -57,6 +58,7 @@ export async function runPhase0Gate(options, {
   now = () => new Date().toISOString(),
   env = process.env,
 } = {}) {
+  assertBytecodeVmGateEnvironment(env);
   const input = await validateInput(options, repoRoot);
   const evidenceRoot = await createPhase0EvidenceRoot(input.outputDir);
   const candidateSpecs = phase0CandidateSpecs(input.repoRoot);
