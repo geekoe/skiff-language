@@ -32,9 +32,7 @@ use skiff_runtime_model::{
     vm_heap::{VmHeap, VmHeapError},
     vm_value::ValueSlot,
 };
-use skiff_runtime_vm::{
-    Vm, VmBudget, VmControl, VmLimits, VmSemanticCharge,
-};
+use skiff_runtime_vm::{Vm, VmBudget, VmControl, VmLimits, VmSemanticCharge};
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
     compile_package_with_dependencies(
@@ -385,6 +383,10 @@ impl VmBudget for TestBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod k2_scalar_core {
+        include!("vertical/k2_scalar_core.rs");
+    }
 
     fn vm_limits() -> VmLimits {
         VmLimits::new(
