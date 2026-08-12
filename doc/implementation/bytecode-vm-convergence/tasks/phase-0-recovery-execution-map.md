@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 16; D0-O and P0-G takeover candidates under independent receive review
+> Status: active; revision 17; finalizing-row and evidence-root identity corrections running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -44,12 +44,12 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | Task | Line | State | Expected elapsed | `status_after` | Initial write set | Join condition |
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
-| P0-G | Proof | clean takeover `6f6ecfc8` committed; independent receive review running | actual 38 min to bounded commit | 10/30 min with hard partial cutoff | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 command/evidence/checker/self-test files; verify registry files only if required | Gate owns commands/candidate/durable evidence only; Rust exact tests own semantics; no JS wire/artifact/event parser or source regex |
+| P0-G | Proof | clean takeover `6f6ecfc8` rejected; evidence-root/env-identity correction running | correction 12–20 min | 7/15 min, 20 min hard cutoff | existing Phase 0 Gate modules/tests only | fix root replacement/symlink race and bind actual child env; Gate owns no Rust semantics |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
 | REV0-S | Review | `FAIL`, complete in 8 min; corrections recorded in rev8 | actual 8 min | on checkpoint | read-only DEC0-S and cited production code | found omitted event-owner/test files and confirmed D0-R sealed-fact expansion; no new authority found |
 | D0-R | Development | takeover complete as `d12a9471`; integrated as `dd1399bc`; independent receive review PASS | actual 10 min takeover + focused validation | complete | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; 7 focused host cases green |
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
-| D0-O | Development | repair candidate `b79e31d7` compiled and committed; independent receive review running; production-chain test follow-up intentionally not started | actual bounded implementation to first commit | 20/35 min partial cutoff | corrected DEC0-S D0-O set plus approved existing driver owner `runtime/host/src/host/request_entry/resumable.rs` and try-only telemetry path | ordered/reentrant-safe observation; no duplicate row overwrite; terminal-before-cleanup permit; exact ingress selector; JSON-RPC failure; real production-chain tests remain Proof obligation |
+| D0-O | Development | repair candidate `b79e31d7` rejected; finalizing-row correction running | correction 15–25 min | 8/20 min, 25 min hard cutoff | `runtime/host/src/host/request_supervisor.rs`; assembly cleanup call only if required | keep request-id guard through terminal and cleanup publication; reject cross-generation reuse/cancel; real production-chain tests remain Proof obligation |
 | P0-V-H/P0-N | Proof | common support `1c5c52da` independently accepted and integrated as `dab771ef`; success and negative writers wait for D0-O receive | support actual 12 min; success/negatives 20–30 min each | 10 min each | shared registration/support now frozen; success and negative host modules are disjoint write lanes | success and three negatives enter only `RuntimeHost::spawn_bytecode_request`, assert actual wire/typed facts, and never mint verdict/internal execution objects |
 | D0-K-M | Development | `c9f24dbf` independently accepted and integrated as `2c9c2fa7` | actual 10 min + 8 min review | complete | host HTTP admission and its focused host test only | production `serverStream` rejected as Unsupported before load/route/target/VM; 1/1 exact test; unary/WebSocket/task unchanged |
 
@@ -313,3 +313,16 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   candidate/command/durable-file integrity only. A fresh reviewer is testing false-green, symlink, TOCTOU and reporter cases;
 - no success/negative Proof writer starts until D0-O receive review resolves the exact observation API. Cargo ownership is
   currently free; independent reviewers are read-only.
+
+### Revision 17 — executable race rejection and narrow correction
+
+- independent D0-O review rejected `b79e31d7`: `claim_completion` removed the active row before `budget.finish` and terminal
+  observation, so the same request id could reserve a second generation with the same correlation/ordinal zero, receive a
+  cancel intended for the first, and interleave admission before the old terminal/cleanup. A clean correction worktree at
+  the rejected candidate now owns only the supervisor finalizing/cleanup-guard lifecycle and deterministic concurrency tests;
+- independent Gate review rejected `6f6ecfc8` with an executable root-replacement counterexample: renaming the created evidence
+  root and substituting a symlink still produced a PASS bundle. It also proved that ambient child environment affected the
+  executed command without appearing in its receipt identity. A clean Node-only correction now pins directory identities,
+  rejects root/subdirectory replacement around writes and binds the actual child environment identity;
+- both reviews were separate from their writers and neither green self-test result was treated as acceptance. Proof success
+  and negative writers remain blocked only until the corrected observation API is received; no broad redesign was reopened.
