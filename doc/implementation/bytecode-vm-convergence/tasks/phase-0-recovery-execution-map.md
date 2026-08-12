@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 7; P0-V/DEC0-S integrated; P0-G/D0-R/D0-M/REV0-S running
+> Status: active; revision 8; P0-V/DEC0-S integrated; P0-G/D0-R/D0-M running; REV0-S corrected
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -46,7 +46,7 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
 | P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
-| REV0-S | Review | running as `/root/p0_seam_review`; started `2026-08-12T16:38:31Z` | 12–18 min | `2026-08-12T16:46:31Z` | read-only DEC0-S and cited production code | independently reject duplicate authority, infeasible propagation, mutable/fallible observer, or non-owner-minted events |
+| REV0-S | Review | `FAIL`, complete in 8 min; corrections recorded in rev8 | actual 8 min | on checkpoint | read-only DEC0-S and cited production code | found omitted event-owner/test files and confirmed D0-R sealed-fact expansion; no new authority found |
 | D0-R | Development | running as `/root/p0_route_identity`; started `2026-08-12T16:38:31Z` | 30–45 min | `2026-08-12T16:56:31Z` | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; focused cases green |
 | D0-M | Development | running as `/root/p0_typedjson_materialize`; started `2026-08-12T16:38:31Z` | 30–45 min | `2026-08-12T16:56:31Z` | exact DEC0-S D0-M write set | typedJson scalar materializes against pinned verified entry; malformed/wrong/non-scalar fail closed; rawHttp unchanged |
 
@@ -182,3 +182,13 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   bindings and the verified gateway adapter plan;
 - the expansion adds no constructor, mutation, alternate verification path or raw hydration accessor. D0-R remains the
   sole Cargo owner and must test these facts through the host route behavior rather than add verifier policy.
+
+### Revision 8 — REV0-S rejection and correction
+
+- REV0-S returned `FAIL` after 8 minutes because D0-O omitted `runtime/host/src/loader/bytecode_admission.rs`, the sole
+  owner of its first two events, and the focused host route call sites that D0-R will change;
+- durable review receipt is `reviews/rev0-s-vcp-production-seam-review.md`; DEC0-S now includes both files and explicitly
+  forbids moving the event mint into non-owner `assembly_wire` code;
+- the review's second blocker is satisfied by revision 7's narrow sealed-fact accessor expansion; D0-R is implementing it;
+- D0-O is not ready until D0-R and D0-M join. Its cleanup proof must query the matching supervised request row, not infer
+  correctness from a global active count.

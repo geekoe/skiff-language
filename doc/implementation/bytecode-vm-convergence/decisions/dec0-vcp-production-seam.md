@@ -162,7 +162,7 @@ than folding them into observability.
 | --- | --- | --- |
 | `D0-R` route identity/pinning repair | `runtime/host/src/loader/bytecode_admission.rs`; focused assertions in `runtime/host/src/host/request_entry/bytecode_http_tests.rs` | deployment build ID comes only from `image.owner()`; request route/adapter facts are pinned, with no post-cache artifact-root read |
 | `D0-M` typedJson scalar materialization | `runtime/request/src/bytecode_ingress.rs`; focused cases in `runtime/request/tests/bytecode_request.rs` | body `2` materializes as VM `number`; malformed/wrong/non-scalar cases fail closed; rawHttp is unchanged |
-| `D0-O` typed observation | `runtime/model/src/bytecode_execution_observation.rs`; `runtime/model/src/lib.rs`; `runtime/vm/src/fiber.rs`; VM call-site updates in `runtime/vm/src/fiber/projection_tests.rs` and `runtime/vm/tests/vertical.rs`; `runtime/request/src/bytecode_ingress.rs`; request call-site updates in `runtime/request/tests/bytecode_request.rs`; `runtime/host/src/host/bytecode_execution_observation.rs`; `runtime/host/src/host/mod.rs`; `runtime/host/src/host/runtime_host.rs`; `runtime/host/src/host/request_entry/assembly_wire.rs`; `runtime/host/src/host/request_entry/assembly.rs`; `runtime/host/src/host/request_entry/websocket_jsonrpc.rs`; `runtime/host/src/host/request_supervisor.rs` | add only the contract, production projection, propagation and five sole mint points; no result-returning hook or execution API |
+| `D0-O` typed observation | `runtime/model/src/bytecode_execution_observation.rs`; `runtime/model/src/lib.rs`; `runtime/vm/src/fiber.rs`; VM call-site updates in `runtime/vm/src/fiber/projection_tests.rs` and `runtime/vm/tests/vertical.rs`; `runtime/request/src/bytecode_ingress.rs`; request call-site updates in `runtime/request/tests/bytecode_request.rs`; `runtime/host/src/loader/bytecode_admission.rs`; `runtime/host/src/host/bytecode_execution_observation.rs`; `runtime/host/src/host/mod.rs`; `runtime/host/src/host/runtime_host.rs`; `runtime/host/src/host/request_entry/assembly_wire.rs`; `runtime/host/src/host/request_entry/assembly.rs`; `runtime/host/src/host/request_entry/websocket_jsonrpc.rs`; `runtime/host/src/host/request_entry/bytecode_http_tests.rs`; `runtime/host/src/host/request_supervisor.rs` | add only the contract, production projection, propagation and five sole mint points; no result-returning hook or execution API; start only after D0-R and D0-M join |
 | `P0-V-H` host VCP | Phase 0 fixture directory; `runtime/host/src/host/request_entry/phase_0_vcp_tests.rs`; module registration in `runtime/host/src/host/request_entry.rs`; remove/supersede only `runtime/request/tests/bytecode_vm_phase_0_vcp.rs` | compile/publish canonical fixture, send exact typedJson wire request through `spawn_bytecode_request`, capture raw response plus typed observations, and write no PASS verdict |
 | `P0-N` proof companions | separate host request-entry negative test file and its module registration only | corrupt artifact, wrong deployment/entry and unsupported capability fail at production boundaries and have no dispatch event |
 
@@ -170,6 +170,12 @@ If implementing pinned adapter/route facts requires exposing an existing
 read-only fact from `VerifiedLinkedBytecodeImage`, `D0-R` must first narrow its
 write set in the execution map; it may not reopen linker, verifier, or image
 semantics under this decision.
+
+`D0-O` must keep `DeploymentImageSelected` and `RouteEntryPinned` in
+`runtime/host/src/loader/bytecode_admission.rs`, their actual state owner.  It
+must not move either mint to `assembly_wire` merely to avoid a sequential edit
+after D0-R.  Its cleanup check is keyed to the matching supervised request;
+global `active_count()` is not evidence that this request's row was removed.
 
 `P0-G` consumes raw compiler/publication receipts, the wire response, and the
 five correlated events.  It proves exact candidate/tree, exact published
