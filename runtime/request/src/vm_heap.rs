@@ -21,6 +21,7 @@ use skiff_runtime_model::{
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
+use skiff_runtime_scheduler::ResourceOwnerLease;
 
 const DOMAIN_SHIFT: u64 = 56;
 const DOMAIN_MASK: u64 = (u8::MAX as u64) << DOMAIN_SHIFT;
@@ -66,6 +67,10 @@ impl ResourceRegistry {
             .map(|entry| (entry.compact_type_tag, entry.flags))
     }
 
+    pub(crate) fn contains_live(&self, handle: VmHandle) -> bool {
+        self.live.contains_key(&handle)
+    }
+
     fn is_released(&self, handle: VmHandle) -> bool {
         self.released.contains(&handle)
     }
@@ -85,10 +90,38 @@ pub type ResourceTable = Arc<Mutex<ResourceRegistry>>;
 /// An entry in the shared resource table.
 pub struct ResourceEntry {
     /// VM slot metadata that must match a live resource reference.
-    pub compact_type_tag: CompactTypeTag,
-    pub flags: ValueFlags,
+    compact_type_tag: CompactTypeTag,
+    flags: ValueFlags,
     /// Cancels the underlying native resource (e.g., HTTP stream).
-    pub cancel: Arc<dyn Fn() + Send + Sync>,
+    cancel: Arc<dyn Fn() + Send + Sync>,
+    owner_lease: ResourceOwnerLease,
+}
+
+impl ResourceEntry {
+    pub fn new(
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+        cancel: Arc<dyn Fn() + Send + Sync>,
+        owner_lease: ResourceOwnerLease,
+    ) -> Self {
+        Self {
+            compact_type_tag,
+            flags,
+            cancel,
+            owner_lease,
+        }
+    }
+
+    /// Ends the native resource while its inventory lease is still live.
+    pub fn cancel(self) {
+        let Self {
+            cancel,
+            owner_lease,
+            ..
+        } = self;
+        (cancel)();
+        drop(owner_lease);
+    }
 }
 
 pub struct RequestVmHeap {
@@ -329,7 +362,7 @@ impl RequestVmHeap {
             .remove_live(handle)
             .ok_or_else(|| Self::stale_resource(handle))?;
         drop(guard);
-        (entry.cancel)();
+        entry.cancel();
         Ok(())
     }
 

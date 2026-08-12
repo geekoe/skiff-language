@@ -8,6 +8,7 @@ use skiff_runtime_model::{
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
+use skiff_runtime_scheduler::{RequestExecutionOwnerInventory, ResourceOwnerRegistration};
 
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -33,18 +34,31 @@ fn heap_with_resource_table() -> (RequestVmHeap, ResourceTable) {
 }
 
 fn register_resource(table: &ResourceTable, handle: u64, cancels: Arc<AtomicUsize>) -> ValueSlot {
+    let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+    register_resource_with(table, handle, cancels, &registrations.resource())
+}
+
+fn register_resource_with(
+    table: &ResourceTable,
+    handle: u64,
+    cancels: Arc<AtomicUsize>,
+    resource_owners: &ResourceOwnerRegistration,
+) -> ValueSlot {
     let vm_handle = skiff_runtime_model::vm_value::VmHandle::new(handle);
     let cancels_clone = Arc::clone(&cancels);
-    table.lock().unwrap().register(
-        vm_handle,
-        ResourceEntry {
-            compact_type_tag: RESOURCE_TAG,
-            flags: RESOURCE_FLAGS,
-            cancel: Arc::new(move || {
-                cancels_clone.fetch_add(1, Ordering::SeqCst);
-            }),
-        },
-    );
+    let entry = resource_owners
+        .install(|owner_lease| {
+            ResourceEntry::new(
+                RESOURCE_TAG,
+                RESOURCE_FLAGS,
+                Arc::new(move || {
+                    cancels_clone.fetch_add(1, Ordering::SeqCst);
+                }),
+                owner_lease,
+            )
+        })
+        .unwrap();
+    table.lock().unwrap().register(vm_handle, entry);
     ValueSlot::resource_ref(vm_handle, RESOURCE_TAG, RESOURCE_FLAGS)
 }
 
@@ -394,6 +408,21 @@ fn release_resource_invokes_cancel_exactly_once_and_is_idempotent() {
             ..
         })
     ));
+}
+
+#[test]
+fn resource_entry_releases_its_actual_inventory_lease_after_cancel() {
+    let inventory = RequestExecutionOwnerInventory::open();
+    let (registrations, freeze) = inventory.into_parts();
+    let resource_owners = registrations.resource();
+    let (mut heap, table) = heap_with_resource_table();
+    let slot = register_resource_with(&table, 100, Arc::new(AtomicUsize::new(0)), &resource_owners);
+
+    heap.release_resource(&slot).unwrap();
+
+    let frozen = freeze.freeze();
+    assert_eq!(frozen.resource().current(), 0);
+    assert!(frozen.resource().ever_created());
 }
 
 #[test]

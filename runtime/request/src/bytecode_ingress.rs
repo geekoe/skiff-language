@@ -23,9 +23,10 @@ use skiff_runtime_model::{
 };
 use skiff_runtime_scheduler::{
     BytecodeScheduler, BytecodeSchedulerOutcome, PendingOwnerRegistration,
-    RequestExecutionOwnerInventory, RequestExecutionOwnerInventoryFreezePermit, RootDisposition,
-    RootEscrow, RootEscrowBacking, StreamConsumer, StreamEvent, StreamPoll, VmCompletionHandle,
-    VmPendingRegistry, VmStreamSupervisor, VmStreamTerminal, WakeSignal,
+    RequestExecutionOwnerInventory, RequestExecutionOwnerInventoryFreezePermit,
+    ResourceOwnerRegistration, RootDisposition, RootEscrow, RootEscrowBacking, StreamConsumer,
+    StreamEvent, StreamPoll, VmCompletionHandle, VmPendingRegistry, VmStreamSupervisor,
+    VmStreamTerminal, WakeSignal,
 };
 use skiff_runtime_vm::{
     ResumeOutcome, Vm, VmBudget, VmBudgetClosed, VmBudgetTerminal, VmError, VmFiber,
@@ -61,6 +62,7 @@ struct RequestAdapterExecutor {
     next_stream_handle: AtomicU64,
     stream: Mutex<Option<HttpClientStreamState>>,
     resource_table: ResourceTable,
+    resource_owners: ResourceOwnerRegistration,
 }
 
 struct HttpClientStreamState {
@@ -79,6 +81,7 @@ impl RequestAdapterExecutor {
         http_executor: Option<Arc<dyn BytecodeHttpExecutor>>,
         self_ingress: Option<BytecodeSelfIngressContext>,
         resource_table: ResourceTable,
+        resource_owners: ResourceOwnerRegistration,
         queue: BytecodeRequestWakeQueue,
         pending_owners: PendingOwnerRegistration,
         cancellation: CancellationToken,
@@ -96,6 +99,7 @@ impl RequestAdapterExecutor {
             next_stream_handle: AtomicU64::new(1),
             stream: Mutex::new(None),
             resource_table,
+            resource_owners,
         }
     }
 
@@ -130,15 +134,15 @@ impl RequestAdapterExecutor {
             return;
         };
         let handle = skiff_runtime_model::vm_value::VmHandle::new(stream.handle);
-        let cancel = {
+        let entry = {
             let mut table = self
                 .resource_table
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            table.remove_live(handle).map(|entry| entry.cancel)
+            table.remove_live(handle)
         };
-        if let Some(cancel) = cancel {
-            (cancel)();
+        if let Some(entry) = entry {
+            entry.cancel();
         }
         if stream.is_self_ingress {
             self.release_self_ingress();
@@ -383,19 +387,40 @@ impl RequestAdapterExecutor {
         let handle = self.next_stream_handle.fetch_add(1, Ordering::Relaxed);
         let vm_handle = skiff_runtime_model::vm_value::VmHandle::new(handle);
         let body = ValueSlot::resource_ref(vm_handle, CompactTypeTag::new(0), ValueFlags::new(0));
-        {
+        let resource_cancel: Arc<dyn Fn() + Send + Sync> = Arc::new(stream.cancel);
+        let installed = {
             let mut table = self
                 .resource_table
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            table.register(
-                vm_handle,
-                crate::vm_heap::ResourceEntry {
-                    compact_type_tag: body.compact_type_tag(),
-                    flags: body.flags(),
-                    cancel: Arc::new(stream.cancel),
-                },
-            );
+            if table.contains_live(vm_handle) {
+                drop(table);
+                (resource_cancel)();
+                if is_self_ingress {
+                    self.release_self_ingress();
+                }
+                return Err(BytecodeSchedulerError::Port(
+                    "bytecode resource handle collided".to_string(),
+                ));
+            }
+            self.resource_owners.install(|owner_lease| {
+                table.register(
+                    vm_handle,
+                    crate::vm_heap::ResourceEntry::new(
+                        body.compact_type_tag(),
+                        body.flags(),
+                        Arc::clone(&resource_cancel),
+                        owner_lease,
+                    ),
+                );
+            })
+        };
+        if let Err(error) = installed {
+            (resource_cancel)();
+            if is_self_ingress {
+                self.release_self_ingress();
+            }
+            return Err(BytecodeSchedulerError::Port(error.to_string()));
         }
         *self
             .stream
@@ -1173,6 +1198,7 @@ pub fn start_runtime_bytecode_request_with_ports(
         handles.http_executor.clone(),
         handles.self_ingress.clone(),
         resource_table,
+        owner_registrations.resource(),
         queue.clone(),
         owner_registrations.pending(),
         cancellation.clone(),
@@ -1581,6 +1607,7 @@ pub fn execute_runtime_bytecode_request_with_ports(
         handles.http_executor.clone(),
         handles.self_ingress.clone(),
         resource_table,
+        owner_registrations.resource(),
         queue.clone(),
         owner_registrations.pending(),
         child_cancellation,
