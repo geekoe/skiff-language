@@ -1,13 +1,12 @@
 # DEC1-O: bounded Phase 1 proof-observation extension
 
-> Status: decided; corrected after independent review; delta re-review required before join
+> Status: consistency-corrected with DEC1-B after independent FAIL; delta re-review required before join
 >
 > Input: MAP1 revision 1 at `34a9a4a8e2c4b563835a484a4eb655a8d22720b0`
 >
-> Preserved baseline: accepted Phase 0 observer/lifecycle commits `5b305744` and `0da6e474`
+> Preserved baseline: accepted Phase 0 observer/lifecycle revisions `5b305744` and `0da6e474`
 >
-> Accounting authority: [`dec1-budget-and-stop-ownership.md`](./dec1-budget-and-stop-ownership.md) (DEC1-B candidate
-> `a800a5d1`)
+> Accounting authority: corrected [`DEC1-B`](./dec1-budget-and-stop-ownership.md) in the same decision stack
 >
 > Scope: minimum non-verdict frame, local-call, return, budget and cleanup facts only
 
@@ -17,14 +16,14 @@ The source-reviewed T-R/V1 candidate reaches the accepted production composition
 `3.0`, and passes both request-boundary negatives. Its expected-red consumer then reports exactly five missing obligations:
 
 1. root and selected helper frame entry;
-2. an actually committed `CallLocal` dispatch;
+2. an actually executed `CallLocal` dispatch;
 3. selected helper and root normal return;
 4. final raw-execution, charged-unit, hard-limit and poll counts; and
 5. exact zero Pending/resource/child owner counts at request cleanup.
 
 The five accepted Phase 0 events cannot prove these facts. Inferring them from response `3.0`, source text, an admitted
-opcode, an allocated fuel grant, absence of event names, or object destruction would be a false green. This activates MAP1's
-conditional O1 decision.
+opcode, a budget counter without the VM event, absence of event names, or object destruction would be a false green. This
+activates MAP1's conditional O1 decision.
 
 The question is how to expose only those facts while preserving the Phase 0 observer's one correlation, strict ordinal
 ordering, reentrant-safe bounded queue, panic/drop isolation and lack of execution or verdict authority.
@@ -43,7 +42,7 @@ sequence and the same `observe` return type `()` and failure semantics as the fi
 The VM facts intentionally describe a fixed observation window rather than a general trace:
 
 - the root VM frame;
-- the first successfully committed direct `CallLocal` whose caller is that root frame; and
+- the first successfully executed direct `CallLocal` whose caller is that root frame; and
 - the matching callee's normal return and the root's normal return.
 
 The VCP's `helper(2)` is that first root-local callee. Repeated calls, loops, recursion below that selected callee, tail calls
@@ -120,11 +119,11 @@ their separate authority.
 | Event | Cardinality for one root request | Sole production mint point | Fact established |
 | --- | --- | --- | --- |
 | `VmFunctionFrameEntered { role: Root, ... }` | zero or one | `VmFiber::start`, after entry/argument validation and after the root frame and its bounded value segment are fully installed, immediately before returning the runnable fiber | the exact pinned root function owns a real depth-1 frame with the reported slot count |
-| `VmLocalCallDispatched` | zero or one | the successful commit tail of `VmFiber::execute_call_local`, only for the first `CallLocal` executed by the observed root frame, after argument transfer, child segment creation, child-frame push and region-depth push all succeed | the opcode was not merely decoded: caller ownership moved into a real callee frame |
-| `VmFunctionFrameEntered { role: FirstRootLocalCallee, ... }` | exactly paired with the selected call | the same successful `execute_call_local` commit tail, immediately after `VmLocalCallDispatched` | the selected callee is installed at depth 2 with the reported frame layout |
+| `VmLocalCallDispatched` | zero or one | the successful state-transition tail of `VmFiber::execute_call_local`, only for the first `CallLocal` executed by the observed root frame, after argument transfer, child segment creation, child-frame push and region-depth push all succeed | the opcode was not merely decoded: caller ownership moved into a real callee frame |
+| `VmFunctionFrameEntered { role: FirstRootLocalCallee, ... }` | exactly paired with the selected call | the same successful `execute_call_local` state-transition tail, immediately after `VmLocalCallDispatched` | the selected callee is installed at depth 2 with the reported frame layout |
 | `VmFunctionReturned { role: FirstRootLocalCallee, ... }` | zero or one | the non-root success tail of `VmFiber::execute_return`, after the selected child frame/region/value segment is removed, results are transferred, and the root caller is resumed | the selected helper completed by normal `Return`; it is not inferred from a later root result |
 | `VmFunctionReturned { role: Root, ... }` | zero or one | the root success tail of `VmFiber::execute_return`, after frames, frame values and regions are cleared and the fiber state is `Terminal`, immediately before returning `DispatchOutcome::Complete` | the root completed by normal `Return`, with no caller and remaining frame depth zero |
-| `VmBudgetAccounted` | exactly one for a completion winner whose request budget was activated | the shared `RequestSupervisor` settlement consumer, copying DEC1-B's already frozen `ExecutionSettlement` after the winning `Active -> Completing` transition and immediately before `RequestTerminalClaimed`; observation runs after locks are released | final authoritative committed raw use, derived charged use, finite limit and trusted poll count |
+| `VmBudgetAccounted` | exactly one for a completion winner whose request budget was activated | the shared `RequestSupervisor` settlement consumer, copying DEC1-B's already frozen `ExecutionSettlement` after the winning `Active -> Completing` transition and immediately before `RequestTerminalClaimed`; observation runs after locks are released | final authoritative attempted-dispatch count, derived charged count, finite limit and trusted poll count |
 | extended `RequestCleanupComplete` | unchanged: zero or one, and exactly one after an admitted request's unique terminal/cleanup path | existing `CleanupGuard::observe_cleanup`, copying the immutable owner-inventory snapshot stored in the unique `CleanupPermit`, outside the supervisor lock and after execution/driver, target, supervised-request and route/image request pins are dropped | current and ever-created facts frozen by the request's sole owner inventory before terminal cleanup |
 
 No event is emitted on a failed frame construction, rejected/malformed `CallLocal`, failed return transition or losing
@@ -136,15 +135,16 @@ state may suppress observation only; no VM branch, error, fuel decision or termi
 
 ## DEC1-B budget projection
 
-DEC1-O does not define a raw-accounting method, grant algorithm, counter or terminal race. DEC1-B is the sole authority for
-the `VmBudget` grant/commit/poll port, the request-owned `ExecutionBudget`, the exact commit-before-dispatch hook and the
-immutable `ExecutionSettlement`. L4 must land and pass its independent review before the overlapping O1 VM/host edits start.
+DEC1-O does not define a raw-accounting method, counter or terminal race. DEC1-B is the sole authority for the request-owned
+`ExecutionBudget`, `VmBudget::{before_dispatch,poll_interrupt,charge_semantic}`, the VM-private adjacent
+`before_dispatch -> dispatch_one exactly once` boundary and immutable `ExecutionSettlement`. L4 must land and pass its
+independent review before the overlapping O1 VM/host edits start.
 
 O1 performs only a four-field projection from that frozen DEC1-B settlement:
 
-- `rawExecutedCount` copies the exact count committed by DEC1-B's `commit_raw_execution` hook. It excludes every unused unit
-  in the outstanding grant, including the tail discarded on completion, failure or stop.
-- `chargedInstructionCount` is DEC1-B's external projection derived from the same committed raw count and therefore equals
+- `rawExecutedCount` copies DEC1-B's exact count of successful `before_dispatch` calls. Each call atomically increments one
+  raw unit immediately before one private `dispatch_one`; an instruction error remains counted and there is no unused tail.
+- `chargedInstructionCount` is DEC1-B's external projection derived from the same raw count and therefore equals
   `rawExecutedCount`; O1 neither stores nor computes an independent charge ledger.
 - `hardLimit` copies the finite trusted raw limit pinned in the settlement.
 - `pollCount` copies the settlement's count of actual trusted polls.
@@ -154,9 +154,9 @@ folded into raw work; terminal classification remains solely in `RequestTerminal
 The event is emitted for every frozen settlement after budget activation, whether the separately observed terminal is
 success, VM failure, budget exhaustion or internal stop.
 
-The observer never reads a mutable stats snapshot, grant maximum, VM local remainder, opcode count or cancellation token.
-It cannot insert another raw hook, choose a grant or cause settlement. In particular, O1 must not request one-unit grants as
-an observability workaround: DEC1-B keeps a bounded multi-unit authorization and charges only each exact committed dispatch.
+The observer never reads a mutable stats snapshot, VM-local counter, opcode count or cancellation token. It cannot call
+`before_dispatch`, insert another raw hook or cause settlement. Observation occurs only after the state mutation it reports;
+it neither authorizes nor charges execution.
 
 ## Linearizable request-owner inventory
 
@@ -168,18 +168,18 @@ Each admitted request instead owns one private `RequestExecutionOwnerInventory`.
 three domains, not an observer-side mirror. Its state is protected by one lock and has one phase (`Open` or `Frozen`) plus,
 for each domain, a current count and a monotonic `ever_created` bit. It has no `Default`, public zero constructor, reset or
 merge operation. The state is one fixed-size record: it contains no owner list, registry scan, per-event entry or other
-allocation whose size can grow with execution. Count increment is checked; overflow rejects the still-uncommitted owner
+allocation whose size can grow with execution. Count increment is checked; overflow rejects the not-yet-installed owner
 without installation or saturation. Its only factory is the private admitted-request driver factory named below.
 
 The request driver owns the only non-cloneable freeze permit. Capability objects may retain opaque registration access to
 the same inventory state, but that access has no count/snapshot/freeze method and cannot be changed to another request.
 Every actual owner constructor must obtain an uncloneable, domain-typed creation guard from that state. Fallible preparation
 may happen first. The guard remains locked until it has both changed that domain's `current`/`ever_created` and installed a
-non-cloneable `OwnerLease` in the actual carrier; abort drops only the uncommitted guard. Consequently construction and
+non-cloneable `OwnerLease` in the actual carrier; abort drops only the not-yet-installed guard. Consequently construction and
 `Open -> Frozen` have one inventory-lock linearization order, with no counted-but-uninstalled or installed-but-uncounted
 window.
 
-The three commit sites are literal: `PendingRegistry::begin` while its new cell is inserted, `ResourceRegistry::register`
+The three installation sites are literal: `PendingRegistry::begin` while its new cell is inserted, `ResourceRegistry::register`
 while its entry becomes live, and `FlatTrampoline::enter_child` while its new `BlockedUnit` is installed. Each uses the
 fixed lock order inventory then carrier/container; no path may enter a container lock and then request a creation guard.
 A caller cannot construct the carrier directly or supply a lease for the wrong domain or request:
@@ -201,8 +201,9 @@ the `PendingCell` created by `PendingRegistry::begin`; cloned `CompletionHandle`
 lease. `Open -> Waiting`, `Open -> Settled`, `Settled -> PendingWake`, and `Waiting -> PendingWake` move the same lease under
 the pending cell state transition. They never release or reacquire it, so inventory `current` remains non-zero across every
 registry-to-wake handoff. `BytecodeScheduler::resume_from_pending_wake` retains that same leased wake until root restoration
-and resume either commit or fail; only then does successful runnable ownership (or failed cleanup) destroy the pending
+and resume either finish or fail; only then does successful runnable ownership (or failed cleanup) destroy the pending
 carrier and release the lease. DEC1-O never sums `PendingRegistry::live_count`, a wake queue length or two locks.
+A stale completion handle that no longer carries/reaches the actual cell lease is not an owner and contributes no count.
 
 The resource lease is a private field of the `ResourceEntry` inserted by `ResourceRegistry::register` and leaves only when
 `remove_live` removes that entry. `ResourceTable` becomes an opaque inventory-bound type rather than exposing its inner
@@ -210,13 +211,13 @@ The resource lease is a private field of the `ResourceEntry` inserted by `Resour
 handle instead of replacing a leased entry. The child lease is a private field of the `BlockedUnit` installed by
 `FlatTrampoline::enter_child`; suspension moves that unit unchanged and child completion removes it before lease release.
 These are the actual ownership carriers, not shadow records. All constructor paths, including pending pre-completion,
-resource replacement/error and child-start failure, must either return the still-uncommitted guard or install exactly one
+resource replacement/error and child-start failure, must either return the not-yet-installed guard or install exactly one
 leased carrier.
 
 Release removes the carrier and its lease from the container, releases that container lock, and only then releases the
 lease under the inventory lock. If release and freeze race, both serialize on the inventory lock: release-first yields
 `current == 0, ever_created == true`; freeze-first preserves a non-zero frozen count. Creation-first/freeze-second
-preserves non-zero; freeze-first rejects creation without installing a carrier. It is impossible for a committed, even
+preserves non-zero; freeze-first rejects creation without installing a carrier. It is impossible for an installed, even
 ephemeral, owner to yield both zero and `ever_created == false`.
 
 The canonical Phase 1 construction is stronger than a zero count. Its request driver keeps the Pending registry/wake queue,
@@ -234,11 +235,14 @@ driver factory and therefore one place that can mint the inventory and freeze pe
 
 `drive_bytecode_request` mints the inventory and its unique freeze permit after activation but before request execution
 starts, passes only inventory-bound registration access into `start_runtime_bytecode_request`, and retains the permit
-across the whole drive loop. `DrivenBytecodeRequest` gains one mandatory frozen snapshot beside its result and optional
-execution object. Start failure, run/resume failure and normal root completion all funnel through one explicit driver
-finish operation; there is no `Drop`-minted or missing-execution fallback. That operation acquires the inventory lock once,
-atomically changes `Open -> Frozen`, and returns the immutable snapshot before any `RequestSupervisor` completion method is
-called. Freeze rejects every later creation. Lease drops after freeze cannot rewrite the snapshot.
+across the whole drive loop. `DrivenBytecodeRequest` gains one mandatory sealed carrier beside its result and optional
+execution object: `NotStarted(actual frozen snapshot)` or `Started(actual frozen snapshot)`. `NotStarted` is valid only when
+the canonical driver has structurally established that all three owner-producing ports/carriers are absent, then freezes
+the actual inventory before VM execution starts. Start failure uses that path. Once execution starts, normal completion,
+run failure and internal terminal use `Started`, frozen by the one explicit driver finish operation. There is no `Default`,
+constant zero, `Drop`-minted or missing-execution fallback. Both paths acquire the inventory lock once, change
+`Open -> Frozen`, and return the immutable snapshot before any `RequestSupervisor` completion method. Freeze rejects later
+creation; lease drops after freeze cannot rewrite the snapshot.
 
 The snapshot is carried with the driven result into the winning supervisor completion, stored in `Completing`, moved into
 the unique `CleanupPermit`, and copied unchanged by `CleanupGuard::observe_cleanup` after the execution and request pins are
@@ -252,8 +256,11 @@ The six cleanup fields have these exact meanings:
 - `pendingOwnerEverCreated`, `resourceOwnerEverCreated` and `childOwnerEverCreated` are the corresponding monotonic creation
   bits from the same frozen state.
 
-If execution fails before any domain can be installed, the frozen inventory still supplies the six facts. There is no
-synthetic `NotStarted => zero` fallback in the observer or cleanup permit.
+If execution fails before any domain can be installed, the frozen actual inventory still supplies the six facts. The
+pre-activation `RevokedByCancel` and `RevokedBySessionStop` outcomes never enter this driver: each maps once to
+`StopWithoutResponse`, creates no inventory/budget and emits no terminal or cleanup event. They cannot be represented as
+`NotStarted`, resettled or given a duplicate cleanup. There is no synthetic `NotStarted => zero` fallback in the observer or
+cleanup permit.
 
 ## Cardinality, order and concurrency
 
@@ -268,7 +275,7 @@ production maximum at **11 observations per root request**:
 ```
 
 `OBSERVATION_QUEUE_CAPACITY` remains 16. Add a model assertion that the named production maximum is no greater than the
-queue capacity. The five spare slots are queue headroom, not authorization for later phases to add events without another
+queue capacity. The five spare slots are queue headroom, not permission for later phases to add events without another
 decision and evidence-epoch change.
 
 For the successful Phase 1 scalar fixture, exact ordinals are:
@@ -325,13 +332,14 @@ bounded/droppable and are not trusted production facts.
 
 The event structs and fixed observation-window state have one model owner; semantic facts remain with their existing
 production owners. DEC1-B's complete L4 write set remains authoritative and is not duplicated here. Its overlap with O1 is
-explicitly serialized: L4 first changes `runtime/vm/src/budget.rs` and `runtime/vm/src/fiber.rs` to establish the exact raw
-commit protocol; only after that reviewed commit may O1 add bounded frame/call/return minting in `fiber.rs` and consume the
-frozen settlement at the host. O1 may not edit the `VmBudget` port or raw dispatch order during that second step.
+explicitly serialized: L4 first changes `runtime/vm/src/{lib,budget,control,error,fiber,limits,statement}.rs` to establish
+the exact adjacent `before_dispatch -> dispatch_one` protocol and remove the old budget errors. Only after that reviewed
+L4 change may O1 add bounded frame/call/return minting in `fiber.rs` and consume the frozen settlement at the host. O1 may not
+edit the `VmBudget` port or raw dispatch order during that second step.
 
 | Owner lane | Exact production writers | Exact allowed production files |
 | --- | --- | --- |
-| DEC1-B/L4 prerequisite, not an O1 authority | exact grant/commit/poll/settlement API and `VmFiber` commit-before-dispatch consumer | `runtime/vm/src/budget.rs`; `runtime/vm/src/fiber.rs`; remaining files only as listed by DEC1-B |
+| DEC1-B/L4 prerequisite, not an O1 authority | exact per-dispatch/poll/settlement API and VM-private adjacent consumer | `runtime/vm/src/{lib,budget,control,error,fiber,limits,statement}.rs`; remaining files only as listed by DEC1-B |
 | O1 model/VM facts | `BytecodeExecutionObserver` fixed claims; `VmFiber::start`; successful tails of `execute_call_local` and `execute_return` | `runtime/model/src/bytecode_execution_observation.rs`; `runtime/vm/src/fiber.rs` |
 | O1 budget projection | winning `RequestSupervisor` copies the four fields from the stored DEC1-B settlement; no accounting mutation | `runtime/model/src/bytecode_execution_observation.rs`; `runtime/host/src/host/request_supervisor.rs` |
 | L5 owner inventory core | inventory lock/guard/lease/frozen snapshot; leases embedded in actual pending and blocked-child owners | new `runtime/scheduler/src/owner_inventory.rs`; `runtime/scheduler/src/lib.rs`; `runtime/scheduler/src/pending.rs`; `runtime/scheduler/src/trampoline.rs`; `runtime/scheduler/src/bytecode.rs`; `runtime/scheduler/src/stream_driver.rs` |
@@ -360,12 +368,12 @@ The production writers own only focused non-verdict tests:
 
 - model: exact serde field names, shared-clone one-shot claims, the 11 <= 16 bound, and preservation of the existing
   concurrent/reentrant/panic/overflow tests;
-- VM: root plus first root-local callee selection, post-commit order, no event on rejected call/return, repeated/deep local
+- VM: root plus first root-local callee selection, post-transition order, no event on rejected call/return, repeated/deep local
   calls staying at the fixed maximum, and no raw value/handle in serialized payloads;
-- budget projection: exact four-field serialization from a frozen DEC1-B settlement and no mutable-stats/grant/remainder
-  read; raw accounting and race tests remain solely DEC1-B's obligation;
+- budget projection: exact four-field serialization from a frozen DEC1-B settlement and no mutable-stats/VM-counter read;
+  raw accounting and race tests remain solely DEC1-B's obligation;
 - inventory: canonical physical absence; live and then released owners; create-versus-freeze and release-versus-freeze
-  barriers; pending cell-to-wake transfer racing freeze; post-freeze creation rejection; and proof that every committed
+  barriers; pending cell-to-wake transfer racing freeze; post-freeze creation rejection; and proof that every installed
   creation yields either a non-zero frozen current count or `everCreated == true`;
 - cleanup: all six real zero/false facts on the synchronous path and a frozen non-zero or ever-created fact in each domain
   being propagated byte-for-byte through terminal, owner drops and cleanup, including sink panic/reentrancy; retain the
@@ -407,11 +415,10 @@ epoch as required by the Phase Contract; there is no compatibility mode for the 
   blocked sink could overflow the accepted queue on ordinary production behavior.
 - **A terminal summary containing a collected trace.** It requires a per-request trace buffer and moves call/frame truth away
   from the state-transition owners that can mint it.
-- **Infer helper execution from source, response or first dispatch.** None establishes a committed `CallLocal`, a child frame
+- **Infer helper execution from source, response or first dispatch.** None establishes an executed `CallLocal`, a child frame
   or normal return.
-- **Use allocated fuel as executed fuel.** It repeats the expected-red L4 defect and can charge a large unused quantum.
-- **Request one-unit fuel grants to simplify O1.** It would make observation choose DEC1-B's execution policy and is not
-  needed once the exact committed-dispatch hook feeds the frozen settlement.
+- **Infer raw execution from decoded opcodes, semantic attribution or an observer-side counter.** None proves the private
+  `before_dispatch -> dispatch_one` boundary, and each creates a second accounting authority.
 - **Sequentially sum pending registry/wake, resource-table and child-depth state.** A transfer or release can occur between
   locks and manufacture an all-zero snapshot even though an owner existed.
 - **Maintain observer-side owner counters or cloneable inventory tokens.** That creates a second ledger with gaps or double
@@ -428,10 +435,10 @@ A reviewer who did not author this decision must answer all of the following bef
 
 1. Can any loop, recursion, repeated call, resumed segment, cloned observer or future fiber cause more than two frame, one
    local-call, two return, one budget or one cleanup event for one root correlation?
-2. Is every VM event after its exact state mutation commits, with zero emission from validation/error paths?
+2. Is every VM event after its exact state mutation succeeds, with zero emission from validation/error paths?
 3. Does the selected callee return pair with the same first root-local call rather than whichever function returns first?
-4. Are all four budget fields copied from one immutable DEC1-B settlement, with charged count derived from committed raw
-   count, unused grant excluded, and no second O1 accounting API or ledger?
+4. Are all four budget fields copied from one immutable DEC1-B settlement, with charged count derived from exact successful
+   `before_dispatch` count and no second O1 accounting API, VM-local counter or ledger?
 5. Is budget emission outside supervisor locks, after a frozen final snapshot and before the unique terminal event on every
    activated-budget terminal path?
 6. Does each actual pending cell, resource entry and blocked child require the correct uncloneable inventory lease at its
@@ -454,7 +461,7 @@ A reviewer who did not author this decision must answer all of the following bef
 
 No shared semantic choice remains. DEC1-O leaves the L4 representation and API wholly to DEC1-B and consumes only its
 reviewed four-field frozen settlement. L5 may choose private names/layout for the fixed-size inventory state and snapshot,
-but the single lock, uncloneable carrier leases, three literal constructor commits, current-plus-ever-created semantics,
+but the single lock, uncloneable carrier leases, three literal installation sites, current-plus-ever-created semantics,
 freeze point, propagation and write-set above are fixed. If any actual constructor cannot be made lease-bearing, or the
 canonical Phase 1 driver cannot keep all three owner-producing capabilities physically absent, L5 is blocked and must
 return to Design; it may not add a second ledger, synthesize zeroes, default a token or weaken the Proof.

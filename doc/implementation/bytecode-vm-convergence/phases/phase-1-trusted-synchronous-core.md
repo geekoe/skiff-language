@@ -385,10 +385,17 @@ surface；不能提前实现 Phase 2 aggregate executor。
 
 ### L4 — Raw fuel、deadline 和 internal stop
 
-- 每个 semantic dispatch 从受信 raw quantum 扣费；
-- grant 可以小于 maximum，不能预扣未执行的完整 quantum；
-- raw executed count 与 semantic attribution 分账；
-- quantum 归零无条件 poll deadline/internal stop；
+- VM 私有 dispatch wrapper 对每次尝试先调用一次 `VmBudget::before_dispatch`，成功后相邻且恰好调用一次
+  `dispatch_one`；中间无 yield、callback、poll 或 fallible bookkeeping；
+- `before_dispatch` 在唯一 request-owned `ExecutionBudget` 锁内原子授权并增加一个 raw unit；随后 instruction
+  error 仍计费且不可重试；不存在 quantum grant/precharge/refund/remainder/dispatch token 或 VM fuel counter；
+- raw executed count 与 semantic attribution 分账；semantic charge 不消耗 raw capacity，O1 charged count 只从 raw
+  count 派生；
+- first/segment/verified-loop poll 与 raw cadence 都由 budget 的 authoritative raw counter 决定；
+- hard limit `N` 允许前 N 次 dispatch，只有 N+1 失败；`u64::MAX` 必须证明 `MAX-1 -> MAX -> N+1 fuel`，raw
+  overflow 不可达，semantic/poll overflow fail closed；
+- deadline/completion/cancel/session-stop 在同一个 winner cell 竞争；每次 open transition 取得 budget lock 后才从
+  budget-owned trusted monotonic clock 取时，due deadline 优先；
 - hard limit exhausted 产生唯一 terminal，当前 frame 不可 catch/继续；
 - artifact、test fixture 和 host adapter不能关闭、扩大或重置 limit；
 - supported scalar opcode 单次工作量由 Phase 1 admitted scalar/frame limits 界定。
@@ -399,6 +406,10 @@ surface；不能提前实现 Phase 2 aggregate executor。
 - request target 只能来自 K1 production image pin；
 - deterministic unary scalar response 使用 canonical boundary carrier；
 - success/VM failure/deadline/internal stop 只选择一个 terminal；
+- request row 以 typed `(RouterSessionEpoch, RequestId)` 为 key；activation 精确返回 `Activated`、
+  `RevokedByCancel`、`RevokedBySessionStop` 或 `Invalid`，两个 revoked outcome 都只执行一次
+  `StopWithoutResponse`，不结算 budget、不发 terminal、不创建/重复 cleanup；`Invalid` 使用 admission error
+  `bytecode request reservation activation failed`，同样不创建 budget/inventory/terminal/cleanup；
 - synchronous closure 不创建 Pending owner、stream/resource/child state；
 - request cleanup 可由 typed event 观察；
 - unsupported request/capability 在 K0C fail closed，不进入 adapter fallback。

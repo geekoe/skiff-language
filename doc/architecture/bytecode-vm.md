@@ -1218,19 +1218,31 @@ decode到当前owner的fresh value；不能把image-local const index当durable 
 
 ### 16.1 Unbypassable hard fuel
 
-Artifact semantic charge metadata不能单独承担安全性。VM dispatch对每条semantic instruction从受信raw-op
-quantum扣1；quantum为0时无条件poll deadline/internal stop，并从execution policy拥有的finite instruction
-limit扣除已执行数量。总limit耗尽立即固定
-`std.error.InstructionLimitExceededError { instructionCount, limit }`并终止当前frame；该frame没有剩余budget
-执行catch。Failure到达service request root后可以固定为typed carrier，供仍active remote caller按admission
-捕获；本地dying frame不可恢复执行。继续执行时只能由VM按固定、非零、受信上限补充下一个quantum。
-Artifact不能设置、关闭、跳过或重置quantum/总limit，也不能用metadata扩大预算。
+Artifact semantic charge metadata不能单独承担安全性。每个 request 只有一个 execution policy拥有的 finite
+raw instruction limit和一个request-owned accounting/terminal winner。VM 私有 dispatch wrapper 对每次尝试调用
+一次 `before_dispatch`；该调用在唯一 budget state 下原子检查 terminal/limit 并增加一个 raw executed unit，
+返回成功后必须相邻且恰好调用一次私有 `dispatch_one`。两者之间不能 yield、poll、callback 或执行其它
+fallible bookkeeping。instruction 自身随后失败仍是已尝试、已计费的 dispatch，不能退款或重试。
+
+不存在 raw quantum grant、whole-quantum precharge/refund、remainder、dispatch receipt/token 或 VM-local fuel
+counter。Limit `N` 允许前 N 次 `before_dispatch`，完成点恰在 N 时可以成功；只有 N+1 返回
+`InstructionLimitExceeded` 且不 dispatch。即使 limit 是 `u64::MAX`，`MAX-1` 也只增加到 `MAX`，下一次先比较
+limit后失败，不求值 `MAX + 1`；因此 raw overflow 不可达。Artifact、adapter、fixture和metadata不能设置、
+关闭、跳过、扩大或重置 production limit。
+
+Budget 从自己的 authoritative raw count决定 deadline/internal-stop poll cadence：首个 dispatch、每个 segment
+入口和verified loop checkpoint都poll，counter cadence保证任意两次强制poll之间至多执行受信上限数量的
+dispatch。每个 open terminal transition都先取得同一 budget lock，再从 budget-owned trusted monotonic clock
+取时；due deadline优先于success/failure/cancel/internal stop/fuel候选，已冻结winner不可覆盖。总limit耗尽固定
+`std.error.InstructionLimitExceededError { instructionCount, limit }`并终止当前frame；本地dying frame不可catch
+或继续。Failure到达service request root后才可按admission投影typed carrier。
 
 Post-link verifier另证明每个CFG cycle经过`budget_checkpoint`，以保持语言级loop/backedge semantic charging与
-source attribution；checkpoint本身有固定非零raw-op成本，但不是唯一interrupt poll。两层同时存在：raw hard
-fuel即使面对损坏artifact/validator bug也界定两次stop poll之间的最大工作量，semantic checkpoint保持既有
-可观察budget单位。Decoded fusion/JIT必须按所含semantic op数量扣raw fuel；任何runtime micro-op内部循环也按
-固定quantum poll，不能一次调用吞掉无界工作。
+source attribution；checkpoint所在 instruction与其它 instruction一样只有一个相邻 `before_dispatch` raw charge，
+同时显式poll但不是唯一interrupt poll。Raw hard fuel即使面对损坏artifact/validator bug也界定总 dispatch，
+semantic checkpoint保持独立可观察 attribution。Decoded fusion/JIT必须为所含每个semantic dispatch保留同一
+before-dispatch boundary；任何runtime micro-op内部循环也必须按固定受信工作上限poll，不能一次调用吞掉无界
+工作。
 
 ### 16.2 Semantic charging and profiling
 
@@ -1357,7 +1369,7 @@ implementation benchmark plan绑定workload、release profile、机器、统计�
   lease/idle TTL同为30s且sweep先expire lease的默认路径必须修正，不能在未向Runtime发送/确认
   discard时只清Router fence并把残留instance当成已销毁；idle/disconnect后的新owner还必须
   推进incarnation epoch，不能让旧ref/continuation命中新instance；
-- 受信raw hard fuel quantum/finite instruction limit与CFG-cycle checkpoint共同阻止无charge pure jump loop；
+- 每次dispatch相邻的受信`before_dispatch`、finite raw limit与CFG-cycle checkpoint共同阻止无charge pure jump loop；
 - source-to-artifact-to-deployment-load-to-runtime真实路径、GC pressure与Agine chat smoke通过；
 - production tree evaluator、old artifact reader、assembly admission/generation、`call_suspend`、test-only
   evaluator和compatibility fallback全部删除。

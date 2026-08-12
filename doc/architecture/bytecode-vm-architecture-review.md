@@ -487,7 +487,13 @@ session A 断线后旧 request R 仍可继续外部副作用；session B 重连�
 
 #### Required convergence
 
-- active request key 使用 `(sessionId, requestId)` 或包含 connection epoch 的 typed identity。
+- active request key 使用 typed `(RouterSessionEpoch, RequestId)`；旧 session 的 cancel 不得命中新 session。
+- reservation activation 必须返回精确的
+  `Activated | RevokedByCancel | RevokedBySessionStop | Invalid`。cancel 或 session stop 在 Reserved 状态留下
+  revoke tombstone；activation 先赢时只由已创建的 request budget 决定 terminal winner。
+- 两种 revoked outcome 都只映射一次 `StopWithoutResponse`，不得创建 budget/inventory，不得重结算、发 terminal
+  或重复 cleanup；`Invalid` 是 token/key/row identity 不匹配并映射既有稳定 admission error，cancel 与
+  disconnect 竞争时保留第一个 revoke 原因。
 - session disconnect 必须终止其全部 request-owned Pending、resources 和 fibers。
 - duplicate begin 始终拒绝，不能静默覆盖。
 
@@ -527,7 +533,14 @@ table、VM frames、Pending、HTTP queue 和重复 carrier graph。
 
 #### Required convergence
 
-- 分离 `rawGranted/rawConsumed`、semantic charge 和 telemetry counters；只提交实际 consumed fuel。
+- request-owned budget 是唯一 accounting/winner authority。VM 私有 dispatch wrapper 在每次 dispatch 紧邻前调用
+  `before_dispatch`，一次原子授权并计入一个 raw unit，成功后恰好执行一次；instruction semantic error 仍已执行、
+  已计费且不得 retry。不得保留 quantum grant/precharge/refund/remainder、可转移 token/receipt 或 VM raw counter。
+- raw 与 semantic attribution 分离。limit=N 时前 N 次 dispatch 成功，第 N+1 次在 dispatch 前失败；limit=`u64::MAX`
+  时 `MAX-1 -> MAX` 成功，下一次因 fuel limit 失败，因此 raw overflow 不可达。semantic/poll counter overflow 仍须
+  fail closed。
+- poll cadence 从同一 budget raw counter 推导；deadline/cancel/internal stop 与 fuel 共用一个 frozen winner，settle
+  后 supervisor 只能消费 winner，不得重判。
 - 为输入尺度 opcode 分块并设置 poll points，或在 admission/budget 中限制单对象尺寸。
 - 删除 per-instruction full-frame reconciliation 和 instruction deep clone。
 - dense record 使用 direct offset；map iteration 使用稳定 cursor/iterator，不按 ordinal 重扫。
