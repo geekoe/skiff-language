@@ -140,7 +140,7 @@ impl PublishedFixture {
         let absolute_path = self
             .artifact_root
             .path()
-            .join(record_path.as_relative_path());
+            .join(record_path.as_relative_path().as_path());
         let before = fs::read(&absolute_path).expect("read immutable bytecode record");
         let value = serde_json::from_slice::<Value>(&before)
             .expect("canonical bytecode record remains JSON before corruption");
