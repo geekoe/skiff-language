@@ -4,7 +4,7 @@ mod support;
 use skiff_artifact_identity::{ArtifactIdentityError, ValidatedBytecodeArtifact};
 use skiff_artifact_model::{
     BytecodeDecodeError, BytecodeRelocation, InstructionSourceSite, Opcode, ParamModeIr,
-    PendingEffectCategory, StatementAttributionClass, StructuralValidationError,
+    PendingEffectCategory, StatementAttributionClass, StructuralValidationError, TypeRefIr,
 };
 use skiff_compiler::{
     BytecodeEmissionError, CompilerPlatformSources, PackageCompileError,
@@ -12,7 +12,7 @@ use skiff_compiler::{
 };
 use skiff_runtime_linked_bytecode::{
     LinkedBytecodeCandidate, LinkedFunction, LinkedGatewayCallableRole, LinkedInstruction,
-    LinkedInstructionTarget,
+    LinkedInstructionTarget, TypeIndex,
 };
 use skiff_runtime_linker::{
     link_deployment, BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability,
@@ -153,15 +153,30 @@ fn scalar_local_source_facts_survive_canonical_publication_loader_and_link() {
     assert_eq!(linked_run.frame().result_types().len(), 1);
     assert_eq!(
         linked_run.frame().slot_types()[0],
-        linked_helper.frame().slot_types()[0]
-    );
-    assert_eq!(
         linked_run.frame().slot_types()[1],
-        linked_helper.frame().slot_types()[0]
+        "the run parameter and source local use one specialization-owned scalar type"
     );
     assert_eq!(
-        linked_run.frame().result_types(),
-        linked_helper.frame().result_types()
+        linked_run.frame().slot_types()[0],
+        linked_run.frame().result_types()[0],
+        "the run result retains its source-owned scalar type"
+    );
+    assert_eq!(
+        linked_helper.frame().slot_types()[0],
+        linked_helper.frame().result_types()[0],
+        "the helper result retains its source-owned scalar type"
+    );
+    assert_linked_type_handoff(
+        &candidate,
+        linked_run,
+        linked_run.frame().slot_types()[0],
+        artifact_run.frame_layout.slot_type_refs[0],
+    );
+    assert_linked_type_handoff(
+        &candidate,
+        linked_helper,
+        linked_helper.frame().slot_types()[0],
+        artifact_helper.frame_layout.slot_type_refs[0],
     );
 
     let gateway = candidate
@@ -393,6 +408,26 @@ fn assert_required_opcodes(function: &LinkedFunction, required: &[Opcode]) {
             .all(|instruction| instruction.opcode() != Opcode::TailCallLocal),
         "the accepted fixture must remain an ordinary direct local call"
     );
+}
+
+fn assert_linked_type_handoff(
+    candidate: &LinkedBytecodeCandidate,
+    function: &LinkedFunction,
+    linked_type: TypeIndex,
+    artifact_type_ref: u32,
+) {
+    let entry = candidate
+        .types()
+        .get(linked_type.get() as usize)
+        .expect("frame type index resolves in the linked image");
+    assert_eq!(entry.index(), linked_type);
+    assert_eq!(
+        entry.origin().package_build_id(),
+        function.key().package_build_id()
+    );
+    assert_eq!(entry.origin().artifact_index().get(), artifact_type_ref);
+    assert_eq!(entry.origin().specialization(), Some(function.key()));
+    assert_eq!(entry.type_ref(), &TypeRefIr::builtin("number"));
 }
 
 fn assert_statement_handoff(
