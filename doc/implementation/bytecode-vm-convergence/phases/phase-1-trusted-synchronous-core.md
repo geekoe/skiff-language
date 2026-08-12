@@ -1,10 +1,10 @@
 # Phase 1：最小可信同步执行闭环
 
-> Status: Phase Contract drafted; activation requires a valid Phase 0 closure acceptance receipt
+> Status: activation authorized by the accepted Phase 0 closure; MAP1 v0 required before production dispatch
 >
 > Semantic Closure: Trusted Synchronous Execution Closure
 >
-> Depends on: [`phase-0-supplemental-closure.md`](../tasks/phase-0-supplemental-closure.md) accepted
+> Depends on: [`phase-0-closure.md`](../results/phase-0-closure.md) accepted
 >
 > Unblocks: Phase 2 value lifecycle and writable path
 

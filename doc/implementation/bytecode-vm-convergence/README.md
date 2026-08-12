@@ -1,6 +1,6 @@
 # Bytecode VM 架构收敛重构总计划
 
-> Status: project plan; Phase 0 integrated, acceptance blocked; Phase 1 blocked
+> Status: project plan; Phase 0 accepted; Phase 1 activation authorized, MAP1 pending
 >
 > Created: 2026-08-12
 >
@@ -338,10 +338,11 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 | --- | --- |
 | reusable execution principles | written; adopted by this project |
 | project plan | active |
-| Phase 0 | integrated; acceptance blocked |
-| Phase 0 supplemental closure | ready for restart; prior attempt aborted |
-| Phase 1 | detailed plan written; activation blocked on Phase 0 closure |
+| Phase 0 | accepted; [`results/phase-0-closure.md`](./results/phase-0-closure.md) |
+| Phase 0 supplemental closure | accepted; durable Gate receipt recorded |
+| Phase 1 | Phase Contract written; MAP1 activation authorized |
 | Phase 2–7 | outline only; not implementation-ready |
 
-在 Phase 0 supplemental closure 获得 valid independent acceptance 之前，任何 Phase 1–7 的 production code
-任务都没有获得本计划授权。
+Phase 0 已由独立 Acceptance Agent 在 exact detached candidate 上通过 canonical Gate。Phase 1 只有在
+MAP1 v0 单独提交、记录 accepted receipt 与首批 Development/Proof frontier 后才可派发 production task；
+Phase 2–7 仍未授权。

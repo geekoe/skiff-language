@@ -1,6 +1,6 @@
 # Phase 0 补充闭合任务（重新执行）
 
-> Status: ready for restart; previous closure attempt aborted and is not acceptance evidence
+> Status: accepted; closure receipt in [`results/phase-0-closure.md`](../results/phase-0-closure.md)
 >
 > Kind: Phase 0 recovery and executable proof closure; not Phase 1 production implementation
 >
@@ -14,13 +14,13 @@
 > [`large-change-execution-principles.md`](../large-change-execution-principles.md)、
 > [`bytecode-vm-architecture-review.md`](../../../architecture/bytecode-vm-architecture-review.md)
 
-当前 Phase 0 已把一版审计、决策、VCP harness 和 selector 合流到 `main`，但原 acceptance 不满足
-production-shaped VCP、candidate-specific evidence、Gate 聚合和独立验收合同。因此 Phase 0 仍是：
+本文启动时，Phase 0 的原 acceptance 不满足 production-shaped VCP、candidate-specific evidence、
+Gate 聚合和独立验收合同。补充闭合现已完成：
 
 ```text
-implementation: integrated
-acceptance: blocked
-Phase 1 production implementation: not authorized
+implementation: integrated to main at 4297bc75aedfd1058fe388d25d43ad996b1b9d5b
+acceptance: PASS for b74b66589a9fe0307ed9a05014e33f3a19a1874a
+Phase 1 production implementation: authorized only after MAP1 v0 is committed
 ```
 
 本任务只补齐 Phase 0 的真实执行证明和 acceptance closure。它采用一条 Development Line 和一条 Proof Line；

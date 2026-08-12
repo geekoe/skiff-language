@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 21; both host proofs accepted; final Gate freeze pending
+> Status: complete; revision 22; frozen candidate accepted and merged to main
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -386,3 +386,18 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   candidate, execute the canonical twenty-receipt Gate into a caller-designated durable directory, and obtain a new
   candidate-level Acceptance verdict. Phase 1 production work remains blocked until that receipt and
   `results/phase-0-closure.md` exist.
+
+### Revision 22 — frozen-candidate acceptance and main closure
+
+- the Gate invocation contract was made explicit in `b74b6658`: candidate commit/tree and the absent durable output path are
+  caller-supplied literals. Missing any input fails before command capture; neither Gate nor verify plan chooses a candidate
+  or temporary evidence directory. The independent delta reviewer returned `PASS`;
+- froze clean candidate `b74b66589a9fe0307ed9a05014e33f3a19a1874a`, tree
+  `4b720da227bc8c25838da7ce35d7eac6417295ed`, and created a detached read-only acceptance worktree. A new Acceptance Agent
+  ran the canonical Gate exactly once into `/Users/geek/workspace/skiff-bcvm-p0-evidence-b74b6658`;
+- Acceptance returned `PASS`: `20/20` commands and `33/33` declared tests passed, with zero failed, skipped, todo, cancelled
+  or ignored cases. All preflight/postflight/closure/fresh identities were exact and clean; the manifest SHA-256 is
+  `96fc89ddfcd4149e8aa3a2bae23989d4f779ae0daf3d680d038c9a41553af22d`; no waiver was used;
+- merged the accepted tree to `main` in `4297bc75aedfd1058fe388d25d43ad996b1b9d5b`. The result receipt is
+  [`results/phase-0-closure.md`](../results/phase-0-closure.md). Phase 0 is complete; Phase 1 is authorized only after its
+  MAP1 v0 receipt is committed.
