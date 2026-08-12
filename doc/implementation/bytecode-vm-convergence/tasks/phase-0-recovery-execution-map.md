@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 10; D0-M/D0-R integrated; D0-O running; P0-G correction running
+> Status: active; revision 11; D0-O, P0-G correction and host Proof running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -50,6 +50,7 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | D0-R | Development | takeover complete as `d12a9471`; integrated as `dd1399bc`; independent receive review PASS | actual 10 min takeover + focused validation | complete | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; 7 focused host cases green |
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
 | D0-O | Development | running as `/root/p0_observation`; started `2026-08-12T17:03:00Z` | 60–85 min | 20 min, then 45 min | corrected DEC0-S D0-O set plus approved existing driver owner `runtime/host/src/host/request_entry/resumable.rs` | dependency-neutral failure-isolated observer; five sole mint points; full deployment owner; request-local terminal/cleanup proof; focused tests |
+| P0-V-H/P0-N | Proof | expected-red writer `/root/p0_host_proof`; started `2026-08-12T17:16:00Z` | 45–65 min | 15 min, then 35 min | two new host-internal test modules, module registration, removal of superseded request VCP; no production/Gate code | success and three negatives enter only `RuntimeHost::spawn_bytecode_request`, preserve actual wire/typed facts, and never mint verdict/internal execution objects |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -79,6 +80,7 @@ Revision 0 只预留首批 writer；实际 Agent ID 在 dispatch revision 中记
 | D0-R | `codex/bcvm-p0-route-takeover` | `/Users/geek/workspace/skiff-bcvm-p0-route-takeover` | corrected revision-8 integration commit | yes after D0-M validation completed |
 | D0-M | `codex/bcvm-p0-materialize` | `/Users/geek/workspace/skiff-bcvm-p0-materialize` | revision-5 MAP commit | no until D0-R releases the lease |
 | D0-O | `codex/bcvm-p0-observation` | `/Users/geek/workspace/skiff-bcvm-p0-observation` | `dd1399bc` after D0-M/D0-R join | yes; one focused command after implementation, no workspace fmt |
+| P0-V-H/P0-N | `codex/bcvm-p0-host-proof` | `/Users/geek/workspace/skiff-bcvm-p0-host-proof` | `f2a1cdc7`; expected-red until D0-O joins | no until rebased after D0-O; no production writes |
 
 同一 worktree 一个 writer。Agent 使用 `fork_turns=none`，只接收 exact task contract。Acceptance Agent 尚未创建，
 且必须与所有 candidate writer 独立。
@@ -227,3 +229,14 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   `resumable.rs` owner before the host finalizer can prove explicit pin release. Approved that one-file write-set expansion:
   the private driver returns a private driven result plus the optional concrete execution, callers explicitly drop it only
   after terminal handling, and no second run/resume loop or public execution seam may be introduced.
+
+### Revision 11 — parallel host Proof frontier
+
+- created `codex/bcvm-p0-host-proof` at exact input `f2a1cdc7` and dispatched `/root/p0_host_proof` with no Cargo lease;
+- combined P0-V-H and P0-N under one Proof write owner because both add sibling host-internal modules and share the sole
+  `request_entry.rs` registration point; their success/negative scenario logic remains separate;
+- the Proof writer may read the in-progress typed observation and Gate schemas but cannot modify production or Gate code.
+  It must first commit an expected-red carrier, then rebase after D0-O/Gate contracts join before executable validation;
+- dispatched a bounded read-only `/root/p0_negative_clarify` to identify exact production setup and actual wire error facts
+  for corrupt artifact, wrong entry and unsupported mode. It has no write set and only feeds P0-N;
+- D0-O retains the sole Cargo lease. P0-G remains Node-only; host Proof does not run Cargo against an intentionally missing API.
