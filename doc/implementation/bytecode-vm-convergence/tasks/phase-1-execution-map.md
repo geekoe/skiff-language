@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 8; L1/L2/K1/L3/K2 accepted, L4/L5 active
+> Status: active; revision 9; L1/L2/K1/L3/K2/L4 accepted, L5 active
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -338,3 +338,26 @@ run the complete Phase 1 Gate and issue the final verdict.
 - the only production-ready frontier is the serialized L4/L5 writer. It must first commit and validate L4's adjacent
   per-dispatch accounting and frozen stop winner, then layer L5's actual owner-inventory carrier. O1 remains blocked until
   those typed carriers are reviewed.
+
+## 16. Revision 9 — exact execution budget and frozen stop winner
+
+- L4 joined as `2e24763b..c2282c42` after focused `21/21` green and independent `PASS`. The old fuel grant,
+  replenish/quantum/remainder, refund and compatibility `VmBudgetError`/`InvalidFuelGrant` surfaces are gone. The VM has one
+  private `dispatch_one` call, immediately preceded by the sole successful `before_dispatch`; an attempted instruction is
+  charged even when its opcode semantics subsequently fail;
+- request-owned `ExecutionBudget` keeps raw, semantic, poll, last-coordinate, clock, attachment and immutable settlement
+  under one mutex. Focused boundaries cover zero, N/N+1, `MAX-1 -> MAX -> N+1`, semantic/poll overflow, cadence and a
+  blocking-clock lock-order barrier. `timeoutMs` is first bounded to signed host milliseconds and then checked against the
+  retained clock; `expiresAt`'s RFC3339 year range is already strictly below that bound;
+- supervisor rows are keyed by exact `(RouterSessionEpoch, RequestId)`. Reservation/activation has four closed outcomes;
+  cancel-before-activation and session-stop revocation return `StopWithoutResponse` and create no budget, settlement,
+  terminal event or cleanup permit. Deadline, explicit cancel, internal stop and completion freeze one winner; the same
+  immutable facts drive response and later observation projection;
+- evidence: request budget `11/11` (`/tmp/skiff-p1-l4-request-budget-tests-r3.log`, SHA-256
+  `5b15709758f1535ad142566796fb7b5ce18a4451cc8ce554f5d2ec8ba7d07ec9`); supervisor/session `6/6` (SHA-256
+  `f4a7a22e1f869590fe8af54b51eef9df8d126551689f3ff907e3e1cb13226b63`); canonical host, VM boundary, VM vertical and
+  scheduler adapter each `1/1`. Host lib test target also compiled. Independent review found no winner/session,
+  cross-epoch, lock-order, representability, compatibility or O1/L5 scope counterexample;
+- L5 is now the sole production-ready frontier and remains under the same serialized owner. It may add only the actual
+  owner-inventory carrier and physically absent Phase 1 ports; it may not change L4's budget/winner or mint O1 events.
+  O1 starts after L5's frozen inventory carrier receives independent review.
