@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 7; L1/L2/K1/L3 accepted, K2 and L4/L5 active
+> Status: active; revision 8; L1/L2/K1/L3/K2 accepted, L4/L5 active
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -313,3 +313,28 @@ run the complete Phase 1 Gate and issue the final verdict.
   the Phase 1 capability surface;
 - the ready frontier is now K2 Proof and the single L4/L5 production writer. L4/L5 share VM/request/scheduler/host state and
   therefore remain serialized under one owner. O1 starts only after their frozen settlement and inventory carriers exist.
+
+## 15. Revision 8 — scalar VM kernel proof and next-phase handoff evidence
+
+- K2 Proof joined as `35131f42` + `bf0d30f8` after its original reviewer rejected three false-greens. The corrected
+  production-image tests use the public compiler/artifact/loader path, sole `DeploymentExecutionImage`, opaque entry and
+  `Vm::start`; no raw linked candidate, private image constructor or second VM exists;
+- the source carrier now executes both branch outcomes with distinct `3.0`/`0.0` results and covers scalar frame
+  load/store, arithmetic/comparison, ordinary local call and return. A verifier-owned fixture covers `CopySlot`/`MoveSlot`
+  only because the compiler has no accepted scalar producer for those opcodes; public root enumeration proves a Move clears
+  its source, so final-value equality cannot mask a copy implementation;
+- the recursive source proof calls `run_segment` exactly once with a sufficient segment budget, reaches exactly 4096 live
+  VM frames in the same dispatch loop and then reports the stable frame bound; a separate one-call carrier proves the exact
+  value-stack bound. A fail-fast heap spy rejects lifecycle, aggregate, resource, snapshot-share/COW and owner-transfer calls
+  on the scalar lane. The focused target passed `3/3`; log `/tmp/skiff-p1-k2-proof-review-fix.log`, SHA-256
+  `f031b7bfe955a38e2976fe196ac40cba3d1f822c3f6b0ce2e658baf52fcb9f49`; independent review returned `PASS`;
+- canonical std source/type authority is now bytecode-free in both compiler and test-runner callers. Test-runner seed unit
+  `4/4` and bootstrap `1/1` passed. The broad batching fixture continues to fail closed on its own disabled test `assert`
+  control flow; it is not an accepted Phase 1 runtime carrier and must not be used to weaken K0A;
+- a permitted Phase 2 read-only investigation identified the future lifecycle seam but did not authorize Phase 2 code:
+  source-owned transfer facts currently do not reach the artifact/image/VM consumer, while emitter, linker and VM each
+  retain partial type-based lifecycle inference. Phase 1's result must hand off that producer→transport→consumer gap,
+  the nested-record alias/COW VCP and missing-plan negative. Phase 2 remains outline-only until Phase 1 Acceptance;
+- the only production-ready frontier is the serialized L4/L5 writer. It must first commit and validate L4's adjacent
+  per-dispatch accounting and frozen stop winner, then layer L5's actual owner-inventory carrier. O1 remains blocked until
+  those typed carriers are reviewed.
