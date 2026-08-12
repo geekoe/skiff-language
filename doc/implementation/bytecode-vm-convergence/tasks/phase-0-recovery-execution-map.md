@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 0; pre-dispatch
+> Status: active; revision 1; P0-V/P0-G running
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -43,8 +43,8 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 
 | Task | Line | State | Expected elapsed | `status_after` | Initial write set | Join condition |
 | --- | --- | --- | --- | --- | --- | --- |
-| P0-V | Proof | ready after MAP commit | 45–75 min | 25 min | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; Phase 0 fixture files; request test registration only if required | non-document commit; production-shaped expected-red/run evidence; no direct internal construction; exact blocker/event request if incomplete |
-| P0-G | Proof | ready after MAP commit | 35–60 min | 20 min | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
+| P0-V | Proof | running as `/root/p0_vcp`; started `2026-08-12T16:14:31Z` | 45–75 min | `2026-08-12T16:39:31Z` | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; Phase 0 fixture files; request test registration only if required | non-document commit; production-shaped expected-red/run evidence; no direct internal construction; exact blocker/event request if incomplete |
+| P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -102,3 +102,13 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
 - declared P0-V and P0-G as the first parallel executable frontier;
 - reserved worktrees, write sets, expected elapsed time, short status checkpoints and Cargo ownership;
 - created no Clarification, Design, Development repair or Acceptance Agent.
+
+### Revision 1 — first executable frontier dispatch
+
+- committed revision 0 as `9244f5b0` before any Agent existed;
+- created `codex/bcvm-p0-vcp` and `codex/bcvm-p0-gate` worktrees directly under `/Users/geek/workspace` from that
+  exact commit;
+- dispatched `/root/p0_vcp` and `/root/p0_gate` with `fork_turns=none`, exact write sets and explicit elapsed/status
+  expectations at `2026-08-12T16:14:31Z`;
+- assigned initial Cargo ownership exclusively to P0-V; P0-G may run only focused Node self-tests;
+- no Clarification, Design, production repair or Acceptance task is active.
