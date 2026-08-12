@@ -49,7 +49,7 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | REV0-S | Review | `FAIL`, complete in 8 min; corrections recorded in rev8 | actual 8 min | on checkpoint | read-only DEC0-S and cited production code | found omitted event-owner/test files and confirmed D0-R sealed-fact expansion; no new authority found |
 | D0-R | Development | takeover complete as `d12a9471`; integrated as `dd1399bc`; independent receive review PASS | actual 10 min takeover + focused validation | complete | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; 7 focused host cases green |
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
-| D0-O | Development | running as `/root/p0_observation`; started `2026-08-12T17:03:00Z` | 60–85 min | 20 min, then 45 min | exact corrected DEC0-S D0-O write set | dependency-neutral failure-isolated observer; five sole mint points; full deployment owner; request-local terminal/cleanup proof; focused tests |
+| D0-O | Development | running as `/root/p0_observation`; started `2026-08-12T17:03:00Z` | 60–85 min | 20 min, then 45 min | corrected DEC0-S D0-O set plus approved existing driver owner `runtime/host/src/host/request_entry/resumable.rs` | dependency-neutral failure-isolated observer; five sole mint points; full deployment owner; request-local terminal/cleanup proof; focused tests |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -223,3 +223,7 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   manufacture sole-mint evidence, and the recorded raw-output environment differed from the executed process;
 - returned P0-G to its Proof owner for a bounded correction with new negative self-tests. No P0-G commit has joined the
   integration branch, and D0-O remains independent of the Gate verdict implementation.
+- D0-O discovered that `drive_bytecode_request` currently destroys `BytecodeRequestExecution` inside the existing
+  `resumable.rs` owner before the host finalizer can prove explicit pin release. Approved that one-file write-set expansion:
+  the private driver returns a private driven result plus the optional concrete execution, callers explicitly drop it only
+  after terminal handling, and no second run/resume loop or public execution seam may be introduced.
