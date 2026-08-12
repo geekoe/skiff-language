@@ -1,28 +1,24 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-
 import {
+  commandEnvironmentIdentity,
   PHASE0_COMMAND_SCHEMA,
   parseTestSummary,
   sha256,
 } from './bytecode-vm-phase-0-contract.mjs';
 
-export async function writePhase0CommandReceipt(outputDir, spec, outcome, {
+export async function writePhase0CommandReceipt(evidenceRoot, spec, actualEnv, outcome, {
   stdout = '',
   stderr = '',
   startedAt = null,
   finishedAt = null,
   interruptedBy = null,
 } = {}) {
-  const commandDir = join(outputDir, 'commands');
-  await mkdir(commandDir, { recursive: true, mode: 0o700 });
   const paths = commandPaths(spec.id);
-  await writeExclusive(join(outputDir, paths.stdout), stdout);
-  await writeExclusive(join(outputDir, paths.stderr), stderr);
+  await evidenceRoot.writeExclusive(paths.stdout, stdout);
+  await evidenceRoot.writeExclusive(paths.stderr, stderr);
   const normalized = normalizeOutcome(outcome, interruptedBy);
   const receipt = {
     schemaVersion: PHASE0_COMMAND_SCHEMA,
-    identity: commandIdentity(spec),
+    identity: commandIdentity(spec, actualEnv),
     startedAt,
     finishedAt,
     outcome: { ...normalized, status: commandStatus(normalized) },
@@ -31,32 +27,37 @@ export async function writePhase0CommandReceipt(outputDir, spec, outcome, {
       stderr: streamIdentity(paths.stderr, stderr),
     },
   };
-  await writeJsonExclusive(join(outputDir, paths.receipt), receipt);
+  await writeJsonExclusive(evidenceRoot, paths.receipt, receipt);
   return receipt;
 }
 
-export async function loadAndValidateCommandReceipts(outputDir, specs) {
+export async function loadAndValidateCommandReceipts(evidenceRoot, specs, commandEnvironments) {
   const failures = [];
   const records = new Map();
   const expectedReceiptNames = new Set(specs.map(({ id }) => `${id}.receipt.json`));
-  const commandDir = join(outputDir, 'commands');
-  const names = await readdir(commandDir).catch((error) => {
-    if (error?.code === 'ENOENT') return [];
-    throw error;
-  });
+  const names = (await evidenceRoot.snapshotFiles())
+    .map(({ path }) => path)
+    .filter((path) => path.startsWith('commands/'))
+    .map((path) => path.slice('commands/'.length));
   for (const name of names.filter((entry) => entry.endsWith('.receipt.json'))) {
     if (!expectedReceiptNames.has(name)) {
       failures.push(failure('command.unexpected', `unexpected command receipt ${name}`));
     }
   }
   for (const spec of specs) {
-    const loaded = await loadReceipt(outputDir, spec);
+    const loaded = await loadReceipt(evidenceRoot, spec);
     if (loaded.error !== null) {
       failures.push(failure('command.missing', `${spec.id}: ${loaded.error}`));
       continue;
     }
     const { receipt, stdout, stderr } = loaded;
-    const commandFailures = validateReceipt(receipt, spec, stdout, stderr);
+    const commandFailures = validateReceipt(
+      receipt,
+      spec,
+      commandEnvironments?.get(spec.id),
+      stdout,
+      stderr,
+    );
     failures.push(...commandFailures);
     records.set(spec.id, {
       receipt,
@@ -71,13 +72,13 @@ export async function loadAndValidateCommandReceipts(outputDir, specs) {
   return { records, failures };
 }
 
-export function commandIdentity(spec) {
+export function commandIdentity(spec, actualEnv) {
   return {
     id: spec.id,
     command: spec.command,
     args: [...spec.args],
     cwd: spec.cwd,
-    evidenceEnv: { ...spec.evidenceEnv },
+    environment: commandEnvironmentIdentity(actualEnv),
     testFormat: spec.testFormat,
   };
 }
@@ -88,12 +89,13 @@ export function commandStatus(outcome) {
   return 'FAIL';
 }
 
-function validateReceipt(receipt, spec, stdout, stderr) {
+function validateReceipt(receipt, spec, actualEnv, stdout, stderr) {
   const failures = [];
   if (receipt?.schemaVersion !== PHASE0_COMMAND_SCHEMA) {
     failures.push(failure('command.schema', `${spec.id} has a stale receipt schema`));
   }
-  if (JSON.stringify(receipt?.identity) !== JSON.stringify(commandIdentity(spec))) {
+  if (actualEnv === undefined
+    || JSON.stringify(receipt?.identity) !== JSON.stringify(commandIdentity(spec, actualEnv))) {
     failures.push(failure('command.identity', `${spec.id} command identity drifted`));
   }
   const paths = commandPaths(spec.id);
@@ -123,13 +125,13 @@ function validateReceipt(receipt, spec, stdout, stderr) {
   return failures;
 }
 
-async function loadReceipt(outputDir, spec) {
+async function loadReceipt(evidenceRoot, spec) {
   const paths = commandPaths(spec.id);
   try {
     const [receiptText, stdout, stderr] = await Promise.all([
-      readFile(join(outputDir, paths.receipt), 'utf8'),
-      readFile(join(outputDir, paths.stdout), 'utf8'),
-      readFile(join(outputDir, paths.stderr), 'utf8'),
+      evidenceRoot.readFile(paths.receipt, 'utf8'),
+      evidenceRoot.readFile(paths.stdout, 'utf8'),
+      evidenceRoot.readFile(paths.stderr, 'utf8'),
     ]);
     return { receipt: JSON.parse(receiptText), stdout, stderr, error: null };
   } catch (error) {
@@ -165,10 +167,6 @@ function failure(code, message) {
   return { code, message };
 }
 
-async function writeExclusive(path, value) {
-  await writeFile(path, value, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-}
-
-export async function writeJsonExclusive(path, value) {
-  await writeExclusive(path, `${JSON.stringify(value, null, 2)}\n`);
+export async function writeJsonExclusive(evidenceRoot, relativePath, value) {
+  await evidenceRoot.writeExclusive(relativePath, `${JSON.stringify(value, null, 2)}\n`);
 }

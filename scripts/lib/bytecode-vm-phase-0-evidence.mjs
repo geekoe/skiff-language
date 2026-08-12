@@ -1,6 +1,3 @@
-import { lstat, readFile, readdir } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
-
 import {
   PHASE0_MANIFEST_SCHEMA,
   phase0CandidateSpecs,
@@ -8,6 +5,7 @@ import {
   sha256,
   validSha256,
 } from './bytecode-vm-phase-0-contract.mjs';
+import { openPhase0EvidenceRoot } from './bytecode-vm-phase-0-evidence-root.mjs';
 import {
   loadAndValidateCommandReceipts,
   writeJsonExclusive,
@@ -16,30 +14,43 @@ import {
 const MANIFEST_NAME = 'manifest.json';
 
 export async function finalizePhase0Evidence({
-  outputDir,
+  evidenceRoot,
   repoRoot,
   expectedCommit,
   expectedTree,
-  transcriptPaths,
+  commandEnvironments,
   startedAt,
   finishedAt,
 }) {
+  await evidenceRoot.assertAll();
   const assessment = await deriveAssessment({
-    outputDir, repoRoot, expectedCommit, expectedTree, transcriptPaths,
+    evidenceRoot, repoRoot, expectedCommit, expectedTree, commandEnvironments,
   });
-  const evidenceFiles = await snapshotEvidenceFiles(outputDir);
+  const evidenceFiles = await snapshotEvidenceFiles(evidenceRoot);
+  const directoryIdentities = evidenceRoot.identities();
   const manifest = {
     schemaVersion: PHASE0_MANIFEST_SCHEMA,
-    request: { repoRoot, outputDir, expectedCommit, expectedTree, startedAt, finishedAt },
+    request: {
+      repoRoot,
+      outputDir: evidenceRoot.outputDir,
+      expectedCommit,
+      expectedTree,
+      directoryIdentities,
+      startedAt,
+      finishedAt,
+    },
     ...assessment,
     evidenceFiles,
   };
-  await writeJsonExclusive(join(outputDir, MANIFEST_NAME), manifest);
+  await writeJsonExclusive(evidenceRoot, MANIFEST_NAME, manifest);
+  await evidenceRoot.assertAll();
   return manifest;
 }
 
 export async function checkPhase0Evidence(outputDir, request) {
-  const manifest = await readJson(join(outputDir, MANIFEST_NAME), 'manifest');
+  const evidenceRoot = await openPhase0EvidenceRoot(outputDir, request.directoryIdentities);
+  await evidenceRoot.assertAll();
+  const manifest = await readJson(evidenceRoot, MANIFEST_NAME, 'manifest');
   if (manifest?.schemaVersion !== PHASE0_MANIFEST_SCHEMA) {
     throw new Error(`manifest schemaVersion must be ${PHASE0_MANIFEST_SCHEMA}`);
   }
@@ -48,47 +59,47 @@ export async function checkPhase0Evidence(outputDir, request) {
     outputDir,
     expectedCommit: request.expectedCommit,
     expectedTree: request.expectedTree,
+    directoryIdentities: request.directoryIdentities,
     startedAt: manifest.request?.startedAt,
     finishedAt: manifest.request?.finishedAt,
   };
   if (JSON.stringify(manifest.request) !== JSON.stringify(expectedRequest)) {
     throw new Error('manifest request does not match the Gate invocation');
   }
-  const actualFiles = await snapshotEvidenceFiles(outputDir);
+  const actualFiles = await snapshotEvidenceFiles(evidenceRoot);
   assertFileClosure(manifest.evidenceFiles, actualFiles);
   const assessment = await deriveAssessment({
-    outputDir,
+    evidenceRoot,
     repoRoot: request.repoRoot,
     expectedCommit: request.expectedCommit,
     expectedTree: request.expectedTree,
-    transcriptPaths: request.transcriptPaths,
+    commandEnvironments: request.commandEnvironments,
   });
-  for (const key of ['candidate', 'verdict', 'counts', 'commands', 'transcripts', 'failures']) {
+  for (const key of ['candidate', 'verdict', 'counts', 'commands', 'failures']) {
     if (JSON.stringify(manifest[key]) !== JSON.stringify(assessment[key])) {
       throw new Error(`manifest ${key} was not derived from command evidence`);
     }
   }
+  await evidenceRoot.assertAll();
   return manifest;
 }
 
 async function deriveAssessment({
-  outputDir, repoRoot, expectedCommit, expectedTree, transcriptPaths,
+  evidenceRoot, repoRoot, expectedCommit, expectedTree, commandEnvironments,
 }) {
   const specs = [
     ...phase0CandidateSpecs(repoRoot),
-    ...phase0WorkloadSpecs(repoRoot, transcriptPaths),
+    ...phase0WorkloadSpecs(repoRoot),
   ];
-  const loaded = await loadAndValidateCommandReceipts(outputDir, specs);
+  const loaded = await loadAndValidateCommandReceipts(
+    evidenceRoot,
+    specs,
+    commandEnvironments,
+  );
   const failures = [...loaded.failures];
   const candidate = deriveCandidate(loaded.records, expectedCommit, expectedTree);
   if (!candidate.exact) failures.push(failure('candidate.stale', 'candidate commit or tree drifted'));
   if (!candidate.clean) failures.push(failure('candidate.dirty', 'candidate worktree was not clean'));
-  const transcripts = [];
-  for (const [id, path] of Object.entries(transcriptPaths ?? {})) {
-    const record = await inspectTranscript(outputDir, id, path);
-    transcripts.push(record);
-    if (record.error !== null) failures.push(failure('transcript.invalid', `${id}: ${record.error}`));
-  }
   const commands = specs.map((spec) => summarizeCommand(spec, loaded.records.get(spec.id)));
   const counts = summarizeCounts(commands);
   const uniqueFailures = deduplicate(failures);
@@ -97,7 +108,6 @@ async function deriveAssessment({
     verdict: uniqueFailures.length === 0 ? 'PASS' : 'FAIL',
     counts,
     commands,
-    transcripts,
     failures: uniqueFailures,
   };
 }
@@ -134,6 +144,7 @@ function summarizeCommand(spec, record) {
     status: record?.valid === true ? 'PASS' : 'FAIL',
     outcome: record?.receipt?.outcome?.status ?? 'MISSING',
     testSummary: record?.testSummary ?? null,
+    environment: record?.receipt?.identity?.environment ?? null,
     receipt: `commands/${spec.id}.receipt.json`,
   };
 }
@@ -158,52 +169,13 @@ function summarizeCounts(commands) {
   };
 }
 
-async function inspectTranscript(outputDir, id, path) {
-  const expectedPrefix = `${outputDir}${sep}`;
-  if (typeof path !== 'string' || !path.startsWith(expectedPrefix)) {
-    return { id, path, present: false, bytes: 0, sha256: null, error: 'path is not inside evidence output' };
-  }
-  try {
-    const metadata = await lstat(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink()) {
-      return { id, path, present: true, bytes: 0, sha256: null, error: 'not a regular file' };
-    }
-    const bytes = await readFile(path);
-    if (bytes.length === 0) {
-      return { id, path, present: true, bytes: 0, sha256: sha256(bytes), error: 'file is empty' };
-    }
-    return { id, path, present: true, bytes: bytes.length, sha256: sha256(bytes), error: null };
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return { id, path, present: false, bytes: 0, sha256: null, error: null };
-    }
-    return { id, path, present: false, bytes: 0, sha256: null, error: error?.code ?? error?.message };
-  }
-}
-
-export async function snapshotEvidenceFiles(outputDir) {
-  const files = [];
-  await walk(outputDir, files);
+export async function snapshotEvidenceFiles(evidenceRoot) {
   const records = [];
-  for (const absolute of files) {
-    const path = relative(outputDir, absolute).split(sep).join('/');
+  for (const { path, bytes } of await evidenceRoot.snapshotFiles()) {
     if (path === MANIFEST_NAME) continue;
-    const bytes = await readFile(absolute);
     records.push({ path, bytes: bytes.length, sha256: sha256(bytes) });
   }
   return records.sort((left, right) => left.path.localeCompare(right.path));
-}
-
-async function walk(root, files) {
-  const entries = await readdir(root, { withFileTypes: true });
-  for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-    const path = join(root, entry.name);
-    const metadata = await lstat(path);
-    if (metadata.isSymbolicLink()) throw new Error(`evidence contains symlink ${path}`);
-    if (metadata.isDirectory()) await walk(path, files);
-    else if (metadata.isFile()) files.push(path);
-    else throw new Error(`evidence contains non-regular entry ${path}`);
-  }
 }
 
 function assertFileClosure(stored, actual) {
@@ -229,9 +201,9 @@ function deduplicate(failures) {
   });
 }
 
-async function readJson(path, label) {
+async function readJson(evidenceRoot, path, label) {
   try {
-    return JSON.parse(await readFile(path, 'utf8'));
+    return JSON.parse(await evidenceRoot.readFile(path, 'utf8'));
   } catch (error) {
     throw new Error(`${label} is missing or invalid: ${error?.code ?? error?.message}`);
   }

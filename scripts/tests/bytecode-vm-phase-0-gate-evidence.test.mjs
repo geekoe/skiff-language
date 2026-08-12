@@ -10,13 +10,12 @@ import {
   withEvidenceBundle,
 } from './bytecode-vm-phase-0-gate-fixture.mjs';
 
-test('checker accepts exact commands on one clean candidate without transcripts', async () => {
+test('checker accepts exact commands on one clean candidate', async () => {
   await withEvidenceBundle({}, async (bundle) => {
     assert.equal(bundle.manifest.verdict, 'PASS');
     assert.deepEqual(bundle.manifest.counts.commands, { total: 17, passed: 17, failed: 0 });
     assert.equal(bundle.manifest.counts.tests.declared, 11);
     assert.equal((await check(bundle)).verdict, 'PASS');
-    assert.equal(bundle.manifest.transcripts.every(({ present }) => !present), true);
   });
 });
 
@@ -58,6 +57,17 @@ test('checker rejects a command log changed after evidence closure', async () =>
   });
 });
 
+test('checker rejects actual child environment drift from the bound command snapshot', async () => {
+  await withEvidenceBundle({ environmentDriftId: 'request-scalar-regression' }, async (bundle) => {
+    assert.equal(bundle.manifest.verdict, 'FAIL');
+    assert.equal(
+      bundle.manifest.failures.some(({ code }) => code === 'command.identity'),
+      true,
+    );
+    assert.equal((await check(bundle)).verdict, 'FAIL');
+  });
+});
+
 test('checker rejects every internal symlink instead of following or ignoring it', async () => {
   await withEvidenceBundle({}, async (bundle) => {
     await symlink('/dev/null', join(bundle.outputDir, 'internal-link'));
@@ -70,6 +80,7 @@ function check(bundle) {
     repoRoot: bundle.repoRoot,
     expectedCommit: COMMIT,
     expectedTree: TREE,
-    transcriptPaths: bundle.transcriptPaths,
+    directoryIdentities: bundle.directoryIdentities,
+    commandEnvironments: bundle.commandEnvironments,
   });
 }

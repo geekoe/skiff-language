@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
-export const PHASE0_COMMAND_SCHEMA = 'skiff-bytecode-vm-phase-0-command-v2';
-export const PHASE0_MANIFEST_SCHEMA = 'skiff-bytecode-vm-phase-0-gate-v3';
+export const PHASE0_COMMAND_SCHEMA = 'skiff-bytecode-vm-phase-0-command-v3';
+export const PHASE0_MANIFEST_SCHEMA = 'skiff-bytecode-vm-phase-0-gate-v4';
 
 const GIT_OBJECT = /^[a-f0-9]{40}$/;
 const HOST_SUCCESS =
@@ -9,44 +9,44 @@ const HOST_SUCCESS =
 const HOST_NEGATIVE =
   'host::request_entry::phase_0_negative_tests::phase_0_negative_production_boundaries';
 
-export function phase0WorkloadSpecs(root, transcriptPaths) {
+export function phase0WorkloadSpecs(root) {
   return Object.freeze([
     spec(root, 'gate-self-tests', 'node', [
       '--test',
       '--test-reporter=tap',
       'scripts/tests/bytecode-vm-phase-0-gate-*.test.mjs',
-    ], {}, 'node-tap'),
+    ], 'node-tap'),
     spec(root, 'host-production-composition', 'cargo', [
       'test', '--manifest-path', 'runtime/host/Cargo.toml', '--lib', HOST_SUCCESS,
       '--', '--exact', '--nocapture',
-    ], transcriptEnv(transcriptPaths?.success), 'rust-exact'),
+    ], 'rust-exact'),
     spec(root, 'host-production-boundaries', 'cargo', [
       'test', '--manifest-path', 'runtime/host/Cargo.toml', '--lib', HOST_NEGATIVE,
       '--', '--exact', '--nocapture',
-    ], transcriptEnv(transcriptPaths?.negative), 'rust-exact'),
+    ], 'rust-exact'),
     spec(root, 'request-scalar-regression', 'cargo', [
       'test', '--manifest-path', 'runtime/request/Cargo.toml', '--test',
       'bytecode_request', 'tests::request_heap_scalar_returns_payload', '--', '--exact',
-    ], {}, 'rust-exact'),
+    ], 'rust-exact'),
     spec(root, 'request-typed-json-regression', 'cargo', [
       'test', '--manifest-path', 'runtime/request/Cargo.toml', '--test',
       'bytecode_request', 'tests::typed_json_number_body_materializes_against_pinned_entry',
       '--', '--exact',
-    ], {}, 'rust-exact'),
+    ], 'rust-exact'),
     spec(root, 'request-raw-http-regression', 'cargo', [
       'test', '--manifest-path', 'runtime/request/Cargo.toml', '--test',
       'bytecode_request', 'tests::raw_http_body_remains_heap_bytes', '--', '--exact',
-    ], {}, 'rust-exact'),
+    ], 'rust-exact'),
     spec(root, 'vm-scalar-vertical-regression', 'cargo', [
       'test', '--manifest-path', 'runtime/vm/Cargo.toml', '--test', 'vertical',
       'tests::source_to_vm_scalar_tail_call_executes_through_the_verified_entry',
       '--', '--exact',
-    ], {}, 'rust-exact'),
+    ], 'rust-exact'),
     spec(root, 'host-mode-containment-regression', 'cargo', [
       'test', '--manifest-path', 'runtime/host/Cargo.toml', '--lib',
       'host::request_entry::bytecode_http_tests::canonical_http_server_stream_with_scalar_operation_fails_closed',
       '--', '--exact',
-    ], {}, 'rust-exact'),
+    ], 'rust-exact'),
   ]);
 }
 
@@ -68,17 +68,12 @@ export function phase0FreshCandidateSpecs(root) {
   ]);
 }
 
-function transcriptEnv(path) {
-  return typeof path === 'string' ? { SKIFF_VCP_PHASE0_RAW_EVENTS: path } : {};
-}
-
-function spec(cwd, id, command, args, evidenceEnv = {}, testFormat = null) {
+function spec(cwd, id, command, args, testFormat = null) {
   return Object.freeze({
     id,
     command,
     args: Object.freeze(args),
     cwd,
-    evidenceEnv: Object.freeze(evidenceEnv),
     testFormat,
   });
 }
@@ -144,6 +139,26 @@ export function assertGitObject(value, label) {
 
 export function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
+}
+
+export function snapshotCommandEnvironment(environment) {
+  return Object.freeze(Object.fromEntries(
+    Object.entries(environment ?? {})
+      .filter(([, value]) => typeof value === 'string')
+      .sort(([left], [right]) => left.localeCompare(right)),
+  ));
+}
+
+export function commandEnvironmentIdentity(environment) {
+  const variables = Object.entries(snapshotCommandEnvironment(environment)).map(([name, value]) => ({
+    name,
+    bytes: Buffer.byteLength(value),
+    valueSha256: sha256(value),
+  }));
+  return {
+    variables,
+    sha256: sha256(JSON.stringify(variables)),
+  };
 }
 
 export function validSha256(value) {

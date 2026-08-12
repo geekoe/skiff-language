@@ -9,10 +9,7 @@ import {
 const ROOT = '/candidate';
 
 test('canonical workload fixes all eight exact commands', () => {
-  const specs = phase0WorkloadSpecs(ROOT, {
-    success: '/evidence/transcripts/success.jsonl',
-    negative: '/evidence/transcripts/negative.jsonl',
-  });
+  const specs = phase0WorkloadSpecs(ROOT);
   assert.equal(specs.length, 8);
   assert.deepEqual(specs[0].args, [
     '--test', '--test-reporter=tap', 'scripts/tests/bytecode-vm-phase-0-gate-*.test.mjs',

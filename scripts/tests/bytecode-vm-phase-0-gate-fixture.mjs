@@ -1,36 +1,45 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   phase0CandidateSpecs,
   phase0WorkloadSpecs,
+  snapshotCommandEnvironment,
 } from '../lib/bytecode-vm-phase-0-contract.mjs';
 import { finalizePhase0Evidence } from '../lib/bytecode-vm-phase-0-evidence.mjs';
+import { createPhase0EvidenceRoot } from '../lib/bytecode-vm-phase-0-evidence-root.mjs';
 import { writePhase0CommandReceipt } from '../lib/bytecode-vm-phase-0-receipts.mjs';
 
 export const COMMIT = 'a'.repeat(40);
 export const TREE = 'b'.repeat(40);
 
 export async function withEvidenceBundle(options, assertion) {
-  const temp = await mkdtemp(join(tmpdir(), 'skiff-phase0-gate-test-'));
+  const created = await mkdtemp(join(tmpdir(), 'skiff-phase0-gate-test-'));
+  const temp = await realpath(created);
   const repoRoot = join(temp, 'repo');
   const outputDir = join(temp, 'evidence');
-  const transcriptPaths = {
-    success: join(outputDir, 'transcripts', 'success.jsonl'),
-    negative: join(outputDir, 'transcripts', 'negative.jsonl'),
-  };
   try {
     await mkdir(repoRoot);
-    await mkdir(outputDir);
+    const evidenceRoot = await createPhase0EvidenceRoot(outputDir);
     const candidateSpecs = phase0CandidateSpecs(repoRoot);
-    const workloadSpecs = phase0WorkloadSpecs(repoRoot, transcriptPaths);
+    const workloadSpecs = phase0WorkloadSpecs(repoRoot);
+    const commandEnvironment = snapshotCommandEnvironment({
+      PATH: '/usr/bin:/bin',
+      P0_UNRECORDED_ENV: 'bound-before-execution',
+    });
+    const commandEnvironments = new Map(
+      [...candidateSpecs, ...workloadSpecs].map((spec) => [spec.id, commandEnvironment]),
+    );
     for (const spec of [...candidateSpecs, ...workloadSpecs]) {
       if (spec.id === options?.missingId) continue;
       const candidate = candidateOutput(spec.id, options);
       const stdout = candidate ?? workloadOutput(spec, options);
       const interrupted = spec.id === options?.interruptedId;
-      await writePhase0CommandReceipt(outputDir, spec, interrupted ? {
+      const actualEnv = spec.id === options?.environmentDriftId
+        ? snapshotCommandEnvironment({ ...commandEnvironment, P0_UNRECORDED_ENV: 'drifted' })
+        : commandEnvironment;
+      await writePhase0CommandReceipt(evidenceRoot, spec, actualEnv, interrupted ? {
         code: null, signal: 'SIGTERM', error: new Error('interrupted'),
       } : { code: 0, signal: null, error: null }, {
         stdout,
@@ -41,17 +50,24 @@ export async function withEvidenceBundle(options, assertion) {
       });
     }
     const manifest = await finalizePhase0Evidence({
-      outputDir,
+      evidenceRoot,
       repoRoot,
       expectedCommit: COMMIT,
       expectedTree: TREE,
-      transcriptPaths,
+      commandEnvironments,
       startedAt: '2026-08-13T00:00:00.000Z',
       finishedAt: '2026-08-13T00:00:02.000Z',
     });
-    await assertion({ temp, repoRoot, outputDir, transcriptPaths, manifest });
+    await assertion({
+      temp,
+      repoRoot,
+      outputDir,
+      directoryIdentities: evidenceRoot.identities(),
+      commandEnvironments,
+      manifest,
+    });
   } finally {
-    await rm(temp, { recursive: true, force: true });
+    await rm(created, { recursive: true, force: true });
   }
 }
 

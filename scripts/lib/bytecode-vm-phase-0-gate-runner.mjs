@@ -1,4 +1,4 @@
-import { lstat, mkdir, realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { captureOwnedCommand } from './owned-command.mjs';
@@ -7,7 +7,9 @@ import {
   phase0CandidateSpecs,
   phase0FreshCandidateSpecs,
   phase0WorkloadSpecs,
+  snapshotCommandEnvironment,
 } from './bytecode-vm-phase-0-contract.mjs';
+import { createPhase0EvidenceRoot } from './bytecode-vm-phase-0-evidence-root.mjs';
 import {
   checkPhase0Evidence,
   finalizePhase0Evidence,
@@ -54,17 +56,17 @@ export async function runPhase0Gate(options, {
   capture = captureOwnedCommand,
   signalTarget = process,
   now = () => new Date().toISOString(),
+  env = process.env,
 } = {}) {
   const input = await validateInput(options, repoRoot);
-  await mkdir(input.outputDir, { mode: 0o700 });
-  const transcriptDir = join(input.outputDir, 'transcripts');
-  await mkdir(transcriptDir, { mode: 0o700 });
-  const transcriptPaths = {
-    success: join(transcriptDir, 'success.jsonl'),
-    negative: join(transcriptDir, 'negative.jsonl'),
-  };
+  const evidenceRoot = await createPhase0EvidenceRoot(input.outputDir);
   const candidateSpecs = phase0CandidateSpecs(input.repoRoot);
-  const workloadSpecs = phase0WorkloadSpecs(input.repoRoot, transcriptPaths);
+  const workloadSpecs = phase0WorkloadSpecs(input.repoRoot);
+  const commandEnvironments = new Map(
+    [...candidateSpecs, ...workloadSpecs]
+      .map((spec) => [spec.id, snapshotCommandEnvironment(env)]),
+  );
+  const freshEnvironment = snapshotCommandEnvironment(env);
   const abortController = new AbortController();
   let interruptedBy = null;
   const handlers = new Map(['SIGINT', 'SIGTERM'].map((signal) => [signal, () => {
@@ -90,36 +92,44 @@ export async function runPhase0Gate(options, {
     for (const [signal, handler] of handlers) signalTarget.off(signal, handler);
   }
   const manifest = await finalizePhase0Evidence({
-    outputDir: input.outputDir,
+    evidenceRoot,
     repoRoot: input.repoRoot,
     expectedCommit: input.expectedCommit,
     expectedTree: input.expectedTree,
-    transcriptPaths,
+    commandEnvironments,
     startedAt,
     finishedAt: now(),
   });
   let checkerError = null;
   try {
-    await checkPhase0Evidence(input.outputDir, { ...input, transcriptPaths });
-    const fresh = await captureFreshCandidate(input.repoRoot, capture);
+    await checkPhase0Evidence(input.outputDir, {
+      ...input,
+      directoryIdentities: evidenceRoot.identities(),
+      commandEnvironments,
+    });
+    const fresh = await captureFreshCandidate(input.repoRoot, capture, freshEnvironment);
     if (fresh.commit !== input.expectedCommit
       || fresh.tree !== input.expectedTree
       || fresh.status !== '') {
       throw new Error('fresh live candidate is dirty or stale after evidence checking');
     }
+    await evidenceRoot.assertAll();
   } catch (error) {
     checkerError = error instanceof Error ? error.message : String(error);
   }
   return { manifest, checkerError, outputDir: input.outputDir };
 
   async function execute(spec) {
+    await evidenceRoot.assertAll();
     const commandStartedAt = now();
+    const actualEnv = commandEnvironments.get(spec.id);
     const outcome = await capture(spec.command, [...spec.args], {
       cwd: spec.cwd,
-      env: { ...process.env, ...spec.evidenceEnv },
+      env: actualEnv,
       signal: abortController.signal,
     });
-    await writePhase0CommandReceipt(input.outputDir, spec, outcome, {
+    await evidenceRoot.assertAll();
+    await writePhase0CommandReceipt(evidenceRoot, spec, actualEnv, outcome, {
       stdout: outcome.stdout,
       stderr: outcome.stderr,
       startedAt: commandStartedAt,
@@ -182,10 +192,10 @@ function successfulText(outcome) {
     : null;
 }
 
-async function captureFreshCandidate(repoRoot, capture) {
+async function captureFreshCandidate(repoRoot, capture, actualEnv) {
   const values = [];
   for (const spec of phase0FreshCandidateSpecs(repoRoot)) {
-    const outcome = await capture(spec.command, [...spec.args], { cwd: repoRoot, env: process.env });
+    const outcome = await capture(spec.command, [...spec.args], { cwd: repoRoot, env: actualEnv });
     values.push(outcome.code === 0 && outcome.signal === null && outcome.error == null
       ? outcome.stdout
       : null);
