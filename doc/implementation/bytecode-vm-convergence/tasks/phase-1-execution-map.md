@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 3; K1 authority accepted and kernel implementation ready
+> Status: active; revision 4; K1 capability closure accepted, atomic image hard cut ready
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -224,3 +224,27 @@ run the complete Phase 1 Gate and issue the final verdict.
   host loader/cache, request/VM/scheduler consumers and the exact test-runner/package-test consumers listed by DEC1-K1. The
   first checkpoint is a compile-visible type/constructor cut and the first committable milestone is capability containment
   plus the T-C reachable/unreachable pair, not an interface-only placeholder.
+
+## 11. Revision 4 — closed capability frontier and atomic-image cut
+
+- corrected DEC1-O `d521e06d` passed two independent reviews and joined integration as `8fb50a84`. It extends the existing
+  observer to an exact eleven-event Phase 1 stream and replaces sequential registry/wake sampling with one request-local,
+  lease-backed current/ever-created inventory whose freeze is linearizable. Budget evidence is the four-field immutable
+  settlement only; terminal verdict, inferred zeros and a second proof sink are forbidden;
+- K1 capability containment landed as the reviewed four-commit stack `57b0aea7..373d7287`. Intermediate slices were rejected
+  until the final stack closed all known bypasses: admission now walks the exact union of publication roots and only actual
+  reachable relocations; dispatch/interface/callback/Actor tables no longer arise from raw private declarations; HTTP and
+  operation roots are unary and handler-only; reachable host/interface/intrinsic/stream facts fail at typed locations;
+  scalar deployment constants remain valid and unsupported dependency constants retain exact node provenance;
+- the final K1 capability stack passed `phase_1_contract` `5/5`, the linker library `48/48`, and independent read-only review.
+  This supplies K0B's missing containment receipt. Together with accepted K0A and K0C, the Phase 1 surface is now closed
+  before the atomic image migration begins; the known `MakeCallback` carrier gap still fails earlier in structural linking
+  and is not represented as an accepted callback capability;
+- K1's next and only central writer is the hard cut to the single deployment-build `DeploymentExecutionImage`: remove the
+  public verifier seal/dual-image composition, publish the cache value atomically, and migrate host/request/VM/scheduler,
+  package-test and test-runner consumers to the same allocation. The parked uncompiled migration patch may be resumed only
+  atop the accepted capability stack and must receive its own independent review;
+- DEC1-B remains blocked at Design. Its takeover candidate simplifies raw accounting to one adjacent
+  `before_dispatch -> dispatch_one` boundary, but independent review found that its exact VM write set and DEC1-O reference
+  still conflict with the proposed API. L4/L5/O1 production writers remain unopened until one amended budget decision and
+  the already accepted observation decision describe the same implementable protocol.
