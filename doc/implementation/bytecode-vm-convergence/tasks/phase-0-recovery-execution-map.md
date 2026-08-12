@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 4; P0-V expected-red integrated; P0-G/DEC0-S running
+> Status: active; revision 5; P0-V/DEC0-S integrated; P0-G running; D0-R/D0-M/review ready
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -45,7 +45,10 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
 | P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
-| DEC0-S | Design | running as `/root/p0_seam_design`; started `2026-08-12T16:19:52Z` | 15–25 min | `2026-08-12T16:31:52Z` | `decisions/dec0-vcp-production-seam.md`; read-only production code | choose the existing production-owned VCP placement and minimum read-only observation contract without adding execution authority |
+| DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
+| REV0-S | Review | ready | 12–18 min | 8 min | read-only DEC0-S and cited production code | independently reject duplicate authority, infeasible propagation, mutable/fallible observer, or non-owner-minted events |
+| D0-R | Development | ready | 30–45 min | 18 min | exact DEC0-S D0-R write set | route identity derives from pinned image owner; no request-time artifact reread; focused cases green |
+| D0-M | Development | ready | 30–45 min | 18 min | exact DEC0-S D0-M write set | typedJson scalar materializes against pinned verified entry; malformed/wrong/non-scalar fail closed; rawHttp unchanged |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -71,6 +74,9 @@ Revision 0 只预留首批 writer；实际 Agent ID 在 dispatch revision 中记
 | --- | --- | --- | --- | --- |
 | P0-V | `codex/bcvm-p0-vcp` | `/Users/geek/workspace/skiff-bcvm-p0-vcp` | revision-0 MAP commit | yes; one focused command at a time, output redirected if >30s |
 | P0-G | `codex/bcvm-p0-gate` | `/Users/geek/workspace/skiff-bcvm-p0-gate` | revision-0 MAP commit | no during initial parallel frontier |
+| REV0-S | none; read-only | DEC0-S integration checkout | revision-5 MAP commit | no |
+| D0-R | `codex/bcvm-p0-route` | `/Users/geek/workspace/skiff-bcvm-p0-route` | revision-5 MAP commit | yes; exclusive first Development lease |
+| D0-M | `codex/bcvm-p0-materialize` | `/Users/geek/workspace/skiff-bcvm-p0-materialize` | revision-5 MAP commit | no until D0-R releases the lease |
 
 同一 worktree 一个 writer。Agent 使用 `fork_turns=none`，只接收 exact task contract。Acceptance Agent 尚未创建，
 且必须与所有 candidate writer 独立。
@@ -146,3 +152,15 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
 - removed direct linker/verifier/image/entry/target/request execution and harness-authored PASS/count/bypass fields;
 - newly exposed downstream prerequisite: typed-JSON `HttpBody` is currently materialized as bytes, so exact scalar entry
   admission requires a narrow production repair after DEC0-S; this does not block P0-G.
+
+### Revision 5 — DEC0-S join and first Development frontier
+
+- validated DEC0-S output `6ae2a8b1338cafd2f152ab4eea80748d9c5fd5c6` / tree
+  `d43edbd2db1f286e45b17b37b6730553aaa0e687` and integrated it as `49214d65`;
+- fixed the VCP at a host-internal `RuntimeHost::spawn_bytecode_request` test without a public or test-only execution seam;
+- separated two executable prerequisites, D0-R pinned deployment/route identity and D0-M typedJson scalar materialization,
+  from D0-O's five-event read-only observation propagation;
+- opened D0-R and D0-M as disjoint Development writers and REV0-S as an independent read-only review; implementation may
+  proceed in parallel, but a review rejection must be resolved before either Development commit joins;
+- transferred the sole Cargo lease to D0-R. D0-M may write and commit a reviewable candidate but cannot run Cargo until the
+  Map records lease transfer after D0-R's command completes.
