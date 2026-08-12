@@ -13,12 +13,28 @@ export const PHASE0_DIRECTORY_IDENTITY_SCHEMA =
 export const PHASE0_DIRECTORY_IDENTITY_FILE = 'directory-identities.json';
 
 export async function createPhase0EvidenceRoot(outputDir) {
+  return createBytecodeVmEvidenceRoot(outputDir, {
+    schemaVersion: PHASE0_DIRECTORY_IDENTITY_SCHEMA,
+    identityFile: PHASE0_DIRECTORY_IDENTITY_FILE,
+  });
+}
+
+export async function createBytecodeVmEvidenceRoot(outputDir, {
+  schemaVersion,
+  identityFile,
+}) {
   await mkdir(outputDir, { mode: 0o700 });
   const root = await captureDirectoryIdentity(outputDir, outputDir);
-  const evidenceRoot = new Phase0EvidenceRoot(outputDir, root, new Map());
+  const evidenceRoot = new Phase0EvidenceRoot(
+    outputDir,
+    root,
+    new Map(),
+    schemaVersion,
+    identityFile,
+  );
   await evidenceRoot.createDirectory('commands');
   await evidenceRoot.writeExclusive(
-    PHASE0_DIRECTORY_IDENTITY_FILE,
+    identityFile,
     `${JSON.stringify(evidenceRoot.identities(), null, 2)}\n`,
   );
   await evidenceRoot.assertAll();
@@ -26,14 +42,26 @@ export async function createPhase0EvidenceRoot(outputDir) {
 }
 
 export async function openPhase0EvidenceRoot(outputDir, expectedIdentities) {
-  const identities = validateIdentityRecord(expectedIdentities, outputDir);
+  return openBytecodeVmEvidenceRoot(outputDir, expectedIdentities, {
+    schemaVersion: PHASE0_DIRECTORY_IDENTITY_SCHEMA,
+    identityFile: PHASE0_DIRECTORY_IDENTITY_FILE,
+  });
+}
+
+export async function openBytecodeVmEvidenceRoot(outputDir, expectedIdentities, {
+  schemaVersion,
+  identityFile,
+}) {
+  const identities = validateIdentityRecord(expectedIdentities, outputDir, schemaVersion);
   const evidenceRoot = new Phase0EvidenceRoot(
     outputDir,
     identities.root,
     new Map(Object.entries(identities.directories)),
+    schemaVersion,
+    identityFile,
   );
   await evidenceRoot.assertAll();
-  const stored = JSON.parse(await evidenceRoot.readFile(PHASE0_DIRECTORY_IDENTITY_FILE, 'utf8'));
+  const stored = JSON.parse(await evidenceRoot.readFile(identityFile, 'utf8'));
   if (JSON.stringify(stored) !== JSON.stringify(identities)) {
     throw new Error('evidence directory identity record drifted');
   }
@@ -42,15 +70,17 @@ export async function openPhase0EvidenceRoot(outputDir, expectedIdentities) {
 }
 
 export class Phase0EvidenceRoot {
-  constructor(outputDir, rootIdentity, directories) {
+  constructor(outputDir, rootIdentity, directories, schemaVersion, identityFile) {
     this.outputDir = outputDir;
     this.rootIdentity = Object.freeze({ ...rootIdentity });
     this.directories = directories;
+    this.schemaVersion = schemaVersion;
+    this.identityFile = identityFile;
   }
 
   identities() {
     return {
-      schemaVersion: PHASE0_DIRECTORY_IDENTITY_SCHEMA,
+      schemaVersion: this.schemaVersion,
       root: { ...this.rootIdentity },
       directories: Object.fromEntries(
         [...this.directories.entries()].map(([path, identity]) => [path, { ...identity }]),
@@ -206,8 +236,8 @@ async function assertRegularPathIdentity(path, expected = null) {
   }
 }
 
-function validateIdentityRecord(value, outputDir) {
-  if (value?.schemaVersion !== PHASE0_DIRECTORY_IDENTITY_SCHEMA
+function validateIdentityRecord(value, outputDir, schemaVersion) {
+  if (value?.schemaVersion !== schemaVersion
     || !validIdentity(value.root, outputDir)
     || value.directories === null
     || typeof value.directories !== 'object'

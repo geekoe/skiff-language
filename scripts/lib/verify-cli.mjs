@@ -124,6 +124,7 @@ quality and focused selectors:
   verify                       tests plus every non-live quality/check gate
   rust-quality                 workspace rustfmt + Rust file/function line gates
   bytecode-vm-phase-0-gate     Phase 0 exact-candidate closure gate
+  bytecode-vm-phase-1-gate     Phase 1 trusted synchronous core gate
   type-check                   scripts and VS Code static checks
   checks                       repository architecture and policy checks
   scripts  vscode              focused tooling tests
@@ -154,7 +155,14 @@ The bytecode-vm-phase-0-gate selector requires all three caller-supplied environ
   SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_TREE     literal 40-hex tree from the freeze receipt
   SKIFF_BYTECODE_VM_PHASE0_EVIDENCE_DIR       caller-chosen canonical absolute absent path
 The Gate checks those identities; it does not choose them from HEAD or choose a temporary evidence
-directory.`);
+directory.
+
+The bytecode-vm-phase-1-gate selector uses an independent evidence epoch and requires:
+  SKIFF_BYTECODE_VM_PHASE1_CANDIDATE_COMMIT   literal 40-hex commit from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE1_CANDIDATE_TREE     literal 40-hex tree from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE1_EVIDENCE_DIR       caller-chosen canonical absolute absent path
+It checks a fixed 20-receipt K0/T-C/T-R/V1/Phase-0-regression matrix and never selects
+its own candidate or evidence directory.`);
 }
 
 function splitSelectors(value) {
