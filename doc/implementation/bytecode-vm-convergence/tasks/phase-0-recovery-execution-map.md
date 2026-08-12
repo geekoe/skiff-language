@@ -44,14 +44,14 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | Task | Line | State | Expected elapsed | `status_after` | Initial write set | Join condition |
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
-| P0-G | Proof | first candidate `e17c3c35` rejected by receive review; correction running as `/root/p0_gate` | correction 20–30 min | 12 min after redispatch | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | exact production event/store facts; full image owner; exact process env; sole-mint structural proof; durable candidate-bound evidence; no harness-authored PASS |
+| P0-G | Proof | corrected candidate `889cd78a` rejected by independent receive review; takeover pending | correction 20–30 min | 8 min after redispatch | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | exact production event/store facts; full image owner; exact process env; non-forgeable production ownership evidence; durable candidate-bound evidence; no harness-authored PASS |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
 | REV0-S | Review | `FAIL`, complete in 8 min; corrections recorded in rev8 | actual 8 min | on checkpoint | read-only DEC0-S and cited production code | found omitted event-owner/test files and confirmed D0-R sealed-fact expansion; no new authority found |
 | D0-R | Development | takeover complete as `d12a9471`; integrated as `dd1399bc`; independent receive review PASS | actual 10 min takeover + focused validation | complete | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; 7 focused host cases green |
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
-| D0-O | Development | running as `/root/p0_observation`; started `2026-08-12T17:03:00Z` | 60–85 min | 20 min, then 45 min | corrected DEC0-S D0-O set plus approved existing driver owner `runtime/host/src/host/request_entry/resumable.rs` | dependency-neutral failure-isolated observer; five sole mint points; full deployment owner; request-local terminal/cleanup proof; focused tests |
-| P0-V-H/P0-N | Proof | expected-red writer `/root/p0_host_proof`; started `2026-08-12T17:16:00Z` | 45–65 min | 15 min, then 35 min | two new host-internal test modules, module registration, removal of superseded request VCP; no production/Gate code | success and three negatives enter only `RuntimeHost::spawn_bytecode_request`, preserve actual wire/typed facts, and never mint verdict/internal execution objects |
-| D0-K-M | Development | running as `/root/p0_mode_containment`; started `2026-08-12T17:21:00Z` | 15–25 min | 10 min | host HTTP admission and its focused host test only | wire-valid `serverStream` is rejected before load/route/target/VM; unary and other independently-owned ingress modes unchanged |
+| D0-O | Development | candidate `cee91031` rejected by independent receive review; repair design running | correction 30–45 min after design | 10/25 min | corrected DEC0-S D0-O set plus approved existing driver owner `runtime/host/src/host/request_entry/resumable.rs` | ordered/reentrant-safe observation; no duplicate row overwrite; terminal-before-cleanup receipt; exact ingress selector; real production-chain tests |
+| P0-V-H/P0-N | Proof | writer exceeded expectation; interrupted; partial `217ac7f7` preserved but not accepted; split takeover pending | success 20–30 min, negatives 20–30 min | 10 min each | success/support host module and negative host module are separate write lanes after common registration is fixed | success and three negatives enter only `RuntimeHost::spawn_bytecode_request`, assert actual wire/typed facts, and never mint verdict/internal execution objects |
+| D0-K-M | Development | `c9f24dbf` independently accepted and integrated as `2c9c2fa7` | actual 10 min + 8 min review | complete | host HTTP admission and its focused host test only | production `serverStream` rejected as Unsupported before load/route/target/VM; 1/1 exact test; unary/WebSocket/task unchanged |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -253,3 +253,32 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
 - dispatched `/root/p0_mode_containment` as a narrow Development owner. It may only reject non-unary HTTP at the existing
   host admission boundary and update the focused host test; it cannot implement streams, change the VM mode surface or add a
   fallback. P0-N will independently prove the resulting actual wire error and absence of dispatch after the join.
+
+### Revision 13 — mode containment join and proof-writer watchdog
+
+- D0-K-M produced `c9f24dbf0b1fc0bcafe11b5627d17c51a416e4f1`; its exact production-entry test ran one case and
+  passed. An independent reviewer confirmed the HTTP-only Unsupported rejection occurs before deployment load, target
+  construction and VM dispatch, and does not alter unary, WebSocket or task admission. It joined as `2c9c2fa7`.
+- P0-V-H/P0-N had written no new proof module after its 15-minute checkpoint and remained at only module declarations plus
+  deletion of the old request test. The writer was warned twice, then interrupted when it exceeded the bounded expectation.
+  Its eventually materialized files were preserved, without Cargo or acceptance, as partial commit `217ac7f7`; this commit is
+  not an integration candidate. It lacks exact negative response assertions, uses an unverified corruption mutation and is
+  still expected-red against the pre-observation API.
+- The next proof frontier splits the shared success/support module from the negative scenario module. Their write sets must
+  not overlap; executable validation waits for the corrected D0-O contract.
+
+### Revision 14 — independent D0-O and Gate rejection
+
+- D0-O produced `cee91031a1b4e59dc40abfa1c1b22124b3dde2e8` and its focused host module passed 7/7, but an
+  independent receive reviewer returned `FAIL`. The observer can deliver ordinal 1 before 0 under concurrency; HTTP/WS lanes
+  overwrite duplicate supervisor rows; row absence can be observed before terminal publication; partial admission paths can
+  emit route facts without terminal/cleanup; gateway observations omit the exact ingress selector; JSON-RPC errors can be
+  labelled Succeeded; and no production test asserts the five-event chain.
+- D0-O therefore did not join. A bounded conditional Design task now freezes ordered delivery, duplicate admission,
+  terminal-to-cleanup ownership and exact production tests before a clean takeover is dispatched.
+- P0-G correction `889cd78a8403e490534ce6c660bce68975557f41` also failed independent receive review. Its own
+  canonical command mis-parses the current Node test reporter as zero tests, it left the command-execution policy fixture
+  stale, raw identity joins accept inconsistent service/build/entry facts, and regex/substring structural checks can be
+  satisfied by comments while a harness writes forged raw events. It did not join; a new owner must repair from the complete
+  counterexample set rather than amend under self-review.
+- D0-M received a separate independent `PASS`; its pinned typedJson materialization remains accepted and integrated.
