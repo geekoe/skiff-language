@@ -334,13 +334,13 @@ fn package_source(scenario: &str, source: &str, service: bool) -> TempRoot {
     )
     .expect("write package manifest");
     fs::write(source_root.path().join("main.skiff"), source).expect("write package source");
+    fs::write(source_root.path().join("api.yml"), "{}\n").expect("write package API manifest");
     if service {
         fs::write(
             source_root.path().join("service.yml"),
             format!("id: {package_id}\n"),
         )
         .expect("write service manifest");
-        fs::write(source_root.path().join("api.yml"), "{}\n").expect("write service API manifest");
         fs::write(
             source_root.path().join("http.yml"),
             "run:\n  method: POST\n  path: /phase-1/contract\n  kind: typedJson\n  handler: main.run\n  adapterArgs:\n    - param: value\n      source: { kind: http.body }\n",
