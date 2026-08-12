@@ -6,7 +6,9 @@ use skiff_runtime_linker::DeploymentExecutionEntry;
 use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionCorrelation, BytecodeExecutionObserver,
 };
-use skiff_runtime_request::{RequestError, RouterWriterMessage};
+use skiff_runtime_request::{
+    execution_budget::admit_request_deadline, RequestError, RouterWriterMessage,
+};
 use skiff_runtime_transport::protocol::{
     BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressProtocol,
     BytecodeRequestStartFrameHeader, BytecodeRequestStartFrameWireHeader,
@@ -23,7 +25,11 @@ use url::Url;
 use super::{request_error_into_runtime_error, response_event_into_transport_message};
 use crate::{
     error::{Result, RuntimeError},
-    host::{router_session::ConnectionBootstrap, RuntimeHost},
+    host::{
+        request_supervisor::{RequestExecutionKey, RequestId, RouterSessionEpoch},
+        router_session::ConnectionBootstrap,
+        RuntimeHost,
+    },
     loader::bytecode_admission::{BytecodeRoute, BytecodeRouteSelector},
 };
 
@@ -71,7 +77,7 @@ enum AdmittedBytecodeRequest {
 impl RuntimeHost {
     pub(crate) async fn spawn_bytecode_request(
         &self,
-        router_session_id: &str,
+        router_session: &RouterSessionEpoch,
         header: BytecodeRequestStartFrameWireHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
@@ -94,16 +100,35 @@ impl RuntimeHost {
             self.send_bytecode_wire_admission_error(&request_id, &error, &sender);
             return;
         }
+        let request_id_typed = match RequestId::parse(request_id.clone()) {
+            Ok(request_id) => request_id,
+            Err(error) => {
+                self.send_http_gateway_admission_error(&request_id, error, &sender);
+                return;
+            }
+        };
+        let request_key = RequestExecutionKey::new(router_session.clone(), request_id_typed);
+        let admitted_deadline = match admit_request_deadline(&wire_deadline_extra(&header)) {
+            Ok(deadline) => deadline,
+            Err(error) => {
+                self.send_http_gateway_admission_error(&request_id, error, &sender);
+                return;
+            }
+        };
+        if admitted_deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline.at()) {
+            self.send_bytecode_wire_admission_error(&request_id, &deadline_exceeded(), &sender);
+            return;
+        }
         let observer = BytecodeExecutionObserver::new(
             Arc::clone(&self.bytecode_execution_event_sink),
             BytecodeExecutionCorrelation {
-                router_session_id: router_session_id.to_string(),
+                router_session_id: router_session.as_str().to_string(),
                 request_id: request_id.clone(),
             },
         );
-        let Some(reservation) = self
-            .request_supervisor
-            .reserve(request_id.clone(), observer.clone())
+        let Some(reservation) =
+            self.request_supervisor
+                .reserve(request_key, observer.clone(), admitted_deadline)
         else {
             self.send_http_gateway_admission_error(
                 &request_id,
@@ -148,7 +173,6 @@ impl RuntimeHost {
         match result {
             Ok(AdmittedBytecodeRequest::Http(request)) => {
                 self.task_bytecode_http_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -158,7 +182,6 @@ impl RuntimeHost {
             }
             Ok(AdmittedBytecodeRequest::WebSocketConnect(request)) => {
                 self.task_bytecode_websocket_connect_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -168,7 +191,6 @@ impl RuntimeHost {
             }
             Ok(AdmittedBytecodeRequest::WebSocketConnectionClosed(request)) => {
                 self.task_bytecode_websocket_connection_closed_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -178,7 +200,6 @@ impl RuntimeHost {
             }
             Ok(AdmittedBytecodeRequest::WebSocketJsonRpc(request)) => {
                 self.task_bytecode_websocket_jsonrpc_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -188,7 +209,6 @@ impl RuntimeHost {
             }
             Ok(AdmittedBytecodeRequest::Task(request)) => {
                 self.task_bytecode_task_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -722,6 +742,29 @@ fn effective_deadline(
     header: &BytecodeRequestStartFrameHeader,
 ) -> Result<Option<BytecodeRequestDeadlineFrameHeader>> {
     effective_request_deadline(header.deadline.as_ref(), "HTTP gateway")
+}
+
+fn wire_deadline_extra(
+    header: &BytecodeRequestStartFrameWireHeader,
+) -> serde_json::Map<String, serde_json::Value> {
+    let deadline = match header {
+        BytecodeRequestStartFrameWireHeader::Http(header) => header.deadline.as_ref(),
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(header) => header.deadline.as_ref(),
+        BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
+            header.deadline.as_ref()
+        }
+        BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => header.deadline.as_ref(),
+        BytecodeRequestStartFrameWireHeader::Task(header) => header.deadline.as_ref(),
+    };
+    let mut extra = serde_json::Map::new();
+    if let Some(deadline) = deadline {
+        extra.insert(
+            "deadline".to_string(),
+            serde_json::to_value(deadline)
+                .expect("typed bytecode request deadline remains serializable"),
+        );
+    }
+    extra
 }
 
 fn effective_request_deadline(

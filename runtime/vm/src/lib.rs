@@ -18,7 +18,9 @@ mod limits;
 mod projection;
 mod statement;
 
-pub use budget::{VmBudget, VmBudgetError, VmSemanticCharge, VmSemanticChargeKind};
+pub use budget::{
+    VmBudget, VmBudgetClosed, VmBudgetTerminal, VmSemanticCharge, VmSemanticChargeKind,
+};
 pub use control::{
     AdapterControl, AdapterInvocation, BoundaryStart, ChildInvocation, ChildTarget, EffectStart,
     PendingOperation, PendingTicket, ResumeOutcome, StreamInvocation, StreamItem, VmControl,

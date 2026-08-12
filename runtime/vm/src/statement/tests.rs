@@ -1,5 +1,3 @@
-use std::num::NonZeroU32;
-
 use skiff_artifact_model::{
     InstructionSourceSite, StatementAttributionId, StatementChargeKind,
     SyntheticInstructionSiteReason,
@@ -7,7 +5,10 @@ use skiff_artifact_model::{
 use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 
 use super::{charge_event_range, charge_frame_entry_kind, SourceEventView};
-use crate::{frame::VmFrame, VmBudget, VmBudgetError, VmSemanticCharge, VmSemanticChargeKind};
+use crate::{
+    frame::VmFrame, VmBudget, VmBudgetClosed, VmBudgetTerminal, VmSemanticCharge,
+    VmSemanticChargeKind,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum BudgetAction {
@@ -40,20 +41,20 @@ struct RecordingBudget {
 }
 
 impl VmBudget for RecordingBudget {
-    fn replenish_raw_fuel(&mut self, _maximum: NonZeroU32) -> Result<NonZeroU32, VmBudgetError> {
-        unreachable!("statement coordinator does not replenish raw fuel")
+    fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed> {
+        unreachable!("statement coordinator does not dispatch")
     }
 
-    fn poll_interrupt(&mut self) -> Result<(), VmBudgetError> {
+    fn poll_interrupt(&mut self) -> Result<(), VmBudgetClosed> {
         self.actions.push(BudgetAction::Poll);
         if self.fail_poll {
-            Err(VmBudgetError::Cancelled)
+            Err(VmBudgetClosed::AlreadySettled(VmBudgetTerminal::Cancelled))
         } else {
             Ok(())
         }
     }
 
-    fn charge_semantic(&mut self, charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetError> {
+    fn charge_semantic(&mut self, charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetClosed> {
         let call = self.charge_calls;
         self.charge_calls += 1;
         if self.fail_charge_at == Some(call) {
@@ -68,7 +69,7 @@ impl VmBudget for RecordingBudget {
                     kind: charge_kind,
                 },
             });
-            return Err(VmBudgetError::AccountingFailure);
+            return Err(VmBudgetClosed::AccountingFailure);
         }
         let action = match charge.kind() {
             VmSemanticChargeKind::FunctionEntry => BudgetAction::Entry {
@@ -124,7 +125,7 @@ fn frame_entry_failure_keeps_entry_pending() {
         charge_frame_entry_kind(&mut frame, StatementChargeKind::FunctionEntry, &mut budget)
             .unwrap_err();
 
-    assert_eq!(error, VmBudgetError::AccountingFailure.into());
+    assert_eq!(error, VmBudgetClosed::AccountingFailure.into());
     assert!(frame.function_entry_pending());
     assert_eq!(budget.actions, [BudgetAction::EntryRejected]);
 }
@@ -220,7 +221,7 @@ fn retry_starts_at_the_first_uncommitted_event() {
 
     let error = charge_event_range(&mut frame, events.as_slice(), &mut budget).unwrap_err();
 
-    assert_eq!(error, VmBudgetError::AccountingFailure.into());
+    assert_eq!(error, VmBudgetClosed::AccountingFailure.into());
     assert_eq!(frame.instruction(), instruction);
     assert_eq!(frame.next_statement_event_index(), 1);
     assert!(frame.statement_events_pending());
@@ -286,7 +287,7 @@ fn failed_loop_charge_retries_poll_and_the_same_event() {
 
     let error = charge_event_range(&mut frame, events.as_slice(), &mut budget).unwrap_err();
 
-    assert_eq!(error, VmBudgetError::AccountingFailure.into());
+    assert_eq!(error, VmBudgetClosed::AccountingFailure.into());
     assert_eq!(frame.next_statement_event_index(), 0);
     assert!(frame.statement_events_pending());
 
@@ -330,7 +331,7 @@ fn event_failure_does_not_commit_pc_or_event_progress() {
     )
     .unwrap_err();
 
-    assert_eq!(error, VmBudgetError::AccountingFailure.into());
+    assert_eq!(error, VmBudgetClosed::AccountingFailure.into());
     assert_eq!(frame.instruction(), instruction);
     assert!(frame.statement_events_pending());
     assert_eq!(frame.next_statement_event_index(), 0);
@@ -360,7 +361,10 @@ fn loop_poll_failure_happens_before_charge_or_pc_commit() {
     )
     .unwrap_err();
 
-    assert_eq!(error, VmBudgetError::Cancelled.into());
+    assert_eq!(
+        error,
+        VmBudgetClosed::AlreadySettled(VmBudgetTerminal::Cancelled).into()
+    );
     assert_eq!(budget.actions, [BudgetAction::Poll]);
     assert_eq!(frame.instruction(), instruction);
     assert!(frame.statement_events_pending());

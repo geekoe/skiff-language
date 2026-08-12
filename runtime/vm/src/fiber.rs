@@ -82,7 +82,6 @@ pub struct VmFiber {
     live_values: Vec<bool>,
     state: VmFiberState,
     limits: VmLimits,
-    raw_fuel_remaining: u32,
     active_regions: Vec<ActiveRegionIndex>,
     region_depths: Vec<usize>,
     unwind: Option<UnwindState>,
@@ -181,7 +180,6 @@ impl VmFiber {
             live_values,
             state: VmFiberState::Runnable,
             limits,
-            raw_fuel_remaining: 0,
             active_regions: Vec::new(),
             region_depths: vec![0],
             unwind: None,
@@ -522,11 +520,11 @@ impl VmFiber {
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
     ) -> Result<SegmentResult, VmError> {
+        budget.poll_interrupt().map_err(VmError::BudgetClosed)?;
         for _ in 0..self.limits.max_segment_instructions().get() {
             self.charge_function_entry(budget)?;
-            self.consume_raw_fuel(budget)?;
             self.charge_statement_events(budget)?;
-            match self.dispatch_one(heap)? {
+            match self.dispatch_accounted(heap, budget)? {
                 DispatchOutcome::Continue => {}
                 DispatchOutcome::Complete(values) => return Ok(SegmentResult::Complete(values)),
                 DispatchOutcome::Handoff(control) => return Ok(SegmentResult::Handoff(control)),
@@ -544,22 +542,6 @@ impl VmFiber {
         charge_frame_entry(schedule, frame, budget)
     }
 
-    fn consume_raw_fuel(&mut self, budget: &mut dyn VmBudget) -> Result<(), VmError> {
-        if self.raw_fuel_remaining == 0 {
-            let maximum = self.limits.raw_fuel_quantum();
-            let granted = budget.replenish_raw_fuel(maximum)?;
-            if granted > maximum {
-                return Err(VmError::InvalidFuelGrant {
-                    requested_maximum: maximum,
-                    granted,
-                });
-            }
-            self.raw_fuel_remaining = granted.get();
-        }
-        self.raw_fuel_remaining -= 1;
-        Ok(())
-    }
-
     fn charge_statement_events(&mut self, budget: &mut dyn VmBudget) -> Result<(), VmError> {
         let schedule = self.entry.image().statement_schedule();
         let frame = self
@@ -567,6 +549,17 @@ impl VmFiber {
             .last_mut()
             .ok_or(VmError::FiberNotRunnable { state: self.state })?;
         charge_instruction_events(schedule, frame, budget)
+    }
+
+    /// Sole attempted-dispatch accounting boundary. A successful budget call
+    /// is immediately adjacent to exactly one private dispatch invocation.
+    fn dispatch_accounted(
+        &mut self,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<DispatchOutcome, VmError> {
+        budget.before_dispatch().map_err(VmError::BudgetClosed)?;
+        self.dispatch_one(heap)
     }
 
     fn dispatch_one(&mut self, heap: &mut dyn VmHeap) -> Result<DispatchOutcome, VmError> {

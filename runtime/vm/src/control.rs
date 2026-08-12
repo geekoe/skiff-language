@@ -12,7 +12,7 @@ use skiff_runtime_model::{
     vm_value::ValueSlot,
 };
 
-use crate::{VmBudgetError, VmError};
+use crate::{VmBudgetClosed, VmError};
 
 pub type VmResult = Result<VmOwnedValues, VmError>;
 
@@ -477,7 +477,7 @@ impl VmRootSource for PendingOperation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmInternalTerminal {
-    Budget(VmBudgetError),
+    Budget(VmBudgetClosed),
     OwnerStopped,
 }
 

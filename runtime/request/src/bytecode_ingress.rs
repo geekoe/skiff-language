@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     num::{NonZeroU32, NonZeroUsize},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Instant,
@@ -27,12 +27,13 @@ use skiff_runtime_scheduler::{
     VmStreamSupervisor, VmStreamTerminal, WakeSignal,
 };
 use skiff_runtime_vm::{
-    ResumeOutcome, Vm, VmBudget, VmBudgetError, VmError, VmFiber, VmInternalTerminal, VmLimits,
-    VmOwnedValues, VmResumeToken, VmSemanticCharge,
+    ResumeOutcome, Vm, VmBudget, VmBudgetClosed, VmBudgetTerminal, VmError, VmFiber,
+    VmInternalTerminal, VmLimits, VmOwnedValues, VmResumeToken,
 };
 
 use crate::{
     continuation_handoff::resume_pending_wake,
+    execution_budget::BytecodeVmBudget,
     http_executor::{BytecodeHttpExecutor, BytecodeHttpStreamEvent, BytecodeSelfIngressContext},
     response_stream_writer::ResponseStreamWriter,
     vm_heap::{RequestVmHeap, ResourceTable},
@@ -900,8 +901,8 @@ fn spawn_sleep_timer(
                     ));
                 }
                 _ = &mut deadline_sleep => {
-                    let _ = completion.deadline(ResumeOutcome::Failure(VmError::Budget(
-                        VmBudgetError::DeadlineExceeded,
+                    let _ = completion.deadline(ResumeOutcome::Failure(VmError::BudgetClosed(
+                        VmBudgetClosed::DeadlineExceeded,
                     )));
                 }
             }
@@ -1001,7 +1002,6 @@ pub struct BytecodeRequestExecutionInput {
     pub target: DeploymentExecutionEntry,
     pub request: RequestEnvelope,
     pub observer: BytecodeExecutionObserver,
-    pub cancelled: Arc<AtomicBool>,
     pub cancellation: CancellationToken,
     pub execution_budget: Arc<ExecutionBudget>,
     pub handles: BytecodeRequestExecutionHandles,
@@ -1139,7 +1139,6 @@ pub fn start_runtime_bytecode_request_with_ports(
         target,
         request,
         observer,
-        cancelled,
         cancellation,
         execution_budget,
         handles,
@@ -1182,11 +1181,10 @@ pub fn start_runtime_bytecode_request_with_ports(
     );
 
     let heap: Box<dyn VmHeap + Send> = Box::new(request_heap);
-    let budget: Box<dyn VmBudget + Send> = Box::new(BytecodeVmBudget::new(
-        execution_budget.clone(),
-        cancelled,
-        cancellation,
-    ));
+    let budget: Box<dyn VmBudget + Send> =
+        Box::new(execution_budget.attach_vm().map_err(|error| {
+            RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
+        })?);
     let driver = BytecodeRequestDriver::new(
         scheduler,
         child_executor,
@@ -1548,7 +1546,6 @@ pub fn execute_runtime_bytecode_request_with_ports(
         target,
         request,
         observer,
-        cancelled,
         cancellation,
         execution_budget,
         handles,
@@ -1566,7 +1563,9 @@ pub fn execute_runtime_bytecode_request_with_ports(
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let queue = Arc::new(InMemoryWakeQueue::new());
     let child_cancellation = cancellation.clone();
-    let mut budget = BytecodeVmBudget::new(execution_budget.clone(), cancelled, cancellation);
+    let mut budget = execution_budget.attach_vm().map_err(|error| {
+        RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
+    })?;
 
     let child_executor = Some(Arc::new(RequestAdapterExecutor::new(
         request.test_effects_enabled,
@@ -2246,96 +2245,53 @@ fn http_headers_from_vm(
     Ok(headers)
 }
 
-struct BytecodeVmBudget {
-    execution_budget: Arc<ExecutionBudget>,
-    cancelled: Arc<AtomicBool>,
-    cancellation: CancellationToken,
-}
-
-impl BytecodeVmBudget {
-    fn new(
-        execution_budget: Arc<ExecutionBudget>,
-        cancelled: Arc<AtomicBool>,
-        cancellation: CancellationToken,
-    ) -> Self {
-        Self {
-            execution_budget,
-            cancelled,
-            cancellation,
-        }
-    }
-
-    fn poll_execution_budget(&self) -> Result<(), VmBudgetError> {
-        let cancelled = self.cancelled.load(Ordering::Acquire) || self.cancellation.is_cancelled();
-        self.execution_budget
-            .poll(cancelled, Instant::now())
-            .map_err(execution_budget_reason_to_vm)
-    }
-}
-
-impl VmBudget for BytecodeVmBudget {
-    fn replenish_raw_fuel(&mut self, maximum: NonZeroU32) -> Result<NonZeroU32, VmBudgetError> {
-        self.poll_execution_budget()?;
-        if self.execution_budget.add_units(u64::from(maximum.get())) {
-            self.poll_execution_budget()?;
-        }
-        Ok(maximum)
-    }
-
-    fn poll_interrupt(&mut self) -> Result<(), VmBudgetError> {
-        self.poll_execution_budget()
-    }
-
-    fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetError> {
-        if self.execution_budget.add_units(1) {
-            self.poll_execution_budget()
-        } else {
-            Ok(())
-        }
-    }
-}
-
-fn execution_budget_reason_to_vm(reason: ExecutionBudgetReason) -> VmBudgetError {
-    match reason {
-        ExecutionBudgetReason::Cancelled => VmBudgetError::Cancelled,
-        ExecutionBudgetReason::DeadlineExceeded => VmBudgetError::DeadlineExceeded,
-        ExecutionBudgetReason::InstructionLimitExceeded => VmBudgetError::InstructionLimitExceeded,
-    }
-}
-
 fn vm_error_to_request_error(execution_budget: &ExecutionBudget, error: VmError) -> RequestError {
     match error {
-        VmError::Budget(error) => vm_budget_error_to_request_error(execution_budget, error),
+        VmError::BudgetClosed(error) => vm_budget_closed_to_request_error(execution_budget, error),
         VmError::InternalTerminal(VmInternalTerminal::Budget(error)) => {
-            vm_budget_error_to_request_error(execution_budget, error)
+            vm_budget_closed_to_request_error(execution_budget, error)
         }
         VmError::InternalTerminal(VmInternalTerminal::OwnerStopped) => RequestError::Cancelled,
         error => RequestError::Unsupported(format!("bytecode VM execution failed: {error}")),
     }
 }
 
-fn vm_budget_error_to_request_error(
+fn vm_budget_closed_to_request_error(
     execution_budget: &ExecutionBudget,
-    error: VmBudgetError,
+    error: VmBudgetClosed,
 ) -> RequestError {
     let stats = execution_budget.stats_snapshot();
     match error {
-        VmBudgetError::Cancelled | VmBudgetError::InternalStop => RequestError::Cancelled,
-        VmBudgetError::DeadlineExceeded => RequestError::ExecutionBudgetExceeded {
-            reason: ExecutionBudgetReason::DeadlineExceeded,
-            instruction_count: stats.instruction_count,
-            limit: stats.budget_limit,
-            elapsed_ms: stats.elapsed_ms,
-        },
-        VmBudgetError::InstructionLimitExceeded => RequestError::ExecutionBudgetExceeded {
-            reason: ExecutionBudgetReason::InstructionLimitExceeded,
-            instruction_count: stats.instruction_count,
-            limit: stats.budget_limit,
-            elapsed_ms: stats.elapsed_ms,
-        },
-        VmBudgetError::AccountingFailure => RequestError::Unsupported(format!(
-            "bytecode VM budget accounting failed closed: {error}"
-        )),
+        VmBudgetClosed::AlreadySettled(
+            VmBudgetTerminal::Succeeded
+            | VmBudgetTerminal::Failed
+            | VmBudgetTerminal::Cancelled
+            | VmBudgetTerminal::InternalStop,
+        ) => RequestError::Cancelled,
+        VmBudgetClosed::DeadlineExceeded
+        | VmBudgetClosed::AlreadySettled(VmBudgetTerminal::DeadlineExceeded) => {
+            RequestError::ExecutionBudgetExceeded {
+                reason: ExecutionBudgetReason::DeadlineExceeded,
+                instruction_count: stats.instruction_count,
+                limit: stats.budget_limit,
+                elapsed_ms: stats.elapsed_ms,
+            }
+        }
+        VmBudgetClosed::InstructionLimitExceeded
+        | VmBudgetClosed::AlreadySettled(VmBudgetTerminal::InstructionLimitExceeded) => {
+            RequestError::ExecutionBudgetExceeded {
+                reason: ExecutionBudgetReason::InstructionLimitExceeded,
+                instruction_count: stats.instruction_count,
+                limit: stats.budget_limit,
+                elapsed_ms: stats.elapsed_ms,
+            }
+        }
+        VmBudgetClosed::AccountingFailure
+        | VmBudgetClosed::AlreadySettled(VmBudgetTerminal::AccountingFailure) => {
+            RequestError::Unsupported(format!(
+                "bytecode VM budget accounting failed closed: {error}"
+            ))
+        }
     }
 }
 
@@ -2343,7 +2299,6 @@ fn vm_limits() -> VmLimits {
     VmLimits::new(
         NonZeroUsize::new(128).expect("VM frame limit is non-zero"),
         NonZeroUsize::new(4096).expect("VM value slot limit is non-zero"),
-        NonZeroU32::new(1024).expect("VM fuel quantum is non-zero"),
         NonZeroU32::new(1024).expect("VM segment instruction limit is non-zero"),
     )
 }
@@ -2596,15 +2551,18 @@ mod tests {
     struct NoopBudget;
 
     impl VmBudget for NoopBudget {
-        fn replenish_raw_fuel(&mut self, maximum: NonZeroU32) -> Result<NonZeroU32, VmBudgetError> {
-            Ok(maximum)
-        }
-
-        fn poll_interrupt(&mut self) -> Result<(), VmBudgetError> {
+        fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed> {
             Ok(())
         }
 
-        fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetError> {
+        fn poll_interrupt(&mut self) -> Result<(), VmBudgetClosed> {
+            Ok(())
+        }
+
+        fn charge_semantic(
+            &mut self,
+            _charge: skiff_runtime_vm::VmSemanticCharge<'_>,
+        ) -> Result<(), VmBudgetClosed> {
             Ok(())
         }
     }
@@ -3217,7 +3175,7 @@ mod tests {
 
     #[test]
     fn scheduler_fail_closed_errors_map_to_unsupported() {
-        let budget = ExecutionBudget::disabled();
+        let budget = ExecutionBudget::for_runtime_request(None);
         assert!(matches!(
             scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedChild),
             RequestError::Unsupported(message) if message.contains("child executor port")

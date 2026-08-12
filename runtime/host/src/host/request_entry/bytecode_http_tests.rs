@@ -37,6 +37,7 @@ use skiff_runtime_transport::{
 use tokio::{sync::mpsc, time::timeout};
 
 use super::phase_0_proof_support::PublishedFixture;
+use crate::host::request_supervisor::RouterSessionEpoch;
 use crate::host::{RuntimeConfig, RuntimeHost};
 
 #[derive(Default)]
@@ -93,10 +94,8 @@ fn legacy_deployment(
             .expect("write legacy package");
 
         let mut deployment = fixture.deployment_artifact.as_ref().clone();
-        deployment.deployment_revision =
-            DeploymentRevision::new("revision-host-legacy-http");
-        deployment.deployment_artifact_identity =
-            DeploymentArtifactIdentity::new("unassigned");
+        deployment.deployment_revision = DeploymentRevision::new("revision-host-legacy-http");
+        deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new("unassigned");
         deployment.implementation = legacy_package_ref;
         skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)
             .expect("legacy deployment identity");
@@ -123,11 +122,7 @@ fn canonical_header(
     fixture: &PublishedFixture,
     request_id: &str,
 ) -> BytecodeRequestStartFrameHeader {
-    canonical_header_for_deployment(
-        &fixture.deployment,
-        request_id,
-        &fixture.gateway_identity,
-    )
+    canonical_header_for_deployment(&fixture.deployment, request_id, &fixture.gateway_identity)
 }
 
 fn canonical_header_for_deployment(
@@ -148,12 +143,7 @@ fn canonical_header_for_deployment(
             assembly_identity: None,
             assembly_generation: None,
             deployment: deployment.clone(),
-            build_id: Some(
-                deployment
-                    .deployment_artifact_identity
-                    .as_str()
-                    .to_string(),
-            ),
+            build_id: Some(deployment.deployment_artifact_identity.as_str().to_string()),
             gateway_entry_identity: gateway_entry_identity.clone(),
             ingress: BytecodeRequestIngressFrameHeader {
                 protocol: BytecodeRequestIngressProtocol::Http,
@@ -229,11 +219,9 @@ fn websocket_connect_header(
     fixture: &PublishedFixture,
     request_id: &str,
 ) -> BytecodeWebSocketConnectRequestStartFrameHeader {
-    let gateway_entry_identity = GatewayEntryIdentity::parse(format!(
-        "skiff-gateway-entry-v1:sha256:{}",
-        "0".repeat(64)
-    ))
-    .expect("mismatched WebSocket gateway identity");
+    let gateway_entry_identity =
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "0".repeat(64)))
+            .expect("mismatched WebSocket gateway identity");
     BytecodeWebSocketConnectRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
@@ -402,6 +390,12 @@ fn test_host_with_bytecode_only(bytecode_only: bool) -> RuntimeHost {
     .expect("bytecode HTTP runtime host")
 }
 
+fn start_test_session(host: &RuntimeHost, id: &str) -> RouterSessionEpoch {
+    let epoch = RouterSessionEpoch::from_connection_id(id.to_string()).unwrap();
+    assert!(host.request_supervisor.start_session(epoch.clone()));
+    epoch
+}
+
 async fn assert_disabled_request_lane(
     fixture: &PublishedFixture,
     scenario: &str,
@@ -421,14 +415,9 @@ async fn assert_disabled_request_lane(
     let bootstrap = connection_bootstrap(fixture);
     let (sender, mut receiver) = mpsc::unbounded_channel();
 
-    host.spawn_bytecode_request(
-        "phase-1-request-lane-session",
-        header,
-        body,
-        &bootstrap,
-        sender,
-    )
-    .await;
+    let router_session = start_test_session(&host, "phase-1-request-lane-session");
+    host.spawn_bytecode_request(&router_session, header, body, &bootstrap, sender)
+        .await;
 
     assert_bytecode_control_error(
         &mut receiver,
@@ -489,8 +478,9 @@ async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
     let bootstrap = connection_bootstrap(fixture);
     let header = canonical_header(fixture, "bytecode-http-42");
     let (sender, mut receiver) = mpsc::unbounded_channel();
+    let router_session = start_test_session(&host, "bytecode-http-session");
     host.spawn_bytecode_request(
-        "bytecode-http-session",
+        &router_session,
         BytecodeRequestStartFrameWireHeader::Http(header),
         b"2".to_vec(),
         &bootstrap,
@@ -555,8 +545,10 @@ async fn admitted_route_and_adapter_remain_pinned_after_store_withdrawal() {
     );
 
     let bootstrap = connection_bootstrap(&fixture);
-    let withdrawn_root =
-        PathBuf::from(format!("{}.withdrawn", fixture.artifact_root.path().display()));
+    let withdrawn_root = PathBuf::from(format!(
+        "{}.withdrawn",
+        fixture.artifact_root.path().display()
+    ));
     std::fs::rename(fixture.artifact_root.path(), &withdrawn_root)
         .expect("withdraw admitted artifact store");
 
@@ -587,8 +579,9 @@ async fn admitted_route_and_adapter_remain_pinned_after_store_withdrawal() {
 
     let header = canonical_header(&fixture, "bytecode-http-pinned-store");
     let (sender, mut receiver) = mpsc::unbounded_channel();
+    let router_session = start_test_session(&host, "bytecode-http-pinned-store-session");
     host.spawn_bytecode_request(
-        "bytecode-http-pinned-store-session",
+        &router_session,
         BytecodeRequestStartFrameWireHeader::Http(header),
         b"2".to_vec(),
         &bootstrap,
@@ -686,8 +679,9 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
         &fixture.gateway_identity,
     );
     let (sender, mut receiver) = mpsc::unbounded_channel();
+    let router_session = start_test_session(&host, "bytecode-only-legacy-session");
     host.spawn_bytecode_request(
-        "bytecode-only-legacy-session",
+        &router_session,
         BytecodeRequestStartFrameWireHeader::Http(header.clone()),
         Vec::new(),
         &bootstrap,

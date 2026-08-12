@@ -99,8 +99,9 @@ async fn phase_0_vcp_production_composition() {
     host.bytecode_execution_event_sink = sink.clone();
     let bootstrap = fixture.connection_bootstrap();
     let (sender, mut receiver) = mpsc::unbounded_channel();
+    let router_session = correlation.router_session_epoch();
     host.spawn_bytecode_request(
-        &correlation.router_session_id,
+        &router_session,
         request.header,
         request.body,
         &bootstrap,

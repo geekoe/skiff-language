@@ -35,10 +35,19 @@ impl Correlation {
             scenario_id: scenario_id.to_string(),
         }
     }
+
+    pub(super) fn router_session_epoch(
+        &self,
+    ) -> crate::host::request_supervisor::RouterSessionEpoch {
+        crate::host::request_supervisor::RouterSessionEpoch::from_connection_id(
+            self.router_session_id.clone(),
+        )
+        .expect("proof correlation has a valid session epoch")
+    }
 }
 
 pub(super) fn runtime_host(correlation: &Correlation) -> RuntimeHost {
-    RuntimeHost::new(RuntimeConfig {
+    let host = RuntimeHost::new(RuntimeConfig {
         db_provider: DbProviderSource::new(TestDbProviderFactory),
         router_url: "ws://127.0.0.1:4001/runtime".to_string(),
         base_runtime_id: format!("runtime-phase-0-{}", correlation.scenario_id),
@@ -51,7 +60,11 @@ pub(super) fn runtime_host(correlation: &Correlation) -> RuntimeHost {
         http_response_max_bytes: 1024,
         http_egress_proxy: None,
     })
-    .expect("construct bytecode-only production host composition")
+    .expect("construct bytecode-only production host composition");
+    assert!(host
+        .request_supervisor
+        .start_session(correlation.router_session_epoch()));
+    host
 }
 
 #[derive(Clone, Default)]

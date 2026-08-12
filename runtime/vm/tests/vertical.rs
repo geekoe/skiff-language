@@ -356,26 +356,22 @@ impl TestBudget {
 }
 
 impl VmBudget for TestBudget {
-    fn replenish_raw_fuel(
-        &mut self,
-        maximum: NonZeroU32,
-    ) -> Result<NonZeroU32, skiff_runtime_vm::VmBudgetError> {
+    fn before_dispatch(&mut self) -> Result<(), skiff_runtime_vm::VmBudgetClosed> {
         if self.fuel == 0 {
-            return Err(skiff_runtime_vm::VmBudgetError::InstructionLimitExceeded);
+            return Err(skiff_runtime_vm::VmBudgetClosed::InstructionLimitExceeded);
         }
-        let grant = self.fuel.min(u64::from(maximum.get()));
-        self.fuel -= grant;
-        NonZeroU32::new(grant as u32).ok_or(skiff_runtime_vm::VmBudgetError::AccountingFailure)
+        self.fuel -= 1;
+        Ok(())
     }
 
-    fn poll_interrupt(&mut self) -> Result<(), skiff_runtime_vm::VmBudgetError> {
+    fn poll_interrupt(&mut self) -> Result<(), skiff_runtime_vm::VmBudgetClosed> {
         Ok(())
     }
 
     fn charge_semantic(
         &mut self,
         _charge: VmSemanticCharge<'_>,
-    ) -> Result<(), skiff_runtime_vm::VmBudgetError> {
+    ) -> Result<(), skiff_runtime_vm::VmBudgetClosed> {
         Ok(())
     }
 }
@@ -392,7 +388,6 @@ mod tests {
         VmLimits::new(
             NonZeroUsize::new(128).unwrap(),
             NonZeroUsize::new(4096).unwrap(),
-            NonZeroU32::new(1024).unwrap(),
             NonZeroU32::new(1024).unwrap(),
         )
     }

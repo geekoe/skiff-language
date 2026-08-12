@@ -21,7 +21,10 @@ use super::{
 };
 use crate::{
     host::{
-        request_supervisor::{CleanupPermit, CompletionTrace, RequestReservation, SupervisedRequest},
+        request_supervisor::{
+            ActivationOutcome, CleanupPermit, CompletionTrace, RequestReservation,
+            SupervisedRequest,
+        },
         RuntimeHost,
     },
     loader::bytecode_admission::BytecodeRoute,
@@ -46,7 +49,6 @@ enum WebSocketJsonRpcTerminal {
 impl RuntimeHost {
     pub(super) async fn task_bytecode_websocket_jsonrpc_request(
         &self,
-        _router_session_id: String,
         reservation: RequestReservation,
         request: AdmittedBytecodeWebSocketJsonRpcRequest,
         _http_response_max_bytes: usize,
@@ -61,14 +63,22 @@ impl RuntimeHost {
         let request_envelope = bytecode_websocket_jsonrpc_request_envelope(&route, &header, params);
         let telemetry = bytecode_websocket_jsonrpc_telemetry_context(self, &header, &route);
         let observer = reservation.observer().clone();
-        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
-            self.send_http_gateway_admission_error(
-                &header.request_id,
-                "bytecode request reservation activation failed",
-                &sender,
-            );
-            return;
-        };
+        let activation_key = reservation.key().clone();
+        let supervised_request =
+            match reservation.activate(&activation_key, &request_envelope, telemetry) {
+                ActivationOutcome::Activated(request) => request,
+                ActivationOutcome::RevokedByCancel | ActivationOutcome::RevokedBySessionStop => {
+                    return
+                }
+                ActivationOutcome::Invalid => {
+                    self.send_http_gateway_admission_error(
+                        &header.request_id,
+                        "bytecode request reservation activation failed",
+                        &sender,
+                    );
+                    return;
+                }
+            };
         route.publish_admission_observations();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
@@ -85,7 +95,6 @@ impl RuntimeHost {
                     target,
                     request: request_envelope,
                     observer: observer.clone(),
-                    cancelled: supervised_request.cancelled(),
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
@@ -105,13 +114,14 @@ impl RuntimeHost {
                     WebSocketJsonRpcTerminal::Response(WebSocketJsonRpcOutcome::InternalError)
                 }
             };
-            let cleanup_permit = host.finish_websocket_jsonrpc_request(
-                &supervised_request,
-                request_id,
-                terminal,
-                &sender,
-            )
-            .await;
+            let cleanup_permit = host
+                .finish_websocket_jsonrpc_request(
+                    &supervised_request,
+                    request_id,
+                    terminal,
+                    &sender,
+                )
+                .await;
             drop(execution);
             drop(execution_budget);
             drop(supervised_request);
@@ -130,7 +140,8 @@ impl RuntimeHost {
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Option<CleanupPermit> {
         let WebSocketJsonRpcTerminal::Response(outcome) = terminal else {
-            return self.request_supervisor
+            return self
+                .request_supervisor
                 .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
                 .await;
         };
@@ -151,10 +162,23 @@ impl RuntimeHost {
                     .await
             }
         };
-        if !permit
-            .as_ref()
-            .is_some_and(CleanupPermit::response_owned)
-        {
+        if !permit.as_ref().is_some_and(CleanupPermit::response_owned) {
+            return permit;
+        }
+        if let Some(error) = permit.as_ref().and_then(CleanupPermit::response_override) {
+            let override_outcome = if error.code == "TimeoutError" {
+                WebSocketJsonRpcOutcome::DeadlineExceeded
+            } else {
+                WebSocketJsonRpcOutcome::InternalError
+            };
+            let (outcome, payload) = websocket_jsonrpc_response_parts(override_outcome);
+            if let Ok(frame) = bytecode_websocket_jsonrpc_response_into_frame(
+                request_id,
+                BytecodeWebSocketJsonRpcResponseFrameHeader { outcome },
+                payload,
+            ) {
+                let _ = sender.send(RouterWriterMessage::Binary(frame));
+            }
             return permit;
         }
         let (outcome, payload) = websocket_jsonrpc_response_parts(outcome);

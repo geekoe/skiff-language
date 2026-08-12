@@ -519,17 +519,14 @@ impl BytecodeUnit for VmFiber {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        num::NonZeroU32,
-        sync::{Arc, Mutex},
-    };
+    use std::sync::{Arc, Mutex};
 
     use skiff_runtime_model::{
         vm_heap::{VmHeap, VmHeapError},
         vm_root::{VmRootSource, VmRootVisitor},
         vm_value::ValueSlot,
     };
-    use skiff_runtime_vm::{VmBudget, VmBudgetError, VmSemanticCharge};
+    use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmSemanticCharge};
 
     use super::*;
     use crate::{
@@ -564,15 +561,15 @@ mod tests {
     struct NoopBudget;
 
     impl VmBudget for NoopBudget {
-        fn replenish_raw_fuel(&mut self, maximum: NonZeroU32) -> Result<NonZeroU32, VmBudgetError> {
-            Ok(maximum)
-        }
-
-        fn poll_interrupt(&mut self) -> Result<(), VmBudgetError> {
+        fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed> {
             Ok(())
         }
 
-        fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetError> {
+        fn poll_interrupt(&mut self) -> Result<(), VmBudgetClosed> {
+            Ok(())
+        }
+
+        fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetClosed> {
             Ok(())
         }
     }
@@ -850,9 +847,7 @@ mod tests {
             parked: Mutex::new(None),
         });
         let ports = BytecodeSchedulerPorts {
-            child_executor: Some(
-                executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>
-            ),
+            child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
             stream_supervisor: None,
         };
         let outcome = BytecodeScheduler::new(
@@ -875,9 +870,7 @@ mod tests {
             42,
             RootEscrow::new(Box::new(EmptyRoots)),
             BytecodeSchedulerPorts {
-                child_executor: Some(
-                    executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>
-                ),
+                child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
                 stream_supervisor: None,
             },
         )
@@ -885,5 +878,4 @@ mod tests {
         let outcome = scheduler.run(&mut heap, &mut budget).unwrap();
         assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(99)));
     }
-
 }

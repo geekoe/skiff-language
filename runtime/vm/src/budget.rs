@@ -1,31 +1,58 @@
-use std::{fmt, num::NonZeroU32};
+use std::fmt;
 
 use skiff_artifact_model::{InstructionSourceSite, StatementAttributionId, StatementChargeKind};
 use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex};
 
-/// Terminal reason returned by the trusted execution-budget owner.
+/// Frozen request terminal already selected by the trusted budget owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VmBudgetError {
+pub enum VmBudgetTerminal {
+    Succeeded,
+    Failed,
+    Cancelled,
     InstructionLimitExceeded,
     DeadlineExceeded,
-    Cancelled,
     InternalStop,
     AccountingFailure,
 }
 
-impl fmt::Display for VmBudgetError {
+/// A closed budget result. Direct variants were selected by the current VM
+/// call; `AlreadySettled` preserves the request winner selected elsewhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmBudgetClosed {
+    DeadlineExceeded,
+    InstructionLimitExceeded,
+    AccountingFailure,
+    AlreadySettled(VmBudgetTerminal),
+}
+
+impl fmt::Display for VmBudgetClosed {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::InstructionLimitExceeded => "VM instruction limit exceeded",
             Self::DeadlineExceeded => "VM execution deadline exceeded",
-            Self::Cancelled => "VM execution cancelled",
-            Self::InternalStop => "VM execution stopped by the runtime",
             Self::AccountingFailure => "VM execution budget accounting failed",
+            Self::AlreadySettled(VmBudgetTerminal::Succeeded) => {
+                "VM execution already completed successfully"
+            }
+            Self::AlreadySettled(VmBudgetTerminal::Failed) => "VM execution already failed",
+            Self::AlreadySettled(VmBudgetTerminal::Cancelled) => "VM execution already cancelled",
+            Self::AlreadySettled(VmBudgetTerminal::DeadlineExceeded) => {
+                "VM execution deadline already exceeded"
+            }
+            Self::AlreadySettled(VmBudgetTerminal::InstructionLimitExceeded) => {
+                "VM instruction limit was already exceeded"
+            }
+            Self::AlreadySettled(VmBudgetTerminal::InternalStop) => {
+                "VM execution was already stopped by the runtime"
+            }
+            Self::AlreadySettled(VmBudgetTerminal::AccountingFailure) => {
+                "VM execution budget accounting already failed"
+            }
         })
     }
 }
 
-impl std::error::Error for VmBudgetError {}
+impl std::error::Error for VmBudgetClosed {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmSemanticChargeKind<'a> {
@@ -93,18 +120,14 @@ impl<'a> VmSemanticCharge<'a> {
 
 /// Narrow synchronous budget port used by the VM dispatch loop.
 ///
-/// `replenish_raw_fuel` owns the finite instruction limit. A grant must be in
-/// `1..=maximum`; the VM rejects any larger grant instead of allowing policy
-/// to weaken its trusted polling quantum. Replenishment also polls deadline
-/// and internal stop before returning fuel.
-///
 /// An error from `charge_semantic` means that semantic unit was not committed.
 /// The VM retains its same-PC event cursor so a permitted retry starts at that
 /// exact event rather than replaying an already committed prefix.
 pub trait VmBudget {
-    fn replenish_raw_fuel(&mut self, maximum: NonZeroU32) -> Result<NonZeroU32, VmBudgetError>;
+    /// Atomically authorizes and charges exactly one attempted dispatch.
+    fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed>;
 
-    fn poll_interrupt(&mut self) -> Result<(), VmBudgetError>;
+    fn poll_interrupt(&mut self) -> Result<(), VmBudgetClosed>;
 
-    fn charge_semantic(&mut self, charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetError>;
+    fn charge_semantic(&mut self, charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetClosed>;
 }

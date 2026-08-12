@@ -1,9 +1,6 @@
-use std::{
-    num::NonZeroU32,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 
 use skiff_runtime_model::{
@@ -13,12 +10,11 @@ use skiff_runtime_model::{
 };
 use skiff_runtime_scheduler::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
-    BytecodeHandoff, BytecodeScheduler,
-    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
-    BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, RootDisposition, RootEscrow,
-    RootEscrowBacking, SuspendedTrampoline,
+    BytecodeHandoff, BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome,
+    BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
+    RootDisposition, RootEscrow, RootEscrowBacking, SuspendedTrampoline,
 };
-use skiff_runtime_vm::{VmBudget, VmBudgetError, VmSemanticCharge};
+use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmSemanticCharge};
 
 struct NoopHeap;
 
@@ -47,15 +43,15 @@ impl VmHeap for NoopHeap {
 struct NoopBudget;
 
 impl VmBudget for NoopBudget {
-    fn replenish_raw_fuel(&mut self, maximum: NonZeroU32) -> Result<NonZeroU32, VmBudgetError> {
-        Ok(maximum)
-    }
-
-    fn poll_interrupt(&mut self) -> Result<(), VmBudgetError> {
+    fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed> {
         Ok(())
     }
 
-    fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetError> {
+    fn poll_interrupt(&mut self) -> Result<(), VmBudgetClosed> {
+        Ok(())
+    }
+
+    fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetClosed> {
         Ok(())
     }
 }

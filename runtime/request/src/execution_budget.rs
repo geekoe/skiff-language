@@ -1,41 +1,505 @@
 use std::{
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Mutex,
-    },
+    fmt,
+    num::NonZeroU64,
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 
 use serde_json::{Map, Value};
 use skiff_runtime_capability_context::ExecutionBudgetReason;
+use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmBudgetTerminal, VmSemanticCharge};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 pub const DEFAULT_INSTRUCTION_LIMIT: u64 = 10_000_000;
 pub const DEFAULT_POLL_INTERVAL: u64 = 1024;
 
-#[derive(Clone, Debug)]
-pub struct ExecutionBudgetConfig {
-    pub enabled: bool,
-    pub instruction_limit: Option<u64>,
-    pub poll_interval: u64,
+/// Trusted finite request policy. Artifact and wire data cannot construct it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutionBudgetPolicy {
+    hard_raw_limit: u64,
+    raw_poll_interval: NonZeroU64,
 }
 
-impl ExecutionBudgetConfig {
-    pub fn runtime_default() -> Self {
+impl ExecutionBudgetPolicy {
+    pub const fn new(hard_raw_limit: u64, raw_poll_interval: NonZeroU64) -> Self {
         Self {
-            enabled: true,
-            instruction_limit: Some(DEFAULT_INSTRUCTION_LIMIT),
-            poll_interval: DEFAULT_POLL_INTERVAL,
+            hard_raw_limit,
+            raw_poll_interval,
         }
     }
 
-    #[allow(dead_code)]
-    pub fn disabled() -> Self {
-        Self {
-            enabled: false,
-            instruction_limit: None,
-            poll_interval: DEFAULT_POLL_INTERVAL,
+    pub const fn runtime_default() -> Self {
+        Self::new(
+            DEFAULT_INSTRUCTION_LIMIT,
+            NonZeroU64::new(DEFAULT_POLL_INTERVAL).expect("default poll interval is non-zero"),
+        )
+    }
+
+    pub const fn hard_raw_limit(self) -> u64 {
+        self.hard_raw_limit
+    }
+
+    pub const fn raw_poll_interval(self) -> NonZeroU64 {
+        self.raw_poll_interval
+    }
+}
+
+/// Absolute monotonic request deadline admitted once at ingress.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdmittedRequestDeadline(Instant);
+
+impl AdmittedRequestDeadline {
+    pub const fn new(at: Instant) -> Self {
+        Self(at)
+    }
+
+    pub const fn at(self) -> Instant {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestDeadlineAdmissionError {
+    InvalidShape,
+    InvalidTimeout,
+    InvalidExpiry,
+    Unrepresentable,
+}
+
+impl fmt::Display for RequestDeadlineAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidShape => "request deadline must be an object",
+            Self::InvalidTimeout => "request deadline timeoutMs must be a non-negative integer",
+            Self::InvalidExpiry => "request deadline expiresAt must be an RFC3339 timestamp",
+            Self::Unrepresentable => "request deadline is outside the monotonic clock range",
+        })
+    }
+}
+
+impl std::error::Error for RequestDeadlineAdmissionError {}
+
+/// Host-owned monotonic time source retained by the request budget.
+pub trait TrustedMonotonicClock: Send + Sync + 'static {
+    fn now(&self) -> Instant;
+}
+
+#[derive(Debug, Default)]
+pub struct SystemTrustedMonotonicClock;
+
+impl TrustedMonotonicClock for SystemTrustedMonotonicClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionWinner {
+    Succeeded,
+    Failed,
+    Cancelled,
+    DeadlineExceeded,
+    InstructionLimitExceeded,
+    InternalStop,
+    AccountingFailure,
+}
+
+impl ExecutionWinner {
+    const fn vm_terminal(self) -> VmBudgetTerminal {
+        match self {
+            Self::Succeeded => VmBudgetTerminal::Succeeded,
+            Self::Failed => VmBudgetTerminal::Failed,
+            Self::Cancelled => VmBudgetTerminal::Cancelled,
+            Self::DeadlineExceeded => VmBudgetTerminal::DeadlineExceeded,
+            Self::InstructionLimitExceeded => VmBudgetTerminal::InstructionLimitExceeded,
+            Self::InternalStop => VmBudgetTerminal::InternalStop,
+            Self::AccountingFailure => VmBudgetTerminal::AccountingFailure,
         }
+    }
+
+    const fn budget_reason(self) -> Option<ExecutionBudgetReason> {
+        match self {
+            Self::Cancelled | Self::InternalStop => Some(ExecutionBudgetReason::Cancelled),
+            Self::DeadlineExceeded => Some(ExecutionBudgetReason::DeadlineExceeded),
+            Self::InstructionLimitExceeded => Some(ExecutionBudgetReason::InstructionLimitExceeded),
+            Self::Succeeded | Self::Failed | Self::AccountingFailure => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionCandidate {
+    Success,
+    Failure,
+}
+
+impl CompletionCandidate {
+    const fn winner(self) -> ExecutionWinner {
+        match self {
+            Self::Success => ExecutionWinner::Succeeded,
+            Self::Failure => ExecutionWinner::Failed,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ExecutionSettlement {
+    winner: ExecutionWinner,
+    raw_executed_count: u64,
+    semantic_charge_count: u64,
+    hard_raw_limit: u64,
+    poll_count: u64,
+    started_at: Instant,
+    finished_at: Instant,
+}
+
+impl ExecutionSettlement {
+    pub const fn winner(&self) -> ExecutionWinner {
+        self.winner
+    }
+
+    pub const fn raw_executed_count(&self) -> u64 {
+        self.raw_executed_count
+    }
+
+    pub(crate) const fn semantic_charge_count(&self) -> u64 {
+        self.semantic_charge_count
+    }
+
+    pub const fn hard_raw_limit(&self) -> u64 {
+        self.hard_raw_limit
+    }
+
+    pub const fn poll_count(&self) -> u64 {
+        self.poll_count
+    }
+
+    pub const fn started_at(&self) -> Instant {
+        self.started_at
+    }
+
+    pub const fn finished_at(&self) -> Instant {
+        self.finished_at
+    }
+
+    pub fn elapsed(&self) -> Duration {
+        self.finished_at
+            .checked_duration_since(self.started_at)
+            .unwrap_or_default()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum SettlementDisposition {
+    Won(Arc<ExecutionSettlement>),
+    AlreadySettled(Arc<ExecutionSettlement>),
+}
+
+impl SettlementDisposition {
+    pub fn settlement(&self) -> &Arc<ExecutionSettlement> {
+        match self {
+            Self::Won(settlement) | Self::AlreadySettled(settlement) => settlement,
+        }
+    }
+
+    pub fn into_settlement(self) -> Arc<ExecutionSettlement> {
+        match self {
+            Self::Won(settlement) | Self::AlreadySettled(settlement) => settlement,
+        }
+    }
+
+    pub const fn won(&self) -> bool {
+        matches!(self, Self::Won(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VmAdapterAttachError {
+    AlreadyAttached,
+    AlreadySettled,
+}
+
+impl fmt::Display for VmAdapterAttachError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::AlreadyAttached => "request execution budget already has a VM adapter",
+            Self::AlreadySettled => "request execution budget is already settled",
+        })
+    }
+}
+
+impl std::error::Error for VmAdapterAttachError {}
+
+struct ExecutionBudgetState {
+    raw_executed_count: u64,
+    semantic_charge_count: u64,
+    poll_count: u64,
+    last_polled_raw_count: Option<u64>,
+    vm_adapter_attached: bool,
+    settlement: Option<Arc<ExecutionSettlement>>,
+}
+
+pub struct ExecutionBudget {
+    policy: ExecutionBudgetPolicy,
+    deadline: Option<AdmittedRequestDeadline>,
+    started_at: Instant,
+    clock: Arc<dyn TrustedMonotonicClock>,
+    state: Mutex<ExecutionBudgetState>,
+}
+
+impl fmt::Debug for ExecutionBudget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExecutionBudget")
+            .field("policy", &self.policy)
+            .field("deadline", &self.deadline)
+            .field("started_at", &self.started_at)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ExecutionBudget {
+    pub fn new(
+        policy: ExecutionBudgetPolicy,
+        deadline: Option<AdmittedRequestDeadline>,
+        clock: Arc<dyn TrustedMonotonicClock>,
+    ) -> Self {
+        let started_at = clock.now();
+        Self {
+            policy,
+            deadline,
+            started_at,
+            clock,
+            state: Mutex::new(ExecutionBudgetState {
+                raw_executed_count: 0,
+                semantic_charge_count: 0,
+                poll_count: 0,
+                last_polled_raw_count: None,
+                vm_adapter_attached: false,
+                settlement: None,
+            }),
+        }
+    }
+
+    pub fn for_runtime_request(deadline: Option<AdmittedRequestDeadline>) -> Self {
+        Self::new(
+            ExecutionBudgetPolicy::runtime_default(),
+            deadline,
+            Arc::new(SystemTrustedMonotonicClock),
+        )
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline.map(AdmittedRequestDeadline::at)
+    }
+
+    pub(crate) fn attach_vm(self: &Arc<Self>) -> Result<BytecodeVmBudget, VmAdapterAttachError> {
+        let mut state = self.lock_state();
+        if state.settlement.is_some() {
+            return Err(VmAdapterAttachError::AlreadySettled);
+        }
+        if state.vm_adapter_attached {
+            return Err(VmAdapterAttachError::AlreadyAttached);
+        }
+        state.vm_adapter_attached = true;
+        drop(state);
+        Ok(BytecodeVmBudget {
+            execution_budget: Arc::clone(self),
+        })
+    }
+
+    pub fn settle(&self, candidate: CompletionCandidate) -> SettlementDisposition {
+        self.settle_requested(candidate.winner())
+    }
+
+    pub fn request_cancel(&self) -> SettlementDisposition {
+        self.settle_requested(ExecutionWinner::Cancelled)
+    }
+
+    pub fn request_internal_stop(&self) -> SettlementDisposition {
+        self.settle_requested(ExecutionWinner::InternalStop)
+    }
+
+    pub fn settlement(&self) -> Option<Arc<ExecutionSettlement>> {
+        self.lock_state().settlement.clone()
+    }
+
+    pub fn stats_snapshot(&self) -> ExecutionStats {
+        let state = self.lock_state();
+        let now = state
+            .settlement
+            .as_ref()
+            .map_or_else(|| self.clock.now(), |settlement| settlement.finished_at);
+        let winner = state
+            .settlement
+            .as_ref()
+            .map(|settlement| settlement.winner);
+        ExecutionStats {
+            instruction_count: state.raw_executed_count,
+            budget_limit: Some(self.policy.hard_raw_limit),
+            poll_count: state.poll_count,
+            elapsed_ms: now
+                .checked_duration_since(self.started_at)
+                .unwrap_or_default()
+                .as_secs_f64()
+                * 1000.0,
+            budget_exceeded: matches!(
+                winner,
+                Some(ExecutionWinner::DeadlineExceeded | ExecutionWinner::InstructionLimitExceeded)
+            ),
+            budget_reason: winner.and_then(ExecutionWinner::budget_reason),
+        }
+    }
+
+    fn settle_requested(&self, requested: ExecutionWinner) -> SettlementDisposition {
+        let mut state = self.lock_state();
+        if let Some(settlement) = &state.settlement {
+            return SettlementDisposition::AlreadySettled(Arc::clone(settlement));
+        }
+        let now = self.clock.now();
+        let winner = if self.deadline_is_due(now) {
+            ExecutionWinner::DeadlineExceeded
+        } else {
+            requested
+        };
+        let settlement = self.freeze(&mut state, winner, now);
+        SettlementDisposition::Won(settlement)
+    }
+
+    fn before_dispatch(&self) -> Result<(), VmBudgetClosed> {
+        let mut state = self.lock_state();
+        if let Some(settlement) = &state.settlement {
+            return Err(Self::already_closed(settlement));
+        }
+        if state.raw_executed_count >= self.policy.hard_raw_limit {
+            let now = self.poll_locked(&mut state)?;
+            let settlement =
+                self.freeze(&mut state, ExecutionWinner::InstructionLimitExceeded, now);
+            debug_assert_eq!(settlement.raw_executed_count, self.policy.hard_raw_limit);
+            return Err(VmBudgetClosed::InstructionLimitExceeded);
+        }
+        let raw = state.raw_executed_count;
+        if raw % self.policy.raw_poll_interval.get() == 0
+            && state.last_polled_raw_count != Some(raw)
+        {
+            let _ = self.poll_locked(&mut state)?;
+        }
+        let Some(next_raw) = state.raw_executed_count.checked_add(1) else {
+            return Err(self.freeze_accounting_after_deadline_check(&mut state));
+        };
+        state.raw_executed_count = next_raw;
+        Ok(())
+    }
+
+    fn poll_interrupt(&self) -> Result<(), VmBudgetClosed> {
+        let mut state = self.lock_state();
+        self.poll_locked(&mut state).map(|_| ())
+    }
+
+    fn charge_semantic(&self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetClosed> {
+        self.charge_semantic_unit()
+    }
+
+    fn charge_semantic_unit(&self) -> Result<(), VmBudgetClosed> {
+        let mut state = self.lock_state();
+        if let Some(settlement) = &state.settlement {
+            return Err(Self::already_closed(settlement));
+        }
+        let Some(next_semantic) = state.semantic_charge_count.checked_add(1) else {
+            return Err(self.freeze_accounting_after_deadline_check(&mut state));
+        };
+        state.semantic_charge_count = next_semantic;
+        Ok(())
+    }
+
+    fn poll_locked(&self, state: &mut ExecutionBudgetState) -> Result<Instant, VmBudgetClosed> {
+        if let Some(settlement) = &state.settlement {
+            return Err(Self::already_closed(settlement));
+        }
+        let now = self.clock.now();
+        let next_poll = state.poll_count.checked_add(1);
+        if self.deadline_is_due(now) {
+            if let Some(next_poll) = next_poll {
+                state.poll_count = next_poll;
+                state.last_polled_raw_count = Some(state.raw_executed_count);
+            }
+            self.freeze(state, ExecutionWinner::DeadlineExceeded, now);
+            return Err(VmBudgetClosed::DeadlineExceeded);
+        }
+        let Some(next_poll) = next_poll else {
+            self.freeze(state, ExecutionWinner::AccountingFailure, now);
+            return Err(VmBudgetClosed::AccountingFailure);
+        };
+        state.poll_count = next_poll;
+        state.last_polled_raw_count = Some(state.raw_executed_count);
+        Ok(now)
+    }
+
+    fn freeze_accounting_after_deadline_check(
+        &self,
+        state: &mut ExecutionBudgetState,
+    ) -> VmBudgetClosed {
+        let now = self.clock.now();
+        if self.deadline_is_due(now) {
+            self.freeze(state, ExecutionWinner::DeadlineExceeded, now);
+            VmBudgetClosed::DeadlineExceeded
+        } else {
+            self.freeze(state, ExecutionWinner::AccountingFailure, now);
+            VmBudgetClosed::AccountingFailure
+        }
+    }
+
+    fn freeze(
+        &self,
+        state: &mut ExecutionBudgetState,
+        winner: ExecutionWinner,
+        finished_at: Instant,
+    ) -> Arc<ExecutionSettlement> {
+        debug_assert!(state.settlement.is_none());
+        let settlement = Arc::new(ExecutionSettlement {
+            winner,
+            raw_executed_count: state.raw_executed_count,
+            semantic_charge_count: state.semantic_charge_count,
+            hard_raw_limit: self.policy.hard_raw_limit,
+            poll_count: state.poll_count,
+            started_at: self.started_at,
+            finished_at,
+        });
+        state.settlement = Some(Arc::clone(&settlement));
+        settlement
+    }
+
+    fn deadline_is_due(&self, now: Instant) -> bool {
+        self.deadline.is_some_and(|deadline| now >= deadline.at())
+    }
+
+    fn already_closed(settlement: &ExecutionSettlement) -> VmBudgetClosed {
+        VmBudgetClosed::AlreadySettled(settlement.winner.vm_terminal())
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, ExecutionBudgetState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The one non-cloneable VM adapter attached by the canonical request start.
+pub(crate) struct BytecodeVmBudget {
+    execution_budget: Arc<ExecutionBudget>,
+}
+
+impl VmBudget for BytecodeVmBudget {
+    fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed> {
+        self.execution_budget.before_dispatch()
+    }
+
+    fn poll_interrupt(&mut self) -> Result<(), VmBudgetClosed> {
+        self.execution_budget.poll_interrupt()
+    }
+
+    fn charge_semantic(&mut self, charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetClosed> {
+        self.execution_budget.charge_semantic(charge)
     }
 }
 
@@ -49,165 +513,56 @@ pub struct ExecutionStats {
     pub budget_reason: Option<ExecutionBudgetReason>,
 }
 
-#[derive(Debug)]
-pub struct ExecutionBudget {
-    config: ExecutionBudgetConfig,
-    deadline: Option<Instant>,
-    started_at: Instant,
-    instruction_count: AtomicU64,
-    poll_count: AtomicU64,
-    finished_at: Mutex<Option<Instant>>,
-    budget_reason: Mutex<Option<ExecutionBudgetReason>>,
-}
+pub fn admit_request_deadline(
+    extra: &Map<String, Value>,
+) -> Result<Option<AdmittedRequestDeadline>, RequestDeadlineAdmissionError> {
+    let Some(value) = extra.get("deadline") else {
+        return Ok(None);
+    };
+    let deadline = value
+        .as_object()
+        .ok_or(RequestDeadlineAdmissionError::InvalidShape)?;
+    let monotonic_now = Instant::now();
+    let mut candidates = Vec::with_capacity(2);
 
-impl ExecutionBudget {
-    pub fn new(config: ExecutionBudgetConfig, deadline: Option<Instant>) -> Self {
-        Self {
-            config,
-            deadline,
-            started_at: Instant::now(),
-            instruction_count: AtomicU64::new(0),
-            poll_count: AtomicU64::new(0),
-            finished_at: Mutex::new(None),
-            budget_reason: Mutex::new(None),
+    if let Some(value) = deadline.get("timeoutMs") {
+        let timeout_ms = value
+            .as_u64()
+            .ok_or(RequestDeadlineAdmissionError::InvalidTimeout)?;
+        candidates.push(
+            monotonic_now
+                .checked_add(Duration::from_millis(timeout_ms))
+                .ok_or(RequestDeadlineAdmissionError::Unrepresentable)?,
+        );
+    }
+
+    if let Some(value) = deadline.get("expiresAt") {
+        let expires_at = value
+            .as_str()
+            .ok_or(RequestDeadlineAdmissionError::InvalidExpiry)
+            .and_then(|value| {
+                OffsetDateTime::parse(value, &Rfc3339)
+                    .map_err(|_| RequestDeadlineAdmissionError::InvalidExpiry)
+            })?;
+        let wall_now = OffsetDateTime::now_utc();
+        if expires_at <= wall_now {
+            candidates.push(monotonic_now);
+        } else {
+            candidates.push(
+                monotonic_now
+                    .checked_add((expires_at - wall_now).unsigned_abs())
+                    .ok_or(RequestDeadlineAdmissionError::Unrepresentable)?,
+            );
         }
     }
 
-    pub fn for_runtime_request(extra: &Map<String, Value>) -> Self {
-        Self::new(
-            ExecutionBudgetConfig::runtime_default(),
-            deadline_from_request_extra(extra),
-        )
+    if candidates.is_empty() {
+        return Err(RequestDeadlineAdmissionError::InvalidShape);
     }
-
-    #[allow(dead_code)]
-    pub fn disabled() -> Self {
-        Self::new(ExecutionBudgetConfig::disabled(), None)
-    }
-
-    pub fn add_units(&self, units: u64) -> bool {
-        if !self.config.enabled || units == 0 {
-            return false;
-        }
-
-        let previous = self.instruction_count.fetch_add(units, Ordering::Relaxed);
-        let current = previous.saturating_add(units);
-        let interval = self.config.poll_interval.max(1);
-        self.config
-            .instruction_limit
-            .is_some_and(|limit| current >= limit)
-            || current / interval != previous / interval
-    }
-
-    pub fn deadline(&self) -> Option<Instant> {
-        self.deadline
-    }
-
-    pub fn poll(&self, cancelled: bool, now: Instant) -> Result<(), ExecutionBudgetReason> {
-        if cancelled {
-            return self.fail(ExecutionBudgetReason::Cancelled);
-        }
-        if !self.config.enabled {
-            return Ok(());
-        }
-
-        self.poll_count.fetch_add(1, Ordering::Relaxed);
-
-        if self.deadline.is_some_and(|deadline| now >= deadline) {
-            return self.fail(ExecutionBudgetReason::DeadlineExceeded);
-        }
-
-        if self
-            .config
-            .instruction_limit
-            .is_some_and(|limit| self.instruction_count.load(Ordering::Relaxed) >= limit)
-        {
-            return self.fail(ExecutionBudgetReason::InstructionLimitExceeded);
-        }
-
-        Ok(())
-    }
-
-    pub(crate) fn record_scoped_poll(&self) {
-        if self.config.enabled {
-            self.poll_count.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    pub fn record_cancelled(&self) {
-        let _ = self.fail(ExecutionBudgetReason::Cancelled);
-    }
-
-    pub fn record_deadline_exceeded(&self) {
-        let _ = self.fail(ExecutionBudgetReason::DeadlineExceeded);
-    }
-
-    pub fn finish(&self, now: Instant) {
-        if let Ok(mut finished_at) = self.finished_at.lock() {
-            finished_at.get_or_insert(now);
-        }
-    }
-
-    pub fn stats_snapshot(&self) -> ExecutionStats {
-        let reason = self.budget_reason.lock().ok().and_then(|reason| *reason);
-        let finished_at = self
-            .finished_at
-            .lock()
-            .ok()
-            .and_then(|finished_at| *finished_at);
-        let elapsed_ms = finished_at
-            .unwrap_or_else(Instant::now)
-            .duration_since(self.started_at)
-            .as_secs_f64()
-            * 1000.0;
-
-        ExecutionStats {
-            instruction_count: self.instruction_count.load(Ordering::Relaxed),
-            budget_limit: self.config.instruction_limit,
-            poll_count: self.poll_count.load(Ordering::Relaxed),
-            elapsed_ms,
-            budget_exceeded: matches!(
-                reason,
-                Some(
-                    ExecutionBudgetReason::DeadlineExceeded
-                        | ExecutionBudgetReason::InstructionLimitExceeded,
-                )
-            ),
-            budget_reason: reason,
-        }
-    }
-
-    fn fail(&self, reason: ExecutionBudgetReason) -> Result<(), ExecutionBudgetReason> {
-        if let Ok(mut stored) = self.budget_reason.lock() {
-            stored.get_or_insert(reason);
-        }
-        Err(reason)
-    }
-}
-
-pub fn deadline_from_request_extra(extra: &Map<String, Value>) -> Option<Instant> {
-    let deadline = extra.get("deadline")?.as_object()?;
-    let now = Instant::now();
-    let mut candidates = Vec::new();
-
-    if let Some(timeout_ms) = deadline.get("timeoutMs").and_then(Value::as_u64) {
-        if let Some(deadline) = now.checked_add(Duration::from_millis(timeout_ms)) {
-            candidates.push(deadline);
-        }
-    }
-
-    if let Some(expires_at) = deadline.get("expiresAt").and_then(Value::as_str) {
-        if let Ok(expires_at) = OffsetDateTime::parse(expires_at, &Rfc3339) {
-            let wall_now = OffsetDateTime::now_utc();
-            if expires_at <= wall_now {
-                candidates.push(now);
-            } else if let Some(deadline) = now.checked_add((expires_at - wall_now).unsigned_abs()) {
-                candidates.push(deadline);
-            }
-        }
-    }
-
-    candidates.into_iter().min()
+    Ok(candidates
+        .into_iter()
+        .min()
+        .map(AdmittedRequestDeadline::new))
 }
 
 #[cfg(test)]

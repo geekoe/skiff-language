@@ -436,7 +436,6 @@ fn vm_limits() -> VmLimits {
         NonZeroUsize::new(128).unwrap(),
         NonZeroUsize::new(4096).unwrap(),
         NonZeroU32::new(1024).unwrap(),
-        NonZeroU32::new(1024).unwrap(),
     )
 }
 

@@ -6,7 +6,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
 };
@@ -594,9 +594,8 @@ fn execute_scalar_gateway(
         target: scalar_gateway_fixture().target(name),
         request: scalar_gateway_request(name, kind, body, adapter_args),
         observer: noop_observer(),
-        cancelled: Arc::new(AtomicBool::new(false)),
         cancellation: CancellationToken::new(),
-        execution_budget: Arc::new(ExecutionBudget::disabled()),
+        execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
             http_executor: None,
@@ -752,9 +751,8 @@ mod tests {
             target,
             request: request_envelope(),
             observer: noop_observer(),
-            cancelled: Arc::new(AtomicBool::new(false)),
             cancellation: CancellationToken::new(),
-            execution_budget: Arc::new(ExecutionBudget::disabled()),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
                 http_executor: None,
@@ -793,9 +791,8 @@ mod tests {
                 target,
                 request: request_envelope(),
                 observer: noop_observer(),
-                cancelled: Arc::new(AtomicBool::new(false)),
                 cancellation: CancellationToken::new(),
-                execution_budget: Arc::new(ExecutionBudget::disabled()),
+                execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
                 handles: BytecodeRequestExecutionHandles {
                     request_heap_limits: RequestHeapLimits::default(),
                     http_executor: None,
@@ -849,9 +846,8 @@ function run() -> number {
                 target,
                 request: request_envelope(),
                 observer: noop_observer(),
-                cancelled: Arc::new(AtomicBool::new(false)),
                 cancellation: CancellationToken::new(),
-                execution_budget: Arc::new(ExecutionBudget::disabled()),
+                execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
                 handles: BytecodeRequestExecutionHandles {
                     request_heap_limits: RequestHeapLimits::default(),
                     http_executor: None,
@@ -906,9 +902,8 @@ function run() -> number {
             target,
             request: request_envelope(),
             observer: noop_observer(),
-            cancelled: Arc::new(AtomicBool::new(false)),
             cancellation: CancellationToken::new(),
-            execution_budget: Arc::new(ExecutionBudget::disabled()),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
                 http_executor: None,
@@ -950,9 +945,8 @@ function run() -> number {
             target,
             request: request_envelope(),
             observer: noop_observer(),
-            cancelled: Arc::new(AtomicBool::new(false)),
             cancellation: CancellationToken::new(),
-            execution_budget: Arc::new(ExecutionBudget::disabled()),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
                 http_executor: None,

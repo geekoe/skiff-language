@@ -152,9 +152,10 @@ async fn run_negative_request(
     let mut host = runtime_host(&correlation);
     host.bytecode_execution_event_sink = recording.clone();
     let (sender, mut receiver) = mpsc::unbounded_channel();
+    let router_session = correlation.router_session_epoch();
 
     host.spawn_bytecode_request(
-        &correlation.router_session_id,
+        &router_session,
         request.header,
         request.body,
         &bootstrap,

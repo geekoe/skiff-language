@@ -14,13 +14,12 @@ use super::{
 };
 use crate::{VmError, VmLimits};
 
-type VmStartFn =
-    fn(
-        DeploymentExecutionEntry,
-        Box<[ValueSlot]>,
-        VmLimits,
-        BytecodeExecutionObserver,
-    ) -> Result<VmFiber, VmError>;
+type VmStartFn = fn(
+    DeploymentExecutionEntry,
+    Box<[ValueSlot]>,
+    VmLimits,
+    BytecodeExecutionObserver,
+) -> Result<VmFiber, VmError>;
 
 #[test]
 fn production_start_signature_requires_the_concrete_pinned_entry() {
