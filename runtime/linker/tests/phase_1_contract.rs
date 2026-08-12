@@ -1,36 +1,27 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
-    time::{SystemTime, UNIX_EPOCH},
-};
+mod support;
 
-use skiff_artifact_identity::{
-    assign_package_artifact_identities, assign_service_deployment_identity, package_artifact_ref,
-    service_deployment_ref, ArtifactIdentityError, ValidatedBytecodeArtifact,
-};
+use skiff_artifact_identity::{ArtifactIdentityError, ValidatedBytecodeArtifact};
 use skiff_artifact_model::{
-    BytecodeArtifactRef, BytecodeDecodeError, CallableEffectSummary, PackageArtifact,
-    PackageArtifactRef, PendingEffectCategory, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceDeploymentRef, StructuralValidationError,
+    BytecodeDecodeError, BytecodeRelocation, InstructionSourceSite, Opcode, ParamModeIr,
+    PendingEffectCategory, StatementAttributionClass, StructuralValidationError,
 };
 use skiff_compiler::{
-    authoring::{build_authoring_object, AuthoringObject},
-    CompilerPlatformSources, PackageCompileError,
+    BytecodeEmissionError, CompilerPlatformSources, PackageCompileError,
+    Phase1UnsupportedCapability,
 };
-use skiff_deployment::storage::CanonicalArtifactStore;
+use skiff_runtime_linked_bytecode::{
+    LinkedBytecodeCandidate, LinkedFunction, LinkedGatewayCallableRole, LinkedInstruction,
+    LinkedInstructionTarget,
+};
 use skiff_runtime_linker::{
-    link_deployment, BytecodeLinkError, BytecodeLinkLocation, LinkLimits, Phase1LinkedCapability,
-};
-use skiff_runtime_loader::{
-    DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
+    link_deployment, BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability,
 };
 use skiff_test_runner::canonical_package::{compile_package_project, CanonicalPackageProjectError};
 
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+use support::{
+    package_source, production_sized_limits, repository_root, PublishedService, TempRoot,
+    PHASE_1_SCALAR_LOCAL_SOURCE,
+};
 
 #[test]
 fn unsupported_typed_source_is_owned_by_phase_1_compiler_admission() {
@@ -45,11 +36,196 @@ fn unsupported_typed_source_is_owned_by_phase_1_compiler_admission() {
     else {
         panic!("unsupported typed source must be owned by bytecode emission: {error:?}");
     };
-    assert_eq!(
-        format!("{source:?}"),
-        "UnsupportedPhase1Capability { capability: ValueShape, module_path: \"main\", function_key: Some(\"main::run\"), location: \"return type\" }",
-        "the source-owned capability category and location are part of the exact contract",
+    let BytecodeEmissionError::UnsupportedPhase1Capability {
+        capability,
+        module_path,
+        function_key,
+        location,
+    } = source
+    else {
+        panic!("unsupported source must retain its typed Phase 1 owner: {source:?}");
+    };
+    assert_eq!(capability, Phase1UnsupportedCapability::ValueShape);
+    assert_eq!(module_path, "main");
+    assert_eq!(function_key.as_deref(), Some("main::run"));
+    assert_eq!(location, "return type");
+}
+
+#[test]
+fn scalar_local_source_facts_survive_canonical_publication_loader_and_link() {
+    let fixture = PublishedService::build_from_source(
+        "scalar-local-producer-consumer",
+        PHASE_1_SCALAR_LOCAL_SOURCE,
     );
+    let artifact = fixture.bytecode.artifact();
+    let artifact_run = artifact
+        .image
+        .functions
+        .get("main::run")
+        .expect("compiler emits the source run function");
+    let artifact_helper = artifact
+        .image
+        .functions
+        .get("main::helper")
+        .expect("compiler emits the source helper function");
+
+    assert_eq!(artifact_run.relocations.len(), 1);
+    let BytecodeRelocation::LocalExecutableRef {
+        function_key,
+        specialization,
+    } = &artifact_run.relocations[0]
+    else {
+        panic!(
+            "the source direct-local call must remain a typed local relocation: {:?}",
+            artifact_run.relocations[0]
+        );
+    };
+    assert_eq!(function_key, "main::helper");
+    assert!(specialization.type_arguments.is_empty());
+    assert_eq!(specialization.concrete_receiver, None);
+
+    assert_eq!(artifact_helper.frame_layout.slot_count, 1);
+    assert_eq!(artifact_helper.frame_layout.parameter_slots.len(), 1);
+    assert_eq!(artifact_helper.frame_layout.parameter_slots[0].slot, 0);
+    assert_eq!(
+        artifact_helper.frame_layout.parameter_slots[0].mode,
+        ParamModeIr::Value
+    );
+    assert_eq!(artifact_helper.frame_layout.result_count, 1);
+    assert_eq!(artifact_run.frame_layout.slot_count, 2);
+    assert_eq!(artifact_run.frame_layout.parameter_slots.len(), 1);
+    assert_eq!(artifact_run.frame_layout.parameter_slots[0].slot, 0);
+    assert_eq!(
+        artifact_run.frame_layout.parameter_slots[0].mode,
+        ParamModeIr::Value
+    );
+    assert_eq!(artifact_run.frame_layout.result_count, 1);
+    assert_eq!(
+        artifact_run.frame_layout.slot_type_refs,
+        vec![
+            artifact_helper.frame_layout.slot_type_refs[0],
+            artifact_helper.frame_layout.slot_type_refs[0],
+        ],
+        "the source local result slot retains the exact scalar type"
+    );
+    assert_eq!(
+        artifact_run.frame_layout.result_type_refs,
+        artifact_helper.frame_layout.result_type_refs
+    );
+
+    let hydrated = fixture.hydrated();
+    let candidate = link_deployment(&hydrated, &production_sized_limits())
+        .expect("the admitted scalar/local source fixture must link");
+    assert_eq!(candidate.functions().len(), 2);
+    let linked_run = linked_function(&candidate, "main::run");
+    let linked_helper = linked_function(&candidate, "main::helper");
+
+    let call = only_instruction(linked_run, Opcode::CallLocal);
+    assert_eq!(
+        call.operands(),
+        &[0, 1, 1],
+        "relocation index, argument count, and result count are exact"
+    );
+    assert_eq!(call.resolved_operands().len(), 1);
+    assert_eq!(call.resolved_operands()[0].operand_ordinal(), 0);
+    assert_eq!(
+        call.resolved_operands()[0].target(),
+        LinkedInstructionTarget::Function(linked_helper.index()),
+        "the linker resolves the source helper symbol to the exact helper function"
+    );
+
+    assert_eq!(linked_helper.frame().slot_types().len(), 1);
+    assert_eq!(linked_helper.frame().parameters().len(), 1);
+    assert_eq!(linked_helper.frame().parameters()[0].slot().get(), 0);
+    assert_eq!(
+        linked_helper.frame().parameters()[0].mode(),
+        ParamModeIr::Value
+    );
+    assert_eq!(linked_helper.frame().result_types().len(), 1);
+    assert_eq!(linked_run.frame().slot_types().len(), 2);
+    assert_eq!(linked_run.frame().parameters().len(), 1);
+    assert_eq!(linked_run.frame().parameters()[0].slot().get(), 0);
+    assert_eq!(
+        linked_run.frame().parameters()[0].mode(),
+        ParamModeIr::Value
+    );
+    assert_eq!(linked_run.frame().result_types().len(), 1);
+    assert_eq!(
+        linked_run.frame().slot_types()[0],
+        linked_helper.frame().slot_types()[0]
+    );
+    assert_eq!(
+        linked_run.frame().slot_types()[1],
+        linked_helper.frame().slot_types()[0]
+    );
+    assert_eq!(
+        linked_run.frame().result_types(),
+        linked_helper.frame().result_types()
+    );
+
+    let gateway = candidate
+        .gateway_entries()
+        .iter()
+        .next()
+        .expect("canonical HTTP publication has one exact gateway entry");
+    assert_eq!(candidate.gateway_entries().len(), 1);
+    let handler = gateway
+        .handler()
+        .expect("gateway has the source run handler");
+    assert_eq!(handler.role(), LinkedGatewayCallableRole::Handler);
+    assert_eq!(handler.function(), linked_run.index());
+    assert_eq!(
+        handler.signature().parameter_types(),
+        &linked_run.frame().slot_types()[..1]
+    );
+    assert_eq!(handler.signature().parameter_modes(), &[ParamModeIr::Value]);
+    assert_eq!(
+        handler.signature().parameter_plans(),
+        &linked_run.frame().slot_plans()[..1]
+    );
+    assert_eq!(
+        handler.signature().result_types(),
+        linked_run.frame().result_types()
+    );
+    assert_eq!(
+        handler.signature().result_plans(),
+        linked_run.frame().result_plans()
+    );
+
+    assert_frame_slot_use(linked_run, Opcode::StoreSlot, 1);
+    assert_frame_slot_use(linked_run, Opcode::LoadSlot, 1);
+    assert_required_opcodes(
+        linked_helper,
+        &[Opcode::LoadSlot, Opcode::Const, Opcode::Add, Opcode::Return],
+    );
+    assert_required_opcodes(
+        linked_run,
+        &[
+            Opcode::CallLocal,
+            Opcode::StoreSlot,
+            Opcode::Equal,
+            Opcode::JumpIfFalse,
+            Opcode::Subtract,
+            Opcode::Return,
+        ],
+    );
+    let (branch_ordinal, branch) = linked_run
+        .instructions()
+        .iter()
+        .enumerate()
+        .find(|(_, instruction)| instruction.opcode() == Opcode::JumpIfFalse)
+        .expect("source if emits one conditional branch");
+    let LinkedInstructionTarget::Branch(branch_target) = branch.resolved_operands()[0].target()
+    else {
+        panic!("conditional branch must retain a typed instruction target");
+    };
+    assert!(branch_target.get() as usize > branch_ordinal);
+    assert!((branch_target.get() as usize) < linked_run.instructions().len());
+
+    let validated_run = validated_function(&fixture, "main::run");
+    let validated_helper = validated_function(&fixture, "main::helper");
+    assert_statement_handoff(validated_run, linked_run);
+    assert_statement_handoff(validated_helper, linked_helper);
 }
 
 #[test]
@@ -138,267 +314,132 @@ fn design_dependent_unreachable_pending_effect_is_not_a_raw_artifact_scan() {
     }));
 }
 
-struct PublishedService {
-    package: Arc<PackageArtifact>,
-    bytecode: Arc<ValidatedBytecodeArtifact>,
-    contract: Arc<ServiceContract>,
-    deployment: Arc<ServiceDeployment>,
+fn linked_function<'a>(candidate: &'a LinkedBytecodeCandidate, key: &str) -> &'a LinkedFunction {
+    candidate
+        .functions()
+        .iter()
+        .find(|function| function.key().artifact_function_key().as_str() == key)
+        .unwrap_or_else(|| panic!("linked candidate contains {key}"))
 }
 
-impl PublishedService {
-    fn build(scenario: &str) -> Self {
-        let source = "function run(value: number) -> number { return value }\n\
-                      function unused() -> number { return 2 }\n";
-        let receipt = author_package(scenario, source).expect("publish canonical fixture");
-        let artifact_root = receipt.artifact_root.path();
-        let output = receipt.output;
-        let package_ref = serde_json::from_value::<PackageArtifactRef>(
-            output
-                .pointer("/packageArtifactReceipt/artifact")
-                .cloned()
-                .expect("authoring receipt contains the exact package"),
-        )
-        .expect("package receipt remains typed");
-        let deployment_ref = serde_json::from_value::<ServiceDeploymentRef>(
-            output
-                .pointer("/serviceDeploymentReceipt/deployment")
-                .cloned()
-                .expect("authoring receipt contains the exact deployment"),
-        )
-        .expect("deployment receipt remains typed");
-        let store = CanonicalArtifactStore::open(artifact_root).expect("open canonical store");
-        let package = store
-            .read_package_artifact(&package_ref)
-            .expect("read exact package record");
-        let bytecode_ref = package
-            .bytecode
-            .as_ref()
-            .expect("production compiler publishes bytecode");
-        let bytecode = store
-            .read_package_bytecode(&package_ref, bytecode_ref)
-            .expect("read through structural and identity admission");
-        let deployment = store
-            .read_service_deployment(&deployment_ref)
-            .expect("read exact deployment record");
-        let contract = store
-            .read_service_contract(&deployment.contract)
-            .expect("read exact contract record");
-        Self {
-            package,
-            bytecode,
-            contract,
-            deployment,
-        }
-    }
+fn validated_function<'a>(
+    fixture: &'a PublishedService,
+    key: &str,
+) -> &'a skiff_artifact_model::ValidatedFunction {
+    fixture
+        .bytecode
+        .view()
+        .functions()
+        .iter()
+        .find(|function| function.function_key == key)
+        .unwrap_or_else(|| panic!("validated artifact contains {key}"))
+}
 
-    fn with_pending_effect(
-        &self,
-        function_suffix: &str,
-    ) -> (HydratedDeploymentBytecode, PackageArtifactRef, String) {
-        let mut package = self.package.as_ref().clone();
-        let (function_key, owner) = self
-            .bytecode
-            .artifact()
-            .image
-            .functions
+fn only_instruction(function: &LinkedFunction, opcode: Opcode) -> &LinkedInstruction {
+    let mut matching = function
+        .instructions()
+        .iter()
+        .filter(|instruction| instruction.opcode() == opcode);
+    let instruction = matching
+        .next()
+        .unwrap_or_else(|| panic!("{:?} contains {opcode:?}", function.key()));
+    assert!(
+        matching.next().is_none(),
+        "{:?} contains exactly one {opcode:?}",
+        function.key()
+    );
+    instruction
+}
+
+fn assert_frame_slot_use(function: &LinkedFunction, opcode: Opcode, expected_slot: u32) {
+    let instruction = function
+        .instructions()
+        .iter()
+        .find(|instruction| {
+            instruction.opcode() == opcode && instruction.operands() == [expected_slot]
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{:?} contains {opcode:?} for frame slot {expected_slot}",
+                function.key()
+            )
+        });
+    assert_eq!(instruction.resolved_operands().len(), 1);
+    assert_eq!(instruction.resolved_operands()[0].operand_ordinal(), 0);
+    assert_eq!(
+        instruction.resolved_operands()[0].target(),
+        LinkedInstructionTarget::FrameSlot(skiff_runtime_linked_bytecode::FrameSlotIndex::new(
+            expected_slot
+        ))
+    );
+}
+
+fn assert_required_opcodes(function: &LinkedFunction, required: &[Opcode]) {
+    for opcode in required {
+        assert!(
+            function
+                .instructions()
+                .iter()
+                .any(|instruction| instruction.opcode() == *opcode),
+            "{:?} retains source-required opcode {opcode:?}",
+            function.key()
+        );
+    }
+    assert!(
+        function
+            .instructions()
             .iter()
-            .find(|(key, _)| key.ends_with(function_suffix))
-            .map(|(key, function)| (key.clone(), function.effect_summary_ref.clone()))
-            .unwrap_or_else(|| panic!("fixture has function suffix {function_suffix}"));
-        let facts = package
-            .callable_semantic_facts
-            .get_mut(&owner)
-            .expect("function effect owner is source-owned package fact");
-        let CallableEffectSummary::Analyzed { effects } = &mut facts.effects else {
-            panic!("compiler must publish analyzed effects")
-        };
-        effects.may_pending = true;
-        effects.pending_effect_categories = vec![PendingEffectCategory::HostEffect];
-        assign_package_artifact_identities(&mut package)
-            .expect("identity assignment accepts a conservative pending declaration");
-        let package = Arc::new(package);
-        let package_ref = package_artifact_ref(&package).expect("derive exact changed package ref");
-
-        let mut deployment = self.deployment.as_ref().clone();
-        deployment.implementation = package_ref.clone();
-        assign_service_deployment_identity(&mut deployment)
-            .expect("re-pin deployment to changed package identity");
-        let deployment = Arc::new(deployment);
-        let deployment_ref = service_deployment_ref(&deployment);
-        let resolver = ExactResolver {
-            deployment_ref: deployment_ref.clone(),
-            deployment,
-            contract: Arc::clone(&self.contract),
-            package_ref: package_ref.clone(),
-            package,
-            bytecode: Arc::clone(&self.bytecode),
-        };
-        let hydrated = DeploymentBytecodeLoader::new(&resolver)
-            .load(&deployment_ref)
-            .expect("production loader admits exact mutated effect owner");
-        (hydrated, package_ref, function_key)
-    }
+            .all(|instruction| instruction.opcode() != Opcode::TailCallLocal),
+        "the accepted fixture must remain an ordinary direct local call"
+    );
 }
 
-struct ExactResolver {
-    deployment_ref: ServiceDeploymentRef,
-    deployment: Arc<ServiceDeployment>,
-    contract: Arc<ServiceContract>,
-    package_ref: PackageArtifactRef,
-    package: Arc<PackageArtifact>,
-    bytecode: Arc<ValidatedBytecodeArtifact>,
-}
-
-impl DeploymentBytecodeContentResolver for ExactResolver {
-    fn resolve_deployment(
-        &self,
-        reference: &ServiceDeploymentRef,
-    ) -> anyhow::Result<Arc<ServiceDeployment>> {
-        anyhow::ensure!(
-            reference == &self.deployment_ref,
-            "deployment identity mismatch"
-        );
-        Ok(Arc::clone(&self.deployment))
+fn assert_statement_handoff(
+    artifact: &skiff_artifact_model::ValidatedFunction,
+    linked: &LinkedFunction,
+) {
+    assert_eq!(artifact.instructions.len(), linked.instructions().len());
+    for (expected, actual) in artifact.instructions.iter().zip(linked.instructions()) {
+        assert_eq!(actual.artifact_pc(), expected.pc);
+        assert_eq!(actual.opcode(), expected.descriptor.kind);
+        assert_eq!(actual.operands(), expected.operand_words);
     }
 
-    fn resolve_contract(
-        &self,
-        reference: &ServiceContractRef,
-    ) -> anyhow::Result<Arc<ServiceContract>> {
-        anyhow::ensure!(
-            reference == &self.deployment.contract,
-            "contract identity mismatch"
-        );
-        Ok(Arc::clone(&self.contract))
+    assert_eq!(
+        artifact.statement_entries.len(),
+        linked.statement_entries().len()
+    );
+    for (expected, actual) in artifact
+        .statement_entries
+        .iter()
+        .zip(linked.statement_entries())
+    {
+        let expected_instruction = artifact
+            .instructions
+            .iter()
+            .position(|instruction| instruction.pc == expected.pc)
+            .expect("structural admission anchors every statement row at an instruction");
+        assert_eq!(actual.instruction().get() as usize, expected_instruction);
+        assert_eq!(actual.sequence_ordinal(), expected.sequence_ordinal);
+        assert_eq!(actual.attribution_id(), expected.attribution_id);
+        assert_eq!(actual.site(), &expected.site);
     }
 
-    fn resolve_package(
-        &self,
-        reference: &PackageArtifactRef,
-    ) -> anyhow::Result<Arc<PackageArtifact>> {
-        anyhow::ensure!(reference == &self.package_ref, "package identity mismatch");
-        Ok(Arc::clone(&self.package))
-    }
-
-    fn resolve_package_bytecode(
-        &self,
-        package: &PackageArtifactRef,
-        reference: &BytecodeArtifactRef,
-    ) -> anyhow::Result<Arc<ValidatedBytecodeArtifact>> {
-        anyhow::ensure!(package == &self.package_ref, "bytecode package mismatch");
-        anyhow::ensure!(
-            reference == self.bytecode.reference(),
-            "bytecode identity mismatch"
-        );
-        Ok(Arc::clone(&self.bytecode))
-    }
-}
-
-#[derive(Debug)]
-struct AuthoringReceipt {
-    artifact_root: TempRoot,
-    output: serde_json::Value,
-}
-
-fn author_package(
-    scenario: &str,
-    source: &str,
-) -> Result<AuthoringReceipt, Box<dyn std::error::Error + Send + Sync>> {
-    let source_root = package_source(scenario, source, true);
-    let artifact_root = TempRoot::create(&format!("phase-1-contract-artifact-{scenario}"));
-    let platform = CompilerPlatformSources::new(&repository_root())?;
-    let output = build_authoring_object(
-        &platform,
-        AuthoringObject::Package,
-        source_root.path(),
-        artifact_root.path(),
-        "phase-1-contract",
-        false,
-    )?;
-    Ok(AuthoringReceipt {
-        artifact_root,
-        output,
-    })
-}
-
-fn package_source(scenario: &str, source: &str, service: bool) -> TempRoot {
-    let source_root = TempRoot::create(&format!("phase-1-contract-source-{scenario}"));
-    let package_id = format!("test.skiff/phase-1-contract-{scenario}");
-    fs::write(
-        source_root.path().join("package.yml"),
-        format!("id: {package_id}\nversion: 1.0.0\n"),
-    )
-    .expect("write package manifest");
-    fs::write(source_root.path().join("main.skiff"), source).expect("write package source");
-    fs::write(source_root.path().join("api.yml"), "{}\n").expect("write package API manifest");
-    if service {
-        fs::write(
-            source_root.path().join("service.yml"),
-            format!("id: {package_id}\n"),
-        )
-        .expect("write service manifest");
-        fs::write(
-            source_root.path().join("http.yml"),
-            "run:\n  method: POST\n  path: /phase-1/contract\n  kind: typedJson\n  handler: main.run\n  adapterArgs:\n    - param: value\n      source: { kind: http.body }\n",
-        )
-        .expect("write HTTP manifest");
-    }
-    source_root
-}
-
-fn production_sized_limits() -> LinkLimits {
-    LinkLimits {
-        max_packages: 8,
-        max_root_specializations: 16,
-        max_specializations: 64,
-        max_code_words_per_function: 16_384,
-        max_total_code_words: 65_536,
-        max_relocations_per_function: 4_096,
-        max_total_relocations: 16_384,
-        max_image_table_entries: 4_096,
-        max_total_image_table_entries: 32_768,
-        max_total_function_table_entries: 32_768,
-        max_type_nesting_depth: 64,
-        max_expanded_type_nodes: 65_536,
-        max_expanded_type_bytes: 4 * 1024 * 1024,
-        max_constant_graph_nodes: 65_536,
-        max_constant_graph_edges: 262_144,
-    }
-}
-
-#[derive(Debug)]
-struct TempRoot(PathBuf);
-
-impl TempRoot {
-    fn create(prefix: &str) -> Self {
-        let ordinal = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "{prefix}-{}-{ordinal}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("system clock")
-                .as_nanos(),
-        ));
-        fs::create_dir(&path).expect("create unique temporary root");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn repository_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("runtime/linker lives below repository root")
-        .to_path_buf()
+    let source_owned = artifact
+        .statement_entries
+        .iter()
+        .filter(|entry| matches!(entry.site, InstructionSourceSite::Source { .. }))
+        .collect::<Vec<_>>();
+    assert!(
+        !source_owned.is_empty(),
+        "{} must retain source-owned statement rows",
+        artifact.function_key
+    );
+    assert!(
+        source_owned
+            .iter()
+            .any(|entry| { entry.attribution_id.class() == StatementAttributionClass::Statement }),
+        "{} must retain a source-owned statement attribution",
+        artifact.function_key
+    );
 }
