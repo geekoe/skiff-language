@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 1; P0-V/P0-G running
+> Status: active; revision 2; P0-V/P0-G running; DEC0-S ready
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -45,6 +45,7 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-V | Proof | running as `/root/p0_vcp`; started `2026-08-12T16:14:31Z` | 45–75 min | `2026-08-12T16:39:31Z` | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; Phase 0 fixture files; request test registration only if required | non-document commit; production-shaped expected-red/run evidence; no direct internal construction; exact blocker/event request if incomplete |
 | P0-G | Proof | running as `/root/p0_gate`; started `2026-08-12T16:14:31Z` | 35–60 min | `2026-08-12T16:34:31Z` | `scripts/run-bytecode-vm-phase-0-gate.mjs`; new Phase 0 evidence/checker/self-test files; verify registry files only if required | non-document commit; durable raw-evidence/checker path; dirty/stale/missing/zero/skip/tamper/interruption self-tests; no harness-authored PASS |
+| DEC0-S | Design | ready after revision 2 | 15–25 min | 12 min after dispatch | one narrow decision receipt under `decisions/`; read-only production code | choose the existing production-owned VCP placement and minimum read-only observation contract without adding execution authority |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
 canonical wrapper；P0-V 是首个且唯一获准运行 Cargo 的 Agent，避免共享 target 并发锁。后续 Cargo owner 由
@@ -112,3 +113,14 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   expectations at `2026-08-12T16:14:31Z`;
 - assigned initial Cargo ownership exclusively to P0-V; P0-G may run only focused Node self-tests;
 - no Clarification, Design, production repair or Acceptance task is active.
+
+### Revision 2 — production composition boundary discovered
+
+- P0-V confirmed that the existing request-crate VCP cannot reach the production owner: `RuntimeHost::spawn_bytecode_request`
+  and the crate-private `BytecodeDeploymentRegistry` own load/cache/admission/route, while `runtime/host` already depends on
+  `runtime/request`; exposing/recreating that path in the request test would add a cycle or second composition authority;
+- P0-V is producing a committable expected-red carrier that stops at that exact boundary rather than fabricating a seam;
+- triggered one narrow Design task, DEC0-S, to decide host-internal VCP placement and the minimum correlated read-only
+  observation facts; it does not reopen verifier/image/entry architecture or block P0-G;
+- expected downstream tasks are a single host-owned VCP/observation Development lane and a resumed Proof assertion lane;
+  exact write sets wait for the decision receipt and independent focused review.
