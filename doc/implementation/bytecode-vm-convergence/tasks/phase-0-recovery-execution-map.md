@@ -1,6 +1,6 @@
 # MAP0-R：Phase 0 recovery rolling execution map
 
-> Status: active; revision 18; D0-O accepted; Gate correction under review; host proofs running
+> Status: active; revision 19; D0-O and Gate accepted; corrected host proofs under review
 >
 > Phase Contract: [`phase-0-supplemental-closure.md`](./phase-0-supplemental-closure.md)
 >
@@ -44,13 +44,13 @@ failure；当前事实不明时条件派 Clarification，新增共享 authority 
 | Task | Line | State | Expected elapsed | `status_after` | Initial write set | Join condition |
 | --- | --- | --- | --- | --- | --- | --- |
 | P0-V | Proof | expected-red complete as `eb464566`; integrated as `5d72cfe3` | actual 12 min | completed before checkpoint | `runtime/request/tests/bytecode_vm_phase_0_vcp.rs`; scalar Phase 0 fixture files | canonical authoring/publication succeeds; raw evidence then stops at exact host-owned composition boundary; no direct constructors or verdict fields |
-| P0-G | Proof | evidence-root/env correction `8d470848` committed; independent delta review running | actual 15 min + Node | 7/15 min | existing Phase 0 Gate modules/tests only | root/subdir replacement rejected; actual child env bound; Gate owns no Rust semantics |
+| P0-G | Proof | `6f6ecfc8` + `8d470848` + `bdcd9b97` independently accepted and integrated as `5c2c2113` + `df31adb8` + `8c6cd2db` | bounded takeover + two executable corrections; Node 44/44 | complete | Phase 0 Gate modules/tests | twenty exact receipt-backed commands; durable clean candidate/fresh/environment/root closure; no JS Rust semantics |
 | DEC0-S | Design | complete as `6ae2a8b1`; integrated as `49214d65` | actual 18 min | reported at overrun checkpoint | `decisions/dec0-vcp-production-seam.md`; read-only production code | host-internal VCP, five sole-mint observations, and D0-R/D0-M/D0-O/P0-V-H write sets decided |
 | REV0-S | Review | `FAIL`, complete in 8 min; corrections recorded in rev8 | actual 8 min | on checkpoint | read-only DEC0-S and cited production code | found omitted event-owner/test files and confirmed D0-R sealed-fact expansion; no new authority found |
 | D0-R | Development | takeover complete as `d12a9471`; integrated as `dd1399bc`; independent receive review PASS | actual 10 min takeover + focused validation | complete | DEC0-S host files plus approved narrow read-only accessors in `runtime/bytecode-verifier/src/verifier.rs` | route identity derives from pinned image owner; no request-time artifact reread; 7 focused host cases green |
 | D0-M | Development | complete as `4a440017`; integrated as `e15bad88` | actual 11 min implementation + focused validation | complete before 18 min checkpoint | exact DEC0-S D0-M write set | seven typedJson cases and one rawHttp regression green; full file has one reproduced baseline failure |
 | D0-O | Development | base `b79e31d7` + finalizing delta `a8eecffa` independently accepted and integrated as `5b305744` + `0da6e474` | implementation + bounded correction; focused 3/3 | complete | corrected DEC0-S observation set plus supervisor lifecycle | ordered observer; reservation; exact ingress; terminal/cleanup guard; try-only telemetry; production-chain assertions delegated to Proof |
-| P0-V-H/P0-N | Proof | support integrated; success `7e9fa1de` under independent source review; negative first writer watchdog-replaced, takeover running | success actual ~15 min; negative takeover 12 min | 5/12 min takeover | success and negative host modules are disjoint write lanes | exact production success five-event closure and three zero-observation fail-closed boundaries |
+| P0-V-H/P0-N | Proof | success `7e9fa1de` rejected then corrected by `94ec0895`; negative takeover `67f3d4b5` committed; both under independent source review | success correction + negative takeover | 5/10 min review | success test+fixture; negative test only | deterministic completion barriers, anti-helper fixture, exact production five-event success and three zero-observation boundaries |
 | D0-K-M | Development | `c9f24dbf` independently accepted and integrated as `2c9c2fa7` | actual 10 min + 8 min review | complete | host HTTP admission and its focused host test only | production `serverStream` rejected as Unsupported before load/route/target/VM; 1/1 exact test; unary/WebSocket/task unchanged |
 
 P0-V 与 P0-G 在本文件提交后并行启动。P0-G 初始阶段只运行 Node focused self-tests，不运行会触发 Cargo 的
@@ -340,3 +340,15 @@ candidate-specific `PASS`/`FAIL`。只有 `PASS` 才创建 `results/phase-0-clos
   review and the single Cargo lease sequence are recorded;
 - Gate correction `8d470848` reports 41/41 Node tests, including root/commands replacement and ambient-env drift
   counterexamples. It remains frozen until the original independent reviewer returns a delta verdict.
+
+### Revision 19 — Gate acceptance and proof false-green corrections
+
+- Gate review found that three final fresh-candidate probes were still hidden commands. The writer made them the final three
+  of twenty receipt-backed commands in `bdcd9b97`; manifest/hash closure/verdict now includes `candidate.fresh`, and the
+  checker runs no hidden process. The original reviewer returned `PASS`; all three accepted Gate commits joined integration;
+- success Proof source review rejected a 100ms no-extra-event guess and a fixture where a wrongly routed helper could itself
+  return `3`. Correction `94ec0895` waits for production writer-channel closure before the exact-five snapshot and changes
+  the fixture so helper returns `7`; only `run` can local-call, branch and subtract to return `3`. Delta review is running;
+- the first negative writer and its replacement are recorded separately: only the replacement produced code. Candidate
+  `67f3d4b5` has the three canonical production-boundary scenarios and is under independent source review. Neither proof
+  candidate may run Cargo or join until its reviewer closes deterministic-terminal and support-visibility questions.
