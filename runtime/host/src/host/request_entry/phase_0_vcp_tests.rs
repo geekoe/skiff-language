@@ -9,6 +9,8 @@ use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionObservation, BytecodeGatewayCallableRole, BytecodeRequestTerminal,
     BytecodeRouteEntrySelector,
 };
+use skiff_runtime_request::RouterWriterMessage;
+use skiff_runtime_transport::protocol::decode_binary_frame;
 use tokio::{sync::mpsc, time::timeout};
 
 use super::phase_0_proof_support::{
@@ -18,7 +20,6 @@ use super::phase_0_proof_support::{
 #[derive(Default)]
 struct RecordingSink {
     observations: Mutex<Vec<BytecodeExecutionObservation>>,
-    changed: tokio::sync::Notify,
 }
 
 impl BytecodeExecutionEventSink for RecordingSink {
@@ -27,37 +28,46 @@ impl BytecodeExecutionEventSink for RecordingSink {
             .lock()
             .expect("lock Phase 0 observation recorder")
             .push(observation);
-        self.changed.notify_waiters();
     }
 }
 
 impl RecordingSink {
-    async fn exactly_five(&self) -> Vec<BytecodeExecutionObservation> {
-        timeout(Duration::from_secs(10), async {
-            loop {
-                let notified = self.changed.notified();
-                if self
-                    .observations
-                    .lock()
-                    .expect("lock Phase 0 observation recorder")
-                    .len()
-                    >= 5
-                {
-                    break;
-                }
-                notified.await;
-            }
-        })
-        .await
-        .expect("five correlated production observations timeout");
-        timeout(Duration::from_millis(100), self.changed.notified())
-            .await
-            .ok();
+    fn snapshot(&self) -> Vec<BytecodeExecutionObservation> {
         self.observations
             .lock()
             .expect("lock Phase 0 observation recorder")
             .clone()
     }
+}
+
+async fn drain_until_router_writer_closes(
+    receiver: &mut mpsc::UnboundedReceiver<RouterWriterMessage>,
+    request_id: &str,
+) {
+    timeout(Duration::from_secs(10), async {
+        while let Some(message) = receiver.recv().await {
+            let RouterWriterMessage::Binary(frame) = message else {
+                continue;
+            };
+            let decoded = decode_binary_frame(&frame)
+                .expect("decode frame emitted after the correlated terminal");
+            let Some(header) = decoded.header.as_object() else {
+                continue;
+            };
+            let is_same_request =
+                header.get("requestId").and_then(serde_json::Value::as_str) == Some(request_id);
+            let is_terminal = matches!(
+                header.get("type").and_then(serde_json::Value::as_str),
+                Some("response.end" | "response.error")
+            );
+            assert!(
+                !(is_same_request && is_terminal),
+                "production emitted a second correlated terminal response"
+            );
+        }
+    })
+    .await
+    .expect("router writer channel did not close after the correlated terminal");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -99,7 +109,8 @@ async fn phase_0_vcp_production_composition() {
     .await;
 
     let response = receive_correlated_response(&mut receiver, &correlation.request_id).await;
-    let observations = sink.exactly_five().await;
+    drain_until_router_writer_closes(&mut receiver, &correlation.request_id).await;
+    let observations = sink.snapshot();
     assert_eq!(
         observations.len(),
         5,
