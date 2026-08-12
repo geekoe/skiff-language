@@ -19,8 +19,11 @@ mod types;
 mod worklist;
 
 pub use entry::link_deployment;
+#[cfg(test)]
+use entry::link_deployment_backend_for_test;
 pub use error::{
     BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation, BytecodeLinkObligation,
+    Phase1LinkedCapability,
 };
 pub use limits::LinkLimits;
 

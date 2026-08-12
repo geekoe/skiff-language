@@ -23,7 +23,7 @@ use skiff_compiler::{
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_linker::{
-    link_deployment, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation, LinkLimits,
+    link_deployment, BytecodeLinkError, BytecodeLinkLocation, LinkLimits, Phase1LinkedCapability,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
@@ -112,20 +112,16 @@ fn bytecode_content_identity_mismatch_is_owned_by_artifact_admission() {
 fn reachable_pending_effect_is_rejected_by_the_link_capability_owner() {
     let fixture = PublishedService::build("reachable-effect");
     let (hydrated, package, function_key) = fixture.with_pending_effect("::run");
-    let expected_detail =
-        "Phase 1 capability gate rejected reachable pending effect HostEffect".to_string();
-
     let error = link_deployment(&hydrated, &production_sized_limits())
         .expect_err("a reachable host effect must not enter the Phase 1 executable closure");
     assert_eq!(
         error,
-        BytecodeLinkError::UnsatisfiedObligation {
-            obligation: BytecodeLinkObligation::CallableEffectPlan,
+        BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::PendingEffect(PendingEffectCategory::HostEffect,),
             location: BytecodeLinkLocation::Function {
                 package: Box::new(package),
                 function_key,
             },
-            detail: expected_detail,
         },
     );
 }

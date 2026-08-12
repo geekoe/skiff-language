@@ -20,3 +20,11 @@ pub fn link_deployment(
 ) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
     DeploymentLinker::new(deployment, limits).link()
 }
+
+#[cfg(test)]
+pub(super) fn link_deployment_backend_for_test(
+    deployment: &HydratedDeploymentBytecode,
+    limits: &LinkLimits,
+) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
+    DeploymentLinker::new(deployment, limits).link_backend_for_test()
+}

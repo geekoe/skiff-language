@@ -1,6 +1,8 @@
 use std::fmt;
 
-use skiff_artifact_model::{PackageArtifactRef, ServiceDeploymentRef, ServiceRequirementKey};
+use skiff_artifact_model::{
+    Opcode, PackageArtifactRef, PendingEffectCategory, ServiceDeploymentRef, ServiceRequirementKey,
+};
 
 /// Bounded resource whose configured link ceiling was exceeded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +68,32 @@ pub enum BytecodeLinkObligation {
     SourceAndStatementTables,
     ControlFlowAndStackMap,
     CandidateAssembly,
+}
+
+/// Typed category rejected by the Phase 1 post-link capability gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase1LinkedCapability {
+    HostTarget,
+    IntrinsicTarget,
+    ServiceTarget,
+    Actor,
+    Interface,
+    Callback,
+    HttpGuardOrPre,
+    WebSocket,
+    Stream,
+    Resource,
+    Aggregate,
+    Exception,
+    TailCall,
+    InOut,
+    Generic,
+    Writable,
+    Constant,
+    ValueShape,
+    Effect,
+    PendingEffect(PendingEffectCategory),
+    UnsupportedOpcode(Opcode),
 }
 
 impl BytecodeLinkObligation {
@@ -191,6 +219,10 @@ pub enum BytecodeLinkError {
         location: BytecodeLinkLocation,
         detail: String,
     },
+    UnsupportedPhase1Capability {
+        capability: Phase1LinkedCapability,
+        location: BytecodeLinkLocation,
+    },
     /// The crate has not implemented a required link obligation.
     ///
     /// This is never a soft warning and must never publish a candidate or
@@ -222,6 +254,13 @@ impl fmt::Display for BytecodeLinkError {
                 formatter,
                 "bytecode {} linking failed at {location}: {detail}",
                 obligation.name()
+            ),
+            Self::UnsupportedPhase1Capability {
+                capability,
+                location,
+            } => write!(
+                formatter,
+                "Phase 1 linked capability {capability:?} is unsupported at {location}"
             ),
             Self::ImplementationUnavailable {
                 obligation,
