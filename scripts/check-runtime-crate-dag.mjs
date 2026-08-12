@@ -342,13 +342,7 @@ function checkExecutableFactsBoundary(sources) {
     }
   }
 
-  expectSequenceCount(
-    consumerTokens,
-    ['facts', '.', 'into_parts', '('],
-    1,
-    `${executableFactsBoundary.consumer} ExecutableFacts::into_parts consumer`,
-    violations,
-  );
+  expectConstructionFunctionOwnership(consumerTokens, violations);
   return { violations };
 }
 
@@ -382,6 +376,84 @@ function expectExecutableFactsIntoParts(tokens, violations) {
     `${executableFactsBoundary.owner} public ExecutableFacts::into_parts declaration`,
     violations,
   );
+}
+
+function expectConstructionFunctionOwnership(tokens, violations) {
+  const functionName = 'link_deployment_execution_image';
+  const functionBody = rustFunctionBody(tokens, functionName, violations);
+  if (functionBody === null) return;
+
+  const body = tokens.slice(functionBody.openBrace + 1, functionBody.closeBrace);
+  const outside = [
+    ...tokens.slice(0, functionBody.openBrace + 1),
+    ...tokens.slice(functionBody.closeBrace),
+  ];
+  for (const symbol of executableFactsBoundary.symbols) {
+    expectSequenceCount(
+      body,
+      [symbol],
+      1,
+      `${executableFactsBoundary.consumer} ${functionName} body ${symbol} ownership`,
+      violations,
+    );
+    expectSequenceCount(
+      outside,
+      [symbol],
+      1,
+      `${executableFactsBoundary.consumer} ${symbol} import-only use outside ${functionName}`,
+      violations,
+    );
+  }
+  expectSequenceCount(
+    body,
+    ['verify_executable_facts', '('],
+    1,
+    `${executableFactsBoundary.consumer} ${functionName} verifier call`,
+    violations,
+  );
+  expectSequenceCount(
+    body,
+    ['facts', '.', 'into_parts', '('],
+    1,
+    `${executableFactsBoundary.consumer} ${functionName} ExecutableFacts::into_parts call`,
+    violations,
+  );
+  expectSequenceCount(
+    tokens,
+    ['facts', '.', 'into_parts', '('],
+    1,
+    `${executableFactsBoundary.consumer} ExecutableFacts::into_parts sole consumer`,
+    violations,
+  );
+}
+
+function rustFunctionBody(tokens, name, violations) {
+  const declarations = sequenceIndexes(tokens, ['pub', 'fn', name]);
+  if (declarations.length !== 1) {
+    violations.push(
+      `${executableFactsBoundary.consumer} must define exactly one public ${name}; found ${declarations.length}`,
+    );
+    return null;
+  }
+  const declaration = declarations[0];
+  let openBrace = declaration + 3;
+  while (openBrace < tokens.length && tokens[openBrace] !== '{') {
+    if (tokens[openBrace] === ';') {
+      violations.push(`${executableFactsBoundary.consumer} ${name} has no function body`);
+      return null;
+    }
+    openBrace += 1;
+  }
+  if (openBrace === tokens.length) {
+    violations.push(`${executableFactsBoundary.consumer} ${name} has no function body`);
+    return null;
+  }
+  const closeBrace = matchingTokenBrace(tokens, openBrace);
+  if (closeBrace === -1) {
+    violations.push(`${executableFactsBoundary.consumer} ${name} has an unterminated function body`);
+    return null;
+  }
+  return { openBrace, closeBrace };
 }
 
 function expectSequenceCount(tokens, sequence, expected, label, violations) {
@@ -981,16 +1053,44 @@ function runSelfTests() {
       },
     },
     {
+      name: 'executable facts boundary rejects a second same-file function consumer',
+      run: () => {
+        const sources = executableFactsBoundaryFixture();
+        sources.set(
+          executableFactsBoundary.consumer,
+          `${sources.get(executableFactsBoundary.consumer)}\n`
+            + 'pub fn leak_executable_facts() -> ExecutableFacts { verify_executable_facts() }\n',
+        );
+        const result = checkExecutableFactsBoundary(sources);
+        assert(
+          result.violations.some((violation) =>
+            violation.includes('import-only use outside link_deployment_execution_image')),
+          'expected a second same-file ExecutableFacts consumer to be rejected',
+        );
+        assert(
+          result.violations.some((violation) =>
+            violation.includes('verify_executable_facts import-only use outside')),
+          'expected a second same-file verifier call to be rejected',
+        );
+      },
+    },
+    {
       name: 'executable facts boundary rejects comment-only into_parts proof',
       run: () => {
         const sources = executableFactsBoundaryFixture();
         sources.set(
           executableFactsBoundary.consumer,
-          'use verifier::{ExecutableFacts, verify_executable_facts}; // facts.into_parts()\n',
+          [
+            'use verifier::{ExecutableFacts, verify_executable_facts};',
+            'pub fn link_deployment_execution_image() {',
+            '  let facts: ExecutableFacts = verify_executable_facts();',
+            '  // facts.into_parts();',
+            '}',
+          ].join('\n'),
         );
         const result = checkExecutableFactsBoundary(sources);
         assert(
-          result.violations.some((violation) => violation.includes('into_parts consumer')),
+          result.violations.some((violation) => violation.includes('into_parts call')),
           'expected comment-only into_parts proof to be rejected',
         );
       },
@@ -1224,7 +1324,7 @@ function executableFactsBoundaryFixture() {
       executableFactsBoundary.consumer,
       [
         'use verifier::{ExecutableFacts, verify_executable_facts};',
-        'fn construct() {',
+        'pub fn link_deployment_execution_image() {',
         '  let facts: ExecutableFacts = verify_executable_facts();',
         '  facts.into_parts();',
         '}',
