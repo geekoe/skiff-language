@@ -355,8 +355,10 @@ fn build_package_after_platform_context_guard(
 
 /// Canonical std seed for the internal `std-seed` tool action.
 ///
-/// Authors the compiler-owned official std candidate and idempotently installs
-/// its exact PackageArtifact records and pointer into one canonical store.
+/// Authors the compiler-owned bytecode-free official std candidate and
+/// idempotently installs its exact PackageArtifact records and pointer into one
+/// canonical store. Std remains a canonical source/type dependency and never
+/// receives a Phase 1 bytecode exemption.
 /// Existing pointer state is validated before any immutable record write;
 /// records are published before the absent-pointer CAS, so a crash can leave
 /// only recoverable orphan records and never a pointer to missing records.
@@ -366,7 +368,7 @@ pub fn seed_official_std_package(
     platform_sources: &CompilerPlatformSources,
     artifact_root: &Path,
 ) -> AuthoringResult<Value> {
-    let (published, bytecode) = author_official_std_package_with_bytecode(platform_sources)?;
+    let published = author_official_std_package(platform_sources)?;
     let artifact = package_artifact_ref(&published.artifact)?;
     let candidate = PackageArtifactPointer::new(artifact)?;
     let store = CanonicalArtifactStore::create(artifact_root)?;
@@ -382,7 +384,7 @@ pub fn seed_official_std_package(
         }
     }
 
-    let package = publish_package_artifact_records_with_bytecode(store.root(), &published, &bytecode)?;
+    let package = publish_package_artifact_records(store.root(), &published)?;
     if current.is_none() {
         match store.compare_and_swap_package_artifact_pointer(None, &candidate) {
             Ok(()) => {}

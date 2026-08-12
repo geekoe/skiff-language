@@ -20,10 +20,7 @@ mod tests {
 
     use skiff_artifact_identity::{package_artifact_ref, PackageArtifactPointerPath};
     use skiff_compiler::{
-        authoring::{
-            author_official_std_package, author_official_std_package_with_bytecode,
-            seed_official_std_package,
-        },
+        authoring::{author_official_std_package, seed_official_std_package},
         CompilerPlatformSources,
     };
     use skiff_deployment::storage::CanonicalArtifactStore;
@@ -37,9 +34,11 @@ mod tests {
         let repeated = seed_official_std_package(&platform_sources, root.path()).unwrap();
         assert_eq!(first, repeated);
 
-        let authored = author_official_std_package_with_bytecode(&platform_sources)
-            .unwrap()
-            .0;
+        let authored = author_official_std_package(&platform_sources).unwrap();
+        assert!(
+            authored.artifact.bytecode.is_none(),
+            "official std must remain a source/type-only dependency"
+        );
         let exact = package_artifact_ref(&authored.artifact).unwrap();
         assert_eq!(
             first["package"]["artifact"],
@@ -71,6 +70,22 @@ mod tests {
             "installed pointer must select the exact std candidate"
         );
         let stored = store.read_package_artifact(&pointer.artifact).unwrap();
+        assert!(
+            stored.bytecode.is_none(),
+            "seeded std PackageArtifact must not carry a bytecode identity"
+        );
+        let stored_value = serde_json::to_value(stored.as_ref()).unwrap();
+        assert!(
+            stored_value.get("bytecode").is_none(),
+            "bytecode-free std record must omit the bytecode field"
+        );
+        let package_record = root
+            .path()
+            .join(first["package"]["recordPath"].as_str().unwrap());
+        assert!(
+            !package_record.parent().unwrap().join("bytecode").exists(),
+            "std seed must not materialize a bytecode record directory"
+        );
         for file in &stored.files {
             store.read_file_ir(&pointer.artifact, file).unwrap();
         }
