@@ -1,6 +1,6 @@
 # Bytecode VM 架构收敛重构总计划
 
-> Status: project plan; Phase 0 accepted; Phase 1 planned
+> Status: project plan; Phase 0 integrated, acceptance blocked; Phase 1 blocked
 >
 > Created: 2026-08-12
 >
@@ -224,6 +224,7 @@ VCP。建立本项目的 exact baseline、Phase 1 task DAG、执行约束和 Exe
 
 详细计划：[`phases/phase-0-architecture-reset.md`](./phases/phase-0-architecture-reset.md)。
 执行结果：[`results/phase-0.md`](./results/phase-0.md)。
+补充闭合任务：[`tasks/phase-0-supplemental-closure.md`](./tasks/phase-0-supplemental-closure.md)。
 
 ### Phase 1 — Trusted synchronous core
 
@@ -332,8 +333,10 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 | Document / Phase | Status |
 | --- | --- |
 | reusable execution principles | written; adopted by this project |
-| project plan | planned |
-| Phase 0 | planned |
-| Phase 1–7 | outline only; not implementation-ready |
+| project plan | active |
+| Phase 0 | integrated; acceptance blocked |
+| Phase 0 supplemental closure | ready |
+| Phase 1–7 | outline only; Phase 1 production tasks blocked |
 
-在 Phase 0 result 接受之前，任何 Phase 1–7 的 production code 任务都没有获得本计划授权。
+在 Phase 0 supplemental closure 获得 valid independent acceptance 之前，任何 Phase 1–7 的 production code
+任务都没有获得本计划授权。

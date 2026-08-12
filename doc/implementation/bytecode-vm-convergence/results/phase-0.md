@@ -1,8 +1,12 @@
 # Phase 0 Result
 
-> Status: accepted as validation-ready
-> Candidate: `bytecode-vm-phase-0` leaf at the commit recorded by the VCP manifest
-> Evidence epoch: `skiff-vcp-phase-0-v1`
+> Status: original acceptance withdrawn; implementation retained as integrated input
+> Reported candidate: not durably recorded by the original manifest; implementation commit `5592c694`,
+> merge commit `01f33c2f`
+> Evidence epoch: `skiff-vcp-phase-0-v1` (invalid for acceptance)
+> Closure task: [`phase-0-supplemental-closure.md`](../tasks/phase-0-supplemental-closure.md)
+
+The sections below preserve the original Phase 0 report. They are historical claims, not a current acceptance receipt.
 
 ## 1. Baseline
 
