@@ -28,6 +28,7 @@ use skiff_runtime_deployment_image::{DeploymentImage, PinnedDeploymentEntry};
 use skiff_runtime_linker::{link_deployment, LinkLimits};
 use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
 use skiff_runtime_model::{
+    bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
     vm_heap::{VmHeap, VmHeapError},
     vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle},
 };
@@ -566,6 +567,13 @@ mod tests {
         )
     }
 
+    fn noop_observer() -> BytecodeExecutionObserver {
+        BytecodeExecutionObserver::noop(BytecodeExecutionCorrelation {
+            router_session_id: "vertical-test-session".to_string(),
+            request_id: "vertical-test".to_string(),
+        })
+    }
+
     struct StreamTestImage {
         verified: Arc<VerifiedLinkedBytecodeImage>,
         image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
@@ -635,7 +643,7 @@ mod tests {
             let operation = self.operations.get(stable_key).unwrap().clone();
             let entry = self.verified.operation_entry(&operation).unwrap();
             let pinned = PinnedDeploymentEntry::try_new(Arc::clone(&self.image), entry).unwrap();
-            Vm::start(pinned, arguments, vm_limits()).unwrap()
+            Vm::start(pinned, arguments, vm_limits(), noop_observer()).unwrap()
         }
     }
 
@@ -762,8 +770,13 @@ mod tests {
                 .unwrap();
         let entry = verified.operation_entry(&operation).unwrap();
         let pinned = PinnedDeploymentEntry::try_new(Arc::clone(&image), entry).unwrap();
-        let mut fiber =
-            Vm::start(pinned, Box::new([ValueSlot::number(41.0)]), vm_limits()).unwrap();
+        let mut fiber = Vm::start(
+            pinned,
+            Box::new([ValueSlot::number(41.0)]),
+            vm_limits(),
+            noop_observer(),
+        )
+        .unwrap();
         let mut heap = TestHeap;
         let mut budget = TestBudget::new();
         loop {

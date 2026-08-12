@@ -4,8 +4,8 @@ mod entries;
 use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
-    ContractOperationId, GatewayAdapterPlan, GatewayEntryIdentity, GatewayEntryKey,
-    GatewayEntryProtocolSurface, PackageCallableId,
+    ContractOperationId, DeploymentIngressBinding, GatewayAdapterPlan, GatewayEntryIdentity,
+    GatewayEntryKey, GatewayEntryProtocolSurface, PackageCallableId, ServiceProtocolIdentity,
 };
 use skiff_runtime_deployment_image::{
     DeploymentOwnerIdentity, DeploymentProgramFacts, ServiceDependencySlot,
@@ -147,6 +147,37 @@ impl VerifiedLinkedBytecodeImage {
     /// Returns canonical symbolic service facts derived from the hydration.
     pub fn dependency_slots(&self) -> &[ServiceDependencySlot] {
         &self.dependency_slots
+    }
+
+    /// Returns the root service protocol identity admitted with this image.
+    pub fn service_protocol_identity(&self) -> &ServiceProtocolIdentity {
+        &self
+            ._hydrated
+            .deployment()
+            .contract
+            .service_protocol_identity
+    }
+
+    /// Returns operation identities in canonical deployment binding order.
+    pub fn operation_entry_ids(&self) -> impl ExactSizeIterator<Item = &ContractOperationId> {
+        self._hydrated
+            .deployment()
+            .operation_bindings
+            .iter()
+            .map(|binding| &binding.contract_operation_id)
+    }
+
+    /// Returns the immutable ingress bindings admitted with this image.
+    pub fn ingress_bindings(&self) -> &[DeploymentIngressBinding] {
+        &self._hydrated.deployment().ingress
+    }
+
+    /// Returns the verifier-pinned adapter plan for one exact gateway entry.
+    pub fn gateway_adapter_plan(&self, key: &GatewayEntryKey) -> Option<&GatewayAdapterPlan> {
+        self.entry_maps
+            .gateways
+            .get(key)
+            .map(|entry| &entry._adapter_plan)
     }
 
     /// Returns the immutable constant heap materialized by this verifier.

@@ -11,6 +11,12 @@ mod assembly;
 mod assembly_wire;
 #[cfg(test)]
 mod bytecode_http_tests;
+#[cfg(test)]
+mod phase_0_negative_tests;
+#[cfg(test)]
+mod phase_0_proof_support;
+#[cfg(test)]
+mod phase_0_vcp_tests;
 mod resumable;
 mod websocket_jsonrpc;
 

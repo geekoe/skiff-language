@@ -1,7 +1,11 @@
 function helper(value: number) -> number {
-  return value + 1
+  return value + 5
 }
 
-function run() -> number {
-  return helper(2)
+function run(value: number) -> number {
+  final result = helper(value)
+  if result == 7 {
+    return result - 4
+  }
+  return 0
 }

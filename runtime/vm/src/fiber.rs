@@ -18,6 +18,9 @@ use skiff_runtime_linked_bytecode::{
     LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_model::{
+    bytecode_execution_observation::{
+        BytecodeExecutionEvent, BytecodeExecutionObserver, VmFirstInstructionDispatched,
+    },
     service_error::CatchIdentity,
     vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmMapEntry, VmRecordField},
     vm_root::{VmRootSource, VmRootVisitor},
@@ -61,8 +64,9 @@ impl Vm {
         entry: VerifiedVmEntry,
         arguments: Box<[ValueSlot]>,
         limits: VmLimits,
+        observer: BytecodeExecutionObserver,
     ) -> Result<VmFiber, VmError> {
-        VmFiber::start(entry, arguments, limits)
+        VmFiber::start(entry, arguments, limits, observer)
     }
 }
 
@@ -87,6 +91,7 @@ pub struct VmFiber {
     pending_resume: Option<PendingResume>,
     resume_sequence: u64,
     projection_sequence: u64,
+    observer: BytecodeExecutionObserver,
 }
 
 #[derive(Clone)]
@@ -113,6 +118,7 @@ impl VmFiber {
         entry: VerifiedVmEntry,
         arguments: Box<[ValueSlot]>,
         limits: VmLimits,
+        observer: BytecodeExecutionObserver,
     ) -> Result<Self, VmError> {
         let function_index = entry.entry().function();
         let program = entry.image().program();
@@ -184,6 +190,7 @@ impl VmFiber {
             pending_resume: None,
             resume_sequence: 0,
             projection_sequence: 0,
+            observer,
         })
     }
 
@@ -598,7 +605,7 @@ impl VmFiber {
             });
         }
 
-        match instruction.opcode() {
+        let outcome = match instruction.opcode() {
             Opcode::Const => self.execute_const(function_index, instruction_index, &instruction),
             Opcode::CopySlot => {
                 self.execute_copy_slot(function_index, instruction_index, &instruction)
@@ -738,7 +745,21 @@ impl VmFiber {
                 instruction: instruction_index,
                 opcode: instruction.opcode(),
             }),
+        };
+        if outcome.is_ok() && self.observer.claim_vm_first_instruction_dispatch() {
+            self.observer.observe(
+                BytecodeExecutionEvent::VmFirstInstructionDispatched(
+                    VmFirstInstructionDispatched {
+                        image_owner: self.entry.owner().deployment().clone(),
+                        root_entry_function_index: self.entry.entry().function().get(),
+                        current_function_index: function_index.get(),
+                        instruction_index: instruction_index.get(),
+                        opcode: instruction.opcode(),
+                    },
+                ),
+            );
         }
+        outcome
     }
 
     fn execute_const(

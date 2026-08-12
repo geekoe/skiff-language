@@ -1,6 +1,11 @@
+use std::sync::Arc;
+
 use skiff_artifact_model::{IngressProtocol, IngressSelector, ServiceDeploymentRef};
 use skiff_runtime_capability_context::ExecutionBudgetReason;
 use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
+use skiff_runtime_model::bytecode_execution_observation::{
+    BytecodeExecutionCorrelation, BytecodeExecutionObserver,
+};
 use skiff_runtime_request::{BytecodeRequestTarget, RequestError, RouterWriterMessage};
 use skiff_runtime_transport::protocol::{
     BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressProtocol,
@@ -85,6 +90,24 @@ impl RuntimeHost {
             }
             BytecodeRequestStartFrameWireHeader::Task(header) => header.request_id.clone(),
         };
+        let observer = BytecodeExecutionObserver::new(
+            Arc::clone(&self.bytecode_execution_event_sink),
+            BytecodeExecutionCorrelation {
+                router_session_id: router_session_id.to_string(),
+                request_id: request_id.clone(),
+            },
+        );
+        let Some(reservation) = self
+            .request_supervisor
+            .reserve(request_id.clone(), observer.clone())
+        else {
+            self.send_http_gateway_admission_error(
+                &request_id,
+                "duplicate active bytecode requestId",
+                &sender,
+            );
+            return;
+        };
         let build_id = wire_routing_build_id(&header);
         let was_loaded = if let Some(build_id) = build_id.as_deref() {
             self.bytecode_deployments.is_loaded_build_id(build_id).await
@@ -93,23 +116,29 @@ impl RuntimeHost {
         };
         let result = match header {
             BytecodeRequestStartFrameWireHeader::Http(header) => {
-                self.http_gateway_request_from_wire(header, body, bootstrap)
+                self.http_gateway_request_from_wire(header, body, bootstrap, &observer)
                     .await
             }
             BytecodeRequestStartFrameWireHeader::WebSocketConnect(header) => {
-                self.websocket_connect_request_from_wire(header, body, bootstrap)
+                self.websocket_connect_request_from_wire(header, body, bootstrap, &observer)
                     .await
             }
             BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
-                self.websocket_connection_closed_request_from_wire(header, body, bootstrap)
+                self.websocket_connection_closed_request_from_wire(
+                    header,
+                    body,
+                    bootstrap,
+                    &observer,
+                )
                     .await
             }
             BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
-                self.websocket_jsonrpc_request_from_wire(header, body, bootstrap)
+                self.websocket_jsonrpc_request_from_wire(header, body, bootstrap, &observer)
                     .await
             }
             BytecodeRequestStartFrameWireHeader::Task(header) => {
-                self.task_request_from_wire(header, body, bootstrap).await
+                self.task_request_from_wire(header, body, bootstrap, &observer)
+                    .await
             }
         };
         if !was_loaded {
@@ -119,6 +148,7 @@ impl RuntimeHost {
             Ok(AdmittedBytecodeRequest::Http(request)) => {
                 self.task_bytecode_http_request(
                     router_session_id.to_string(),
+                    reservation,
                     request,
                     bootstrap.max_response_bytes,
                     sender,
@@ -128,6 +158,7 @@ impl RuntimeHost {
             Ok(AdmittedBytecodeRequest::WebSocketConnect(request)) => {
                 self.task_bytecode_websocket_connect_request(
                     router_session_id.to_string(),
+                    reservation,
                     request,
                     bootstrap.max_response_bytes,
                     sender,
@@ -137,6 +168,7 @@ impl RuntimeHost {
             Ok(AdmittedBytecodeRequest::WebSocketConnectionClosed(request)) => {
                 self.task_bytecode_websocket_connection_closed_request(
                     router_session_id.to_string(),
+                    reservation,
                     request,
                     bootstrap.max_response_bytes,
                     sender,
@@ -146,6 +178,7 @@ impl RuntimeHost {
             Ok(AdmittedBytecodeRequest::WebSocketJsonRpc(request)) => {
                 self.task_bytecode_websocket_jsonrpc_request(
                     router_session_id.to_string(),
+                    reservation,
                     request,
                     bootstrap.max_response_bytes,
                     sender,
@@ -155,6 +188,7 @@ impl RuntimeHost {
             Ok(AdmittedBytecodeRequest::Task(request)) => {
                 self.task_bytecode_task_request(
                     router_session_id.to_string(),
+                    reservation,
                     request,
                     bootstrap.max_response_bytes,
                     sender,
@@ -162,6 +196,7 @@ impl RuntimeHost {
                 .await
             }
             Err(runtime_error) => {
+                drop(reservation);
                 error!(
                     event = "runtime.assembly_wire_rejected",
                     request_id,
@@ -186,10 +221,16 @@ impl RuntimeHost {
         deployment: &ServiceDeploymentRef,
         bootstrap: &ConnectionBootstrap,
         selector: BytecodeRouteSelector,
+        observer: &BytecodeExecutionObserver,
     ) -> Result<Option<BytecodeRoute>> {
         let route = self
             .bytecode_deployments
-            .route(deployment, bootstrap.resolver.store().root(), selector)
+            .route(
+                deployment,
+                bootstrap.resolver.store().root(),
+                selector,
+                observer,
+            )
             .await
             .map_err(|error| RuntimeError::Decode(error.to_string()))?;
         if route.is_none() {
@@ -203,6 +244,7 @@ impl RuntimeHost {
         mut header: BytecodeWebSocketConnectRequestStartFrameHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
+        observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
         validate_websocket_connect_header(&header, &body)?;
         let route = self
@@ -218,6 +260,7 @@ impl RuntimeHost {
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
                     role: LinkedGatewayCallableRole::Handler,
                 },
+                observer,
             )
             .await?
             .expect("bytecode route is required after resolution");
@@ -250,6 +293,7 @@ impl RuntimeHost {
         mut header: BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
+        observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
         validate_websocket_connection_closed_header(&header, &body)?;
         let route = self
@@ -265,6 +309,7 @@ impl RuntimeHost {
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
                     role: LinkedGatewayCallableRole::CloseHandler,
                 },
+                observer,
             )
             .await?
             .expect("bytecode route is required after resolution");
@@ -297,6 +342,7 @@ impl RuntimeHost {
         mut header: BytecodeRequestStartFrameHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
+        observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
         validate_http_header(&header)?;
         let route = self
@@ -312,6 +358,7 @@ impl RuntimeHost {
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
                     role: LinkedGatewayCallableRole::Handler,
                 },
+                observer,
             )
             .await?
             .expect("bytecode route is required after resolution");
@@ -342,6 +389,7 @@ impl RuntimeHost {
         mut header: BytecodeTaskRequestStartFrameHeader,
         payload: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
+        observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
         validate_task_header(&header, &payload)?;
         let deployment = &header.routing.deployment;
@@ -354,7 +402,12 @@ impl RuntimeHost {
             }
         }
         let route = self
-            .resolve_bytecode_request_route(deployment, bootstrap, BytecodeRouteSelector::Operation)
+            .resolve_bytecode_request_route(
+                deployment,
+                bootstrap,
+                BytecodeRouteSelector::Operation,
+                observer,
+            )
             .await?
             .expect("bytecode route is required after resolution");
         header.deadline = effective_request_deadline(header.deadline.as_ref(), "task")?;
@@ -379,6 +432,7 @@ impl RuntimeHost {
         mut header: BytecodeWebSocketJsonRpcRequestStartFrameHeader,
         params: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
+        observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
         validate_websocket_jsonrpc_header(&header, &params)?;
         let route = self
@@ -394,6 +448,7 @@ impl RuntimeHost {
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
                     role: LinkedGatewayCallableRole::Handler,
                 },
+                observer,
             )
             .await?
             .expect("bytecode route is required after resolution");
@@ -470,6 +525,12 @@ fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> 
         return Err(RuntimeError::Decode(
             "canonical request.start requestId must be non-empty".to_string(),
         ));
+    }
+    if header.mode != "unary" {
+        return Err(RuntimeError::Unsupported(format!(
+            "bytecode HTTP ingress only supports unary request.start, got {}",
+            header.mode
+        )));
     }
     if header.caller.kind != "gateway" {
         return Err(RuntimeError::Unsupported(

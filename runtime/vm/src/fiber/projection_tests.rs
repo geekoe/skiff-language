@@ -24,7 +24,10 @@ use skiff_runtime_deployment_image::{DeploymentImage, PinnedDeploymentEntry};
 use skiff_runtime_linked_bytecode::{ActiveRegionIndex, InstructionIndex};
 use skiff_runtime_linker::{link_deployment, LinkLimits};
 use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
-use skiff_runtime_model::vm_value::ValueSlot;
+use skiff_runtime_model::{
+    bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
+    vm_value::ValueSlot,
+};
 
 use super::{Vm, VmFiber, VmFiberState};
 use crate::{VmError, VmLimits, VmProjectionHandoff};
@@ -198,7 +201,13 @@ impl ProjectionTestImage {
     fn start(&self) -> VmFiber {
         let entry = self.verified.operation_entry(&self.operation).unwrap();
         let pinned = PinnedDeploymentEntry::try_new(Arc::clone(&self.image), entry).unwrap();
-        Vm::start(pinned, Box::<[ValueSlot]>::default(), vm_limits()).unwrap()
+        Vm::start(
+            pinned,
+            Box::<[ValueSlot]>::default(),
+            vm_limits(),
+            noop_observer(),
+        )
+        .unwrap()
     }
 }
 
@@ -429,6 +438,13 @@ fn vm_limits() -> VmLimits {
         NonZeroU32::new(1024).unwrap(),
         NonZeroU32::new(1024).unwrap(),
     )
+}
+
+fn noop_observer() -> BytecodeExecutionObserver {
+    BytecodeExecutionObserver::noop(BytecodeExecutionCorrelation {
+        router_session_id: "projection-test-session".to_string(),
+        request_id: "projection-test".to_string(),
+    })
 }
 
 fn link_limits() -> LinkLimits {

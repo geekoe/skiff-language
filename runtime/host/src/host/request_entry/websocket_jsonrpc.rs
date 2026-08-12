@@ -3,7 +3,7 @@ use std::sync::Arc;
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
     BoundaryResponse, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
-    RequestEnvelope, ResponseEnd, ResponseEvent, RouterWriterMessage,
+    RequestEnvelope, ResponseEnd, ResponseError, ResponseEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -17,11 +17,11 @@ use tracing::error;
 
 use super::{
     assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest,
-    resumable::{drive_bytecode_request, RejectingResponseEventSink},
+    resumable::{drive_bytecode_request, DrivenBytecodeRequest, RejectingResponseEventSink},
 };
 use crate::{
     host::{
-        request_supervisor::{CompletionTrace, SupervisedRequest},
+        request_supervisor::{CleanupPermit, CompletionTrace, RequestReservation, SupervisedRequest},
         RuntimeHost,
     },
     loader::bytecode_admission::BytecodeRoute,
@@ -47,6 +47,7 @@ impl RuntimeHost {
     pub(super) async fn task_bytecode_websocket_jsonrpc_request(
         &self,
         _router_session_id: String,
+        reservation: RequestReservation,
         request: AdmittedBytecodeWebSocketJsonRpcRequest,
         _http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
@@ -59,10 +60,16 @@ impl RuntimeHost {
         } = request;
         let request_envelope = bytecode_websocket_jsonrpc_request_envelope(&route, &header, params);
         let telemetry = bytecode_websocket_jsonrpc_telemetry_context(self, &header, &route);
-        let supervised_request = self
-            .request_supervisor
-            .begin(&request_envelope, telemetry)
-            .await;
+        let observer = reservation.observer().clone();
+        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
+            self.send_http_gateway_admission_error(
+                &header.request_id,
+                "bytecode request reservation activation failed",
+                &sender,
+            );
+            return;
+        };
+        route.publish_admission_observations();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
@@ -73,10 +80,11 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let result = drive_bytecode_request(
+            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
                 BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
+                    observer: observer.clone(),
                     cancelled: supervised_request.cancelled(),
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
@@ -97,14 +105,20 @@ impl RuntimeHost {
                     WebSocketJsonRpcTerminal::Response(WebSocketJsonRpcOutcome::InternalError)
                 }
             };
-            host.finish_websocket_jsonrpc_request(
+            let cleanup_permit = host.finish_websocket_jsonrpc_request(
                 &supervised_request,
                 request_id,
                 terminal,
                 &sender,
             )
             .await;
+            drop(execution);
+            drop(execution_budget);
+            drop(supervised_request);
             drop(route);
+            if let Some(permit) = cleanup_permit {
+                host.observe_bytecode_request_cleanup(permit);
+            }
         });
     }
 
@@ -114,19 +128,34 @@ impl RuntimeHost {
         request_id: String,
         terminal: WebSocketJsonRpcTerminal,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
+    ) -> Option<CleanupPermit> {
         let WebSocketJsonRpcTerminal::Response(outcome) = terminal else {
-            self.request_supervisor
+            return self.request_supervisor
                 .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
                 .await;
-            return;
         };
-        if !self
-            .request_supervisor
-            .complete_success(supervised_request, CompletionTrace::RUNTIME)
-            .await
+        let permit = match &outcome {
+            WebSocketJsonRpcOutcome::Success { .. } => {
+                self.request_supervisor
+                    .complete_success(supervised_request, CompletionTrace::RUNTIME)
+                    .await
+            }
+            failed => {
+                self.request_supervisor
+                    .complete_error(
+                        supervised_request,
+                        "request.error",
+                        &websocket_jsonrpc_response_error(failed),
+                        CompletionTrace::RUNTIME,
+                    )
+                    .await
+            }
+        };
+        if !permit
+            .as_ref()
+            .is_some_and(CleanupPermit::response_owned)
         {
-            return;
+            return permit;
         }
         let (outcome, payload) = websocket_jsonrpc_response_parts(outcome);
         match bytecode_websocket_jsonrpc_response_into_frame(
@@ -141,6 +170,26 @@ impl RuntimeHost {
                 error!(event = "runtime.response_encode_error", error = %error);
             }
         }
+        permit
+    }
+}
+
+fn websocket_jsonrpc_response_error(outcome: &WebSocketJsonRpcOutcome) -> ResponseError {
+    let (code, message) = match outcome {
+        WebSocketJsonRpcOutcome::Success { .. } => {
+            unreachable!("success JSON-RPC outcome is not an error")
+        }
+        WebSocketJsonRpcOutcome::InvalidParams => ("InvalidParams", "invalid JSON-RPC params"),
+        WebSocketJsonRpcOutcome::InternalError => ("InternalError", "JSON-RPC execution failed"),
+        WebSocketJsonRpcOutcome::DeadlineExceeded => {
+            ("DeadlineExceeded", "JSON-RPC deadline exceeded")
+        }
+    };
+    ResponseError {
+        code: code.to_string(),
+        message: message.to_string(),
+        status: None,
+        details: None,
     }
 }
 

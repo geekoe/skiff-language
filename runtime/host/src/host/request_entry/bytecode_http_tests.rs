@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
     path::PathBuf,
-    sync::{Arc, OnceLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -20,10 +23,10 @@ use skiff_artifact_model::{
     GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
     GatewayExternalErrorProjection, GatewayHttpProtocolSurface, GatewayProtocolSurface,
     GatewayWebSocketConnectProtocolSurface, GatewayWebSocketDownlinkFrame,
-    GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion, PackageBinding, PackageCallableId,
-    PackageLocalAbiSymbol, PackageRequirementKey, ServiceContract, ServiceDeployment,
-    WebSocketEntryId,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    GatewayWebSocketRpcProfile, GatewayWebSocketShapeVersion, IngressProtocol, IngressSelector,
+    PackageBinding, PackageCallableId, PackageLocalAbiSymbol, PackageRequirementKey,
+    ServiceContract, ServiceDeployment, WebSocketEntryId, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     compile_package, CompilerPlatformSources, ManifestOwner, ManifestProvenance,
@@ -35,6 +38,9 @@ use skiff_compiler_input::PublicationApiSpec;
 use skiff_compiler_source::source_graph::CompilerSourceFile;
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver;
+use skiff_runtime_model::bytecode_execution_observation::{
+    BytecodeExecutionCorrelation, BytecodeExecutionObserver,
+};
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::{
     protocol::{decode_binary_frame, decode_response_end_frame, RUNTIME_FRAME_SCHEMA_VERSION},
@@ -63,22 +69,27 @@ struct CompiledFixture {
     artifact_root: PathBuf,
     deployment: skiff_artifact_model::ServiceDeploymentRef,
     legacy_deployment: skiff_artifact_model::ServiceDeploymentRef,
+    implementation_package_build_id: skiff_artifact_model::PackageBuildId,
+    service_protocol_identity: skiff_artifact_model::ServiceProtocolIdentity,
     http_gateway_identity: GatewayEntryIdentity,
     websocket_gateway_identity: GatewayEntryIdentity,
 }
 
 static FIXTURE: OnceLock<CompiledFixture> = OnceLock::new();
+static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn fixture() -> &'static CompiledFixture {
-    FIXTURE.get_or_init(|| {
-        std::thread::Builder::new()
-            .name("host-bytecode-http-fixture".to_string())
-            .stack_size(32 * 1024 * 1024)
-            .spawn(compile_fixture)
-            .expect("bytecode fixture compiler thread")
-            .join()
-            .expect("bytecode fixture compiler thread should not panic")
-    })
+    FIXTURE.get_or_init(|| compile_fixture_with_large_stack("host-bytecode-http-fixture"))
+}
+
+fn compile_fixture_with_large_stack(thread_name: &str) -> CompiledFixture {
+    std::thread::Builder::new()
+        .name(thread_name.to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(compile_fixture)
+        .expect("bytecode fixture compiler thread")
+        .join()
+        .expect("bytecode fixture compiler thread should not panic")
 }
 
 fn implementation_callable_id(
@@ -191,22 +202,25 @@ fn compile_fixture() -> CompiledFixture {
     let platform_sources =
         CompilerPlatformSources::new(&repository_root).expect("repository platform sources");
     let package_id = PublicationId::parse(PACKAGE_ID).expect("test package id");
+    let fixture_sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temp = std::env::temp_dir().join(format!(
-        "skiff-host-bytecode-src-{}-{}",
+        "skiff-host-bytecode-src-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock")
-            .as_nanos()
+            .as_nanos(),
+        fixture_sequence
     ));
     std::fs::create_dir_all(&temp).expect("bytecode source dir");
     let artifact_root = std::env::temp_dir().join(format!(
-        "skiff-host-bytecode-artifacts-{}-{}",
+        "skiff-host-bytecode-artifacts-{}-{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock")
-            .as_nanos()
+            .as_nanos(),
+        fixture_sequence
     ));
     skiff_compiler::authoring::seed_official_std_package(&platform_sources, &artifact_root)
         .expect("seed compiler-owned std");
@@ -441,8 +455,22 @@ function runHttp(request: std.http.HttpRequest) -> std.http.HttpResponse {
         artifact_root,
         deployment: deployment_ref,
         legacy_deployment: legacy_deployment_ref,
+        implementation_package_build_id: package_ref.package_build_id.clone(),
+        service_protocol_identity: contract.service_protocol_identity.clone(),
         http_gateway_identity,
         websocket_gateway_identity,
+    }
+}
+
+fn http_route_selector(fixture: &CompiledFixture) -> BytecodeRouteSelector {
+    BytecodeRouteSelector::Gateway {
+        ingress: IngressSelector {
+            protocol: IngressProtocol::Http,
+            method: Some("POST".to_string()),
+            path: "/run".to_string(),
+        },
+        gateway_entry_identity: fixture.http_gateway_identity.clone(),
+        role: skiff_runtime_linked_bytecode::LinkedGatewayCallableRole::Handler,
     }
 }
 
@@ -698,6 +726,13 @@ fn test_host_with_bytecode_only(bytecode_only: bool) -> RuntimeHost {
     .expect("bytecode HTTP runtime host")
 }
 
+fn noop_observer() -> BytecodeExecutionObserver {
+    BytecodeExecutionObserver::noop(BytecodeExecutionCorrelation {
+        router_session_id: "bytecode-http-test-session".to_string(),
+        request_id: "bytecode-http-test-request".to_string(),
+    })
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
     let fixture = fixture();
@@ -708,10 +743,29 @@ async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
             &fixture.deployment,
             &fixture.artifact_root,
             BytecodeRouteSelector::Operation,
+            &noop_observer(),
         )
         .await
-        .expect("bytecode route should load");
-    assert!(route.is_some(), "fixture must carry a bytecode deployment");
+        .expect("bytecode route should load")
+        .expect("fixture must carry a bytecode deployment");
+    let target = route
+        .request_target()
+        .expect("operation target should pin the admitted image");
+    assert_eq!(route.owner(), target.image().owner());
+    assert_eq!(route.deployment(), &fixture.deployment);
+    assert_eq!(
+        route.build_id(),
+        fixture.deployment.deployment_artifact_identity.as_str()
+    );
+    assert_ne!(
+        route.build_id(),
+        fixture.implementation_package_build_id.as_str(),
+        "route identity must not substitute the implementation package build"
+    );
+    assert_eq!(
+        route.service_protocol_identity(),
+        fixture.service_protocol_identity.as_str()
+    );
 
     let bootstrap = connection_bootstrap(fixture);
     let header = canonical_header(fixture, "bytecode-http-42");
@@ -734,6 +788,171 @@ async fn canonical_http_bytecode_request_executes_through_scalar_vm() {
     };
     let (_header, payload) = decode_response_end_frame(&frame).expect("bytecode response.end");
     assert_eq!(payload, b"42.0");
+
+    let duration_event = host
+        .telemetry_producer()
+        .drain_batches()
+        .into_iter()
+        .flat_map(|batch| batch.events)
+        .find(|event| {
+            event.name.as_deref() == Some("request.duration")
+                && event.request_id.as_deref() == Some("bytecode-http-42")
+        })
+        .expect("request envelope identity should reach request telemetry");
+    assert_eq!(
+        duration_event.build_id.as_deref(),
+        Some(fixture.deployment.deployment_artifact_identity.as_str())
+    );
+    assert_ne!(
+        duration_event.build_id.as_deref(),
+        Some(fixture.implementation_package_build_id.as_str())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn admitted_route_and_adapter_remain_pinned_after_store_withdrawal() {
+    let fixture = compile_fixture_with_large_stack("host-bytecode-pinned-route-fixture");
+    let host = test_host_with_bytecode_only(true);
+    let selector = http_route_selector(&fixture);
+    let route = host
+        .bytecode_deployments
+        .route(
+            &fixture.deployment,
+            &fixture.artifact_root,
+            selector.clone(),
+            &noop_observer(),
+        )
+        .await
+        .expect("gateway route should load")
+        .expect("fixture must carry a bytecode deployment");
+    let adapter = route.http_adapter().expect("HTTP adapter should be pinned");
+    let target = route
+        .request_target()
+        .expect("gateway target should pin the admitted image");
+    assert_eq!(route.owner(), target.image().owner());
+    assert_eq!(
+        route.build_id(),
+        fixture.deployment.deployment_artifact_identity.as_str()
+    );
+
+    let bootstrap = connection_bootstrap(&fixture);
+    let withdrawn_root = PathBuf::from(format!("{}.withdrawn", fixture.artifact_root.display()));
+    std::fs::rename(&fixture.artifact_root, &withdrawn_root)
+        .expect("withdraw admitted artifact store");
+
+    assert_eq!(
+        route
+            .http_adapter()
+            .expect("pinned adapter after withdrawal"),
+        adapter
+    );
+    let cached_route = host
+        .bytecode_deployments
+        .route(&fixture.deployment, &fixture.artifact_root, selector, &noop_observer())
+        .await
+        .expect("cached route must not reopen the withdrawn store")
+        .expect("cached deployment image should remain admitted");
+    assert_eq!(cached_route.owner(), route.owner());
+    assert_eq!(
+        cached_route
+            .http_adapter()
+            .expect("cached pinned adapter after withdrawal"),
+        adapter
+    );
+
+    let header = canonical_header(&fixture, "bytecode-http-pinned-store");
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+    host.spawn_bytecode_request(
+        "bytecode-http-pinned-store-session",
+        BytecodeRequestStartFrameWireHeader::Http(header),
+        Vec::new(),
+        &bootstrap,
+        sender,
+    )
+    .await;
+    let message = timeout(Duration::from_secs(10), receiver.recv())
+        .await
+        .expect("pinned-store response timeout")
+        .expect("pinned-store response channel closed");
+    let RouterWriterMessage::Binary(frame) = message else {
+        panic!("pinned-store response must be a binary transport frame")
+    };
+    let (_header, payload) = decode_response_end_frame(&frame).expect("pinned-store response.end");
+    assert_eq!(payload, b"42.0");
+
+    std::fs::remove_dir_all(&withdrawn_root).expect("clean withdrawn artifact store");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn gateway_route_fails_closed_on_missing_or_mismatched_pinned_facts() {
+    let fixture = fixture();
+    let host = test_host_with_bytecode_only(true);
+
+    let missing_ingress = host
+        .bytecode_deployments
+        .route(
+            &fixture.deployment,
+            &fixture.artifact_root,
+            BytecodeRouteSelector::Gateway {
+                ingress: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    method: Some("POST".to_string()),
+                    path: "/missing".to_string(),
+                },
+                gateway_entry_identity: fixture.http_gateway_identity.clone(),
+                role: skiff_runtime_linked_bytecode::LinkedGatewayCallableRole::Handler,
+            },
+            &noop_observer(),
+        )
+        .await
+        .expect_err("missing ingress must fail closed");
+    assert!(missing_ingress
+        .to_string()
+        .contains("has no ingress binding"));
+
+    let mismatched_identity = host
+        .bytecode_deployments
+        .route(
+            &fixture.deployment,
+            &fixture.artifact_root,
+            BytecodeRouteSelector::Gateway {
+                ingress: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    method: Some("POST".to_string()),
+                    path: "/run".to_string(),
+                },
+                gateway_entry_identity: fixture.websocket_gateway_identity.clone(),
+                role: skiff_runtime_linked_bytecode::LinkedGatewayCallableRole::Handler,
+            },
+            &noop_observer(),
+        )
+        .await
+        .expect_err("mismatched gateway identity must fail closed");
+    assert!(mismatched_identity
+        .to_string()
+        .contains("does not match routed gateway identity"));
+
+    let missing_callable = host
+        .bytecode_deployments
+        .route(
+            &fixture.deployment,
+            &fixture.artifact_root,
+            BytecodeRouteSelector::Gateway {
+                ingress: IngressSelector {
+                    protocol: IngressProtocol::Http,
+                    method: Some("POST".to_string()),
+                    path: "/run".to_string(),
+                },
+                gateway_entry_identity: fixture.http_gateway_identity.clone(),
+                role: skiff_runtime_linked_bytecode::LinkedGatewayCallableRole::CloseHandler,
+            },
+            &noop_observer(),
+        )
+        .await
+        .expect_err("missing callable role must fail closed");
+    assert!(missing_callable
+        .to_string()
+        .contains("no CloseHandler callable"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -746,6 +965,7 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
             &fixture.legacy_deployment,
             &fixture.artifact_root,
             BytecodeRouteSelector::Operation,
+            &noop_observer(),
         )
         .await
         .expect("legacy deployment bytecode lookup should succeed");
@@ -783,11 +1003,12 @@ async fn canonical_http_server_stream_with_scalar_operation_fails_closed() {
     let bootstrap = connection_bootstrap(fixture);
     let mut header = canonical_header(fixture, "bytecode-http-server-stream");
     header.mode = "serverStream".to_string();
+    let body = b"2".to_vec();
     let (sender, mut receiver) = mpsc::unbounded_channel();
     host.spawn_bytecode_request(
         "bytecode-http-server-stream-session",
         BytecodeRequestStartFrameWireHeader::Http(header.clone()),
-        Vec::new(),
+        body,
         &bootstrap,
         sender,
     )
@@ -795,7 +1016,7 @@ async fn canonical_http_server_stream_with_scalar_operation_fails_closed() {
     assert_bytecode_response_error(
         &mut receiver,
         &header.request_id,
-        "serverStream request completed without a response stream",
+        "bytecode HTTP ingress only supports unary request.start, got serverStream",
     )
     .await;
 }

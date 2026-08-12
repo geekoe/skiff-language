@@ -18,10 +18,10 @@ import { scanCommandExecutionSource } from '../lib/command-execution-scanner.mjs
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
-test('actual production ledger passes with exactly twenty-three explicit lifecycle owners', async () => {
+test('actual production ledger passes with exactly twenty-two explicit lifecycle owners', async () => {
   await assertCommandExecutionPolicy(root);
-  assert.equal(COMMAND_EXECUTION_LEDGER.length, 23);
-  assert.equal(new Set(COMMAND_EXECUTION_LEDGER.map((entry) => entry.ownerId)).size, 23);
+  assert.equal(COMMAND_EXECUTION_LEDGER.length, 22);
+  assert.equal(new Set(COMMAND_EXECUTION_LEDGER.map((entry) => entry.ownerId)).size, 22);
   assert.equal(
     COMMAND_EXECUTION_LEDGER.filter((entry) => entry.importedSymbol === 'spawn').length,
     16,
@@ -32,7 +32,7 @@ test('actual production ledger passes with exactly twenty-three explicit lifecyc
   );
   assert.equal(
     COMMAND_EXECUTION_LEDGER.filter((entry) => entry.importedSymbol === 'execFileSync').length,
-    4,
+    3,
   );
   assert.equal(Object.values(COMMAND_OWNER_CLASSES).includes('migration-pending'), false);
 });

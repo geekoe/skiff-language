@@ -6,7 +6,9 @@ use std::{
 use skiff_runtime_capability_context::{
     ConnectionRequestRegistry, DbProviderSource, HttpRuntimeOptions,
 };
-use skiff_runtime_model::request_heap::RequestHeapLimits;
+use skiff_runtime_model::{
+    bytecode_execution_observation::BytecodeExecutionEventSink, request_heap::RequestHeapLimits,
+};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -16,6 +18,7 @@ use crate::{
 
 use super::{
     blob_store::BlobStore,
+    bytecode_execution_observation::TelemetryBytecodeExecutionEventSink,
     file_runtime::FileRuntime,
     request_supervisor::RequestSupervisor,
     telemetry::{
@@ -69,6 +72,7 @@ pub struct RuntimeHost {
     pub(super) artifact_root: Arc<StdMutex<Option<String>>>,
     pub(super) blob_store: Arc<StdMutex<Option<Arc<dyn BlobStore>>>>,
     pub(super) request_supervisor: Arc<RequestSupervisor>,
+    pub(super) bytecode_execution_event_sink: Arc<dyn BytecodeExecutionEventSink>,
     pub(super) telemetry: TelemetryProducer,
     pub(super) telemetry_exporter: Arc<Mutex<Option<TelemetryExporterHandle>>>,
     pub(super) telemetry_file_sink: Arc<Mutex<Option<TelemetryFileSinkHandle>>>,
@@ -181,6 +185,10 @@ impl RuntimeHost {
             telemetry_file_max_bytes,
             telemetry_file_max_files,
         ));
+        let bytecode_execution_event_sink = Arc::new(TelemetryBytecodeExecutionEventSink::new(
+            telemetry.clone(),
+            base_runtime_id.clone(),
+        ));
         let _ = &db_provider;
         Ok(Self {
             router_url,
@@ -195,6 +203,7 @@ impl RuntimeHost {
             artifact_root: Arc::new(StdMutex::new(None)),
             blob_store: Arc::new(StdMutex::new(None)),
             request_supervisor: Arc::new(RequestSupervisor::new()),
+            bytecode_execution_event_sink,
             telemetry,
             telemetry_exporter: Arc::new(Mutex::new(None)),
             telemetry_file_sink: Arc::new(Mutex::new(None)),

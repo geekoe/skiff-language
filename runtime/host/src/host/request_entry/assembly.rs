@@ -26,7 +26,7 @@ use super::{
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
-    resumable::{drive_bytecode_request, RejectingResponseEventSink},
+    resumable::{drive_bytecode_request, DrivenBytecodeRequest, RejectingResponseEventSink},
 };
 use crate::{
     capability_context::{
@@ -37,7 +37,9 @@ use crate::{
     host::{
         build_bytecode_http_executor,
         http_response_ceiling::HttpResponseCeiling,
-        request_supervisor::{CompletionTrace, SupervisedRequest},
+        request_supervisor::{
+            CleanupPermit, CompletionTrace, RequestReservation, SupervisedRequest,
+        },
         RuntimeHost,
     },
     loader::bytecode_admission::BytecodeRoute,
@@ -48,6 +50,7 @@ impl RuntimeHost {
     pub(super) async fn task_bytecode_http_request(
         &self,
         _router_session_id: String,
+        reservation: RequestReservation,
         request: AdmittedBytecodeHttpRequest,
         http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
@@ -71,10 +74,16 @@ impl RuntimeHost {
             }
         };
         let telemetry = bytecode_http_telemetry_context(self, &header, &route);
-        let supervised_request = self
-            .request_supervisor
-            .begin(&request_envelope, telemetry)
-            .await;
+        let observer = reservation.observer().clone();
+        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
+            self.send_http_gateway_admission_error(
+                &header.request_id,
+                "bytecode request reservation activation failed",
+                &sender,
+            );
+            return;
+        };
+        route.publish_admission_observations();
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
@@ -129,10 +138,11 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let result = drive_bytecode_request(
+            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
                 BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
+                    observer: observer.clone(),
                     cancelled,
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
@@ -141,7 +151,7 @@ impl RuntimeHost {
                 response_sink.clone(),
             )
             .await;
-            host.finish_http_gateway_request(
+            let cleanup_permit = host.finish_http_gateway_request(
                 &supervised_request,
                 &request_id,
                 result,
@@ -150,13 +160,20 @@ impl RuntimeHost {
                 &sender,
             )
             .await;
+            drop(execution);
+            drop(execution_budget);
+            drop(supervised_request);
             drop(route);
+            if let Some(permit) = cleanup_permit {
+                host.observe_bytecode_request_cleanup(permit);
+            }
         });
     }
 
     pub(super) async fn task_bytecode_task_request(
         &self,
         _router_session_id: String,
+        reservation: RequestReservation,
         request: AdmittedBytecodeTaskRequest,
         _http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
@@ -169,15 +186,16 @@ impl RuntimeHost {
         } = request;
         let request_envelope = bytecode_task_request_envelope(&route, &header, payload);
         let telemetry = bytecode_task_telemetry_context(self, &header, &route);
-        let Some(supervised_request) = self.request_supervisor.begin_task(&header, telemetry).await
-        else {
+        let observer = reservation.observer().clone();
+        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
             self.send_http_gateway_admission_error(
                 &header.request_id,
-                "duplicate active task requestId",
+                "bytecode request reservation activation failed",
                 &sender,
             );
             return;
         };
+        route.publish_admission_observations();
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
@@ -189,10 +207,11 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let result = drive_bytecode_request(
+            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
                 BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
+                    observer: observer.clone(),
                     cancelled,
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
@@ -201,37 +220,44 @@ impl RuntimeHost {
                 Arc::new(RejectingResponseEventSink),
             )
             .await;
-            match result {
+            let cleanup_permit = match result {
                 Ok(response) => {
-                    if !host
+                    let permit = host
                         .request_supervisor
                         .complete_success(&supervised_request, CompletionTrace::RUNTIME)
-                        .await
-                    {
-                        return;
-                    }
-                    match response_into_transport_message(request_id, response) {
-                        Ok(Some(message)) => {
-                            let _ = sender.send(message);
+                        .await;
+                    if permit.as_ref().is_some_and(CleanupPermit::response_owned) {
+                        match response_into_transport_message(request_id, response) {
+                            Ok(Some(message)) => {
+                                let _ = sender.send(message);
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                error!(event = "runtime.response_encode_error", error = %error)
+                            }
                         }
-                        Ok(None) => {}
-                        Err(error) => {
-                            error!(event = "runtime.response_encode_error", error = %error)
-                        }
                     }
+                    permit
                 }
                 Err(error) => {
                     host.finish_direct_task_error(&supervised_request, request_id, error, &sender)
-                        .await;
+                        .await
                 }
-            }
+            };
+            drop(execution);
+            drop(execution_budget);
+            drop(supervised_request);
             drop(route);
+            if let Some(permit) = cleanup_permit {
+                host.observe_bytecode_request_cleanup(permit);
+            }
         });
     }
 
     pub(super) async fn task_bytecode_websocket_connect_request(
         &self,
         _router_session_id: String,
+        reservation: RequestReservation,
         request: AdmittedBytecodeWebSocketConnectRequest,
         _http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
@@ -243,10 +269,16 @@ impl RuntimeHost {
         } = request;
         let request_envelope = bytecode_websocket_connect_request_envelope(&route, &header);
         let telemetry = bytecode_websocket_connect_telemetry_context(self, &header, &route);
-        let supervised_request = self
-            .request_supervisor
-            .begin(&request_envelope, telemetry)
-            .await;
+        let observer = reservation.observer().clone();
+        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
+            self.send_http_gateway_admission_error(
+                &header.request_id,
+                "bytecode request reservation activation failed",
+                &sender,
+            );
+            return;
+        };
+        route.publish_admission_observations();
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
@@ -258,10 +290,11 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let result = drive_bytecode_request(
+            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
                 BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
+                    observer: observer.clone(),
                     cancelled,
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
@@ -277,20 +310,27 @@ impl RuntimeHost {
                 ),
                 Err(error) => error,
             };
-            host.finish_websocket_connect_error(
+            let cleanup_permit = host.finish_websocket_connect_error(
                 &supervised_request,
                 request_id,
                 mapped_error,
                 &sender,
             )
             .await;
+            drop(execution);
+            drop(execution_budget);
+            drop(supervised_request);
             drop(route);
+            if let Some(permit) = cleanup_permit {
+                host.observe_bytecode_request_cleanup(permit);
+            }
         });
     }
 
     pub(super) async fn task_bytecode_websocket_connection_closed_request(
         &self,
         _router_session_id: String,
+        reservation: RequestReservation,
         request: AdmittedBytecodeWebSocketConnectionClosedRequest,
         _http_response_max_bytes: usize,
         _sender: mpsc::UnboundedSender<RouterWriterMessage>,
@@ -304,10 +344,11 @@ impl RuntimeHost {
             bytecode_websocket_connection_closed_request_envelope(&route, &header);
         let telemetry =
             bytecode_websocket_connection_closed_telemetry_context(self, &header, &route);
-        let supervised_request = self
-            .request_supervisor
-            .begin(&request_envelope, telemetry)
-            .await;
+        let observer = reservation.observer().clone();
+        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
+            return;
+        };
+        route.publish_admission_observations();
         let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
@@ -318,10 +359,11 @@ impl RuntimeHost {
         };
         let host = self.clone();
         tokio::spawn(async move {
-            let result = drive_bytecode_request(
+            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
                 BytecodeRequestExecutionInput {
                     target,
                     request: request_envelope,
+                    observer: observer.clone(),
                     cancelled,
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
@@ -337,9 +379,16 @@ impl RuntimeHost {
                 ),
                 Err(error) => error,
             };
-            host.finish_websocket_connection_closed_error(&supervised_request, error)
+            let cleanup_permit = host
+                .finish_websocket_connection_closed_error(&supervised_request, error)
                 .await;
+            drop(execution);
+            drop(execution_budget);
+            drop(supervised_request);
             drop(route);
+            if let Some(permit) = cleanup_permit {
+                host.observe_bytecode_request_cleanup(permit);
+            }
         });
     }
 
@@ -351,8 +400,8 @@ impl RuntimeHost {
         http_response_max_bytes: usize,
         response_sink: &HostHttpGatewayResponseSink,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
-        let message = match result {
+    ) -> Option<CleanupPermit> {
+        match result {
             Ok(response) => {
                 if let Err(response_error) =
                     super::super::http_response_ceiling::validate_unary_response(
@@ -363,7 +412,7 @@ impl RuntimeHost {
                 {
                     let response_event = OrdinaryResponseEvent::try_error(&response_error)
                         .expect("response ceiling failure is ordinary");
-                    let ordinary_owner = self
+                    let permit = self
                         .request_supervisor
                         .complete_error(
                             supervised_request,
@@ -374,36 +423,54 @@ impl RuntimeHost {
                             CompletionTrace::RUNTIME,
                         )
                         .await;
-                    if !ordinary_owner {
+                    if permit
+                        .as_ref()
+                        .is_some_and(CleanupPermit::response_owned)
+                    {
+                        response_sink.send_terminal_response(request_id, response_event);
+                    } else {
                         response_sink.cancel_without_response();
-                        return;
                     }
-                    return response_sink.send_terminal_response(request_id, response_event);
+                    return permit;
                 }
-                if !self
+
+                let permit = self
                     .request_supervisor
                     .complete_success(supervised_request, CompletionTrace::RUNTIME)
-                    .await
+                    .await;
+                if !permit
+                    .as_ref()
+                    .is_some_and(CleanupPermit::response_owned)
                 {
                     response_sink.cancel_without_response();
-                    return;
+                    return permit;
                 }
                 if matches!(response, BoundaryResponse::StreamSent) {
                     response_sink.send_pending_stream_terminal();
-                    return;
+                    return permit;
                 }
-                response_into_transport_message(request_id.to_string(), response)
+                match response_into_transport_message(request_id.to_string(), response) {
+                    Ok(Some(message)) => {
+                        let _ = sender.send(message);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        error!(event = "runtime.response_encode_error", error = %error)
+                    }
+                }
+                permit
             }
             Err(request_error) => {
                 if request_error.is_cancellation_terminal() {
-                    self.request_supervisor
+                    let permit = self
+                        .request_supervisor
                         .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
                         .await;
                     response_sink.cancel_without_response();
-                    return;
+                    return permit;
                 }
                 if let Some(response_event) = response_sink.pending_ordinary_error() {
-                    let ordinary_owner = self
+                    let permit = self
                         .request_supervisor
                         .complete_error(
                             supervised_request,
@@ -414,11 +481,15 @@ impl RuntimeHost {
                             CompletionTrace::RUNTIME,
                         )
                         .await;
-                    if !ordinary_owner {
+                    if permit
+                        .as_ref()
+                        .is_some_and(CleanupPermit::response_owned)
+                    {
+                        response_sink.send_terminal_response(request_id, response_event);
+                    } else {
                         response_sink.cancel_without_response();
-                        return;
                     }
-                    return response_sink.send_terminal_response(request_id, response_event);
+                    return permit;
                 }
                 if let Some(failure) = request_error.fixed_service_response_failure() {
                     error!(
@@ -427,7 +498,7 @@ impl RuntimeHost {
                         trace_id = %failure.error().envelope().trace_id(),
                         error_id = %failure.error().envelope().error_id(),
                     );
-                    let ordinary_owner = self
+                    let permit = self
                         .request_supervisor
                         .complete_fixed_service_failure(
                             supervised_request,
@@ -436,14 +507,18 @@ impl RuntimeHost {
                             CompletionTrace::RUNTIME,
                         )
                         .await;
-                    if !ordinary_owner {
+                    if permit
+                        .as_ref()
+                        .is_some_and(CleanupPermit::response_owned)
+                    {
+                        response_sink.send_terminal_response(
+                            request_id,
+                            OrdinaryResponseEvent::FixedServiceFailure(failure),
+                        );
+                    } else {
                         response_sink.cancel_without_response();
-                        return;
                     }
-                    return response_sink.send_terminal_response(
-                        request_id,
-                        OrdinaryResponseEvent::FixedServiceFailure(failure),
-                    );
+                    return permit;
                 }
                 let response_event = OrdinaryResponseEvent::try_error(&request_error)
                     .expect("cancellation was split before ordinary response mapping");
@@ -456,7 +531,7 @@ impl RuntimeHost {
                     request_id,
                     error = %runtime_error
                 );
-                let ordinary_owner = self
+                let permit = self
                     .request_supervisor
                     .complete_error(
                         supervised_request,
@@ -465,19 +540,16 @@ impl RuntimeHost {
                         CompletionTrace::RUNTIME,
                     )
                     .await;
-                if !ordinary_owner {
+                if permit
+                    .as_ref()
+                    .is_some_and(CleanupPermit::response_owned)
+                {
+                    response_sink.send_terminal_response(request_id, response_event);
+                } else {
                     response_sink.cancel_without_response();
-                    return;
                 }
-                return response_sink.send_terminal_response(request_id, response_event);
+                permit
             }
-        };
-        match message {
-            Ok(Some(message)) => {
-                let _ = sender.send(message);
-            }
-            Ok(None) => {}
-            Err(error) => error!(event = "runtime.response_encode_error", error = %error),
         }
     }
 
@@ -504,19 +576,19 @@ impl RuntimeHost {
         request_id: String,
         request_error: RequestError,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
+    ) -> Option<CleanupPermit> {
         if request_error.is_cancellation_terminal() {
-            self.request_supervisor
+            return self
+                .request_supervisor
                 .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
                 .await;
-            return;
         }
         let response_event = OrdinaryResponseEvent::try_error(&request_error)
             .expect("cancellation was split before ordinary response mapping");
         let response_error = request_error
             .ordinary_response_error()
             .expect("cancellation was split before ordinary response mapping");
-        let ordinary_owner = self
+        let permit = self
             .request_supervisor
             .complete_error(
                 supervised_request,
@@ -525,12 +597,17 @@ impl RuntimeHost {
                 CompletionTrace::RUNTIME,
             )
             .await;
-        if !ordinary_owner {
-            return;
+        if permit
+            .as_ref()
+            .is_some_and(CleanupPermit::response_owned)
+        {
+            if let Ok(message) =
+                response_event_into_transport_message(request_id, response_event)
+            {
+                let _ = sender.send(message);
+            }
         }
-        if let Ok(message) = response_event_into_transport_message(request_id, response_event) {
-            let _ = sender.send(message);
-        }
+        permit
     }
 
     async fn finish_direct_task_error(
@@ -539,12 +616,12 @@ impl RuntimeHost {
         request_id: String,
         request_error: RequestError,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
-    ) {
+    ) -> Option<CleanupPermit> {
         if request_error.is_cancellation_terminal() {
-            self.request_supervisor
+            return self
+                .request_supervisor
                 .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
                 .await;
-            return;
         }
         if let Some(failure) = request_error.fixed_service_response_failure() {
             error!(
@@ -553,7 +630,7 @@ impl RuntimeHost {
                 trace_id = %failure.error().envelope().trace_id(),
                 error_id = %failure.error().envelope().error_id(),
             );
-            if !self
+            let permit = self
                 .request_supervisor
                 .complete_fixed_service_failure(
                     supervised_request,
@@ -561,17 +638,19 @@ impl RuntimeHost {
                     failure.error(),
                     CompletionTrace::RUNTIME,
                 )
-                .await
+                .await;
+            if permit
+                .as_ref()
+                .is_some_and(CleanupPermit::response_owned)
             {
-                return;
+                if let Ok(message) = response_event_into_transport_message(
+                    request_id,
+                    OrdinaryResponseEvent::FixedServiceFailure(failure),
+                ) {
+                    let _ = sender.send(message);
+                }
             }
-            if let Ok(message) = response_event_into_transport_message(
-                request_id,
-                OrdinaryResponseEvent::FixedServiceFailure(failure),
-            ) {
-                let _ = sender.send(message);
-            }
-            return;
+            return permit;
         }
         let response_event = OrdinaryResponseEvent::try_error(&request_error)
             .expect("cancellation was split before ordinary response mapping");
@@ -584,7 +663,7 @@ impl RuntimeHost {
             request_id,
             error = %runtime_error
         );
-        if !self
+        let permit = self
             .request_supervisor
             .complete_error(
                 supervised_request,
@@ -592,25 +671,30 @@ impl RuntimeHost {
                 &response_error,
                 CompletionTrace::RUNTIME,
             )
-            .await
+            .await;
+        if permit
+            .as_ref()
+            .is_some_and(CleanupPermit::response_owned)
         {
-            return;
+            if let Ok(message) =
+                response_event_into_transport_message(request_id, response_event)
+            {
+                let _ = sender.send(message);
+            }
         }
-        if let Ok(message) = response_event_into_transport_message(request_id, response_event) {
-            let _ = sender.send(message);
-        }
+        permit
     }
 
     async fn finish_websocket_connection_closed_error(
         &self,
         supervised_request: &SupervisedRequest,
         request_error: RequestError,
-    ) {
+    ) -> Option<CleanupPermit> {
         if request_error.is_cancellation_terminal() {
-            self.request_supervisor
+            return self
+                .request_supervisor
                 .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
                 .await;
-            return;
         }
         let response_error = request_error
             .ordinary_response_error()
@@ -622,7 +706,13 @@ impl RuntimeHost {
                 &response_error,
                 CompletionTrace::RUNTIME,
             )
-            .await;
+            .await
+    }
+}
+
+impl RuntimeHost {
+    pub(super) fn observe_bytecode_request_cleanup(&self, permit: CleanupPermit) {
+        permit.observe_cleanup();
     }
 }
 

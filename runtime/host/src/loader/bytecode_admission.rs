@@ -1,21 +1,28 @@
 use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
+    path::Path,
+    sync::{Arc, Mutex},
 };
 
 use skiff_artifact_model::{
     ContractOperationId, GatewayAdapterKind, GatewayAdapterSource, GatewayEntryIdentity,
     GatewayEntryKey, IngressSelector, ServiceDeploymentRef,
 };
-use skiff_runtime_bytecode_verifier::{verify, VerificationLimits, VerifiedLinkedBytecodeImage};
+use skiff_runtime_bytecode_verifier::{
+    verify, VerificationLimits, VerifiedCodeEntryKind, VerifiedLinkedBytecodeImage,
+};
 use skiff_runtime_deployment_image::{
-    DeploymentImage, DeploymentImageCache, DeploymentImageError, DeploymentOwnerIdentity,
+    DeploymentImage, DeploymentImageCache, DeploymentImageError, DeploymentLoadError,
+    DeploymentLoadFailureReason, DeploymentOwnerIdentity,
 };
 use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
 use skiff_runtime_linker::{link_deployment, BytecodeLinkError, LinkLimits};
 use skiff_runtime_loader::{
     load_deployment_bytecode_from_store, DeploymentBytecodeContentResolver,
     FilesystemDeploymentBytecodeContentResolver,
+};
+use skiff_runtime_model::bytecode_execution_observation::{
+    BytecodeExecutionEvent, BytecodeExecutionObserver, BytecodeGatewayCallableRole,
+    BytecodeRouteEntrySelector, DeploymentImageSelected, RouteEntryPinned,
 };
 use skiff_runtime_request::{
     BytecodeRequestTarget, BytecodeRequestTargetError, GatewayAdapterArg as RequestGatewayAdapterArg,
@@ -35,6 +42,8 @@ pub(crate) enum BytecodeDeploymentLoadError {
     Verification(#[from] skiff_runtime_bytecode_verifier::VerificationError),
     #[error("deployment image construction failed: {0}")]
     Image(#[from] DeploymentImageError),
+    #[error("deployment implementation package has no bytecode record")]
+    LegacyAssembly,
 }
 
 /// Selects the exact verified code entry used for one admitted request.
@@ -78,15 +87,30 @@ impl BytecodeDeploymentRegistry {
         deployment: &ServiceDeploymentRef,
         artifact_root: &Path,
         selector: BytecodeRouteSelector,
+        observer: &BytecodeExecutionObserver,
     ) -> anyhow::Result<Option<BytecodeRoute>> {
         let Some(image) = self.get_or_load(deployment, artifact_root).await? else {
             return Ok(None);
         };
+        if image.owner().deployment() != deployment {
+            anyhow::bail!(
+                "bytecode route deployment {} does not match loaded image owner {}",
+                deployment.deployment_artifact_identity,
+                image.owner().build_id()
+            );
+        }
+        let selected = BytecodeExecutionEvent::DeploymentImageSelected(
+            DeploymentImageSelected {
+                deployment: image.owner().deployment().clone(),
+                deployment_build_id: image.owner().build_id().clone(),
+            },
+        );
         Ok(Some(BytecodeRoute::new(
             image,
             deployment,
-            artifact_root,
             selector,
+            observer.clone(),
+            selected,
         )?))
     }
 
@@ -95,17 +119,10 @@ impl BytecodeDeploymentRegistry {
         deployment: &ServiceDeploymentRef,
         artifact_root: &Path,
     ) -> anyhow::Result<Option<Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>>> {
-        let resolver = FilesystemDeploymentBytecodeContentResolver::open(artifact_root)?;
-        let deployment_record = resolver.resolve_deployment(deployment)?;
-        let implementation = resolver.resolve_package(&deployment_record.implementation)?;
-        if implementation.bytecode.is_none() {
-            return Ok(None);
-        }
-
         let owner = DeploymentOwnerIdentity::new(deployment.clone());
         let reference = deployment.clone();
         let artifact_root = artifact_root.to_path_buf();
-        let image = self
+        let result = self
             .cache
             .get_or_load(owner, move |_attempt_id, _owner| {
                 let reference = reference.clone();
@@ -115,6 +132,19 @@ impl BytecodeDeploymentRegistry {
                         &artifact_root,
                     )
                     .map_err(|error| BytecodeDeploymentLoadError::Resolver(error.to_string()))?;
+                    let deployment_record = resolver
+                        .resolve_deployment(&reference)
+                        .map_err(|error| {
+                            BytecodeDeploymentLoadError::Resolver(error.to_string())
+                        })?;
+                    let implementation = resolver
+                        .resolve_package(&deployment_record.implementation)
+                        .map_err(|error| {
+                            BytecodeDeploymentLoadError::Resolver(error.to_string())
+                        })?;
+                    if implementation.bytecode.is_none() {
+                        return Err(BytecodeDeploymentLoadError::LegacyAssembly);
+                    }
                     let hydrated =
                         load_deployment_bytecode_from_store(resolver.store(), &reference)
                             .map_err(BytecodeDeploymentLoadError::Hydration)?;
@@ -131,9 +161,12 @@ impl BytecodeDeploymentRegistry {
                     Ok(image)
                 }
             })
-            .await
-            .map_err(|error| anyhow::anyhow!("bytecode deployment load failed: {error}"))?;
-        Ok(Some(image))
+            .await;
+        match result {
+            Ok(image) => Ok(Some(image)),
+            Err(error) if is_legacy_assembly(&error) => Ok(None),
+            Err(error) => Err(anyhow::anyhow!("bytecode deployment load failed: {error}")),
+        }
     }
 }
 
@@ -143,24 +176,42 @@ impl Default for BytecodeDeploymentRegistry {
     }
 }
 
+fn is_legacy_assembly(error: &DeploymentLoadError<BytecodeDeploymentLoadError>) -> bool {
+    matches!(
+        error,
+        DeploymentLoadError::Attempt(failure)
+            if matches!(
+                failure.reason(),
+                DeploymentLoadFailureReason::Provider { error }
+                    if matches!(error.as_ref(), BytecodeDeploymentLoadError::LegacyAssembly)
+            )
+    )
+}
+
 /// Exact deployment image pinned to an operation or gateway entry.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct BytecodeRoute {
     image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-    deployment: ServiceDeploymentRef,
     target: BytecodeRouteTarget,
-    artifact_root: PathBuf,
-    build_id: String,
-    service_protocol_identity: String,
+    observer: BytecodeExecutionObserver,
+    admission_observations: Mutex<AdmissionObservations>,
+}
+
+#[derive(Debug)]
+struct AdmissionObservations {
+    deployment: Option<BytecodeExecutionEvent>,
+    entry: Option<BytecodeExecutionEvent>,
 }
 
 #[derive(Debug, Clone)]
 enum BytecodeRouteTarget {
     Operation(ContractOperationId),
     Gateway {
+        ingress: IngressSelector,
         gateway_entry_key: GatewayEntryKey,
         gateway_entry_identity: GatewayEntryIdentity,
         role: LinkedGatewayCallableRole,
+        adapter_plan: skiff_artifact_model::GatewayAdapterPlan,
     },
 }
 
@@ -168,8 +219,9 @@ impl BytecodeRoute {
     fn new(
         image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
         deployment: &ServiceDeploymentRef,
-        artifact_root: &Path,
         selector: BytecodeRouteSelector,
+        observer: BytecodeExecutionObserver,
+        selected: BytecodeExecutionEvent,
     ) -> anyhow::Result<Self> {
         if image.owner().deployment() != deployment {
             anyhow::bail!(
@@ -178,28 +230,31 @@ impl BytecodeRoute {
                 image.owner().build_id()
             );
         }
-        let resolver = FilesystemDeploymentBytecodeContentResolver::open(artifact_root)?;
-        let deployment_record = resolver.resolve_deployment(deployment)?;
+        let program = image.program();
         let target = match selector {
-            BytecodeRouteSelector::Operation => BytecodeRouteTarget::Operation(
-                deployment_record
-                    .operation_bindings
-                    .first()
-                    .map(|binding| binding.contract_operation_id.clone())
+            BytecodeRouteSelector::Operation => {
+                let operation_id = program
+                    .operation_entry_ids()
+                    .next()
+                    .cloned()
                     .ok_or_else(|| {
                         anyhow::anyhow!(
                             "bytecode deployment {} has no operation binding",
                             deployment.deployment_artifact_identity
                         )
-                    })?,
-            ),
+                    })?;
+                program.operation_entry(&operation_id).map_err(|error| {
+                    anyhow::anyhow!("bytecode operation lookup failed: {error}")
+                })?;
+                BytecodeRouteTarget::Operation(operation_id)
+            }
             BytecodeRouteSelector::Gateway {
                 ingress,
                 gateway_entry_identity,
                 role,
             } => {
-                let mut matching_bindings = deployment_record
-                    .ingress
+                let mut matching_bindings = program
+                    .ingress_bindings()
                     .iter()
                     .filter(|binding| binding.selector == ingress);
                 let binding = matching_bindings.next().ok_or_else(|| {
@@ -217,17 +272,21 @@ impl BytecodeRoute {
                     );
                 }
                 let gateway_entry_key = binding.gateway_entry_key.clone();
-                let entry = deployment_record
-                    .gateway_entries
-                    .get(&gateway_entry_key)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "bytecode deployment {} ingress references missing gateway entry {}",
-                            deployment.deployment_artifact_identity,
-                            gateway_entry_key
-                        )
-                    })?;
-                if entry.gateway_entry_identity != gateway_entry_identity {
+                let entry = program
+                    .gateway_entry(&gateway_entry_key, role)
+                    .map_err(|error| anyhow::anyhow!("bytecode gateway lookup failed: {error}"))?;
+                let VerifiedCodeEntryKind::Gateway {
+                    gateway_entry_identity: admitted_identity,
+                    ..
+                } = entry.kind()
+                else {
+                    anyhow::bail!(
+                        "bytecode deployment {} ingress references a non-gateway entry {}",
+                        deployment.deployment_artifact_identity,
+                        gateway_entry_key
+                    );
+                };
+                if admitted_identity != &gateway_entry_identity {
                     anyhow::bail!(
                         "bytecode deployment {} ingress entry {} does not match routed gateway identity {}",
                         deployment.deployment_artifact_identity,
@@ -235,30 +294,42 @@ impl BytecodeRoute {
                         gateway_entry_identity
                     );
                 }
+                let adapter_plan = program
+                    .gateway_adapter_plan(&gateway_entry_key)
+                    .cloned()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "bytecode deployment {} gateway entry {} has no verified adapter plan",
+                            deployment.deployment_artifact_identity,
+                            gateway_entry_key
+                        )
+                    })?;
                 BytecodeRouteTarget::Gateway {
+                    ingress,
                     gateway_entry_key,
-                    gateway_entry_identity,
+                    gateway_entry_identity: admitted_identity.clone(),
                     role,
+                    adapter_plan,
                 }
             }
         };
-        let contract = resolver.resolve_contract(&deployment_record.contract)?;
         Ok(Self {
             image,
-            deployment: deployment.clone(),
             target,
-            artifact_root: artifact_root.to_path_buf(),
-            build_id: deployment_record
-                .implementation
-                .package_build_id
-                .as_str()
-                .to_string(),
-            service_protocol_identity: contract.service_protocol_identity.as_str().to_string(),
+            observer,
+            admission_observations: Mutex::new(AdmissionObservations {
+                deployment: Some(selected),
+                entry: None,
+            }),
         })
     }
 
     pub(crate) fn deployment(&self) -> &ServiceDeploymentRef {
-        &self.deployment
+        self.image.owner().deployment()
+    }
+
+    pub(crate) fn owner(&self) -> &DeploymentOwnerIdentity {
+        self.image.owner()
     }
 
     pub(crate) fn target_label(&self) -> String {
@@ -272,46 +343,30 @@ impl BytecodeRoute {
     }
 
     pub(crate) fn build_id(&self) -> &str {
-        &self.build_id
+        self.image.owner().build_id().as_str()
     }
 
     pub(crate) fn service_protocol_identity(&self) -> &str {
-        &self.service_protocol_identity
+        self.image.program().service_protocol_identity().as_str()
     }
 
     pub(crate) fn http_adapter(&self) -> anyhow::Result<HttpAdapter> {
-        let resolver = FilesystemDeploymentBytecodeContentResolver::open(&self.artifact_root)?;
-        let deployment_record = resolver.resolve_deployment(&self.deployment)?;
-        let (key, entry) = match &self.target {
+        let (key, adapter_plan) = match &self.target {
             BytecodeRouteTarget::Gateway {
                 gateway_entry_key,
+                adapter_plan,
                 ..
-            } => deployment_record
-                .gateway_entries
-                .get(gateway_entry_key)
-                .map(|entry| (gateway_entry_key.clone(), entry))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "bytecode deployment {} has no gateway entry {}",
-                        self.deployment.deployment_artifact_identity,
-                        gateway_entry_key
-                    )
-                })?,
+            } => (gateway_entry_key, adapter_plan),
             BytecodeRouteTarget::Operation(_) => {
                 anyhow::bail!("HTTP adapter requires a gateway route")
             }
         };
-        let kind = match entry.adapter_plan.kind {
+        let kind = match adapter_plan.kind {
             GatewayAdapterKind::RawHttp => HttpAdapterKind::RawHttp,
             GatewayAdapterKind::TypedJson => HttpAdapterKind::TypedJson,
-            _ => {
-                anyhow::bail!(
-                    "gateway entry {key} has no HTTP adapter plan"
-                )
-            }
+            _ => anyhow::bail!("gateway entry {key} has no HTTP adapter plan"),
         };
-        let adapter_args = entry
-            .adapter_plan
+        let adapter_args = adapter_plan
             .args
             .iter()
             .map(|arg| {
@@ -335,7 +390,7 @@ impl BytecodeRoute {
         Ok(HttpAdapter {
             kind,
             handler: HttpAdapterCallable::PackageFunction {
-                package_id: self.deployment.service_id.clone(),
+                package_id: self.deployment().service_id.clone(),
                 symbol_path: key.as_str().to_string(),
             },
             guard: None,
@@ -347,7 +402,7 @@ impl BytecodeRoute {
     pub(crate) fn request_target(&self) -> anyhow::Result<BytecodeRequestTarget> {
         let program = Arc::clone(self.image.program());
         let image = Arc::clone(&self.image);
-        match &self.target {
+        let target = match &self.target {
             BytecodeRouteTarget::Operation(operation_id) => {
                 let entry = program
                     .operation_entry(operation_id)
@@ -371,7 +426,72 @@ impl BytecodeRoute {
                 )
                 .map_err(bytecode_target_error)
             }
+        }?;
+        let (selector, gateway_key, gateway_identity, callable_role) = match &self.target {
+            BytecodeRouteTarget::Operation(operation_id) => (
+                BytecodeRouteEntrySelector::Operation(operation_id.clone()),
+                None,
+                None,
+                None,
+            ),
+            BytecodeRouteTarget::Gateway {
+                ingress,
+                gateway_entry_key,
+                gateway_entry_identity,
+                role,
+                ..
+            } => (
+                BytecodeRouteEntrySelector::Gateway(ingress.clone()),
+                Some(gateway_entry_key.clone()),
+                Some(gateway_entry_identity.clone()),
+                Some(observation_callable_role(*role)),
+            ),
+        };
+        let entry = BytecodeExecutionEvent::RouteEntryPinned(RouteEntryPinned {
+                image_owner: self.image.owner().deployment().clone(),
+                selector,
+                gateway_key,
+                gateway_identity,
+                callable_role,
+                verified_function_index: target.entry().function().get(),
+            });
+        self.admission_observations
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .entry = Some(entry);
+        Ok(target)
+    }
+
+    /// Publishes owner-minted admission facts only after the supervisor row is
+    /// active. A route dropped on any pre-admission failure publishes nothing.
+    pub(crate) fn publish_admission_observations(&self) {
+        let observations = {
+            let mut staged = self
+                .admission_observations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let deployment = staged
+                .deployment
+                .take()
+                .expect("admitted route retains its deployment observation");
+            let entry = staged
+                .entry
+                .take()
+                .expect("admitted route retains its entry observation");
+            [deployment, entry]
+        };
+        for observation in observations {
+            self.observer.observe(observation);
         }
+    }
+}
+
+fn observation_callable_role(role: LinkedGatewayCallableRole) -> BytecodeGatewayCallableRole {
+    match role {
+        LinkedGatewayCallableRole::Handler => BytecodeGatewayCallableRole::Handler,
+        LinkedGatewayCallableRole::Pre => BytecodeGatewayCallableRole::Pre,
+        LinkedGatewayCallableRole::Guard => BytecodeGatewayCallableRole::Guard,
+        LinkedGatewayCallableRole::CloseHandler => BytecodeGatewayCallableRole::CloseHandler,
     }
 }
 

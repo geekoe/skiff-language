@@ -281,6 +281,22 @@ D0-O 后合流并解锁真实 event assertions。
 
 freeze 后任何 production/test/fixture/Gate/event/schema 修改都开始新 candidate/evidence epoch。
 
+freeze receipt 必须把 canonical invocation 写成完整的三项 caller-supplied input；Gate 和 verify plan 都不得从
+`HEAD` 选择 candidate，也不得创建或选择临时 evidence directory。下面的 commit/tree 是示例 freeze receipt 中
+已经记录的字面值；真实验收必须逐字替换为该次 freeze receipt 的两个字面 identity。示例 output 是 caller 选择的
+canonical absolute path，调用前必须不存在，且位于 candidate repository 之外：
+
+```bash
+SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_COMMIT=0123456789abcdef0123456789abcdef01234567 \
+SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_TREE=89abcdef0123456789abcdef0123456789abcdef \
+SKIFF_BYTECODE_VM_PHASE0_EVIDENCE_DIR=/Users/geek/workspace/skiff-phase-0-evidence-0123456789abcdef \
+node scripts/verify.mjs --only bytecode-vm-phase-0-gate
+```
+
+三项缺任一项都必须在 Gate 执行零条 candidate/workload command 时失败；不得用 shell Git 查询、临时目录生成器
+或默认路径补值。Gate 内部的 `HEAD` probes 只验证 caller 提供的 freeze identity 在 preflight、postflight、closure
+和 fresh 四个时点保持一致，不产生 candidate identity。
+
 全新 Acceptance Agent 只接收本文、frozen candidate、canonical Gate command 和 durable evidence location。它：
 
 1. 在 detached clean worktree运行完整 Gate；
