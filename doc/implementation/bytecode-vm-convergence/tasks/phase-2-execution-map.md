@@ -1,6 +1,6 @@
 # MAP2：Phase 2 rolling execution map
 
-> Status: active; revision 7; VCP green on the production seam, merged preflight and independent review next
+> Status: active; revision 8; merged preflight PASS and candidate frozen at `d0b0b694`, fresh Acceptance dispatched
 >
 > Phase Contract: [`phase-2-value-lifecycle.md`](../phases/phase-2-value-lifecycle.md)
 >
@@ -105,6 +105,27 @@ Integrator 只做机械 cherry-pick、receipt/MAP 更新、Gate/freeze/Acceptanc
   301 过 0 红。kernel/compiler/proof 三 lane 全部合入 integration（tip `43fee5ff`）。
 - 下一顺序：fresh 独立 review（Phase 2 diff 对照 contract + Amendment 1/2 + Phase 1 不变式）→ merged Gate preflight
   → freeze → 全新 Acceptance → result 合 main。Phase 2 未 acceptance 前 Phase 3 不解禁。
+
+## 4h. Revision 8 — freeze receipt
+
+- fresh 独立 reviewer REV2 判 PASS（9/9，无 blocker；3 条 advisory：死代码 map-put/representation-wrap handler、
+  COW 中途 OOM 孤儿克隆链论证、VCP doc 注释陈旧——全部记入后续义务）。
+- merged Gate preflight 首轮抓到 Phase 1 回归：vertical fail-fast spy 因 executor 对标量调 `snapshot_share` 而红；
+  K2 `3bc458f1` 给 `Trivial` 计划加 sidecar-free 快路径修复，vertical 4/4、VCP 2/2（断言未弱化）、三包 301 全绿。
+- merged preflight 复跑 PASS：33/33 commands、185/185 tests、candidate exact+clean、`failures=[]`、`checkerError=null`；
+  evidence `/Users/geek/workspace/skiff-bcvm-p2-preflight-evidence-r2`，manifest SHA-256
+  `19226c11a1e3c02a160e3cfc0baeb2e01b11f52d1b1fed5f89ddccff5283d204`。
+
+冻结候选：
+
+| Freeze field | Value |
+| --- | --- |
+| candidate commit | `d0b0b69478b686220f1437b77808dd2238fdc077` |
+| candidate tree | `5d5698e9ae1db7f9792e5993bd8275c99ace4677` |
+| branch / worktree | `codex/bcvm-p2-integration` / `/Users/geek/workspace/skiff-bcvm-p2-integration`（clean） |
+
+全新 Acceptance Agent 在 detached worktree 跑完整 Phase 2 Gate 并按契约 §7 checklist 出 verdict。它不修改候选；
+FAIL 退回对应 owner，PASS 后写 `results/phase-2.md` 并合入 `main`。
 
 ## 4. Task contracts
 
