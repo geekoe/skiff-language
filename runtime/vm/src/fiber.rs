@@ -1326,6 +1326,8 @@ impl VmFiber {
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
         let absolute_index = Self::slot_index(&frame, slot_count, slot, frame.function())?;
+        let payload = self.read_slot(&frame, slot_count, slot)?;
+        let payload_plan = self.slot_plan(frame.function(), slot)?;
         let caught = self
             .caught_exceptions
             .remove(&absolute_index)
@@ -1333,8 +1335,6 @@ impl VmFiber {
                 function,
                 instruction,
             })?;
-        let payload = self.read_slot(&frame, slot_count, slot)?;
-        let payload_plan = self.slot_plan(frame.function(), slot)?;
         // The catch slot holds a shared snapshot of the envelope payload; the
         // envelope itself keeps the single payload authority. Rethrow releases
         // the handler's share and reuses the exact same envelope.
