@@ -88,7 +88,7 @@ impl DeploymentLinker<'_> {
         let mut constant_origins = BTreeMap::new();
         let mut node_origins = BTreeMap::new();
 
-        for package in self.deployment.packages().values() {
+        for package in self.deployment.packages().values().filter(|package| package.has_bytecode()) {
             self.link_literal_nodes(package, &mut nodes, &mut node_origins)?;
             self.link_package_constants(
                 package,
@@ -114,7 +114,7 @@ impl DeploymentLinker<'_> {
         linked: &mut Vec<LinkedFrozenConstantNode>,
         origins: &mut BTreeMap<NodeOriginKey, FrozenConstantNodeIndex>,
     ) -> Result<(), BytecodeLinkError> {
-        let source = &package.bytecode().view().frozen_constant_graph().nodes;
+        let source = &package.bytecode().ok_or_else(|| unavailable(self.package_location(package)))?.view().frozen_constant_graph().nodes;
         for (position, node) in source.iter().enumerate() {
             let location = constant_location(package, position, source.len())?;
             let FrozenConstantNode::Literal { literal } = node else {
@@ -152,7 +152,7 @@ impl DeploymentLinker<'_> {
         linked: &mut Vec<LinkedConstantEntry>,
         origins: &mut BTreeMap<ConstantOriginKey, ConstantIndex>,
     ) -> Result<(), BytecodeLinkError> {
-        let view = package.bytecode().view();
+        let view = package.bytecode().ok_or_else(|| unavailable(self.package_location(package)))?.view();
         for (position, entry) in view.pools().constants.iter().enumerate() {
             let package_location = self.package_location(package);
             let artifact_index = artifact_constant_index(
@@ -220,7 +220,7 @@ impl DeploymentLinker<'_> {
         origins: &BTreeMap<ConstantOriginKey, ConstantIndex>,
         linked: &mut Vec<LinkedConstantRoot>,
     ) -> Result<(), BytecodeLinkError> {
-        for (symbol, artifact_index) in package.bytecode().view().constant_roots() {
+        for (symbol, artifact_index) in package.bytecode().ok_or_else(|| unavailable(self.package_location(package)))?.view().constant_roots() {
             let location = self.package_location(package);
             let constant = origins
                 .get(&(

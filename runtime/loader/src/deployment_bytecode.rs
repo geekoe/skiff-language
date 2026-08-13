@@ -291,9 +291,9 @@ impl std::error::Error for DeploymentBytecodeHydrationError {}
 pub struct HydratedBytecodePackage {
     reference: PackageArtifactRef,
     artifact: Arc<PackageArtifact>,
-    bytecode: Arc<ValidatedBytecodeArtifact>,
+    bytecode: Option<Arc<ValidatedBytecodeArtifact>>,
     platform_error_projection_registry: PlatformErrorProjectionRegistryRef,
-    manifests: HydratedPackageManifests,
+    manifests: Option<HydratedPackageManifests>,
 }
 
 impl HydratedBytecodePackage {
@@ -332,9 +332,43 @@ impl HydratedBytecodePackage {
         Ok(Self {
             reference,
             artifact,
-            bytecode,
+            bytecode: Some(bytecode),
             platform_error_projection_registry,
-            manifests,
+            manifests: Some(manifests),
+        })
+    }
+
+    pub(crate) fn checked_type_only(
+        reference: PackageArtifactRef,
+        artifact: Arc<PackageArtifact>,
+    ) -> Result<Self, DeploymentBytecodeHydrationError> {
+        let actual_reference = exact_package_reference(&artifact);
+        if reference != actual_reference {
+            return Err(DeploymentBytecodeHydrationError::ReferenceMismatch {
+                expected: Box::new(DeploymentBytecodeReference::Package(reference)),
+                actual: Box::new(DeploymentBytecodeReference::Package(actual_reference)),
+            });
+        }
+        if reference.package_id != "skiff.run/std" {
+            return Err(DeploymentBytecodeHydrationError::MissingBytecode {
+                package: Box::new(reference.clone()),
+            });
+        }
+        if artifact.bytecode.is_some() {
+            return Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+                package: Box::new(reference.clone()),
+                kind: DeploymentBytecodeManifestKind::Header,
+                detail: "type-only std package unexpectedly declares bytecode".to_string(),
+            });
+        }
+        let platform_error_projection_registry =
+            join_type_only_package_platform_error_projection_registry(&reference, &artifact)?;
+        Ok(Self {
+            reference,
+            artifact,
+            bytecode: None,
+            platform_error_projection_registry,
+            manifests: None,
         })
     }
 
@@ -346,8 +380,16 @@ impl HydratedBytecodePackage {
         &self.artifact
     }
 
-    pub fn bytecode(&self) -> &Arc<ValidatedBytecodeArtifact> {
-        &self.bytecode
+    pub fn bytecode(&self) -> Option<&Arc<ValidatedBytecodeArtifact>> {
+        self.bytecode.as_ref()
+    }
+
+    pub fn has_bytecode(&self) -> bool {
+        self.bytecode.is_some()
+    }
+
+    pub fn is_type_only(&self) -> bool {
+        self.bytecode.is_none()
     }
 
     pub fn platform_error_projection_registry(&self) -> &PlatformErrorProjectionRegistryRef {
@@ -360,13 +402,17 @@ impl HydratedBytecodePackage {
         &self,
         executable: &PackageExecutableCoordinate,
     ) -> Option<&str> {
-        self.manifests.function_key_for_executable(executable)
+        self.manifests
+            .as_ref()
+            .and_then(|manifests| manifests.function_key_for_executable(executable))
     }
 
     /// Returns the admitted artifact function key selected by one exact
     /// package callable manifest row.
     pub fn function_key_for_callable(&self, callable: &PackageCallableId) -> Option<&str> {
-        self.manifests.function_key_for_callable(callable)
+        self.manifests
+            .as_ref()
+            .and_then(|manifests| manifests.function_key_for_callable(callable))
     }
 
     /// Returns the unique package implementation callable that canonically
@@ -376,6 +422,7 @@ impl HydratedBytecodePackage {
         executable: &PackageExecutableCoordinate,
     ) -> Option<&PackageCallableId> {
         self.manifests
+            .as_ref()?
             .canonical_implementation_callable_for_executable(executable)
     }
 
@@ -386,6 +433,7 @@ impl HydratedBytecodePackage {
         function_key: &str,
     ) -> Option<&PackageCallableId> {
         self.manifests
+            .as_ref()?
             .canonical_implementation_callable_for_function_key(function_key)
     }
 
@@ -396,6 +444,7 @@ impl HydratedBytecodePackage {
         callable: &PackageCallableId,
     ) -> Option<&str> {
         self.manifests
+            .as_ref()?
             .function_key_for_canonical_implementation_callable(callable)
     }
 
@@ -407,6 +456,7 @@ impl HydratedBytecodePackage {
         site_ordinal: u32,
     ) -> Option<&str> {
         self.manifests
+            .as_ref()?
             .function_key_for_synthetic_callback(owner, site_ordinal)
     }
 
@@ -418,6 +468,7 @@ impl HydratedBytecodePackage {
         site_ordinal: u32,
     ) -> Option<&PackageCallableId> {
         self.manifests
+            .as_ref()?
             .synthetic_callback_callable(owner, site_ordinal)
     }
 
@@ -428,6 +479,7 @@ impl HydratedBytecodePackage {
         callable: &PackageCallableId,
     ) -> Option<&str> {
         self.manifests
+            .as_ref()?
             .function_key_for_synthetic_callback_callable(callable)
     }
 
@@ -438,6 +490,7 @@ impl HydratedBytecodePackage {
         function_key: &str,
     ) -> Option<&PackageCallableId> {
         self.manifests
+            .as_ref()?
             .canonical_effect_callable_for_function_key(function_key)
     }
 }
@@ -673,25 +726,30 @@ where
             let artifact = self.resolve_package(&package_reference)?;
             validate_package_service_slot_uniqueness(&package_reference, &artifact)?;
             let requirements = artifact.package_requirements.clone();
-            let bytecode_reference = artifact.bytecode.clone().ok_or_else(|| {
-                DeploymentBytecodeHydrationError::MissingBytecode {
-                    package: Box::new(package_reference.clone()),
-                }
-            })?;
-            let bytecode = self
-                .resolver
-                .resolve_package_bytecode(&package_reference, &bytecode_reference)
-                .map_err(
-                    |error| DeploymentBytecodeHydrationError::ContentResolution {
-                        reference: Box::new(DeploymentBytecodeReference::PackageBytecode {
-                            package: package_reference.clone(),
-                            bytecode: bytecode_reference,
-                        }),
-                        message: error.to_string(),
-                    },
-                )?;
-            let hydrated =
-                HydratedBytecodePackage::checked(package_reference.clone(), artifact, bytecode)?;
+            let hydrated = if artifact.bytecode.is_none() {
+                HydratedBytecodePackage::checked_type_only(
+                    package_reference.clone(),
+                    artifact,
+                )?
+            } else {
+                let bytecode_reference = artifact
+                    .bytecode
+                    .clone()
+                    .expect("artifact bytecode presence checked above");
+                let bytecode = self
+                    .resolver
+                    .resolve_package_bytecode(&package_reference, &bytecode_reference)
+                    .map_err(
+                        |error| DeploymentBytecodeHydrationError::ContentResolution {
+                            reference: Box::new(DeploymentBytecodeReference::PackageBytecode {
+                                package: package_reference.clone(),
+                                bytecode: bytecode_reference,
+                            }),
+                            message: error.to_string(),
+                        },
+                    )?;
+                HydratedBytecodePackage::checked(package_reference.clone(), artifact, bytecode)?
+            };
 
             for requirement in requirements {
                 let key = PackageRequirementKey {
@@ -952,6 +1010,24 @@ fn join_package_platform_error_projection_registry(
                 runtime: Box::new(runtime.clone()),
             },
         );
+    }
+    Ok(package_artifact.clone())
+}
+
+fn join_type_only_package_platform_error_projection_registry(
+    reference: &PackageArtifactRef,
+    artifact: &PackageArtifact,
+) -> Result<PlatformErrorProjectionRegistryRef, DeploymentBytecodeHydrationError> {
+    let package_artifact = &artifact.platform_error_projection_registry;
+    let runtime = current_platform_error_projection_registry_ref();
+    if package_artifact != runtime {
+        return Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            package: Box::new(reference.clone()),
+            kind: DeploymentBytecodeManifestKind::Header,
+            detail: format!(
+                "type-only std package declares platform error projection registry {package_artifact:?}, expected runtime {runtime:?}"
+            ),
+        });
     }
     Ok(package_artifact.clone())
 }

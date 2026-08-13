@@ -17,13 +17,17 @@ pub(super) fn prove_owner_and_packages(
     candidate: &LinkedBytecodeCandidate,
 ) -> Result<(), VerificationError> {
     prove_owner(hydrated)?;
-    if candidate.packages().len() != hydrated.packages().len() {
+    let bytecode_packages = hydrated
+        .packages()
+        .iter()
+        .filter(|(_, package)| package.has_bytecode());
+    if candidate.packages().len() != bytecode_packages.clone().count() {
         return Err(semantic_violation(
             VerificationLocation::Image,
             format!(
-                "candidate package set has {} rows; exact hydration has {}",
+                "candidate package set has {} rows; exact bytecode hydration has {}",
                 candidate.packages().len(),
-                hydrated.packages().len()
+                bytecode_packages.clone().count()
             ),
         ));
     }
@@ -31,7 +35,7 @@ pub(super) fn prove_owner_and_packages(
     for (row_number, (candidate_package, (map_key, hydrated_package))) in candidate
         .packages()
         .iter()
-        .zip(hydrated.packages())
+        .zip(bytecode_packages)
         .enumerate()
     {
         let location = table_location(
@@ -89,7 +93,12 @@ fn prove_package_header(
     deployment_registry_receipt: &PlatformErrorProjectionRegistryRef,
     location: VerificationLocation,
 ) -> Result<(), VerificationError> {
-    let admitted = package.bytecode();
+    let Some(admitted) = package.bytecode() else {
+        return Err(semantic_violation(
+            location,
+            "candidate bytecode package is absent from hydration bytecode".to_string(),
+        ));
+    };
     let artifact = admitted.artifact();
     let view = admitted.view();
     let expected_fingerprint = opcode_table_fingerprint();
@@ -184,7 +193,12 @@ fn prove_platform_error_projection_registry_pin(
     package: &HydratedBytecodePackage,
     location: VerificationLocation,
 ) -> Result<(), VerificationError> {
-    let admitted = package.bytecode();
+    let Some(admitted) = package.bytecode() else {
+        return Err(semantic_violation(
+            location,
+            "candidate bytecode package is absent from hydration bytecode".to_string(),
+        ));
+    };
     let artifact = admitted.artifact();
     let view = admitted.view();
     let pins = [

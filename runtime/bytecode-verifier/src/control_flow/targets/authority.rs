@@ -22,8 +22,13 @@ pub(super) fn prove_target_authority(
         .ok_or_else(|| violation(location, "local target owner package is not hydrated"))?;
 
     let function_key = target.key().artifact_function_key().as_str();
-    let mut sources = package
-        .bytecode()
+    let bytecode = package.bytecode().ok_or_else(|| {
+        violation(
+            location,
+            "local target owner is type-only".to_string(),
+        )
+    })?;
+    let mut sources = bytecode
         .view()
         .functions()
         .iter()

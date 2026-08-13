@@ -737,10 +737,12 @@ fn admit_effect_summary(
     // binding and resume descriptor are still pinned per instruction.
     let pinned_pending = effects.may_pending
         && !effects.pending_effect_categories.is_empty()
-        && effects
-            .pending_effect_categories
-            .iter()
-            .all(|category| *category == PendingEffectCategory::NativeCall);
+        && effects.pending_effect_categories.iter().all(|category| {
+            matches!(
+                category,
+                PendingEffectCategory::NativeCall | PendingEffectCategory::HostEffect
+            )
+        });
     if (effects.may_pending || !effects.pending_effect_categories.is_empty()) && !pinned_pending {
         return rejected(
             Phase1LinkedCapability::PendingEffect(
@@ -903,6 +905,15 @@ fn admit_catch_result_try_argument(
     admit_type(linker, ty, false, admitted_symbols, location)
 }
 
+fn is_canonical_sleep_duration_symbol(symbol: &PackageSymbolRef) -> bool {
+    symbol.symbol_path == "std.time.Duration"
+        && matches!(
+            &symbol.package,
+            PackageRefIr::PackageId { package_id }
+                if package_id == "skiff.run/std"
+        )
+}
+
 /// True for the exact unparameterized `string` builtin.
 fn is_string_type(ty: &TypeRefIr) -> bool {
     matches!(
@@ -986,6 +997,19 @@ fn admit_package_symbol(
                 .public_symbols
                 .get(&symbol.symbol_path)
         });
+    if is_canonical_sleep_duration_symbol(symbol) {
+        let Some(PackageLocalAbiSymbol::Type { descriptor, .. }) = resolved else {
+            return rejected(Phase1LinkedCapability::ValueShape, location);
+        };
+        let target = match descriptor {
+            TypeDescriptorIr::Alias { target }
+            | TypeDescriptorIr::Representation { representation: target } => target,
+            _ => return rejected(Phase1LinkedCapability::ValueShape, location),
+        };
+        admitted_symbols.remove(&path);
+        let concrete = normalize_type(linker.deployment, owner, target, &location)?;
+        return admit_type(linker, &concrete, false, admitted_symbols, location);
+    }
     let admission = match resolved {
         Some(PackageLocalAbiSymbol::Type {
             descriptor,
@@ -1021,6 +1045,10 @@ fn admit_package_type_descriptor(
                 admit_type(linker, &concrete, false, admitted_symbols, location.clone())?;
             }
             Ok(())
+        }
+        TypeDescriptorIr::Alias { target } => {
+            let concrete = normalize_type(linker.deployment, owner, target, &location)?;
+            admit_type(linker, &concrete, false, admitted_symbols, location)
         }
         _ => rejected(Phase1LinkedCapability::ValueShape, location),
     }

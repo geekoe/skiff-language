@@ -492,6 +492,7 @@ fn statement_manifest(
 ) -> skiff_artifact_model::BytecodeStatementManifestIdentity {
     let mut functions = package
         .bytecode()
+        .unwrap()
         .view()
         .functions()
         .iter()
@@ -520,7 +521,7 @@ fn assert_exact_v7_provenance(
     provenance: &LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
 ) {
-    let admitted = package.bytecode();
+    let admitted = package.bytecode().unwrap();
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");

@@ -313,6 +313,7 @@ impl<'a> TypeLinker<'a> {
         })?;
         let entry = package
             .bytecode()
+            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode type pool".to_string()))?
             .view()
             .pools()
             .types
@@ -395,6 +396,7 @@ impl<'a> TypeLinker<'a> {
         }
         let entry = package
             .bytecode()
+            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode shape pool".to_string()))?
             .view()
             .pools()
             .shapes
@@ -480,6 +482,7 @@ impl<'a> TypeLinker<'a> {
         }
         let entry = package
             .bytecode()
+            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode writable-path pool".to_string()))?
             .view()
             .pools()
             .writable_paths
@@ -597,6 +600,7 @@ impl<'a> TypeLinker<'a> {
     ) -> Result<CallbackCaptureLayoutIndex, BytecodeLinkError> {
         let entry = package
             .bytecode()
+            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode callback-capture pool".to_string()))?
             .view()
             .pools()
             .callback_capture
@@ -724,6 +728,7 @@ impl<'a> TypeLinker<'a> {
     ) -> Result<ResumeSiteIndex, BytecodeLinkError> {
         let descriptor = package
             .bytecode()
+            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode resume pool".to_string()))?
             .view()
             .resume_sites()
             .get(usize::try_from(artifact_index).map_err(|_| {
@@ -908,7 +913,7 @@ impl<'a> TypeLinker<'a> {
     ) -> Option<&skiff_artifact_model::ValidatedFunction> {
         let package = self.deployment.packages().get(key.package_build_id())?;
         package
-            .bytecode()
+            .bytecode()?
             .view()
             .functions()
             .iter()
@@ -1012,7 +1017,7 @@ impl<'a> TypeLinker<'a> {
 
 fn find_pool_type(package: &HydratedBytecodePackage, expected: &TypeRefIr) -> Option<u32> {
     package
-        .bytecode()
+        .bytecode()?
         .view()
         .pools()
         .types
@@ -1080,12 +1085,15 @@ fn find_pool_type_after_substitution(
     expected: &TypeRefIr,
     substitutions: &BTreeMap<String, TypeRefIr>,
 ) -> Result<Option<u32>, BytecodeLinkError> {
-    for (index, entry) in package.bytecode().view().pools().types.iter().enumerate() {
+    let location = BytecodeLinkLocation::Package {
+        package: Box::new(package.reference().clone()),
+    };
+    let bytecode = package.bytecode().ok_or_else(|| {
+        obligation_error(location.clone(), "type-only package has no bytecode type pool".to_string())
+    })?;
+    for (index, entry) in bytecode.view().pools().types.iter().enumerate() {
         let BytecodePoolEntry::TypeRef { ty } = entry else {
             continue;
-        };
-        let location = BytecodeLinkLocation::Package {
-            package: Box::new(package.reference().clone()),
         };
         let expected = normalize_type(deployment, package, expected, &location)?;
         let concrete = match substitute_type(ty, substitutions, &location) {
@@ -1141,6 +1149,7 @@ fn descriptor_index(
 ) -> Result<u32, BytecodeLinkError> {
     package
         .bytecode()
+        .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode resume pool".to_string()))?
         .view()
         .resume_sites()
         .iter()

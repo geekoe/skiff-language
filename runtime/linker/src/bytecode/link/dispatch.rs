@@ -465,8 +465,14 @@ fn first_specialization(
     package: &HydratedBytecodePackage,
     location: &BytecodeLinkLocation,
 ) -> Result<SpecializationKey, BytecodeLinkError> {
-    let function = package
-        .bytecode()
+    let bytecode = package.bytecode().ok_or_else(|| {
+        unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            "type-only package has no bytecode functions".to_string(),
+        )
+    })?;
+    let function = bytecode
         .view()
         .functions()
         .iter()
@@ -965,8 +971,8 @@ impl DeploymentLinker<'_> {
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<Vec<LinkedInterfaceTable>, BytecodeLinkError> {
         let mut unique = Vec::<InterfaceKey>::new();
-        for package in self.deployment.packages().values() {
-            for function in package.bytecode().view().functions() {
+        for package in self.deployment.packages().values().filter(|package| package.has_bytecode()) {
+            for function in package.bytecode().ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, self.package_location(package), "type-only package has no functions".to_string()))?.view().functions() {
                 let Some(source_specialization) = reachable.iter().find_map(|reference| {
                     (reference.specialization.package_build_id() == &package.reference().package_build_id
                         && reference.specialization.artifact_function_key().as_str() == function.function_key)
@@ -1282,8 +1288,8 @@ impl DeploymentLinker<'_> {
     ) -> Result<Vec<LinkedSyntheticCallbackTarget>, BytecodeLinkError> {
         let mut seen = BTreeSet::new();
         let mut rows = Vec::new();
-        for package in self.deployment.packages().values() {
-            for function in package.bytecode().view().functions() {
+        for package in self.deployment.packages().values().filter(|package| package.has_bytecode()) {
+            for function in package.bytecode().ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, self.package_location(package), "type-only package has no functions".to_string()))?.view().functions() {
                 for relocation in &function.relocations {
                     if !reachable.iter().any(|reference| {
                         reference.specialization.package_build_id() == &package.reference().package_build_id
@@ -1388,8 +1394,8 @@ impl DeploymentLinker<'_> {
         let mut intrinsics = Vec::new();
         let mut seen_host = BTreeSet::new();
         let mut seen_intrinsics = BTreeSet::new();
-        for package in self.deployment.packages().values() {
-            for function in package.bytecode().view().functions() {
+        for package in self.deployment.packages().values().filter(|package| package.has_bytecode()) {
+            for function in package.bytecode().ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, self.package_location(package), "type-only package has no functions".to_string()))?.view().functions() {
                 if !indices.keys().any(|key| {
                     key.package_build_id() == &package.reference().package_build_id
                         && key.artifact_function_key().as_str() == function.function_key
@@ -1501,7 +1507,14 @@ impl DeploymentLinker<'_> {
         let function_key = package.function_key_for_callable(callable).ok_or_else(|| {
             unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("callable {callable} has no function key"))
         })?;
-        let function = package.bytecode().view().functions().iter().find(|function| function.function_key == function_key)
+        let bytecode = package.bytecode().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "receiver callable owner is type-only".to_string(),
+            )
+        })?;
+        let function = bytecode.view().functions().iter().find(|function| function.function_key == function_key)
             .ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("function {function_key} is absent")))?;
         if !function.type_parameters.is_empty() {
             return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location, "receiver callable is generic".to_string()));
@@ -1533,7 +1546,14 @@ impl DeploymentLinker<'_> {
         function_key: &str,
     ) -> Result<SpecializationKey, BytecodeLinkError> {
         let location = self.package_location(package);
-        let function = package.bytecode().view().functions().iter().find(|function| function.function_key == function_key)
+        let bytecode = package.bytecode().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "synthetic callback owner is type-only".to_string(),
+            )
+        })?;
+        let function = bytecode.view().functions().iter().find(|function| function.function_key == function_key)
             .ok_or_else(|| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("synthetic callback {function_key} is absent")))?;
         let skiff_artifact_model::BytecodeFunctionOrigin::SyntheticCallback { owner, site_ordinal } = &function.origin else {
             return Err(unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location, "callback target is not synthetic".to_string()));
@@ -2121,8 +2141,14 @@ impl DeploymentLinker<'_> {
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<SpecializationKey, BytecodeLinkError> {
         let location = self.package_location(package);
-        let function = package
-            .bytecode()
+        let bytecode = package.bytecode().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "receiver function owner is type-only".to_string(),
+            )
+        })?;
+        let function = bytecode
             .view()
             .functions()
             .iter()

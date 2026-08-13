@@ -327,6 +327,7 @@ pub(super) fn prove_resume_sites(
 ) -> Result<Vec<ExactResumeEntry>, VerificationError> {
     let artifact_rows = package
         .bytecode()
+        .ok_or_else(|| semantic_violation(VerificationLocation::Image, "resume owner is type-only".to_string()))?
         .view()
         .resume_sites()
         .iter()

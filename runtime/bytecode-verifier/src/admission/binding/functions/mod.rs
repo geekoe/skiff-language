@@ -286,7 +286,7 @@ pub(super) fn source_function<'a>(
     key: &SpecializationKey,
 ) -> Option<&'a ValidatedFunction> {
     package
-        .bytecode()
+        .bytecode()?
         .view()
         .functions()
         .iter()
