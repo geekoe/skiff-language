@@ -14,7 +14,7 @@ use skiff_artifact_model::{
     PackageArtifactRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler::{
-    authoring::{build_authoring_object, AuthoringObject},
+    authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
     CompilerPlatformSources,
 };
 use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
@@ -75,6 +75,12 @@ impl Phase4PublishedFixture {
         let artifact_root = TempRoot::create(prefix);
         let platform_sources =
             CompilerPlatformSources::new(&repo_root).expect("open repository platform sources");
+        // The Phase 4 fixture imports `std` for the canonical sleep effect. The
+        // production authoring seam does not implicitly author the std package,
+        // so publish the compiler-owned std artifact into the same canonical
+        // store before compiling the user package.
+        seed_official_std_package(&platform_sources, artifact_root.path())
+            .expect("seed canonical std package into the Phase 4 artifact store");
         let authoring_receipt = match build_authoring_object(
             &platform_sources,
             AuthoringObject::Package,
