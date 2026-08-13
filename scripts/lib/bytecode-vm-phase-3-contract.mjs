@@ -49,10 +49,11 @@ export const PHASE3_REQUIRED_LANES = Object.freeze([
   'phase-2-regression',
 ]);
 
-// Phase 3 scenario commands. The K3/C3 focused commands are P3G-chosen join
-// contracts: each lane must land tests matching these exact cargo filters in
-// the same join that flips its scenario green. They stay expected-red until
-// then, so the real Gate correctly reports FAIL for the unjoined scenarios.
+// Phase 3 scenario commands. The K3/C3 focused commands are join contracts
+// pinned to the exact test names each lane landed: K3's VM coverage lives
+// under `fiber::tests::catch*` and C3's admission/emission coverage lives in
+// `skiff-compiler-emission` (`phase_3_admission*`, `throw*`). Each filter
+// matches at least one test and yields exactly one `test result:` line.
 export function phase3ScenarioSpecs(root) {
   return Object.freeze([
     spec(root, 'phase-3-gate-self-tests', 'node', [
@@ -81,7 +82,7 @@ export function phase3ScenarioSpecs(root) {
       '--', '--exact', '--nocapture',
     ], 'rust-exact', ['VCP', 'K3']),
     spec(root, 'k3-vm-throw-unwind', 'cargo', [
-      'test', '-p', 'skiff-runtime-vm', '--lib', 'throw',
+      'test', '-p', 'skiff-runtime-vm', '--lib', 'catch',
     ], 'rust-suite', ['K3']),
     spec(root, 'k3-model-service-error-envelope', 'cargo', [
       'test', '-p', 'skiff-runtime-model', '--lib', 'service_error',
@@ -96,10 +97,10 @@ export function phase3ScenarioSpecs(root) {
       'test', '-p', 'skiff-runtime-linker', '--lib', 'capability',
     ], 'rust-suite', ['K3']),
     spec(root, 'c3-emission-throw-admission', 'cargo', [
-      'test', '-p', 'skiff-compiler-emission', '--lib', 'phase_3_bytecode_admission',
+      'test', '-p', 'skiff-compiler-emission', '--lib', 'phase_3_admission',
     ], 'rust-suite', ['C3']),
-    spec(root, 'c3-pipeline-throw-admission', 'cargo', [
-      'test', '-p', 'skiff-compiler', '--lib', 'phase_3_bytecode_admission',
+    spec(root, 'c3-emission-throw-emission', 'cargo', [
+      'test', '-p', 'skiff-compiler-emission', '--lib', 'throw',
     ], 'rust-suite', ['C3']),
   ]);
 }
