@@ -1,6 +1,6 @@
 # MAP2：Phase 2 rolling execution map
 
-> Status: active; revision 8; merged preflight PASS and candidate frozen at `d0b0b694`, fresh Acceptance dispatched
+> Status: complete; revision 9; candidate `d0b0b694` accepted by fresh independent Acceptance (PASS, §7 all green), result merged into `main`
 >
 > Phase Contract: [`phase-2-value-lifecycle.md`](../phases/phase-2-value-lifecycle.md)
 >
@@ -126,6 +126,14 @@ Integrator 只做机械 cherry-pick、receipt/MAP 更新、Gate/freeze/Acceptanc
 
 全新 Acceptance Agent 在 detached worktree 跑完整 Phase 2 Gate 并按契约 §7 checklist 出 verdict。它不修改候选；
 FAIL 退回对应 owner，PASS 后写 `results/phase-2.md` 并合入 `main`。
+
+## 4i. Revision 9 — accepted
+
+全新独立 Acceptance agent 在 frozen candidate `d0b0b694`/tree `5d5698e9` 跑完整 Phase 2 Gate：33/33 commands、
+185/185 tests、candidate exact+clean、`checkerError: null`；证据闭包独立重算 0 偏差；§7 checklist 全 `[x]`；无新红
+（R-CLIPPY 旧红随重构消除，R-FMT 为唯一 waived 旧红且 Phase 2 零新增 drift）。receipt
+`cae742b4ae65851f783642a1fb87baef9befad9c7c30ce511854b501e88edbdd`。`results/phase-2.md` 记录全字段并把
+record/array 标为 `accepted`；Phase 3 在其合入 `main` 后解禁。
 
 ## 4. Task contracts
 
