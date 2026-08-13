@@ -16,9 +16,8 @@ use skiff_runtime_linked_bytecode::{
 use skiff_runtime_loader::HydratedBytecodePackage;
 
 use crate::bytecode::{
-    link::dispatch::LinkedDispatchTables,
-    types::TypeLinker,
-    BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
+    link::dispatch::LinkedDispatchTables, types::TypeLinker, BytecodeLinkError,
+    BytecodeLinkLocation, BytecodeLinkObligation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,10 +303,9 @@ fn exceptional_successor(
     if matches!(behavior, ExceptionBehavior::None) {
         return Ok(None);
     }
-    let Some(region) = innermost_exception_region(
-        &context.source.function.exception_regions,
-        artifact_pc,
-    ) else {
+    let Some(region) =
+        innermost_exception_region(&context.source.function.exception_regions, artifact_pc)
+    else {
         return Ok(None);
     };
     let handler = context
@@ -333,10 +331,7 @@ fn exceptional_successor(
 
 /// The innermost artifact exception region containing `pc`, in declaration
 /// order (innermost last), exactly as the verifier's region lookup.
-fn innermost_exception_region(
-    regions: &[ExceptionRegion],
-    pc: u32,
-) -> Option<&ExceptionRegion> {
+fn innermost_exception_region(regions: &[ExceptionRegion], pc: u32) -> Option<&ExceptionRegion> {
     regions
         .iter()
         .rev()
@@ -459,14 +454,20 @@ fn obligation_error(location: BytecodeLinkLocation, detail: String) -> BytecodeL
 
 #[cfg(test)]
 mod tests {
-    use skiff_runtime_linked_bytecode::{
-        LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+    use skiff_runtime_linked_bytecode::{LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex};
+
+    use super::{
+        handler_state_from, innermost_exception_region, ExceptionRegion, LinkedSlotState,
+        LinkedStackValue, MachineState,
     };
 
-    use super::{handler_state_from, innermost_exception_region, ExceptionRegion, LinkedSlotState,
-                 LinkedStackValue, MachineState};
-
-    fn region(start_pc: u32, end_pc: u32, handler_pc: u32, height: u32, catch_slot: u32) -> ExceptionRegion {
+    fn region(
+        start_pc: u32,
+        end_pc: u32,
+        handler_pc: u32,
+        height: u32,
+        catch_slot: u32,
+    ) -> ExceptionRegion {
         ExceptionRegion {
             start_pc,
             end_pc,

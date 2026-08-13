@@ -16,8 +16,7 @@ use skiff_artifact_model::{
     ContractOperationId, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentOperationBinding, DeploymentRevision, InstructionSourceSite, Opcode, PackageArtifact,
     ServiceContract, ServiceDeployment, SourcePosition, SourceSpanRef, TypeRefIr,
-    SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     compile_package, CompilerPlatformSources, ManifestOwner, ManifestProvenance,
@@ -50,11 +49,11 @@ use super::{
     find_exception_region, linked_type_catch_identity, nominal_tag_index, opcode_supported,
     runtime_leaf_catch_identity, DispatchOutcome, Vm, VmFiber,
 };
+use crate::control::VmResumeAuthority;
 use crate::{
     ChildTarget, ResumeOutcome, VmBudget, VmBudgetClosed, VmControl, VmError, VmFiberState,
     VmLimits, VmSemanticCharge,
 };
-use crate::control::VmResumeAuthority;
 
 type VmStartFn = fn(
     DeploymentExecutionEntry,
@@ -1275,7 +1274,10 @@ fn lifecycle_executor_keeps_scalar_dispatch_sidecar_free() {
         heap.snapshot_releases, 0,
         "scalar frame exit must not release-snapshot"
     );
-    assert_eq!(heap.resource_releases, 0, "no resource owners in a scalar fixture");
+    assert_eq!(
+        heap.resource_releases, 0,
+        "no resource owners in a scalar fixture"
+    );
 }
 
 #[test]
@@ -1453,7 +1455,9 @@ fn controlled_resume_throw_preserves_the_exact_envelope_into_the_catch_handler()
             end: SourcePosition::new(3, 7),
         },
     };
-    let stack = vec![ExceptionStackFrame::Local { site: source.clone() }];
+    let stack = vec![ExceptionStackFrame::Local {
+        site: source.clone(),
+    }];
     let correlation = ErrorCorrelation {
         trace_id: "fiber-resume-trace".to_string(),
         error_id: "fiber-resume-error".to_string(),

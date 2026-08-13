@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::ValidatedFunction;
 use skiff_runtime_linked_bytecode::{
-    InstructionIndex, LinkedFrameLayout, LinkedInstruction,
-    LinkedProgramPointState, LinkedSlotState, LinkedStackMapCandidate, LinkedStackValue, SpecializationKey,
+    InstructionIndex, LinkedFrameLayout, LinkedInstruction, LinkedProgramPointState,
+    LinkedSlotState, LinkedStackMapCandidate, LinkedStackValue, SpecializationKey,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -61,13 +61,7 @@ pub(super) fn merge_successors(
             })?;
         match states.get(&successor) {
             Some(existing) => {
-                let merged = merge_machine_states(
-                    package,
-                    source,
-                    successor_pc,
-                    existing,
-                    &next,
-                )?;
+                let merged = merge_machine_states(package, source, successor_pc, existing, &next)?;
                 if &merged != existing {
                     states.insert(successor, merged);
                     pending.insert(successor);
@@ -102,8 +96,7 @@ fn merge_machine_states(
                 function_key: source.function_key.clone(),
                 artifact_pc: successor_pc,
             },
-            "control-flow predecessors produce different concrete stack or slot states"
-                .to_string(),
+            "control-flow predecessors produce different concrete stack or slot states".to_string(),
         ));
     }
     if existing.slots.len() != next.slots.len() {
@@ -142,7 +135,9 @@ fn merge_slot_state(left: &LinkedSlotState, right: &LinkedSlotState) -> LinkedSl
             LinkedSlotState::Uninitialized
         }
         (LinkedSlotState::Moved, _) | (_, LinkedSlotState::Moved) => LinkedSlotState::Moved,
-        (LinkedSlotState::Live(left), LinkedSlotState::Live(_)) => LinkedSlotState::Live(left.clone()),
+        (LinkedSlotState::Live(left), LinkedSlotState::Live(_)) => {
+            LinkedSlotState::Live(left.clone())
+        }
     }
 }
 

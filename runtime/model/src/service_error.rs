@@ -183,9 +183,9 @@ impl RequestException {
         match &self.cause {
             RequestExceptionCause::Local { value } => value.catch_identity(),
             RequestExceptionCause::VmLocal { identity, .. } => Some(identity),
-            RequestExceptionCause::OpaqueService { local_value, .. } => {
-                local_value.as_ref().and_then(RuntimeValueCarrier::catch_identity)
-            }
+            RequestExceptionCause::OpaqueService { local_value, .. } => local_value
+                .as_ref()
+                .and_then(RuntimeValueCarrier::catch_identity),
         }
     }
 

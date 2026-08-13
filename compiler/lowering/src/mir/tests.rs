@@ -932,7 +932,10 @@ fn value_block_expression_facts_freeze_ternary_and_user_value_blocks() {
                 .get(&index)
                 .unwrap_or_else(|| panic!("{declaration} ValueBlock {index} has no fact"));
             assert_eq!(fact.result, result);
-            assert_eq!(function.block(fact.body_block).expect("body block").label, block_label);
+            assert_eq!(
+                function.block(fact.body_block).expect("body block").label,
+                block_label
+            );
             assert!(!fact.completion_targets.is_empty());
             assert!(fact
                 .completion_targets
@@ -952,12 +955,11 @@ fn value_block_expression_facts_freeze_ternary_and_user_value_blocks() {
         .iter()
         .find(|function| function.symbol == format!("{MODULE}.pick"))
         .expect("pick MirFunction");
-    let pick_facts = pick
-        .expression_blocks
-        .values()
-        .collect::<Vec<_>>();
+    let pick_facts = pick.expression_blocks.values().collect::<Vec<_>>();
     assert_eq!(pick_facts.len(), 1);
-    let pick_body = pick.block(pick_facts[0].body_block).expect("ternary body block");
+    let pick_body = pick
+        .block(pick_facts[0].body_block)
+        .expect("ternary body block");
     assert!(matches!(
         pick_body.statements.last().map(|statement| &statement.kind),
         Some(MirStmtKind::If { .. })
@@ -1002,10 +1004,7 @@ fn config_intrinsics_route_to_native_call_targets() {
     assert_eq!(
         targets,
         vec![
-            (
-                "config.has".to_string(),
-                Some("std.config.has".to_string())
-            ),
+            ("config.has".to_string(), Some("std.config.has".to_string())),
             (
                 "config.optional".to_string(),
                 Some("std.config.optional".to_string())
@@ -1259,10 +1258,11 @@ fn phase_3_union_catch_fixture_lowers_with_union_bindings_and_aligned_rethrow() 
         .collect::<Vec<_>>();
     assert_eq!(leaf_slots.len(), 2);
     for leaf in leaf_slots {
-        assert!(matches!(
-            leaf.ty,
-            Some(TypeRefIr::Union { .. })
-        ), "leaf binding should widen into the declared union, got {:?}", leaf.ty);
+        assert!(
+            matches!(leaf.ty, Some(TypeRefIr::Union { .. })),
+            "leaf binding should widen into the declared union, got {:?}",
+            leaf.ty
+        );
     }
 
     // The caught payload binding carries the opaque Exception<LeafA>
@@ -1334,13 +1334,15 @@ fn phase_3_union_catch_fixture_lowers_with_union_bindings_and_aligned_rethrow() 
         .iter()
         .find(|function| function.symbol == format!("{MODULE}.innerThrow"))
         .expect("innerThrow");
-    assert!(inner_throw.blocks.iter().flat_map(|block| &block.statements).any(
-        |statement| matches!(
+    assert!(inner_throw
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .any(|statement| matches!(
             &statement.kind,
             MirStmtKind::Throw { payload_type, .. }
                 if matches!(payload_type, TypeRefIr::Union { .. })
-        )
-    ));
+        )));
 }
 
 #[test]
@@ -1460,8 +1462,7 @@ fn phase_3_rethrow_with_non_identifier_operand_fails_closed() {
     match error {
         skiff_compiler_source::SourceCompileError::ContractValidation { message } => {
             assert!(
-                message
-                    .contains("rethrow in typed File IR requires an exception slot identifier"),
+                message.contains("rethrow in typed File IR requires an exception slot identifier"),
                 "unexpected rethrow diagnostic: {message}"
             );
         }

@@ -380,7 +380,10 @@ fn admit_exception_regions(
             return Err(exception_region_fact(
                 unit,
                 function_key,
-                &format!("catch expression {} has no exception region", expression.index),
+                &format!(
+                    "catch expression {} has no exception region",
+                    expression.index
+                ),
             ));
         }
     }
@@ -395,7 +398,10 @@ fn exception_region_fact(
     BytecodeEmissionError::UnsupportedConstruct {
         function_key: function_key.to_string(),
         construct: "exception region facts",
-        location: format!(" in module `{}` function `{function_key}`: {detail}", unit.module_path),
+        location: format!(
+            " in module `{}` function `{function_key}`: {detail}",
+            unit.module_path
+        ),
     }
 }
 
@@ -494,10 +500,7 @@ fn admit_statement(
                 unit,
                 function_key,
                 payload_type,
-                &format!(
-                    "statement {} throw payload type",
-                    statement.statement_index
-                ),
+                &format!("statement {} throw payload type", statement.statement_index),
             )?;
             None
         }
@@ -561,12 +564,10 @@ fn collect_discriminator_literal_positions(
         else {
             continue;
         };
-        if is_tag_field_read(function, *left)? && is_string_literal_expression(function, *right)?
-        {
+        if is_tag_field_read(function, *left)? && is_string_literal_expression(function, *right)? {
             positions.insert(right.expression);
         }
-        if is_tag_field_read(function, *right)? && is_string_literal_expression(function, *left)?
-        {
+        if is_tag_field_read(function, *right)? && is_string_literal_expression(function, *left)? {
             positions.insert(left.expression);
         }
     }
@@ -681,9 +682,12 @@ fn admit_expression(
         )?;
     }
     let discriminator_context = discriminator_literals.contains(&expression.index)
-        || is_tag_field_read(function, ExprRefIr {
-            expression: expression.index,
-        })?;
+        || is_tag_field_read(
+            function,
+            ExprRefIr {
+                expression: expression.index,
+            },
+        )?;
     admit_type_with_discriminator_flag(
         units,
         unit,
@@ -1150,7 +1154,12 @@ fn admit_throw_payload_type(
             module_path,
             type_index,
         } => admit_nominal_record_leaf(
-            units, unit, function_key, module_path, *type_index, location,
+            units,
+            unit,
+            function_key,
+            module_path,
+            *type_index,
+            location,
         ),
         other => Err(rejected_function(
             unit,
@@ -1586,9 +1595,7 @@ mod tests {
     }
 
     fn local(index: u32) -> TypeRefIr {
-        TypeRefIr::LocalType {
-            type_index: index,
-        }
+        TypeRefIr::LocalType { type_index: index }
     }
 
     fn union(items: Vec<TypeRefIr>) -> TypeRefIr {
@@ -1748,11 +1755,9 @@ mod tests {
             },
             number(),
         ));
-        function.expressions.push(expression(
-            1,
-            ExprIr::LoadSlot { slot: 0 },
-            local(0),
-        ));
+        function
+            .expressions
+            .push(expression(1, ExprIr::LoadSlot { slot: 0 }, local(0)));
         function.expressions.push(expression(
             2,
             ExprIr::Catch {
@@ -1798,14 +1803,15 @@ mod tests {
             &units[0],
             FUNCTION_KEY,
             &function,
-            &statement(
-                0,
-                MirStmtKind::Rethrow { exception_slot: 0 },
-            ),
+            &statement(0, MirStmtKind::Rethrow { exception_slot: 0 }),
         )
         .expect("a rethrow statement is admitted");
 
-        let rethrow = expression(0, ExprIr::Rethrow { exception_slot: 0 }, TypeRefIr::builtin("never"));
+        let rethrow = expression(
+            0,
+            ExprIr::Rethrow { exception_slot: 0 },
+            TypeRefIr::builtin("never"),
+        );
         function.expressions.push(rethrow.clone());
         admit_expression(
             &units,
@@ -1864,11 +1870,9 @@ mod tests {
                 args: vec![number(), local(0)],
             },
         ));
-        function.expressions.push(expression(
-            1,
-            ExprIr::LoadSlot { slot: 0 },
-            local(0),
-        ));
+        function
+            .expressions
+            .push(expression(1, ExprIr::LoadSlot { slot: 0 }, local(0)));
         let error = admit_exception_regions(&units[0], FUNCTION_KEY, &function)
             .expect_err("a Catch node without a region must fail closed");
         assert!(matches!(
@@ -1913,10 +1917,12 @@ mod tests {
             )],
             successors: Vec::new(),
         });
-        function.statements.push(skiff_compiler_lowering::mir::MirStatementEntry {
-            statement_index: 0,
-            span: None,
-        });
+        function
+            .statements
+            .push(skiff_compiler_lowering::mir::MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            });
         let units = [unit(vec![function], two_nominal_types())];
         let error = admit_phase_1_bytecode_mir(&units).expect_err("host targets stay rejected");
         assert!(matches!(
@@ -1951,10 +1957,7 @@ mod tests {
             1,
             ExprIr::Construct {
                 type_ref: catch_type.clone(),
-                fields: BTreeMap::from([(
-                    "marker".to_string(),
-                    ExprRefIr { expression: 0 },
-                )]),
+                fields: BTreeMap::from([("marker".to_string(), ExprRefIr { expression: 0 })]),
             },
             catch_type.clone(),
         ));
@@ -2108,13 +2111,16 @@ mod tests {
             &BTreeSet::new(),
         )
         .expect_err("a bare string literal stays rejected");
-        assert!(matches!(
-            error,
-            BytecodeEmissionError::UnsupportedPhase1Capability {
-                capability: Phase1UnsupportedCapability::ValueShape,
-                ..
-            }
-        ), "unexpected rejection: {error:?}");
+        assert!(
+            matches!(
+                error,
+                BytecodeEmissionError::UnsupportedPhase1Capability {
+                    capability: Phase1UnsupportedCapability::ValueShape,
+                    ..
+                }
+            ),
+            "unexpected rejection: {error:?}"
+        );
     }
 
     #[test]

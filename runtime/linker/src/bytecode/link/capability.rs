@@ -80,14 +80,14 @@ impl DeploymentLinker<'_> {
                 admit_transfer_plan(plan, function_location.clone())?;
             }
             for ty in frame.slot_types().iter().chain(frame.result_types()) {
-            admit_type_index(
-                self,
-                candidate,
-                *ty,
-                false,
-                &mut admitted_symbols,
-                function_location.clone(),
-            )?;
+                admit_type_index(
+                    self,
+                    candidate,
+                    *ty,
+                    false,
+                    &mut admitted_symbols,
+                    function_location.clone(),
+                )?;
             }
             if !function.active_regions().is_empty() {
                 return rejected(Phase1LinkedCapability::Exception, function_location);
@@ -529,14 +529,7 @@ fn admit_resolved_target(
         LinkedInstructionTarget::HostEffectAdapter(_) => Phase1LinkedCapability::HostTarget,
         LinkedInstructionTarget::Intrinsic(_) => Phase1LinkedCapability::IntrinsicTarget,
         LinkedInstructionTarget::Type(index) => {
-            return admit_type_index(
-                linker,
-                candidate,
-                index,
-                false,
-                admitted_symbols,
-                location,
-            );
+            return admit_type_index(linker, candidate, index, false, admitted_symbols, location);
         }
         LinkedInstructionTarget::ResumeSite(_) => Phase1LinkedCapability::PendingEffect(
             skiff_artifact_model::PendingEffectCategory::Unknown,
@@ -777,24 +770,12 @@ fn admit_type(
     match ty {
         TypeRefIr::Record { fields } => {
             for field in fields.values() {
-                admit_type(
-                    linker,
-                    field,
-                    false,
-                    admitted_symbols,
-                    location.clone(),
-                )?;
+                admit_type(linker, field, false, admitted_symbols, location.clone())?;
             }
             return Ok(());
         }
         TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
-            admit_type(
-                linker,
-                &args[0],
-                false,
-                admitted_symbols,
-                location.clone(),
-            )?;
+            admit_type(linker, &args[0], false, admitted_symbols, location.clone())?;
             return Ok(());
         }
         TypeRefIr::Union { items } => {
@@ -802,13 +783,7 @@ fn admit_type(
                 return rejected(Phase1LinkedCapability::ValueShape, location);
             }
             for item in items {
-                admit_type(
-                    linker,
-                    item,
-                    false,
-                    admitted_symbols,
-                    location.clone(),
-                )?;
+                admit_type(linker, item, false, admitted_symbols, location.clone())?;
             }
             return Ok(());
         }
@@ -819,29 +794,12 @@ fn admit_type(
         // must still be admitted Phase 2 faces; a `never` try type names the
         // catch-over-throw divergence with no runtime value.
         TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
-            admit_catch_result_try_argument(
-                linker,
-                &args[0],
-                admitted_symbols,
-                location.clone(),
-            )?;
-            admit_type(
-                linker,
-                &args[1],
-                false,
-                admitted_symbols,
-                location.clone(),
-            )?;
+            admit_catch_result_try_argument(linker, &args[0], admitted_symbols, location.clone())?;
+            admit_type(linker, &args[1], false, admitted_symbols, location.clone())?;
             return Ok(());
         }
         TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
-            admit_type(
-                linker,
-                &args[0],
-                false,
-                admitted_symbols,
-                location.clone(),
-            )?;
+            admit_type(linker, &args[0], false, admitted_symbols, location.clone())?;
             return Ok(());
         }
         TypeRefIr::PackageSymbol { symbol } => {
@@ -901,12 +859,8 @@ fn admit_structural_leaf(
         TypeRefIr::TypeParam { .. } | TypeRefIr::AppliedNominal { .. } => {
             rejected(Phase1LinkedCapability::Generic, location)
         }
-        TypeRefIr::AnyInterface { .. } => {
-            rejected(Phase1LinkedCapability::Interface, location)
-        }
-        TypeRefIr::Function { .. } => {
-            rejected(Phase1LinkedCapability::Callback, location)
-        }
+        TypeRefIr::AnyInterface { .. } => rejected(Phase1LinkedCapability::Interface, location),
+        TypeRefIr::Function { .. } => rejected(Phase1LinkedCapability::Callback, location),
         TypeRefIr::ServiceSymbol { .. } | TypeRefIr::DbObjectSymbol { .. } => {
             rejected(Phase1LinkedCapability::ServiceTarget, location)
         }
@@ -931,9 +885,11 @@ fn admit_package_symbol(
     else {
         return rejected(Phase1LinkedCapability::ValueShape, location);
     };
-    if symbol.abi_expectation.as_deref().is_some_and(|expected| {
-        expected != owner.reference().package_local_abi_identity.as_str()
-    }) {
+    if symbol
+        .abi_expectation
+        .as_deref()
+        .is_some_and(|expected| expected != owner.reference().package_local_abi_identity.as_str())
+    {
         return rejected(Phase1LinkedCapability::ValueShape, location);
     }
     let path = format!("{package_id}::{}", symbol.symbol_path);
@@ -986,13 +942,7 @@ fn admit_package_type_descriptor(
         TypeDescriptorIr::Record { fields } => {
             for field in fields.values() {
                 let concrete = normalize_type(linker.deployment, owner, field, &location)?;
-                admit_type(
-                    linker,
-                    &concrete,
-                    false,
-                    admitted_symbols,
-                    location.clone(),
-                )?;
+                admit_type(linker, &concrete, false, admitted_symbols, location.clone())?;
             }
             Ok(())
         }
@@ -1119,7 +1069,10 @@ mod tests {
                 false,
             ),
         ] {
-            assert!(admit_structural_leaf(&ty, allow_void, location()).is_ok(), "{ty:?}");
+            assert!(
+                admit_structural_leaf(&ty, allow_void, location()).is_ok(),
+                "{ty:?}"
+            );
         }
     }
 
@@ -1194,11 +1147,10 @@ mod tests {
             args: vec![TypeRefIr::builtin("number")],
         }));
 
-        let literal = skiff_runtime_linked_bytecode::LinkedFrozenConstantValue::Literal(
-            LiteralIr::String {
+        let literal =
+            skiff_runtime_linked_bytecode::LinkedFrozenConstantValue::Literal(LiteralIr::String {
                 value: "ok".to_string(),
-            },
-        );
+            });
         assert!(is_discriminator_string_constant(&literal, Some(&string)));
         assert!(!is_discriminator_string_constant(&literal, None));
         assert!(!is_discriminator_string_constant(

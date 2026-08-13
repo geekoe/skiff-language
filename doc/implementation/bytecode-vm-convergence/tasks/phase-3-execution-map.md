@@ -1,6 +1,6 @@
 # MAP3：Phase 3 rolling execution map
 
-> Status: active; revision 3; C3 converged union/catch/throw-site, string-literal discriminator slice decided
+> Status: active; revision 5; first Acceptance FAIL (Phase 3 fmt drift) fixed and candidate re-frozen, second Acceptance dispatched
 >
 > Phase Contract: [`phase-3-outcome-unwind.md`](../phases/phase-3-outcome-unwind.md)
 >
@@ -121,3 +121,13 @@ Agent 可出最终 verdict。
 4. F3（linker/verifier union-branch 接受面不对称，verifier 更严即 fail-closed）为非阻塞 advisory，保留记录。
 
 Gate preflight 已 PASS（46/46、267/267）；上三项闭合后重跑 preflight → freeze → 全新 Acceptance。
+
+## 11. Revision 5
+
+- 首轮全新 Acceptance 判 FAIL，唯一 blocker：Phase 3 写入行引入 rustfmt 新红（652→748，14 个文件，≥48 hunk）。
+  R0 规则「本链写入文件内的新 fmt 告警 = 新红」。语义审查（全部证据、Gate 46/46、272/272、证据闭包 0 偏差、
+  反假绿）全部通过。
+- 修复：对 14 个文件跑 `rustfmt --edition 2021`（语义不变）；`cargo fmt --all -- --check` 总数降到 558（低于
+  R0 旧红 652，且 14 文件零残留；剩余全部为旧漂移）。非阻塞 findings：R-CLIPPY 无 Phase 3 新红；Phase 2 的
+  fmt-clean 声明在 Phase 2 tip 不可复现（历史记录，不豁免 Phase 3）。
+- 候选重新 freeze 于 fmt 修复后的新 commit/tree，开新 evidence epoch，派第二轮全新 Acceptance。

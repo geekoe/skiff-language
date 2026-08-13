@@ -5,9 +5,7 @@ use skiff_runtime_linked_bytecode::{
     ActiveRegionIndex, CandidateTable, FrameSlotIndex, FunctionIndex, InstructionIndex, TypeIndex,
 };
 use skiff_runtime_model::{
-    service_error::RequestException,
-    vm_heap::VmHeapError,
-    vm_value::ValueKind,
+    service_error::RequestException, vm_heap::VmHeapError, vm_value::ValueKind,
 };
 
 use crate::{fiber::VmFiberState, VmBudgetClosed, VmInternalTerminal};

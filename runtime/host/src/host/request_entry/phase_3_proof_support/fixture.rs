@@ -257,9 +257,8 @@ impl Phase3PublishedFixture {
         mode: &str,
         request_body: &[u8],
     ) -> CanonicalSkbfRequest {
-        let frame =
-            encode_binary_frame(&self.http_header(correlation, mode), request_body)
-                .expect("encode canonical Phase 3 SKBF request");
+        let frame = encode_binary_frame(&self.http_header(correlation, mode), request_body)
+            .expect("encode canonical Phase 3 SKBF request");
         let (header, body) = decode_bytecode_request_start_frame(&frame)
             .expect("production decoder accepts canonical Phase 3 request");
         CanonicalSkbfRequest {

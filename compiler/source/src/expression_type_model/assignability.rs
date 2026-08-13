@@ -365,11 +365,7 @@ impl<'a> OwnerChecker<'a> {
             self.record_union_target_constructor(value, value_key, actual, expected);
             return true;
         }
-        let object_source = self
-            .outputs
-            .object_materialization
-            .sources
-            .get(value_key);
+        let object_source = self.outputs.object_materialization.sources.get(value_key);
         if let Some(diagnostics) = assignability.object_literal_assignability_diagnostics(
             ObjectLiteralAssignabilityContext {
                 annotation,

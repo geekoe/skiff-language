@@ -397,17 +397,16 @@ impl VmFiber {
     }
 
     pub fn run_segment(&mut self, heap: &mut dyn VmHeap, budget: &mut dyn VmBudget) -> VmControl {
-        if !matches!(
-            self.state,
-            VmFiberState::Runnable | VmFiberState::Unwinding
-        ) {
+        if !matches!(self.state, VmFiberState::Runnable | VmFiberState::Unwinding) {
             return VmControl::Complete(Err(VmError::FiberNotRunnable { state: self.state }));
         }
 
         match self.run_segment_inner(heap, budget) {
             Ok(SegmentResult::Continue) => VmControl::Continue,
             Ok(SegmentResult::Complete(values)) => VmControl::Complete(Ok(values)),
-            Ok(SegmentResult::Throw(envelope)) => VmControl::Complete(Err(VmError::Thrown(envelope))),
+            Ok(SegmentResult::Throw(envelope)) => {
+                VmControl::Complete(Err(VmError::Thrown(envelope)))
+            }
             Ok(SegmentResult::Handoff(control)) => control,
             Err(error) => {
                 self.state = VmFiberState::Terminal;
@@ -607,10 +606,7 @@ impl VmFiber {
     /// Continues an unwind armed by `resume_throw` now that a heap port is
     /// available. The armed envelope must always be the authority here: the
     /// frame scan starts at the resume site and never re-derives an identity.
-    fn resume_unwind_segment(
-        &mut self,
-        heap: &mut dyn VmHeap,
-    ) -> Result<SegmentResult, VmError> {
+    fn resume_unwind_segment(&mut self, heap: &mut dyn VmHeap) -> Result<SegmentResult, VmError> {
         let mut lifecycle = LifecycleExecutor::new(heap);
         self.unwind_loop(&mut lifecycle)
             .map(|outcome| match outcome {
@@ -697,9 +693,12 @@ impl VmFiber {
                 instruction_index,
                 &instruction,
             ),
-            Opcode::Drop => {
-                self.execute_drop(&mut lifecycle, function_index, instruction_index, &instruction)
-            }
+            Opcode::Drop => self.execute_drop(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::Dup => self.execute_dup(&mut lifecycle, function_index, instruction_index),
             Opcode::LoadSlot => self.execute_load_slot(
                 &mut lifecycle,
@@ -753,14 +752,12 @@ impl VmFiber {
             Opcode::InvokeHost => {
                 self.execute_invoke_host(function_index, instruction_index, &instruction)
             }
-            Opcode::InvokeIntrinsic => {
-                self.execute_invoke_intrinsic(
-                    lifecycle.heap(),
-                    function_index,
-                    instruction_index,
-                    &instruction,
-                )
-            }
+            Opcode::InvokeIntrinsic => self.execute_invoke_intrinsic(
+                lifecycle.heap(),
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::MakeCallback => {
                 self.execute_make_callback(function_index, instruction_index, &instruction)
             }
@@ -816,11 +813,7 @@ impl VmFiber {
                 &instruction,
             ),
             Opcode::ArrayBuilderPush => {
-                self.execute_array_builder_push(
-                    &mut lifecycle,
-                    function_index,
-                    instruction_index,
-                )
+                self.execute_array_builder_push(&mut lifecycle, function_index, instruction_index)
             }
             Opcode::FreezeArray => {
                 self.execute_freeze_array(lifecycle.heap(), function_index, instruction_index)
@@ -837,14 +830,12 @@ impl VmFiber {
             Opcode::ArrayLen => {
                 self.execute_array_len(lifecycle.heap(), function_index, instruction_index)
             }
-            Opcode::NewMapBuilder => {
-                self.execute_new_map_builder(
-                    lifecycle.heap(),
-                    function_index,
-                    instruction_index,
-                    &instruction,
-                )
-            }
+            Opcode::NewMapBuilder => self.execute_new_map_builder(
+                lifecycle.heap(),
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::MapBuilderPut => {
                 self.execute_map_builder_put(lifecycle.heap(), function_index, instruction_index)
             }
@@ -1284,7 +1275,8 @@ impl VmFiber {
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
     ) -> Result<DispatchOutcome, VmError> {
-        let LinkedInstructionTarget::Type(_) = self.resolved_target(function, instruction, decoded, 0)?
+        let LinkedInstructionTarget::Type(_) =
+            self.resolved_target(function, instruction, decoded, 0)?
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
@@ -1348,20 +1340,18 @@ impl VmFiber {
                 instruction,
             },
         )?;
-        let absolute_index = self
-            .caught_by_payload
-            .remove(&payload_handle)
-            .ok_or(VmError::RethrowEnvelopeUnavailable {
+        let absolute_index = self.caught_by_payload.remove(&payload_handle).ok_or(
+            VmError::RethrowEnvelopeUnavailable {
                 function,
                 instruction,
-            })?;
-        let caught = self
-            .caught_exceptions
-            .remove(&absolute_index)
-            .ok_or(VmError::RethrowEnvelopeUnavailable {
+            },
+        )?;
+        let caught = self.caught_exceptions.remove(&absolute_index).ok_or(
+            VmError::RethrowEnvelopeUnavailable {
                 function,
                 instruction,
-            })?;
+            },
+        )?;
         // The rethrow source slot releases its `Exception<E>` record share;
         // the envelope keeps its payload authority and reuses the exact same
         // envelope, so the actual catch identity stays unchanged.
@@ -1543,25 +1533,28 @@ impl VmFiber {
         let handler_base = operand_base + handler_height;
         for index in handler_base..operand_end {
             let position = index - operand_base;
-            let plan = self.stack_map_operand_plan(frame.function(), frame.instruction(), position)?;
+            let plan =
+                self.stack_map_operand_plan(frame.function(), frame.instruction(), position)?;
             let value = self.values[index];
-            executor
-                .release(&value, &plan)
-                .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw))?;
+            executor.release(&value, &plan).map_err(|error| {
+                error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw)
+            })?;
             self.clear_value(index);
         }
         self.current_frame_mut()?.set_operand_height(handler_height);
         // The handler receives a shared snapshot of the envelope payload; the
         // envelope itself remains the single payload authority.
-        let payload = envelope.vm_local_slot().ok_or(VmError::ThrowEnvelopeUnavailable {
-            function: frame.function(),
-            instruction: frame.instruction(),
-            reason: "caught envelope has no opaque VM payload".to_string(),
-        })?;
+        let payload = envelope
+            .vm_local_slot()
+            .ok_or(VmError::ThrowEnvelopeUnavailable {
+                function: frame.function(),
+                instruction: frame.instruction(),
+                reason: "caught envelope has no opaque VM payload".to_string(),
+            })?;
         let catch_plan = self.slot_plan(frame.function(), region.catch_slot())?;
-        let shared = executor
-            .share(&payload, &catch_plan)
-            .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw))?;
+        let shared = executor.share(&payload, &catch_plan).map_err(|error| {
+            error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw)
+        })?;
         let absolute_index =
             Self::slot_index(frame, slot_count, region.catch_slot(), frame.function())?;
         self.overwrite_slot(
@@ -1574,14 +1567,13 @@ impl VmFiber {
             frame.instruction(),
             Opcode::Throw,
         )?;
-        let payload_handle = payload
-            .as_handle()
-            .map(|handle| handle.get())
-            .ok_or(VmError::ThrowEnvelopeUnavailable {
+        let payload_handle = payload.as_handle().map(|handle| handle.get()).ok_or(
+            VmError::ThrowEnvelopeUnavailable {
                 function: frame.function(),
                 instruction: frame.instruction(),
                 reason: "caught envelope payload has no heap handle".to_string(),
-            })?;
+            },
+        )?;
         let entry = CaughtException {
             envelope: Arc::clone(envelope),
             plan: catch_plan,
@@ -1589,9 +1581,9 @@ impl VmFiber {
         };
         if let Some(previous) = self.caught_exceptions.insert(absolute_index, entry) {
             if let Some(slot) = previous.envelope.vm_local_slot() {
-                executor
-                    .release(&slot, &previous.plan)
-                    .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw))?;
+                executor.release(&slot, &previous.plan).map_err(|error| {
+                    error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw)
+                })?;
             }
             self.caught_by_payload.remove(&previous.payload_handle);
         }
@@ -1765,9 +1757,7 @@ impl VmFiber {
         for (ordinal, destination_slot) in transfer_slots.into_iter().enumerate() {
             let value = executor
                 .transfer(&arguments[ordinal], &argument_plans[ordinal])
-                .map_err(|error| {
-                    error.into_vm_error(function, instruction, Opcode::CallLocal)
-                })?;
+                .map_err(|error| error.into_vm_error(function, instruction, Opcode::CallLocal))?;
             self.values[child_start + destination_slot] = value;
             self.live_values[child_start + destination_slot] = true;
         }
@@ -2069,14 +2059,17 @@ impl VmFiber {
         for (ordinal, (field, value)) in shape.fields().iter().zip(values).enumerate() {
             let value = if matches!(value.kind(), Some(ValueKind::ConstRef)) {
                 match self.string_slot_value(executor.heap(), &value) {
-                    Ok(string) => executor.heap().alloc_string(string).map_err(VmError::Heap)?,
+                    Ok(string) => executor
+                        .heap()
+                        .alloc_string(string)
+                        .map_err(VmError::Heap)?,
                     Err(_) => value,
                 }
             } else {
                 let plan = self.operand_plan(&frame, instruction, field_count - 1 - ordinal)?;
-                executor
-                    .transfer(&value, &plan)
-                    .map_err(|error| error.into_vm_error(function, instruction, Opcode::NewRecord))?
+                executor.transfer(&value, &plan).map_err(|error| {
+                    error.into_vm_error(function, instruction, Opcode::NewRecord)
+                })?
             };
             fields.push(VmRecordField {
                 name: field.name().to_string(),
@@ -2133,15 +2126,12 @@ impl VmFiber {
             .heap()
             .get_dense_field(&record, field_ordinal)
             .map_err(VmError::Heap)?;
-        let next = InstructionIndex::new(
-            instruction
-                .get()
-                .checked_add(1)
-                .ok_or(VmError::InstructionPointerOutOfBounds {
-                    function,
-                    instruction,
-                })?,
-        );
+        let next = InstructionIndex::new(instruction.get().checked_add(1).ok_or(
+            VmError::InstructionPointerOutOfBounds {
+                function,
+                instruction,
+            },
+        )?);
         let field_plan = self.stack_map_operand_plan(
             frame.function(),
             next,
@@ -2271,11 +2261,9 @@ impl VmFiber {
             // Exclusive in-place commit: the slot keeps its bits and owner.
         } else {
             let root_plan = self.slot_plan(frame.function(), root_slot)?;
-            executor
-                .release(&root, &root_plan)
-                .map_err(|error| {
-                    error.into_vm_error(function, instruction, Opcode::SetWritablePath)
-                })?;
+            executor.release(&root, &root_plan).map_err(|error| {
+                error.into_vm_error(function, instruction, Opcode::SetWritablePath)
+            })?;
             self.install_slot_value(&frame, slot_count, root_slot, replacement)?;
         }
         self.advance_current_instruction()?;
@@ -2394,25 +2382,23 @@ impl VmFiber {
         let array_plan = self.operand_plan(&frame, instruction, 1)?;
         let values = self.pop_operands(2, false)?;
         let array = values[0];
-        let index =
-            skiff_runtime_model::vm_heap::collection_index(&values[1]).ok_or(VmError::ExpectedNumber {
-            function,
-            instruction,
-            actual: values[1].kind(),
-        })?;
+        let index = skiff_runtime_model::vm_heap::collection_index(&values[1]).ok_or(
+            VmError::ExpectedNumber {
+                function,
+                instruction,
+                actual: values[1].kind(),
+            },
+        )?;
         let value = executor
             .heap()
             .array_get(&array, index)
             .map_err(VmError::Heap)?;
-        let next = InstructionIndex::new(
-            instruction
-                .get()
-                .checked_add(1)
-                .ok_or(VmError::InstructionPointerOutOfBounds {
-                    function,
-                    instruction,
-                })?,
-        );
+        let next = InstructionIndex::new(instruction.get().checked_add(1).ok_or(
+            VmError::InstructionPointerOutOfBounds {
+                function,
+                instruction,
+            },
+        )?);
         let element_plan = self.stack_map_operand_plan(
             frame.function(),
             next,
@@ -2639,12 +2625,13 @@ impl VmFiber {
     ) -> Result<DispatchOutcome, VmError> {
         let values = self.pop_operands(2, false)?;
         let map = values[0];
-        let ordinal =
-            skiff_runtime_model::vm_heap::collection_index(&values[1]).ok_or(VmError::ExpectedNumber {
-            function,
-            instruction,
-            actual: values[1].kind(),
-        })?;
+        let ordinal = skiff_runtime_model::vm_heap::collection_index(&values[1]).ok_or(
+            VmError::ExpectedNumber {
+                function,
+                instruction,
+                actual: values[1].kind(),
+            },
+        )?;
         let entry = heap.map_entry_at(&map, ordinal).map_err(VmError::Heap)?;
         self.push_operand(entry.key)?;
         self.push_operand(entry.value)?;
@@ -3782,14 +3769,13 @@ impl VmFiber {
         instruction: InstructionIndex,
         from_top: usize,
     ) -> Result<LinkedValueTransferPlan, VmError> {
-        let position = frame
-            .operand_height()
-            .checked_sub(from_top + 1)
-            .ok_or(VmError::OperandStackUnderflow {
+        let position = frame.operand_height().checked_sub(from_top + 1).ok_or(
+            VmError::OperandStackUnderflow {
                 function: frame.function(),
                 needed: from_top + 1,
                 available: frame.operand_height(),
-            })?;
+            },
+        )?;
         self.stack_map_operand_plan(frame.function(), instruction, position)
     }
 
@@ -3881,31 +3867,32 @@ impl VmFiber {
         frame: &VmFrame,
         opcode: Opcode,
     ) -> Result<(), VmError> {
-        let slot_plans = self.function(frame.function())?.frame().slot_plans().to_vec();
+        let slot_plans = self
+            .function(frame.function())?
+            .frame()
+            .slot_plans()
+            .to_vec();
         let slot_count = slot_plans.len();
         for ordinal in 0..slot_count {
             let index = frame.slot_base() + ordinal;
             if self.live_values.get(index).copied() == Some(true) {
                 let value = self.values[index];
                 let plan = slot_plans[ordinal].clone();
-                executor
-                    .release(&value, &plan)
-                    .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), opcode))?;
+                executor.release(&value, &plan).map_err(|error| {
+                    error.into_vm_error(frame.function(), frame.instruction(), opcode)
+                })?;
                 self.clear_value(index);
             }
         }
         for position in 0..frame.operand_height() {
             let index = frame.operand_base() + position;
             if self.live_values.get(index).copied() == Some(true) {
-                let plan = self.stack_map_operand_plan(
-                    frame.function(),
-                    frame.instruction(),
-                    position,
-                )?;
+                let plan =
+                    self.stack_map_operand_plan(frame.function(), frame.instruction(), position)?;
                 let value = self.values[index];
-                executor
-                    .release(&value, &plan)
-                    .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), opcode))?;
+                executor.release(&value, &plan).map_err(|error| {
+                    error.into_vm_error(frame.function(), frame.instruction(), opcode)
+                })?;
                 self.clear_value(index);
             }
         }
@@ -4185,9 +4172,7 @@ fn envelope_leaf_type_index(envelope: &RequestException) -> Option<TypeIndex> {
         | ValueKind::ActorStateRef
         | ValueKind::ConstRef
         | ValueKind::ResourceRef
-        | ValueKind::CallbackClosureRef => {
-            Some(TypeIndex::new(slot.compact_type_tag().get()))
-        }
+        | ValueKind::CallbackClosureRef => Some(TypeIndex::new(slot.compact_type_tag().get())),
         _ => None,
     }
 }
@@ -4230,16 +4215,16 @@ fn linked_type_catch_identity(
                 .iter()
                 .find(|package| package.package_build_id() == entry.origin().package_build_id())
                 .map(|package| package.index().get() as usize)?;
-            Some(CatchIdentity::Nominal(
-                NominalTypeIdentity::LocalExecution(LocalExecutionTypeIdentity {
+            Some(CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
+                LocalExecutionTypeIdentity {
                     addr: TypeAddr {
                         unit: UnitAddr::Package(package_slot),
                         file: FileAddr::FileIrIdentity(package_id.clone()),
                         type_index: leaf.get() as usize,
                     },
                     type_arguments: Vec::new(),
-                }),
-            ))
+                },
+            )))
         }
         _ => None,
     }

@@ -4,19 +4,17 @@ use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
     BytecodeSpecialization, CallLoanBinding, CallLoanLayout, CallTargetIr, CallableMayEffects,
-    CatchMatcher,
-    ExceptionRegion, ExprIr, ExprRefIr, DbOperandRole, DbOperationKind, DbOperationReference,
-    DbTargetIr, FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
-    IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
-    ParamModeIr, PendingEffectCategory,
-    ParameterSlotDecl, PatternIr, RelocatableBytecodeFunction, RemoteInterfaceMethod,
-    RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, SourceMapEntry, StatementAttributionId,
-    StatementEntry, SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr,
-    WritablePathSegment,
+    CatchMatcher, DbOperandRole, DbOperationKind, DbOperationReference, DbTargetIr,
+    ExceptionRegion, ExprIr, ExprRefIr, FrameLayout, HostEffectReference, HostEffectSignature,
+    InstructionSourceSite, IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef,
+    NativeTarget, Opcode, ParamModeIr, ParameterSlotDecl, PatternIr, PendingEffectCategory,
+    RelocatableBytecodeFunction, RemoteInterfaceMethod, RemoteInterfaceRef, ResumeDescriptor,
+    ResumeErrorMode, SourceMapEntry, StatementAttributionId, StatementEntry,
+    SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
-    MirFunction, MirIndexReceiverKind, MirInOutPathSegment, MirParamMode, MirSlot, MirSlotKind,
+    MirFunction, MirInOutPathSegment, MirIndexReceiverKind, MirParamMode, MirSlot, MirSlotKind,
     MirSourceEvent, MirStatementPlacement, MirStmtKind, MirUnit, MirWritablePathSegment,
     MirWritablePlace, MirWritableRoot,
 };
@@ -277,7 +275,11 @@ impl<'a> FunctionEmitter<'a> {
                     &format!("expression {expression_index} has no exact completion facts"),
                 )
             })?;
-        let completion_targets = fact.completion_targets.iter().copied().collect::<BTreeSet<_>>();
+        let completion_targets = fact
+            .completion_targets
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
         if completion_targets.is_empty() {
             return Err(unsupported(
                 &self.key,
@@ -380,10 +382,8 @@ impl<'a> FunctionEmitter<'a> {
                 "single insert must carry only ObjectFields",
             ));
         }
-        let skiff_artifact_model::DbBodyIr::ObjectFields { fields } = operation
-            .body
-            .as_ref()
-            .ok_or_else(|| {
+        let skiff_artifact_model::DbBodyIr::ObjectFields { fields } =
+            operation.body.as_ref().ok_or_else(|| {
                 unsupported(
                     &self.key,
                     "DbOperation",
@@ -401,8 +401,7 @@ impl<'a> FunctionEmitter<'a> {
             &operation.target.type_ref,
             "DbOperation single insert object",
         )?;
-        if declared.len() != fields.len()
-            || declared.keys().any(|name| !fields.contains_key(name))
+        if declared.len() != fields.len() || declared.keys().any(|name| !fields.contains_key(name))
         {
             return Err(unsupported(
                 &self.key,
@@ -423,10 +422,14 @@ impl<'a> FunctionEmitter<'a> {
             .map_err(|_| arithmetic(&self.key, "DbOperation field count conversion"))?;
         self.emit_op(Opcode::NewRecord, vec![shape, field_count])?;
 
-        let qualified_target =
-            super::constants::qualify_local_types(self.unit.module_path.as_str(), &operation.target.type_ref);
-        let qualified_result =
-            super::constants::qualify_local_types(self.unit.module_path.as_str(), &operation.result_type);
+        let qualified_target = super::constants::qualify_local_types(
+            self.unit.module_path.as_str(),
+            &operation.target.type_ref,
+        );
+        let qualified_result = super::constants::qualify_local_types(
+            self.unit.module_path.as_str(),
+            &operation.result_type,
+        );
         let effects = skiff_artifact_model::host_effect_registry()
             .entries()
             .iter()
@@ -472,18 +475,20 @@ impl<'a> FunctionEmitter<'a> {
                 }],
             })),
         };
-        let relocation_index = u32::try_from(self.relocations.len())
-            .map_err(|_| arithmetic(self.key.as_str(), "DbOperation relocation index conversion"))?;
+        let relocation_index = u32::try_from(self.relocations.len()).map_err(|_| {
+            arithmetic(self.key.as_str(), "DbOperation relocation index conversion")
+        })?;
         self.relocations
             .push(BytecodeRelocation::HostEffectRef(reference));
         let result_count = u32::from(!is_void(&expression.ty));
-        let expected_stack_height_before_result = self.operand_depth.checked_sub(1).ok_or_else(|| {
-            unsupported(
-                &self.key,
-                "DbOperation",
-                "insert object operand is absent from the emitted stack",
-            )
-        })?;
+        let expected_stack_height_before_result =
+            self.operand_depth.checked_sub(1).ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "DbOperation",
+                    "insert object operand is absent from the emitted stack",
+                )
+            })?;
         let instruction = self.emit_op(
             Opcode::InvokeHost,
             vec![relocation_index, 1, result_count, 0],
@@ -491,10 +496,8 @@ impl<'a> FunctionEmitter<'a> {
         self.pending_resumes.push(PendingResume {
             instruction,
             operand: 3,
-            expected_stack_height_before_result: u32::try_from(
-                expected_stack_height_before_result,
-            )
-            .map_err(|_| arithmetic(&self.key, "DbOperation resume stack height conversion"))?,
+            expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
+                .map_err(|_| arithmetic(&self.key, "DbOperation resume stack height conversion"))?,
             result_ty: Some(expression.ty.clone()),
             end_block: None,
         });
@@ -563,10 +566,7 @@ impl<'a> FunctionEmitter<'a> {
             let terminal = self.instructions.last().is_some_and(|instruction| {
                 matches!(
                     instruction.opcode,
-                    Opcode::Return
-                        | Opcode::Throw
-                        | Opcode::Rethrow
-                        | Opcode::Jump
+                    Opcode::Return | Opcode::Throw | Opcode::Rethrow | Opcode::Jump
                 )
             });
             let needs_return = self.function.stream_result.is_some()
@@ -1092,13 +1092,7 @@ impl<'a> FunctionEmitter<'a> {
                 let relocation = BytecodeRelocation::IntrinsicRef {
                     intrinsic: self.intrinsic_reference(call, expression, canonical_key)?,
                 };
-                self.emit_pending_call(
-                    expression,
-                    Opcode::InvokeIntrinsic,
-                    relocation,
-                    None,
-                    false,
-                )
+                self.emit_pending_call(expression, Opcode::InvokeIntrinsic, relocation, None, false)
             }
             CallTargetIr::Native { target } => {
                 let relocation = BytecodeRelocation::HostEffectRef(
@@ -1266,12 +1260,13 @@ impl<'a> FunctionEmitter<'a> {
             TypeRefIr::Record { fields } => TypeRefIr::Record {
                 fields: fields
                     .iter()
-                    .map(|(name, field)| {
-                        (name.clone(), self.normalize_signature_type_tree(field))
-                    })
+                    .map(|(name, field)| (name.clone(), self.normalize_signature_type_tree(field)))
                     .collect(),
             },
-            TypeRefIr::Function { params, return_type } => TypeRefIr::Function {
+            TypeRefIr::Function {
+                params,
+                return_type,
+            } => TypeRefIr::Function {
                 params: params
                     .iter()
                     .map(|param| skiff_artifact_model::FunctionTypeParamIr {
@@ -1294,7 +1289,10 @@ impl<'a> FunctionEmitter<'a> {
         self.image
             .intern_type(self.unit.module_path.as_str(), &ty, context)?;
         match &ty {
-            TypeRefIr::Builtin { args, .. } | TypeRefIr::AppliedNominal { arguments: args, .. } => {
+            TypeRefIr::Builtin { args, .. }
+            | TypeRefIr::AppliedNominal {
+                arguments: args, ..
+            } => {
                 for arg in args {
                     self.intern_type_tree(arg, context)?;
                 }
@@ -1310,7 +1308,10 @@ impl<'a> FunctionEmitter<'a> {
                     self.intern_type_tree(field, context)?;
                 }
             }
-            TypeRefIr::Function { params, return_type } => {
+            TypeRefIr::Function {
+                params,
+                return_type,
+            } => {
                 for param in params {
                     self.intern_type_tree(&param.ty, context)?;
                 }
@@ -1361,8 +1362,7 @@ impl<'a> FunctionEmitter<'a> {
         expression: &MirExpression,
         canonical_key: &str,
     ) -> Result<IntrinsicReference, BytecodeEmissionError> {
-        let canonical_key =
-            static_intrinsic_canonical_key(canonical_key).unwrap_or(canonical_key);
+        let canonical_key = static_intrinsic_canonical_key(canonical_key).unwrap_or(canonical_key);
         let target = BytecodeIntrinsicRef::Static {
             canonical_key: canonical_key.to_string(),
             signature_version: 1,
@@ -1383,10 +1383,7 @@ impl<'a> FunctionEmitter<'a> {
             })?;
         let signature = self.call_signature(call, expression, effects)?;
         self.intern_signature_types(&signature, &format!("intrinsic `{canonical_key}`"))?;
-        Ok(IntrinsicReference {
-            target,
-            signature,
-        })
+        Ok(IntrinsicReference { target, signature })
     }
 
     fn receiver_intrinsic_reference(
@@ -1412,11 +1409,11 @@ impl<'a> FunctionEmitter<'a> {
                 )
             })?;
         let signature = self.call_signature(call, expression, effects)?;
-        self.intern_signature_types(&signature, &format!("receiver intrinsic `{}`", op.canonical_key))?;
-        Ok(IntrinsicReference {
-            target,
-            signature,
-        })
+        self.intern_signature_types(
+            &signature,
+            &format!("receiver intrinsic `{}`", op.canonical_key),
+        )?;
+        Ok(IntrinsicReference { target, signature })
     }
 
     fn normalize_host_signature_type(&self, ty: &TypeRefIr) -> TypeRefIr {
@@ -1706,13 +1703,7 @@ impl<'a> FunctionEmitter<'a> {
         let relocation = BytecodeRelocation::IntrinsicRef {
             intrinsic: self.receiver_intrinsic_reference(call, expression, op)?,
         };
-        self.emit_pending_call(
-            expression,
-            Opcode::InvokeIntrinsic,
-            relocation,
-            None,
-            false,
-        )
+        self.emit_pending_call(expression, Opcode::InvokeIntrinsic, relocation, None, false)
     }
 
     fn try_emit_tail_call(
@@ -1824,18 +1815,17 @@ impl<'a> FunctionEmitter<'a> {
             for segment in &loan.path {
                 match segment {
                     MirInOutPathSegment::Field { name } => {
-                        let fields =
-                            self.record_shape_fields(&current_ty, "inout field path")?;
+                        let fields = self.record_shape_fields(&current_ty, "inout field path")?;
                         let field_ordinal = fields
                             .keys()
                             .position(|candidate| candidate == name)
                             .ok_or_else(|| {
-                                unsupported(
-                                    &self.key,
-                                    "inout field path",
-                                    &format!("field `{name}` is absent from the record shape"),
-                                )
-                            })?;
+                            unsupported(
+                                &self.key,
+                                "inout field path",
+                                &format!("field `{name}` is absent from the record shape"),
+                            )
+                        })?;
                         let shape_ref = self.image.intern_shape(
                             self.unit.module_path.as_str(),
                             &current_ty,
@@ -1848,7 +1838,9 @@ impl<'a> FunctionEmitter<'a> {
                         });
                         current_ty = fields.get(name).expect("ordinal was found").clone();
                     }
-                    MirInOutPathSegment::Index { selector, access, .. } => {
+                    MirInOutPathSegment::Index {
+                        selector, access, ..
+                    } => {
                         let selector_ordinal = next_selector_ordinal;
                         next_selector_ordinal = next_selector_ordinal.saturating_add(1);
                         selectors.push(*selector);
@@ -1867,10 +1859,8 @@ impl<'a> FunctionEmitter<'a> {
                                 current_ty = element_ty;
                             }
                             MirIndexReceiverKind::Map => {
-                                let (key_ty, value_ty) = self.map_key_value_types(
-                                    &current_ty,
-                                    "inout map path",
-                                )?;
+                                let (key_ty, value_ty) =
+                                    self.map_key_value_types(&current_ty, "inout map path")?;
                                 let key_type_ref = self.image.type_index(
                                     self.unit.module_path.as_str(),
                                     &key_ty,
@@ -2360,11 +2350,9 @@ impl<'a> FunctionEmitter<'a> {
                 Ok(())
             }
             TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
-                let element_ref = self.image.type_index(
-                    self.unit.module_path.as_str(),
-                    &args[0],
-                    context,
-                )?;
+                let element_ref =
+                    self.image
+                        .type_index(self.unit.module_path.as_str(), &args[0], context)?;
                 self.emit_op(Opcode::NewArrayBuilder, vec![element_ref])?;
                 self.emit_op(Opcode::FreezeArray, Vec::new())?;
                 Ok(())
@@ -2396,17 +2384,12 @@ impl<'a> FunctionEmitter<'a> {
     ) -> Result<(), BytecodeEmissionError> {
         let declared = match self.record_shape_fields(type_ref, "record construct") {
             Ok(declared) => declared,
-            Err(_) if is_package_symbol_type(type_ref) => {
-                fields
-                    .iter()
-                    .map(|(name, value)| {
-                        Ok((
-                            name.clone(),
-                            self.function.expression(*value)?.ty.clone(),
-                        ))
-                    })
-                    .collect::<Result<BTreeMap<_, _>, BytecodeEmissionError>>()?
-            }
+            Err(_) if is_package_symbol_type(type_ref) => fields
+                .iter()
+                .map(|(name, value)| {
+                    Ok((name.clone(), self.function.expression(*value)?.ty.clone()))
+                })
+                .collect::<Result<BTreeMap<_, _>, BytecodeEmissionError>>()?,
             Err(error) => return Err(error),
         };
         if declared.len() != fields.len() || declared.keys().any(|name| !fields.contains_key(name))
@@ -2692,12 +2675,9 @@ impl<'a> FunctionEmitter<'a> {
                     )),
                 }
             }
-            TypeRefIr::PackageSymbol { symbol } => {
-                self.package_record_fields(symbol, context)
-            }
+            TypeRefIr::PackageSymbol { symbol } => self.package_record_fields(symbol, context),
             TypeRefIr::AppliedNominal {
-                base:
-                    skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol },
+                base: skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol },
                 arguments,
             } if arguments.is_empty() => self.package_record_fields(symbol, context),
             TypeRefIr::AppliedNominal { .. } => Err(unsupported(
@@ -2794,7 +2774,13 @@ impl<'a> FunctionEmitter<'a> {
                 key_slot,
                 value_slot,
                 ..
-            } => (false, false, *key_slot, Some(*value_slot), iterable_ty.clone()),
+            } => (
+                false,
+                false,
+                *key_slot,
+                Some(*value_slot),
+                iterable_ty.clone(),
+            ),
         };
         let iterable_slot = self.push_generated_slot(&iterable_ty, "$forIterable")?;
         if stream {
@@ -3083,13 +3069,7 @@ impl<'a> FunctionEmitter<'a> {
             });
         found
             .and_then(|candidate| candidate.ty.as_ref())
-            .ok_or_else(|| {
-                unsupported(
-                    &self.key,
-                    "slot type",
-                    &format!("slot {slot} is absent"),
-                )
-            })
+            .ok_or_else(|| unsupported(&self.key, "slot type", &format!("slot {slot} is absent")))
     }
 
     fn push_generated_slot(
@@ -3454,9 +3434,10 @@ impl<'a> FunctionEmitter<'a> {
                             &format!("block {end_block} is absent"),
                         )
                     })?;
-                Some(*pcs.get(start).ok_or_else(|| {
-                    arithmetic(&self.key, "resume end pc lookup")
-                })?)
+                Some(
+                    *pcs.get(start)
+                        .ok_or_else(|| arithmetic(&self.key, "resume end pc lookup"))?,
+                )
             } else {
                 None
             };
@@ -3548,7 +3529,10 @@ impl<'a> FunctionEmitter<'a> {
                 unsupported(
                     &self.key,
                     "operand stack",
-                    &format!("instruction {:?} underflows the emitted stack", instruction.opcode),
+                    &format!(
+                        "instruction {:?} underflows the emitted stack",
+                        instruction.opcode
+                    ),
                 )
             })?;
             depth = depth
@@ -3701,9 +3685,9 @@ impl<'a> FunctionEmitter<'a> {
             });
         }
         for (instruction_index, site) in &self.throw_source_sites {
-            let start_pc = *pcs.get(*instruction_index).ok_or_else(|| {
-                arithmetic(&self.key, "throw source site instruction pc lookup")
-            })?;
+            let start_pc = *pcs
+                .get(*instruction_index)
+                .ok_or_else(|| arithmetic(&self.key, "throw source site instruction pc lookup"))?;
             let end_pc = pcs
                 .get(instruction_index + 1)
                 .copied()
@@ -4054,7 +4038,8 @@ fn package_symbol_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool
     if actual == expected {
         return true;
     }
-    if actual.symbol_path != expected.symbol_path || actual.abi_expectation != expected.abi_expectation
+    if actual.symbol_path != expected.symbol_path
+        || actual.abi_expectation != expected.abi_expectation
     {
         return false;
     }
@@ -4130,10 +4115,20 @@ fn unsupported(function_key: &str, construct: &'static str, detail: &str) -> Byt
 }
 
 fn host_effect_effects(mut effects: CallableMayEffects) -> CallableMayEffects {
-    if effects.pending_effect_categories.contains(&PendingEffectCategory::NativeCall) {
-        effects.pending_effect_categories.retain(|category| *category != PendingEffectCategory::NativeCall);
-        if !effects.pending_effect_categories.contains(&PendingEffectCategory::HostEffect) {
-            effects.pending_effect_categories.push(PendingEffectCategory::HostEffect);
+    if effects
+        .pending_effect_categories
+        .contains(&PendingEffectCategory::NativeCall)
+    {
+        effects
+            .pending_effect_categories
+            .retain(|category| *category != PendingEffectCategory::NativeCall);
+        if !effects
+            .pending_effect_categories
+            .contains(&PendingEffectCategory::HostEffect)
+        {
+            effects
+                .pending_effect_categories
+                .push(PendingEffectCategory::HostEffect);
         }
     }
     effects
@@ -4160,9 +4155,7 @@ fn check_limit(
     Ok(())
 }
 
-fn value_block_body_blocks(
-    function: &MirFunction,
-) -> Result<BTreeSet<u32>, BytecodeEmissionError> {
+fn value_block_body_blocks(function: &MirFunction) -> Result<BTreeSet<u32>, BytecodeEmissionError> {
     let mut bodies = BTreeSet::new();
     for fact in function.expression_blocks.values() {
         bodies.extend(value_block_body_ids(function, fact)?);
@@ -4546,12 +4539,9 @@ mod tests {
             )]),
             BTreeMap::new(),
         );
-        let artifact = crate::bytecode::emitter::emit_bytecode_artifact_unchecked(
-            &[unit],
-            &[bundle],
-            &plans,
-        )
-        .expect("tag discriminator emission succeeds");
+        let artifact =
+            crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
+                .expect("tag discriminator emission succeeds");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("tag discriminator bytecode validates");
         let function = view
@@ -4718,12 +4708,9 @@ mod tests {
             )]),
             BTreeMap::new(),
         );
-        let artifact = crate::bytecode::emitter::emit_bytecode_artifact_unchecked(
-            &[unit],
-            &[bundle],
-            &plans,
-        )
-        .expect("union-typed construct emission succeeds");
+        let artifact =
+            crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
+                .expect("union-typed construct emission succeeds");
         let leaf_shape = artifact
             .image
             .pools

@@ -13,9 +13,9 @@ use skiff_runtime_model::{
 use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use super::phase_3_proof_support::{
-    drive_phase_3_vcp_request, phase_3_correlation, run_phase_3_request, HeapSpyEvent, HeapSpyTrace,
-    Phase3FixtureBuild, Phase3PublishedFixture, RecordingVmHeap, SpySlot, CorrelatedResponse,
-    PHASE3_HOST_THROW_FIXTURE_RELATIVE, PHASE3_MISMATCH_FIXTURE_RELATIVE,
+    drive_phase_3_vcp_request, phase_3_correlation, run_phase_3_request, CorrelatedResponse,
+    HeapSpyEvent, HeapSpyTrace, Phase3FixtureBuild, Phase3PublishedFixture, RecordingVmHeap,
+    SpySlot, PHASE3_HOST_THROW_FIXTURE_RELATIVE, PHASE3_MISMATCH_FIXTURE_RELATIVE,
     PHASE3_PENDING_THROW_FIXTURE_RELATIVE, PHASE3_UNCAUGHT_FIXTURE_RELATIVE,
     PHASE3_VCP_FIXTURE_RELATIVE,
 };
@@ -199,7 +199,10 @@ fn phase_3_controlled_resume_harness() {
         baseline.vm_slot.is_some(),
         "the controlled envelope must carry its opaque VM payload slot authority"
     );
-    assert_eq!(baseline.catch_identity.as_ref(), envelope.actual_catch_identity());
+    assert_eq!(
+        baseline.catch_identity.as_ref(),
+        envelope.actual_catch_identity()
+    );
 
     let other = controlled_local_envelope("controlled-resume-other");
     assert_ne!(
@@ -216,13 +219,8 @@ fn publish_or_panic(
     version: &str,
     ingress_path: &'static str,
 ) -> Phase3PublishedFixture {
-    match Phase3PublishedFixture::build(
-        prefix,
-        fixture_relative,
-        package_id,
-        version,
-        ingress_path,
-    ) {
+    match Phase3PublishedFixture::build(prefix, fixture_relative, package_id, version, ingress_path)
+    {
         Phase3FixtureBuild::Rejected { error_chain } => panic!(
             "K3 and C3 have joined: the Phase 3 fixture must publish through the \
              production authoring seam; observed rejection chain: {error_chain}"

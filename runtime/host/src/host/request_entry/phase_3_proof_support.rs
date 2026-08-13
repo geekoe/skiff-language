@@ -14,11 +14,11 @@ pub(super) use request_composition::drive_phase_3_vcp_request;
 // event stream and `host_passthrough_note`) without touching its semantics:
 // unwind cleanup-owner release and rethrow envelope identity are still proven
 // through the exact production share/transfer/release primitive sequence.
-pub(super) use super::phase_2_proof_support::{
-    host_passthrough_note, HeapSpyEvent, HeapSpyTrace, RecordingVmHeap, SpySlot,
-};
 pub(super) use super::phase_0_proof_support::{
     receive_correlated_response, CanonicalSkbfRequest, CorrelatedResponse, Correlation,
+};
+pub(super) use super::phase_2_proof_support::{
+    host_passthrough_note, HeapSpyEvent, HeapSpyTrace, RecordingVmHeap, SpySlot,
 };
 
 /// Correlation ids for the Phase 3 proof epoch. The Phase 3 harness reuses the

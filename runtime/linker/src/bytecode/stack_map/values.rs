@@ -58,7 +58,12 @@ pub(super) fn source_values(
                 .slot_plans()
                 .get(slot)
                 .cloned()
-                .ok_or_else(|| obligation_error(location.clone(), format!("frame slot plan {slot} is out of bounds")))?;
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        format!("frame slot plan {slot} is out of bounds"),
+                    )
+                })?;
             Ok(vec![LinkedStackValue::new(ty, plan)])
         }
         ValueSource::StackInput { group } => inputs.get(group as usize).cloned().ok_or_else(|| {
@@ -95,45 +100,68 @@ pub(super) fn source_values(
                     "interface receiver requires a local interface table".to_string(),
                 )
             })?;
-            let concrete = context.type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
-                obligation_error(location.clone(), "interface receiver type is absent".to_string())
-            })?;
+            let concrete = context
+                .type_linker
+                .linked_type_ref(ty)
+                .cloned()
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "interface receiver type is absent".to_string(),
+                    )
+                })?;
             Ok(vec![LinkedStackValue::new(
                 ty,
-                context.type_linker.plan_for_concrete_type(&concrete, location)?,
+                context
+                    .type_linker
+                    .plan_for_concrete_type(&concrete, location)?,
             )])
         }
         ValueSource::InterfaceCarrier { interface } => {
             let table = interface_table(context, instruction, interface, location.clone())?;
             let interface_ref = table.interface().artifact().clone();
-            let ty = context
+            let ty = context.type_linker.intern_concrete_type(
+                context.source.package,
+                context.source.specialization,
+                &TypeRefIr::AnyInterface {
+                    interface: interface_ref,
+                },
+                context.substitutions,
+                location.clone(),
+            )?;
+            let concrete = context
                 .type_linker
-                .intern_concrete_type(
-                    context.source.package,
-                    context.source.specialization,
-                    &TypeRefIr::AnyInterface {
-                        interface: interface_ref,
-                    },
-                    context.substitutions,
-                    location.clone(),
-                )?;
-            let concrete = context.type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
-                obligation_error(location.clone(), "interface carrier type is absent".to_string())
-            })?;
+                .linked_type_ref(ty)
+                .cloned()
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "interface carrier type is absent".to_string(),
+                    )
+                })?;
             Ok(vec![LinkedStackValue::new(
                 ty,
-                context.type_linker.plan_for_concrete_type(&concrete, location)?,
+                context
+                    .type_linker
+                    .plan_for_concrete_type(&concrete, location)?,
             )])
         }
         ValueSource::CallbackCaptures { layout } => {
             let index = pool_index(instruction, layout, location.clone())?;
-            let row = context
-                .type_linker
-                .intern_callback_capture_layout(context.source.package, index, location.clone())?;
+            let row = context.type_linker.intern_callback_capture_layout(
+                context.source.package,
+                index,
+                location.clone(),
+            )?;
             Ok(context
                 .type_linker
                 .callback_capture_layout(row)
-                .ok_or_else(|| obligation_error(location.clone(), "callback capture layout is absent".to_string()))?
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "callback capture layout is absent".to_string(),
+                    )
+                })?
                 .captures()
                 .iter()
                 .map(|capture| LinkedStackValue::new(capture.ty(), capture.plan().clone()))
@@ -146,9 +174,19 @@ pub(super) fn source_values(
                 .function
                 .relocations
                 .get(index as usize)
-                .ok_or_else(|| obligation_error(location.clone(), "callback relocation is absent".to_string()))?;
-            let skiff_artifact_model::BytecodeRelocation::SyntheticCallbackRef { function_key } = relocation else {
-                return Err(obligation_error(location.clone(), "callback target is not synthetic".to_string()));
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "callback relocation is absent".to_string(),
+                    )
+                })?;
+            let skiff_artifact_model::BytecodeRelocation::SyntheticCallbackRef { function_key } =
+                relocation
+            else {
+                return Err(obligation_error(
+                    location.clone(),
+                    "callback target is not synthetic".to_string(),
+                ));
             };
             let callback = context
                 .dispatch_tables
@@ -159,27 +197,49 @@ pub(super) fn source_values(
                         .synthetic_callbacks
                         .get(index.get() as usize)
                 })
-                .ok_or_else(|| obligation_error(location.clone(), "synthetic callback target is absent".to_string()))?;
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "synthetic callback target is absent".to_string(),
+                    )
+                })?;
             if let Some(binding) = callback.interface_method() {
                 let table = context
                     .dispatch_tables
                     .interface_tables
                     .get(binding.interface_table().get() as usize)
-                    .ok_or_else(|| obligation_error(location.clone(), "callback interface table is absent".to_string()))?;
+                    .ok_or_else(|| {
+                        obligation_error(
+                            location.clone(),
+                            "callback interface table is absent".to_string(),
+                        )
+                    })?;
                 let interface_ref = table.interface().artifact().clone();
-                let ty = context
+                let ty = context.type_linker.intern_concrete_type(
+                    context.source.package,
+                    context.source.specialization,
+                    &TypeRefIr::AnyInterface {
+                        interface: interface_ref,
+                    },
+                    context.substitutions,
+                    location.clone(),
+                )?;
+                let concrete = context
                     .type_linker
-                    .intern_concrete_type(
-                        context.source.package,
-                        context.source.specialization,
-                        &TypeRefIr::AnyInterface {
-                            interface: interface_ref,
-                        },
-                        context.substitutions,
-                        location.clone(),
-                    )?;
-                let concrete = context.type_linker.linked_type_ref(ty).cloned().ok_or_else(|| obligation_error(location.clone(), "callback closure type is absent".to_string()))?;
-                return Ok(vec![LinkedStackValue::new(ty, context.type_linker.plan_for_concrete_type(&concrete, location)?)]);
+                    .linked_type_ref(ty)
+                    .cloned()
+                    .ok_or_else(|| {
+                        obligation_error(
+                            location.clone(),
+                            "callback closure type is absent".to_string(),
+                        )
+                    })?;
+                return Ok(vec![LinkedStackValue::new(
+                    ty,
+                    context
+                        .type_linker
+                        .plan_for_concrete_type(&concrete, location)?,
+                )]);
             }
             Err(obligation_error(
                 location,
@@ -188,19 +248,19 @@ pub(super) fn source_values(
         }
         ValueSource::ShapeFields { shape } => {
             let index = pool_index(instruction, shape, location.clone())?;
-            let row = context
-                .type_linker
-                .intern_pool_shape(
-                    context.source.package,
-                    context.source.specialization,
-                    index,
-                    context.substitutions,
-                    location.clone(),
-                )?;
+            let row = context.type_linker.intern_pool_shape(
+                context.source.package,
+                context.source.specialization,
+                index,
+                context.substitutions,
+                location.clone(),
+            )?;
             Ok(context
                 .type_linker
                 .shape(row)
-                .ok_or_else(|| obligation_error(location.clone(), "shape row is absent".to_string()))?
+                .ok_or_else(|| {
+                    obligation_error(location.clone(), "shape row is absent".to_string())
+                })?
                 .fields()
                 .iter()
                 .map(|field| LinkedStackValue::new(field.ty(), field.plan().clone()))
@@ -208,97 +268,134 @@ pub(super) fn source_values(
         }
         ValueSource::ShapeValue { shape } => {
             let index = pool_index(instruction, shape, location.clone())?;
-            let row = context
+            let row = context.type_linker.intern_pool_shape(
+                context.source.package,
+                context.source.specialization,
+                index,
+                context.substitutions,
+                location.clone(),
+            )?;
+            let entry = context.type_linker.shape(row).ok_or_else(|| {
+                obligation_error(location.clone(), "shape row is absent".to_string())
+            })?;
+            let concrete = context
                 .type_linker
-                .intern_pool_shape(
-                    context.source.package,
-                    context.source.specialization,
-                    index,
-                    context.substitutions,
-                    location.clone(),
-                )?;
-            let entry = context
-                .type_linker
-                .shape(row)
-                .ok_or_else(|| obligation_error(location.clone(), "shape row is absent".to_string()))?;
-            let concrete = context.type_linker.linked_type_ref(entry.nominal_type()).cloned().ok_or_else(|| obligation_error(location.clone(), "shape nominal type is absent".to_string()))?;
+                .linked_type_ref(entry.nominal_type())
+                .cloned()
+                .ok_or_else(|| {
+                    obligation_error(location.clone(), "shape nominal type is absent".to_string())
+                })?;
             Ok(vec![LinkedStackValue::new(
                 entry.nominal_type(),
-                context.type_linker.plan_for_concrete_type(&concrete, location)?,
+                context
+                    .type_linker
+                    .plan_for_concrete_type(&concrete, location)?,
             )])
         }
         ValueSource::ShapeField { shape, ordinal } => {
             let index = pool_index(instruction, shape, location.clone())?;
-            let row = context
-                .type_linker
-                .intern_pool_shape(
-                    context.source.package,
-                    context.source.specialization,
-                    index,
-                    context.substitutions,
-                    location.clone(),
-                )?;
+            let row = context.type_linker.intern_pool_shape(
+                context.source.package,
+                context.source.specialization,
+                index,
+                context.substitutions,
+                location.clone(),
+            )?;
             let field_index = operand_word(instruction, ordinal, location.clone())? as usize;
             let field = context
                 .type_linker
                 .shape(row)
                 .and_then(|shape| shape.fields().get(field_index))
-                .ok_or_else(|| obligation_error(location.clone(), format!("shape field {field_index} is absent")))?;
-            Ok(vec![LinkedStackValue::new(field.ty(), field.plan().clone())])
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        format!("shape field {field_index} is absent"),
+                    )
+                })?;
+            Ok(vec![LinkedStackValue::new(
+                field.ty(),
+                field.plan().clone(),
+            )])
         }
         ValueSource::WritablePathSelectors { path } => {
             let index = pool_index(instruction, path, location.clone())?;
-            let row = context
-                .type_linker
-                .intern_writable_path(
-                    context.source.package,
-                    context.source.specialization,
-                    index,
-                    context.substitutions,
-                    location.clone(),
-                )?;
-            let entry = context
-                .type_linker
-                .writable_path(row)
-                .ok_or_else(|| obligation_error(location.clone(), "writable path row is absent".to_string()))?;
+            let row = context.type_linker.intern_writable_path(
+                context.source.package,
+                context.source.specialization,
+                index,
+                context.substitutions,
+                location.clone(),
+            )?;
+            let entry = context.type_linker.writable_path(row).ok_or_else(|| {
+                obligation_error(location.clone(), "writable path row is absent".to_string())
+            })?;
             let mut values = Vec::new();
             let segments = entry.segments().to_vec();
             for segment in segments.iter() {
                 match segment {
-                    skiff_runtime_linked_bytecode::LinkedWritablePathSegment::ArrayIndex { .. } => {
+                    skiff_runtime_linked_bytecode::LinkedWritablePathSegment::ArrayIndex {
+                        ..
+                    } => {
                         // The selector is the index value itself, not the array
                         // element: array indices are number-typed exactly like
                         // the canonical `CollectionIndex` input class.
                         values.extend(scalar_value(context, "number", location.clone())?);
                     }
-                    skiff_runtime_linked_bytecode::LinkedWritablePathSegment::MapKey { key_type, .. } => {
-                        let concrete = context.type_linker.linked_type_ref(*key_type).cloned().ok_or_else(|| obligation_error(location.clone(), "map selector type is absent".to_string()))?;
-                        values.push(LinkedStackValue::new(*key_type, context.type_linker.plan_for_concrete_type(&concrete, location.clone())?));
+                    skiff_runtime_linked_bytecode::LinkedWritablePathSegment::MapKey {
+                        key_type,
+                        ..
+                    } => {
+                        let concrete = context
+                            .type_linker
+                            .linked_type_ref(*key_type)
+                            .cloned()
+                            .ok_or_else(|| {
+                                obligation_error(
+                                    location.clone(),
+                                    "map selector type is absent".to_string(),
+                                )
+                            })?;
+                        values.push(LinkedStackValue::new(
+                            *key_type,
+                            context
+                                .type_linker
+                                .plan_for_concrete_type(&concrete, location.clone())?,
+                        ));
                     }
-                    skiff_runtime_linked_bytecode::LinkedWritablePathSegment::DenseField { .. } => {}
+                    skiff_runtime_linked_bytecode::LinkedWritablePathSegment::DenseField {
+                        ..
+                    } => {}
                 }
             }
             Ok(values)
         }
         ValueSource::WritablePathLeaf { path } => {
             let index = pool_index(instruction, path, location.clone())?;
-            let row = context
+            let row = context.type_linker.intern_writable_path(
+                context.source.package,
+                context.source.specialization,
+                index,
+                context.substitutions,
+                location.clone(),
+            )?;
+            let entry = context.type_linker.writable_path(row).ok_or_else(|| {
+                obligation_error(location.clone(), "writable path row is absent".to_string())
+            })?;
+            let concrete = context
                 .type_linker
-                .intern_writable_path(
-                    context.source.package,
-                    context.source.specialization,
-                    index,
-                    context.substitutions,
-                    location.clone(),
-                )?;
-            let entry = context
-                .type_linker
-                .writable_path(row)
-                .ok_or_else(|| obligation_error(location.clone(), "writable path row is absent".to_string()))?;
-            let concrete = context.type_linker.linked_type_ref(entry.leaf_type()).cloned().ok_or_else(|| obligation_error(location.clone(), "writable path leaf type is absent".to_string()))?;
+                .linked_type_ref(entry.leaf_type())
+                .cloned()
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "writable path leaf type is absent".to_string(),
+                    )
+                })?;
             Ok(vec![LinkedStackValue::new(
                 entry.leaf_type(),
-                context.type_linker.plan_for_concrete_type(&concrete, location)?,
+                context
+                    .type_linker
+                    .plan_for_concrete_type(&concrete, location)?,
             )])
         }
         ValueSource::RepresentationPayload { ty } => {
@@ -310,8 +407,22 @@ pub(super) fn source_values(
                 context.substitutions,
                 location.clone(),
             )?;
-            let concrete = context.type_linker.linked_type_ref(linked_ty).cloned().ok_or_else(|| obligation_error(location.clone(), "representation type is absent".to_string()))?;
-            let payload = representation_payload(context.source.package, &concrete, context.substitutions, &location)?;
+            let concrete = context
+                .type_linker
+                .linked_type_ref(linked_ty)
+                .cloned()
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "representation type is absent".to_string(),
+                    )
+                })?;
+            let payload = representation_payload(
+                context.source.package,
+                &concrete,
+                context.substitutions,
+                &location,
+            )?;
             let payload_ty = context.type_linker.intern_concrete_type(
                 context.source.package,
                 context.source.specialization,
@@ -321,7 +432,9 @@ pub(super) fn source_values(
             )?;
             Ok(vec![LinkedStackValue::new(
                 payload_ty,
-                context.type_linker.plan_for_concrete_type(&payload, location)?,
+                context
+                    .type_linker
+                    .plan_for_concrete_type(&payload, location)?,
             )])
         }
         ValueSource::RepresentationValue { ty } => {
@@ -333,21 +446,40 @@ pub(super) fn source_values(
                 context.substitutions,
                 location.clone(),
             )?;
-            let concrete = context.type_linker.linked_type_ref(linked_ty).cloned().ok_or_else(|| obligation_error(location.clone(), "representation type is absent".to_string()))?;
+            let concrete = context
+                .type_linker
+                .linked_type_ref(linked_ty)
+                .cloned()
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "representation type is absent".to_string(),
+                    )
+                })?;
             Ok(vec![LinkedStackValue::new(
                 linked_ty,
-                context.type_linker.plan_for_concrete_type(&concrete, location)?,
+                context
+                    .type_linker
+                    .plan_for_concrete_type(&concrete, location)?,
             )])
         }
         ValueSource::ArrayBuilder { element_type } => {
             container_builder(context, instruction, element_type, "Array", 0, location)
         }
-        ValueSource::ArrayValue | ValueSource::MapValue => {
-            Ok(vec![LinkedStackValue::new(
-                context.frame.slot_types().first().copied().ok_or_else(|| obligation_error(location.clone(), "container input requires a typed stack value".to_string()))?,
-                context.frame.slot_plans().first().cloned().ok_or_else(|| obligation_error(location.clone(), "container input plan is absent".to_string()))?,
-            )])
-        }
+        ValueSource::ArrayValue | ValueSource::MapValue => Ok(vec![LinkedStackValue::new(
+            context.frame.slot_types().first().copied().ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "container input requires a typed stack value".to_string(),
+                )
+            })?,
+            context.frame.slot_plans().first().cloned().ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "container input plan is absent".to_string(),
+                )
+            })?,
+        )]),
         ValueSource::ArrayFromBuilder { builder_input } => {
             container_from_builder(context, inputs, builder_input, "Array", location)
         }
@@ -357,26 +489,71 @@ pub(super) fn source_values(
         ValueSource::ArrayElementFromSlot { slot } => {
             container_element_from_slot(context, instruction, slot, false, location)
         }
-        ValueSource::MapBuilder { key_type, value_type } => {
+        ValueSource::MapBuilder {
+            key_type,
+            value_type,
+        } => {
             let key = pool_index(instruction, key_type, location.clone())?;
             let value = pool_index(instruction, value_type, location.clone())?;
-            let key_index = context.type_linker.intern_pool_type(context.source.package, context.source.specialization, key, context.substitutions, location.clone())?;
-            let value_index = context.type_linker.intern_pool_type(context.source.package, context.source.specialization, value, context.substitutions, location.clone())?;
+            let key_index = context.type_linker.intern_pool_type(
+                context.source.package,
+                context.source.specialization,
+                key,
+                context.substitutions,
+                location.clone(),
+            )?;
+            let value_index = context.type_linker.intern_pool_type(
+                context.source.package,
+                context.source.specialization,
+                value,
+                context.substitutions,
+                location.clone(),
+            )?;
             let map = TypeRefIr::Builtin {
                 name: "Map".to_string(),
                 args: vec![
-                    context.type_linker.linked_type_ref(key_index).cloned().ok_or_else(|| obligation_error(location.clone(), "map key type is absent".to_string()))?,
-                    context.type_linker.linked_type_ref(value_index).cloned().ok_or_else(|| obligation_error(location.clone(), "map value type is absent".to_string()))?,
+                    context
+                        .type_linker
+                        .linked_type_ref(key_index)
+                        .cloned()
+                        .ok_or_else(|| {
+                            obligation_error(location.clone(), "map key type is absent".to_string())
+                        })?,
+                    context
+                        .type_linker
+                        .linked_type_ref(value_index)
+                        .cloned()
+                        .ok_or_else(|| {
+                            obligation_error(
+                                location.clone(),
+                                "map value type is absent".to_string(),
+                            )
+                        })?,
                 ],
             };
-            let ty = context.type_linker.intern_concrete_type(context.source.package, context.source.specialization, &map, context.substitutions, location.clone())?;
-            Ok(vec![LinkedStackValue::new(ty, context.type_linker.plan_for_concrete_type(&map, location)?)])
+            let ty = context.type_linker.intern_concrete_type(
+                context.source.package,
+                context.source.specialization,
+                &map,
+                context.substitutions,
+                location.clone(),
+            )?;
+            Ok(vec![LinkedStackValue::new(
+                ty,
+                context.type_linker.plan_for_concrete_type(&map, location)?,
+            )])
         }
         ValueSource::MapFromBuilder { builder_input } => {
             container_from_builder(context, inputs, builder_input, "Map", location)
         }
         ValueSource::MapKey { map_input } | ValueSource::MapElement { map_input } => {
-            container_element(context, inputs, map_input, source == ValueSource::MapKey { map_input }, location)
+            container_element(
+                context,
+                inputs,
+                map_input,
+                source == ValueSource::MapKey { map_input },
+                location,
+            )
         }
         ValueSource::MapKeyFromSlot { slot } => {
             container_element_from_slot(context, instruction, slot, true, location)
@@ -386,26 +563,78 @@ pub(super) fn source_values(
         }
         ValueSource::StreamItem { endpoint_slot } => {
             let slot = operand_word(instruction, endpoint_slot, location.clone())? as usize;
-            let endpoint = context.frame.slot_types().get(slot).copied().ok_or_else(|| obligation_error(location.clone(), format!("stream endpoint slot {slot} is absent")))?;
+            let endpoint = context
+                .frame
+                .slot_types()
+                .get(slot)
+                .copied()
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        format!("stream endpoint slot {slot} is absent"),
+                    )
+                })?;
             stream_item_from_endpoint(context, endpoint, location)
         }
         ValueSource::FunctionStreamItem => {
-            let stream = context
-                .frame
-                .stream_result_type_ref()
-                .ok_or_else(|| obligation_error(location.clone(), "stream producer has no stream result type".to_string()))?;
+            let stream = context.frame.stream_result_type_ref().ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "stream producer has no stream result type".to_string(),
+                )
+            })?;
             stream_item_from_endpoint(context, stream, location)
         }
         ValueSource::ExceptionPayload { type_ref } => {
             let type_index = pool_index(instruction, type_ref, location.clone())?;
-            let ty = context.type_linker.intern_pool_type(context.source.package, context.source.specialization, type_index, context.substitutions, location.clone())?;
-            let concrete = context.type_linker.linked_type_ref(ty).cloned().ok_or_else(|| obligation_error(location.clone(), "exception payload type is absent".to_string()))?;
-            Ok(vec![LinkedStackValue::new(ty, context.type_linker.plan_for_concrete_type(&concrete, location)?)])
+            let ty = context.type_linker.intern_pool_type(
+                context.source.package,
+                context.source.specialization,
+                type_index,
+                context.substitutions,
+                location.clone(),
+            )?;
+            let concrete = context
+                .type_linker
+                .linked_type_ref(ty)
+                .cloned()
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "exception payload type is absent".to_string(),
+                    )
+                })?;
+            Ok(vec![LinkedStackValue::new(
+                ty,
+                context
+                    .type_linker
+                    .plan_for_concrete_type(&concrete, location)?,
+            )])
         }
         ValueSource::ExceptionEnvelope { source_slot } => {
             let slot = operand_word(instruction, source_slot, location.clone())? as usize;
-            let ty = context.frame.slot_types().get(slot).copied().ok_or_else(|| obligation_error(location.clone(), format!("exception envelope slot {slot} is absent")))?;
-            let plan = context.frame.slot_plans().get(slot).cloned().ok_or_else(|| obligation_error(location.clone(), format!("exception envelope slot plan {slot} is absent")))?;
+            let ty = context
+                .frame
+                .slot_types()
+                .get(slot)
+                .copied()
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        format!("exception envelope slot {slot} is absent"),
+                    )
+                })?;
+            let plan = context
+                .frame
+                .slot_plans()
+                .get(slot)
+                .cloned()
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        format!("exception envelope slot plan {slot} is absent"),
+                    )
+                })?;
             Ok(vec![LinkedStackValue::new(ty, plan)])
         }
         ValueSource::AnyStackValue | ValueSource::TaggedValue | ValueSource::ComparablePair => {
@@ -451,7 +680,12 @@ fn interface_table<'a>(
         .dispatch_tables
         .interface_tables
         .get(index as usize)
-        .ok_or_else(|| obligation_error(location.clone(), format!("interface table {index} is absent")))
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("interface table {index} is absent"),
+            )
+        })
 }
 
 fn target_index(
@@ -461,7 +695,12 @@ fn target_index(
 ) -> Result<u32, BytecodeLinkError> {
     let ordinal = contract_for_opcode(instruction.opcode())
         .operand_position(role)
-        .ok_or_else(|| obligation_error(location.clone(), format!("operand role {} is absent", role.name())))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("operand role {} is absent", role.name()),
+            )
+        })?;
     instruction
         .resolved_operands()
         .iter()
@@ -474,7 +713,12 @@ fn target_index(
             LinkedInstructionTarget::Intrinsic(index) => index.get(),
             _ => 0,
         })
-        .ok_or_else(|| obligation_error(location.clone(), format!("target operand role {} is unresolved", role.name())))
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("target operand role {} is unresolved", role.name()),
+            )
+        })
 }
 
 fn target_parameter_values(
@@ -483,7 +727,9 @@ fn target_parameter_values(
     role: OperandRole,
     location: BytecodeLinkLocation,
 ) -> Result<Vec<LinkedStackValue>, BytecodeLinkError> {
-    if let Some(values) = local_target_parameter_values(context, instruction, role, location.clone())? {
+    if let Some(values) =
+        local_target_parameter_values(context, instruction, role, location.clone())?
+    {
         return Ok(values);
     }
     target_signature(context, instruction, role, location).map(|signature| {
@@ -503,7 +749,8 @@ fn target_result_values(
     role: OperandRole,
     location: BytecodeLinkLocation,
 ) -> Result<Vec<LinkedStackValue>, BytecodeLinkError> {
-    if let Some(values) = local_target_result_values(context, instruction, role, location.clone())? {
+    if let Some(values) = local_target_result_values(context, instruction, role, location.clone())?
+    {
         return Ok(values);
     }
     target_signature(context, instruction, role, location).map(|signature| {
@@ -525,7 +772,12 @@ fn local_target_parameter_values(
 ) -> Result<Option<Vec<LinkedStackValue>>, BytecodeLinkError> {
     let ordinal = contract_for_opcode(instruction.opcode())
         .operand_position(role)
-        .ok_or_else(|| obligation_error(location.clone(), format!("operand role {} is absent", role.name())))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("operand role {} is absent", role.name()),
+            )
+        })?;
     let Some(LinkedInstructionTarget::Function(function)) = instruction
         .resolved_operands()
         .iter()
@@ -537,7 +789,12 @@ fn local_target_parameter_values(
     let frame = context
         .all_frames
         .get(function.get() as usize)
-        .ok_or_else(|| obligation_error(location.clone(), format!("function target {} is absent", function.get())))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("function target {} is absent", function.get()),
+            )
+        })?;
     Ok(Some(
         frame
             .parameters()
@@ -548,7 +805,12 @@ fn local_target_parameter_values(
                     .get(parameter.slot().get() as usize)
                     .copied()
                     .map(|ty| LinkedStackValue::new(ty, parameter.plan().clone()))
-                    .ok_or_else(|| obligation_error(location.clone(), "target parameter type is absent".to_string()))
+                    .ok_or_else(|| {
+                        obligation_error(
+                            location.clone(),
+                            "target parameter type is absent".to_string(),
+                        )
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?,
     ))
@@ -562,7 +824,12 @@ fn local_target_result_values(
 ) -> Result<Option<Vec<LinkedStackValue>>, BytecodeLinkError> {
     let ordinal = contract_for_opcode(instruction.opcode())
         .operand_position(role)
-        .ok_or_else(|| obligation_error(location.clone(), format!("operand role {} is absent", role.name())))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("operand role {} is absent", role.name()),
+            )
+        })?;
     let Some(LinkedInstructionTarget::Function(function)) = instruction
         .resolved_operands()
         .iter()
@@ -574,7 +841,12 @@ fn local_target_result_values(
     let frame = context
         .all_frames
         .get(function.get() as usize)
-        .ok_or_else(|| obligation_error(location.clone(), format!("function target {} is absent", function.get())))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("function target {} is absent", function.get()),
+            )
+        })?;
     Ok(Some(
         frame
             .result_types()
@@ -630,46 +902,79 @@ fn target_signature<'a>(
     let index = target_index(instruction, role, location.clone())? as usize;
     let ordinal = contract_for_opcode(instruction.opcode())
         .operand_position(role)
-        .ok_or_else(|| obligation_error(location.clone(), format!("operand role {} is absent", role.name())))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("operand role {} is absent", role.name()),
+            )
+        })?;
     let target = instruction
         .resolved_operands()
         .iter()
         .find(|resolved| resolved.operand_ordinal() == ordinal as u32)
         .map(|resolved| resolved.target())
-        .ok_or_else(|| obligation_error(location.clone(), format!("target operand role {} is unresolved", role.name())))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("target operand role {} is unresolved", role.name()),
+            )
+        })?;
     match target {
         LinkedInstructionTarget::ServiceOperation(_) => context
             .dispatch_tables
             .service_operations
             .get(index)
             .map(|target| TargetSignature::Callable(target.signature()))
-            .ok_or_else(|| obligation_error(location.clone(), "service operation target is absent".to_string())),
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "service operation target is absent".to_string(),
+                )
+            }),
         LinkedInstructionTarget::ActorMethod(_) => context
             .dispatch_tables
             .actor_methods
             .get(index)
             .map(|target| TargetSignature::Callable(target.signature()))
-            .ok_or_else(|| obligation_error(location.clone(), "actor method target is absent".to_string())),
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "actor method target is absent".to_string(),
+                )
+            }),
         LinkedInstructionTarget::InterfaceTable(_) => {
             let table = context
                 .dispatch_tables
                 .interface_tables
                 .get(index)
-                .ok_or_else(|| obligation_error(location.clone(), "interface table is absent".to_string()))?;
-            let method_ordinal = operand_word(instruction, OperandRole::MethodOrdinal, location.clone())? as usize;
+                .ok_or_else(|| {
+                    obligation_error(location.clone(), "interface table is absent".to_string())
+                })?;
+            let method_ordinal =
+                operand_word(instruction, OperandRole::MethodOrdinal, location.clone())? as usize;
             let signature = match table.kind() {
                 skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Requirement(methods)
                 | skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Callback(methods) => {
-                    methods.methods().get(method_ordinal).map(|method| method.signature())
+                    methods
+                        .methods()
+                        .get(method_ordinal)
+                        .map(|method| method.signature())
                 }
-                skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Local(methods) => {
-                    methods.methods().get(method_ordinal).map(|method| method.signature())
-                }
-                skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Remote(methods) => {
-                    methods.methods().get(method_ordinal).map(|method| method.signature())
-                }
+                skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Local(methods) => methods
+                    .methods()
+                    .get(method_ordinal)
+                    .map(|method| method.signature()),
+                skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Remote(methods) => methods
+                    .methods()
+                    .get(method_ordinal)
+                    .map(|method| method.signature()),
             }
-            .ok_or_else(|| obligation_error(location.clone(), format!("interface method ordinal {method_ordinal} is absent")))?;
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("interface method ordinal {method_ordinal} is absent"),
+                )
+            })?;
             Ok(TargetSignature::Callable(signature))
         }
         LinkedInstructionTarget::HostEffectAdapter(_) => context
@@ -677,14 +982,21 @@ fn target_signature<'a>(
             .host_effect_adapters
             .get(index)
             .map(|target| TargetSignature::Native(target.signature()))
-            .ok_or_else(|| obligation_error(location.clone(), "host effect target is absent".to_string())),
+            .ok_or_else(|| {
+                obligation_error(location.clone(), "host effect target is absent".to_string())
+            }),
         LinkedInstructionTarget::Intrinsic(_) => context
             .dispatch_tables
             .intrinsics
             .get(index)
             .map(|target| TargetSignature::Native(target.signature()))
-            .ok_or_else(|| obligation_error(location.clone(), "intrinsic target is absent".to_string())),
-        _ => Err(obligation_error(location.clone(), "target is not callable".to_string())),
+            .ok_or_else(|| {
+                obligation_error(location.clone(), "intrinsic target is absent".to_string())
+            }),
+        _ => Err(obligation_error(
+            location.clone(),
+            "target is not callable".to_string(),
+        )),
     }
 }
 
@@ -708,7 +1020,12 @@ fn container_builder(
         .type_linker
         .linked_type_ref(element)
         .cloned()
-        .ok_or_else(|| obligation_error(location.clone(), "container element type is absent".to_string()))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "container element type is absent".to_string(),
+            )
+        })?;
     let builtin = TypeRefIr::Builtin {
         name: name.to_string(),
         args: vec![element_ty],
@@ -722,7 +1039,9 @@ fn container_builder(
     )?;
     Ok(vec![LinkedStackValue::new(
         ty,
-        context.type_linker.plan_for_concrete_type(&builtin, location)?,
+        context
+            .type_linker
+            .plan_for_concrete_type(&builtin, location)?,
     )])
 }
 
@@ -737,15 +1056,27 @@ fn container_from_builder(
         .get(builder_input as usize)
         .and_then(|values| values.first())
         .cloned()
-        .ok_or_else(|| obligation_error(location.clone(), "container builder input is absent".to_string()))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "container builder input is absent".to_string(),
+            )
+        })?;
     let concrete = context
         .type_linker
         .linked_type_ref(builder.ty())
         .cloned()
-        .ok_or_else(|| obligation_error(location.clone(), "container builder type is absent".to_string()))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "container builder type is absent".to_string(),
+            )
+        })?;
     Ok(vec![LinkedStackValue::new(
         builder.ty(),
-        context.type_linker.plan_for_concrete_type(&concrete, location)?,
+        context
+            .type_linker
+            .plan_for_concrete_type(&concrete, location)?,
     )])
 }
 
@@ -760,18 +1091,30 @@ fn container_element(
         .get(input_group as usize)
         .and_then(|values| values.first())
         .cloned()
-        .ok_or_else(|| obligation_error(location.clone(), "container input is absent".to_string()))?;
+        .ok_or_else(|| {
+            obligation_error(location.clone(), "container input is absent".to_string())
+        })?;
     let layout = context
         .type_linker
         .container_layout(container.ty())
-        .ok_or_else(|| obligation_error(location.clone(), "container input has no layout".to_string()))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "container input has no layout".to_string(),
+            )
+        })?;
     let position = if key {
         layout.key()
     } else {
         layout.element().or_else(|| layout.value())
     }
-    .ok_or_else(|| obligation_error(location.clone(), "container position is absent".to_string()))?;
-    Ok(vec![LinkedStackValue::new(position.ty(), position.plan().clone())])
+    .ok_or_else(|| {
+        obligation_error(location.clone(), "container position is absent".to_string())
+    })?;
+    Ok(vec![LinkedStackValue::new(
+        position.ty(),
+        position.plan().clone(),
+    )])
 }
 
 fn container_element_from_slot(
@@ -787,18 +1130,24 @@ fn container_element_from_slot(
         .slot_types()
         .get(slot)
         .copied()
-        .ok_or_else(|| obligation_error(location.clone(), format!("container slot {slot} is absent")))?;
-    let layout = context
-        .type_linker
-        .container_layout(ty)
-        .ok_or_else(|| obligation_error(location.clone(), "container slot has no layout".to_string()))?;
+        .ok_or_else(|| {
+            obligation_error(location.clone(), format!("container slot {slot} is absent"))
+        })?;
+    let layout = context.type_linker.container_layout(ty).ok_or_else(|| {
+        obligation_error(location.clone(), "container slot has no layout".to_string())
+    })?;
     let position = if key {
         layout.key()
     } else {
         layout.element().or_else(|| layout.value())
     }
-    .ok_or_else(|| obligation_error(location.clone(), "container position is absent".to_string()))?;
-    Ok(vec![LinkedStackValue::new(position.ty(), position.plan().clone())])
+    .ok_or_else(|| {
+        obligation_error(location.clone(), "container position is absent".to_string())
+    })?;
+    Ok(vec![LinkedStackValue::new(
+        position.ty(),
+        position.plan().clone(),
+    )])
 }
 
 fn stream_item_from_endpoint(
@@ -810,15 +1159,29 @@ fn stream_item_from_endpoint(
         .type_linker
         .linked_type_ref(endpoint)
         .cloned()
-        .ok_or_else(|| obligation_error(location.clone(), "stream endpoint type is absent".to_string()))?;
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "stream endpoint type is absent".to_string(),
+            )
+        })?;
     let TypeRefIr::Builtin { name, args } = &concrete else {
-        return Err(obligation_error(location.clone(), "stream endpoint is not a builtin".to_string()));
+        return Err(obligation_error(
+            location.clone(),
+            "stream endpoint is not a builtin".to_string(),
+        ));
     };
     if name != "Stream" {
-        return Err(obligation_error(location.clone(), "stream endpoint is not Stream".to_string()));
+        return Err(obligation_error(
+            location.clone(),
+            "stream endpoint is not Stream".to_string(),
+        ));
     }
     let [item] = args.as_slice() else {
-        return Err(obligation_error(location.clone(), "Stream endpoint must have one item type".to_string()));
+        return Err(obligation_error(
+            location.clone(),
+            "Stream endpoint must have one item type".to_string(),
+        ));
     };
     let ty = context.type_linker.intern_concrete_type(
         context.source.package,
@@ -846,14 +1209,35 @@ fn representation_payload(
                 .package_local_abi
                 .implementation_symbols
                 .get(&symbol.symbol_path)
-                .or_else(|| package.artifact().package_local_abi.public_symbols.get(&symbol.symbol_path))
-                .ok_or_else(|| obligation_error(location.clone(), "representation package symbol is absent".to_string()))?;
+                .or_else(|| {
+                    package
+                        .artifact()
+                        .package_local_abi
+                        .public_symbols
+                        .get(&symbol.symbol_path)
+                })
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "representation package symbol is absent".to_string(),
+                    )
+                })?;
             match symbol {
-                skiff_artifact_model::PackageLocalAbiSymbol::Type { descriptor, .. } => match descriptor {
-                    skiff_artifact_model::TypeDescriptorIr::Representation { representation } => Ok(representation.clone()),
-                    _ => Err(obligation_error(location.clone(), "representation type is not a representation descriptor".to_string())),
-                },
-                _ => Err(obligation_error(location.clone(), "representation type is not a type symbol".to_string())),
+                skiff_artifact_model::PackageLocalAbiSymbol::Type { descriptor, .. } => {
+                    match descriptor {
+                        skiff_artifact_model::TypeDescriptorIr::Representation {
+                            representation,
+                        } => Ok(representation.clone()),
+                        _ => Err(obligation_error(
+                            location.clone(),
+                            "representation type is not a representation descriptor".to_string(),
+                        )),
+                    }
+                }
+                _ => Err(obligation_error(
+                    location.clone(),
+                    "representation type is not a type symbol".to_string(),
+                )),
             }
         }
         _ => Err(obligation_error(
@@ -904,7 +1288,10 @@ pub(super) fn operand_word(
     contract_for_opcode(instruction.opcode())
         .operand_word(role, instruction.operands())
         .ok_or_else(|| {
-            obligation_error(location.clone(), format!("operand role {} is absent", role.name()))
+            obligation_error(
+                location.clone(),
+                format!("operand role {} is absent", role.name()),
+            )
         })
 }
 
