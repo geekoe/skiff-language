@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     self, BoundaryOperationContract, BytecodeIntrinsicRef, BytecodeRelocation,
-    CallableEffectSummary, CallableMayEffects, ContractOperationId, ContractTypeRef, DbOperandRole,
-    DbOperationKind, HostEffectRequiredContext,
+    CallableEffectSummary, CallableMayEffects, CallableRegistryTypeExpression,
+    ContractOperationId, ContractTypeRef, HostEffectRegistryEntry,
     InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, PackageBuildId,
     PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId, PackageSymbolRef, ParamModeIr,
     PendingEffectCategory, ResolvedPackageValueType, ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver, ValueLifecycleResolverError,
@@ -615,6 +615,347 @@ impl LinkedDispatchTables {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use skiff_artifact_model::{
+        HostEffectReference, HostEffectRegistryEntry, HostEffectSignature, NativeTarget,
+        PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, ParamModeIr,
+        PendingEffectCategory, ResolvedPackageValueType, TypeDescriptorIr, TypeRefIr,
+        ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
+        ValueTransferPlan,
+    };
+
+    use super::{
+        registry_entry_for, registry_type_expression, validate_host_effect_authority,
+    };
+    use crate::bytecode::BytecodeLinkLocation;
+
+    fn location() -> BytecodeLinkLocation {
+        BytecodeLinkLocation::Package {
+            package: Box::new(PackageArtifactRef {
+                package_id: "example.com/host-authority".to_string(),
+                package_version: "0.1.0".to_string(),
+                package_build_id: PackageBuildId::new("build"),
+                package_local_abi_identity: PackageLocalAbiIdentity::new("abi"),
+            }),
+        }
+    }
+
+    fn budget() -> ValueLifecyclePolicyBudget {
+        ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64).expect("test budget is valid")
+    }
+
+    struct StubResolver;
+
+    impl ValueLifecycleFactResolver for StubResolver {
+        fn resolve_package_symbol(
+            &mut self,
+            _symbol: &skiff_artifact_model::PackageSymbolRef,
+        ) -> Result<ResolvedPackageValueType, ValueLifecycleResolverError> {
+            Ok(ResolvedPackageValueType {
+                type_parameters: Vec::new(),
+                descriptor: TypeDescriptorIr::Alias {
+                    target: TypeRefIr::builtin("number"),
+                },
+            })
+        }
+
+        fn resolve_package_schema(
+            &mut self,
+            _package_id: &str,
+            _stable_schema_key: &str,
+            _package_schema_type_id: &skiff_artifact_model::PackageSchemaTypeId,
+        ) -> Result<skiff_artifact_model::PackageSchemaTypeRecord, ValueLifecycleResolverError>
+        {
+            Err(resolver_error("schema resolution is unavailable in this test"))
+        }
+
+        fn validate_interface(
+            &mut self,
+            _interface: &skiff_artifact_model::InterfaceInstantiationRef,
+        ) -> Result<(), ValueLifecycleResolverError> {
+            Err(resolver_error("interface validation is unavailable in this test"))
+        }
+
+        fn validate_contract_interface(
+            &mut self,
+            _interface: &skiff_artifact_model::ContractTypeRef,
+            _arguments: &[skiff_artifact_model::ContractTypeRef],
+        ) -> Result<(), ValueLifecycleResolverError> {
+            Err(resolver_error(
+                "contract interface validation is unavailable in this test",
+            ))
+        }
+    }
+
+    fn resolver_error(message: &str) -> ValueLifecycleResolverError {
+        ValueLifecycleResolverError {
+            authority: "bytecodeLinker.hostAuthorityTest".to_string(),
+            message: message.to_string(),
+        }
+    }
+
+    fn fill_abi(ty: &mut TypeRefIr) {
+        match ty {
+            TypeRefIr::PackageSymbol { symbol } => {
+                if symbol.abi_expectation.is_none() {
+                    symbol.abi_expectation = Some("test-abi".to_string());
+                }
+            }
+            TypeRefIr::Builtin { args, .. } => {
+                for argument in args {
+                    fill_abi(argument);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn signature_from(entry: &HostEffectRegistryEntry) -> HostEffectSignature {
+        let parameter_types = entry
+            .signature
+            .parameter_types
+            .iter()
+            .map(|ty| registry_type_expression(ty, &location()).expect("registry type converts"))
+            .map(|mut ty| {
+                fill_abi(&mut ty);
+                ty
+            })
+            .collect::<Vec<_>>();
+        let parameter_plans = parameter_types
+            .iter()
+            .cloned()
+            .map(|ty| ValueTransferPlan::FromType { ty })
+            .collect();
+        let result_types = entry
+            .signature
+            .result_types
+            .iter()
+            .map(|ty| registry_type_expression(ty, &location()).expect("registry type converts"))
+            .map(|mut ty| {
+                fill_abi(&mut ty);
+                ty
+            })
+            .collect::<Vec<_>>();
+        let result_plans = result_types
+            .iter()
+            .cloned()
+            .map(|ty| ValueTransferPlan::FromType { ty })
+            .collect();
+        HostEffectSignature {
+            parameter_types,
+            parameter_modes: entry.signature.parameter_modes.clone(),
+            parameter_plans,
+            result_types,
+            result_plans,
+            effects: entry.signature.effects.clone(),
+        }
+    }
+
+    fn reference_for(entry: &HostEffectRegistryEntry) -> HostEffectReference {
+        let (namespace, symbol) = entry
+            .target
+            .split_once('.')
+            .expect("registry target is namespace-qualified");
+        HostEffectReference {
+            target: NativeTarget {
+                namespace: namespace.to_string(),
+                symbol: symbol.to_string(),
+                binding_key: Some(entry.binding_key.clone()),
+                metadata: BTreeMap::new(),
+            },
+            signature: signature_from(entry),
+            db_operation: None,
+        }
+    }
+
+    fn sleep_reference() -> HostEffectReference {
+        let entry = skiff_artifact_model::host_effect_registry()
+            .entries()
+            .iter()
+            .find(|entry| entry.binding_key == "std.time.sleep")
+            .expect("pinned registry has std.time.sleep");
+        reference_for(entry)
+    }
+
+    #[test]
+    fn pinned_registry_owns_the_sleep_typed_entry() {
+        let effect = sleep_reference();
+        let entry = registry_entry_for(&effect, &location()).expect("pinned sleep resolves");
+        assert_eq!(entry.binding_key, "std.time.sleep");
+        assert_eq!(entry.signature.parameter_types.len(), 1);
+        assert_eq!(entry.signature.result_types.len(), 0);
+        assert!(entry.signature.effects.may_pending());
+    }
+
+    #[test]
+    fn exact_sleep_arity_type_plan_and_effects_are_admitted() {
+        let effect = sleep_reference();
+        let mut resolver = StubResolver;
+        let mut budget = budget();
+        validate_host_effect_authority(
+            &effect,
+            &effect.signature,
+            &mut resolver,
+            &mut budget,
+            &location(),
+        )
+        .expect("exact canonical sleep facts validate against the frozen registry");
+    }
+
+    #[test]
+    fn wrong_sleep_arity_is_rejected() {
+        let mut effect = sleep_reference();
+        let duplicated = effect.signature.parameter_types[0].clone();
+        effect.signature.parameter_types.push(duplicated.clone());
+        effect
+            .signature
+            .parameter_modes
+            .push(ParamModeIr::Value);
+        effect
+            .signature
+            .parameter_plans
+            .push(ValueTransferPlan::FromType { ty: duplicated });
+        let mut resolver = StubResolver;
+        let mut budget = budget();
+        assert!(
+            validate_host_effect_authority(
+                &effect,
+                &effect.signature,
+                &mut resolver,
+                &mut budget,
+                &location(),
+            )
+            .is_err(),
+            "wrong arity must not be admitted"
+        );
+    }
+
+    #[test]
+    fn wrong_sleep_parameter_type_is_rejected() {
+        let mut effect = sleep_reference();
+        effect.signature.parameter_types[0] = TypeRefIr::builtin("integer");
+        let mut resolver = StubResolver;
+        let mut budget = budget();
+        assert!(
+            validate_host_effect_authority(
+                &effect,
+                &effect.signature,
+                &mut resolver,
+                &mut budget,
+                &location(),
+            )
+            .is_err(),
+            "wrong parameter type must not be admitted"
+        );
+    }
+
+    #[test]
+    fn wrong_sleep_parameter_plan_is_rejected() {
+        let mut effect = sleep_reference();
+        effect.signature.parameter_plans[0] = ValueTransferPlan::FromType {
+            ty: TypeRefIr::builtin("integer"),
+        };
+        let mut resolver = StubResolver;
+        let mut budget = budget();
+        assert!(
+            validate_host_effect_authority(
+                &effect,
+                &effect.signature,
+                &mut resolver,
+                &mut budget,
+                &location(),
+            )
+            .is_err(),
+            "wrong parameter plan must not be admitted"
+        );
+    }
+
+    #[test]
+    fn wrong_sleep_effects_are_rejected() {
+        let mut effect = sleep_reference();
+        effect.signature.effects.pending_effect_categories =
+            vec![PendingEffectCategory::HostEffect];
+        let mut resolver = StubResolver;
+        let mut budget = budget();
+        assert!(
+            validate_host_effect_authority(
+                &effect,
+                &effect.signature,
+                &mut resolver,
+                &mut budget,
+                &location(),
+            )
+            .is_err(),
+            "rewritten effects must not be admitted"
+        );
+    }
+
+    #[test]
+    fn std_binding_mismatch_is_no_longer_swallowed() {
+        let entry = skiff_artifact_model::host_effect_registry()
+            .entries()
+            .iter()
+            .find(|entry| entry.binding_key == "std.crypto.uuid")
+            .expect("pinned registry has std.crypto.uuid");
+        let mut effect = reference_for(entry);
+        effect.signature.effects.may_pending = true;
+        effect.signature.effects.pending_effect_categories =
+            vec![PendingEffectCategory::HostEffect];
+        let mut resolver = StubResolver;
+        let mut budget = budget();
+        assert!(
+            validate_host_effect_authority(
+                &effect,
+                &effect.signature,
+                &mut resolver,
+                &mut budget,
+                &location(),
+            )
+            .is_err(),
+            "a std.* binding mismatch must fail closed instead of being swallowed"
+        );
+    }
+
+    #[test]
+    fn unknown_binding_key_fails_closed() {
+        let effect = HostEffectReference {
+            target: NativeTarget {
+                namespace: "fixture".to_string(),
+                symbol: "drift".to_string(),
+                binding_key: Some("fixture.drift".to_string()),
+                metadata: BTreeMap::new(),
+            },
+            signature: HostEffectSignature {
+                parameter_types: Vec::new(),
+                parameter_modes: Vec::new(),
+                parameter_plans: Vec::new(),
+                result_types: Vec::new(),
+                result_plans: Vec::new(),
+                effects: skiff_artifact_model::CallableMayEffects {
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_pending: false,
+                    pending_effect_categories: Vec::new(),
+                    inout_path_effects: Vec::new(),
+                },
+            },
+            db_operation: None,
+        };
+        assert!(registry_entry_for(&effect, &location()).is_err());
+    }
+
+    #[test]
+    fn missing_binding_key_fails_closed() {
+        let mut effect = sleep_reference();
+        effect.target.binding_key = None;
+        assert!(registry_entry_for(&effect, &location()).is_err());
+    }
+}
+
 impl DeploymentLinker<'_> {
     fn link_interface_tables(
         &self,
@@ -1065,33 +1406,30 @@ impl DeploymentLinker<'_> {
                     match relocation {
                         BytecodeRelocation::HostEffectRef(effect) => {
                             let specialization = self.specialization_for_function_key(package, &function.function_key, indices)?;
-                            let signature = self.host_signature_with_abi(&effect.signature);
+                            // The pinned registry is the only typed signature
+                            // authority. The artifact's self-reported signature
+                            // is checked against that registry and never
+                            // copied into the linked entry.
+                            let entry = registry_entry_for(effect, &location)?;
                             let mut resolver = DeploymentLifecycleResolver::new(self.deployment, package);
                             let mut budget = ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64)
                                 .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?;
-                            if let Err(error) = skiff_artifact_model::host_effect_registry()
-                                .match_reference(&effect.target, &signature, &mut resolver, &mut budget)
-                            {
-                                let std_binding = effect
-                                    .target
-                                    .binding_key
-                                    .as_deref()
-                                    .is_some_and(|key| key.starts_with("std."));
-                                if package.reference().package_id != "skiff.run/std"
-                                    && !std_binding
-                                {
-                                    return Err(unsatisfied(
-                                        BytecodeLinkObligation::ConcreteTargetTables,
-                                        location.clone(),
-                                        format!("host effect registry rejected target: {error:?}"),
-                                    ));
-                                }
-                            }
-                            validate_host_effect_contract(effect, &location)?;
-                            let signature = native_signature(package, specialization, &signature, type_linker, &location)?;
-                            let binding_key = effect.target.binding_key.as_deref().ok_or_else(|| {
-                                unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), "host effect target has no binding key".to_string())
-                            })?;
+                            let self_reported = self.host_signature_with_abi(&effect.signature);
+                            validate_host_effect_authority(
+                                effect,
+                                &self_reported,
+                                &mut resolver,
+                                &mut budget,
+                                &location,
+                            )?;
+                            let signature = self.registry_native_signature(
+                                entry,
+                                package,
+                                specialization,
+                                type_linker,
+                                &location,
+                            )?;
+                            let binding_key = entry.binding_key.as_str();
                             if !seen_host.insert(binding_key.to_string()) {
                                 continue;
                             }
@@ -1364,18 +1702,22 @@ fn native_signature(
     .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))
 }
 
-fn validate_host_effect_contract(
+/// Looks up a host effect relocation in the frozen registry by its canonical
+/// binding ID. The registry is the only typed authority: an absent binding ID
+/// fails closed, and the returned entry never borrows the artifact's
+/// self-reported signature.
+fn registry_entry_for(
     effect: &skiff_artifact_model::HostEffectReference,
     location: &BytecodeLinkLocation,
-) -> Result<(), BytecodeLinkError> {
+) -> Result<&'static HostEffectRegistryEntry, BytecodeLinkError> {
     let binding_key = effect.target.binding_key.as_deref().ok_or_else(|| {
         unsatisfied(
             BytecodeLinkObligation::ConcreteTargetTables,
             location.clone(),
-            "host effect target has no binding key".to_string(),
+            "host effect target carries no canonical binding ID".to_string(),
         )
     })?;
-    let entry = skiff_artifact_model::host_effect_registry()
+    skiff_artifact_model::host_effect_registry()
         .entries()
         .iter()
         .find(|entry| entry.binding_key == binding_key)
@@ -1385,63 +1727,176 @@ fn validate_host_effect_contract(
                 location.clone(),
                 format!("host effect binding key `{binding_key}` is absent from the registry"),
             )
-        })?;
-    match binding_key {
-        "std.config.require" | "std.config.optional" | "std.config.has" => {
-            if entry.required_context != HostEffectRequiredContext::Config {
-                return Err(unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    format!("{binding_key} must require Config context"),
-                ));
-            }
-            if !entry.signature.effects.pending_effect_categories.is_empty() {
-                return Err(unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    format!("{binding_key} must be NoPending"),
-                ));
-            }
+        })
+}
+
+/// Proves the artifact's canonical facts (exact target, metadata, binding ID
+/// and self-reported signature) against the frozen registry. Any mismatch is
+/// fatal: there is no std-binding bypass.
+fn validate_host_effect_authority<R: ValueLifecycleFactResolver>(
+    effect: &skiff_artifact_model::HostEffectReference,
+    self_reported: &skiff_artifact_model::HostEffectSignature,
+    resolver: &mut R,
+    budget: &mut ValueLifecyclePolicyBudget,
+    location: &BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    skiff_artifact_model::host_effect_registry()
+        .match_reference(&effect.target, self_reported, resolver, budget)
+        .map(|_| ())
+        .map_err(|error| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("host effect registry rejected the artifact's canonical facts: {error:?}"),
+            )
+        })
+}
+
+impl DeploymentLinker<'_> {
+    /// Builds the linked native signature exclusively from the frozen
+    /// registry entry. The artifact's self-reported signature is never
+    /// copied.
+    fn registry_native_signature(
+        &self,
+        entry: &HostEffectRegistryEntry,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        type_linker: &mut TypeLinker<'_>,
+        location: &BytecodeLinkLocation,
+    ) -> Result<LinkedNativeCallableSignature, BytecodeLinkError> {
+        let mut parameter_types = Vec::new();
+        let mut parameter_plans = Vec::new();
+        for (ty, plan) in entry
+            .signature
+            .parameter_types
+            .iter()
+            .zip(&entry.signature.parameter_plans)
+        {
+            let mut ty = registry_type_expression(ty, location)?;
+            self.fill_package_abi(&mut ty);
+            let index = type_linker.intern_concrete_type(
+                package,
+                specialization,
+                &ty,
+                &BTreeMap::new(),
+                location.clone(),
+            )?;
+            let concrete = type_linker
+                .linked_type_ref(index)
+                .cloned()
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "registry host parameter type is absent".to_string(),
+                    )
+                })?;
+            parameter_types.push(index);
+            parameter_plans.push(type_linker.link_plan_for_type(
+                &registry_plan_expression(plan, location)?,
+                &concrete,
+                location.clone(),
+            )?);
         }
-        "std.db.operation" => {
-            if entry.required_context != HostEffectRequiredContext::Db {
-                return Err(unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "std.db.operation must require Db context".to_string(),
-                ));
-            }
-            if !entry.signature.effects.may_pending()
-                || entry.signature.effects.pending_effect_categories
-                    != vec![PendingEffectCategory::HostEffect]
-            {
-                return Err(unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "std.db.operation must be a pending HostEffect".to_string(),
-                ));
-            }
-            let operation = effect.db_operation.as_deref().ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "std.db.operation requires a structured DbOperationReference".to_string(),
-                )
-            })?;
-            if operation.op != DbOperationKind::Insert
-                || operation.operand_roles != vec![DbOperandRole::ObjectFields]
-            {
-                return Err(unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "std.db.operation supports only single insert with ObjectFields"
-                        .to_string(),
-                ));
-            }
+        let mut result_types = Vec::new();
+        let mut result_plans = Vec::new();
+        for (ty, plan) in entry
+            .signature
+            .result_types
+            .iter()
+            .zip(&entry.signature.result_plans)
+        {
+            let mut ty = registry_type_expression(ty, location)?;
+            self.fill_package_abi(&mut ty);
+            let index = type_linker.intern_concrete_type(
+                package,
+                specialization,
+                &ty,
+                &BTreeMap::new(),
+                location.clone(),
+            )?;
+            let concrete = type_linker
+                .linked_type_ref(index)
+                .cloned()
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "registry host result type is absent".to_string(),
+                    )
+                })?;
+            result_types.push(index);
+            result_plans.push(type_linker.link_plan_for_type(
+                &registry_plan_expression(plan, location)?,
+                &concrete,
+                location.clone(),
+            )?);
         }
-        _ => {}
+        LinkedNativeCallableSignature::new(
+            parameter_types.into_boxed_slice(),
+            entry.signature.parameter_modes.clone().into_boxed_slice(),
+            parameter_plans.into_boxed_slice(),
+            result_types.into_boxed_slice(),
+            result_plans.into_boxed_slice(),
+            entry.signature.effects.clone(),
+        )
+        .map_err(|error| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                error.to_string(),
+            )
+        })
     }
-    Ok(())
+}
+
+fn registry_type_expression(
+    ty: &CallableRegistryTypeExpression,
+    location: &BytecodeLinkLocation,
+) -> Result<TypeRefIr, BytecodeLinkError> {
+    Ok(match ty {
+        CallableRegistryTypeExpression::TypeParameter { ordinal } => {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!(
+                    "registry host signature type parameter {ordinal} requires an instantiation and is not admitted"
+                ),
+            ))
+        }
+        CallableRegistryTypeExpression::Builtin { name, arguments } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: arguments
+                .iter()
+                .map(|argument| registry_type_expression(argument, location))
+                .collect::<Result<_, _>>()?,
+        },
+        CallableRegistryTypeExpression::PackageSymbol {
+            package_id,
+            symbol_path,
+        } => TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: package_id.clone(),
+                },
+                symbol_path: symbol_path.clone(),
+                abi_expectation: None,
+            },
+        },
+    })
+}
+
+fn registry_plan_expression(
+    plan: &skiff_artifact_model::CallableRegistryPlanExpression,
+    location: &BytecodeLinkLocation,
+) -> Result<skiff_artifact_model::ValueTransferPlan, BytecodeLinkError> {
+    match plan {
+        skiff_artifact_model::CallableRegistryPlanExpression::FromType { ty } => {
+            Ok(skiff_artifact_model::ValueTransferPlan::FromType {
+                ty: registry_type_expression(ty, location)?,
+            })
+        }
+    }
 }
 
 struct DeploymentLifecycleResolver<'a> {
