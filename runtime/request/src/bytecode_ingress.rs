@@ -745,6 +745,30 @@ mod tests {
     };
 
     #[test]
+    fn user_throw_and_envelope_vm_failure_project_distinct_codes() {
+        let budget = ExecutionBudget::for_runtime_request(None);
+        let user_error = uncaught_throw_to_request_error_without_payload()
+            .ordinary_payload()
+            .expect("user throw is an ordinary response error");
+        assert_eq!(user_error.code, "std.service.InternalError");
+        assert_eq!(user_error.message, "uncaught user exception");
+
+        let envelope_failure = vm_error_to_request_error(
+            &budget,
+            VmError::ThrowEnvelopeUnavailable {
+                function: skiff_runtime_linked_bytecode::FunctionIndex::new(0),
+                instruction: skiff_runtime_linked_bytecode::InstructionIndex::new(0),
+                reason: "fixture".to_string(),
+            },
+        )
+        .ordinary_payload()
+        .expect("envelope VmFailure is an ordinary response error");
+        assert_eq!(envelope_failure.code, "InternalError");
+        assert_eq!(envelope_failure.message, "bytecode VM execution failed");
+        assert_ne!(user_error.code, envelope_failure.code);
+    }
+
+    #[test]
     fn json_payload_encodes_scalar_immediates() {
         let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
         assert_eq!(json_payload_from_value_slots(&mut heap, &[]).unwrap(), b"null");

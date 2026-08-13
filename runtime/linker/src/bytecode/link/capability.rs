@@ -176,7 +176,8 @@ impl DeploymentLinker<'_> {
                 )?;
             }
         }
-        self.admit_global_tables(candidate, &mut admitted_symbols)
+        let referenced_constants = referenced_constant_indices(candidate);
+        self.admit_global_tables(candidate, &mut admitted_symbols, &referenced_constants)
     }
 
     fn admit_public_roots(
@@ -245,17 +246,33 @@ impl DeploymentLinker<'_> {
         &self,
         candidate: &LinkedBytecodeCandidate,
         admitted_symbols: &mut BTreeSet<String>,
+        referenced_constants: &BTreeSet<u32>,
     ) -> Result<(), BytecodeLinkError> {
         let location = self.deployment_location();
         for constant in candidate.constants() {
-            admit_constant(self, candidate, constant, admitted_symbols)?;
+            admit_constant(
+                self,
+                candidate,
+                constant,
+                admitted_symbols,
+                referenced_constants.contains(&constant.index().get()),
+            )?;
         }
+        // §4a string-literal discriminator slice: a `string`-typed frozen
+        // literal node is admissible only when an instruction-referenced
+        // constant (the `tag == "<literal>"` operand) cites it. Package-global
+        // and unreferenced string constants stay fail closed.
+        let discriminator_nodes = discriminator_string_nodes(candidate, referenced_constants);
         for node in candidate.frozen_constant_nodes() {
             let location = frozen_node_location(self, node);
             let LinkedFrozenConstantValue::Literal(value) = node.value() else {
                 return rejected(Phase1LinkedCapability::Aggregate, location);
             };
-            if !immediate_literal(value) {
+            if matches!(value, LiteralIr::String { .. }) {
+                if !discriminator_nodes.contains(&node.index().get()) {
+                    return rejected(Phase1LinkedCapability::ValueShape, location);
+                }
+            } else if !immediate_literal(value) {
                 return rejected(Phase1LinkedCapability::ValueShape, location);
             }
         }
@@ -267,6 +284,12 @@ impl DeploymentLinker<'_> {
                 ) {
                     return rejected(Phase1LinkedCapability::ValueShape, location);
                 }
+            }
+            if is_string_type(ty.type_ref()) {
+                if discriminator_nodes.is_empty() {
+                    return rejected(Phase1LinkedCapability::ValueShape, location);
+                }
+                continue;
             }
             admit_type(
                 self,
@@ -324,6 +347,7 @@ fn admit_constant(
     candidate: &LinkedBytecodeCandidate,
     constant: &skiff_runtime_linked_bytecode::LinkedConstantEntry,
     admitted_symbols: &mut BTreeSet<String>,
+    referenced: bool,
 ) -> Result<(), BytecodeLinkError> {
     let location = constant_location(linker, candidate, constant);
     if matches!(
@@ -332,15 +356,68 @@ fn admit_constant(
     ) {
         return rejected(Phase1LinkedCapability::Constant, location);
     }
-    admit_type_index(
-        linker,
-        candidate,
-        constant.ty(),
-        false,
-        admitted_symbols,
-        location.clone(),
-    )?;
+    // §4a string-literal discriminator slice: the `string`-typed frozen
+    // literal constant bypasses the generic type gate; every other constant
+    // still admits its exact linked type.
+    let constant_type = candidate
+        .types()
+        .get(constant.ty().get() as usize)
+        .filter(|row| row.index() == constant.ty())
+        .map(|row| row.type_ref());
+    let discriminator_string = referenced
+        && candidate
+            .frozen_constant_nodes()
+            .get(constant.reference().node().get() as usize)
+            .is_some_and(|node| is_discriminator_string_constant(node.value(), constant_type));
+    if !discriminator_string {
+        admit_type_index(
+            linker,
+            candidate,
+            constant.ty(),
+            false,
+            admitted_symbols,
+            location.clone(),
+        )?;
+    }
     admit_transfer_plan(constant.plan(), location)
+}
+
+/// The set of constant indexes cited by at least one `Const` instruction.
+fn referenced_constant_indices(candidate: &LinkedBytecodeCandidate) -> BTreeSet<u32> {
+    candidate
+        .functions()
+        .iter()
+        .flat_map(|function| function.instructions())
+        .flat_map(|instruction| instruction.resolved_operands())
+        .filter_map(|resolved| match resolved.target() {
+            LinkedInstructionTarget::Constant(index) => Some(index.get()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The frozen node indexes of the §4a discriminator string constants: exact
+/// `String` literals whose `string`-typed constant is cited by an instruction.
+fn discriminator_string_nodes(
+    candidate: &LinkedBytecodeCandidate,
+    referenced_constants: &BTreeSet<u32>,
+) -> BTreeSet<u32> {
+    candidate
+        .constants()
+        .iter()
+        .filter(|constant| referenced_constants.contains(&constant.index().get()))
+        .filter_map(|constant| {
+            let node = candidate
+                .frozen_constant_nodes()
+                .get(constant.reference().node().get() as usize)?;
+            let ty = candidate
+                .types()
+                .get(constant.ty().get() as usize)
+                .filter(|row| row.index() == constant.ty())
+                .map(|row| row.type_ref());
+            is_discriminator_string_constant(node.value(), ty).then_some(node.index().get())
+        })
+        .collect()
 }
 
 fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), BytecodeLinkError> {
@@ -816,7 +893,11 @@ fn admit_structural_leaf(
         {
             Ok(())
         }
-        TypeRefIr::Literal { value } if immediate_literal(value) => Ok(()),
+        TypeRefIr::Literal { value }
+            if immediate_literal(value) || matches!(value, LiteralIr::String { .. }) =>
+        {
+            Ok(())
+        }
         TypeRefIr::TypeParam { .. } | TypeRefIr::AppliedNominal { .. } => {
             rejected(Phase1LinkedCapability::Generic, location)
         }
