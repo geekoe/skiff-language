@@ -177,7 +177,9 @@ impl Phase4PublishedFixture {
         &self.package_ref
     }
 
-    pub(in crate::host::request_entry) fn package_bytecode_ref(&self) -> Option<&BytecodeArtifactRef> {
+    pub(in crate::host::request_entry) fn package_bytecode_ref(
+        &self,
+    ) -> Option<&BytecodeArtifactRef> {
         self.package_artifact.bytecode.as_ref()
     }
 
@@ -278,7 +280,9 @@ impl Phase4PublishedFixture {
     ) -> CanonicalSkbfRequest {
         let deadline = timeout_ms.map(|timeout_ms| {
             let expires_at = (time::OffsetDateTime::now_utc()
-                + time::Duration::milliseconds(i64::try_from(timeout_ms).expect("deadline fits i64")))
+                + time::Duration::milliseconds(
+                    i64::try_from(timeout_ms).expect("deadline fits i64"),
+                ))
             .format(&time::format_description::well_known::Rfc3339)
             .expect("format RFC3339 deadline");
             BytecodeRequestDeadlineFrameHeader {
@@ -286,11 +290,9 @@ impl Phase4PublishedFixture {
                 expires_at,
             }
         });
-        let frame = encode_binary_frame(
-            &self.http_header(correlation, mode, deadline),
-            request_body,
-        )
-        .expect("encode canonical Phase 4 SKBF request");
+        let frame =
+            encode_binary_frame(&self.http_header(correlation, mode, deadline), request_body)
+                .expect("encode canonical Phase 4 SKBF request");
         let (header, body) = decode_bytecode_request_start_frame(&frame)
             .expect("production decoder accepts canonical Phase 4 request");
         CanonicalSkbfRequest {

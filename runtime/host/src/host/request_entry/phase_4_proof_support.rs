@@ -11,9 +11,7 @@ mod fixture;
 mod observation;
 mod request_composition;
 
-pub(super) use fixture::{
-    Phase4FixtureBuild, Phase4PublishedFixture, PHASE4_VCP_FIXTURE_RELATIVE,
-};
+pub(super) use fixture::{Phase4FixtureBuild, Phase4PublishedFixture, PHASE4_VCP_FIXTURE_RELATIVE};
 pub(super) use observation::RecordingSink;
 pub(super) use request_composition::{
     drive_phase_4_vcp_request, park_phase_4_request, Phase4DriveEvidence,

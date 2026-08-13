@@ -40,8 +40,10 @@ impl RecordingSink {
     ) -> Vec<BytecodeRequestTerminal> {
         self.snapshot()
             .into_iter()
-            .filter(|observation| observation.correlation.router_session_id == correlation.router_session_id
-                && observation.correlation.request_id == correlation.request_id)
+            .filter(|observation| {
+                observation.correlation.router_session_id == correlation.router_session_id
+                    && observation.correlation.request_id == correlation.request_id
+            })
             .filter_map(|observation| match observation.event {
                 BytecodeExecutionEvent::RequestTerminalClaimed(RequestTerminalClaimed {
                     terminal,
@@ -58,8 +60,10 @@ impl RecordingSink {
     ) -> Vec<RequestExecutionOwnerInventorySnapshot> {
         self.snapshot()
             .into_iter()
-            .filter(|observation| observation.correlation.router_session_id == correlation.router_session_id
-                && observation.correlation.request_id == correlation.request_id)
+            .filter(|observation| {
+                observation.correlation.router_session_id == correlation.router_session_id
+                    && observation.correlation.request_id == correlation.request_id
+            })
             .filter_map(|observation| match observation.event {
                 BytecodeExecutionEvent::RequestCleanupComplete(RequestCleanupComplete {
                     owner_inventory,

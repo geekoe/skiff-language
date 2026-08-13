@@ -5,8 +5,7 @@ use skiff_artifact_model::bytecode::{structurally_validate, Opcode};
 use skiff_runtime_bytecode_verifier::VerifiedResumeKind;
 use skiff_runtime_model::{
     bytecode_execution_observation::{
-        BytecodeExecutionEvent, BytecodeRequestTerminal,
-        RequestExecutionOwnerInventorySnapshot,
+        BytecodeExecutionEvent, BytecodeRequestTerminal, RequestExecutionOwnerInventorySnapshot,
     },
     request_heap::RequestHeapLimits,
     vm_heap::VmHeap,
@@ -16,7 +15,7 @@ use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use super::phase_4_proof_support::{
     await_terminal_without_response, drive_phase_4_vcp_request, park_phase_4_request,
-    phase_4_correlation, runtime_host, run_phase_4_request, spawn_phase_4_request,
+    phase_4_correlation, run_phase_4_request, runtime_host, spawn_phase_4_request,
     CorrelatedResponse, HeapSpyTrace, Phase4FixtureBuild, Phase4PublishedFixture, RecordingSink,
     RecordingVmHeap, PHASE4_VCP_FIXTURE_RELATIVE,
 };
@@ -447,7 +446,10 @@ fn assert_single_terminal(
                 BytecodeExecutionEvent::VmFirstInstructionDispatched(_)
             )
     });
-    assert!(dispatched, "the request must observe at least one VM dispatch");
+    assert!(
+        dispatched,
+        "the request must observe at least one VM dispatch"
+    );
 }
 
 fn assert_heap_resume_facts(events: &[super::phase_2_proof_support::HeapSpyEvent], scenario: f64) {
