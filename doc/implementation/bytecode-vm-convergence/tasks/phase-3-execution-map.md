@@ -1,6 +1,6 @@
 # MAP3：Phase 3 rolling execution map
 
-> Status: active; revision 5; first Acceptance FAIL (Phase 3 fmt drift) fixed and candidate re-frozen, second Acceptance dispatched
+> Status: active; revision 6; second Acceptance fmt residual fixed, third Acceptance dispatched
 >
 > Phase Contract: [`phase-3-outcome-unwind.md`](../phases/phase-3-outcome-unwind.md)
 >

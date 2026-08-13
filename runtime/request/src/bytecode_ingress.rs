@@ -14,13 +14,12 @@ use skiff_runtime_model::{
     },
     request_heap::RequestHeapLimits,
     service_error::{ErrorCorrelation, RequestException},
-    vm_heap::{
-        VmContainerShape, VmHeap, VmHeapError, VmRecordField,
-    },
+    vm_heap::{VmContainerShape, VmHeap, VmHeapError, VmRecordField},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
 use skiff_runtime_scheduler::{
-    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts, RequestExecutionContext,
+    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
+    RequestExecutionContext,
 };
 use skiff_runtime_vm::{
     Vm, VmBudget, VmBudgetClosed, VmBudgetTerminal, VmError, VmFiber, VmInternalTerminal, VmLimits,
@@ -116,25 +115,26 @@ pub fn drive_runtime_bytecode_request(
 
     let mut context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
 
-    let start = (|| -> RequestResult<(VmFiber, Box<dyn VmHeap + Send>, Box<dyn VmBudget + Send>)> {
-        validate_bytecode_request(&request)?;
-        ExecutionControl::new(cancellation.clone(), &execution_budget)
-            .check_cancelled()
-            .map_err(RequestError::from)?;
-        let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
-            Some(heap) => heap,
-            None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
-        };
-        let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
-        let mut fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
-            .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-        fiber.set_error_correlation(bytecode_error_correlation(&request));
-        let budget = execution_budget.attach_vm().map_err(|error| {
-            RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
-        })?;
-        let budget: Box<dyn VmBudget + Send> = Box::new(budget);
-        Ok((fiber, heap, budget))
-    })();
+    let start =
+        (|| -> RequestResult<(VmFiber, Box<dyn VmHeap + Send>, Box<dyn VmBudget + Send>)> {
+            validate_bytecode_request(&request)?;
+            ExecutionControl::new(cancellation.clone(), &execution_budget)
+                .check_cancelled()
+                .map_err(RequestError::from)?;
+            let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
+                Some(heap) => heap,
+                None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
+            };
+            let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
+            let mut fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
+                .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
+            fiber.set_error_correlation(bytecode_error_correlation(&request));
+            let budget = execution_budget.attach_vm().map_err(|error| {
+                RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
+            })?;
+            let budget: Box<dyn VmBudget + Send> = Box::new(budget);
+            Ok((fiber, heap, budget))
+        })();
 
     let (fiber, mut heap, mut budget) = match start {
         Ok(parts) => parts,
@@ -155,26 +155,24 @@ pub fn drive_runtime_bytecode_request(
     context.install_root(fiber);
     let (outcome, snapshot) = context.drive(&mut *heap, &mut *budget);
     let result = match outcome {
-        Ok(BytecodeSchedulerOutcome::Complete(result)) => {
-            match result {
-                Ok(values) => {
-                    if mode == "serverStream" {
-                        Err(RequestError::Decode(
-                            "serverStream request completed without a response stream".to_string(),
-                        ))
-                    } else if raw_http_adapter {
-                        http_response_from_vm_values(&mut *heap, values.values())
-                    } else {
-                        json_payload_from_value_slots(&mut *heap, values.values())
-                            .map(BoundaryResponse::payload)
-                    }
+        Ok(BytecodeSchedulerOutcome::Complete(result)) => match result {
+            Ok(values) => {
+                if mode == "serverStream" {
+                    Err(RequestError::Decode(
+                        "serverStream request completed without a response stream".to_string(),
+                    ))
+                } else if raw_http_adapter {
+                    http_response_from_vm_values(&mut *heap, values.values())
+                } else {
+                    json_payload_from_value_slots(&mut *heap, values.values())
+                        .map(BoundaryResponse::payload)
                 }
-                Err(VmError::Thrown(envelope)) => {
-                    Err(uncaught_throw_to_request_error(&mut *heap, &envelope))
-                }
-                Err(error) => Err(vm_error_to_request_error(&execution_budget, error)),
             }
-        }
+            Err(VmError::Thrown(envelope)) => {
+                Err(uncaught_throw_to_request_error(&mut *heap, &envelope))
+            }
+            Err(error) => Err(vm_error_to_request_error(&execution_budget, error)),
+        },
         Ok(BytecodeSchedulerOutcome::Parked) => Err(RequestError::Unsupported(
             "bytecode VM parked on the synchronous Phase 1 request lane".to_string(),
         )),
@@ -472,8 +470,9 @@ fn json_payload_from_value_slots(
 ) -> RequestResult<Vec<u8>> {
     match values {
         [] => Ok(b"null".to_vec()),
-        [value] => serde_json::to_vec(&json_value_from_slot(heap, value, 0)?)
-            .map_err(|error| RequestError::Decode(format!("bytecode VM JSON encode failed: {error}"))),
+        [value] => serde_json::to_vec(&json_value_from_slot(heap, value, 0)?).map_err(|error| {
+            RequestError::Decode(format!("bytecode VM JSON encode failed: {error}"))
+        }),
         _ => Err(RequestError::Unsupported(format!(
             "bytecode VM returned {} results; expected zero or one",
             values.len()
@@ -495,9 +494,7 @@ fn json_value_from_slot(
     }
     if let Some(number) = value.as_number() {
         let number = serde_json::Number::from_f64(number).ok_or_else(|| {
-            RequestError::Unsupported(format!(
-                "bytecode VM returned a non-JSON number: {number}"
-            ))
+            RequestError::Unsupported(format!("bytecode VM returned a non-JSON number: {number}"))
         })?;
         return Ok(serde_json::Value::Number(number));
     }
@@ -771,7 +768,10 @@ mod tests {
     #[test]
     fn json_payload_encodes_scalar_immediates() {
         let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
-        assert_eq!(json_payload_from_value_slots(&mut heap, &[]).unwrap(), b"null");
+        assert_eq!(
+            json_payload_from_value_slots(&mut heap, &[]).unwrap(),
+            b"null"
+        );
         assert_eq!(
             json_payload_from_value_slots(&mut heap, &[ValueSlot::null()]).unwrap(),
             b"null"
@@ -795,13 +795,12 @@ mod tests {
         let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
         assert!(json_payload_from_value_slots(&mut heap, &[ValueSlot::integer(1)]).is_err());
         assert!(json_payload_from_value_slots(&mut heap, &[ValueSlot::date(1)]).is_err());
-        assert!(
-            json_payload_from_value_slots(&mut heap, &[ValueSlot::null(), ValueSlot::bool(true)])
-                .is_err()
-        );
-        assert!(
-            json_payload_from_value_slots(&mut heap, &[ValueSlot::number(f64::NAN)]).is_err()
-        );
+        assert!(json_payload_from_value_slots(
+            &mut heap,
+            &[ValueSlot::null(), ValueSlot::bool(true)]
+        )
+        .is_err());
+        assert!(json_payload_from_value_slots(&mut heap, &[ValueSlot::number(f64::NAN)]).is_err());
     }
 
     #[test]
