@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     ConstDeclarationIr, ConstIr, ConstLinkTargetIr, ExecutableBody, ExecutableDeclarationIr,
     ExecutableIr, ExecutableKind, ExecutableLinkTargetIr, FileIrUnit, FunctionTypeParamIr,
-    InterfaceDeclIr, InterfaceOperationIr, PackageExportIndex, ParamIr, ParamModeIr, SlotLayout, TypeDeclIr,
-    TypeDeclarationIr, TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
+    InterfaceDeclIr, InterfaceOperationIr, PackageExportIndex, ParamIr, ParamModeIr, SlotLayout,
+    TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
 };
 
 use super::super::project_package_export_links;

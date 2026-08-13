@@ -236,12 +236,7 @@ fn has_builtin_call(calls: &[&Value], op: &str) -> bool {
         .any(|call| call["target"]["kind"] == "builtin" && call["target"]["op"] == op)
 }
 
-fn assert_native_call(
-    executable: &Value,
-    namespace: &str,
-    symbol_name: &str,
-    binding_key: &str,
-) {
+fn assert_native_call(executable: &Value, namespace: &str, symbol_name: &str, binding_key: &str) {
     let calls = call_exprs(executable);
     assert!(
         has_native_call(&calls, namespace, symbol_name, binding_key),

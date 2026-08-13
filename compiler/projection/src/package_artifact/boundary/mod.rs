@@ -56,7 +56,9 @@ pub(super) fn project_boundary_callable_with_package_schemas(
                     .params
                     .iter()
                     .enumerate()
-                    .filter(|(_, parameter)| parameter.mode == skiff_artifact_model::ParamModeIr::InOut)
+                    .filter(|(_, parameter)| {
+                        parameter.mode == skiff_artifact_model::ParamModeIr::InOut
+                    })
                     .map(|(index, _)| index)
                     .collect::<Vec<_>>()
             })

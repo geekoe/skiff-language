@@ -65,7 +65,10 @@ pub(super) fn package(
     ]);
     implementation_symbols.extend(constants::implementation_symbols(bytecode, package_id));
     let mut public_symbols = BTreeMap::new();
-    if matches!(program, RootProgram::Interface | RootProgram::UnreachableInterface) {
+    if matches!(
+        program,
+        RootProgram::Interface | RootProgram::UnreachableInterface
+    ) {
         implementation_symbols.insert(
             "fixture.Reader".to_string(),
             PackageLocalAbiSymbol::Type {
@@ -128,7 +131,8 @@ pub(super) fn package(
     let synthetic_callback = matches!(
         program,
         RootProgram::SyntheticTarget | RootProgram::UnreachableCallback
-    ).then(|| synthetic_callback_callable_for(synthetic_callback_owner));
+    )
+    .then(|| synthetic_callback_callable_for(synthetic_callback_owner));
     if let Some(callback) = &synthetic_callback {
         callable_semantic_facts.insert(callback.clone(), analyzed_facts());
     }
@@ -189,7 +193,10 @@ pub(super) fn package(
                 } else {
                     BTreeMap::new()
                 };
-                if matches!(program, RootProgram::Interface | RootProgram::UnreachableInterface) {
+                if matches!(
+                    program,
+                    RootProgram::Interface | RootProgram::UnreachableInterface
+                ) {
                     types.insert(
                         "fixture.Reader".to_string(),
                         TypeExport {

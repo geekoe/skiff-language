@@ -63,7 +63,13 @@ fn initial_registry_contains_audited_scalars_snapshots_and_stream() {
         );
     }
     for name in [
-        "string", "bytes", "Json", "JsonObject", "TaskRef", "TaskStatus", "TaskCancelResult",
+        "string",
+        "bytes",
+        "Json",
+        "JsonObject",
+        "TaskRef",
+        "TaskStatus",
+        "TaskCancelResult",
     ] {
         assert_eq!(
             native_value_lifecycle_registry().lookup(&builtin(name, Vec::new())),

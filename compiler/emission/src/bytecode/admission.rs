@@ -2,7 +2,8 @@ use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
     AssignTargetIr, BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, LiteralIr,
-    NamedUnionBranchIr, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
+    NamedUnionBranchIr, NativeTarget, NominalTypeRefBaseIr, PackageRefIr, PendingEffectCategory,
+    StatementAttributionId, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -10,9 +11,21 @@ use skiff_compiler_lowering::mir::{
 };
 
 use super::{
-    inputs::canonical_function_key, BytecodeEmissionError, Phase1MirFactMismatch,
-    Phase1UnsupportedCapability,
+    inputs::{canonical_function_key, is_void},
+    BytecodeEmissionError, Phase1MirFactMismatch, Phase1UnsupportedCapability,
 };
+
+/// Canonical host binding admitted by the Phase 4 gate: `std.time.sleep`.
+const CANONICAL_SLEEP_BINDING_KEY: &str = "std.time.sleep";
+const CANONICAL_DURATION_MILLISECONDS_BINDING_KEY: &str = "core.duration.milliseconds";
+/// Canonical package owner of the pinned `Duration` parameter type.
+const CANONICAL_SLEEP_DURATION_PACKAGE: &str = "skiff.run/std";
+/// Canonical symbol path of the pinned `Duration` parameter type.
+const CANONICAL_SLEEP_DURATION_PATH: &str = "std.time.Duration";
+/// Canonical module that declares `Duration` inside the std package.
+const CANONICAL_SLEEP_DURATION_MODULE: &str = "std.time";
+/// Canonical declaration name of the pinned `Duration` parameter type.
+const CANONICAL_SLEEP_DURATION_NAME: &str = "Duration";
 
 /// Opaque proof that one exact MIR slice passed the Phase 1 bytecode boundary.
 ///
@@ -52,6 +65,12 @@ impl<'a> AdmittedPhase1BytecodeMir<'a> {
 /// constant (`.tag` reads, `tag == "…"` equality and their narrowed types).
 /// General string values (bindings, fields, aggregates, boundary payloads,
 /// concatenation) remain rejected.
+///
+/// Phase 4 gate 1 admits exactly one host effect: the canonical
+/// `std.time.sleep` binding with its pinned arity (one `Duration` argument),
+/// pinned parameter type (`skiff.run/std::std.time.Duration`) and pinned
+/// `void` result. Every other host binding, every other pending category and
+/// any drifted/missing fact stay fail closed at this single boundary.
 pub fn admit_phase_1_bytecode_mir(
     units: &[MirUnit],
 ) -> Result<AdmittedPhase1BytecodeMir<'_>, BytecodeEmissionError> {
@@ -253,7 +272,7 @@ fn admit_function(
             "stream result facts",
         ));
     }
-    admit_effects(unit, function_key, &function.effect_summary)?;
+    admit_effects(unit, function_key, function, &function.effect_summary)?;
     let discriminator_literals = collect_discriminator_literal_positions(function)?;
     for expression in &function.expressions {
         admit_expression(
@@ -405,9 +424,17 @@ fn exception_region_fact(
     }
 }
 
+fn function_contains_throw(function: &MirFunction) -> bool {
+    function
+        .expressions
+        .iter()
+        .any(|expression| matches!(expression.expression, ExprIr::Throw { .. }))
+}
+
 fn admit_effects(
     unit: &MirUnit,
     function_key: &str,
+    function: &MirFunction,
     summary: &CallableEffectSummary,
 ) -> Result<(), BytecodeEmissionError> {
     let effects = match summary {
@@ -431,12 +458,37 @@ fn admit_effects(
     }
     if effects.may_pending || effects.may_pending() || !effects.pending_effect_categories.is_empty()
     {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::PendingEffect,
-            "callable pending effects",
-        ));
+        // A throw inside a may-pending function remains fail-closed until
+        // Phase 5 host/Pending rethrow support, and its rejection must still
+        // name the throwing function rather than falling through to a tail
+        // call or value-shape diagnostic.
+        if function_contains_throw(function) {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::PendingEffect,
+                "throw inside a may-pending function",
+            ));
+        }
+        // Phase 4 gate 1 narrows the pending face to the exact trace produced
+        // by a canonical `std.time.sleep` call: `mayPending` plus the single
+        // `NativeCall` category. Every other pending trace (service, stream,
+        // actor, unknown, or any category mix) stays fail closed. A
+        // `mayPending` flag that disagrees with the category trace is a fact
+        // drift and keeps the same stable rejection.
+        let canonical_sleep_pending = effects.may_pending
+            && matches!(
+                effects.pending_effect_categories.as_slice(),
+                [PendingEffectCategory::NativeCall] | [PendingEffectCategory::HostEffect]
+            );
+        if !canonical_sleep_pending {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::PendingEffect,
+                "callable pending effects",
+            ));
+        }
     }
     if effects.escapes_caller_value
         || effects.requires_same_heap_identity
@@ -474,14 +526,27 @@ fn admit_statement(
         }
         MirStmtKind::Expr { .. } | MirStmtKind::If { .. } => None,
         MirStmtKind::Return { value } => {
-            if value
-                .as_ref()
-                .is_some_and(|value| is_tail_local_call(function, value.expression))
-            {
-                Some(Phase1UnsupportedCapability::TailCall)
-            } else {
-                None
+            if let Some(value) = value.as_ref() {
+                if is_tail_local_call(function, value.expression) {
+                    if let Some(callee) = tail_local_call_callee(unit, function, value.expression) {
+                        if callee_effect_may_pending(callee) {
+                            return Err(rejected_function(
+                                unit,
+                                function_key,
+                                Phase1UnsupportedCapability::PendingEffect,
+                                &format!("tail call to pending function {}", callee.symbol),
+                            ));
+                        }
+                    }
+                    return Err(rejected_function(
+                        unit,
+                        function_key,
+                        Phase1UnsupportedCapability::TailCall,
+                        &format!("statement {}", statement.statement_index),
+                    ));
+                }
             }
+            None
         }
         MirStmtKind::Assign { target, place, .. } => match target {
             AssignTargetIr::Slot { .. } => None,
@@ -532,6 +597,28 @@ fn admit_statement(
         ));
     }
     Ok(())
+}
+
+fn tail_local_call_callee<'a>(
+    unit: &'a MirUnit,
+    function: &MirFunction,
+    expression_index: u32,
+) -> Option<&'a MirFunction> {
+    let expression = function.expressions.get(expression_index as usize)?;
+    let ExprIr::Call { call } = &expression.expression else {
+        return None;
+    };
+    let CallTargetIr::LocalExecutable { executable_index } = call.target else {
+        return None;
+    };
+    unit.function_by_executable_index(executable_index).ok()
+}
+
+fn callee_effect_may_pending(callee: &MirFunction) -> bool {
+    matches!(
+        &callee.effect_summary,
+        CallableEffectSummary::Analyzed { effects } if effects.may_pending || effects.may_pending()
+    )
 }
 
 fn is_tail_local_call(function: &MirFunction, expression_index: u32) -> bool {
@@ -747,7 +834,7 @@ fn admit_expression(
             _ => None,
         },
         ExprIr::Call { call } => {
-            admit_call(unit, function_key, function, expression, call)?;
+            admit_call(units, unit, function_key, function, expression, call)?;
             None
         }
         ExprIr::LoadConst { .. } | ExprIr::LoadPackageConst { .. } => {
@@ -832,6 +919,7 @@ fn admit_expression(
 }
 
 fn admit_call(
+    units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
@@ -905,9 +993,31 @@ fn admit_call(
                 &format!("expression {} call target", expression.index),
             ));
         }
-        CallTargetIr::Native { .. }
-        | CallTargetIr::Builtin { .. }
-        | CallTargetIr::ReceiverBuiltin { .. } => {
+        CallTargetIr::Native { target } => {
+            if target.binding_key.as_deref() == Some(CANONICAL_DURATION_MILLISECONDS_BINDING_KEY) {
+                admit_duration_milliseconds_constructor(
+                    units,
+                    unit,
+                    function_key,
+                    function,
+                    expression,
+                    call,
+                    target,
+                )?;
+            } else {
+                admit_native_host_effect(
+                    units,
+                    unit,
+                    function_key,
+                    function,
+                    expression,
+                    call,
+                    target,
+                )?;
+            }
+            return Ok(());
+        }
+        CallTargetIr::Builtin { .. } | CallTargetIr::ReceiverBuiltin { .. } => {
             return Err(rejected_function(
                 unit,
                 function_key,
@@ -970,6 +1080,206 @@ fn admit_call(
     )?;
     admit_local_call_source_event(unit, function_key, function, expression, call)?;
     Ok(())
+}
+
+/// Phase 4 gate 1: admits only the canonical `std.time.sleep` host effect.
+///
+/// The gate checks the exact pinned facts and nothing else. The artifact gets
+/// no self-reported effect authority: only the canonical binding key passes,
+/// with exactly one `Duration` (`skiff.run/std::std.time.Duration`) value
+/// argument, an all-`Value` parameter surface (type args, inout, receivers and
+/// metadata are already rejected by the shared call checks) and a `void`
+/// result. Any other binding, a missing binding key, a wrong arity, a wrong
+/// parameter/result type, or a drifted declaration all produce the same
+/// stable typed `HostTarget` rejection and never publish an artifact.
+fn admit_native_host_effect(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    call: &skiff_artifact_model::CallIr,
+    target: &NativeTarget,
+) -> Result<(), BytecodeEmissionError> {
+    let Some(binding_key) = target.binding_key.as_deref() else {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} native target lacks an exact binding key",
+                expression.index
+            ),
+        ));
+    };
+    if binding_key != CANONICAL_SLEEP_BINDING_KEY {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} host binding `{binding_key}` is not the canonical std.time.sleep",
+                expression.index
+            ),
+        ));
+    }
+    if call.args.len() != 1 {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} sleep arity {} (pinned arity is exactly one Duration argument)",
+                expression.index,
+                call.args.len()
+            ),
+        ));
+    }
+    let argument_type = &function.expression(call.args[0])?.ty;
+    if !is_canonical_sleep_duration_type(units, unit, argument_type) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} sleep argument type {argument_type:?} is not the pinned skiff.run/std::std.time.Duration",
+                expression.index
+            ),
+        ));
+    }
+    if !is_void(&expression.ty) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} sleep result type {:?} is not the pinned void result",
+                expression.index, expression.ty
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Phase 4 gate 1 companion: admits the pure `Duration.milliseconds`
+/// constructor only when its exact argument and result stay on the pinned
+/// sleep argument face. It is not a host effect, does not carry Pending, and
+/// remains emitted as a synchronous constant/identity operation by the
+/// bytecode emitter rather than an `InvokeHost` adapter.
+fn admit_duration_milliseconds_constructor(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    call: &skiff_artifact_model::CallIr,
+    target: &NativeTarget,
+) -> Result<(), BytecodeEmissionError> {
+    if call.args.len() != 1 {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} Duration.milliseconds arity {} (pinned arity is exactly one integer argument)",
+                expression.index,
+                call.args.len()
+            ),
+        ));
+    }
+    let argument = function.expression(call.args[0])?;
+    let argument_type = &argument.ty;
+    if !matches!(
+        &argument.expression,
+        ExprIr::Literal {
+            value: LiteralIr::Number { .. }
+        }
+    ) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} Duration.milliseconds argument must be a literal integer",
+                expression.index
+            ),
+        ));
+    }
+    if !matches!(
+        argument_type,
+        TypeRefIr::Builtin { name, args } if name == "integer" && args.is_empty()
+    ) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} Duration.milliseconds argument type {argument_type:?} is not the pinned integer",
+                expression.index
+            ),
+        ));
+    }
+    if !is_canonical_sleep_duration_type(units, unit, &expression.ty) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} Duration.milliseconds result type {:?} is not the pinned skiff.run/std::std.time.Duration",
+                expression.index, expression.ty
+            ),
+        ));
+    }
+    let _ = target;
+    Ok(())
+}
+
+/// Exact pinned identity of the `std.time.sleep` `Duration` parameter.
+///
+/// A `Duration` fact resolves to the same canonical type in three exact
+/// source-owned shapes: a package symbol owned by `skiff.run/std` (ordinary
+/// user-package references), an empty applied nominal over that same symbol,
+/// and — only while the std package itself is compiled — the `Duration`
+/// declaration in module `std.time`, addressed locally or across std modules.
+fn is_canonical_sleep_duration_type(units: &[MirUnit], unit: &MirUnit, ty: &TypeRefIr) -> bool {
+    match ty {
+        TypeRefIr::PackageSymbol { symbol } => is_canonical_sleep_duration_symbol(symbol),
+        TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+            arguments,
+        } => arguments.is_empty() && is_canonical_sleep_duration_symbol(symbol),
+        TypeRefIr::LocalType { type_index }
+            if unit.module_path == CANONICAL_SLEEP_DURATION_MODULE =>
+        {
+            is_canonical_sleep_duration_declaration(unit, *type_index)
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            module_path == CANONICAL_SLEEP_DURATION_MODULE
+                && units
+                    .iter()
+                    .find(|candidate| candidate.module_path == *module_path)
+                    .is_some_and(|owning_unit| {
+                        is_canonical_sleep_duration_declaration(owning_unit, *type_index)
+                    })
+        }
+        _ => false,
+    }
+}
+
+fn is_canonical_sleep_duration_symbol(symbol: &skiff_artifact_model::PackageSymbolRef) -> bool {
+    matches!(
+        &symbol.package,
+        PackageRefIr::PackageId { package_id } if package_id == CANONICAL_SLEEP_DURATION_PACKAGE
+    ) && symbol.symbol_path == CANONICAL_SLEEP_DURATION_PATH
+}
+
+fn is_canonical_sleep_duration_declaration(unit: &MirUnit, type_index: u32) -> bool {
+    unit.type_table
+        .get(type_index as usize)
+        .is_some_and(|declaration| declaration.name == CANONICAL_SLEEP_DURATION_NAME)
 }
 
 fn admit_local_call_abi(
@@ -1353,6 +1663,16 @@ fn admit_type_nested(
             module_path,
             type_index,
         } => admit_nominal_declaration(context, unit, module_path, *type_index, location),
+        // Phase 4 gate 1 pins `Duration` (`skiff.run/std::std.time.Duration`) as
+        // the sole std package type admitted on the value face, because the
+        // canonical `std.time.sleep` parameter carries exactly that type. The
+        // alias is a transparent `integer`; every other package symbol stays
+        // fail closed through the catch-all below.
+        TypeRefIr::PackageSymbol { symbol } if is_canonical_sleep_duration_symbol(symbol) => Ok(()),
+        TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+            arguments,
+        } if arguments.is_empty() && is_canonical_sleep_duration_symbol(symbol) => Ok(()),
         _ => {
             if let Some(capability) = unsupported_type_capability(ty, allow_void) {
                 return if nested {
@@ -1576,8 +1896,9 @@ mod tests {
 
     use skiff_artifact_model::{
         CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects, ExprIr, ExprRefIr,
-        FileIrUnit, InstructionSourceSite, LiteralIr, PackageCallableId,
-        SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+        FileIrUnit, InstructionSourceSite, LiteralIr, NativeTarget, PackageCallableId,
+        PackageRefIr, PackageSymbolRef, PendingEffectCategory, SyntheticInstructionSiteReason,
+        TypeDeclIr, TypeDescriptorIr, TypeRefIr,
     };
     use skiff_compiler_lowering::mir::{
         MirBlock, MirExecutableKind, MirExpression, MirFunction, MirLiveness, MirRegion, MirSlot,
@@ -1714,6 +2035,336 @@ mod tests {
             record_declaration("A", BTreeMap::from([("x".to_string(), number())])),
             record_declaration("B", BTreeMap::from([("y".to_string(), number())])),
         ]
+    }
+
+    fn canonical_duration_type() -> TypeRefIr {
+        TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: "skiff.run/std".to_string(),
+                },
+                symbol_path: "std.time.Duration".to_string(),
+                abi_expectation: None,
+            },
+        }
+    }
+
+    fn native_target(namespace: &str, symbol: &str, binding_key: Option<&str>) -> NativeTarget {
+        NativeTarget {
+            namespace: namespace.to_string(),
+            symbol: symbol.to_string(),
+            binding_key: binding_key.map(str::to_string),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn native_call(target: NativeTarget, args: Vec<ExprRefIr>) -> CallIr {
+        CallIr {
+            target: CallTargetIr::Native { target },
+            concrete_receiver: None,
+            site: synthetic_site(),
+            args,
+            inout_args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::new(),
+        }
+    }
+
+    fn sleep_pending_effects() -> CallableMayEffects {
+        CallableMayEffects {
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+            inout_path_effects: Vec::new(),
+        }
+    }
+
+    fn sleep_call_function(duration: TypeRefIr, call: CallIr, call_type: TypeRefIr) -> MirFunction {
+        let mut function = function();
+        function.slots.push(slot(0, duration.clone()));
+        function.expressions.push(expression(
+            0,
+            ExprIr::LoadSlot { slot: 0 },
+            duration.clone(),
+        ));
+        function
+            .expressions
+            .push(expression(1, ExprIr::Call { call }, call_type));
+        function.effect_summary = CallableEffectSummary::Analyzed {
+            effects: sleep_pending_effects(),
+        };
+        function
+    }
+
+    #[test]
+    fn phase_4_admission_admits_canonical_sleep_call_and_its_pending_trace() {
+        let duration = canonical_duration_type();
+        let function = sleep_call_function(
+            duration.clone(),
+            native_call(
+                native_target("std.time", "sleep", Some("std.time.sleep")),
+                vec![ExprRefIr { expression: 0 }],
+            ),
+            TypeRefIr::builtin("void"),
+        );
+        let units = [unit(vec![function], Vec::new())];
+        let function = &units[0].functions[0];
+
+        admit_effects(&units[0], FUNCTION_KEY, function, &function.effect_summary)
+            .expect("the canonical sleep pending trace is admitted");
+        admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            function,
+            &function.expressions[0],
+            &BTreeSet::new(),
+        )
+        .expect("the pinned Duration argument type is admitted");
+        admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            function,
+            &function.expressions[1],
+            &BTreeSet::new(),
+        )
+        .expect("the canonical sleep call is admitted");
+    }
+
+    #[test]
+    fn phase_4_admission_rejects_other_host_binding_with_typed_error() {
+        let duration = canonical_duration_type();
+        let function = sleep_call_function(
+            duration.clone(),
+            native_call(
+                native_target(
+                    "Duration",
+                    "milliseconds",
+                    Some("core.duration.milliseconds"),
+                ),
+                vec![ExprRefIr { expression: 0 }],
+            ),
+            duration,
+        );
+        let units = [unit(vec![function], Vec::new())];
+        let error = admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &units[0].functions[0],
+            &units[0].functions[0].expressions[1],
+            &BTreeSet::new(),
+        )
+        .expect_err("non-sleep host bindings stay rejected");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::HostTarget,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn phase_4_admission_rejects_sleep_wrong_arity() {
+        let function = sleep_call_function(
+            canonical_duration_type(),
+            native_call(
+                native_target("std.time", "sleep", Some("std.time.sleep")),
+                Vec::new(),
+            ),
+            TypeRefIr::builtin("void"),
+        );
+        let units = [unit(vec![function], Vec::new())];
+        let error = admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &units[0].functions[0],
+            &units[0].functions[0].expressions[1],
+            &BTreeSet::new(),
+        )
+        .expect_err("sleep with zero arguments stays rejected");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::HostTarget,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn phase_4_admission_rejects_sleep_wrong_argument_type() {
+        let mut function = function();
+        function.slots.push(slot(0, number()));
+        function
+            .expressions
+            .push(expression(0, ExprIr::LoadSlot { slot: 0 }, number()));
+        function.expressions.push(expression(
+            1,
+            ExprIr::Call {
+                call: native_call(
+                    native_target("std.time", "sleep", Some("std.time.sleep")),
+                    vec![ExprRefIr { expression: 0 }],
+                ),
+            },
+            TypeRefIr::builtin("void"),
+        ));
+        function.effect_summary = CallableEffectSummary::Analyzed {
+            effects: sleep_pending_effects(),
+        };
+        let units = [unit(vec![function], Vec::new())];
+        let error = admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &units[0].functions[0],
+            &units[0].functions[0].expressions[1],
+            &BTreeSet::new(),
+        )
+        .expect_err("a non-Duration sleep argument stays rejected");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::HostTarget,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn phase_4_admission_rejects_sleep_wrong_result_type() {
+        let function = sleep_call_function(
+            canonical_duration_type(),
+            native_call(
+                native_target("std.time", "sleep", Some("std.time.sleep")),
+                vec![ExprRefIr { expression: 0 }],
+            ),
+            number(),
+        );
+        let units = [unit(vec![function], Vec::new())];
+        let error = admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &units[0].functions[0],
+            &units[0].functions[0].expressions[1],
+            &BTreeSet::new(),
+        )
+        .expect_err("a non-void sleep result stays rejected");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::HostTarget,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn phase_4_admission_rejects_native_target_without_binding_key() {
+        let function = sleep_call_function(
+            canonical_duration_type(),
+            native_call(
+                native_target("std.time", "sleep", None),
+                vec![ExprRefIr { expression: 0 }],
+            ),
+            TypeRefIr::builtin("void"),
+        );
+        let units = [unit(vec![function], Vec::new())];
+        let error = admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &units[0].functions[0],
+            &units[0].functions[0].expressions[1],
+            &BTreeSet::new(),
+        )
+        .expect_err("a native target without a binding key stays rejected");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::HostTarget,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn phase_4_admission_rejects_drifted_pending_trace() {
+        let units = [unit(Vec::new(), Vec::new())];
+        let summary = CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_pending: true,
+                pending_effect_categories: Vec::new(),
+                inout_path_effects: Vec::new(),
+            },
+        };
+        let function = function();
+        let error = admit_effects(&units[0], FUNCTION_KEY, &function, &summary)
+            .expect_err("a mayPending flag without a category trace is a drifted fact");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::PendingEffect,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn phase_4_admission_admits_canonical_host_effect_pending_trace() {
+        let units = [unit(Vec::new(), Vec::new())];
+        let summary = CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::HostEffect],
+                inout_path_effects: Vec::new(),
+            },
+        };
+        let function = function();
+        admit_effects(&units[0], FUNCTION_KEY, &function, &summary).expect(
+            "the production std.time.sleep trace is the canonical HostEffect pending category",
+        );
+    }
+
+    #[test]
+    fn phase_4_admission_rejects_other_package_symbol_types() {
+        let units = [unit(Vec::new(), Vec::new())];
+        let error = admit_type(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: "skiff.run/std".to_string(),
+                    },
+                    symbol_path: "std.http.HttpRequest".to_string(),
+                    abi_expectation: None,
+                },
+            },
+            false,
+            "expression 0 type",
+        )
+        .expect_err("only the pinned Duration package symbol is admitted");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::ValueShape,
+                ..
+            }
+        ));
     }
 
     #[test]

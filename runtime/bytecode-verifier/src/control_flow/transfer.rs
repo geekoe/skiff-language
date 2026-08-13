@@ -133,13 +133,21 @@ fn prove_function(
                             exception_state(function, &before, region, concrete_values, location)?
                         }
                     };
-                    propagate(edge, propagated, &mut states, &mut worklist, concrete_values, function)?;
+                    propagate(
+                        edge,
+                        propagated,
+                        &mut states,
+                        &mut worklist,
+                        concrete_values,
+                        function,
+                    )?;
                 }
             }
             instruction::InstructionTransfer::ContinueDual(item_after, end_after) => {
                 computed_max = record_depth(computed_max, &item_after, limits, location)?;
                 computed_max = record_depth(computed_max, &end_after, limits, location)?;
-                let (item_target, end_target) = stream_next_targets(candidate, function, instruction)?;
+                let (item_target, end_target) =
+                    stream_next_targets(candidate, function, instruction)?;
                 for edge in &flow.successors[ordinal] {
                     let propagated = match edge.kind {
                         ControlFlowEdgeKind::Ordinary if edge.target == item_target => {
@@ -158,7 +166,14 @@ fn prove_function(
                             exception_state(function, &before, region, concrete_values, location)?
                         }
                     };
-                    propagate(edge, propagated, &mut states, &mut worklist, concrete_values, function)?;
+                    propagate(
+                        edge,
+                        propagated,
+                        &mut states,
+                        &mut worklist,
+                        concrete_values,
+                        function,
+                    )?;
                 }
             }
         }
@@ -230,11 +245,14 @@ fn stream_next_targets(
         .get(instruction.get() as usize)
         .ok_or_else(|| violation(location, "StreamNext instruction is out of bounds"))?;
     let contract = contract_for_opcode(linked.opcode());
-    let ordinal = contract.operand_position(OperandRole::ResumeRef).ok_or_else(|| {
-        violation(location, "StreamNext resume role is absent")
-    })?;
+    let ordinal = contract
+        .operand_position(OperandRole::ResumeRef)
+        .ok_or_else(|| violation(location, "StreamNext resume role is absent"))?;
     let ordinal = u32::try_from(ordinal).map_err(|_| {
-        violation(location, "StreamNext resume operand ordinal does not fit u32")
+        violation(
+            location,
+            "StreamNext resume operand ordinal does not fit u32",
+        )
     })?;
     let index = linked
         .resolved_operands()

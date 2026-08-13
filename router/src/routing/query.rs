@@ -153,7 +153,11 @@ pub struct RuntimeCandidateQuery;
 
 impl RuntimeCandidateQuery {
     /// Frozen projection over a typed directory view.
-    pub fn query(&self, view: &CandidateDirectoryView, query: &CandidateQuery) -> Vec<RegisteredSessionLease> {
+    pub fn query(
+        &self,
+        view: &CandidateDirectoryView,
+        query: &CandidateQuery,
+    ) -> Vec<RegisteredSessionLease> {
         self.query_with_counters(view, query).0
     }
 
@@ -232,10 +236,7 @@ impl RuntimeCandidateQuery {
             .values()
             .filter_map(|session| {
                 let record = directory.record(session)?;
-                let facts = registration_facts
-                    .get(session)
-                    .cloned()
-                    .unwrap_or_default();
+                let facts = registration_facts.get(session).cloned().unwrap_or_default();
                 Some(CandidateSession {
                     session_epoch: session.clone(),
                     registered: record.routable,
@@ -306,7 +307,10 @@ fn project_session_with_capability(
         counters.excluded_cancelled += 1;
         return None;
     }
-    let build_id_eligible = session.registered_build_ids.iter().any(|id| id == &query.build_id)
+    let build_id_eligible = session
+        .registered_build_ids
+        .iter()
+        .any(|id| id == &query.build_id)
         || (session.lazy_load && session.artifact_root == *router_artifact_root);
     if !build_id_eligible {
         counters.excluded_build_id += 1;

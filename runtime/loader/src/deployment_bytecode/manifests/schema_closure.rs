@@ -85,7 +85,10 @@ fn collect_package_roots(
     package: &HydratedBytecodePackage,
     roots: &mut BTreeSet<SchemaReference>,
 ) -> Result<(), DeploymentBytecodeHydrationError> {
-    let view = package.bytecode().view();
+    let Some(bytecode) = package.bytecode() else {
+        return Ok(());
+    };
+    let view = bytecode.view();
     for entry in &view.pools().types {
         if let BytecodePoolEntry::TypeRef { ty } = entry {
             collect_type_ref(package, ty, roots)?;

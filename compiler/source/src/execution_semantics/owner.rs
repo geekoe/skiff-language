@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     shared::{
-        ast::{Block, DispatchTiming, Expr, ForBinding, FunctionDecl, LocalBindingKind, Stmt, ValueBlock},
+        ast::{
+            Block, DispatchTiming, Expr, ForBinding, FunctionDecl, LocalBindingKind, Stmt,
+            ValueBlock,
+        },
         ast_utils::{walk_expr, AstVisitor},
         error::SourceSpan,
     },

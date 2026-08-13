@@ -308,21 +308,25 @@ fn validate_resume_site(
             });
         }
         (Opcode::StreamNext, Some(end_resume)) if end_resume == resume.resume() => {
-            return Err(LinkedBytecodeCandidateError::StreamNextResumeEndTargetsEqual {
-                resume_site: resume.index().get(),
-                function: resume.function(),
-                site: resume.site(),
-                resume: resume.resume(),
-                end_resume,
-            });
+            return Err(
+                LinkedBytecodeCandidateError::StreamNextResumeEndTargetsEqual {
+                    resume_site: resume.index().get(),
+                    function: resume.function(),
+                    site: resume.site(),
+                    resume: resume.resume(),
+                    end_resume,
+                },
+            );
         }
         (Opcode::StreamNext, Some(_)) => {}
         (_, Some(_)) => {
-            return Err(LinkedBytecodeCandidateError::EndResumeOnlyValidForStreamNext {
-                resume_site: resume.index().get(),
-                function: resume.function(),
-                site: resume.site(),
-            });
+            return Err(
+                LinkedBytecodeCandidateError::EndResumeOnlyValidForStreamNext {
+                    resume_site: resume.index().get(),
+                    function: resume.function(),
+                    site: resume.site(),
+                },
+            );
         }
         (_, None) => {}
     }

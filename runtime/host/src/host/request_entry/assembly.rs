@@ -96,15 +96,18 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
-                target,
-                request: request_envelope,
-                observer: observer.clone(),
-                cancellation,
-                execution_budget: Arc::clone(&execution_budget),
-                handles,
-                heap: None,
-            });
+            } = request_runner::drive_runtime_bytecode_request_async(
+                BytecodeRequestExecutionInput {
+                    target,
+                    request: request_envelope,
+                    observer: observer.clone(),
+                    cancellation,
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                    heap: None,
+                },
+            )
+            .await;
             let owner_inventory = owner_inventory.into_snapshot();
             let cleanup_permit = host
                 .finish_http_gateway_request(
@@ -172,15 +175,18 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
-                target,
-                request: request_envelope,
-                observer: observer.clone(),
-                cancellation,
-                execution_budget: Arc::clone(&execution_budget),
-                handles,
-                heap: None,
-            });
+            } = request_runner::drive_runtime_bytecode_request_async(
+                BytecodeRequestExecutionInput {
+                    target,
+                    request: request_envelope,
+                    observer: observer.clone(),
+                    cancellation,
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                    heap: None,
+                },
+            )
+            .await;
             let owner_inventory = owner_inventory.into_snapshot();
             let cleanup_permit = match result {
                 Ok(response) => {
@@ -274,15 +280,18 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
-                target,
-                request: request_envelope,
-                observer: observer.clone(),
-                cancellation,
-                execution_budget: Arc::clone(&execution_budget),
-                handles,
-                heap: None,
-            });
+            } = request_runner::drive_runtime_bytecode_request_async(
+                BytecodeRequestExecutionInput {
+                    target,
+                    request: request_envelope,
+                    observer: observer.clone(),
+                    cancellation,
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                    heap: None,
+                },
+            )
+            .await;
             let owner_inventory = owner_inventory.into_snapshot();
             let mapped_error = match result {
                 Ok(_) => RequestError::Unsupported(
@@ -348,15 +357,18 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
-                target,
-                request: request_envelope,
-                observer: observer.clone(),
-                cancellation,
-                execution_budget: Arc::clone(&execution_budget),
-                handles,
-                heap: None,
-            });
+            } = request_runner::drive_runtime_bytecode_request_async(
+                BytecodeRequestExecutionInput {
+                    target,
+                    request: request_envelope,
+                    observer: observer.clone(),
+                    cancellation,
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                    heap: None,
+                },
+            )
+            .await;
             let owner_inventory = owner_inventory.into_snapshot();
             let error = match result {
                 Ok(_) => RequestError::Unsupported(
@@ -423,7 +435,11 @@ impl RuntimeHost {
 
                 let permit = self
                     .request_supervisor
-                    .complete_success(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
+                    .complete_success(
+                        supervised_request,
+                        owner_inventory,
+                        CompletionTrace::RUNTIME,
+                    )
                     .await;
                 if !allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
                     return permit;
@@ -443,7 +459,11 @@ impl RuntimeHost {
                 if request_error.is_cancellation_terminal() {
                     let permit = self
                         .request_supervisor
-                        .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
+                        .complete_cancelled(
+                            supervised_request,
+                            owner_inventory,
+                            CompletionTrace::RUNTIME,
+                        )
                         .await;
                     if allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
                         response_sink.cancel_without_response();
@@ -532,7 +552,11 @@ impl RuntimeHost {
         if request_error.is_cancellation_terminal() {
             let permit = self
                 .request_supervisor
-                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
+                .complete_cancelled(
+                    supervised_request,
+                    owner_inventory,
+                    CompletionTrace::RUNTIME,
+                )
                 .await;
             let _ =
                 send_transport_override_or_allow_candidate(permit.as_ref(), &request_id, sender);
@@ -572,7 +596,11 @@ impl RuntimeHost {
         if request_error.is_cancellation_terminal() {
             let permit = self
                 .request_supervisor
-                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
+                .complete_cancelled(
+                    supervised_request,
+                    owner_inventory,
+                    CompletionTrace::RUNTIME,
+                )
                 .await;
             let _ =
                 send_transport_override_or_allow_candidate(permit.as_ref(), &request_id, sender);
@@ -643,7 +671,11 @@ impl RuntimeHost {
         if request_error.is_cancellation_terminal() {
             return self
                 .request_supervisor
-                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
+                .complete_cancelled(
+                    supervised_request,
+                    owner_inventory,
+                    CompletionTrace::RUNTIME,
+                )
                 .await;
         }
         let response_error = request_error

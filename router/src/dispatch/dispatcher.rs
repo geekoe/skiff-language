@@ -220,7 +220,8 @@ impl RequestDispatcher {
             .query(&view, &query)
             .into_iter()
             .filter(|lease| {
-                !lease.cancellation.cancelled && !inner.closed_sessions.contains(&lease.session_epoch)
+                !lease.cancellation.cancelled
+                    && !inner.closed_sessions.contains(&lease.session_epoch)
             })
             .collect::<Vec<_>>();
         if leases.is_empty() {
@@ -703,7 +704,8 @@ impl RequestDispatcher {
             .query(&view, &query)
             .into_iter()
             .filter(|lease| {
-                !lease.cancellation.cancelled && !inner.closed_sessions.contains(&lease.session_epoch)
+                !lease.cancellation.cancelled
+                    && !inner.closed_sessions.contains(&lease.session_epoch)
             })
             .collect::<Vec<_>>();
         // Test-case attempts (F2a) must execute on the exact origin Runtime

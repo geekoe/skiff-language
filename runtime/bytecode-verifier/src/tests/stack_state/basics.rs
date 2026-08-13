@@ -270,16 +270,10 @@ fn ordinary_stream_result_return_is_not_treated_as_producer() {
             vec![0],
             vec![(0, ParamModeIr::Value)],
             vec![0],
-            vec![
-                slot_instruction(Opcode::TakeSlot, 0),
-                plain(Opcode::Return),
-            ],
+            vec![slot_instruction(Opcode::TakeSlot, 0), plain(Opcode::Return)],
             1,
         )
-        .with_hints(vec![
-            hint(&[], &[live(0)]),
-            hint(&[0], &[moved()]),
-        ]),
+        .with_hints(vec![hint(&[], &[live(0)]), hint(&[0], &[moved()])]),
     );
     prove(&fixture)
         .expect("an ordinary Stream<T> return is a normal result, not a producer authority");

@@ -516,35 +516,35 @@ impl VmHeap for TwoPhaseHeap {
         }
         let resolved = segments
             .iter()
-            .map(|segment| -> Result<PinnedWritablePathSegment, VmHeapError> {
-                match segment {
-                VmHeapPathSegment::DenseField { field } => {
-                    Ok(PinnedWritablePathSegment::DenseField {
-                        field: field.clone(),
-                    })
-                }
-                VmHeapPathSegment::ArrayIndex => {
-                    let selector = selectors.first().copied().ok_or_else(|| {
-                        VmHeapError::HeapOperationFailed {
-                            operation: VmHeapOperation::PrepareWritablePath,
-                            message: "missing array selector".to_string(),
+            .map(
+                |segment| -> Result<PinnedWritablePathSegment, VmHeapError> {
+                    match segment {
+                        VmHeapPathSegment::DenseField { field } => {
+                            Ok(PinnedWritablePathSegment::DenseField {
+                                field: field.clone(),
+                            })
                         }
-                    })?;
-                    let index = usize::try_from(
-                        selector
-                            .as_integer()
-                            .ok_or(VmHeapError::InvalidValueMetadata)?,
-                    )
-                    .map_err(|_| VmHeapError::InvalidValueMetadata)?;
-                    Ok(PinnedWritablePathSegment::ArrayIndex {
-                        index,
-                    })
-                }
-                VmHeapPathSegment::MapKey => Ok(PinnedWritablePathSegment::MapKey {
-                    key: selectors.first().copied().unwrap_or(ValueSlot::null()),
-                }),
-            }
-            })
+                        VmHeapPathSegment::ArrayIndex => {
+                            let selector = selectors.first().copied().ok_or_else(|| {
+                                VmHeapError::HeapOperationFailed {
+                                    operation: VmHeapOperation::PrepareWritablePath,
+                                    message: "missing array selector".to_string(),
+                                }
+                            })?;
+                            let index = usize::try_from(
+                                selector
+                                    .as_integer()
+                                    .ok_or(VmHeapError::InvalidValueMetadata)?,
+                            )
+                            .map_err(|_| VmHeapError::InvalidValueMetadata)?;
+                            Ok(PinnedWritablePathSegment::ArrayIndex { index })
+                        }
+                        VmHeapPathSegment::MapKey => Ok(PinnedWritablePathSegment::MapKey {
+                            key: selectors.first().copied().unwrap_or(ValueSlot::null()),
+                        }),
+                    }
+                },
+            )
             .collect::<Result<Vec<_>, VmHeapError>>()?;
         let containers = vec![*root; resolved.len()];
         WritablePathPreparation::new(

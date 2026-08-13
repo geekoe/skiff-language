@@ -1051,10 +1051,12 @@ fn build_ws_connect_metadata(
     let query = target
         .query
         .iter()
-        .map(|value| skiff_runtime_transport::protocol::BytecodeRequestNameValueFrameHeader {
-            name: value.name.clone(),
-            value: value.value.clone(),
-        })
+        .map(
+            |value| skiff_runtime_transport::protocol::BytecodeRequestNameValueFrameHeader {
+                name: value.name.clone(),
+                value: value.value.clone(),
+            },
+        )
         .collect();
     let mut request_headers = Vec::new();
     let mut cookies = Vec::new();

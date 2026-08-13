@@ -131,10 +131,9 @@ fn a3_record(name: &str) -> String {
 }
 
 fn model_corpus() -> ModelCorpus {
-    let mut value: Value = serde_json::from_str(
-        &std::fs::read_to_string(MODEL_CORPUS).expect("model corpus"),
-    )
-    .expect("model corpus decode");
+    let mut value: Value =
+        serde_json::from_str(&std::fs::read_to_string(MODEL_CORPUS).expect("model corpus"))
+            .expect("model corpus decode");
     for case in value
         .get_mut("positive")
         .and_then(Value::as_array_mut)
@@ -220,7 +219,11 @@ mod tests {
             )),
             ActorMethodIdentity::new(format!("skiff-actor-method-v1:sha256:{}", "d".repeat(64))),
         )));
-        assert_eq!(view.health().misses, 2, "miss reloads the projection once and retries");
+        assert_eq!(
+            view.health().misses,
+            2,
+            "miss reloads the projection once and retries"
+        );
     }
 
     #[test]
@@ -327,7 +330,11 @@ mod tests {
         assert_eq!(health.captures, 4);
         assert_eq!(health.hits, 2);
         assert_eq!(health.misses, 2);
-        assert_eq!(view.loads(), 2, "the miss reloads the projection once and retries");
+        assert_eq!(
+            view.loads(),
+            2,
+            "the miss reloads the projection once and retries"
+        );
     }
 
     #[test]

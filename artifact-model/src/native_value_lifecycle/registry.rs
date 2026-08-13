@@ -463,16 +463,24 @@ fn initial_entries() -> Vec<NativeValueLifecycleEntry> {
     // ordinary snapshot-root policy as string-backed handles. `TaskStatus` and
     // `TaskCancelResult` are ordinary snapshot union values.
     entries.extend(
-        ["string", "bytes", "Json", "JsonObject", "TaskRef", "TaskStatus", "TaskCancelResult"]
-            .into_iter()
-            .map(|name| {
-                builtin_entry(
-                    name,
-                    Vec::new(),
-                    snapshot_root(),
-                    NativeValueEmbedding::Ordinary,
-                )
-            }),
+        [
+            "string",
+            "bytes",
+            "Json",
+            "JsonObject",
+            "TaskRef",
+            "TaskStatus",
+            "TaskCancelResult",
+        ]
+        .into_iter()
+        .map(|name| {
+            builtin_entry(
+                name,
+                Vec::new(),
+                snapshot_root(),
+                NativeValueEmbedding::Ordinary,
+            )
+        }),
     );
     entries.push(builtin_entry(
         "Array",

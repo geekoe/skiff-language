@@ -21,11 +21,11 @@ use crate::http::HttpGatewayHealth;
 use crate::supervisor::RouterComponents;
 
 use super::counters::{
-    ActorCounters, AdmissionCounters, BarrierCounters, BlockingLoaderCounters,
-    BootstrapCounters, BrokerCounters, CapabilityCounters, ClientConnectionCounters,
-    DurableTaskCounters, GenerationLeaseCounters, HealthCounters, HealthObservationCounters,
-    HttpCounters, MailboxCounters, RequestPendingCounters, SessionCounters,
-    ShutdownResidueCounters, TerminalCounters, WriterQueueCounters,
+    ActorCounters, AdmissionCounters, BarrierCounters, BlockingLoaderCounters, BootstrapCounters,
+    BrokerCounters, CapabilityCounters, ClientConnectionCounters, DurableTaskCounters,
+    GenerationLeaseCounters, HealthCounters, HealthObservationCounters, HttpCounters,
+    MailboxCounters, RequestPendingCounters, SessionCounters, ShutdownResidueCounters,
+    TerminalCounters, WriterQueueCounters,
 };
 use super::time::format_iso_millis;
 use super::wire::{

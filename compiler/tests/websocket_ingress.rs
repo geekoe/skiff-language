@@ -367,7 +367,10 @@ mod tests {
         let deployment_ref = skiff_artifact_identity::service_deployment_ref(&deployment);
         assert_eq!(deployment.ingress.len(), 1);
         assert_eq!(deployment.ingress[0].gateway_entry_key, key);
-        assert_eq!(deployment.ingress[0].selector.protocol, IngressProtocol::WebSocket);
+        assert_eq!(
+            deployment.ingress[0].selector.protocol,
+            IngressProtocol::WebSocket
+        );
         assert_eq!(deployment.ingress[0].selector.path, "/chat");
         assert_eq!(
             deployment.gateway_entries[&key].gateway_entry_identity,
@@ -453,7 +456,10 @@ close:
         else {
             panic!("WebSocket entry must have the websocketConnect surface");
         };
-        assert_eq!(surface.connection_close_shape, GatewayWebSocketShapeVersion::V1);
+        assert_eq!(
+            surface.connection_close_shape,
+            GatewayWebSocketShapeVersion::V1
+        );
         assert!(surface.close_external_sources.is_empty());
         assert_ne!(
             without_entry.gateway_entry_identity, entry.gateway_entry_identity,

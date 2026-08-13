@@ -22,8 +22,8 @@ use skiff_runtime_linker::{
 use skiff_test_runner::canonical_package::{compile_package_project, CanonicalPackageProjectError};
 
 use support::{
-    package_source, production_sized_execution_limits, repository_root, PublishedService,
-    TempRoot, PHASE_1_SCALAR_LOCAL_SOURCE,
+    package_source, production_sized_execution_limits, repository_root, PublishedService, TempRoot,
+    PHASE_1_SCALAR_LOCAL_SOURCE,
 };
 
 #[test]

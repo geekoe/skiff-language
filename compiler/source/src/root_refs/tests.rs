@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 
 use crate::shared::ast::{
     AliasDecl, Block, BuiltinPackage, ConstDecl, Expr, FieldDecl, FunctionDecl, ImportDecl,
-    InterfaceDecl, LocalBindingKind, PackageId, Param, ParamMode, SourceFile, Stmt, TypeDecl, TypeRef,
+    InterfaceDecl, LocalBindingKind, PackageId, Param, ParamMode, SourceFile, Stmt, TypeDecl,
+    TypeRef,
 };
 use crate::shared::error::SourceSpan;
 use crate::shared::parser::parse_source;

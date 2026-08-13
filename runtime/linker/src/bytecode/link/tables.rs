@@ -2,11 +2,11 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{TypeRefIr, ValidatedFunction};
 use skiff_runtime_linked_bytecode::{
-    ActiveRegionIndex, CallLoanLayoutIndex, FrameSlotIndex,
-    InstructionBoundaryIndex, InstructionIndex, LinkedActiveRegion, LinkedActiveRegionKind,
-    LinkedCallLoanBinding, LinkedCallLoanLayout, LinkedCatchMatcher, LinkedExceptionRegion,
-    LinkedFunctionTables, LinkedSourceMapEntry, LinkedStatementEntry, LinkedSwitchCase,
-    LinkedSwitchTable, SpecializationKey,
+    ActiveRegionIndex, CallLoanLayoutIndex, FrameSlotIndex, InstructionBoundaryIndex,
+    InstructionIndex, LinkedActiveRegion, LinkedActiveRegionKind, LinkedCallLoanBinding,
+    LinkedCallLoanLayout, LinkedCatchMatcher, LinkedExceptionRegion, LinkedFunctionTables,
+    LinkedSourceMapEntry, LinkedStatementEntry, LinkedSwitchCase, LinkedSwitchTable,
+    SpecializationKey,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -80,16 +80,18 @@ fn link_exception_regions(
                 .catch_matchers
                 .iter()
                 .map(|matcher| match matcher {
-                    skiff_artifact_model::CatchMatcher::TypeRef { type_ref } => Ok(
-                        LinkedCatchMatcher::Type(type_linker.intern_pool_type(
+                    skiff_artifact_model::CatchMatcher::TypeRef { type_ref } => {
+                        Ok(LinkedCatchMatcher::Type(type_linker.intern_pool_type(
                             package,
                             specialization,
                             *type_ref,
                             substitutions,
                             location.clone(),
-                        )?),
-                    ),
-                    skiff_artifact_model::CatchMatcher::CatchAll => Ok(LinkedCatchMatcher::CatchAll),
+                        )?))
+                    }
+                    skiff_artifact_model::CatchMatcher::CatchAll => {
+                        Ok(LinkedCatchMatcher::CatchAll)
+                    }
                 })
                 .collect::<Result<Vec<_>, BytecodeLinkError>>()?;
             Ok(LinkedExceptionRegion::new(

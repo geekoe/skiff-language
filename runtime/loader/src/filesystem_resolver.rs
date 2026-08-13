@@ -1,8 +1,4 @@
-use std::{
-    borrow::Borrow,
-    path::Path,
-    sync::Arc,
-};
+use std::{borrow::Borrow, path::Path, sync::Arc};
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{

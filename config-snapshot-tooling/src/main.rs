@@ -26,8 +26,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|source| source.deployment.clone())
         .collect::<BTreeSet<_>>();
-    let deployments =
-        discover_exact_deployments(&arguments.artifact_root, &expected_deployments)?;
+    let deployments = discover_exact_deployments(&arguments.artifact_root, &expected_deployments)?;
     let package_refs = required_package_refs(&deployments);
     let packages = discover_exact_packages(&arguments.artifact_root, &package_refs)?;
     let receipt = produce_runtime_config_snapshot(
@@ -176,7 +175,9 @@ fn discover_exact_packages(
         })
         .collect::<BTreeMap<_, _>>();
     if expected_by_build.len() != expected.len() {
-        return Err("deployment package closure contains duplicate PackageBuildId references".into());
+        return Err(
+            "deployment package closure contains duplicate PackageBuildId references".into(),
+        );
     }
     if expected.is_empty() {
         return Ok(BTreeMap::new());

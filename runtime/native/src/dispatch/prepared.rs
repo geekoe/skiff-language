@@ -94,9 +94,7 @@ pub fn prepared_native_call_from_db_value_operation(
 ) -> PreparedNativeCall<'static> {
     let wait = operation.into_wait();
     PreparedNativeCall::ExternalWait(PreparedExternalNativeOperation::new(
-        async move {
-            wait.await.map_err(db_capability_error_to_native)
-        },
+        async move { wait.await.map_err(db_capability_error_to_native) },
         |finalizer: DbRuntimeFinalizer<RuntimeValue>, heap: &mut RequestHeap| {
             finalizer
                 .finalize(heap)

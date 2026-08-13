@@ -1,9 +1,9 @@
 use serde_json::{json, Value};
 
 use super::{
-    response_event_into_frame, response_stream_event_into_frame,
-    bytecode_websocket_jsonrpc_response_into_frame, validate_response_end_frame,
-    OrdinaryResponseEvent, ResponseEndPhase,
+    bytecode_websocket_jsonrpc_response_into_frame, response_event_into_frame,
+    response_stream_event_into_frame, validate_response_end_frame, OrdinaryResponseEvent,
+    ResponseEndPhase,
 };
 use crate::protocol::{
     decode_binary_frame, decode_response_chunk_frame, decode_response_end_frame,
@@ -13,8 +13,7 @@ use crate::protocol::{
 };
 use crate::protocol::{
     decode_bytecode_websocket_jsonrpc_response_end_frame,
-    BytecodeWebSocketJsonRpcResponseFrameHeader,
-    BytecodeWebSocketJsonRpcResponseOutcome,
+    BytecodeWebSocketJsonRpcResponseFrameHeader, BytecodeWebSocketJsonRpcResponseOutcome,
 };
 use skiff_runtime_request_contract::{
     FixedServiceResponseFailure, HttpResponseMetadata, OpaqueServiceError,
@@ -262,9 +261,8 @@ fn bytecode_websocket_jsonrpc_mapper_round_trips_opaque_success_payload() {
         payload.clone(),
     )
     .expect("success must encode");
-    let (decoded, decoded_payload) =
-        decode_bytecode_websocket_jsonrpc_response_end_frame(&encoded)
-            .expect("mapped response must decode");
+    let (decoded, decoded_payload) = decode_bytecode_websocket_jsonrpc_response_end_frame(&encoded)
+        .expect("mapped response must decode");
 
     assert_eq!(decoded.request_id, "request-websocket-jsonrpc-mapper");
     assert_eq!(

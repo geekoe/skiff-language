@@ -127,6 +127,19 @@ impl ExecutionWinner {
     }
 }
 
+/// Terminal sink registered by the request driver while one of its VM
+/// continuations is parked on an actual pending operation.
+///
+/// The budget is the sole authority that decides a request terminal. When it
+/// selects a winner while pending cells are parked, it notifies every sink
+/// exactly once; the sink converts the winner to the VM resume terminal and
+/// settles the pending cell so the suspended fiber can unwind. A sink must
+/// never re-enter the budget, settle twice or emit a request observation.
+pub trait RequestPendingSink: Send + Sync + 'static {
+    /// Delivered exactly once when the budget selects a terminal winner.
+    fn on_terminal(&self, winner: ExecutionWinner);
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompletionCandidate {
     Success,
@@ -237,6 +250,7 @@ struct ExecutionBudgetState {
     last_polled_raw_count: Option<u64>,
     vm_adapter_attached: bool,
     settlement: Option<Arc<ExecutionSettlement>>,
+    pending_sinks: Vec<Arc<dyn RequestPendingSink>>,
 }
 
 pub struct ExecutionBudget {
@@ -277,6 +291,7 @@ impl ExecutionBudget {
                 last_polled_raw_count: None,
                 vm_adapter_attached: false,
                 settlement: None,
+                pending_sinks: Vec::new(),
             }),
         }
     }
@@ -320,6 +335,56 @@ impl ExecutionBudget {
         self.settle_requested(ExecutionWinner::InternalStop)
     }
 
+    /// Registers a pending-cell sink and reports an already-selected winner.
+    ///
+    /// `None` means the budget is still open and the sink is now registered:
+    /// the budget will notify it exactly once when a terminal winner is
+    /// selected. `Some(winner)` means the budget had already frozen (or the
+    /// deadline is already due); the caller must settle the parked cell with
+    /// that winner inline, and the sink is not registered.
+    pub fn register_pending_sink(
+        &self,
+        sink: Arc<dyn RequestPendingSink>,
+    ) -> Option<ExecutionWinner> {
+        let mut state = self.lock_state();
+        if let Some(settlement) = &state.settlement {
+            return Some(settlement.winner);
+        }
+        let now = self.clock.now();
+        if self.deadline_is_due(now) {
+            let settlement = self.freeze(&mut state, ExecutionWinner::DeadlineExceeded, now);
+            let winner = settlement.winner;
+            drop(state);
+            self.complete_pending_sinks(winner);
+            return Some(winner);
+        }
+        state.pending_sinks.push(sink);
+        None
+    }
+
+    /// Authoritative terminal arbitration for a parked request completion.
+    ///
+    /// `None` means the request is still open and the completion may deliver
+    /// its host value. `Some(winner)` means the request is already terminal or
+    /// its deadline is due; the completion must be converted to that terminal
+    /// instead. A due deadline freezes the budget as `DeadlineExceeded` so the
+    /// same single winner is reported to every later racer.
+    pub fn pending_terminal_winner(&self) -> Option<ExecutionWinner> {
+        let mut state = self.lock_state();
+        if let Some(settlement) = &state.settlement {
+            return Some(settlement.winner);
+        }
+        let now = self.clock.now();
+        if self.deadline_is_due(now) {
+            let settlement = self.freeze(&mut state, ExecutionWinner::DeadlineExceeded, now);
+            let winner = settlement.winner;
+            drop(state);
+            self.complete_pending_sinks(winner);
+            return Some(winner);
+        }
+        None
+    }
+
     pub fn settlement(&self) -> Option<Arc<ExecutionSettlement>> {
         self.lock_state().settlement.clone()
     }
@@ -352,18 +417,32 @@ impl ExecutionBudget {
     }
 
     fn settle_requested(&self, requested: ExecutionWinner) -> SettlementDisposition {
-        let mut state = self.lock_state();
-        if let Some(settlement) = &state.settlement {
-            return SettlementDisposition::AlreadySettled(Arc::clone(settlement));
-        }
-        let now = self.clock.now();
-        let winner = if self.deadline_is_due(now) {
-            ExecutionWinner::DeadlineExceeded
-        } else {
-            requested
+        let (disposition, winner) = {
+            let mut state = self.lock_state();
+            if let Some(settlement) = &state.settlement {
+                return SettlementDisposition::AlreadySettled(Arc::clone(settlement));
+            }
+            let now = self.clock.now();
+            let winner = if self.deadline_is_due(now) {
+                ExecutionWinner::DeadlineExceeded
+            } else {
+                requested
+            };
+            let settlement = self.freeze(&mut state, winner, now);
+            (SettlementDisposition::Won(settlement), winner)
         };
-        let settlement = self.freeze(&mut state, winner, now);
-        SettlementDisposition::Won(settlement)
+        self.complete_pending_sinks(winner);
+        disposition
+    }
+
+    fn complete_pending_sinks(&self, winner: ExecutionWinner) {
+        let sinks = {
+            let mut state = self.lock_state();
+            std::mem::take(&mut state.pending_sinks)
+        };
+        for sink in sinks {
+            sink.on_terminal(winner);
+        }
     }
 
     fn before_dispatch(&self) -> Result<(), VmBudgetClosed> {

@@ -46,7 +46,7 @@ fn identity_observation_survives_detachment_and_database_materialization() {
                 may_pending: true,
                 pending_effect_categories: vec![PendingEffectCategory::Unknown],
                 inout_path_effects: Vec::new(),
-},
+            },
         },
         provenance: CallableProvenanceSummary::Analyzed {
             return_origins: vec![ValueProvenance::Fresh],

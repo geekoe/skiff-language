@@ -20,7 +20,7 @@ use skiff_runtime_request::{
     cancellation::CancellationToken,
     execution_budget::{
         AdmittedRequestDeadline, CompletionCandidate, ExecutionBudget, ExecutionSettlement,
-        ExecutionWinner,
+        ExecutionWinner, RequestPendingSink,
     },
     execution_budget_trace_attrs, response_error_to_telemetry_map, RequestCancel, RequestEnvelope,
     RequestExecutionOwnerInventorySnapshot, ResponseError,
@@ -1420,5 +1420,94 @@ mod tests {
         }));
         assert!(!sink.overlap.load(Ordering::SeqCst));
         assert_eq!(sink.callbacks.load(Ordering::SeqCst), 0);
+    }
+
+    #[derive(Default)]
+    struct RecordingPendingSink(Mutex<Vec<ExecutionWinner>>);
+
+    impl RequestPendingSink for RecordingPendingSink {
+        fn on_terminal(&self, winner: ExecutionWinner) {
+            self.0.lock().unwrap().push(winner);
+        }
+    }
+
+    #[tokio::test]
+    async fn session_stop_terminates_registered_pending_sinks_exactly_once() {
+        let supervisor = Arc::new(RequestSupervisor::new());
+        let sink = Arc::new(RecordingSink::default());
+        let key = key("session", "parked");
+        assert!(supervisor.start_session(key.router_session().clone()));
+        let supervised = activate(
+            supervisor
+                .reserve(key.clone(), observer(sink.clone(), &key), None)
+                .unwrap(),
+            &key,
+        );
+        let pending_sink = Arc::new(RecordingPendingSink::default());
+        assert_eq!(
+            supervised
+                .execution_budget()
+                .register_pending_sink(pending_sink.clone()),
+            None
+        );
+
+        supervisor.stop_session(key.router_session());
+        supervisor.stop_session(key.router_session());
+
+        assert_eq!(
+            *pending_sink.0.lock().unwrap(),
+            [ExecutionWinner::InternalStop]
+        );
+        assert_eq!(
+            supervised.execution_budget().settlement().unwrap().winner(),
+            ExecutionWinner::InternalStop
+        );
+        // Pending termination must not mint request terminal/cleanup
+        // observations; only the request finalizer does that, exactly once.
+        assert!(sink.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cancel_terminates_registered_pending_sinks_with_one_winner() {
+        let supervisor = Arc::new(RequestSupervisor::new());
+        let key = key("session", "cancelled");
+        assert!(supervisor.start_session(key.router_session().clone()));
+        let supervised = activate(
+            supervisor
+                .reserve(
+                    key.clone(),
+                    observer(Arc::new(RecordingSink::default()), &key),
+                    None,
+                )
+                .unwrap(),
+            &key,
+        );
+        let pending_sink = Arc::new(RecordingPendingSink::default());
+        assert_eq!(
+            supervised
+                .execution_budget()
+                .register_pending_sink(pending_sink.clone()),
+            None
+        );
+
+        assert!(
+            supervisor
+                .cancel(
+                    key.router_session(),
+                    &RequestCancel {
+                        request_id: "cancelled".to_string(),
+                        reason: None,
+                    },
+                )
+                .await
+        );
+        assert_eq!(
+            *pending_sink.0.lock().unwrap(),
+            [ExecutionWinner::Cancelled]
+        );
+        assert_eq!(
+            supervised.execution_budget().settlement().unwrap().winner(),
+            ExecutionWinner::Cancelled
+        );
     }
 }

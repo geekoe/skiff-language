@@ -9,7 +9,10 @@ use skiff_artifact_model::{
 use skiff_compiler_core::type_ref::{map_type_ref, walk_type_ref};
 use skiff_compiler_lowering::mir::{MirFunction, MirUnit};
 
-use super::{inputs::{ValidatedConstant, ValidatedEmissionInputs}, BytecodeEmissionError};
+use super::{
+    inputs::{ValidatedConstant, ValidatedEmissionInputs},
+    BytecodeEmissionError,
+};
 
 pub(crate) struct ConstantImage {
     pub(crate) pools: BytecodePools,
@@ -53,9 +56,9 @@ impl ConstantImage {
             return Ok(index);
         }
         let index = checked_index(self.pools.types.len(), "indexing canonical types")?;
-        self.pools
-            .types
-            .push(BytecodePoolEntry::TypeRef { ty: qualified.clone() });
+        self.pools.types.push(BytecodePoolEntry::TypeRef {
+            ty: qualified.clone(),
+        });
         self.type_indices.insert(key, index);
         for child in nested_types(&qualified) {
             self.intern_type(module_path, &child, context)?;
@@ -485,11 +488,11 @@ fn relocate_node(
             })
         }
         FrozenConstantNode::Implementation { record, behaviors } => {
-            let record = base.checked_add(*record).ok_or(
-                BytecodeEmissionError::ArithmeticOverflow {
-                    context: "relocating frozen implementation record",
-                },
-            )?;
+            let record =
+                base.checked_add(*record)
+                    .ok_or(BytecodeEmissionError::ArithmeticOverflow {
+                        context: "relocating frozen implementation record",
+                    })?;
             Ok(FrozenConstantNode::Implementation {
                 record,
                 behaviors: behaviors.clone(),
@@ -507,7 +510,10 @@ fn relocate_constant_shape(
 ) -> Result<u32, BytecodeEmissionError> {
     let shape = validated.bundle.shape(shape_index).map_err(|error| {
         BytecodeEmissionError::CanonicalSerialization {
-            context: format!("constant `{}` shape {shape_index}", validated.constant.symbol),
+            context: format!(
+                "constant `{}` shape {shape_index}",
+                validated.constant.symbol
+            ),
             message: error.to_string(),
         }
     })?;
@@ -536,7 +542,8 @@ fn relocate_constant_shape(
             })?
             .clone();
         let qualified = qualify_local_types(validated.module_path, &ty);
-        let field_type_ref = intern_merged_type(validated.module_path, &qualified, pools, type_indices)?;
+        let field_type_ref =
+            intern_merged_type(validated.module_path, &qualified, pools, type_indices)?;
         fields.push(ShapeFieldDeclaration {
             name: field.name().to_string(),
             type_ref: field_type_ref,
@@ -647,13 +654,17 @@ fn qualify_transfer_plan(module_path: &str, plan: &ValueTransferPlan) -> ValueTr
 
 fn nested_types(ty: &TypeRefIr) -> Vec<TypeRefIr> {
     match ty {
-        TypeRefIr::Builtin { args, .. } | TypeRefIr::AppliedNominal { arguments: args, .. } => {
-            args.clone()
-        }
+        TypeRefIr::Builtin { args, .. }
+        | TypeRefIr::AppliedNominal {
+            arguments: args, ..
+        } => args.clone(),
         TypeRefIr::Nullable { inner } => vec![(**inner).clone()],
         TypeRefIr::Union { items } => items.clone(),
         TypeRefIr::Record { fields } => fields.values().cloned().collect(),
-        TypeRefIr::Function { params, return_type } => {
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
             let mut children = params
                 .iter()
                 .map(|param| param.ty.clone())

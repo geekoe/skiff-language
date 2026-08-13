@@ -14,12 +14,11 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
-    owner_inventory::PendingOwnerRegistration,
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
-    BytecodeSchedulerError, BytecodeStreamHandoff, BytecodeStreamSupervisor, PendingWakeQueue,
-    RootDisposition, RootEscrow, RootEscrowBacking, StreamConsumer, StreamEmit, StreamError,
-    StreamEvent, StreamPoll, StreamProducer, StreamSupervisor, SuspendedTrampoline,
-    VmCompletionHandle, VmPendingRegistry, WakeSignal,
+    owner_inventory::PendingOwnerRegistration, BytecodeAdapterHandoff, BytecodeChildExecutor,
+    BytecodeChildStart, BytecodeHandoff, BytecodeSchedulerError, BytecodeStreamHandoff,
+    BytecodeStreamSupervisor, PendingWakeQueue, RootDisposition, RootEscrow, RootEscrowBacking,
+    StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll, StreamProducer,
+    StreamSupervisor, SuspendedTrampoline, VmCompletionHandle, VmPendingRegistry, WakeSignal,
 };
 
 type VmSuspended = SuspendedTrampoline<VmFiber, VmResumeToken>;

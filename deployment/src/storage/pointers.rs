@@ -5,8 +5,9 @@ use std::{
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use skiff_artifact_identity::{
-    PackageArtifactPointerPath, PackageArtifactRecordPath, ReleasePointerPath, ServiceContractPointerPath,
-    ServiceContractRecordPath, ServiceDeploymentPointerPath, ServiceDeploymentRecordPath,
+    PackageArtifactPointerPath, PackageArtifactRecordPath, ReleasePointerPath,
+    ServiceContractPointerPath, ServiceContractRecordPath, ServiceDeploymentPointerPath,
+    ServiceDeploymentRecordPath,
 };
 use skiff_artifact_model::{PackageArtifactRef, ServiceContractRef, ServiceDeploymentRef};
 

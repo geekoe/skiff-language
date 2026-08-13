@@ -63,10 +63,10 @@ fn callable_semantics_registry_is_sparse_exact_and_safe() {
                 escapes_caller_value: false,
                 requires_same_heap_identity: false,
                 invokes_unknown_target: false,
-                may_pending: false,            
-            pending_effect_categories: Vec::new(),
-            inout_path_effects: Vec::new(),
-}
+                may_pending: false,
+                pending_effect_categories: Vec::new(),
+                inout_path_effects: Vec::new(),
+            }
         );
         assert_eq!(
             semantics.return_provenance,
@@ -113,10 +113,10 @@ fn bytes_to_hex_callable_semantics_are_exact() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,        
+            may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -184,10 +184,10 @@ fn number_ceil_callable_semantics_are_exact_and_detached() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,        
+            may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
     assert_eq!(semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -235,10 +235,10 @@ fn map_get_callable_semantics_are_exact_and_receiver_reachable() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,        
+            may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
     assert_eq!(
         semantics.return_provenance,
@@ -281,10 +281,10 @@ fn map_has_and_set_callable_semantics_are_exact() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,        
+            may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
     assert_eq!(has_semantics.return_provenance, ValueProvenance::Fresh);
 
@@ -297,10 +297,10 @@ fn map_has_and_set_callable_semantics_are_exact() {
             escapes_caller_value: false,
             requires_same_heap_identity: false,
             invokes_unknown_target: false,
-            may_pending: false,        
+            may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
     assert_eq!(set_semantics.return_provenance, ValueProvenance::Constant);
 

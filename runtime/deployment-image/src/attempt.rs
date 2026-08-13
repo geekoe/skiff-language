@@ -4,8 +4,7 @@ use tokio::sync::{Mutex, Notify};
 
 use crate::{DeploymentLoadFailure, DeploymentOwnerIdentity, LoadAttemptId};
 
-pub(crate) type SharedAttemptResult<P, E> =
-    Result<Arc<P>, Arc<DeploymentLoadFailure<E>>>;
+pub(crate) type SharedAttemptResult<P, E> = Result<Arc<P>, Arc<DeploymentLoadFailure<E>>>;
 
 pub(crate) struct LoadAttempt<P, E> {
     id: LoadAttemptId,

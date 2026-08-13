@@ -733,8 +733,7 @@ fn stream_next_end_resume_pc_participates_in_the_preimage() {
     let baseline = bytecode_identity(&base).unwrap();
 
     let mut changed = base;
-    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut changed.image.pools.resume[0]
-    else {
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut changed.image.pools.resume[0] else {
         unreachable!("stream consumer resume descriptor")
     };
     descriptor.end_resume_pc = Some(5);

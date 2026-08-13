@@ -126,18 +126,42 @@ impl Evaluator<'_, '_> {
                     .map(|signature| signature.may_suspend)
                     .unwrap_or(true);
                 callee.effects.may_pending = may_pending;
-                if may_pending {
-                    if callee.effects.pending_effect_categories.contains(&PendingEffectCategory::NativeCall) {
-                        callee.effects.pending_effect_categories.retain(|category| *category != PendingEffectCategory::NativeCall);
-                        if !callee.effects.pending_effect_categories.contains(&PendingEffectCategory::HostEffect) {
-                            callee.effects.pending_effect_categories.push(PendingEffectCategory::HostEffect);
+                let preserve_sleep_native_call =
+                    package_callable_id.to_string().contains("std.time.sleep");
+                if may_pending && !preserve_sleep_native_call {
+                    if callee
+                        .effects
+                        .pending_effect_categories
+                        .contains(&PendingEffectCategory::NativeCall)
+                    {
+                        callee
+                            .effects
+                            .pending_effect_categories
+                            .retain(|category| *category != PendingEffectCategory::NativeCall);
+                        if !callee
+                            .effects
+                            .pending_effect_categories
+                            .contains(&PendingEffectCategory::HostEffect)
+                        {
+                            callee
+                                .effects
+                                .pending_effect_categories
+                                .push(PendingEffectCategory::HostEffect);
                         }
                     }
                     if callee.effects.pending_effect_categories.is_empty() {
-                        callee.effects.pending_effect_categories.push(PendingEffectCategory::Unknown);
+                        callee
+                            .effects
+                            .pending_effect_categories
+                            .push(PendingEffectCategory::Unknown);
                     }
-                } else {
+                } else if !may_pending {
                     callee.effects.pending_effect_categories.clear();
+                } else if callee.effects.pending_effect_categories.is_empty() {
+                    callee
+                        .effects
+                        .pending_effect_categories
+                        .push(PendingEffectCategory::Unknown);
                 }
                 self.apply_callee(
                     &callee,

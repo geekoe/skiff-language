@@ -317,11 +317,7 @@ impl<'a> OwnerChecker<'a> {
         } else {
             assignability
         };
-        let object_source = self
-            .outputs
-            .object_materialization
-            .sources
-            .get(value_key);
+        let object_source = self.outputs.object_materialization.sources.get(value_key);
         let plan = match assignability.object_literal_materialization_plan(
             ObjectLiteralAssignabilityContext {
                 annotation,
@@ -416,10 +412,13 @@ impl<'a> OwnerChecker<'a> {
                 .fields
                 .iter()
                 .filter_map(|field| {
-                    field.actual.clone().map(|ty| MaterializedObjectSourceField {
-                        name: field.name.clone(),
-                        ty,
-                    })
+                    field
+                        .actual
+                        .clone()
+                        .map(|ty| MaterializedObjectSourceField {
+                            name: field.name.clone(),
+                            ty,
+                        })
                 })
                 .collect::<Vec<_>>();
             self.outputs.object_materialization.facts.insert(

@@ -983,9 +983,8 @@ async fn submit_same_task_id_is_idempotent() {
     // Fixed clock: `created_at`/`due_at` derive from `store.now()`, so two
     // submits must land on the exact same timestamp to produce an identical
     // canonical record (the store's idempotent-create path).
-    let (store, _scheduler, sink, writer, _counters) = sink_rig_with_clock(Arc::new(
-        FixedTaskClock(1_700_000_000_000),
-    ));
+    let (store, _scheduler, sink, writer, _counters) =
+        sink_rig_with_clock(Arc::new(FixedTaskClock(1_700_000_000_000)));
     let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
     let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
     let session = RuntimeSessionEpoch {

@@ -43,16 +43,10 @@ impl Parser {
             ));
         }
         if self.match_ident("final") {
-            return self.parse_local_binding(
-                LocalBindingKind::Final,
-                self.previous().span.start,
-            );
+            return self.parse_local_binding(LocalBindingKind::Final, self.previous().span.start);
         }
         if self.match_ident("var") {
-            return self.parse_local_binding(
-                LocalBindingKind::Var,
-                self.previous().span.start,
-            );
+            return self.parse_local_binding(LocalBindingKind::Var, self.previous().span.start);
         }
         if self.match_ident("timeout") {
             return self.parse_timeout_statement(in_test, self.previous().span.start);

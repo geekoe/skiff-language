@@ -17,18 +17,16 @@ mod tests {
         DeploymentIngressBinding, DeploymentRevision, GatewayAdapterKind, GatewayAdapterPlan,
         GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity, GatewayEntryKey,
         GatewayEntryProtocolSurface, GatewayExternalErrorProjection, GatewayExternalSchema,
-        GatewayHttpProtocolSurface,
-        GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifactRef,
-        PackageBuildId, PackageLocalAbiIdentity, ServiceContractRef, ServiceDeployment,
-        ServiceProtocolIdentity, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+        GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol, IngressSelector,
+        PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, ServiceContractRef,
+        ServiceDeployment, ServiceProtocolIdentity, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
     };
     use skiff_deployment::storage::{CanonicalArtifactStore, ReleasePointer};
     use skiff_router::http::fake::{FakeDispatchPlan, FakeHttpDispatcher};
-    use skiff_router::http::{
-        start_http_gateway, HttpGatewayServerOptions, StoreHttpIngressResolver,
-        HttpIngressResolver,
-    };
     use skiff_router::http::selector::ServiceDeploymentSelector;
+    use skiff_router::http::{
+        start_http_gateway, HttpGatewayServerOptions, HttpIngressResolver, StoreHttpIngressResolver,
+    };
 
     use crate::http_common::send_request;
 
@@ -45,7 +43,8 @@ mod tests {
     }
 
     fn temp_root() -> (PathBuf, Guard) {
-        static TEMP_ROOT_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        static TEMP_ROOT_SEQUENCE: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "skiff-http-release-resolver-{}-{}-{}",
             std::process::id(),
@@ -196,10 +195,7 @@ mod tests {
         );
         assert_eq!(binding.selector.method.as_deref(), Some("POST"));
         assert_eq!(binding.selector.path, "/greet");
-        assert_eq!(
-            binding.mode,
-            skiff_router::http::HttpDispatchMode::Unary
-        );
+        assert_eq!(binding.mode, skiff_router::http::HttpDispatchMode::Unary);
     }
 
     #[test]

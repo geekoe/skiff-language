@@ -1,6 +1,7 @@
 use std::{
     num::{NonZeroU32, NonZeroUsize},
-    sync::Arc,
+    sync::{mpsc, Arc, Mutex},
+    time::Duration,
 };
 
 use skiff_artifact_model::TypeRefIr;
@@ -15,20 +16,26 @@ use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
     service_error::{ErrorCorrelation, RequestException},
     vm_heap::{VmContainerShape, VmHeap, VmHeapError, VmRecordField},
+    vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
 use skiff_runtime_scheduler::{
-    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
-    RequestExecutionContext,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeScheduler,
+    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts, PendingWakeQueue,
+    RequestExecutionContext, RootDisposition, RootEscrow, RootEscrowBacking, SuspendedTrampoline,
+    VmCompletionHandle, VmPendingRegistry, VmPendingWake,
 };
 use skiff_runtime_vm::{
-    Vm, VmBudget, VmBudgetClosed, VmBudgetTerminal, VmError, VmFiber, VmInternalTerminal, VmLimits,
+    AdapterInvocation, PendingOperation, ResumeOutcome, Vm, VmBudget, VmBudgetClosed,
+    VmBudgetTerminal, VmError, VmFiber, VmInternalTerminal, VmLimits, VmResult, VmResumeToken,
 };
 
 use crate::{
-    vm_heap::RequestVmHeap, BinaryHttpRequest, BoundaryResponse, ExecutionBudget, ExecutionControl,
-    GatewayAdapterSource, HttpAdapterKind, HttpNameValue, HttpResponseMetadata, RequestEnvelope,
-    RequestError, RequestResult,
+    execution_budget::{ExecutionWinner, RequestPendingSink},
+    vm_heap::RequestVmHeap,
+    BinaryHttpRequest, BoundaryResponse, ExecutionBudget, ExecutionControl, GatewayAdapterSource,
+    HttpAdapterKind, HttpNameValue, HttpResponseMetadata, RequestEnvelope, RequestError,
+    RequestResult,
 };
 
 pub struct BytecodeRequestExecutionInput {
@@ -87,16 +94,24 @@ impl DrivenBytecodeRequestOwnerInventory {
     }
 }
 
-/// The only public composition of one bytecode request: create the owner-bound
-/// execution context, start the fiber exactly once, then drive the scheduler
-/// exactly once.
-///
-/// A failure during the start phase returns an empty retention carrier and a
-/// frozen `NotStarted` owner inventory. A completed drive freezes the actual
-/// `Started` snapshot on every outcome, success, parked or failed.
-pub fn drive_runtime_bytecode_request(
-    input: BytecodeRequestExecutionInput,
-) -> DrivenBytecodeRequest {
+/// Suspended invocation chain of one parked bytecode request.
+type VmSuspended = SuspendedTrampoline<VmFiber, VmResumeToken>;
+
+/// The sole pinned host effect admitted into the Phase 4 actual-Pending lane.
+const SLEEP_BINDING_KEY: &str = "std.time.sleep";
+
+/// Everything needed to project and retain one started request across any
+/// number of park/resume cycles.
+struct BytecodeStart {
+    fiber: VmFiber,
+    heap: Box<dyn VmHeap + Send>,
+    budget: Box<dyn VmBudget + Send>,
+    execution_budget: Arc<ExecutionBudget>,
+    mode: String,
+    raw_http_adapter: bool,
+}
+
+fn start_bytecode_request(input: BytecodeRequestExecutionInput) -> RequestResult<BytecodeStart> {
     let BytecodeRequestExecutionInput {
         target,
         request,
@@ -112,34 +127,130 @@ pub fn drive_runtime_bytecode_request(
         .http_adapter
         .as_ref()
         .is_some_and(|adapter| adapter.kind == HttpAdapterKind::RawHttp);
+    validate_bytecode_request(&request)?;
+    ExecutionControl::new(cancellation.clone(), &execution_budget)
+        .check_cancelled()
+        .map_err(RequestError::from)?;
+    let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
+        Some(heap) => heap,
+        None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
+    };
+    let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
+    let mut fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
+        .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
+    fiber.set_error_correlation(bytecode_error_correlation(&request));
+    let budget = execution_budget.attach_vm().map_err(|error| {
+        RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
+    })?;
+    Ok(BytecodeStart {
+        fiber,
+        heap,
+        budget: Box::new(budget),
+        execution_budget,
+        mode,
+        raw_http_adapter,
+    })
+}
 
-    let mut context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+/// The only public composition of one bytecode request on the production
+/// seam: start the fiber exactly once, then drive with the deterministic
+/// controlled completion.
+///
+/// A pinned `std.time.sleep` still executes the real park/publish/wake/claim/
+/// resume chain; its deterministic completion is injected at the production
+/// boundary instead of a real clock, so the drive never blocks or fakes a
+/// synchronous `Ready`. A failure during the start phase returns an empty
+/// retention carrier and a frozen `NotStarted` owner inventory.
+pub fn drive_runtime_bytecode_request(
+    input: BytecodeRequestExecutionInput,
+) -> DrivenBytecodeRequest {
+    let mut drive = drive_runtime_bytecode_request_controlled(input);
+    loop {
+        match drive {
+            ControlledBytecodeDrive::Complete(driven) => return driven,
+            ControlledBytecodeDrive::Parked(parked) => drive = parked.complete_and_resume(),
+        }
+    }
+}
 
-    let start =
-        (|| -> RequestResult<(VmFiber, Box<dyn VmHeap + Send>, Box<dyn VmBudget + Send>)> {
-            validate_bytecode_request(&request)?;
-            ExecutionControl::new(cancellation.clone(), &execution_budget)
-                .check_cancelled()
-                .map_err(RequestError::from)?;
-            let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
-                Some(heap) => heap,
-                None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
-            };
-            let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
-            let mut fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
-                .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-            fiber.set_error_correlation(bytecode_error_correlation(&request));
-            let budget = execution_budget.attach_vm().map_err(|error| {
-                RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
-            })?;
-            let budget: Box<dyn VmBudget + Send> = Box::new(budget);
-            Ok((fiber, heap, budget))
-        })();
+/// Async production driver for the Phase 4 pending lane.
+///
+/// The controlled driver still owns park/publish/wake/claim/resume. This
+/// wrapper waits for the request's budget terminal or the pinned sleep
+/// duration, whichever is the single winner, instead of synchronously
+/// completing every parked effect. That keeps cancel/deadline/session-stop
+/// races observable while a successful sleep still resumes on its
+/// deterministic timer.
+pub async fn drive_runtime_bytecode_request_async(
+    input: BytecodeRequestExecutionInput,
+) -> DrivenBytecodeRequest {
+    let mut drive = drive_runtime_bytecode_request_controlled(input);
+    loop {
+        match drive {
+            ControlledBytecodeDrive::Complete(driven) => return driven,
+            ControlledBytecodeDrive::Parked(parked) => {
+                let sleep_millis = parked.sleep_millis();
+                let sleep = tokio::time::sleep(Duration::from_millis(sleep_millis));
+                tokio::pin!(sleep);
+                loop {
+                    let _ = parked
+                        .pending_completion()
+                        .runtime
+                        .budget
+                        .pending_terminal_winner();
+                    match parked.wake_receiver.try_recv() {
+                        Ok(()) => {
+                            drive = parked.resume_with_claimed_signal();
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {}
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            drive = parked.terminal(BytecodeSchedulerError::Port(
+                                "pending wake queue disconnected before terminal".to_string(),
+                            ));
+                            break;
+                        }
+                    }
+                    tokio::select! {
+                        _ = &mut sleep => {
+                            parked.pending_completion().complete();
+                            drive = parked.resume();
+                            break;
+                        }
+                        _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                    }
+                }
+            }
+        }
+    }
+}
 
-    let (fiber, mut heap, mut budget) = match start {
-        Ok(parts) => parts,
+/// One controlled-drive step.
+///
+/// `Parked` carries the live request and its completion authority so a host
+/// boundary can finish the pending effect before resuming; `Complete` is the
+/// frozen terminal carrier shared with the synchronous lane.
+#[must_use = "a controlled bytecode drive must be completed or resumed"]
+pub enum ControlledBytecodeDrive {
+    Complete(DrivenBytecodeRequest),
+    Parked(ParkedBytecodeRequest),
+}
+
+/// Drives a bytecode request until its first actual-Pending park, a root
+/// completion, or a terminal error, without injecting any completion.
+///
+/// This is the seam the Phase 4 proof gate uses to inject a fake host
+/// completion at the production boundary: [`ParkedBytecodeRequest`] exposes
+/// [`RequestPendingCompletion`], and [`ParkedBytecodeRequest::resume`] drains
+/// exactly one wake and restores the original VM site.
+pub fn drive_runtime_bytecode_request_controlled(
+    input: BytecodeRequestExecutionInput,
+) -> ControlledBytecodeDrive {
+    let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+    let start = match start_bytecode_request(input) {
+        Ok(start) => start,
         Err(error) => {
-            return DrivenBytecodeRequest {
+            return ControlledBytecodeDrive::Complete(DrivenBytecodeRequest {
                 result: Err(error),
                 retention: BytecodeRequestRetention {
                     heap: None,
@@ -148,43 +259,484 @@ pub fn drive_runtime_bytecode_request(
                 owner_inventory: DrivenBytecodeRequestOwnerInventory::NotStarted(
                     context.into_not_started(),
                 ),
-            };
+            });
         }
     };
 
+    let (wake_queue, wake_receiver) = RequestPendingWakeQueue::new();
+    let runtime = Arc::new(RequestPendingRuntime {
+        registry: Arc::new(VmPendingRegistry::new(context.pending_registration())),
+        wake_queue,
+        budget: Arc::clone(&start.execution_budget),
+        completion: Mutex::new(None),
+        sleep_millis: Mutex::new(None),
+    });
+    let mut context = context.with_ports(BytecodeSchedulerPorts {
+        child_executor: Some(Arc::new(SleepHostExecutor {
+            runtime: Arc::clone(&runtime),
+        })),
+        stream_supervisor: None,
+    });
+
+    let BytecodeStart {
+        fiber,
+        mut heap,
+        mut budget,
+        execution_budget,
+        mode,
+        raw_http_adapter,
+    } = start;
     context.install_root(fiber);
-    let (outcome, snapshot) = context.drive(&mut *heap, &mut *budget);
-    let result = match outcome {
-        Ok(BytecodeSchedulerOutcome::Complete(result)) => match result {
-            Ok(values) => {
-                if mode == "serverStream" {
-                    Err(RequestError::Decode(
-                        "serverStream request completed without a response stream".to_string(),
-                    ))
-                } else if raw_http_adapter {
-                    http_response_from_vm_values(&mut *heap, values.values())
+    let outcome = context.start_drive(&mut *heap, &mut *budget);
+    ParkedBytecodeRequest {
+        context,
+        heap,
+        budget,
+        execution_budget,
+        runtime,
+        wake_receiver,
+        mode,
+        raw_http_adapter,
+    }
+    .finish_drive(outcome)
+}
+
+/// Roots transferred out of a parked fiber as the argument of a pinned
+/// pending host effect.
+///
+/// The slots are already popped from the fiber operand stack, so neither
+/// terminal path can "restore" them back into a live owner. The escrow keeps
+/// them enumerable during a safepoint walk; the request heap releases their
+/// storage at boundary teardown.
+struct SleepArgumentRoots(Vec<ValueSlot>);
+
+impl VmRootSource for SleepArgumentRoots {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        for root in &self.0 {
+            visitor.visit_root(root)?;
+        }
+        Ok(())
+    }
+}
+
+impl RootEscrowBacking for SleepArgumentRoots {
+    fn root_count(&self) -> usize {
+        self.0.len()
+    }
+
+    fn restore_roots(self: Box<Self>) {}
+
+    fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {}
+}
+
+/// Runtime-neutral runnable queue for claimed pending wakes.
+///
+/// Every wake stays root-enumerable while queued; `enqueue` also signals the
+/// single parked-request receiver so a resume can drain exactly one wake.
+struct RequestPendingWakeQueue {
+    wakes: Mutex<Vec<VmPendingWake<VmSuspended>>>,
+    signal: mpsc::Sender<()>,
+}
+
+impl RequestPendingWakeQueue {
+    fn new() -> (Arc<Self>, mpsc::Receiver<()>) {
+        let (signal, receiver) = mpsc::channel();
+        (
+            Arc::new(Self {
+                wakes: Mutex::new(Vec::new()),
+                signal,
+            }),
+            receiver,
+        )
+    }
+
+    fn pop(&self) -> Option<VmPendingWake<VmSuspended>> {
+        self.wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop()
+    }
+}
+
+impl PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome> for RequestPendingWakeQueue {
+    fn enqueue(&self, wake: VmPendingWake<VmSuspended>) {
+        self.wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(wake);
+        let _ = self.signal.send(());
+    }
+}
+
+impl VmRootSource for RequestPendingWakeQueue {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        for wake in self
+            .wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+        {
+            wake.visit_roots(visitor)?;
+        }
+        Ok(())
+    }
+}
+
+/// Shared pending state of one request: the registry, the wake queue, the
+/// authoritative budget and the most recently parked completion cell.
+struct RequestPendingRuntime {
+    registry: Arc<VmPendingRegistry<VmSuspended>>,
+    wake_queue: Arc<RequestPendingWakeQueue>,
+    budget: Arc<ExecutionBudget>,
+    completion: Mutex<Option<VmCompletionHandle<VmSuspended>>>,
+    sleep_millis: Mutex<Option<u64>>,
+}
+
+/// Converts the budget's single authoritative winner into the exact pending
+/// cell settlement. The cell arbiter drops every duplicate, so this path can
+/// never produce a second terminal.
+fn complete_cell_from_winner(
+    completion: &VmCompletionHandle<VmSuspended>,
+    winner: ExecutionWinner,
+) {
+    let outcome = ResumeOutcome::InternalTerminal(match winner {
+        ExecutionWinner::DeadlineExceeded => {
+            VmInternalTerminal::Budget(VmBudgetClosed::DeadlineExceeded)
+        }
+        ExecutionWinner::InstructionLimitExceeded => {
+            VmInternalTerminal::Budget(VmBudgetClosed::InstructionLimitExceeded)
+        }
+        ExecutionWinner::AccountingFailure => {
+            VmInternalTerminal::Budget(VmBudgetClosed::AccountingFailure)
+        }
+        ExecutionWinner::Cancelled
+        | ExecutionWinner::InternalStop
+        | ExecutionWinner::Succeeded
+        | ExecutionWinner::Failed => VmInternalTerminal::OwnerStopped,
+    });
+    match winner {
+        ExecutionWinner::DeadlineExceeded => {
+            let _ = completion.deadline(outcome);
+        }
+        ExecutionWinner::Cancelled => {
+            let _ = completion.cancel(outcome);
+        }
+        _ => {
+            let _ = completion.internal_stop(outcome);
+        }
+    }
+}
+
+struct PendingCellSink {
+    completion: VmCompletionHandle<VmSuspended>,
+}
+
+impl RequestPendingSink for PendingCellSink {
+    fn on_terminal(&self, winner: ExecutionWinner) {
+        complete_cell_from_winner(&self.completion, winner);
+    }
+}
+
+/// Typed executor slot for the sole pinned pending host effect.
+///
+/// Every other host effect fails closed with `UnsupportedAdapter`, exactly as
+/// it did before Phase 4; only `std.time.sleep` enters the pending registry.
+struct SleepHostExecutor {
+    runtime: Arc<RequestPendingRuntime>,
+}
+
+impl BytecodeChildExecutor<VmFiber> for SleepHostExecutor {
+    fn execute_child(
+        &self,
+        _invocation: skiff_runtime_vm::ChildInvocation,
+        _heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeChildStart<VmFiber>, BytecodeSchedulerError> {
+        Err(BytecodeSchedulerError::UnsupportedChild)
+    }
+
+    fn execute_adapter(
+        &self,
+        invocation: AdapterInvocation,
+        _heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+        let adapter_index = invocation.adapter();
+        let image = invocation.resume().image();
+        let adapter = image
+            .host_effect_adapters()
+            .get(adapter_index.get() as usize)
+            .filter(|row| row.index() == adapter_index)
+            .ok_or_else(|| {
+                BytecodeSchedulerError::Port(
+                    "pending host effect adapter row is absent from the pinned image".to_string(),
+                )
+            })?;
+        if adapter.binding_key().as_str() != SLEEP_BINDING_KEY {
+            return Err(BytecodeSchedulerError::UnsupportedAdapter);
+        }
+        let (_adapter, arguments, resume) = invocation.into_parts();
+        let sleep_millis = arguments
+            .values()
+            .first()
+            .and_then(|value| {
+                if let Some(millis) = value.as_integer() {
+                    u64::try_from(millis).ok()
                 } else {
-                    json_payload_from_value_slots(&mut *heap, values.values())
-                        .map(BoundaryResponse::payload)
+                    let number = value.as_number()?;
+                    if !number.is_finite()
+                        || number < 0.0
+                        || number.fract() != 0.0
+                        || number > u64::MAX as f64
+                    {
+                        return None;
+                    }
+                    Some(number as u64)
                 }
+            })
+            .unwrap_or(0);
+        *self
+            .runtime
+            .sleep_millis
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sleep_millis);
+        let escrow = RootEscrow::new(Box::new(SleepArgumentRoots(arguments.values().to_vec())));
+        let completion = self
+            .runtime
+            .registry
+            .begin(escrow)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let sink: Arc<dyn RequestPendingSink> = Arc::new(PendingCellSink {
+            completion: completion.clone(),
+        });
+        if let Some(winner) = self.runtime.budget.register_pending_sink(sink) {
+            complete_cell_from_winner(&completion, winner);
+        }
+        *self
+            .runtime
+            .completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(completion.clone());
+        Ok(BytecodeAdapterHandoff::Pending(
+            resume.into_pending(completion.ticket()),
+        ))
+    }
+
+    fn park_adapter(
+        &self,
+        operation: PendingOperation,
+        suspended: VmSuspended,
+        _heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<(), BytecodeSchedulerError> {
+        let queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome>> =
+            self.runtime.wake_queue.clone();
+        self.runtime
+            .registry
+            .publish_operation(operation, suspended, queue)
+            .map(|_| ())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))
+    }
+}
+
+/// Cloneable authority to complete the most recently parked pending host
+/// effect of one request.
+#[derive(Clone)]
+pub struct RequestPendingCompletion {
+    runtime: Arc<RequestPendingRuntime>,
+}
+
+impl RequestPendingCompletion {
+    /// Delivers the deterministic zero-result host completion exactly once.
+    ///
+    /// The request budget arbitrates first: a cancelled, stopped or
+    /// deadline-exceeded request converts the completion into its single
+    /// terminal instead of a host value. Returns `true` only when this call
+    /// won the pending cell; a duplicate completion is dropped and returns
+    /// `false`.
+    pub fn complete(&self) -> bool {
+        let Some(completion) = self
+            .runtime
+            .completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        else {
+            return false;
+        };
+        let before = completion.state();
+        if matches!(before, skiff_runtime_scheduler::PendingCellState::Claimed) {
+            return false;
+        }
+        match self.runtime.budget.pending_terminal_winner() {
+            None => {
+                let _ = completion.complete(ResumeOutcome::Empty);
             }
-            Err(VmError::Thrown(envelope)) => {
-                Err(uncaught_throw_to_request_error(&mut *heap, &envelope))
+            Some(winner) => complete_cell_from_winner(&completion, winner),
+        }
+        completion.state() != before
+    }
+}
+
+/// A bytecode request parked on its first (or a later) actual pending effect.
+///
+/// The carrier retains the heap, budget, owner inventory and scheduler ports
+/// until the request reaches its single terminal, so a cancel, deadline or
+/// session stop can still settle the parked cell through the budget.
+#[must_use = "a parked bytecode request must be completed and resumed"]
+pub struct ParkedBytecodeRequest {
+    context: RequestExecutionContext<VmFiber>,
+    heap: Box<dyn VmHeap + Send>,
+    budget: Box<dyn VmBudget + Send>,
+    execution_budget: Arc<ExecutionBudget>,
+    runtime: Arc<RequestPendingRuntime>,
+    wake_receiver: mpsc::Receiver<()>,
+    mode: String,
+    raw_http_adapter: bool,
+}
+
+impl ParkedBytecodeRequest {
+    /// The completion authority for the currently parked effect.
+    pub fn pending_completion(&self) -> RequestPendingCompletion {
+        RequestPendingCompletion {
+            runtime: Arc::clone(&self.runtime),
+        }
+    }
+
+    /// Deterministic sleep duration for the currently parked effect.
+    fn sleep_millis(&self) -> u64 {
+        self.runtime
+            .sleep_millis
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or(0)
+    }
+
+    /// Completes the parked effect deterministically and resumes the request.
+    pub fn complete_and_resume(self) -> ControlledBytecodeDrive {
+        let parked = self;
+        parked.pending_completion().complete();
+        parked.resume()
+    }
+
+    /// Resumes after the caller has already claimed the wake signal.
+    fn resume_with_claimed_signal(self) -> ControlledBytecodeDrive {
+        let wake = self
+            .runtime
+            .wake_queue
+            .pop()
+            .expect("a claimed pending wake queue must hold exactly one wake");
+        self.resume_wake(wake)
+    }
+
+    /// Drains exactly one claimed wake and restores the original VM site.
+    ///
+    /// The restored scheduler runs once; a second park suspends the chain
+    /// again and returns a fresh [`ControlledBytecodeDrive::Parked`].
+    pub fn resume(self) -> ControlledBytecodeDrive {
+        self.wake_receiver
+            .recv()
+            .expect("a parked bytecode request must be completed before resume");
+        let wake = self
+            .runtime
+            .wake_queue
+            .pop()
+            .expect("a signaled pending wake queue must hold exactly one wake");
+        self.resume_wake(wake)
+    }
+
+    fn resume_wake(mut self, wake: VmPendingWake<VmSuspended>) -> ControlledBytecodeDrive {
+        match BytecodeScheduler::<VmFiber>::resume_from_pending_wake(wake, self.context.ports()) {
+            Ok(scheduler) => {
+                let outcome =
+                    self.context
+                        .resume_drive(scheduler, &mut *self.heap, &mut *self.budget);
+                self.finish_drive(outcome)
             }
-            Err(error) => Err(vm_error_to_request_error(&execution_budget, error)),
-        },
-        Ok(BytecodeSchedulerOutcome::Parked) => Err(RequestError::Unsupported(
-            "bytecode VM parked on the synchronous Phase 1 request lane".to_string(),
-        )),
-        Err(error) => Err(scheduler_error_to_request_error(&execution_budget, error)),
-    };
-    DrivenBytecodeRequest {
-        result,
-        retention: BytecodeRequestRetention {
-            heap: Some(heap),
-            budget: Some(budget),
-        },
-        owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(snapshot),
+            Err(error) => self.terminal(error),
+        }
+    }
+
+    fn finish_drive(
+        self,
+        outcome: Result<BytecodeSchedulerOutcome<VmFiber>, BytecodeSchedulerError>,
+    ) -> ControlledBytecodeDrive {
+        match outcome {
+            Ok(BytecodeSchedulerOutcome::Complete(result)) => self.complete(result),
+            Ok(BytecodeSchedulerOutcome::Parked) => ControlledBytecodeDrive::Parked(self),
+            Err(error) => self.terminal(error),
+        }
+    }
+
+    fn complete(self, result: VmResult) -> ControlledBytecodeDrive {
+        let ParkedBytecodeRequest {
+            context,
+            mut heap,
+            budget,
+            execution_budget,
+            mode,
+            raw_http_adapter,
+            ..
+        } = self;
+        let snapshot = context.freeze();
+        let result = project_completed_request(
+            &mut *heap,
+            &execution_budget,
+            result,
+            &mode,
+            raw_http_adapter,
+        );
+        ControlledBytecodeDrive::Complete(DrivenBytecodeRequest {
+            result,
+            retention: BytecodeRequestRetention {
+                heap: Some(heap),
+                budget: Some(budget),
+            },
+            owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(snapshot),
+        })
+    }
+
+    fn terminal(self, error: BytecodeSchedulerError) -> ControlledBytecodeDrive {
+        let ParkedBytecodeRequest {
+            context,
+            heap,
+            budget,
+            execution_budget,
+            ..
+        } = self;
+        let snapshot = context.freeze();
+        ControlledBytecodeDrive::Complete(DrivenBytecodeRequest {
+            result: Err(scheduler_error_to_request_error(&execution_budget, error)),
+            retention: BytecodeRequestRetention {
+                heap: Some(heap),
+                budget: Some(budget),
+            },
+            owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(snapshot),
+        })
+    }
+}
+
+fn project_completed_request(
+    heap: &mut dyn VmHeap,
+    execution_budget: &ExecutionBudget,
+    result: VmResult,
+    mode: &str,
+    raw_http_adapter: bool,
+) -> RequestResult<BoundaryResponse> {
+    match result {
+        Ok(values) => {
+            if mode == "serverStream" {
+                Err(RequestError::Decode(
+                    "serverStream request completed without a response stream".to_string(),
+                ))
+            } else if raw_http_adapter {
+                http_response_from_vm_values(heap, values.values())
+            } else {
+                json_payload_from_value_slots(heap, values.values()).map(BoundaryResponse::payload)
+            }
+        }
+        Err(VmError::Thrown(envelope)) => Err(uncaught_throw_to_request_error(heap, &envelope)),
+        Err(error) => Err(vm_error_to_request_error(execution_budget, error)),
     }
 }
 
@@ -1010,5 +1562,102 @@ mod tests {
             payload_bytes: Vec::new(),
             extra: serde_json::Map::new(),
         }
+    }
+
+    fn pending_registry() -> (
+        VmPendingRegistry<VmSuspended>,
+        RequestExecutionContext<VmFiber>,
+    ) {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let registry = VmPendingRegistry::new(context.pending_registration());
+        (registry, context)
+    }
+
+    #[test]
+    fn cancellation_sink_settles_the_parked_cell_once_through_the_budget() {
+        let budget = Arc::new(ExecutionBudget::for_runtime_request(None));
+        let (registry, _context) = pending_registry();
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(SleepArgumentRoots(Vec::new()))))
+            .unwrap();
+        let sink: Arc<dyn RequestPendingSink> = Arc::new(PendingCellSink {
+            completion: completion.clone(),
+        });
+
+        assert_eq!(budget.register_pending_sink(sink), None);
+        assert_eq!(
+            completion.state(),
+            skiff_runtime_scheduler::PendingCellState::Open
+        );
+        budget.request_cancel();
+        assert_eq!(
+            completion.state(),
+            skiff_runtime_scheduler::PendingCellState::Settled
+        );
+
+        // A second terminal source cannot re-settle the same cell.
+        budget.request_internal_stop();
+        assert_eq!(
+            completion.state(),
+            skiff_runtime_scheduler::PendingCellState::Settled
+        );
+        assert!(registry.abandon(completion.ticket()));
+    }
+
+    #[test]
+    fn due_deadline_converts_the_parked_cell_to_one_deadline_terminal() {
+        let now = std::time::Instant::now();
+        let deadline = crate::execution_budget::AdmittedRequestDeadline::new(
+            now.checked_sub(std::time::Duration::from_millis(1))
+                .unwrap(),
+        );
+        let budget = Arc::new(ExecutionBudget::for_runtime_request(Some(deadline)));
+        let (registry, _context) = pending_registry();
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(SleepArgumentRoots(Vec::new()))))
+            .unwrap();
+        let sink: Arc<dyn RequestPendingSink> = Arc::new(PendingCellSink {
+            completion: completion.clone(),
+        });
+
+        let winner = budget.register_pending_sink(sink);
+        assert_eq!(winner, Some(ExecutionWinner::DeadlineExceeded));
+        complete_cell_from_winner(&completion, winner.unwrap());
+        assert_eq!(
+            completion.state(),
+            skiff_runtime_scheduler::PendingCellState::Settled
+        );
+        assert_eq!(
+            budget.settlement().unwrap().winner(),
+            ExecutionWinner::DeadlineExceeded
+        );
+        assert!(registry.abandon(completion.ticket()));
+    }
+
+    #[test]
+    fn deterministic_completion_claims_the_parked_cell_exactly_once() {
+        let budget = Arc::new(ExecutionBudget::for_runtime_request(None));
+        let (registry, _context) = pending_registry();
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(SleepArgumentRoots(Vec::new()))))
+            .unwrap();
+        let (wake_queue, _wake_receiver) = RequestPendingWakeQueue::new();
+        let runtime = Arc::new(RequestPendingRuntime {
+            registry: Arc::new(registry),
+            wake_queue,
+            budget: Arc::clone(&budget),
+            completion: Mutex::new(Some(completion.clone())),
+            sleep_millis: Mutex::new(None),
+        });
+        let authority = RequestPendingCompletion {
+            runtime: Arc::clone(&runtime),
+        };
+
+        assert!(authority.complete());
+        assert_eq!(
+            completion.state(),
+            skiff_runtime_scheduler::PendingCellState::Settled
+        );
+        assert!(!authority.complete());
     }
 }

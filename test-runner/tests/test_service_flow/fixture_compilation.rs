@@ -2,8 +2,8 @@ use std::{collections::BTreeSet, path::Path};
 
 use skiff_artifact_model::{
     GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterSource, GatewayEntryKey,
-    GatewayProtocolSurface, GatewayWebSocketShapeVersion, IngressProtocol,
-    PackageLocalAbiSymbol, ServiceAuthoringKind,
+    GatewayProtocolSurface, GatewayWebSocketShapeVersion, IngressProtocol, PackageLocalAbiSymbol,
+    ServiceAuthoringKind,
 };
 use skiff_test_runner::{
     canonical_fixture::discover_test_service_cases,

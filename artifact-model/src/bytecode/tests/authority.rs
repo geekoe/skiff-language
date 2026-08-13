@@ -242,7 +242,10 @@ fn stream_producer_requires_zero_return_arity_and_exact_stream_type() {
         .frame_layout
         .stream_result_type_ref = Some(0);
     let error = assert_rejected(&wrong_type);
-    assert!(error.to_string().contains("must select Stream<T>"), "{error}");
+    assert!(
+        error.to_string().contains("must select Stream<T>"),
+        "{error}"
+    );
 
     let mut non_zero_return = stream_producer_artifact();
     let stream_index = non_zero_return
@@ -263,7 +266,10 @@ fn stream_producer_requires_zero_return_arity_and_exact_stream_type() {
     frame.result_type_refs = vec![stream_index];
     frame.result_plans = vec![snapshot_share()];
     let error = assert_rejected(&non_zero_return);
-    assert!(error.to_string().contains("resultCount must be 0"), "{error}");
+    assert!(
+        error.to_string().contains("resultCount must be 0"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -323,7 +329,10 @@ fn stream_next_requires_explicit_end_resume_pc() {
     descriptor.end_resume_pc = None;
 
     let error = assert_rejected(&artifact);
-    assert!(error.to_string().contains("requires endResumePc"), "{error}");
+    assert!(
+        error.to_string().contains("requires endResumePc"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -336,7 +345,10 @@ fn non_stream_resume_cannot_declare_end_resume_pc() {
     descriptor.end_resume_pc = Some(27);
 
     let error = assert_rejected(&artifact);
-    assert!(error.to_string().contains("only valid for StreamNext"), "{error}");
+    assert!(
+        error.to_string().contains("only valid for StreamNext"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -348,7 +360,10 @@ fn stream_next_end_resume_pc_must_be_distinct_instruction_header() {
     };
     descriptor.end_resume_pc = Some(3);
     let error = assert_rejected(&duplicate);
-    assert!(error.to_string().contains("must differ from item resumePc"), "{error}");
+    assert!(
+        error.to_string().contains("must differ from item resumePc"),
+        "{error}"
+    );
 
     let mut not_header = stream_consumer_artifact();
     let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut not_header.image.pools.resume[1]

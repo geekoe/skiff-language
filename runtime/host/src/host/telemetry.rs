@@ -590,7 +590,9 @@ fn file_sink_path(config: &TelemetryConfig) -> PathBuf {
     match &config.file_path {
         Some(path) if path.is_absolute() => path.clone(),
         Some(path) => config.file_root.join(path),
-        None => config.file_root.join(format!("{}.jsonl", config.producer_id)),
+        None => config
+            .file_root
+            .join(format!("{}.jsonl", config.producer_id)),
     }
 }
 
@@ -853,8 +855,7 @@ pub fn build_batches(
     for event in events {
         let event_size = serialized_event_size(&event).saturating_add(BATCH_EVENT_JSON_OVERHEAD);
         if !current.is_empty()
-            && (current.len() >= max_events
-                || current_size.saturating_add(event_size) > max_bytes)
+            && (current.len() >= max_events || current_size.saturating_add(event_size) > max_bytes)
         {
             batches.push(make_batch(
                 producer_id,

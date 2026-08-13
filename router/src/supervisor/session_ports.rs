@@ -19,9 +19,7 @@ use skiff_runtime_transport::protocol::{
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
-use crate::dispatch::{
-    CandidateViewSource, LeaseRevalidate, RevalidateOutcome,
-};
+use crate::dispatch::{CandidateViewSource, LeaseRevalidate, RevalidateOutcome};
 use crate::dispatch::{
     DispatchSubmit, RequestDispatcher, RuntimePeer, SessionAbortControl, TaskAttemptSubmit,
 };

@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::shared::ast::{
-    Block, BlockSourceSpans, DispatchTiming, Expr, ExprSourceSpans, LocalBindingKind, SourceFile, Stmt,
+    Block, BlockSourceSpans, DispatchTiming, Expr, ExprSourceSpans, LocalBindingKind, SourceFile,
+    Stmt,
 };
 
 use super::validation::{

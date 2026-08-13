@@ -670,8 +670,7 @@ impl MirFunction {
             }
             let inout_parameter = slot.kind == MirSlotKind::Param
                 && self.params.iter().any(|parameter| {
-                    parameter.slot == slot.slot
-                        && parameter.mode == MirParamMode::InOut
+                    parameter.slot == slot.slot && parameter.mode == MirParamMode::InOut
                 });
             if slot.kind != MirSlotKind::Local && !inout_parameter {
                 return Err(MirContractError::InvalidWritableLocalSlot {
@@ -927,9 +926,7 @@ pub enum MirContractError {
         "MIR function `{function}` retains expression-block facts for non-ValueBlock expression {expression}"
     )]
     ExpressionBlockFactOwnerMismatch { function: String, expression: u32 },
-    #[error(
-        "MIR function `{function}` expression-block fact {expression} is invalid: {message}"
-    )]
+    #[error("MIR function `{function}` expression-block fact {expression} is invalid: {message}")]
     InvalidExpressionBlockFact {
         function: String,
         expression: u32,

@@ -58,12 +58,8 @@ fn production_execution_image_links_distinct_operation_entries_to_shared_image()
     assert!(Arc::ptr_eq(entry_a.image(), &image));
     assert!(Arc::ptr_eq(entry_b.image(), &image));
 
-    let unknown = contract_operation_id(
-        "example.bytecode-link-service",
-        "1.0.0",
-        "missing",
-    )
-    .unwrap();
+    let unknown =
+        contract_operation_id("example.bytecode-link-service", "1.0.0", "missing").unwrap();
     assert!(matches!(
         image.operation_entry(&unknown),
         Err(CodeEntryLookupError::OperationNotFound {
@@ -311,7 +307,10 @@ fn production_entry_prunes_unreachable_private_interface_and_callback_authority(
     // could populate LinkedSyntheticCallbackTarget::interface_method. This test
     // deliberately proves only that unreachable private callback authority is
     // excluded; the reachable interface case below supplies the K0B rejection.
-    for fixture in [Fixture::unreachable_interface(), Fixture::unreachable_callback()] {
+    for fixture in [
+        Fixture::unreachable_interface(),
+        Fixture::unreachable_callback(),
+    ] {
         let hydrated = fixture.hydrate();
         let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
         assert_eq!(candidate.functions().len(), 1);
@@ -492,6 +491,7 @@ fn statement_manifest(
 ) -> skiff_artifact_model::BytecodeStatementManifestIdentity {
     let mut functions = package
         .bytecode()
+        .unwrap()
         .view()
         .functions()
         .iter()
@@ -520,7 +520,7 @@ fn assert_exact_v7_provenance(
     provenance: &LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
 ) {
-    let admitted = package.bytecode();
+    let admitted = package.bytecode().unwrap();
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");

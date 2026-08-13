@@ -497,12 +497,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         let entries = match value {
             Expr::ObjectLiteral { entries } => entries
                 .iter()
-                .map(|entry| {
-                    (
-                        object_literal_key_text(&entry.key),
-                        entry.key_span,
-                    )
-                })
+                .map(|entry| (object_literal_key_text(&entry.key), entry.key_span))
                 .collect::<Vec<_>>(),
             Expr::MapLiteral { entries } => entries
                 .iter()

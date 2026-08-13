@@ -365,7 +365,8 @@ fn file_sink_writes_header_then_one_jsonl_line_per_event() {
         event.message = Some(format!("msg-{index}"));
         assert!(producer.emit(event));
     }
-    sink.drain_once_to_file().expect("file sink flush should succeed");
+    sink.drain_once_to_file()
+        .expect("file sink flush should succeed");
 
     let lines = read_jsonl_lines(&dir.path().join("custom.jsonl"));
     assert_eq!(lines.len(), 4, "header plus 3 events, no batch envelope");
@@ -387,7 +388,8 @@ fn file_sink_defaults_to_producer_id_under_file_root() {
     let mut event = telemetry_event(TS, TelemetrySource::Test);
     event.name = Some("default.path".to_string());
     assert!(producer.emit(event));
-    sink.drain_once_to_file().expect("file sink flush should succeed");
+    sink.drain_once_to_file()
+        .expect("file sink flush should succeed");
 
     let lines = read_jsonl_lines(&dir.path().join("producer-1.jsonl"));
     assert_eq!(lines.len(), 2);
@@ -407,7 +409,8 @@ fn file_sink_resolves_relative_file_path_against_file_root() {
     let mut event = telemetry_event(TS, TelemetrySource::Test);
     event.name = Some("relative.override".to_string());
     assert!(producer.emit(event));
-    sink.drain_once_to_file().expect("file sink flush should succeed");
+    sink.drain_once_to_file()
+        .expect("file sink flush should succeed");
 
     let lines = read_jsonl_lines(&dir.path().join("nested/override.jsonl"));
     assert_eq!(lines.len(), 2);
@@ -431,10 +434,15 @@ fn file_sink_rotates_on_size_and_retains_max_files() {
         event.name = Some(format!("evt-{index}"));
         assert!(producer.emit(event));
     }
-    sink.drain_once_to_file().expect("file sink flush should succeed");
+    sink.drain_once_to_file()
+        .expect("file sink flush should succeed");
 
     let current = read_jsonl_lines(&dir.path().join("telemetry.jsonl"));
-    assert_eq!(current.len(), 2, "current file holds header plus last event");
+    assert_eq!(
+        current.len(),
+        2,
+        "current file holds header plus last event"
+    );
     assert_file_header(&current[0]);
     assert_eq!(current[1]["name"], "evt-4");
 
@@ -442,7 +450,11 @@ fn file_sink_rotates_on_size_and_retains_max_files() {
     for index in 1..=3 {
         let rotated = dir.path().join(format!("telemetry.jsonl.{index}"));
         let lines = read_jsonl_lines(&rotated);
-        assert_eq!(lines.len(), 2, "rotated {index} should hold header plus one event");
+        assert_eq!(
+            lines.len(),
+            2,
+            "rotated {index} should hold header plus one event"
+        );
         assert_file_header(&lines[0]);
         seen.push(lines[1]["name"].as_str().unwrap().to_string());
     }
@@ -450,7 +462,14 @@ fn file_sink_rotates_on_size_and_retains_max_files() {
         !dir.path().join("telemetry.jsonl.4").exists(),
         "oldest rotated file beyond fileMaxFiles must be evicted"
     );
-    assert_eq!(seen, vec!["evt-3".to_string(), "evt-2".to_string(), "evt-1".to_string()]);
+    assert_eq!(
+        seen,
+        vec![
+            "evt-3".to_string(),
+            "evt-2".to_string(),
+            "evt-1".to_string()
+        ]
+    );
     assert!(
         !seen.iter().any(|name| name == "evt-0"),
         "evt-0 must be evicted by rotation"

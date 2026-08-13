@@ -21,10 +21,10 @@ use super::{
     liveness::compute_liveness,
     MirBlock, MirBuildError, MirConcurrentLaneIr, MirConcurrentPlanIr, MirConst, MirExecutableKind,
     MirExpression, MirExpressionBlockFact, MirFunction, MirIndexAccessFacts, MirLiveness,
-    MirMatchArmIr, MirParam,
-    MirParamMode, MirRegion, MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts, MirSlot,
-    MirSlotKind, MirSourceEventPlan, MirSourceEventUnavailableReason, MirSourceFacts,
-    MirStatementEntry, MirStmt, MirStmtKind, MirStreamResultFacts, MirUnit,
+    MirMatchArmIr, MirParam, MirParamMode, MirRegion, MirRemoteInterfaceFacts,
+    MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind, MirSourceEventPlan,
+    MirSourceEventUnavailableReason, MirSourceFacts, MirStatementEntry, MirStmt, MirStmtKind,
+    MirStreamResultFacts, MirUnit,
 };
 
 mod actor_authority;
@@ -346,8 +346,7 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
         .map(|slot| {
             let inout_parameter = matches!(slot.kind, skiff_artifact_model::SlotKind::Param)
                 && params.iter().any(|parameter| {
-                    parameter.slot == slot.index
-                        && parameter.mode == MirParamMode::InOut
+                    parameter.slot == slot.index && parameter.mode == MirParamMode::InOut
                 });
             MirSlot {
                 slot: slot.index,
@@ -377,13 +376,13 @@ fn build_mir_function(input: MirFunctionBuildInput<'_, '_>) -> Result<MirFunctio
             symbol: executable.symbol.clone(),
             message,
         })?;
-    let (blocks, regions, statements, expression_blocks) = cfg
-        .finish()
-        .map_err(|message| MirBuildError::InvalidControlFlow {
-            module_path: unit.module_path.clone(),
-            symbol: executable.symbol.clone(),
-            message,
-        })?;
+    let (blocks, regions, statements, expression_blocks) =
+        cfg.finish()
+            .map_err(|message| MirBuildError::InvalidControlFlow {
+                module_path: unit.module_path.clone(),
+                symbol: executable.symbol.clone(),
+                message,
+            })?;
     let source_event_plan = source_facts
         .source_event_plan(&unit.module_path, executable_index)
         .cloned()
@@ -1913,11 +1912,7 @@ impl<'a> FunctionCfg<'a> {
         Ok(expression_blocks)
     }
 
-    fn completion_targets(
-        &self,
-        body_block: u32,
-        continuation: u32,
-    ) -> Result<Vec<u32>, String> {
+    fn completion_targets(&self, body_block: u32, continuation: u32) -> Result<Vec<u32>, String> {
         let mut pending = vec![body_block];
         let mut seen = BTreeSet::new();
         let mut targets = BTreeSet::new();

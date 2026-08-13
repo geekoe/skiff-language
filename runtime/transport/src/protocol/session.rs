@@ -51,7 +51,8 @@ pub struct RuntimeCapabilitiesFrameHeaderMetadata {
 impl Default for RuntimeCapabilitiesFrameHeaderMetadata {
     fn default() -> Self {
         Self {
-            platform_error_projection_registry: skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
+            platform_error_projection_registry:
+                skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
             dispatch_modes: Vec::new(),
             package_test_dispatch: false,
             request_cancel: false,

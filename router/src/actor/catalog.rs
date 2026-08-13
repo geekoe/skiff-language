@@ -182,9 +182,12 @@ impl ActorMethodCatalogView {
         actor_abi_identity: &ActorAbiIdentity,
         actor_implementation_identity: &ActorImplementationIdentity,
     ) -> Option<String> {
-        if let Some(build_id) =
-            self.deployment_build_id_for_with(&self.catalog(), service_id, actor_abi_identity, actor_implementation_identity)
-        {
+        if let Some(build_id) = self.deployment_build_id_for_with(
+            &self.catalog(),
+            service_id,
+            actor_abi_identity,
+            actor_implementation_identity,
+        ) {
             return Some(build_id);
         }
         self.deployment_build_id_for_with(
@@ -209,8 +212,7 @@ impl ActorMethodCatalogView {
                 && &entry.actor.actor_abi_identity == actor_abi_identity
                 && &entry.actor_implementation_identity == actor_implementation_identity
         });
-        let build_id = found
-            .map(|entry| entry.deployment.deployment_artifact_identity.to_string());
+        let build_id = found.map(|entry| entry.deployment.deployment_artifact_identity.to_string());
         if build_id.is_some() {
             self.hits.fetch_add(1, Ordering::Relaxed);
         } else {

@@ -86,7 +86,11 @@ impl OwnerCreationError {
 
 impl fmt::Display for OwnerCreationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} owner creation failed: {}", self.domain, self.kind)
+        write!(
+            formatter,
+            "{} owner creation failed: {}",
+            self.domain, self.kind
+        )
     }
 }
 
@@ -236,8 +240,15 @@ impl Drop for OwnerLease {
     }
 }
 
+/// Cloneable authority to create pending owners inside one request's owner
+/// inventory.
+///
+/// The handle only admits [`PendingRegistry`](crate::PendingRegistry)
+/// construction; it cannot mint leases, install owners or freeze the
+/// inventory. It stays bound to the inventory it was cloned from, so a
+/// registry built from it can never mix ownership with another request.
 #[derive(Clone)]
-pub(crate) struct PendingOwnerRegistration(Arc<InventoryShared>);
+pub struct PendingOwnerRegistration(Arc<InventoryShared>);
 
 #[derive(Clone)]
 pub(crate) struct ResourceOwnerRegistration(Arc<InventoryShared>);
@@ -457,6 +468,31 @@ where
         }
     }
 
+    /// Clones the pending-owner registration bound to this context so the
+    /// caller can build a [`BytecodeSchedulerPorts`] that owns a real
+    /// [`PendingRegistry`](crate::PendingRegistry) before the first drive.
+    ///
+    /// The registration cannot mint or release owners on its own, and it
+    /// never outlives the context's inventory.
+    pub fn pending_registration(&self) -> PendingOwnerRegistration {
+        self.registrations.pending()
+    }
+
+    /// Replaces the scheduler ports installed at [`Self::create`].
+    ///
+    /// The caller typically builds the real ports from
+    /// [`Self::pending_registration`] and installs them here before any
+    /// drive; both ports and registration remain bound to this one context.
+    pub fn with_ports(mut self, ports: BytecodeSchedulerPorts<U>) -> Self {
+        self.ports = ports;
+        self
+    }
+
+    /// Clones the current scheduler ports for a pending wake resume.
+    pub fn ports(&self) -> BytecodeSchedulerPorts<U> {
+        self.ports.clone()
+    }
+
     /// Installs the root unit exactly once, without running any caller code.
     ///
     /// # Panics
@@ -497,6 +533,58 @@ where
         let result = scheduler.run(heap, budget);
         let snapshot = self.freeze.freeze();
         (result, snapshot)
+    }
+
+    /// Drives the installed root unit exactly once without freezing the owner
+    /// inventory.
+    ///
+    /// A `Parked` outcome consumes the scheduler: the suspended invocation
+    /// chain moves into the pending registry and can only return through a
+    /// completed [`PendingWake`](crate::PendingWake). A `Complete` or error
+    /// outcome also consumes the scheduler and leaves the context ready for
+    /// [`Self::freeze`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when no root unit was installed before driving.
+    pub fn start_drive(
+        &mut self,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerError> {
+        let root = self
+            .root
+            .take()
+            .expect("the request execution context must install its root unit before driving");
+        let scheduler =
+            BytecodeScheduler::new(root, self.ports.clone(), self.registrations.child());
+        scheduler.run(heap, budget)
+    }
+
+    /// Drives a scheduler restored from a completed pending wake exactly once,
+    /// still without freezing the owner inventory.
+    ///
+    /// The caller restores the scheduler with
+    /// [`BytecodeScheduler::resume_from_pending_wake`] and passes it here; a
+    /// second `Parked` outcome is legal and suspends the chain again.
+    pub fn resume_drive(
+        &mut self,
+        scheduler: BytecodeScheduler<U>,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerError> {
+        scheduler.run(heap, budget)
+    }
+
+    /// Consumes the context and freezes the actual `Started` owner inventory
+    /// snapshot exactly once, after the request reached its terminal outcome.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the context was already frozen by
+    /// [`Self::into_not_started`] or an earlier freeze.
+    pub fn freeze(self) -> RequestExecutionOwnerInventorySnapshot {
+        self.freeze.freeze()
     }
 }
 

@@ -90,15 +90,18 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
-                target,
-                request: request_envelope,
-                observer: observer.clone(),
-                cancellation,
-                execution_budget: Arc::clone(&execution_budget),
-                handles,
-                heap: None,
-            });
+            } = request_runner::drive_runtime_bytecode_request_async(
+                BytecodeRequestExecutionInput {
+                    target,
+                    request: request_envelope,
+                    observer: observer.clone(),
+                    cancellation,
+                    execution_budget: Arc::clone(&execution_budget),
+                    handles,
+                    heap: None,
+                },
+            )
+            .await;
             let owner_inventory = owner_inventory.into_snapshot();
             let terminal = match result {
                 Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))) => {
@@ -142,13 +145,21 @@ impl RuntimeHost {
         let WebSocketJsonRpcTerminal::Response(outcome) = terminal else {
             return self
                 .request_supervisor
-                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
+                .complete_cancelled(
+                    supervised_request,
+                    owner_inventory,
+                    CompletionTrace::RUNTIME,
+                )
                 .await;
         };
         let permit = match &outcome {
             WebSocketJsonRpcOutcome::Success { .. } => {
                 self.request_supervisor
-                    .complete_success(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
+                    .complete_success(
+                        supervised_request,
+                        owner_inventory,
+                        CompletionTrace::RUNTIME,
+                    )
                     .await
             }
             failed => {

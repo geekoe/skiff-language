@@ -107,10 +107,9 @@ pub use events::{
     MirSourceEventPlanError, MirSourceEventUnavailableReason, MirStatementPlacement,
 };
 pub use facts::{
-    MirCallWritableFacts, MirExpressionBlockFact, MirForInBinding, MirForInFacts,
-    MirForInItemKind, MirInOutLoan, MirInOutPathSegment, MirRemoteInterfaceFacts,
-    MirRemoteInterfaceMethodFacts, MirStreamResultFacts, MirWritablePathSegment, MirWritablePlace,
-    MirWritableRoot,
+    MirCallWritableFacts, MirExpressionBlockFact, MirForInBinding, MirForInFacts, MirForInItemKind,
+    MirInOutLoan, MirInOutPathSegment, MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts,
+    MirStreamResultFacts, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
 };
 pub use index::{MirIndexAccessFacts, MirIndexPolicy, MirIndexReceiverKind, MirSourceFacts};
 

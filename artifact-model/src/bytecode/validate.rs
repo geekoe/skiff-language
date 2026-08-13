@@ -963,9 +963,7 @@ fn validate_db_operation_reference(
             "{operation_location}.op only supports single insert in this contract generation"
         )));
     }
-    if operation.operand_roles
-        != vec![crate::bytecode::dto::DbOperandRole::ObjectFields]
-    {
+    if operation.operand_roles != vec![crate::bytecode::dto::DbOperandRole::ObjectFields] {
         return Err(header_error(format!(
             "{operation_location}.operandRoles only supports ObjectFields in this contract generation"
         )));

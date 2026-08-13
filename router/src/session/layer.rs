@@ -245,7 +245,9 @@ impl SessionLayer {
             timing: options.timing,
             budgets: options.budgets,
             writer_delay: options.writer_delay,
-            router_artifact_root: Some(crate::config::canonicalize_artifact_root(&config.artifacts_path)),
+            router_artifact_root: Some(crate::config::canonicalize_artifact_root(
+                &config.artifacts_path,
+            )),
             next_connection_id: AtomicU64::new(0),
             next_generation: AtomicU64::new(0),
             shutdown_tx,
@@ -662,10 +664,8 @@ impl SessionLayer {
     }
 
     pub fn candidates_by_build_id(&self, build_id: &str) -> Vec<RuntimeSessionEpoch> {
-        self.directory_lock().candidates_by_build_id(
-            build_id,
-            self.router_artifact_root.as_deref(),
-        )
+        self.directory_lock()
+            .candidates_by_build_id(build_id, self.router_artifact_root.as_deref())
     }
 }
 

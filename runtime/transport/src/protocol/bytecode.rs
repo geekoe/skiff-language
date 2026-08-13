@@ -13,20 +13,20 @@ mod metadata;
 mod strict_json;
 
 use lexical::{
-    deserialize_dispatch_mode, deserialize_gateway_caller_kind, deserialize_gateway_entry_identity,
+    deserialize_bytecode_routing_kind, deserialize_bytecode_websocket_jsonrpc_connection_id,
+    deserialize_bytecode_websocket_jsonrpc_method,
+    deserialize_bytecode_websocket_jsonrpc_request_id, deserialize_dispatch_mode,
+    deserialize_gateway_caller_kind, deserialize_gateway_entry_identity,
     deserialize_optional_assembly_identity, deserialize_optional_build_id,
     deserialize_optional_safe_activation_generation, deserialize_optional_test_case_capability,
     deserialize_optional_test_case_parent_request_id,
     deserialize_optional_websocket_connection_closed_business_identity,
     deserialize_optional_websocket_jsonrpc_business_identity, deserialize_request_start_type,
-    deserialize_response_end_type, deserialize_bytecode_routing_kind,
-    deserialize_bytecode_websocket_jsonrpc_connection_id,
-    deserialize_bytecode_websocket_jsonrpc_method,
-    deserialize_bytecode_websocket_jsonrpc_request_id,
-    deserialize_runtime_frame_schema_version, deserialize_service_caller_kind,
-    deserialize_service_deployment_ref, deserialize_task_invocation_kind, deserialize_task_target,
-    deserialize_task_target_kind, deserialize_task_unary_dispatch_mode,
-    deserialize_unary_dispatch_mode, deserialize_websocket_jsonrpc_unary_dispatch_mode,
+    deserialize_response_end_type, deserialize_runtime_frame_schema_version,
+    deserialize_service_caller_kind, deserialize_service_deployment_ref,
+    deserialize_task_invocation_kind, deserialize_task_target, deserialize_task_target_kind,
+    deserialize_task_unary_dispatch_mode, deserialize_unary_dispatch_mode,
+    deserialize_websocket_jsonrpc_unary_dispatch_mode,
 };
 use metadata::deserialize_present_option;
 pub use metadata::*;
@@ -379,9 +379,8 @@ impl<'de> Deserialize<'de> for BytecodeWebSocketConnectionClosedIngressFrameHead
     where
         D: Deserializer<'de>,
     {
-        let raw = RawBytecodeWebSocketConnectionClosedIngressFrameHeader::deserialize(
-            deserializer,
-        )?;
+        let raw =
+            RawBytecodeWebSocketConnectionClosedIngressFrameHeader::deserialize(deserializer)?;
         if !raw.path.starts_with('/') {
             return Err(de::Error::custom(
                 "routing.ingress.path must be an absolute path",
@@ -448,9 +447,8 @@ impl<'de> Deserialize<'de> for BytecodeWebSocketConnectionClosedRequestFrameHead
     where
         D: Deserializer<'de>,
     {
-        let raw = RawBytecodeWebSocketConnectionClosedRequestFrameHeader::deserialize(
-            deserializer,
-        )?;
+        let raw =
+            RawBytecodeWebSocketConnectionClosedRequestFrameHeader::deserialize(deserializer)?;
         if raw.connection_id.is_empty()
             || raw.connection_id.len() > 255
             || !raw.connection_id.bytes().all(|byte| {
@@ -775,8 +773,8 @@ pub fn decode_bytecode_request_start_frame(
     frame: &[u8],
 ) -> Result<(BytecodeRequestStartFrameWireHeader, Vec<u8>), BinaryFrameError> {
     let (header, payload) = strict_json::decode_bytecode_request_json_frame(frame)?;
-    let header: BytecodeRequestStartFrameWireHeader = serde_json::from_value(header)
-        .map_err(|error| {
+    let header: BytecodeRequestStartFrameWireHeader =
+        serde_json::from_value(header).map_err(|error| {
             TransportError::decode(format!(
                 "invalid skiff binary frame: header failed typed decode: {error}"
             ))
@@ -1124,13 +1122,7 @@ pub fn encode_bytecode_websocket_jsonrpc_response_end_frame(
 
 pub fn decode_bytecode_websocket_jsonrpc_response_end_frame(
     frame: &[u8],
-) -> Result<
-    (
-        BytecodeWebSocketJsonRpcResponseEndFrameHeader,
-        Vec<u8>,
-    ),
-    BinaryFrameError,
-> {
+) -> Result<(BytecodeWebSocketJsonRpcResponseEndFrameHeader, Vec<u8>), BinaryFrameError> {
     let (header, payload) = strict_json::decode_bytecode_json_frame(
         frame,
         "runtimeAssembly websocketJsonRpc response.end",

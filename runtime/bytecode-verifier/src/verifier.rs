@@ -11,7 +11,8 @@ use crate::{
     concrete_values::prove_types_and_plans,
     control_flow,
     effects::{prove_effect_and_no_pending, VerifiedCallableEffects},
-    resume::VerifiedResumeSites, VerificationError, VerificationLimits,
+    resume::VerifiedResumeSites,
+    VerificationError, VerificationLimits,
 };
 
 #[cfg(test)]

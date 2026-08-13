@@ -135,6 +135,7 @@ impl<'a> DeploymentLinker<'a> {
         self.deployment
             .packages()
             .values()
+            .filter(|package| package.has_bytecode())
             .enumerate()
             .map(|(index, package)| {
                 let index = u32::try_from(index).map_err(|_| BytecodeLinkError::LimitExceeded {
@@ -143,7 +144,14 @@ impl<'a> DeploymentLinker<'a> {
                     max: u32::MAX as u64,
                     location: self.deployment_location(),
                 })?;
-                let view = package.bytecode().view();
+                let Some(bytecode) = package.bytecode() else {
+                    return Err(unsatisfied(
+                        BytecodeLinkObligation::ExactPackageClosure,
+                        self.package_location(package),
+                        "type-only package cannot provide bytecode provenance".to_string(),
+                    ));
+                };
+                let view = bytecode.view();
                 let authorities = LinkedBytecodeAuthorityPins::new(
                     view.native_value_lifecycle_registry().clone(),
                     view.value_lifecycle_policy().clone(),
@@ -161,7 +169,7 @@ impl<'a> DeploymentLinker<'a> {
                 LinkedPackageBytecodeProvenance::new(
                     BytecodePackageIndex::new(index),
                     package.reference().package_build_id.clone(),
-                    package.bytecode().reference().clone(),
+                    bytecode.reference().clone(),
                     view.bytecode_identity(),
                     BYTECODE_MAGIC,
                     view.schema_version(),
@@ -392,7 +400,7 @@ pub(super) fn find_function<'a>(
     function_key: &str,
 ) -> Option<&'a ValidatedFunction> {
     package
-        .bytecode()
+        .bytecode()?
         .view()
         .functions()
         .iter()

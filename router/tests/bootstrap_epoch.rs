@@ -8,9 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use skiff_artifact_identity::{
-    ArtifactRelativePath, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-};
+use skiff_artifact_identity::{ArtifactRelativePath, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX};
 use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, DeploymentArtifactIdentity,
     DeploymentRevision, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
@@ -129,7 +127,11 @@ mod tests {
         assert!(!view.has_method(&query), "empty projection has no methods");
         assert_eq!(view.loads(), 2, "miss retries a fresh projection load once");
         let _ = view.has_method(&query);
-        assert_eq!(view.loads(), 3, "each miss reloads once; the reloaded catalog is cached");
+        assert_eq!(
+            view.loads(),
+            3,
+            "each miss reloads once; the reloaded catalog is cached"
+        );
         assert_eq!(
             view.schema_version(),
             ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION
@@ -146,33 +148,31 @@ mod tests {
         let impl_id = implementation('b');
         let method_id = method('c');
         let service = "example.com/service-1".to_string();
-        let entry = |abi: &ActorAbiIdentity, build: &str| {
-            ActorRoutingMethod {
-                actor: skiff_deployment::projection::actor_routing::ActorRoutingRef {
-                    service_id: service.clone(),
-                    actor_abi_identity: abi.clone(),
-                },
-                actor_implementation_identity: impl_id.clone(),
-                method_identity: method_id.clone(),
-                deployment: ServiceDeploymentRef {
-                    service_id: service.clone(),
-                    contract_version: "0.1.0".to_string(),
-                    deployment_revision: DeploymentRevision::new(format!("rev-{build}")),
-                    deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
-                        "skiff-deployment-artifact-v4:sha256:{build}"
-                    )),
-                },
-                package: PackageArtifactRef {
-                    package_id: service.clone(),
-                    package_version: "0.1.0".to_string(),
-                    package_build_id: PackageBuildId::new(format!(
-                        "{PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX}:{build}"
-                    )),
-                    package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
-                        "skiff-package-local-abi-v7:sha256:{build}"
-                    )),
-                },
-            }
+        let entry = |abi: &ActorAbiIdentity, build: &str| ActorRoutingMethod {
+            actor: skiff_deployment::projection::actor_routing::ActorRoutingRef {
+                service_id: service.clone(),
+                actor_abi_identity: abi.clone(),
+            },
+            actor_implementation_identity: impl_id.clone(),
+            method_identity: method_id.clone(),
+            deployment: ServiceDeploymentRef {
+                service_id: service.clone(),
+                contract_version: "0.1.0".to_string(),
+                deployment_revision: DeploymentRevision::new(format!("rev-{build}")),
+                deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
+                    "skiff-deployment-artifact-v4:sha256:{build}"
+                )),
+            },
+            package: PackageArtifactRef {
+                package_id: service.clone(),
+                package_version: "0.1.0".to_string(),
+                package_build_id: PackageBuildId::new(format!(
+                    "{PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX}:{build}"
+                )),
+                package_local_abi_identity: PackageLocalAbiIdentity::new(format!(
+                    "skiff-package-local-abi-v7:sha256:{build}"
+                )),
+            },
         };
         let old_build = "a".repeat(64);
         let new_build = "b".repeat(64);
@@ -204,12 +204,8 @@ mod tests {
             )
             .expect("new projection"),
         );
-        let stale_query = CatalogQuery::new(
-            service.clone(),
-            old_abi,
-            impl_id.clone(),
-            method_id.clone(),
-        );
+        let stale_query =
+            CatalogQuery::new(service.clone(), old_abi, impl_id.clone(), method_id.clone());
         let new_query = CatalogQuery::new(service, new_abi.clone(), impl_id, method_id);
         assert!(
             view.has_method(&stale_query),
@@ -219,7 +215,11 @@ mod tests {
             view.has_method(&new_query),
             "miss reloads the projection and resolves the new build"
         );
-        assert_eq!(view.loads(), 2, "initial load + one reload on the stale miss");
+        assert_eq!(
+            view.loads(),
+            2,
+            "initial load + one reload on the stale miss"
+        );
     }
 
     #[test]

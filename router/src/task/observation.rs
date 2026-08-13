@@ -88,13 +88,7 @@ impl SchedulerObservation for RouterTaskSchedulerObservation {
             "reason".to_string(),
             Value::String(format!("{rejection:?}")),
         );
-        emit_lease_event(
-            &self.telemetry,
-            "task.lease.lost",
-            task_id,
-            lease_id,
-            extra,
-        );
+        emit_lease_event(&self.telemetry, "task.lease.lost", task_id, lease_id, extra);
     }
 
     fn on_recover(&self, task_id: &TaskId, lease_id: &LeaseId) {

@@ -76,8 +76,9 @@ fn author_official_std_package_with_bytecode_after_platform_context_guard(
         .ok_or_else(|| invalid_input("official std compilation did not produce bytecode"))?;
     let mut published = compilation.package().clone();
     canonicalize_std_abi_type_symbols(&mut published.artifact);
-    assign_package_artifact_identities(&mut published.artifact)
-        .map_err(|error| invalid_input(format!("official std ABI canonicalization failed: {error}")))?;
+    assign_package_artifact_identities(&mut published.artifact).map_err(|error| {
+        invalid_input(format!("official std ABI canonicalization failed: {error}"))
+    })?;
     Ok((published, bytecode))
 }
 
@@ -162,9 +163,9 @@ fn normalize_std_descriptor(
         TypeDescriptorIr::Union { branches } => {
             for branch in branches {
                 match branch {
-                    skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
-                        nominal_type,
-                    } => normalize_std_type(nominal_type, links, abi),
+                    skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        normalize_std_type(nominal_type, links, abi)
+                    }
                     skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
                         payload_type,
                         ..
@@ -210,13 +211,20 @@ fn normalize_std_type(
             }
         }
         TypeRefIr::LocalType { type_index } => {
-            if let Some(symbol) = std_package_symbol("std", *type_index, links, abi)
-                .or_else(|| links.values().find_map(|export| {
+            if let Some(symbol) = std_package_symbol("std", *type_index, links, abi).or_else(|| {
+                links.values().find_map(|export| {
                     (export.type_index == *type_index)
-                        .then(|| std_package_symbol(&export.file.module_path, export.type_index, links, abi))
+                        .then(|| {
+                            std_package_symbol(
+                                &export.file.module_path,
+                                export.type_index,
+                                links,
+                                abi,
+                            )
+                        })
                         .flatten()
-                }))
-            {
+                })
+            }) {
                 *ty = TypeRefIr::PackageSymbol { symbol };
             }
         }

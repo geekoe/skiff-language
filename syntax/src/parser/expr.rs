@@ -966,9 +966,7 @@ impl Parser {
         ))
     }
 
-    pub(super) fn parse_map_literal_key(
-        &mut self,
-    ) -> Result<(String, SourceSpan)> {
+    pub(super) fn parse_map_literal_key(&mut self) -> Result<(String, SourceSpan)> {
         let token = self.advance().clone();
         match token.kind {
             TokenKind::Ident(value) | TokenKind::String(value) => Ok((value, token.span)),
@@ -982,7 +980,6 @@ impl Parser {
             )),
         }
     }
-
 }
 
 fn contiguous_locations(left: SourceLocation, right: SourceLocation) -> bool {

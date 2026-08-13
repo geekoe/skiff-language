@@ -8,20 +8,18 @@ use skiff_artifact_model::{
 use skiff_compiler_source::{
     package_type_ref_from_contract_type,
     prelude_registry::{prelude_registry, shared_native_alias_target, shared_native_binding_key},
-    ConfigIntrinsic,
     semantic::{executable_symbol, impl_method_declaration_name, InterfaceSemantics},
-    ConstructorFieldValueSource, ExpressionKey, ExpressionOwnerKey, ExpressionTypeModel,
-    LocalDbObjectIndex, PackageInterfaceMethodIndex, PublicationDbMetadataIndex,
-    PublicationTypeSymbolIndex, ResolvedCallTarget, ResolvedCallTargetFacts, ResolvedTypeRef,
-    SourceEventFacts, SourceExecutableSignatureFacts, SourceExecutionSemantics, SourceSymbolKey,
-    TypeResolutionContext, TypeResolutionModel,
+    ConfigIntrinsic, ConstructorFieldValueSource, ExpressionKey, ExpressionOwnerKey,
+    ExpressionTypeModel, LocalDbObjectIndex, PackageInterfaceMethodIndex,
+    PublicationDbMetadataIndex, PublicationTypeSymbolIndex, ResolvedCallTarget,
+    ResolvedCallTargetFacts, ResolvedTypeRef, SourceEventFacts, SourceExecutableSignatureFacts,
+    SourceExecutionSemantics, SourceSymbolKey, TypeResolutionContext, TypeResolutionModel,
 };
 use skiff_syntax::{
     ast::{
-        BinaryOp, CallArg, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding,
-        LocalBindingKind,
-        Literal, ObjectLiteralEntry, ObjectLiteralKey, PatchOperation, Stmt, TestEffectStepOutcome,
-        TypeRef, UnaryOp,
+        BinaryOp, CallArg, DbBlockMode, DbOperationKind, DispatchTiming, Expr, ForBinding, Literal,
+        LocalBindingKind, ObjectLiteralEntry, ObjectLiteralKey, PatchOperation, Stmt,
+        TestEffectStepOutcome, TypeRef, UnaryOp,
     },
     ast_utils::{compiler_test_effect_expressions, dependency_source_address_parts, expr_path},
     error::{CompileError, Result},

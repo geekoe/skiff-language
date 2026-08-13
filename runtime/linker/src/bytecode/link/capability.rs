@@ -3,12 +3,13 @@ use std::collections::BTreeSet;
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryStreamContract, CallableEffectSummary, GatewayDispatchMode,
     GatewayProtocolSurface, LiteralIr, Opcode, PackageLocalAbiSymbol, PackageRefIr,
-    PackageSymbolRef, ParamModeIr, TypeDescriptorIr, TypeRefIr,
+    PackageSymbolRef, ParamModeIr, PendingEffectCategory, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedBytecodeCandidate, LinkedCallableSignature, LinkedCatchMatcher, LinkedConstantReference,
-    LinkedFrozenConstantValue, LinkedGatewayCallableRole, LinkedInstructionTarget, LinkedSlotState,
-    LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+    LinkedFrozenConstantValue, LinkedGatewayCallableRole, LinkedInstruction,
+    LinkedInstructionTarget, LinkedSlotState, LinkedValueDropPlan, LinkedValueTransferPlan,
+    TypeIndex,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -44,14 +45,18 @@ impl DeploymentLinker<'_> {
                 // exact PC; resolved operands then close every target fact
                 // for otherwise admitted opcodes.
                 admit_opcode(instruction.opcode(), location.clone())?;
-                for resolved in instruction.resolved_operands() {
-                    admit_resolved_target(
-                        self,
-                        candidate,
-                        resolved.target(),
-                        &mut admitted_symbols,
-                        location.clone(),
-                    )?;
+                if instruction.opcode() == Opcode::InvokeHost {
+                    admit_pinned_host_call(candidate, instruction, location)?;
+                } else {
+                    for resolved in instruction.resolved_operands() {
+                        admit_resolved_target(
+                            self,
+                            candidate,
+                            resolved.target(),
+                            &mut admitted_symbols,
+                            location.clone(),
+                        )?;
+                    }
                 }
             }
 
@@ -144,7 +149,11 @@ impl DeploymentLinker<'_> {
                 }
             }
 
-            admit_effect_summary(function.declarative_effect_summary(), function_location)?;
+            admit_effect_summary(
+                function.declarative_effect_summary(),
+                function_location,
+                candidate_has_sleep(candidate),
+            )?;
         }
 
         // Entry signatures are untrusted linked facts as well, but direct
@@ -300,6 +309,63 @@ impl DeploymentLinker<'_> {
             )?;
         }
         Ok(())
+    }
+}
+
+/// Canonical binding ID of the single host effect admitted in Phase 4. Every
+/// other host effect, and every resume descriptor without an exact pinned host
+/// target, fails closed.
+const PINNED_HOST_EFFECT_BINDING_KEY: &str = "std.time.sleep";
+
+fn admit_pinned_host_call(
+    candidate: &LinkedBytecodeCandidate,
+    instruction: &LinkedInstruction,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let host_index = instruction
+        .resolved_operands()
+        .iter()
+        .find_map(|resolved| match resolved.target() {
+            LinkedInstructionTarget::HostEffectAdapter(index) => Some(index),
+            _ => None,
+        })
+        .ok_or_else(|| host_target_error(location.clone()))?;
+    let adapter = candidate
+        .host_effect_adapters()
+        .get(host_index.get() as usize)
+        .filter(|row| row.index() == host_index)
+        .ok_or_else(|| host_target_error(location.clone()))?;
+    if adapter.binding_key().as_str() != PINNED_HOST_EFFECT_BINDING_KEY {
+        return Err(host_target_error(location.clone()));
+    }
+    // Candidate shape validation already bounds every resolved operand, so
+    // this presence check is defense in depth: a pinned host call must retain
+    // an exact resume descriptor or it is rejected as an unresolved pending
+    // effect.
+    let resume_ok =
+        instruction
+            .resolved_operands()
+            .iter()
+            .any(|resolved| match resolved.target() {
+                LinkedInstructionTarget::ResumeSite(index) => candidate
+                    .resume_sites()
+                    .get(index.get() as usize)
+                    .is_some_and(|row| row.index() == index),
+                _ => false,
+            });
+    if !resume_ok {
+        return rejected(
+            Phase1LinkedCapability::PendingEffect(PendingEffectCategory::Unknown),
+            location,
+        );
+    }
+    Ok(())
+}
+
+fn host_target_error(location: BytecodeLinkLocation) -> BytecodeLinkError {
+    BytecodeLinkError::UnsupportedPhase1Capability {
+        capability: Phase1LinkedCapability::HostTarget,
+        location,
     }
 }
 
@@ -464,8 +530,13 @@ fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), By
     ) {
         return Ok(());
     }
+    // InvokeHost is admitted only through the pinned-host-call proof, which
+    // binds the exact host adapter and resume descriptor; every other binding
+    // fails closed there.
+    if opcode == Opcode::InvokeHost {
+        return Ok(());
+    }
     let capability = match opcode {
-        Opcode::InvokeHost => Phase1LinkedCapability::HostTarget,
         Opcode::InvokeIntrinsic => Phase1LinkedCapability::IntrinsicTarget,
         Opcode::CallService => Phase1LinkedCapability::ServiceTarget,
         Opcode::CallActor => Phase1LinkedCapability::Actor,
@@ -653,12 +724,24 @@ fn admit_signature(
     {
         admit_transfer_plan(plan, location.clone())?;
     }
-    admit_effect_summary(signature.effect_summary(), location)
+    admit_effect_summary(
+        signature.effect_summary(),
+        location,
+        candidate_has_sleep(candidate),
+    )
+}
+
+fn candidate_has_sleep(candidate: &LinkedBytecodeCandidate) -> bool {
+    candidate
+        .host_effect_adapters()
+        .iter()
+        .any(|adapter| adapter.binding_key().as_str() == PINNED_HOST_EFFECT_BINDING_KEY)
 }
 
 fn admit_effect_summary(
     summary: &CallableEffectSummary,
     location: BytecodeLinkLocation,
+    allow_pinned_pending: bool,
 ) -> Result<(), BytecodeLinkError> {
     let effects = match summary {
         CallableEffectSummary::Unknown { .. } => {
@@ -666,13 +749,26 @@ fn admit_effect_summary(
         }
         CallableEffectSummary::Analyzed { effects } => effects,
     };
-    if let Some(category) = effects.pending_effect_categories.first().copied() {
-        return rejected(Phase1LinkedCapability::PendingEffect(category), location);
-    }
-    if effects.may_pending {
+    // Phase 4 admits exactly the pinned std.time.sleep pending authority.
+    // Source analysis labels its pending category NativeCall; the exact
+    // binding and resume descriptor are still pinned per instruction.
+    let pinned_pending = allow_pinned_pending
+        && effects.may_pending
+        && !effects.pending_effect_categories.is_empty()
+        && effects.pending_effect_categories.iter().all(|category| {
+            matches!(
+                category,
+                PendingEffectCategory::NativeCall | PendingEffectCategory::HostEffect
+            )
+        });
+    if (effects.may_pending || !effects.pending_effect_categories.is_empty()) && !pinned_pending {
         return rejected(
             Phase1LinkedCapability::PendingEffect(
-                skiff_artifact_model::PendingEffectCategory::Unknown,
+                effects
+                    .pending_effect_categories
+                    .first()
+                    .copied()
+                    .unwrap_or(PendingEffectCategory::Unknown),
             ),
             location,
         );
@@ -827,6 +923,15 @@ fn admit_catch_result_try_argument(
     admit_type(linker, ty, false, admitted_symbols, location)
 }
 
+fn is_canonical_sleep_duration_symbol(symbol: &PackageSymbolRef) -> bool {
+    symbol.symbol_path == "std.time.Duration"
+        && matches!(
+            &symbol.package,
+            PackageRefIr::PackageId { package_id }
+                if package_id == "skiff.run/std"
+        )
+}
+
 /// True for the exact unparameterized `string` builtin.
 fn is_string_type(ty: &TypeRefIr) -> bool {
     matches!(
@@ -910,6 +1015,21 @@ fn admit_package_symbol(
                 .public_symbols
                 .get(&symbol.symbol_path)
         });
+    if is_canonical_sleep_duration_symbol(symbol) {
+        let Some(PackageLocalAbiSymbol::Type { descriptor, .. }) = resolved else {
+            return rejected(Phase1LinkedCapability::ValueShape, location);
+        };
+        let target = match descriptor {
+            TypeDescriptorIr::Alias { target }
+            | TypeDescriptorIr::Representation {
+                representation: target,
+            } => target,
+            _ => return rejected(Phase1LinkedCapability::ValueShape, location),
+        };
+        admitted_symbols.remove(&path);
+        let concrete = normalize_type(linker.deployment, owner, target, &location)?;
+        return admit_type(linker, &concrete, false, admitted_symbols, location);
+    }
     let admission = match resolved {
         Some(PackageLocalAbiSymbol::Type {
             descriptor,
@@ -946,6 +1066,10 @@ fn admit_package_type_descriptor(
             }
             Ok(())
         }
+        TypeDescriptorIr::Alias { target } => {
+            let concrete = normalize_type(linker.deployment, owner, target, &location)?;
+            admit_type(linker, &concrete, false, admitted_symbols, location)
+        }
         _ => rejected(Phase1LinkedCapability::ValueShape, location),
     }
 }
@@ -969,14 +1093,28 @@ fn rejected<T>(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use skiff_artifact_model::{
-        LiteralIr, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, TypeRefIr,
+        bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifactRef, CallableEffectSummary,
+        CallableMayEffects, LiteralIr, Opcode, PackageArtifactRef, PackageBuildId,
+        PackageCallableId, PackageLocalAbiIdentity, PendingEffectCategory, ResumeErrorMode,
+        TypeRefIr,
     };
-    use skiff_runtime_linked_bytecode::{LinkedValueDropPlan, LinkedValueTransferPlan};
+    use skiff_runtime_linked_bytecode::{
+        ArtifactFunctionKey, BytecodePackageIndex, FunctionIndex, HostEffectAdapterIndex,
+        InstructionIndex, LinkedBytecodeAuthorityPins, LinkedBytecodeCandidate,
+        LinkedBytecodeCandidateParts, LinkedCallableEffectDeclaration, LinkedFrameLayout,
+        LinkedFunction, LinkedFunctionTables, LinkedHostBindingKey, LinkedHostEffectAdapterTarget,
+        LinkedInstruction, LinkedInstructionTarget, LinkedNativeCallableSignature,
+        LinkedPackageBytecodeProvenance, LinkedProgramPointState, LinkedResolvedOperand,
+        LinkedResumeSite, LinkedStackMapCandidate, LinkedValueDropPlan, LinkedValueTransferPlan,
+        ResumeSiteIndex, SpecializationKey,
+    };
 
     use super::{
-        admit_opcode, admit_structural_leaf, admit_transfer_plan, is_discriminator_string_constant,
-        is_string_type,
+        admit_opcode, admit_pinned_host_call, admit_structural_leaf, admit_transfer_plan,
+        is_discriminator_string_constant, is_string_type,
     };
     use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability};
 
@@ -1189,5 +1327,195 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn native_signature() -> LinkedNativeCallableSignature {
+        LinkedNativeCallableSignature::new(
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            CallableMayEffects {
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+                inout_path_effects: Vec::new(),
+            },
+        )
+        .expect("empty native signature is valid")
+    }
+
+    fn host_candidate(binding_key: &str, with_resume: bool) -> LinkedBytecodeCandidate {
+        let provenance = LinkedPackageBytecodeProvenance::new(
+            BytecodePackageIndex::new(0),
+            PackageBuildId::new("build"),
+            BytecodeArtifactRef::new("test-identity"),
+            "test-identity",
+            "magic",
+            "schema-v7",
+            "isa-v1",
+            opcode_table_fingerprint(),
+            LinkedBytecodeAuthorityPins::new(
+                skiff_artifact_model::native_value_lifecycle_registry_identity().clone(),
+                skiff_artifact_model::value_lifecycle_policy_identity().clone(),
+                skiff_artifact_model::host_effect_registry_identity().clone(),
+                skiff_artifact_model::intrinsic_registry_identity().clone(),
+                skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
+            )
+            .expect("authority pins are valid"),
+        )
+        .expect("provenance is valid");
+        let adapter = LinkedHostEffectAdapterTarget::new(
+            HostEffectAdapterIndex::new(0),
+            "std",
+            "time.sleep",
+            LinkedHostBindingKey::parse(binding_key).expect("binding key parses"),
+            BTreeMap::new(),
+            native_signature(),
+        )
+        .expect("host adapter is valid");
+        let instructions = vec![
+            host_instruction(),
+            LinkedInstruction::new(Opcode::Return, Box::new([]), Box::new([]), 1)
+                .expect("return instruction is valid"),
+        ];
+        let states = (0..instructions.len())
+            .map(|index| {
+                LinkedProgramPointState::new(
+                    InstructionIndex::new(index as u32),
+                    Box::new([]),
+                    Box::new([]),
+                    Box::new([]),
+                    Box::new([]),
+                )
+            })
+            .collect::<Vec<_>>();
+        let stack_map =
+            LinkedStackMapCandidate::try_new(states.into_boxed_slice(), instructions.len(), 0, 0)
+                .expect("stack map is valid");
+        let function = LinkedFunction::new(
+            FunctionIndex::new(0),
+            SpecializationKey::new(
+                PackageBuildId::new("build"),
+                ArtifactFunctionKey::parse("fixture::host").expect("function key parses"),
+                PackageCallableId::new("host"),
+                Box::new([]),
+                None,
+            ),
+            instructions.into_boxed_slice(),
+            LinkedFrameLayout::new(
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                None,
+            )
+            .expect("frame is valid"),
+            0,
+            LinkedCallableEffectDeclaration::new(
+                PackageCallableId::new("host"),
+                CallableEffectSummary::analysis_pending(),
+            ),
+            LinkedFunctionTables::new(
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+            ),
+            stack_map,
+        );
+        let resume_sites = with_resume
+            .then(|| {
+                LinkedResumeSite::new(
+                    ResumeSiteIndex::new(0),
+                    FunctionIndex::new(0),
+                    InstructionIndex::new(0),
+                    InstructionIndex::new(1),
+                    None,
+                    0,
+                    Box::new([]),
+                    Box::new([]),
+                    ResumeErrorMode::RaiseAtSite,
+                )
+                .expect("resume site is valid")
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        LinkedBytecodeCandidate::try_from_parts(LinkedBytecodeCandidateParts {
+            packages: vec![provenance],
+            functions: vec![function],
+            operation_entries: Vec::new(),
+            gateway_entries: Vec::new(),
+            exact_local_targets: Vec::new(),
+            service_operations: Vec::new(),
+            actor_creates: Vec::new(),
+            actor_methods: Vec::new(),
+            interface_tables: Vec::new(),
+            synthetic_callbacks: Vec::new(),
+            callback_capture_layouts: Vec::new(),
+            host_effect_adapters: vec![adapter],
+            intrinsics: Vec::new(),
+            types: Vec::new(),
+            shapes: Vec::new(),
+            constants: Vec::new(),
+            constant_roots: Vec::new(),
+            frozen_constant_nodes: Vec::new(),
+            resume_sites,
+            writable_paths: Vec::new(),
+        })
+        .expect("candidate parts are valid")
+    }
+
+    fn host_instruction() -> LinkedInstruction {
+        let resolved = vec![
+            LinkedResolvedOperand::new(
+                0,
+                LinkedInstructionTarget::HostEffectAdapter(HostEffectAdapterIndex::new(0)),
+            ),
+            LinkedResolvedOperand::new(
+                3,
+                LinkedInstructionTarget::ResumeSite(ResumeSiteIndex::new(0)),
+            ),
+        ];
+        LinkedInstruction::new(
+            Opcode::InvokeHost,
+            Box::new([0, 0, 0, 0]),
+            resolved.into_boxed_slice(),
+            0,
+        )
+        .expect("host instruction is valid")
+    }
+
+    #[test]
+    fn pinned_sleep_host_call_with_resume_is_admitted() {
+        let candidate = host_candidate("std.time.sleep", true);
+        let instruction = host_instruction();
+        admit_pinned_host_call(&candidate, &instruction, location())
+            .expect("the pinned sleep call with an exact resume descriptor is admitted");
+    }
+
+    #[test]
+    fn non_sleep_host_binding_fails_closed_at_the_pinned_gate() {
+        let candidate = host_candidate("std.config.require", true);
+        let instruction = host_instruction();
+        assert!(matches!(
+            admit_pinned_host_call(&candidate, &instruction, location()),
+            Err(BytecodeLinkError::UnsupportedPhase1Capability {
+                capability: Phase1LinkedCapability::HostTarget,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn invoke_host_opcode_is_delegated_to_the_pinned_call_gate() {
+        assert!(admit_opcode(Opcode::InvokeHost, location()).is_ok());
     }
 }

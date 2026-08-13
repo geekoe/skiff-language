@@ -10,10 +10,7 @@ use skiff_router::routing::{DispatchMode, RegisteredSessionLease, RuntimeCandida
 mod routing_query_support;
 use routing_query_support::*;
 
-fn assert_lease_matches_fixture(
-    fixture: &ScenarioFixture,
-    lease: &RegisteredSessionLease,
-) {
+fn assert_lease_matches_fixture(fixture: &ScenarioFixture, lease: &RegisteredSessionLease) {
     let session = fixture
         .sessions
         .iter()
@@ -33,14 +30,13 @@ fn assert_lease_matches_fixture(
         "projected lease must support the queried mode"
     );
     assert!(
-        session
-            .loaded_build_ids
-            .iter()
-            .any(|id| id == &fixture.query.build_id.as_deref().unwrap_or(
-                &fixture.epoch.deployment.deployment_artifact_identity
-            ))
-            || (session.lazy_load
-                && session.artifact_root == fixture.router_artifact_root),
+        session.loaded_build_ids.iter().any(|id| id
+            == &fixture
+                .query
+                .build_id
+                .as_deref()
+                .unwrap_or(&fixture.epoch.deployment.deployment_artifact_identity))
+            || (session.lazy_load && session.artifact_root == fixture.router_artifact_root),
         "lease build-id eligibility must match the fixture"
     );
     assert!(

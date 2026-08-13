@@ -26,7 +26,6 @@ use tokio::sync::{watch, Semaphore};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-
 use super::cors;
 use super::dispatch::{
     cancel_channel, CancelOnDrop, DispatchRequest, HttpDispatchError, HttpDispatchPort,
@@ -408,10 +407,9 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
             .await;
         }
     };
-    let service_manages_cors =
-        context
-            .resolver
-            .has_explicit_options_ingress(&selector, &target.path);
+    let service_manages_cors = context
+        .resolver
+        .has_explicit_options_ingress(&selector, &target.path);
     if service_manages_cors {
         context
             .counters
@@ -491,7 +489,10 @@ async fn handle_request(context: &GatewayContext, request: Request<Incoming>) ->
             return Ok(error_response(error, &cors_headers));
         }
     };
-    let binding = match context.resolver.resolve(&selector, &method_str, &target.path) {
+    let binding = match context
+        .resolver
+        .resolve(&selector, &method_str, &target.path)
+    {
         Ok(binding) => binding,
         Err(error) => {
             if error.status == 404 {

@@ -399,7 +399,10 @@ fn exact_json_object_delete_mutates_caller_receiver_but_discharges_fresh_receive
     .package("skiff.run/codex-relay")
     .analyze();
 
-    assert_eq!(effects_in(&model, "responses_projection", "deleteCallerField"), no_effects());
+    assert_eq!(
+        effects_in(&model, "responses_projection", "deleteCallerField"),
+        no_effects()
+    );
     assert_eq!(
         effects_in(&model, "responses_projection", "sanitize"),
         no_effects()
@@ -475,7 +478,10 @@ fn exact_json_object_get_preserves_nested_alias_but_fresh_codec_shape_is_detache
     .package("skiff.run/llm-providers")
     .analyze();
 
-    assert_eq!(effects_in(&model, "chatgpt_plan.codec", "direct"), no_effects());
+    assert_eq!(
+        effects_in(&model, "chatgpt_plan.codec", "direct"),
+        no_effects()
+    );
     assert!(matches!(
         provenance_in(&model, "chatgpt_plan.codec", "direct"),
         CallableProvenanceSummary::Analyzed { return_origins, .. }
@@ -583,7 +589,10 @@ fn exact_map_has_and_set_keep_contextual_receiver_semantics() {
     .analyze();
 
     assert_eq!(effects_in(&model, "responses", "inspect"), no_effects());
-    assert_eq!(effects_in(&model, "responses", "updateCaller"), no_effects());
+    assert_eq!(
+        effects_in(&model, "responses", "updateCaller"),
+        no_effects()
+    );
     assert_eq!(
         effects_in(&model, "responses", "local"),
         no_effects(),
@@ -649,6 +658,10 @@ fn formal_indexed_receiver_writes_ignore_unrelated_caller_actuals_through_helper
         "a caller request actual must not make a Fresh headers receiver write caller-visible"
     );
     for callable in ["add", "nestedAdd", "recursiveAdd", "callerHeaders"] {
-        assert_eq!(effects_in(&model, "formal_write", callable), no_effects(), "{callable}");
+        assert_eq!(
+            effects_in(&model, "formal_write", callable),
+            no_effects(),
+            "{callable}"
+        );
     }
 }

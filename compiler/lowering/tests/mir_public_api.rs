@@ -7,11 +7,10 @@ mod tests {
         liveness::compute_liveness,
         MirBuildError, MirCallArgument, MirCallWritableFacts, MirConst, MirContractError,
         MirDirectCallFacts, MirExpression, MirExpressionBlockFact, MirForInBinding, MirForInFacts,
-        MirForInItemKind,
-        MirFunction, MirInOutLoan, MirInOutPathSegment, MirIndexAccessFacts, MirIndexPolicy,
-        MirIndexReceiverKind, MirLiveness, MirReceiverFacts, MirRemoteInterfaceFacts,
-        MirRemoteInterfaceMethodFacts, MirSourceFacts, MirStreamResultFacts, MirUnit,
-        MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
+        MirForInItemKind, MirFunction, MirInOutLoan, MirInOutPathSegment, MirIndexAccessFacts,
+        MirIndexPolicy, MirIndexReceiverKind, MirLiveness, MirReceiverFacts,
+        MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts, MirSourceFacts,
+        MirStreamResultFacts, MirUnit, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
     };
 
     type MirUnitsResult = Result<Vec<MirUnit>, MirBuildError>;

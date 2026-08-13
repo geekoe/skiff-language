@@ -464,11 +464,7 @@ fn producer_batches_submit_events() {
         file_max_files: None,
     });
     let producer = RouterTelemetryProducer::new(&config).expect("producer");
-    let event = task_event(
-        "task.submit.accepted",
-        Some(TASK_ID),
-        Default::default(),
-    );
+    let event = task_event("task.submit.accepted", Some(TASK_ID), Default::default());
     for _ in 0..3 {
         assert!(producer.emit(event.clone()));
     }
@@ -544,11 +540,7 @@ fn telemetry_config(
 }
 
 fn sample_event() -> TelemetryEvent {
-    task_event(
-        "task.submit.accepted",
-        Some(TASK_ID),
-        Default::default(),
-    )
+    task_event("task.submit.accepted", Some(TASK_ID), Default::default())
 }
 
 fn assert_file_header(line: &serde_json::Value) {
@@ -574,7 +566,11 @@ fn file_sink_default_path_writes_header_then_one_event_per_line() {
 
     // Default path: <artifacts_path.parent()>/logs/telemetry/<producer_id>.jsonl
     let path = temp.join("logs/telemetry/router:dev.jsonl");
-    assert!(path.exists(), "default JSONL path missing: {}", path.display());
+    assert!(
+        path.exists(),
+        "default JSONL path missing: {}",
+        path.display()
+    );
     let lines = read_jsonl(&path);
     assert_eq!(lines.len(), 3, "header + two events, no batch wrapper");
     assert_file_header(&lines[0]);
@@ -635,7 +631,10 @@ fn file_sink_file_path_override_relative_to_default_root() {
     sink.drain_once_to_file().expect("flush to file");
 
     let path = temp.join("logs/telemetry/nested/rel.jsonl");
-    assert!(path.exists(), "relative override under default root missing");
+    assert!(
+        path.exists(),
+        "relative override under default root missing"
+    );
     let lines = read_jsonl(&path);
     assert_eq!(lines.len(), 2);
     assert_file_header(&lines[0]);

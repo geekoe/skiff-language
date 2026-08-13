@@ -36,7 +36,10 @@ fn parses_dispatch_call_statement() {
         panic!("expected dispatch call, got {call:?}");
     };
     assert_eq!(callee.as_ref(), &Expr::Identifier("runDrain".to_string()));
-    assert_eq!(args, &vec![CallArg::Value(Expr::Identifier("threadId".to_string()))]);
+    assert_eq!(
+        args,
+        &vec![CallArg::Value(Expr::Identifier("threadId".to_string()))]
+    );
 }
 
 #[test]
@@ -111,7 +114,9 @@ fn parses_dispatch_after_duration_literal_and_at_expression() {
     assert_eq!(field, "milliseconds");
     assert_eq!(
         args,
-        &vec![CallArg::Value(Expr::Literal(crate::ast::Literal::Number(200.0)))]
+        &vec![CallArg::Value(Expr::Literal(crate::ast::Literal::Number(
+            200.0
+        )))]
     );
 
     let Stmt::Expr(Expr::Dispatch {
@@ -137,7 +142,12 @@ fn parses_dispatch_after_duration_literal_and_at_expression() {
     let Expr::Call { args, .. } = value.as_ref() else {
         panic!("expected zero-duration desugar, got {value:?}");
     };
-    assert_eq!(args, &vec![CallArg::Value(Expr::Literal(crate::ast::Literal::Number(0.0)))]);
+    assert_eq!(
+        args,
+        &vec![CallArg::Value(Expr::Literal(crate::ast::Literal::Number(
+            0.0
+        )))]
+    );
 }
 
 #[test]

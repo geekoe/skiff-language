@@ -452,13 +452,8 @@ impl RecoverableBoundaryCodec {
         )?;
 
         let checkpoint = heap.checkpoint();
-        match decode_node_with_behavior(
-            &envelope.root,
-            expected,
-            "$.root",
-            heap,
-            behavior_context,
-        ) {
+        match decode_node_with_behavior(&envelope.root, expected, "$.root", heap, behavior_context)
+        {
             Ok(value) => Ok(value),
             Err(error) => {
                 heap.rollback_to_checkpoint(checkpoint);
@@ -1604,12 +1599,7 @@ fn select_expected_plan_for_node_with_behavior_policy<'a>(
     let operation = behavior_context.operation;
     match &expected.node {
         RuntimeRecoverableExpectedTypeNode::Alias { target } => {
-            select_expected_plan_for_node_with_behavior_policy(
-                node,
-                target,
-                path,
-                behavior_context,
-            )
+            select_expected_plan_for_node_with_behavior_policy(node, target, path, behavior_context)
         }
         RuntimeRecoverableExpectedTypeNode::Nullable { inner } => {
             if matches!(node.state, RecoverableState::Null) {
@@ -1627,12 +1617,7 @@ fn select_expected_plan_for_node_with_behavior_policy<'a>(
             let mut matches = Vec::new();
             let mut errors = Vec::new();
             for item in items {
-                match behavior_union_branch_matches(
-                    node,
-                    item,
-                    path,
-                    behavior_context,
-                )? {
+                match behavior_union_branch_matches(node, item, path, behavior_context)? {
                     Ok(()) => matches.push(item),
                     Err(error) => errors.push(format!("{}: {}", item.label, error.reason)),
                 }

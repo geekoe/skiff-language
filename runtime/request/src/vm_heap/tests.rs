@@ -161,8 +161,10 @@ fn writable_path_cow_isolates_shared_aliases() {
     );
 
     heap.release_snapshot(&alias).expect("release alias owner");
-    heap.release_snapshot(&record).expect("release original owner");
-    heap.release_snapshot(&replacement).expect("release replacement owner");
+    heap.release_snapshot(&record)
+        .expect("release original owner");
+    heap.release_snapshot(&replacement)
+        .expect("release replacement owner");
     assert!(matches!(
         heap.validate_live(&leaf),
         Err(VmHeapError::InvalidHandle {
@@ -268,7 +270,8 @@ fn recursive_snapshot_drop_releases_nested_aggregate_owners() {
         .expect("outer record");
     let shared = heap.snapshot_share(&outer).expect("outer should share");
 
-    heap.release_snapshot(&shared).expect("release shared owner");
+    heap.release_snapshot(&shared)
+        .expect("release shared owner");
     assert_eq!(heap.validate_live(&leaf), Ok(()), "leaf stays live");
     heap.release_snapshot(&outer).expect("release final owner");
     assert!(matches!(

@@ -1,5 +1,3 @@
-
-
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{LiteralIr, NativeValueLifecycleResolution, TypeRefIr};
@@ -139,64 +137,76 @@ pub(super) fn equivalent_type_ref(left: &TypeRefIr, right: &TypeRefIr) -> bool {
     match (left, right) {
         (
             TypeRefIr::Builtin { name, args },
-            TypeRefIr::Builtin { name: other_name, args: other_args },
+            TypeRefIr::Builtin {
+                name: other_name,
+                args: other_args,
+            },
         ) => {
             (name == other_name && args == other_args)
-                || (name == "integer" && other_name == "number" && args.is_empty() && other_args.is_empty())
-                || (name == "number" && other_name == "integer" && args.is_empty() && other_args.is_empty())
+                || (name == "integer"
+                    && other_name == "number"
+                    && args.is_empty()
+                    && other_args.is_empty())
+                || (name == "number"
+                    && other_name == "integer"
+                    && args.is_empty()
+                    && other_args.is_empty())
+        }
+        (TypeRefIr::Literal { value }, TypeRefIr::Builtin { name, args }) if args.is_empty() => {
+            literal_builtin_name(value) == name
+        }
+        (TypeRefIr::Builtin { name, args }, TypeRefIr::Literal { value }) if args.is_empty() => {
+            literal_builtin_name(value) == name
         }
         (
-            TypeRefIr::Literal { value },
-            TypeRefIr::Builtin { name, args },
-        ) if args.is_empty() => literal_builtin_name(value) == name,
-        (
-            TypeRefIr::Builtin { name, args },
-            TypeRefIr::Literal { value },
-        ) if args.is_empty() => literal_builtin_name(value) == name,
-        (
-            TypeRefIr::Literal { value: LiteralIr::Null },
+            TypeRefIr::Literal {
+                value: LiteralIr::Null,
+            },
             TypeRefIr::Nullable { .. },
         ) => true,
         (
             TypeRefIr::Nullable { .. },
-            TypeRefIr::Literal { value: LiteralIr::Null },
+            TypeRefIr::Literal {
+                value: LiteralIr::Null,
+            },
         ) => true,
-        (
-            TypeRefIr::Builtin { name, args },
-            TypeRefIr::Nullable { .. },
-        ) if name == "null" && args.is_empty() => true,
-        (
-            TypeRefIr::Nullable { .. },
-            TypeRefIr::Builtin { name, args },
-        ) if name == "null" && args.is_empty() => true,
-        (
-            TypeRefIr::Builtin { .. },
-            TypeRefIr::Nullable { inner },
-        ) => equivalent_type_ref(left, inner),
-        (
-            TypeRefIr::Nullable { inner },
-            TypeRefIr::Builtin { .. },
-        ) => equivalent_type_ref(inner, right),
-        (
-            TypeRefIr::Nullable { inner: left },
-            TypeRefIr::Nullable { inner: right },
-        ) => equivalent_type_ref(left, right),
-        (
-            TypeRefIr::Builtin { name, args },
-            TypeRefIr::Record { fields },
-        ) if name == "CatchResult"
-            && args.len() == 2
-            && fields.len() == 2
-            && fields.contains_key("exception")
-            && fields.contains_key("tag") => true,
-        (
-            TypeRefIr::Record { fields },
-            TypeRefIr::Builtin { name, args },
-        ) if name == "CatchResult"
-            && args.len() == 2
-            && fields.len() == 2
-            && fields.contains_key("exception")
-            && fields.contains_key("tag") => true,
+        (TypeRefIr::Builtin { name, args }, TypeRefIr::Nullable { .. })
+            if name == "null" && args.is_empty() =>
+        {
+            true
+        }
+        (TypeRefIr::Nullable { .. }, TypeRefIr::Builtin { name, args })
+            if name == "null" && args.is_empty() =>
+        {
+            true
+        }
+        (TypeRefIr::Builtin { .. }, TypeRefIr::Nullable { inner }) => {
+            equivalent_type_ref(left, inner)
+        }
+        (TypeRefIr::Nullable { inner }, TypeRefIr::Builtin { .. }) => {
+            equivalent_type_ref(inner, right)
+        }
+        (TypeRefIr::Nullable { inner: left }, TypeRefIr::Nullable { inner: right }) => {
+            equivalent_type_ref(left, right)
+        }
+        (TypeRefIr::Builtin { name, args }, TypeRefIr::Record { fields })
+            if name == "CatchResult"
+                && args.len() == 2
+                && fields.len() == 2
+                && fields.contains_key("exception")
+                && fields.contains_key("tag") =>
+        {
+            true
+        }
+        (TypeRefIr::Record { fields }, TypeRefIr::Builtin { name, args })
+            if name == "CatchResult"
+                && args.len() == 2
+                && fields.len() == 2
+                && fields.contains_key("exception")
+                && fields.contains_key("tag") =>
+        {
+            true
+        }
         _ => false,
     }
 }
@@ -231,7 +241,6 @@ fn class_fact<'a>(
         .get(usize::try_from(class.representative.get()).ok()?)
         .filter(|fact| fact.coordinate == class.representative)
 }
-
 
 fn index_implicit_builtins(
     types: &[ConcreteTypeFact],

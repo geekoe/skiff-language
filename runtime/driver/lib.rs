@@ -16,6 +16,4 @@ pub use value_codec::request_heap;
 pub use value_codec::runtime_value;
 
 #[allow(unused_imports)]
-pub(crate) use value_codec::{
-    date_value, runtime_type_algebra, runtime_value_graph,
-};
+pub(crate) use value_codec::{date_value, runtime_type_algebra, runtime_value_graph};
