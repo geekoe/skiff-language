@@ -26,6 +26,12 @@
 7. 首个 production seam 用 **deterministic controlled completion**（fake host completion 注入 production
    边界，无真实 HTTP/时钟）。
 
+**Authority 边界（REV 意见采纳）**：Pending root graph 的唯一权威是 `PendingOwner<S: VmRootSource>`（scheduler）。
+Phase 5 只能扩展 stream/resource roots 的**输入**，Phase 6 只能扩展 cross-owner heap 的 **owner**；任何 Phase
+不得重立 root graph 权威，否则构成"两个 owner 共有一状态机"。Phase 3 的 exception identity 只在同步面
+closed；**同一 envelope 跨真实 Pending 保持 identity 是 Phase 4 的回归义务**（复用既有 `VmFiber::resume`/
+`ResumeOutcome::Throw` 路径，不新增 seam），Phase 4 的 VCP/regression 必须含此场景。
+
 ## 2. 非目标
 
 Phase 4 不：接真实 HTTP/时钟/stream/resource；实现 request GC/compaction（root graph 闭合是 GC 的前置，
