@@ -15,8 +15,9 @@ use skiff_runtime_model::{
     runtime_value::{HeapHandle, HeapNode, RuntimeValue, RuntimeValueCarrier},
     service_error::CatchIdentity,
     vm_heap::{
-        PinnedWritablePathSegment, VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation,
-        VmHeapPathSegment, VmMapEntry, VmRecordField, WritablePathPreparation,
+        PinnedWritablePathSegment, VmContainerElement, VmContainerElements, VmContainerShape,
+        VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment, VmMapEntry,
+        VmRecordField, WritablePathPreparation,
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
@@ -463,7 +464,7 @@ impl RequestVmHeap {
     fn ensure_exclusive_owner(
         &self,
         container: &ValueSlot,
-        operation: VmHeapOperation,
+        _operation: VmHeapOperation,
     ) -> Result<(), VmHeapError> {
         let vm_handle = container
             .as_request_heap_ref()
@@ -738,14 +739,10 @@ impl RequestVmHeap {
                                 operation,
                                 message: "missing array selector".to_string(),
                             }
-                        })?;
+                    })?;
                     selector_index += 1;
-                    let index = usize::try_from(
-                        selector
-                            .as_integer()
-                            .ok_or(VmHeapError::InvalidValueMetadata)?,
-                    )
-                    .map_err(|_| VmHeapError::InvalidValueMetadata)?;
+                    let index = skiff_runtime_model::vm_heap::collection_index(selector)
+                        .ok_or(VmHeapError::InvalidValueMetadata)?;
                     resolved.push(PinnedWritablePathSegment::ArrayIndex { index });
                     self.array_get(&current, index)?
                 }
@@ -1272,6 +1269,58 @@ impl VmHeap for RequestVmHeap {
                         message: format!("record ordinal {field_ordinal} is out of bounds"),
                     })?;
                 self.slot_from_carrier(&RuntimeValueCarrier::unidentified(value), operation)
+            }
+            _ => Err(VmHeapError::OperationKindMismatch {
+                operation,
+                kind: ValueKind::RequestHeapRef,
+            }),
+        }
+    }
+
+    fn container_elements(
+        &self,
+        container: &ValueSlot,
+    ) -> Result<VmContainerElements, VmHeapError> {
+        let operation = VmHeapOperation::ContainerElements;
+        let heap_handle = self.request_handle(container, operation)?;
+        match self
+            .heap
+            .get(heap_handle)
+            .map_err(|error| self.map_error(error, operation))?
+        {
+            HeapNode::Array(_) => {
+                let elements = self
+                    .array_slots
+                    .get(&heap_handle)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|value| VmContainerElement {
+                        field: None,
+                        value,
+                    })
+                    .collect();
+                Ok(VmContainerElements {
+                    shape: VmContainerShape::Array,
+                    elements,
+                })
+            }
+            HeapNode::Object(_) => {
+                let elements = self
+                    .object_slots
+                    .get(&heap_handle)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(field, value)| VmContainerElement {
+                        field: Some(field),
+                        value,
+                    })
+                    .collect();
+                Ok(VmContainerElements {
+                    shape: VmContainerShape::Record,
+                    elements,
+                })
             }
             _ => Err(VmHeapError::OperationKindMismatch {
                 operation,
