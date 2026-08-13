@@ -526,24 +526,32 @@ fn admit_statement(
         }
         MirStmtKind::Expr { .. } | MirStmtKind::If { .. } => None,
         MirStmtKind::Return { value } => {
-            if value
-                .as_ref()
-                .is_some_and(|value| is_tail_local_call(function, value.expression))
-            {
-                if let Some(callee) = tail_local_call_callee(unit, function, value.expression) {
-                    if callee_effect_may_pending(callee) {
-                        return Err(rejected_function(
-                            unit,
-                            function_key,
-                            Phase1UnsupportedCapability::PendingEffect,
-                            &format!("tail call to pending function {}", callee.symbol),
-                        ));
+            if let Some(value) = value.as_ref() {
+                if is_tail_local_call(function, value.expression) {
+                    if let Some(callee) =
+                        tail_local_call_callee(unit, function, value.expression)
+                    {
+                        if callee_effect_may_pending(callee) {
+                            return Err(rejected_function(
+                                unit,
+                                function_key,
+                                Phase1UnsupportedCapability::PendingEffect,
+                                &format!(
+                                    "tail call to pending function {}",
+                                    callee.symbol
+                                ),
+                            ));
+                        }
                     }
+                    return Err(rejected_function(
+                        unit,
+                        function_key,
+                        Phase1UnsupportedCapability::TailCall,
+                        &format!("statement {}", statement.statement_index),
+                    ));
                 }
-                Some(Phase1UnsupportedCapability::TailCall)
-            } else {
-                None
             }
+            None
         }
         MirStmtKind::Assign { target, place, .. } => match target {
             AssignTargetIr::Slot { .. } => None,
