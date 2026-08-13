@@ -149,7 +149,11 @@ impl DeploymentLinker<'_> {
                 }
             }
 
-            admit_effect_summary(function.declarative_effect_summary(), function_location)?;
+            admit_effect_summary(
+                function.declarative_effect_summary(),
+                function_location,
+                candidate_has_sleep(candidate),
+            )?;
         }
 
         // Entry signatures are untrusted linked facts as well, but direct
@@ -338,16 +342,17 @@ fn admit_pinned_host_call(
     // this presence check is defense in depth: a pinned host call must retain
     // an exact resume descriptor or it is rejected as an unresolved pending
     // effect.
-    let resume_ok = instruction
-        .resolved_operands()
-        .iter()
-        .any(|resolved| match resolved.target() {
-            LinkedInstructionTarget::ResumeSite(index) => candidate
-                .resume_sites()
-                .get(index.get() as usize)
-                .is_some_and(|row| row.index() == index),
-            _ => false,
-        });
+    let resume_ok =
+        instruction
+            .resolved_operands()
+            .iter()
+            .any(|resolved| match resolved.target() {
+                LinkedInstructionTarget::ResumeSite(index) => candidate
+                    .resume_sites()
+                    .get(index.get() as usize)
+                    .is_some_and(|row| row.index() == index),
+                _ => false,
+            });
     if !resume_ok {
         return rejected(
             Phase1LinkedCapability::PendingEffect(PendingEffectCategory::Unknown),
@@ -719,12 +724,24 @@ fn admit_signature(
     {
         admit_transfer_plan(plan, location.clone())?;
     }
-    admit_effect_summary(signature.effect_summary(), location)
+    admit_effect_summary(
+        signature.effect_summary(),
+        location,
+        candidate_has_sleep(candidate),
+    )
+}
+
+fn candidate_has_sleep(candidate: &LinkedBytecodeCandidate) -> bool {
+    candidate
+        .host_effect_adapters()
+        .iter()
+        .any(|adapter| adapter.binding_key().as_str() == PINNED_HOST_EFFECT_BINDING_KEY)
 }
 
 fn admit_effect_summary(
     summary: &CallableEffectSummary,
     location: BytecodeLinkLocation,
+    allow_pinned_pending: bool,
 ) -> Result<(), BytecodeLinkError> {
     let effects = match summary {
         CallableEffectSummary::Unknown { .. } => {
@@ -735,7 +752,8 @@ fn admit_effect_summary(
     // Phase 4 admits exactly the pinned std.time.sleep pending authority.
     // Source analysis labels its pending category NativeCall; the exact
     // binding and resume descriptor are still pinned per instruction.
-    let pinned_pending = effects.may_pending
+    let pinned_pending = allow_pinned_pending
+        && effects.may_pending
         && !effects.pending_effect_categories.is_empty()
         && effects.pending_effect_categories.iter().all(|category| {
             matches!(
@@ -1003,7 +1021,9 @@ fn admit_package_symbol(
         };
         let target = match descriptor {
             TypeDescriptorIr::Alias { target }
-            | TypeDescriptorIr::Representation { representation: target } => target,
+            | TypeDescriptorIr::Representation {
+                representation: target,
+            } => target,
             _ => return rejected(Phase1LinkedCapability::ValueShape, location),
         };
         admitted_symbols.remove(&path);
@@ -1373,13 +1393,9 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        let stack_map = LinkedStackMapCandidate::try_new(
-            states.into_boxed_slice(),
-            instructions.len(),
-            0,
-            0,
-        )
-        .expect("stack map is valid");
+        let stack_map =
+            LinkedStackMapCandidate::try_new(states.into_boxed_slice(), instructions.len(), 0, 0)
+                .expect("stack map is valid");
         let function = LinkedFunction::new(
             FunctionIndex::new(0),
             SpecializationKey::new(

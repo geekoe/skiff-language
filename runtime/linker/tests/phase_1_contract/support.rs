@@ -14,8 +14,8 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     BytecodeArtifactRef, CallableEffectSummary, GatewayEntryIdentity, IngressSelector,
-    PackageArtifact, PackageArtifactRef, PackageLocalAbiSymbol, PendingEffectCategory, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
+    PackageArtifact, PackageArtifactRef, PackageLocalAbiSymbol, PendingEffectCategory,
+    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
