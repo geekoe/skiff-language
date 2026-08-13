@@ -14,7 +14,7 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     BytecodeArtifactRef, CallableEffectSummary, GatewayEntryIdentity, IngressSelector,
-    PackageArtifact, PackageArtifactRef, PendingEffectCategory, ServiceContract,
+    PackageArtifact, PackageArtifactRef, PackageLocalAbiSymbol, PendingEffectCategory, ServiceContract,
     ServiceContractRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler::{
@@ -148,6 +148,16 @@ impl PublishedService {
         };
         effects.may_pending = true;
         effects.pending_effect_categories = vec![PendingEffectCategory::HostEffect];
+        for symbols in [
+            &mut package.package_local_abi.public_symbols,
+            &mut package.package_local_abi.implementation_symbols,
+        ] {
+            for symbol in symbols.values_mut() {
+                if let PackageLocalAbiSymbol::Callable { signature, .. } = symbol {
+                    signature.may_suspend = true;
+                }
+            }
+        }
         assign_package_artifact_identities(&mut package)
             .expect("identity assignment accepts a conservative pending declaration");
         let package = Arc::new(package);
