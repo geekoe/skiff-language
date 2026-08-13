@@ -296,6 +296,33 @@ fn comparable_equality_resolves_const_and_request_heap_strings() {
     );
 }
 
+#[test]
+fn discriminator_tag_constant_comparison_uses_exact_literal_equality() {
+    // `attempt.tag == "ok"` where the union branch tag is "err" must compare
+    // false, while `== "err"` compares true. Both sides are image-scoped
+    // string constants, which is exactly the Phase 3 §4a discriminator slice.
+    let tag_err =
+        ValueSlot::const_ref(VmHandle::new(1), CompactTypeTag::new(0), ValueFlags::new(0));
+    let literal_ok =
+        ValueSlot::const_ref(VmHandle::new(2), CompactTypeTag::new(0), ValueFlags::new(0));
+    let literal_err =
+        ValueSlot::const_ref(VmHandle::new(3), CompactTypeTag::new(0), ValueFlags::new(0));
+    let resolve_string = |value: &ValueSlot| match value.as_handle()?.get() {
+        1 | 3 => Some("err".to_string()),
+        2 => Some("ok".to_string()),
+        _ => None,
+    };
+
+    assert_eq!(
+        comparable_equality_with_string_resolver(&tag_err, &literal_ok, resolve_string),
+        Some(false)
+    );
+    assert_eq!(
+        comparable_equality_with_string_resolver(&tag_err, &literal_err, resolve_string),
+        Some(true)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // O1 Phase 1 observation-window tests. The fixtures below compile the same
 // scalar local-call sources accepted by the Phase 1 containment surface and

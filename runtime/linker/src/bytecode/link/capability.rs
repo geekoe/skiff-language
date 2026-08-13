@@ -121,7 +121,7 @@ impl DeploymentLinker<'_> {
                     return rejected(Phase1LinkedCapability::Exception, location);
                 }
                 for value in state.stack_before() {
-                    admit_stack_value(
+                    admit_transient_stack_value(
                         self,
                         candidate,
                         value.ty(),
@@ -488,22 +488,52 @@ fn admit_constant_reference(
     ) {
         return rejected(Phase1LinkedCapability::Constant, location);
     }
-    admit_type_index(
-        linker,
-        candidate,
-        constant.ty(),
-        false,
-        admitted_symbols,
-        location.clone(),
-    )?;
+    // Phase 3 string-literal discriminator slice (§4a Amendment 1): a
+    // compile-time string literal may enter the frozen constant heap only as
+    // a `string`-typed constant. It is the operand of the `tag == "<literal>"`
+    // discriminator comparison; generic string values never enter this slice.
+    let constant_type = candidate
+        .types()
+        .get(constant.ty().get() as usize)
+        .filter(|row| row.index() == constant.ty())
+        .map(|row| row.type_ref());
+    let discriminator_string = is_discriminator_string_constant(node.value(), constant_type);
+    if !discriminator_string {
+        admit_type_index(
+            linker,
+            candidate,
+            constant.ty(),
+            false,
+            admitted_symbols,
+            location.clone(),
+        )?;
+    }
     admit_transfer_plan(constant.plan(), location.clone())?;
     match node.value() {
-        LinkedFrozenConstantValue::Literal(value) if immediate_literal(value) => Ok(()),
+        LinkedFrozenConstantValue::Literal(value)
+            if immediate_literal(value) || matches!(value, LiteralIr::String { .. }) =>
+        {
+            Ok(())
+        }
         LinkedFrozenConstantValue::Literal(_) => {
             rejected(Phase1LinkedCapability::ValueShape, location)
         }
         _ => rejected(Phase1LinkedCapability::Aggregate, location),
     }
+}
+
+/// The narrow frozen-constant slice for the string-literal discriminator
+/// (§4a Amendment 1): a `String` literal whose exact linked type is the
+/// unparameterized `string` builtin. Anything else is a generic value shape
+/// and must fail closed.
+fn is_discriminator_string_constant(
+    literal: &LinkedFrozenConstantValue,
+    ty: Option<&TypeRefIr>,
+) -> bool {
+    matches!(
+        literal,
+        LinkedFrozenConstantValue::Literal(LiteralIr::String { .. })
+    ) && ty.is_some_and(is_string_type)
 }
 
 fn admit_transfer_plan(
@@ -608,6 +638,38 @@ fn admit_stack_value(
     admit_transfer_plan(plan, location)
 }
 
+/// Admits one transient operand-stack value. This is the only position where
+/// the string-literal discriminator slice may put a `string`-typed value: the
+/// union/`CatchResult` `tag` read and its `Equal` comparison keep the string
+/// on the operand stack and never store it in a live slot. Every other
+/// `string` position (slot types, signatures, results, aggregate fields)
+/// remains fail closed through [`admit_type`].
+fn admit_transient_stack_value(
+    linker: &DeploymentLinker<'_>,
+    candidate: &LinkedBytecodeCandidate,
+    ty: TypeIndex,
+    plan: &LinkedValueTransferPlan,
+    admitted_symbols: &mut BTreeSet<String>,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let string = candidate
+        .types()
+        .get(ty.get() as usize)
+        .filter(|row| row.index() == ty)
+        .is_some_and(|row| is_string_type(row.type_ref()));
+    if !string {
+        admit_type_index(
+            linker,
+            candidate,
+            ty,
+            false,
+            admitted_symbols,
+            location.clone(),
+        )?;
+    }
+    admit_transfer_plan(plan, location)
+}
+
 fn admit_type_index(
     linker: &DeploymentLinker<'_>,
     candidate: &LinkedBytecodeCandidate,
@@ -673,11 +735,69 @@ fn admit_type(
             }
             return Ok(());
         }
+        // Phase 3 string-literal discriminator slice (§4a Amendment 1):
+        // `CatchResult<T, E>` and `Exception<E>` are the canonical
+        // discriminated-envelope record types whose `tag` field is a
+        // compile-time string literal by construction. Their payload types
+        // must still be admitted Phase 2 faces; a `never` try type names the
+        // catch-over-throw divergence with no runtime value.
+        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
+            admit_catch_result_try_argument(
+                linker,
+                &args[0],
+                admitted_symbols,
+                location.clone(),
+            )?;
+            admit_type(
+                linker,
+                &args[1],
+                false,
+                admitted_symbols,
+                location.clone(),
+            )?;
+            return Ok(());
+        }
+        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
+            admit_type(
+                linker,
+                &args[0],
+                false,
+                admitted_symbols,
+                location.clone(),
+            )?;
+            return Ok(());
+        }
         TypeRefIr::PackageSymbol { symbol } => {
             return admit_package_symbol(linker, symbol, admitted_symbols, location);
         }
         other => admit_structural_leaf(other, allow_void, location),
     }
+}
+
+/// The `CatchResult` try argument may be the bottom `never` type (catch over a
+/// throw expression) or any ordinary admitted payload face.
+fn admit_catch_result_try_argument(
+    linker: &DeploymentLinker<'_>,
+    ty: &TypeRefIr,
+    admitted_symbols: &mut BTreeSet<String>,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    if matches!(
+        ty,
+        TypeRefIr::Builtin { name, args }
+            if args.is_empty() && (name == "never" || name == "void")
+    ) {
+        return Ok(());
+    }
+    admit_type(linker, ty, false, admitted_symbols, location)
+}
+
+/// True for the exact unparameterized `string` builtin.
+fn is_string_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args } if name == "string" && args.is_empty()
+    )
 }
 
 /// Linker-free admission for the immediate leaf shapes. Anonymous record and
@@ -823,7 +943,10 @@ mod tests {
     };
     use skiff_runtime_linked_bytecode::{LinkedValueDropPlan, LinkedValueTransferPlan};
 
-    use super::{admit_opcode, admit_structural_leaf, admit_transfer_plan};
+    use super::{
+        admit_opcode, admit_structural_leaf, admit_transfer_plan, is_discriminator_string_constant,
+        is_string_type,
+    };
     use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability};
 
     fn location() -> BytecodeLinkLocation {
@@ -976,6 +1099,60 @@ mod tests {
             ),
             Err(BytecodeLinkError::UnsupportedPhase1Capability {
                 capability: Phase1LinkedCapability::Resource,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn discriminator_string_constant_is_the_only_admitted_string_literal() {
+        let string = TypeRefIr::builtin("string");
+        assert!(is_string_type(&string));
+        assert!(!is_string_type(&TypeRefIr::Builtin {
+            name: "string".to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        }));
+
+        let literal = skiff_runtime_linked_bytecode::LinkedFrozenConstantValue::Literal(
+            LiteralIr::String {
+                value: "ok".to_string(),
+            },
+        );
+        assert!(is_discriminator_string_constant(&literal, Some(&string)));
+        assert!(!is_discriminator_string_constant(&literal, None));
+        assert!(!is_discriminator_string_constant(
+            &literal,
+            Some(&TypeRefIr::builtin("number")),
+        ));
+        assert!(!is_discriminator_string_constant(
+            &skiff_runtime_linked_bytecode::LinkedFrozenConstantValue::Literal(LiteralIr::Number {
+                value: serde_json::Number::from(1),
+            }),
+            Some(&string),
+        ));
+    }
+
+    #[test]
+    fn generic_string_values_stay_fail_closed_at_the_type_leaf() {
+        assert!(matches!(
+            admit_structural_leaf(&TypeRefIr::builtin("string"), false, location()),
+            Err(BytecodeLinkError::UnsupportedPhase1Capability {
+                capability: Phase1LinkedCapability::ValueShape,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn discriminator_envelope_builtins_require_the_exact_arity() {
+        let catch_result = TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        };
+        assert!(matches!(
+            admit_structural_leaf(&catch_result, false, location()),
+            Err(BytecodeLinkError::UnsupportedPhase1Capability {
+                capability: Phase1LinkedCapability::ValueShape,
                 ..
             })
         ));
