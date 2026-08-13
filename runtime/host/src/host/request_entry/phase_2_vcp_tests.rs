@@ -241,6 +241,9 @@ fn assert_internal_facts(events: &[HeapSpyEvent]) {
         index_prepare.1,
         &[
             VmHeapPathSegment::DenseField {
+                field: "inner".to_string()
+            },
+            VmHeapPathSegment::DenseField {
                 field: "tags".to_string()
             },
             VmHeapPathSegment::ArrayIndex,
@@ -252,9 +255,10 @@ fn assert_internal_facts(events: &[HeapSpyEvent]) {
     );
 
     // The field mutation happens while `b` aliases `a` (owner count > 1), so
-    // commit must copy-on-write and return a new root. The index mutation then
-    // runs on the now-exclusive replacement root, so its commit may write in
-    // place while keeping the alias untouched.
+    // commit must copy-on-write and return a new root. The index mutation
+    // reaches the `tags` array, which is still shared between the original
+    // chain and the replacement chain, so it must copy-on-write as well; the
+    // alias isolation is proven by `a.inner.tags` staying `[1, 2]`.
     assert!(
         *field_commit.2,
         "the shared-root field mutation must copy-on-write, observed roots \
@@ -266,8 +270,8 @@ fn assert_internal_facts(events: &[HeapSpyEvent]) {
         "the COW commit must return a replacement root handle"
     );
     assert!(
-        !*index_commit.2,
-        "the exclusive-root index mutation must commit in place, observed roots \
+        *index_commit.2,
+        "the index mutation reaches a shared intermediate container and must COW, observed roots \
          {:?} -> {:?}",
         index_commit.0, index_commit.1
     );
@@ -277,7 +281,7 @@ fn assert_internal_facts(events: &[HeapSpyEvent]) {
     );
     assert_eq!(
         index_prepare.0.handle, index_commit.0.handle,
-        "the in-place commit must pair with its pinned prepare root"
+        "the COW commit must pair with its pinned prepare root"
     );
     assert_ne!(
         field_prepare.0.handle, index_commit.1.handle,

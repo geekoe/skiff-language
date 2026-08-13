@@ -7,7 +7,8 @@ use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
     service_error::CatchIdentity,
     vm_heap::{
-        VmHeap, VmHeapError, VmHeapPathSegment, VmMapEntry, VmRecordField, WritablePathPreparation,
+        VmContainerElements, VmHeap, VmHeapError, VmHeapPathSegment, VmMapEntry, VmRecordField,
+        WritablePathPreparation,
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
@@ -320,6 +321,13 @@ impl VmHeap for RecordingVmHeap {
         field_ordinal: usize,
     ) -> Result<ValueSlot, VmHeapError> {
         self.inner.get_dense_field(record, field_ordinal)
+    }
+
+    fn container_elements(
+        &self,
+        container: &ValueSlot,
+    ) -> Result<VmContainerElements, VmHeapError> {
+        self.inner.container_elements(container)
     }
 }
 

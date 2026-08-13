@@ -45,13 +45,13 @@ pub(in crate::host::request_entry) async fn drive_phase_2_vcp_request(
         .await
         .map_err(|error| format!("production deployment load failed: {error}"))?
         .ok_or_else(|| "production deployment has no bytecode route".to_string())?;
-    route.publish_admission_observations();
     let target = route
         .execution_entry()
         .map_err(|error| format!("bytecode gateway lookup failed: {error}"))?;
     let adapter = route
         .http_adapter()
         .map_err(|error| format!("gateway HTTP adapter failed: {error}"))?;
+    route.publish_admission_observations();
 
     let envelope = RequestEnvelope {
         request_id: correlation.request_id.clone(),
