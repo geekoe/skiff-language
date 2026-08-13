@@ -1,6 +1,6 @@
 # MAP2：Phase 2 rolling execution map
 
-> Status: active; revision 1; initial frontier dispatched
+> Status: active; revision 2; P2G first-day expected-red delivered, K2 heap-seam write set extended
 >
 > Phase Contract: [`phase-2-value-lifecycle.md`](../phases/phase-2-value-lifecycle.md)
 >
@@ -36,6 +36,18 @@ Phase 1 的 scalar/local-call/budget/observation 语义在本 Phase 不改变。
 
 Integrator 只做机械 cherry-pick、receipt/MAP 更新、Gate/freeze/Acceptance 编排；不在 merge 时补 plan、默认值、
 第二 API 或生命周期语义。K2 是唯一 central kernel owner，不因 crate 边界拆给多个 owner。
+
+## 4b. Revision 2
+
+- P2G 首日交付 `1919af92` + `03aa7da7`：expected-red VCP-2 harness（真实 fixture 经 production seam，heap spy 已
+  编译级实现）与 missing-plan negative；Phase 2 Gate 共 33 命令（12 probes + 21 workloads：9 条 Phase 2 场景 +
+  12 条 Phase 1 全量回归），Node 自测 24/24 与回归 59/59 绿，VCP/negative 以真实断言红（exit 101，0 skip/ignore/todo）。
+- heap 注入 seam 经证实横跨 request 与 host：`drive_runtime_bytecode_request` 需增加 `heap: Option<Box<dyn VmHeap +
+  Send>>` 传递，且 `runtime/host/src/host/request_entry/assembly.rs` 是 host 侧透传点。该文件加入 K2 写界（仅最小
+  透传，host 默认 None，proof 可注入；不新增公共执行器）。
+- join 契约过滤词固定：K2 = `lifecycle`（vm lib）、`vm_heap`（model/request lib）、`capability`（linker lib）；
+  C2 = `phase_2_bytecode_admission`（emission 与 compiler lib）。producer 测试必须按词精确命中且非零。
+- VCP fixture 源语义修正：Skiff 别名突变需 `var b = a`（`final` 绑定不可作赋值目标）；fixture 已按此落地。
 
 ## 4. Task contracts
 
