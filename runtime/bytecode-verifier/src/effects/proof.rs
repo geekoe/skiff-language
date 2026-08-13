@@ -391,9 +391,24 @@ fn prove_exact_remote_call(
             prove_effect_subset(effects, caller.effects(), location)
         }
         PendingPlan::ActualWithResume(mode) => {
-            let expected = pending_category(mode).ok_or_else(|| unavailable(location))?;
+            let category_ok = match mode {
+                // The pinned registry owns the host-effect category
+                // (NativeCall for std.time.sleep). The verifier proves only
+                // that the linked entry declares an actual pending effect;
+                // it never re-derives the binding's semantic category.
+                PendingMode::HostEffect => {
+                    effects.may_pending && !effects.pending_effect_categories.is_empty()
+                }
+                PendingMode::StreamRead | PendingMode::StreamBackpressure => {
+                    return Err(unavailable(location));
+                }
+                boundary => pending_category(boundary)
+                    .is_some_and(|expected| {
+                        effects.pending_effect_categories.contains(&expected)
+                    }),
+            };
             if !control_flow_and_calls.proves_pending_resume(caller_index, instruction, mode)
-                || !effects.pending_effect_categories.contains(&expected)
+                || !category_ok
             {
                 let resume_ok = control_flow_and_calls.proves_pending_resume(caller_index, instruction, mode);
                 let categories = &caller.effects().pending_effect_categories;
@@ -421,8 +436,9 @@ fn pending_category(mode: PendingMode) -> Option<PendingEffectCategory> {
         PendingMode::InterfaceBoundary | PendingMode::CallbackBoundary => {
             Some(PendingEffectCategory::InterfaceCall)
         }
-        PendingMode::HostEffect => Some(PendingEffectCategory::HostEffect),
-        PendingMode::StreamRead | PendingMode::StreamBackpressure => None,
+        PendingMode::HostEffect | PendingMode::StreamRead | PendingMode::StreamBackpressure => {
+            None
+        }
     }
 }
 
