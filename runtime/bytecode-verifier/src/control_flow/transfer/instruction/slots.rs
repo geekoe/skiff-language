@@ -173,10 +173,18 @@ fn write_slot(
         "slot write",
     )?;
     let AbstractValue::Concrete(value_ty) = value;
-    context
-        .facts
-        .merge_coordinate(value_ty, declared)
-        .map_err(|_| violation(context.location, "slot write has no exact class coordinate"))?;
+    // A leaf stored into an anonymous-union slot keeps the declared union
+    // type as the live state; the leaf and union coordinates deliberately
+    // belong to different concrete classes, so the class merge only applies
+    // to exact/equivalent writes.
+    if context.facts.semantically_equal(value_ty, declared) != Some(true)
+        && !context.facts.union_branch_assignable(value_ty, declared)
+    {
+        context
+            .facts
+            .merge_coordinate(value_ty, declared)
+            .map_err(|_| violation(context.location, "slot write has no exact class coordinate"))?;
+    }
     values::set_slot(
         slots,
         slot,
