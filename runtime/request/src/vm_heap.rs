@@ -15,8 +15,8 @@ use skiff_runtime_model::{
     runtime_value::{HeapHandle, HeapNode, RuntimeValue, RuntimeValueCarrier},
     service_error::CatchIdentity,
     vm_heap::{
-        VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment, VmMapEntry,
-        VmRecordField,
+        PinnedWritablePathSegment, VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation,
+        VmHeapPathSegment, VmMapEntry, VmRecordField, WritablePathPreparation,
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
@@ -456,46 +456,326 @@ impl RequestVmHeap {
         }
     }
 
-    fn set_array_element(
-        &mut self,
-        array: &ValueSlot,
-        index: usize,
-        value: ValueSlot,
+    fn snapshot_owner_count(&self, container: &ValueSlot) -> Result<usize, VmHeapError> {
+        Ok(self.live_entry(container)?.snapshot_owners)
+    }
+
+    fn ensure_exclusive_owner(
+        &self,
+        container: &ValueSlot,
+        operation: VmHeapOperation,
     ) -> Result<(), VmHeapError> {
-        let heap_handle = self.request_handle(array, VmHeapOperation::SetWritablePath)?;
-        self.array_get(array, index)?;
-        self.ensure_node_kind(heap_handle, VmHeapOperation::SetWritablePath, |node| {
-            matches!(node, HeapNode::Array(_))
-        })?;
-        let carrier = self.runtime_carrier_for_slot(&value, VmHeapOperation::SetWritablePath)?;
-        self.heap
-            .set_array_item_carrier(heap_handle, index, carrier)
-            .map_err(|error| self.map_error(error, VmHeapOperation::SetWritablePath))?;
-        if let Some(slots) = self.array_slots.get_mut(&heap_handle) {
-            if let Some(slot) = slots.get_mut(index) {
-                *slot = value;
-            }
+        let vm_handle = container
+            .as_request_heap_ref()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        let owners = self.snapshot_owner_count(container)?;
+        if owners > 1 {
+            return Err(VmHeapError::OwnershipViolation {
+                kind: ValueKind::RequestHeapRef,
+                handle: vm_handle,
+            });
         }
         Ok(())
     }
 
-    fn set_record_field(
+    fn restore_shares(&mut self, shared: &[ValueSlot]) -> Result<(), VmHeapError> {
+        for slot in shared {
+            self.release_snapshot(slot)?;
+        }
+        Ok(())
+    }
+
+    fn take_container_children(&mut self, heap_handle: HeapHandle) -> Vec<ValueSlot> {
+        let mut children = Vec::new();
+        if let Some(slots) = self.array_slots.remove(&heap_handle) {
+            children.extend(slots);
+        }
+        if let Some(slots) = self.object_slots.remove(&heap_handle) {
+            children.extend(slots.into_values());
+        }
+        if let Some(slots) = self.map_slots.remove(&heap_handle) {
+            for (_, (key, value)) in slots {
+                children.push(key);
+                children.push(value);
+            }
+        }
+        if let Some(payload) = self.representation_slots.remove(&heap_handle) {
+            children.push(payload);
+        }
+        children
+    }
+
+    fn release_replaced_slot(&mut self, slot: &ValueSlot) -> Result<(), VmHeapError> {
+        match slot.kind() {
+            Some(ValueKind::RequestHeapRef) => self.release_snapshot(slot),
+            Some(ValueKind::ResourceRef) => self.release_resource(slot),
+            _ => Ok(()),
+        }
+    }
+
+    fn replace_child_slot(
         &mut self,
-        record: &ValueSlot,
-        field: &str,
+        container: &ValueSlot,
+        segment: &PinnedWritablePathSegment,
         value: ValueSlot,
     ) -> Result<(), VmHeapError> {
-        let heap_handle = self.request_handle(record, VmHeapOperation::SetWritablePath)?;
-        self.record_field(record, field)?;
-        let carrier = self.runtime_carrier_for_slot(&value, VmHeapOperation::SetWritablePath)?;
-        self.heap
-            .set_object_field_carrier(heap_handle, field.to_string(), carrier)
-            .map_err(|error| self.map_error(error, VmHeapOperation::SetWritablePath))?;
-        self.object_slots
-            .entry(heap_handle)
-            .or_default()
-            .insert(field.to_string(), value);
+        let operation = VmHeapOperation::CommitWritablePath;
+        let heap_handle = self.request_handle(container, operation)?;
+        let carrier = self.runtime_carrier_for_slot(&value, operation)?;
+        let old = match segment {
+            PinnedWritablePathSegment::DenseField { field } => {
+                let old = self
+                    .object_slots
+                    .get(&heap_handle)
+                    .and_then(|slots| slots.get(field))
+                    .copied();
+                self.heap
+                    .set_object_field_carrier(heap_handle, field.clone(), carrier)
+                    .map_err(|error| self.map_error(error, operation))?;
+                self.object_slots
+                    .entry(heap_handle)
+                    .or_default()
+                    .insert(field.clone(), value);
+                old
+            }
+            PinnedWritablePathSegment::ArrayIndex { index } => {
+                let old = self
+                    .array_slots
+                    .get(&heap_handle)
+                    .and_then(|slots| slots.get(*index))
+                    .copied();
+                if old.is_none() {
+                    return Err(VmHeapError::HeapOperationFailed {
+                        operation,
+                        message: format!("array index {index} is out of bounds"),
+                    });
+                }
+                self.heap
+                    .set_array_item_carrier(heap_handle, *index, carrier)
+                    .map_err(|error| self.map_error(error, operation))?;
+                self.array_slots
+                    .entry(heap_handle)
+                    .or_default()
+                    .get_mut(*index)
+                    .map(|slot| *slot = value)
+                    .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                        operation,
+                        message: format!("array index {index} is out of bounds"),
+                    })?;
+                old
+            }
+            PinnedWritablePathSegment::MapKey { .. } => {
+                return Err(VmHeapError::OperationKindMismatch {
+                    operation,
+                    kind: ValueKind::RequestHeapRef,
+                });
+            }
+        };
+        if let Some(old) = old {
+            self.release_replaced_slot(&old)?;
+        }
         Ok(())
+    }
+
+    fn clone_container(&mut self, container: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        let operation = VmHeapOperation::CommitWritablePath;
+        let heap_handle = self.request_handle(container, operation)?;
+        let node = self
+            .heap
+            .get(heap_handle)
+            .map_err(|error| self.map_error(error, operation))?;
+        let (children, names): (Vec<ValueSlot>, Option<Vec<String>>) = match node {
+            HeapNode::Array(_) => {
+                let slots = self
+                    .array_slots
+                    .get(&heap_handle)
+                    .cloned()
+                    .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                        operation,
+                        message: "array container has no slot sidecar".to_string(),
+                    })?;
+                (slots, None)
+            }
+            HeapNode::Object(_) => {
+                let slots = self
+                    .object_slots
+                    .get(&heap_handle)
+                    .cloned()
+                    .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                        operation,
+                        message: "record container has no slot sidecar".to_string(),
+                    })?;
+                let names = slots.keys().cloned().collect::<Vec<_>>();
+                (slots.into_values().collect(), Some(names))
+            }
+            _ => {
+                return Err(VmHeapError::OperationKindMismatch {
+                    operation,
+                    kind: ValueKind::RequestHeapRef,
+                });
+            }
+        };
+        for child in &children {
+            self.validate_live(child)?;
+        }
+        let mut shared = Vec::with_capacity(children.len());
+        for child in &children {
+            shared.push(self.snapshot_share(child)?);
+        }
+        let carriers = children
+            .iter()
+            .map(|child| self.runtime_carrier_for_slot(child, operation))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.ensure_serial_available(operation)?;
+        let allocated = match &names {
+            None => self
+                .heap
+                .alloc_array_carriers(carriers)
+                .map_err(|error| self.map_error(error, operation)),
+            Some(names) => {
+                let fields = names
+                    .iter()
+                    .cloned()
+                    .zip(carriers)
+                    .collect::<BTreeMap<_, _>>();
+                self.heap
+                    .alloc_object_carriers(fields)
+                    .map_err(|error| self.map_error(error, operation))
+            }
+        };
+        let new_handle = match allocated {
+            Ok(handle) => handle,
+            Err(error) => {
+                self.restore_shares(&shared)?;
+                return Err(error);
+            }
+        };
+        let slot = match self.register_handle(
+            new_handle,
+            container.compact_type_tag(),
+            container.flags(),
+        ) {
+            Ok(slot) => slot,
+            Err(error) => {
+                self.restore_shares(&shared)?;
+                return Err(error);
+            }
+        };
+        match names {
+            None => {
+                self.array_slots.insert(new_handle, shared);
+            }
+            Some(names) => {
+                self.object_slots.insert(
+                    new_handle,
+                    names.into_iter().zip(shared).collect(),
+                );
+            }
+        }
+        Ok(slot)
+    }
+
+    fn commit_copy_on_write(
+        &mut self,
+        prepared: WritablePathPreparation,
+        value: ValueSlot,
+    ) -> Result<ValueSlot, VmHeapError> {
+        let segments = prepared.segments().to_vec();
+        let containers = prepared.containers().to_vec();
+        let new_root = self.clone_container(&containers[0])?;
+        let mut new_current = new_root;
+        for (segment_index, segment) in segments.iter().enumerate() {
+            let terminal = segment_index + 1 == segments.len();
+            let replacement = if terminal {
+                value
+            } else {
+                self.clone_container(&containers[segment_index + 1])?
+            };
+            self.replace_child_slot(&new_current, segment, replacement)?;
+            if !terminal {
+                new_current = replacement;
+            }
+        }
+        Ok(new_root)
+    }
+
+    fn prepare_writable_path_impl(
+        &mut self,
+        root: &ValueSlot,
+        segments: &[VmHeapPathSegment],
+        selectors: &[ValueSlot],
+    ) -> Result<WritablePathPreparation, VmHeapError> {
+        let operation = VmHeapOperation::PrepareWritablePath;
+        if segments.is_empty() {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation,
+                message: "writable path must contain at least one segment".to_string(),
+            });
+        }
+        self.ensure_selector_count(segments, selectors, operation)?;
+        self.validate_live(root)?;
+        for selector in selectors {
+            self.validate_live(selector)?;
+        }
+        let mut resolved = Vec::with_capacity(segments.len());
+        let mut containers = Vec::with_capacity(segments.len());
+        let mut current = *root;
+        let mut selector_index = 0usize;
+        for (segment_index, segment) in segments.iter().enumerate() {
+            containers.push(current);
+            let terminal = segment_index + 1 == segments.len();
+            let child = match segment {
+                VmHeapPathSegment::DenseField { field } => {
+                    resolved.push(PinnedWritablePathSegment::DenseField {
+                        field: field.clone(),
+                    });
+                    self.record_field(&current, field)?
+                }
+                VmHeapPathSegment::ArrayIndex => {
+                    let selector =
+                        selectors.get(selector_index).ok_or_else(|| {
+                            VmHeapError::HeapOperationFailed {
+                                operation,
+                                message: "missing array selector".to_string(),
+                            }
+                        })?;
+                    selector_index += 1;
+                    let index = usize::try_from(
+                        selector
+                            .as_integer()
+                            .ok_or(VmHeapError::InvalidValueMetadata)?,
+                    )
+                    .map_err(|_| VmHeapError::InvalidValueMetadata)?;
+                    resolved.push(PinnedWritablePathSegment::ArrayIndex { index });
+                    self.array_get(&current, index)?
+                }
+                VmHeapPathSegment::MapKey => {
+                    let selector =
+                        selectors.get(selector_index).ok_or_else(|| {
+                            VmHeapError::HeapOperationFailed {
+                                operation,
+                                message: "missing map selector".to_string(),
+                            }
+                        })?;
+                    selector_index += 1;
+                    resolved.push(PinnedWritablePathSegment::MapKey { key: *selector });
+                    self.map_get(&current, selector)?
+                }
+            };
+            if terminal {
+                return WritablePathPreparation::new(
+                    *root,
+                    resolved.into_boxed_slice(),
+                    containers.into_boxed_slice(),
+                    Some(child),
+                );
+            }
+            current = child;
+        }
+        Err(VmHeapError::HeapOperationFailed {
+            operation,
+            message: "writable path resolution did not terminate".to_string(),
+        })
     }
 }
 
@@ -607,13 +887,19 @@ impl VmHeap for RequestVmHeap {
                             VmHandleInvalidReason::StaleGenerationOrEpoch,
                         )
                     })?;
+                    let children = self.take_container_children(heap_handle);
                     self.handles_by_heap.remove(&entry.heap_handle);
                     self.released_heap_handles
                         .insert(entry.heap_handle, vm_handle);
-                    self.array_slots.remove(&heap_handle);
-                    self.object_slots.remove(&heap_handle);
-                    self.map_slots.remove(&heap_handle);
-                    self.representation_slots.remove(&heap_handle);
+                    // Recursive snapshot drop: nested aggregates owned by this
+                    // container lose exactly one owner each. The guard skips
+                    // already-released children so a self-referential container
+                    // cannot recurse forever.
+                    for child in children {
+                        if self.validate_live(&child).is_ok() {
+                            self.release_snapshot(&child)?;
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -1009,6 +1295,7 @@ impl VmHeap for RequestVmHeap {
     fn array_push_owned(&mut self, array: &ValueSlot, value: ValueSlot) -> Result<(), VmHeapError> {
         let operation = VmHeapOperation::ArrayPushOwned;
         let heap_handle = self.request_handle(array, operation)?;
+        self.ensure_exclusive_owner(array, operation)?;
         self.ensure_node_kind(heap_handle, operation, |node| {
             matches!(node, HeapNode::Array(_))
         })?;
@@ -1030,6 +1317,7 @@ impl VmHeap for RequestVmHeap {
         let operation = VmHeapOperation::MapPutOwned;
         let key_value = self.map_key_from_slot(&key, operation)?;
         let heap_handle = self.request_handle(map, operation)?;
+        self.ensure_exclusive_owner(map, operation)?;
         self.ensure_node_kind(heap_handle, operation, |node| {
             matches!(node, HeapNode::Map(_))
         })?;
@@ -1046,72 +1334,45 @@ impl VmHeap for RequestVmHeap {
         Ok(existed)
     }
 
-    fn set_writable_path(
+    fn prepare_writable_path(
         &mut self,
         root: &ValueSlot,
         segments: &[VmHeapPathSegment],
         selectors: &[ValueSlot],
+    ) -> Result<WritablePathPreparation, VmHeapError> {
+        self.prepare_writable_path_impl(root, segments, selectors)
+    }
+
+    fn commit_writable_path(
+        &mut self,
+        prepared: WritablePathPreparation,
         value: ValueSlot,
-    ) -> Result<(), VmHeapError> {
-        let operation = VmHeapOperation::SetWritablePath;
-        if segments.is_empty() {
-            return Err(VmHeapError::HeapOperationFailed {
-                operation,
-                message: "writable path must contain at least one segment".to_string(),
-            });
-        }
-        self.ensure_selector_count(segments, selectors, operation)?;
-        self.validate_live(root)?;
+    ) -> Result<ValueSlot, VmHeapError> {
+        let operation = VmHeapOperation::CommitWritablePath;
+        self.validate_live(&prepared.root())?;
         self.validate_live(&value)?;
-        let mut current = *root;
-        let mut selector_index = 0;
-        for (segment_index, segment) in segments.iter().enumerate() {
-            let terminal = segment_index + 1 == segments.len();
-            match segment {
-                VmHeapPathSegment::DenseField { field } => {
-                    if terminal {
-                        self.set_record_field(&current, field, value)?;
-                    } else {
-                        current = self.record_field(&current, field)?;
-                    }
+        let exclusive = prepared
+            .containers()
+            .iter()
+            .all(|container| self.snapshot_owner_count(container) == Ok(1));
+        if exclusive {
+            let terminal = *prepared.containers().last().ok_or_else(|| {
+                VmHeapError::HeapOperationFailed {
+                    operation,
+                    message: "writable path preparation has no terminal container".to_string(),
                 }
-                VmHeapPathSegment::ArrayIndex => {
-                    let selector = selectors.get(selector_index).ok_or_else(|| {
-                        VmHeapError::HeapOperationFailed {
-                            operation,
-                            message: "missing array selector".to_string(),
-                        }
-                    })?;
-                    selector_index += 1;
-                    let index = usize::try_from(
-                        selector
-                            .as_integer()
-                            .ok_or(VmHeapError::InvalidValueMetadata)?,
-                    )
-                    .map_err(|_| VmHeapError::InvalidValueMetadata)?;
-                    if terminal {
-                        self.set_array_element(&current, index, value)?;
-                    } else {
-                        current = self.array_get(&current, index)?;
-                    }
+            })?;
+            let segment = prepared.segments().last().ok_or_else(|| {
+                VmHeapError::HeapOperationFailed {
+                    operation,
+                    message: "writable path preparation has no terminal segment".to_string(),
                 }
-                VmHeapPathSegment::MapKey => {
-                    let selector = selectors.get(selector_index).ok_or_else(|| {
-                        VmHeapError::HeapOperationFailed {
-                            operation,
-                            message: "missing map selector".to_string(),
-                        }
-                    })?;
-                    selector_index += 1;
-                    if terminal {
-                        self.map_put_owned(&current, *selector, value)?;
-                    } else {
-                        current = self.map_get(&current, selector)?;
-                    }
-                }
-            }
+            })?;
+            self.replace_child_slot(&terminal, segment, value)?;
+            Ok(prepared.root())
+        } else {
+            self.commit_copy_on_write(prepared, value)
         }
-        Ok(())
     }
 }
 

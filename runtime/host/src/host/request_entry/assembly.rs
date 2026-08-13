@@ -103,6 +103,7 @@ impl RuntimeHost {
                 cancellation,
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
+                heap: None,
             });
             let owner_inventory = owner_inventory.into_snapshot();
             let cleanup_permit = host
@@ -178,6 +179,7 @@ impl RuntimeHost {
                 cancellation,
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
+                heap: None,
             });
             let owner_inventory = owner_inventory.into_snapshot();
             let cleanup_permit = match result {
@@ -279,6 +281,7 @@ impl RuntimeHost {
                 cancellation,
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
+                heap: None,
             });
             let owner_inventory = owner_inventory.into_snapshot();
             let mapped_error = match result {
@@ -352,6 +355,7 @@ impl RuntimeHost {
                 cancellation,
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
+                heap: None,
             });
             let owner_inventory = owner_inventory.into_snapshot();
             let error = match result {

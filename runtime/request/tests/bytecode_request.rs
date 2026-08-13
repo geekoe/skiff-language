@@ -634,6 +634,7 @@ fn execute_scalar_gateway(
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
         },
+        heap: None,
     })
 }
 
@@ -688,6 +689,7 @@ mod tests {
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
             },
+            heap: None,
         });
 
         match driven.owner_inventory {
@@ -724,6 +726,7 @@ mod tests {
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
             },
+            heap: None,
         });
 
         match driven.owner_inventory {
@@ -881,6 +884,7 @@ mod tests {
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
             },
+            heap: None,
         })
         .unwrap();
 

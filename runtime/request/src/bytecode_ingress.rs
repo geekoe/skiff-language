@@ -36,6 +36,12 @@ pub struct BytecodeRequestExecutionInput {
     pub cancellation: CancellationToken,
     pub execution_budget: Arc<ExecutionBudget>,
     pub handles: BytecodeRequestExecutionHandles,
+    /// Optional injected VM heap (production composition or a recording heap
+    /// spy). When `None`, the driver constructs the production
+    /// [`RequestVmHeap`] from `handles.request_heap_limits`. The injected heap
+    /// is exactly the heap driven into the VM and retained for the boundary
+    /// result lifetime.
+    pub heap: Option<Box<dyn VmHeap + Send>>,
 }
 
 pub struct BytecodeRequestExecutionHandles {
@@ -96,6 +102,7 @@ pub fn drive_runtime_bytecode_request(
         cancellation,
         execution_budget,
         handles,
+        heap: injected_heap,
     } = input;
 
     let mode = request.mode.clone();
@@ -111,14 +118,16 @@ pub fn drive_runtime_bytecode_request(
         ExecutionControl::new(cancellation.clone(), &execution_budget)
             .check_cancelled()
             .map_err(RequestError::from)?;
-        let mut request_heap = RequestVmHeap::new(handles.request_heap_limits);
-        let arguments = gateway_entry_arguments(&request, &target, &mut request_heap)?;
+        let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
+            Some(heap) => heap,
+            None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
+        };
+        let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
         let fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
             .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
         let budget = execution_budget.attach_vm().map_err(|error| {
             RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
         })?;
-        let heap: Box<dyn VmHeap + Send> = Box::new(request_heap);
         let budget: Box<dyn VmBudget + Send> = Box::new(budget);
         Ok((fiber, heap, budget))
     })();
@@ -176,7 +185,7 @@ pub fn drive_runtime_bytecode_request(
 fn gateway_entry_arguments(
     request: &RequestEnvelope,
     entry: &DeploymentExecutionEntry,
-    heap: &mut RequestVmHeap,
+    heap: &mut dyn VmHeap,
 ) -> RequestResult<Vec<ValueSlot>> {
     let Some(adapter) = &request.http_adapter else {
         return Ok(Vec::new());
@@ -308,7 +317,7 @@ fn unsupported_typed_json_parameter_type(ordinal: usize) -> RequestError {
 
 fn materialize_http_request(
     binary: &BinaryHttpRequest,
-    heap: &mut RequestVmHeap,
+    heap: &mut dyn VmHeap,
 ) -> RequestResult<ValueSlot> {
     let method = heap
         .alloc_string(binary.metadata.method.clone())
@@ -356,7 +365,7 @@ fn materialize_http_request(
 
 fn materialize_name_values(
     items: &[HttpNameValue],
-    heap: &mut RequestVmHeap,
+    heap: &mut dyn VmHeap,
 ) -> RequestResult<ValueSlot> {
     let mut records = Vec::with_capacity(items.len());
     for item in items {
