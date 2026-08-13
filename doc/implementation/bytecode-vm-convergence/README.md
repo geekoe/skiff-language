@@ -341,3 +341,9 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 Phase 0/1/2/3 均已由独立 Acceptance Agent 在 exact detached candidate 上通过 canonical Gate，且各 result commit
 已合入 `main`（`results/phase-*.md` 记录 accepted candidate、merge commit/tree 与独立 Acceptance receipt）。
 Phase 4 只有从 Phase 3 的 accepted main receipt 建立新 MAP 后才可派发 production task；Phase 5–7 仍未授权。
+
+**稳定 dev env 运营注意**：本机常驻 dev 进程（router/runtime/各 client）仍在运行旧二进制，`main` 上
+Phase 1–3 的 admission 收紧只影响**下一次重建并重启**。真实业务服务（aihub/registry/agine 的 string/stream/
+host-effect 面）会在那次重启后 fail closed，直到 Phase 5/6 恢复对应能力。恢复路径：在 Phase 5/6 验收前，
+dev 栈重建时把二进制钉在最后一个业务服务可用的 accepted Phase，或显式接受退化；不得为了恢复 dev env
+临时放宽 admission。
