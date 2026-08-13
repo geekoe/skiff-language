@@ -40,6 +40,28 @@ pub struct VmRecordField {
     pub value: ValueSlot,
 }
 
+/// One immediate child of an aggregate container, for boundary traversal.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VmContainerElement {
+    /// `None` for array elements; the canonical field name for record fields.
+    pub field: Option<String>,
+    pub value: ValueSlot,
+}
+
+/// The canonical aggregate shape of one container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VmContainerShape {
+    Array,
+    Record,
+}
+
+/// Immediate children plus the exact container shape of one aggregate.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VmContainerElements {
+    pub shape: VmContainerShape,
+    pub elements: Vec<VmContainerElement>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VmHeapPathSegment {
     DenseField { field: String },
@@ -58,6 +80,26 @@ pub enum PinnedWritablePathSegment {
     DenseField { field: String },
     ArrayIndex { index: usize },
     MapKey { key: ValueSlot },
+}
+
+/// Reads one canonical collection index from a selector slot.
+///
+/// Array and map ordinal indices are `integer`-or-`number` by the canonical
+/// `CollectionIndex` input class: an integer immediate is accepted as-is, and
+/// an integral non-negative finite number is accepted as the same index. Any
+/// other value shape is not a collection index.
+pub fn collection_index(selector: &ValueSlot) -> Option<usize> {
+    if let Some(index) = selector.as_integer() {
+        return usize::try_from(index).ok();
+    }
+    let number = selector.as_number()?;
+    if !number.is_finite() || number < 0.0 || number.fract() != 0.0 {
+        return None;
+    }
+    if number >= (usize::MAX as f64) {
+        return None;
+    }
+    Some(number as usize)
 }
 
 impl fmt::Debug for PinnedWritablePathSegment {
@@ -187,6 +229,7 @@ pub enum VmHeapOperation {
     MapEntryAt,
     RecordField,
     RepresentationPayload,
+    ContainerElements,
     ArrayPushOwned,
     MapPutOwned,
     PrepareWritablePath,
@@ -502,6 +545,22 @@ pub trait VmHeap {
     ) -> Result<ValueSlot, VmHeapError> {
         Err(VmHeapError::OperationKindMismatch {
             operation: VmHeapOperation::RecordField,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Enumerates the immediate children of one aggregate container in
+    /// canonical order for boundary materialization.
+    ///
+    /// Arrays yield positionally ordered elements with `field == None`;
+    /// records yield fields with their canonical name. A non-container value
+    /// fails closed without leaking the physical node representation.
+    fn container_elements(
+        &self,
+        _container: &ValueSlot,
+    ) -> Result<VmContainerElements, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::ContainerElements,
             kind: ValueKind::RequestHeapRef,
         })
     }

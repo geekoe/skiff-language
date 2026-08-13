@@ -2172,12 +2172,8 @@ impl VmFiber {
         let array_plan = self.operand_plan(&frame, instruction, 1)?;
         let values = self.pop_operands(2, false)?;
         let array = values[0];
-        let index = values[1].as_integer().ok_or(VmError::ExpectedNumber {
-            function,
-            instruction,
-            actual: values[1].kind(),
-        })?;
-        let index = usize::try_from(index).map_err(|_| VmError::ExpectedNumber {
+        let index =
+            skiff_runtime_model::vm_heap::collection_index(&values[1]).ok_or(VmError::ExpectedNumber {
             function,
             instruction,
             actual: values[1].kind(),
@@ -2421,12 +2417,8 @@ impl VmFiber {
     ) -> Result<DispatchOutcome, VmError> {
         let values = self.pop_operands(2, false)?;
         let map = values[0];
-        let ordinal = values[1].as_integer().ok_or(VmError::ExpectedNumber {
-            function,
-            instruction,
-            actual: values[1].kind(),
-        })?;
-        let ordinal = usize::try_from(ordinal).map_err(|_| VmError::ExpectedNumber {
+        let ordinal =
+            skiff_runtime_model::vm_heap::collection_index(&values[1]).ok_or(VmError::ExpectedNumber {
             function,
             instruction,
             actual: values[1].kind(),
