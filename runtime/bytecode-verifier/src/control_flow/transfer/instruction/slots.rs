@@ -24,14 +24,23 @@ pub(super) fn apply(
         let slot = values::resolve_slot(context, effect.operand)?;
         match effect.action {
             SlotAction::Read | SlotAction::ReadShare | SlotAction::Take | SlotAction::Drop => {
-                if effect.value
-                    != (ValueSource::Slot {
-                        operand: effect.operand,
-                    })
-                {
-                    return Err(unavailable(context.location));
-                }
-                let value = values::live_slot(before, slot, context.location)?;
+                let value = match effect.value {
+                    ValueSource::Slot { operand } if operand == effect.operand => {
+                        values::live_slot(before, slot, context.location)?
+                    }
+                    // `Rethrow` reads its exception slot as the opaque
+                    // `Exception<E>` envelope; the same provenance check as
+                    // the stack-input path, without touching the slot.
+                    ValueSource::ExceptionEnvelope { source_slot }
+                        if matches!(effect.action, SlotAction::Read) =>
+                    {
+                        let source = values::resolve_slot(context, source_slot)?;
+                        let value = values::live_slot(before, source, context.location)?;
+                        values::require_exception_envelope(value, context, context.location)?;
+                        value
+                    }
+                    _ => return Err(unavailable(context.location)),
+                };
                 if effect.action == SlotAction::ReadShare {
                     values::require_shareable(value, context.facts, context.location)?;
                 }
