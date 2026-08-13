@@ -126,17 +126,9 @@ impl Evaluator<'_, '_> {
                     .map(|signature| signature.may_suspend)
                     .unwrap_or(true);
                 callee.effects.may_pending = may_pending;
-                if may_pending {
-                    if callee.effects.pending_effect_categories.contains(&PendingEffectCategory::NativeCall) {
-                        callee.effects.pending_effect_categories.retain(|category| *category != PendingEffectCategory::NativeCall);
-                        if !callee.effects.pending_effect_categories.contains(&PendingEffectCategory::HostEffect) {
-                            callee.effects.pending_effect_categories.push(PendingEffectCategory::HostEffect);
-                        }
-                    }
-                    if callee.effects.pending_effect_categories.is_empty() {
-                        callee.effects.pending_effect_categories.push(PendingEffectCategory::Unknown);
-                    }
-                } else {
+                if may_pending && callee.effects.pending_effect_categories.is_empty() {
+                    callee.effects.pending_effect_categories.push(PendingEffectCategory::Unknown);
+                } else if !may_pending {
                     callee.effects.pending_effect_categories.clear();
                 }
                 self.apply_callee(
