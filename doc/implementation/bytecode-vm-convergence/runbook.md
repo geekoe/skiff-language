@@ -16,11 +16,14 @@
    lane 数量由写面分区推导，不由角色名决定。派发前花几分钟做只读 gate-map 预调查：目标面会经过哪些
    pipeline 门、门在谁家，写进 MAP。任务信封 = 引用契约/MAP 条目 + 验收判据 + 预算 + 上报格式。写集外
    需求先上报，获准后**先改 MAP 再动代码**。
+   任务信封的"验收判据"必须**引用契约的 VCP/checklist 小节，不得复述**；integrator 派单时机械核对
+   信封判据 ⊆ 契约条款，防止复述漂移。
 4. **验证**：focused 每轮跑；三包/全量只在 join 点跑；跨 worker cargo 用目录租约串行；>30s 重定向轮询；
    结果只跑一次。
-5. **收敛**：逐 gate 转绿；每扇门转绿时同一 join 收进 Gate 矩阵（含 fmt/clippy 自检命令）。Gate 脚本写完、
-   producer 未 join 时**先完整跑一遍** Gate 留 expected-red baseline（非 zero/skip/ignore），后续用它区分
-   新旧红。
+5. **收敛**：逐 gate 转绿；每扇门转绿时同一 join 收进 Gate 矩阵（含 fmt/clippy 自检命令）。**本 Phase 的
+   新矩阵**（本 Phase 场景 + 上一 Phase 的 Gate 作为回归子集）写完后、producer 未 join 时先完整跑一遍，
+   留 expected-red baseline（非 zero/skip/ignore），证明矩阵可执行且覆盖契约全部 required scenario；这不是
+   重跑上一 Phase 的 Gate，后续用它区分新旧红。
 6. **Gate**：merged preflight 全绿 → freeze（exact commit/tree）→ 新建 detached acceptance worktree。
 7. **独立 review**（全新只读 agent）：只判语义——契约落实、已接受 Phase 不变式、假绿/第二权威/fallback、
    fail-closed。不判簿记和格式（那是 integrator 在 join 时的机械检查）。
