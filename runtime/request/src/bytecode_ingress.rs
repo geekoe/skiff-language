@@ -1178,6 +1178,7 @@ pub fn start_runtime_bytecode_request_with_ports(
             child_executor: child_executor.clone(),
             stream_supervisor: Some(stream_supervisor.clone()),
         },
+        owner_registrations.child(),
     );
 
     let heap: Box<dyn VmHeap + Send> = Box::new(request_heap);
@@ -1586,6 +1587,7 @@ pub fn execute_runtime_bytecode_request_with_ports(
             child_executor,
             stream_supervisor: ports.stream_supervisor,
         },
+        owner_registrations.child(),
     )
     .run(&mut heap, &mut budget)
     .map_err(|error| scheduler_error_to_request_error(&execution_budget, error))?;
@@ -2330,6 +2332,11 @@ mod tests {
     type TestSuspended = SuspendedTrampoline<TestUnit, usize>;
     const ERROR_OUTCOME: usize = usize::MAX;
 
+    fn test_child_registration() -> skiff_runtime_scheduler::ChildOwnerRegistration {
+        let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        registrations.child()
+    }
+
     #[derive(Debug)]
     struct TestUnit {
         control: Option<TestControl>,
@@ -2580,6 +2587,7 @@ mod tests {
                 child_executor: None,
                 stream_supervisor: Some(supervisor.clone()),
             },
+            test_child_registration(),
         );
         let heap: Box<dyn VmHeap + Send> = Box::new(NoopHeap);
         let budget: Box<dyn VmBudget + Send> = Box::new(NoopBudget);
@@ -2897,6 +2905,7 @@ mod tests {
                 child_executor: Some(executor_dyn.clone()),
                 stream_supervisor: None,
             },
+            test_child_registration(),
         );
         let heap: Box<dyn VmHeap + Send> = Box::new(NoopHeap);
         let budget: Box<dyn VmBudget + Send> = Box::new(NoopBudget);
