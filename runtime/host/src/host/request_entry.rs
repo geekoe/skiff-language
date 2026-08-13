@@ -17,6 +17,10 @@ mod phase_0_negative_tests;
 mod phase_0_proof_support;
 #[cfg(test)]
 mod phase_0_vcp_tests;
+#[cfg(test)]
+mod phase_1_runtime_proof_support;
+#[cfg(test)]
+mod phase_1_runtime_proof_tests;
 mod websocket_jsonrpc;
 
 impl RuntimeHost {
