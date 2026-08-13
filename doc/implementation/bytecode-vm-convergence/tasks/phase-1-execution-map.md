@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 12; L1/L2/K1/L3/K2/L4 accepted, fresh independent L5 review PASS, O1 event projection is the sole ready owner
+> Status: active; revision 13; merged preflight PASS and candidate frozen at `6234d602`, awaiting fresh independent Acceptance
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -479,3 +479,41 @@ must share. The authoritative review is
   instances; this window is planned and must not be mistaken for a new regression.
 - Remaining order is unchanged and serial: R2 O1 → R3 T-R/V1 → R4 Gate schema/matrix → R5 freeze + fresh Acceptance →
   R6 cleanup. Phase 1 is not complete at this revision, and Phase 2 production remains forbidden.
+
+## 20. Revision 13 — merged preflight PASS, frozen candidate, fresh Acceptance dispatched
+
+This revision is the §12.2 freeze receipt. The frozen candidate is the integration branch tip after all R0..R4 joins; no
+code/test/fixture/Gate/event/schema change is permitted after this point without starting a new candidate epoch.
+
+| Freeze field | Value |
+| --- | --- |
+| candidate commit | `6234d602b262c603cfd8e90ad097916162fba76b` |
+| candidate tree | `5d020dafe89e09b90d754370d47ac04a3668e902` |
+| branch / worktree | `codex/bcvm-p1-integration` / `/Users/geek/workspace/skiff-bcvm-p1-integration`（freeze 时 clean） |
+| merged preflight evidence | `/Users/geek/workspace/skiff-bcvm-p1-preflight-evidence-r4` |
+| preflight manifest | `manifest.json` @ evidence root，SHA-256 `7652dd35c0397e901fb253482c238e9f43f2adb1589847d9a8f38ffbcad5e8b7`，`verdict: PASS`，`checkerError: null` |
+| preflight matrix | 21/21 commands PASS；83/83 tests，0 failed/skipped/todo/cancelled/ignored；candidate `exact: true`、`clean: true` |
+| observation schema | `skiff-bytecode-vm-phase-1-observation-v1`，内容 SHA-256 `88e261ee444e9742683194a2f5592841f070aed6204b04f197eddef3630a4d0e`（嵌套 cleanup wire shape + 11 事件序 0..10 + 最大 11 ≤ 队列 16） |
+
+R0..R4 join order on the integration line (baseline `b2bfdb0f` →):
+
+```text
+baseline b2bfdb0f
+  .. K0/L*/T-C/K1 joins (MAP1 Revision 1..11 已记录)
+  -> 2be7d126 L5 docs         -> e2e19233 R0 baseline
+  -> cb4ecf76 REV1-L5 receipt -> abb3a1da MAP Rev 12 (+DEC1-O amendment)
+  -> 5bdbcfcc..46d9e1de O1 events (R2)
+  -> b731dbf8 vertical VmLimits residual fix
+  -> a99193ad..8b428d9b T-R/V1 migration (R3)
+  -> 6234d602 G1 observation schema + merged preflight PASS (R4)
+```
+
+Capability ledger is unchanged from the accepted Phase 1 closure: only the synchronous immediate-scalar lane is
+accepted; every aggregate/string/bytes/collection, exception region, tail call, host effect, stream/Pending/resource/child,
+task/service/Actor/interface/callback, generic and `InOut` surface remains disabled and fails closed. The accepted waived
+red set is still R-FMT (workspace rustfmt 1.8.0 drift, 652 diffs) and R-CLIPPY
+(`compiler/emission/src/bytecode/admission.rs:60` `never_loop`), neither introduced by Phase 1.
+
+Next action is §12.3: a fresh Acceptance agent runs the canonical Phase 1 Gate in a new detached worktree at the frozen
+commit, reviews the candidate and every triggered shared decision receipt against the Phase Contract, verifies raw evidence
+against the manifest, answers the §13 checklist, and issues the sole verdict. It may not modify the candidate.
