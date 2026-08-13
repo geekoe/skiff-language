@@ -1174,10 +1174,10 @@ impl<'a> FunctionEmitter<'a> {
         )?;
         self.emit_op(Opcode::Const, vec![pool])?;
         self.map_call_event(call.args[0].expression);
-        // The constructor is an identity alias. Emit a no-value-changing
-        // instruction pair so the constructor source event has its own exact
-        // program point while the operand stack remains one Duration value.
-        self.emit_op(Opcode::Dup, Vec::new())?;
+        // The constructor is an identity alias. A second typed constant plus
+        // Pop gives the constructor source event its own exact program point
+        // while the operand stack remains one Duration value.
+        self.emit_op(Opcode::Const, vec![pool])?;
         self.emit_op(Opcode::Pop, Vec::new())?;
         Ok(())
     }
