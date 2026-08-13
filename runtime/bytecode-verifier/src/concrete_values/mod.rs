@@ -125,6 +125,26 @@ impl ConcreteValueFacts {
         )
     }
 
+    /// Narrow anonymous-union branch assignability: `value` is one concrete
+    /// leaf of the anonymous union `target`, with exactly the same lifecycle.
+    /// This is only the Phase 3 slot-write/call-argument slice; every other
+    /// type inequality remains unequal.
+    pub(crate) fn union_branch_assignable(&self, value: TypeIndex, target: TypeIndex) -> bool {
+        let Some(value_fact) = self.type_fact(value) else {
+            return false;
+        };
+        let Some(target_fact) = self.type_fact(target) else {
+            return false;
+        };
+        let TypeRefIr::Union { items } = target_fact.normalized_type() else {
+            return false;
+        };
+        items.iter().any(|item| {
+            classes::equivalent_type_ref(item, value_fact.normalized_type())
+                && target_fact.lifecycle == value_fact.lifecycle
+        })
+    }
+
     /// Merges equivalent coordinates to the class's minimum dense member.
     #[allow(dead_code)]
     pub(crate) fn merge_coordinate(

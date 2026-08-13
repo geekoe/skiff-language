@@ -670,15 +670,7 @@ fn validate_slot_write(
             format!("slot write type or lifecycle plan differs at slot {slot}"),
         ));
     }
-    // A leaf flowing into an anonymous-union slot keeps the runtime leaf
-    // type as the stored state (exact plan equality); an exact-type write
-    // stores the declared slot type. This mirrors the verifier's own derived
-    // live-slot state.
-    if union_branch_assignable(&expected, value, context) {
-        Ok(value.clone())
-    } else {
-        Ok(expected)
-    }
+    Ok(expected)
 }
 
 fn resolve_arity(

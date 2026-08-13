@@ -165,7 +165,7 @@ fn write_slot(
         .get(slot.get() as usize)
         .copied()
         .ok_or_else(|| violation(context.location, "slot write destination is out of bounds"))?;
-    values::require_same_type(
+    values::require_assignable(
         value,
         declared,
         context.facts,
