@@ -17,14 +17,8 @@ mod runner;
 pub mod vm_heap;
 
 pub use bytecode_ingress::{
-    execute_runtime_bytecode_request, execute_runtime_bytecode_request_with_ports,
-    start_runtime_bytecode_request, start_runtime_bytecode_request_with_ports,
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
-    BytecodeInvocationHandoff, BytecodeRequestExecution, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, BytecodeRequestExecutionPorts, BytecodeRequestPendingWake,
-    BytecodeRequestRunOutcome, BytecodeRequestSuspended, BytecodeRequestWakeQueue,
-    BytecodeSchedulerError, BytecodeSchedulerPorts, BytecodeStreamHandoff,
-    BytecodeStreamSupervisor, SuspendedTrampoline,
+    start_runtime_bytecode_request, BytecodeRequestExecution, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput,
 };
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
