@@ -1,200 +1,213 @@
-use std::{future::Future, sync::Arc};
-
 use skiff_runtime_request::{
     self as request_runner, BoundaryResponse, BytecodeRequestExecution,
-    BytecodeRequestExecutionInput, BytecodeRequestPendingWake, BytecodeRequestRunOutcome,
-    RequestError, RequestResult, ResponseEventSink, ResponseStreamEvent,
+    BytecodeRequestExecutionInput, RequestExecutionOwnerInventory,
+    RequestExecutionOwnerInventorySnapshot, RequestResult,
 };
 
-#[allow(clippy::result_large_err)]
-trait ResumableBytecodeRequest {
-    type Wake;
-
-    fn run(&mut self) -> RequestResult<BytecodeRequestRunOutcome>;
-
-    fn take_pending_wake(&mut self) -> Option<Self::Wake>;
-
-    fn resume(&mut self, wake: Self::Wake) -> RequestResult<BytecodeRequestRunOutcome>;
-
-    fn wait_for_wake(&mut self) -> impl Future<Output = RequestResult<Self::Wake>> + Send + '_;
+pub(super) enum DrivenBytecodeRequestOwnerInventory {
+    NotStarted(RequestExecutionOwnerInventorySnapshot),
+    Started(RequestExecutionOwnerInventorySnapshot),
 }
 
-impl ResumableBytecodeRequest for BytecodeRequestExecution {
-    type Wake = BytecodeRequestPendingWake;
-
-    fn run(&mut self) -> RequestResult<BytecodeRequestRunOutcome> {
-        self.run()
-    }
-
-    fn take_pending_wake(&mut self) -> Option<Self::Wake> {
-        self.take_pending_wake()
-    }
-
-    fn resume(&mut self, wake: Self::Wake) -> RequestResult<BytecodeRequestRunOutcome> {
-        self.resume(wake)
-    }
-
-    fn wait_for_wake(&mut self) -> impl Future<Output = RequestResult<Self::Wake>> + Send + '_ {
-        async move { request_runner::BytecodeRequestExecution::wait_pending_wake(self).await }
+impl DrivenBytecodeRequestOwnerInventory {
+    pub(super) fn into_snapshot(self) -> RequestExecutionOwnerInventorySnapshot {
+        match self {
+            Self::NotStarted(snapshot) | Self::Started(snapshot) => snapshot,
+        }
     }
 }
 
-pub(super) struct DrivenBytecodeRequest {
+#[must_use = "the result and frozen owner inventory must reach supervisor completion"]
+pub(super) struct DrivenBytecodeRequest<E = BytecodeRequestExecution> {
     pub(super) result: RequestResult<BoundaryResponse>,
-    pub(super) execution: Option<BytecodeRequestExecution>,
+    pub(super) execution: Option<E>,
+    pub(super) owner_inventory: DrivenBytecodeRequestOwnerInventory,
 }
 
-pub(super) async fn drive_bytecode_request(
+pub(super) fn drive_bytecode_request(
     input: BytecodeRequestExecutionInput,
-    response_events: Arc<dyn ResponseEventSink>,
 ) -> DrivenBytecodeRequest {
-    let mut execution = match request_runner::start_runtime_bytecode_request(input, response_events)
-    {
+    let (owner_registrations, owner_inventory_freeze) =
+        RequestExecutionOwnerInventory::open().into_parts();
+    drive_bytecode_request_with(
+        move || request_runner::start_runtime_bytecode_request(input, owner_registrations),
+        BytecodeRequestExecution::run,
+        move || owner_inventory_freeze.freeze(),
+    )
+}
+
+fn drive_bytecode_request_with<E>(
+    start: impl FnOnce() -> RequestResult<E>,
+    run: impl FnOnce(&mut E) -> RequestResult<BoundaryResponse>,
+    freeze: impl FnOnce() -> RequestExecutionOwnerInventorySnapshot,
+) -> DrivenBytecodeRequest<E> {
+    let mut execution = match start() {
         Ok(execution) => execution,
         Err(error) => {
             return DrivenBytecodeRequest {
                 result: Err(error),
                 execution: None,
+                owner_inventory: DrivenBytecodeRequestOwnerInventory::NotStarted(freeze()),
             }
         }
     };
-    let result = drive_bytecode_request_with(&mut execution).await;
+    let result = run(&mut execution);
     DrivenBytecodeRequest {
         result,
         execution: Some(execution),
-    }
-}
-
-async fn drive_bytecode_request_with<R>(execution: &mut R) -> RequestResult<BoundaryResponse>
-where
-    R: ResumableBytecodeRequest + ?Sized,
-{
-    let mut outcome = execution.run()?;
-    loop {
-        match outcome {
-            BytecodeRequestRunOutcome::Complete(response) => return Ok(response),
-            BytecodeRequestRunOutcome::Parked => {
-                let wake = if let Some(wake) = execution.take_pending_wake() {
-                    wake
-                } else {
-                    execution.wait_for_wake().await?
-                };
-                outcome = execution.resume(wake)?;
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-pub(super) struct RejectingResponseEventSink;
-
-impl ResponseEventSink for RejectingResponseEventSink {
-    fn send_stream_event(
-        &self,
-        _request_id: &str,
-        _event: ResponseStreamEvent,
-    ) -> RequestResult<()> {
-        Err(RequestError::Unsupported(
-            "bytecode response stream is not configured for this host ingress".to_string(),
-        ))
+        owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(freeze()),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::VecDeque, sync::Mutex};
+    use std::{
+        any::Any,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+    };
 
-    use skiff_runtime_request::{ResponseEnd, ResponseEvent};
+    use skiff_runtime_request::{RequestError, ResponseEnd, ResponseEvent};
 
     use super::*;
 
     struct FakeExecution {
-        wakes: Arc<Mutex<VecDeque<usize>>>,
-        resumed: Arc<Mutex<Vec<usize>>>,
+        _owner: Box<dyn Any + Send>,
     }
 
-    impl ResumableBytecodeRequest for FakeExecution {
-        type Wake = usize;
-
-        fn run(&mut self) -> RequestResult<BytecodeRequestRunOutcome> {
-            if !self.resumed.lock().unwrap().is_empty() {
-                return Err(RequestError::Decode(
-                    "fake execution must be resumed after parking".to_string(),
-                ));
-            }
-            Ok(BytecodeRequestRunOutcome::Parked)
-        }
-
-        fn take_pending_wake(&mut self) -> Option<Self::Wake> {
-            self.wakes.lock().unwrap().pop_front()
-        }
-
-        fn resume(&mut self, wake: Self::Wake) -> RequestResult<BytecodeRequestRunOutcome> {
-            let mut resumed = self.resumed.lock().unwrap();
-            resumed.push(wake);
-            if resumed.len() < 2 {
-                Ok(BytecodeRequestRunOutcome::Parked)
-            } else {
-                Ok(BytecodeRequestRunOutcome::Complete(
-                    BoundaryResponse::payload(b"done".to_vec()),
-                ))
-            }
-        }
-
-        fn wait_for_wake(&mut self) -> impl Future<Output = RequestResult<Self::Wake>> + Send + '_ {
-            async move {
-                loop {
-                    if let Some(wake) = self.take_pending_wake() {
-                        return Ok(wake);
-                    }
-                    tokio::task::yield_now().await;
+    #[test]
+    fn start_error_freezes_the_actual_not_started_inventory_without_running() {
+        let run_count = Arc::new(AtomicUsize::new(0));
+        let (registrations, freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        let registration_after_freeze = registrations.pending();
+        let DrivenBytecodeRequest {
+            result,
+            execution,
+            owner_inventory,
+        } = drive_bytecode_request_with(
+            move || {
+                let released_owner = registrations
+                    .pending()
+                    .prepare()
+                    .unwrap()
+                    .install(|owner| owner)
+                    .unwrap();
+                drop(released_owner);
+                Err::<FakeExecution, _>(RequestError::Decode("fake start failure".to_string()))
+            },
+            {
+                let run_count = Arc::clone(&run_count);
+                move |_| {
+                    run_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(BoundaryResponse::payload(Vec::new()))
                 }
-            }
-        }
+            },
+            move || freeze.freeze(),
+        );
+
+        assert!(
+            matches!(result, Err(RequestError::Decode(message)) if message == "fake start failure")
+        );
+        assert!(execution.is_none());
+        assert_eq!(run_count.load(Ordering::SeqCst), 0);
+        let DrivenBytecodeRequestOwnerInventory::NotStarted(snapshot) = owner_inventory else {
+            panic!("a start failure must carry NotStarted");
+        };
+        assert_eq!(snapshot.pending().current(), 0);
+        assert!(snapshot.pending().ever_created());
+        assert_eq!(snapshot.resource().current(), 0);
+        assert!(!snapshot.resource().ever_created());
+        assert_eq!(snapshot.child().current(), 0);
+        assert!(!snapshot.child().ever_created());
+        assert!(registration_after_freeze.prepare().is_err());
     }
 
-    #[tokio::test]
-    async fn host_driver_consumes_pending_wakes_until_terminal() {
-        let wakes = Arc::new(Mutex::new(VecDeque::from([1, 2])));
-        let resumed = Arc::new(Mutex::new(Vec::new()));
-        let mut execution = FakeExecution {
-            wakes: Arc::clone(&wakes),
-            resumed: Arc::clone(&resumed),
-        };
+    #[test]
+    fn run_success_executes_once_and_freezes_the_actual_started_inventory() {
+        let run_count = Arc::new(AtomicUsize::new(0));
+        let (registrations, freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        let registration_after_freeze = registrations.child();
+        let DrivenBytecodeRequest {
+            result,
+            execution,
+            owner_inventory,
+        } = drive_bytecode_request_with(
+            move || {
+                let owner = registrations
+                    .pending()
+                    .prepare()
+                    .unwrap()
+                    .install(|owner| Box::new(owner) as Box<dyn Any + Send>)
+                    .unwrap();
+                Ok(FakeExecution { _owner: owner })
+            },
+            {
+                let run_count = Arc::clone(&run_count);
+                move |_| {
+                    run_count.fetch_add(1, Ordering::SeqCst);
+                    Ok(BoundaryResponse::payload(b"done".to_vec()))
+                }
+            },
+            move || freeze.freeze(),
+        );
 
-        let response = drive_bytecode_request_with(&mut execution).await.unwrap();
-
-        assert_eq!(*resumed.lock().unwrap(), [1, 2]);
+        assert_eq!(run_count.load(Ordering::SeqCst), 1);
         assert!(matches!(
-            response,
-            BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))
+            result,
+            Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))))
                 if payload == b"done"
         ));
+        let DrivenBytecodeRequestOwnerInventory::Started(snapshot) = owner_inventory else {
+            panic!("a started execution must carry Started");
+        };
+        assert_eq!(snapshot.pending().current(), 1);
+        assert!(snapshot.pending().ever_created());
+        drop(execution);
+        assert_eq!(snapshot.pending().current(), 1);
+        assert!(registration_after_freeze.prepare().is_err());
     }
 
-    #[tokio::test]
-    async fn host_driver_waits_for_late_pending_wake() {
-        let wakes = Arc::new(Mutex::new(VecDeque::new()));
-        let resumed = Arc::new(Mutex::new(Vec::new()));
-        let mut execution = FakeExecution {
-            wakes: Arc::clone(&wakes),
-            resumed: Arc::clone(&resumed),
+    #[test]
+    fn run_error_executes_once_and_still_freezes_started() {
+        let run_count = Arc::new(AtomicUsize::new(0));
+        let (registrations, freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        let registration_after_freeze = registrations.resource();
+        let DrivenBytecodeRequest {
+            result,
+            execution,
+            owner_inventory,
+        } = drive_bytecode_request_with(
+            move || {
+                let owner = registrations
+                    .resource()
+                    .prepare()
+                    .unwrap()
+                    .install(|owner| Box::new(owner) as Box<dyn Any + Send>)
+                    .unwrap();
+                Ok(FakeExecution { _owner: owner })
+            },
+            {
+                let run_count = Arc::clone(&run_count);
+                move |_| {
+                    run_count.fetch_add(1, Ordering::SeqCst);
+                    Err(RequestError::Decode("fake run failure".to_string()))
+                }
+            },
+            move || freeze.freeze(),
+        );
+
+        assert!(
+            matches!(result, Err(RequestError::Decode(message)) if message == "fake run failure")
+        );
+        assert!(execution.is_some());
+        assert_eq!(run_count.load(Ordering::SeqCst), 1);
+        let DrivenBytecodeRequestOwnerInventory::Started(snapshot) = owner_inventory else {
+            panic!("a run failure must carry Started");
         };
-
-        let request = tokio::spawn(async move {
-            let response = drive_bytecode_request_with(&mut execution).await.unwrap();
-            (response, execution)
-        });
-
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        wakes.lock().unwrap().extend([1, 2]);
-
-        let (response, execution) = request.await.unwrap();
-        assert_eq!(*execution.resumed.lock().unwrap(), [1, 2]);
-        assert!(matches!(
-            response,
-            BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))
-                if payload == b"done"
-        ));
+        assert_eq!(snapshot.resource().current(), 1);
+        assert!(snapshot.resource().ever_created());
+        assert!(registration_after_freeze.prepare().is_err());
     }
 }
