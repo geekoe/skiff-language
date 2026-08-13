@@ -21,6 +21,7 @@ use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
     bytecode_execution_observation::{
         BytecodeExecutionEvent, BytecodeExecutionObserver, VmFirstInstructionDispatched,
+        VmFunctionFrameEntered, VmFunctionReturned, VmLocalCallDispatched, VmObservedFrameRole,
     },
     vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmRecordField},
     vm_root::{VmRootSource, VmRootVisitor},
@@ -173,7 +174,7 @@ impl VmFiber {
             live_values[index] = true;
         }
 
-        Ok(Self {
+        let fiber = Self {
             entry,
             frames: vec![frame],
             values,
@@ -187,7 +188,22 @@ impl VmFiber {
             resume_sequence: 0,
             projection_sequence: 0,
             observer,
-        })
+        };
+        if let Ok(slot_count) = u32::try_from(slot_count) {
+            if fiber.observer.claim_root_frame_entry() {
+                fiber
+                    .observer
+                    .observe(BytecodeExecutionEvent::VmFunctionFrameEntered(
+                        VmFunctionFrameEntered {
+                            role: VmObservedFrameRole::Root,
+                            function_index: function_index.get(),
+                            frame_depth: 1,
+                            slot_count,
+                        },
+                    ));
+            }
+        }
+        Ok(fiber)
     }
 
     pub const fn state(&self) -> VmFiberState {
@@ -1321,8 +1337,35 @@ impl VmFiber {
             self.values[child_start + destination_slot] = value;
             self.live_values[child_start + destination_slot] = true;
         }
+        let caller_is_root = self.frames.len() == 1;
         self.frames.push(child);
         self.region_depths.push(self.active_regions.len());
+        if caller_is_root {
+            if self.observer.claim_root_local_call() {
+                self.observer
+                    .observe(BytecodeExecutionEvent::VmLocalCallDispatched(
+                        VmLocalCallDispatched {
+                            caller_function_index: caller.function().get(),
+                            callee_function_index: target.get(),
+                            caller_frame_depth: 1,
+                            callee_frame_depth: 2,
+                        },
+                    ));
+            }
+            if let Ok(slot_count) = u32::try_from(target_slot_count) {
+                if self.observer.claim_first_root_local_callee_frame_entry() {
+                    self.observer
+                        .observe(BytecodeExecutionEvent::VmFunctionFrameEntered(
+                            VmFunctionFrameEntered {
+                                role: VmObservedFrameRole::FirstRootLocalCallee,
+                                function_index: target.get(),
+                                frame_depth: 2,
+                                slot_count,
+                            },
+                        ));
+                }
+            }
+        }
         Ok(DispatchOutcome::Continue)
     }
 
@@ -1441,6 +1484,7 @@ impl VmFiber {
         _instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
         let frame = self.current_frame()?.clone();
+        let depth = self.frames.len();
         let result_count = self
             .function(frame.function())?
             .frame()
@@ -1471,6 +1515,17 @@ impl VmFiber {
             self.active_regions.clear();
             self.region_depths.clear();
             self.state = VmFiberState::Terminal;
+            if self.observer.claim_root_return() {
+                self.observer
+                    .observe(BytecodeExecutionEvent::VmFunctionReturned(
+                        VmFunctionReturned {
+                            role: VmObservedFrameRole::Root,
+                            function_index: frame.function().get(),
+                            caller_function_index: None,
+                            remaining_frame_depth: 0,
+                        },
+                    ));
+            }
             return Ok(DispatchOutcome::Complete(VmOwnedValues::new(image, values)));
         }
 
@@ -1501,6 +1556,23 @@ impl VmFiber {
             self.push_operand(value)?;
         }
         self.current_frame_mut()?.resume_to(resume);
+        if depth == 2 {
+            if let (Ok(remaining_frame_depth), Some(caller)) =
+                (u32::try_from(self.frames.len()), self.frames.last())
+            {
+                if self.observer.claim_first_root_local_callee_return() {
+                    self.observer
+                        .observe(BytecodeExecutionEvent::VmFunctionReturned(
+                            VmFunctionReturned {
+                                role: VmObservedFrameRole::FirstRootLocalCallee,
+                                function_index: child.function().get(),
+                                caller_function_index: Some(caller.function().get()),
+                                remaining_frame_depth,
+                            },
+                        ));
+                }
+            }
+        }
         Ok(DispatchOutcome::Continue)
     }
 

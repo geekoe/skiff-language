@@ -1,11 +1,43 @@
-use skiff_artifact_model::Opcode;
+use std::{
+    collections::BTreeMap,
+    num::{NonZeroU32, NonZeroUsize},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex,
+    },
+};
+
+use skiff_artifact_identity::ValidatedBytecodeArtifact;
+use skiff_artifact_model::{
+    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    ContractOperationId, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentOperationBinding, DeploymentRevision, Opcode, PackageArtifact, ServiceContract,
+    ServiceDeployment, SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+};
+use skiff_compiler::{
+    compile_package, CompilerPlatformSources, ManifestOwner, ManifestProvenance,
+    PackageCompileInput, PackageSourceInput, PublicationManifest, PublicationSourceGraph,
+    SourceTree, SourceTreeFile,
+};
+use skiff_runtime_bytecode_verifier::VerificationLimits;
 use skiff_runtime_linked_bytecode::{
     FrameSlotIndex, InstructionBoundaryIndex, InstructionIndex, LinkedCatchMatcher,
     LinkedExceptionRegion, TypeIndex,
 };
-use skiff_runtime_linker::DeploymentExecutionEntry;
-use skiff_runtime_model::bytecode_execution_observation::BytecodeExecutionObserver;
-use skiff_runtime_model::vm_heap::VmHeap;
+use skiff_runtime_linker::{
+    link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage,
+    DeploymentExecutionLimits, LinkLimits,
+};
+use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
+use skiff_runtime_model::bytecode_execution_observation::{
+    BytecodeExecutionCorrelation, BytecodeExecutionEvent, BytecodeExecutionEventSink,
+    BytecodeExecutionObservation, BytecodeExecutionObserver, VmFunctionFrameEntered,
+    VmFunctionReturned, VmLocalCallDispatched, VmObservedFrameRole,
+};
+use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError};
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
@@ -259,4 +291,875 @@ fn comparable_equality_resolves_const_and_request_heap_strings() {
         comparable_equality_with_string_resolver(&const_left, &unresolved, resolve_string),
         None
     );
+}
+
+// ---------------------------------------------------------------------------
+// O1 Phase 1 observation-window tests. The fixtures below compile the same
+// scalar local-call sources accepted by the Phase 1 containment surface and
+// drive the real production fiber/observer seam. No existing budget or DEC1-B
+// test is modified.
+// ---------------------------------------------------------------------------
+
+const LOCAL_CALL_SOURCE: &str = "function helper(value: number) -> number { return value + 1 }\n\
+     function run(value: number) -> number { final result = helper(value)\n return result }\n";
+const REPEATED_CALL_SOURCE: &str =
+    "function helper(value: number) -> number { return value + 1 }\n\
+     function run(value: number) -> number {\n\
+       final first = helper(value)\n final second = helper(first)\n return second\n }\n";
+const DEEP_CALL_SOURCE: &str = "function innermost(value: number) -> number { return value + 1 }\n\
+     function middle(value: number) -> number {\n\
+       final result = innermost(value)\n return result\n }\n\
+     function run(value: number) -> number {\n\
+       final result = middle(value)\n return result\n }\n";
+const ROOT_ONLY_SOURCE: &str = "function run() -> number { return 1 }\n";
+
+struct ObservationFixture {
+    image: Arc<DeploymentExecutionImage>,
+    operation: ContractOperationId,
+}
+
+impl ObservationFixture {
+    fn build(package_id: &str, source: &str) -> Self {
+        let (package, bytecode) = compile_fixture_package(package_id, source);
+        let (contract, operation) = service_contract(package_id);
+        let (deployment, deployment_reference) =
+            service_deployment(&package, &contract, operation.clone());
+        let resolver = TestResolver {
+            deployment,
+            contract,
+            package,
+            bytecode,
+        };
+        let hydrated = DeploymentBytecodeLoader::new(&resolver)
+            .load(&deployment_reference)
+            .unwrap();
+        let image = Arc::new(
+            link_deployment_execution_image(
+                hydrated,
+                &DeploymentExecutionLimits::new(link_limits(), verification_limits()),
+            )
+            .unwrap(),
+        );
+        Self { image, operation }
+    }
+
+    fn root_function_index(&self) -> u32 {
+        self.image
+            .operation_entry(&self.operation)
+            .unwrap()
+            .function()
+            .get()
+    }
+
+    fn slot_count(&self, function_index: u32) -> usize {
+        self.image.functions()[function_index as usize]
+            .frame()
+            .slot_types()
+            .len()
+    }
+
+    fn start(
+        &self,
+        limits: VmLimits,
+        observer: BytecodeExecutionObserver,
+        arguments: Box<[ValueSlot]>,
+    ) -> VmFiber {
+        let entry = self.image.operation_entry(&self.operation).unwrap();
+        Vm::start(entry, arguments, limits, observer).unwrap()
+    }
+}
+
+#[derive(Default)]
+struct RecordingSink(StdMutex<Vec<BytecodeExecutionObservation>>);
+
+impl BytecodeExecutionEventSink for RecordingSink {
+    fn observe(&self, observation: BytecodeExecutionObservation) {
+        self.0.lock().unwrap().push(observation);
+    }
+}
+
+fn observation_correlation() -> BytecodeExecutionCorrelation {
+    BytecodeExecutionCorrelation {
+        router_session_id: "fiber-observation-session".to_string(),
+        request_id: "fiber-observation-request".to_string(),
+    }
+}
+
+struct TestHeap;
+
+impl VmHeap for TestHeap {
+    fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn release_snapshot(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+}
+
+fn vm_limits() -> VmLimits {
+    VmLimits::new(
+        NonZeroUsize::new(128).unwrap(),
+        NonZeroUsize::new(4096).unwrap(),
+        NonZeroU32::new(1024).unwrap(),
+    )
+}
+
+fn single_frame_limits() -> VmLimits {
+    VmLimits::new(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(4096).unwrap(),
+        NonZeroU32::new(1024).unwrap(),
+    )
+}
+
+fn drive_to_completion(
+    fiber: &mut VmFiber,
+    track: &mut dyn FnMut(&VmFiber),
+) -> Result<(), VmError> {
+    let mut heap = TestHeap;
+    for _ in 0..10_000 {
+        let outcome = fiber.dispatch_one(&mut heap)?;
+        track(fiber);
+        match outcome {
+            DispatchOutcome::Continue => {}
+            DispatchOutcome::Complete(_) => return Ok(()),
+            DispatchOutcome::Handoff(_) => panic!("observation fixture must not hand off"),
+        }
+    }
+    panic!("observation fixture did not terminate within the step cap");
+}
+
+fn drive_until_error(fiber: &mut VmFiber) -> VmError {
+    let mut heap = TestHeap;
+    for _ in 0..10_000 {
+        match fiber.dispatch_one(&mut heap) {
+            Err(error) => return error,
+            Ok(DispatchOutcome::Complete(_)) => {
+                panic!("observation fixture completed instead of failing")
+            }
+            Ok(DispatchOutcome::Continue) => {}
+            Ok(DispatchOutcome::Handoff(_)) => panic!("observation fixture must not hand off"),
+        }
+    }
+    panic!("observation fixture never failed");
+}
+
+fn event_kind(event: &BytecodeExecutionEvent) -> &'static str {
+    match event {
+        BytecodeExecutionEvent::DeploymentImageSelected(_) => "DeploymentImageSelected",
+        BytecodeExecutionEvent::RouteEntryPinned(_) => "RouteEntryPinned",
+        BytecodeExecutionEvent::VmFirstInstructionDispatched(_) => "VmFirstInstructionDispatched",
+        BytecodeExecutionEvent::VmFunctionFrameEntered(_) => "VmFunctionFrameEntered",
+        BytecodeExecutionEvent::VmLocalCallDispatched(_) => "VmLocalCallDispatched",
+        BytecodeExecutionEvent::VmFunctionReturned(_) => "VmFunctionReturned",
+        BytecodeExecutionEvent::VmBudgetAccounted(_) => "VmBudgetAccounted",
+        BytecodeExecutionEvent::RequestTerminalClaimed(_) => "RequestTerminalClaimed",
+        BytecodeExecutionEvent::RequestCleanupComplete(_) => "RequestCleanupComplete",
+    }
+}
+
+fn new_events(records: &[BytecodeExecutionObservation]) -> Vec<&BytecodeExecutionEvent> {
+    records
+        .iter()
+        .map(|record| &record.event)
+        .filter(|event| {
+            matches!(
+                event,
+                BytecodeExecutionEvent::VmFunctionFrameEntered(_)
+                    | BytecodeExecutionEvent::VmLocalCallDispatched(_)
+                    | BytecodeExecutionEvent::VmFunctionReturned(_)
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn root_and_first_root_local_callee_are_selected_and_paired() {
+    let fixture =
+        ObservationFixture::build("example.com/fiber-observation-scalar", LOCAL_CALL_SOURCE);
+    let root = fixture.root_function_index();
+    let sink = Arc::new(RecordingSink::default());
+    let observer = BytecodeExecutionObserver::new(sink.clone(), observation_correlation());
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    drive_to_completion(&mut fiber, &mut |_| {}).unwrap();
+
+    let records = sink.0.lock().unwrap();
+    let events = new_events(&records);
+    assert_eq!(events.len(), 5, "exactly the bounded five VM events");
+
+    let BytecodeExecutionEvent::VmFunctionFrameEntered(root_entry) = events[0] else {
+        panic!("first new event must be the root frame entry");
+    };
+    assert_eq!(root_entry.role, VmObservedFrameRole::Root);
+    assert_eq!(root_entry.function_index, root);
+    assert_eq!(root_entry.frame_depth, 1);
+    assert_eq!(root_entry.slot_count as usize, fixture.slot_count(root));
+
+    let BytecodeExecutionEvent::VmLocalCallDispatched(dispatched) = events[1] else {
+        panic!("second new event must be the selected local call");
+    };
+    assert_eq!(dispatched.caller_function_index, root);
+    assert_eq!(dispatched.caller_frame_depth, 1);
+    assert_eq!(dispatched.callee_frame_depth, 2);
+    let callee = dispatched.callee_function_index;
+    assert_ne!(callee, root);
+    assert_eq!(fixture.image.functions().len(), 2);
+
+    let BytecodeExecutionEvent::VmFunctionFrameEntered(callee_entry) = events[2] else {
+        panic!("third new event must be the selected callee frame entry");
+    };
+    assert_eq!(callee_entry.role, VmObservedFrameRole::FirstRootLocalCallee);
+    assert_eq!(callee_entry.function_index, callee);
+    assert_eq!(callee_entry.frame_depth, 2);
+    assert_eq!(callee_entry.slot_count as usize, fixture.slot_count(callee));
+
+    let BytecodeExecutionEvent::VmFunctionReturned(callee_return) = events[3] else {
+        panic!("fourth new event must be the selected callee return");
+    };
+    assert_eq!(
+        callee_return.role,
+        VmObservedFrameRole::FirstRootLocalCallee
+    );
+    assert_eq!(callee_return.function_index, callee);
+    assert_eq!(callee_return.caller_function_index, Some(root));
+    assert_eq!(callee_return.remaining_frame_depth, 1);
+
+    let BytecodeExecutionEvent::VmFunctionReturned(root_return) = events[4] else {
+        panic!("fifth new event must be the root return");
+    };
+    assert_eq!(root_return.role, VmObservedFrameRole::Root);
+    assert_eq!(root_return.function_index, root);
+    assert_eq!(root_return.caller_function_index, None);
+    assert_eq!(root_return.remaining_frame_depth, 0);
+
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| event_kind(&record.event))
+            .collect::<Vec<_>>(),
+        [
+            "VmFunctionFrameEntered",
+            "VmFirstInstructionDispatched",
+            "VmLocalCallDispatched",
+            "VmFunctionFrameEntered",
+            "VmFunctionReturned",
+            "VmFunctionReturned",
+        ]
+    );
+}
+
+#[test]
+fn every_mint_reports_the_state_transition_that_already_completed() {
+    let fixture = ObservationFixture::build(
+        "example.com/fiber-observation-transition",
+        LOCAL_CALL_SOURCE,
+    );
+    let root = fixture.root_function_index();
+    let sink = Arc::new(RecordingSink::default());
+    let observer = BytecodeExecutionObserver::new(sink.clone(), observation_correlation());
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+
+    {
+        let records = sink.0.lock().unwrap();
+        assert!(matches!(
+            records[0].event,
+            BytecodeExecutionEvent::VmFunctionFrameEntered(VmFunctionFrameEntered {
+                frame_depth: 1,
+                ..
+            })
+        ));
+        assert_eq!(fiber.frames.len(), 1);
+    }
+
+    let mut saw_call_return = false;
+    let mut saw_root_return = false;
+    let mut step = |fiber: &VmFiber| {
+        let records = sink.0.lock().unwrap();
+        if !saw_call_return
+            && records.iter().any(|record| {
+                matches!(
+                    record.event,
+                    BytecodeExecutionEvent::VmLocalCallDispatched(_)
+                )
+            })
+        {
+            assert_eq!(fiber.frames.len(), 2, "call mint ran after the child push");
+            saw_call_return = true;
+        }
+        if !saw_root_return
+            && records.iter().any(|record| {
+                matches!(
+                    record.event,
+                    BytecodeExecutionEvent::VmFunctionReturned(VmFunctionReturned {
+                        role: VmObservedFrameRole::Root,
+                        ..
+                    })
+                )
+            })
+        {
+            assert_eq!(
+                fiber.frames.len(),
+                0,
+                "root return mint ran after the clear"
+            );
+            assert_eq!(fiber.state(), super::VmFiberState::Terminal);
+            saw_root_return = true;
+        }
+    };
+    drive_to_completion(&mut fiber, &mut step).unwrap();
+    assert!(saw_call_return);
+    assert!(saw_root_return);
+
+    let records = sink.0.lock().unwrap();
+    let events = new_events(&records);
+    let callee = match events[2] {
+        BytecodeExecutionEvent::VmFunctionFrameEntered(VmFunctionFrameEntered {
+            function_index,
+            ..
+        }) => *function_index,
+        _ => panic!("expected callee frame entry"),
+    };
+    let callee_return = match events[3] {
+        BytecodeExecutionEvent::VmFunctionReturned(returned) => returned,
+        _ => panic!("expected callee return"),
+    };
+    assert_eq!(callee_return.function_index, callee);
+    assert_eq!(callee_return.caller_function_index, Some(root));
+    assert_eq!(callee_return.remaining_frame_depth, 1);
+}
+
+#[test]
+fn rejected_call_and_return_emit_no_events_and_consume_no_claims() {
+    let call_fixture = ObservationFixture::build(
+        "example.com/fiber-observation-rejected-call",
+        LOCAL_CALL_SOURCE,
+    );
+    let sink = Arc::new(RecordingSink::default());
+    let observer = BytecodeExecutionObserver::new(sink.clone(), observation_correlation());
+    let mut rejected = call_fixture.start(
+        single_frame_limits(),
+        observer.clone(),
+        Box::new([ValueSlot::number(1.0)]),
+    );
+    assert!(matches!(
+        drive_until_error(&mut rejected),
+        VmError::FrameLimitExceeded { .. }
+    ));
+    {
+        let records = sink.0.lock().unwrap();
+        assert!(!records.iter().any(|record| {
+            matches!(
+                record.event,
+                BytecodeExecutionEvent::VmLocalCallDispatched(_)
+                    | BytecodeExecutionEvent::VmFunctionFrameEntered(VmFunctionFrameEntered {
+                        role: VmObservedFrameRole::FirstRootLocalCallee,
+                        ..
+                    })
+                    | BytecodeExecutionEvent::VmFunctionReturned(_)
+            )
+        }));
+    }
+
+    let mut accepted =
+        call_fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    drive_to_completion(&mut accepted, &mut |_| {}).unwrap();
+    let records = sink.0.lock().unwrap();
+    let events = new_events(&records);
+    assert_eq!(
+        events.len(),
+        5,
+        "rejected call must not consume selection claims"
+    );
+    assert!(events
+        .iter()
+        .any(|event| { matches!(event, BytecodeExecutionEvent::VmLocalCallDispatched(_)) }));
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            BytecodeExecutionEvent::VmFunctionFrameEntered(VmFunctionFrameEntered {
+                role: VmObservedFrameRole::FirstRootLocalCallee,
+                ..
+            })
+        )
+    }));
+
+    let root_fixture = ObservationFixture::build(
+        "example.com/fiber-observation-rejected-return",
+        ROOT_ONLY_SOURCE,
+    );
+    let sink = Arc::new(RecordingSink::default());
+    let observer = BytecodeExecutionObserver::new(sink.clone(), observation_correlation());
+    let mut fiber = root_fixture.start(vm_limits(), observer, Box::<[ValueSlot]>::default());
+    let (function, instruction) = {
+        let frame = fiber.frames.last().unwrap();
+        (frame.function(), frame.instruction())
+    };
+    assert!(matches!(
+        fiber.execute_return(function, instruction),
+        Err(VmError::OperandStackUnderflow { .. })
+    ));
+    assert!(sink
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|record| !matches!(record.event, BytecodeExecutionEvent::VmFunctionReturned(_))));
+    assert_eq!(fiber.state(), super::VmFiberState::Runnable);
+
+    drive_to_completion(&mut fiber, &mut |_| {}).unwrap();
+    let records = sink.0.lock().unwrap();
+    let events = new_events(&records);
+    assert!(events.iter().any(|event| {
+        matches!(
+            event,
+            BytecodeExecutionEvent::VmFunctionReturned(VmFunctionReturned {
+                role: VmObservedFrameRole::Root,
+                ..
+            })
+        )
+    }));
+}
+
+#[test]
+fn repeated_root_local_calls_stop_at_the_fixed_event_maximum() {
+    let fixture = ObservationFixture::build(
+        "example.com/fiber-observation-repeated",
+        REPEATED_CALL_SOURCE,
+    );
+    let sink = Arc::new(RecordingSink::default());
+    let observer = BytecodeExecutionObserver::new(sink.clone(), observation_correlation());
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    let mut depth = 1usize;
+    let mut call_transitions = 0usize;
+    drive_to_completion(&mut fiber, &mut |fiber| {
+        let next = fiber.frames.len();
+        if next == 2 && depth == 1 {
+            call_transitions += 1;
+        }
+        depth = next;
+    })
+    .unwrap();
+    assert_eq!(call_transitions, 2, "helper was really called twice");
+
+    let records = sink.0.lock().unwrap();
+    let events = new_events(&records);
+    assert_eq!(events.len(), 5);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, BytecodeExecutionEvent::VmFunctionFrameEntered(_)))
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, BytecodeExecutionEvent::VmLocalCallDispatched(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, BytecodeExecutionEvent::VmFunctionReturned(_)))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn deep_local_calls_stop_at_the_fixed_event_maximum() {
+    let fixture = ObservationFixture::build("example.com/fiber-observation-deep", DEEP_CALL_SOURCE);
+    let sink = Arc::new(RecordingSink::default());
+    let observer = BytecodeExecutionObserver::new(sink.clone(), observation_correlation());
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    let mut max_depth = 0usize;
+    drive_to_completion(&mut fiber, &mut |fiber| {
+        max_depth = max_depth.max(fiber.frames.len());
+    })
+    .unwrap();
+    assert_eq!(max_depth, 3, "the deep call chain really executed");
+
+    let records = sink.0.lock().unwrap();
+    let events = new_events(&records);
+    assert_eq!(events.len(), 5);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, BytecodeExecutionEvent::VmFunctionFrameEntered(_)))
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, BytecodeExecutionEvent::VmLocalCallDispatched(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, BytecodeExecutionEvent::VmFunctionReturned(_)))
+            .count(),
+        2
+    );
+
+    let selected_callee = match events[2] {
+        BytecodeExecutionEvent::VmFunctionFrameEntered(VmFunctionFrameEntered {
+            function_index,
+            ..
+        }) => *function_index,
+        _ => panic!("expected selected callee entry"),
+    };
+    let returned_callee = match events[3] {
+        BytecodeExecutionEvent::VmFunctionReturned(VmFunctionReturned {
+            function_index, ..
+        }) => *function_index,
+        _ => panic!("expected selected callee return"),
+    };
+    assert_eq!(returned_callee, selected_callee);
+    let root = fixture.root_function_index();
+    assert!(
+        events.iter().all(|event| match event {
+            BytecodeExecutionEvent::VmFunctionFrameEntered(VmFunctionFrameEntered {
+                function_index,
+                ..
+            })
+            | BytecodeExecutionEvent::VmFunctionReturned(VmFunctionReturned {
+                function_index,
+                ..
+            }) => *function_index == root || *function_index == selected_callee,
+            _ => true,
+        }),
+        "the intermediate frame must not mint events"
+    );
+}
+
+#[test]
+fn new_event_payloads_expose_only_scalar_coordinates() {
+    let fixture = ObservationFixture::build(
+        "example.com/fiber-observation-payload-shape",
+        LOCAL_CALL_SOURCE,
+    );
+    let sink = Arc::new(RecordingSink::default());
+    let observer = BytecodeExecutionObserver::new(sink.clone(), observation_correlation());
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    drive_to_completion(&mut fiber, &mut |_| {}).unwrap();
+
+    for record in sink.0.lock().unwrap().iter() {
+        match record.event {
+            BytecodeExecutionEvent::VmFunctionFrameEntered(VmFunctionFrameEntered {
+                role,
+                function_index,
+                frame_depth,
+                slot_count,
+            }) => {
+                assert!(matches!(
+                    role,
+                    VmObservedFrameRole::Root | VmObservedFrameRole::FirstRootLocalCallee
+                ));
+                let _ = (function_index, frame_depth, slot_count);
+            }
+            BytecodeExecutionEvent::VmLocalCallDispatched(VmLocalCallDispatched {
+                caller_function_index,
+                callee_function_index,
+                caller_frame_depth,
+                callee_frame_depth,
+            }) => {
+                let _ = (
+                    caller_function_index,
+                    callee_function_index,
+                    caller_frame_depth,
+                    callee_frame_depth,
+                );
+            }
+            BytecodeExecutionEvent::VmFunctionReturned(VmFunctionReturned {
+                role,
+                function_index,
+                caller_function_index,
+                remaining_frame_depth,
+            }) => {
+                assert!(matches!(
+                    role,
+                    VmObservedFrameRole::Root | VmObservedFrameRole::FirstRootLocalCallee
+                ));
+                let _ = (function_index, caller_function_index, remaining_frame_depth);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn compile_fixture_package(
+    package_id: &str,
+    text: &str,
+) -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("runtime manifest must have a repository parent")
+        .to_path_buf();
+    let platform_sources =
+        CompilerPlatformSources::new(&repository_root).expect("repository platform sources");
+    let package_id = skiff_compiler_core::id::PublicationId::parse(package_id).unwrap();
+    let unique = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
+    let temp = std::env::temp_dir().join(format!(
+        "skiff-vm-observation-{}-{}-{}",
+        std::process::id(),
+        unique,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp).unwrap();
+    let source_path = temp.join("main.skiff");
+    std::fs::write(&source_path, text).unwrap();
+    let source_tree = SourceTree {
+        root: temp.clone(),
+        sources: vec![SourceTreeFile {
+            module_path: "main".to_string(),
+            file_path: PathBuf::from("main.skiff"),
+            is_test_file: false,
+            byte_len: text.len() as u64,
+        }],
+    };
+    let compiler_source = skiff_compiler_source::source_graph::CompilerSourceFile::parse(
+        PathBuf::from("main.skiff"),
+        "main".to_string(),
+        false,
+        false,
+        text.to_string(),
+        source_path.display().to_string(),
+    )
+    .unwrap();
+    let package = PackageSourceInput::new(
+        PublicationManifest::new(
+            package_id.clone(),
+            "1.0.0".to_string(),
+            skiff_compiler_input::PublicationApiSpec::empty(),
+            Vec::new(),
+            ManifestProvenance {
+                owner: ManifestOwner::UserOrBuiltinPackage,
+                path: PathBuf::new(),
+                synthetic: true,
+            },
+        ),
+        source_tree,
+        PublicationSourceGraph::from_compiler_sources(vec![compiler_source]),
+        Vec::new(),
+    );
+    let compiled = compile_package(PackageCompileInput::new(
+        &platform_sources,
+        &package,
+        &BTreeMap::new(),
+        package_id.as_str(),
+        true,
+    ))
+    .unwrap();
+    let bytecode = Arc::new(
+        ValidatedBytecodeArtifact::admit(compiled.bytecode_handoff().unwrap().artifact().clone())
+            .unwrap(),
+    );
+    let package = Arc::new(compiled.package().artifact.clone());
+    std::fs::remove_dir_all(temp).unwrap();
+    (package, bytecode)
+}
+
+fn service_contract(package_id: &str) -> (Arc<ServiceContract>, ContractOperationId) {
+    let operation =
+        skiff_artifact_identity::contract_operation_id(package_id, "1.0.0", "run").unwrap();
+    let mut contract = ServiceContract {
+        schema_version: SERVICE_CONTRACT_SCHEMA_VERSION.to_string(),
+        service_id: package_id.to_string(),
+        contract_version: "1.0.0".to_string(),
+        service_protocol_identity: skiff_artifact_model::ServiceProtocolIdentity::new("unassigned"),
+        operations: BTreeMap::from([(
+            operation.clone(),
+            BoundaryOperationDescriptor {
+                operation_id: operation.clone(),
+                stable_key: "run".to_string(),
+                contract: BoundaryOperationContract {
+                    parameters: Vec::new(),
+                    return_value: BoundaryReturn {
+                        ty: ContractTypeRef::builtin("number"),
+                        value_plan: BoundaryValuePlan::Linkable {
+                            carrier: BoundaryValueCarrier::DetachedValueGraph,
+                            encoding: BoundaryValueEncoding::CanonicalValue,
+                            owner: BoundaryValueOwner::Provider,
+                            lifetime: BoundaryValueLifetime::Call,
+                        },
+                    },
+                    stream: BoundaryStreamContract::Unary,
+                    callbacks: BoundaryCallbackContract::None,
+                    effect_guarantee: BoundaryEffectGuarantee {
+                        detached_parameters: true,
+                        detached_return: true,
+                        detached_error: true,
+                        no_caller_reachable_mutation: true,
+                        no_caller_value_escape: true,
+                        no_same_heap_identity: true,
+                    },
+                },
+            },
+        )]),
+        public_instances: BTreeMap::new(),
+        package_type_requirements: Vec::new(),
+        diagnostic_text: skiff_artifact_model::ContractDiagnosticText {
+            service: package_id.to_string(),
+            operations: BTreeMap::new(),
+            types: BTreeMap::new(),
+        },
+    };
+    skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
+    (Arc::new(contract), operation)
+}
+
+fn service_deployment(
+    package: &PackageArtifact,
+    contract: &ServiceContract,
+    operation: ContractOperationId,
+) -> (
+    Arc<ServiceDeployment>,
+    skiff_artifact_model::ServiceDeploymentRef,
+) {
+    let package_ref = skiff_artifact_identity::package_artifact_ref(package).unwrap();
+    let contract_ref = skiff_artifact_identity::service_contract_ref(contract).unwrap();
+    let callable = package
+        .callable_links
+        .keys()
+        .find(|callable| callable.as_str().ends_with(":main.run"))
+        .expect("compiled fixture exposes the main.run callable")
+        .clone();
+    let mut deployment = ServiceDeployment {
+        schema_version: SERVICE_DEPLOYMENT_SCHEMA_VERSION.to_string(),
+        contract: contract_ref,
+        deployment_revision: DeploymentRevision::new("revision:fiber-observation"),
+        deployment_artifact_identity: DeploymentArtifactIdentity::new("unassigned"),
+        implementation: package_ref,
+        operation_bindings: vec![DeploymentOperationBinding {
+            contract_operation_id: operation,
+            package_callable_id: callable,
+        }],
+        package_bindings: Vec::new(),
+        service_selectors: Vec::new(),
+        gateway_entries: BTreeMap::new(),
+        ingress: Vec::new(),
+        diagnostic_text: DeploymentDiagnosticText {
+            display_name: "fiber observation".to_string(),
+            notes: BTreeMap::new(),
+        },
+    };
+    skiff_artifact_identity::assign_service_deployment_identity(&mut deployment).unwrap();
+    let reference = skiff_artifact_identity::service_deployment_ref(&deployment);
+    (Arc::new(deployment), reference)
+}
+
+struct TestResolver {
+    deployment: Arc<ServiceDeployment>,
+    contract: Arc<ServiceContract>,
+    package: Arc<PackageArtifact>,
+    bytecode: Arc<ValidatedBytecodeArtifact>,
+}
+
+impl DeploymentBytecodeContentResolver for TestResolver {
+    fn resolve_deployment(
+        &self,
+        reference: &skiff_artifact_model::ServiceDeploymentRef,
+    ) -> anyhow::Result<Arc<ServiceDeployment>> {
+        let actual = skiff_artifact_identity::service_deployment_ref(&self.deployment);
+        anyhow::ensure!(&actual == reference, "deployment reference mismatch");
+        Ok(Arc::clone(&self.deployment))
+    }
+
+    fn resolve_contract(
+        &self,
+        reference: &skiff_artifact_model::ServiceContractRef,
+    ) -> anyhow::Result<Arc<ServiceContract>> {
+        let actual = skiff_artifact_identity::service_contract_ref(&self.contract).unwrap();
+        anyhow::ensure!(&actual == reference, "contract reference mismatch");
+        Ok(Arc::clone(&self.contract))
+    }
+
+    fn resolve_package(
+        &self,
+        reference: &skiff_artifact_model::PackageArtifactRef,
+    ) -> anyhow::Result<Arc<PackageArtifact>> {
+        let actual = skiff_artifact_identity::package_artifact_ref(&self.package).unwrap();
+        anyhow::ensure!(&actual == reference, "package reference mismatch");
+        Ok(Arc::clone(&self.package))
+    }
+
+    fn resolve_package_bytecode(
+        &self,
+        package: &skiff_artifact_model::PackageArtifactRef,
+        reference: &skiff_artifact_model::BytecodeArtifactRef,
+    ) -> anyhow::Result<Arc<ValidatedBytecodeArtifact>> {
+        let actual = skiff_artifact_identity::package_artifact_ref(&self.package).unwrap();
+        anyhow::ensure!(&actual == package, "bytecode package mismatch");
+        anyhow::ensure!(
+            self.bytecode.reference() == reference,
+            "bytecode reference mismatch"
+        );
+        Ok(Arc::clone(&self.bytecode))
+    }
+}
+
+fn link_limits() -> LinkLimits {
+    LinkLimits {
+        max_packages: u64::MAX,
+        max_root_specializations: u64::MAX,
+        max_specializations: u64::MAX,
+        max_code_words_per_function: u64::MAX,
+        max_total_code_words: u64::MAX,
+        max_relocations_per_function: u64::MAX,
+        max_total_relocations: u64::MAX,
+        max_image_table_entries: u64::MAX,
+        max_total_image_table_entries: u64::MAX,
+        max_total_function_table_entries: u64::MAX,
+        max_type_nesting_depth: u64::MAX,
+        max_expanded_type_nodes: u64::MAX,
+        max_expanded_type_bytes: u64::MAX,
+        max_constant_graph_nodes: u64::MAX,
+        max_constant_graph_edges: u64::MAX,
+    }
+}
+
+fn verification_limits() -> VerificationLimits {
+    VerificationLimits {
+        max_functions: u64::MAX,
+        max_total_instructions: u64::MAX,
+        max_instructions_per_function: u64::MAX,
+        max_frame_slots_per_function: u64::MAX,
+        max_operand_depth: u64::MAX,
+        max_control_flow_edges_per_function: u64::MAX,
+        max_exception_regions_per_function: u64::MAX,
+        max_switch_targets_per_function: u64::MAX,
+        max_statement_events_per_pc: u64::MAX,
+        max_statement_events_per_function: u64::MAX,
+        max_total_statement_events: u64::MAX,
+        max_source_map_entries_per_function: u64::MAX,
+        max_image_table_entries: u64::MAX,
+        max_arity: u64::MAX,
+        max_callback_captures_per_callback: u64::MAX,
+        max_type_nesting_depth: u64::MAX,
+        max_value_lifecycle_nodes: u64::MAX,
+        max_value_lifecycle_canonical_bytes: u64::MAX,
+        max_constant_graph_edges: u64::MAX,
+    }
 }
