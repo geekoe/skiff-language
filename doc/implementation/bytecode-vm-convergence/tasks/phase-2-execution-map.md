@@ -1,6 +1,6 @@
 # MAP2：Phase 2 rolling execution map
 
-> Status: active; revision 6; linker join fixed, array-index selector authority decided, verifier fix authorized to K2
+> Status: active; revision 7; VCP green on the production seam, merged preflight and independent review next
 >
 > Phase Contract: [`phase-2-value-lifecycle.md`](../phases/phase-2-value-lifecycle.md)
 >
@@ -94,6 +94,17 @@ Integrator 只做机械 cherry-pick、receipt/MAP 更新、Gate/freeze/Acceptanc
   自身类型、verifier 按 integer-or-number 接受。授权 K2 修 linker 与 `runtime/bytecode-verifier/.../values.rs` 两处
   （verifier 该文件仅此最小一致修复）。
 - P2G `4c2f921b`（两阶段 spy + VCP harness）已并入 integration（`65b07e09`），host lib 恢复可编译。
+
+## 4g. Revision 7
+
+- K2 后续 `823208f0`/`aa00e701`/`0dceb8b0` 把 VCP 推到绿：number 选择器权威落地（linker 取自身类型、verifier
+  integer-or-number、runtime `collection_index`）、`SetWritablePath` writable-loan hint 由 linker stack map 产出、
+  边界 JSON 经 `VmHeap::container_elements` 递归物化 record/array（其余形状 fail closed）、P2G harness 三处机械
+  修正（publish 顺序、spy 委托、index mutation 必须 COW 的正确期望）。
+- VCP 2/2 绿：alias isolation（`a.inner.x`/`a.inner.tags` 不变）与精确 share/COW/drop 序列全断言通过；三包全量
+  301 过 0 红。kernel/compiler/proof 三 lane 全部合入 integration（tip `43fee5ff`）。
+- 下一顺序：fresh 独立 review（Phase 2 diff 对照 contract + Amendment 1/2 + Phase 1 不变式）→ merged Gate preflight
+  → freeze → 全新 Acceptance → result 合 main。Phase 2 未 acceptance 前 Phase 3 不解禁。
 
 ## 4. Task contracts
 
