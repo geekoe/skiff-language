@@ -1,0 +1,8 @@
+run:
+  method: POST
+  path: /phase-2/negative
+  kind: typedJson
+  handler: main.run
+  adapterArgs:
+    - param: value
+      source: { kind: http.body }
