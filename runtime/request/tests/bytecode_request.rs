@@ -945,7 +945,7 @@ function run() -> number {
     }
 
     #[test]
-    fn bytes_shape_is_rejected_by_typed_compiler_containment() {
+    fn native_bytes_wrapper_is_rejected_by_typed_compiler_containment() {
         let error = compile_test_package_with_source(
             "function run() -> bytes {
   return bytes.fromUtf8(\"disabled\")
@@ -956,8 +956,8 @@ function run() -> number {
 
         assert_phase_1_compiler_rejection(
             error,
-            Phase1UnsupportedCapability::ValueShape,
-            "return type",
+            Phase1UnsupportedCapability::HostTarget,
+            "native executable",
         );
     }
 }
