@@ -171,6 +171,22 @@ Design task 只有在改变下列高风险共享事实时需要独立 review：
 Review 只审查对应 decision receipt，不等待整个 Phase 设计完毕。`FAIL` 只阻塞消费该决定的 task；其它工作
 继续。普通局部设计由代码 review、focused tests 和最终 Acceptance 覆盖。
 
+### 4.4 Gate-map 预调查（派单前只读调查）
+
+在派发本 Phase 第一批 production lane 之前，主 Agent（或一个 read-only agent）对目标支持面做一次
+**pipeline gate-map 预调查**：让目标 fixture/source 形状静态走过 compiler→admission→emission→link→verify→
+VM→request 的每一层，列出每一层会出现的门（fact 缺失、形状拒绝、stack-map 缺口、state-proof 缺口、运行时
+liveness、投影不一致等），以及每扇门落在哪个 lane 的写界。
+
+调查产出写进 Execution Map，并作为三条硬约束：
+
+- Proof harness 从第一天就把每个 gate 的 expected-red **点**钉上（不是只钉最终端到端红）；
+- 互不依赖的 gate 在首日按 lane 并行派发，不在同一个修复串里逐个发现；
+- 每扇门由红转绿时，同一 join 收进 Gate 矩阵（这是 join 条件，不等 Acceptance 再补）。
+
+该调查是只读的（不写生产、不跑 cargo），不替代 Phase Contract 的设计决策；它只回答"还有哪些门、门在
+谁家"，不决定"门该怎么开"。
+
 ## 5. Execution Map 与主 Agent
 
 主 Agent 维护滚动 Execution Map、派发、监控、接管、机械合流、freeze 和 acceptance handoff。它不写最终
@@ -212,8 +228,23 @@ Execution Map 初始版本只记录当前 ready frontier：
 focused commands、日志位置、未运行项、remaining risk 和下一 ready task。只读 clarification 默认交付短证据
 handoff，不强制 commit。
 
+每个非只读 task 的 handoff **必交项**还包括：
+
+- 对本 task 写入的 `.rs`/`.mjs` 文件跑 `cargo fmt --check`（或等价 formatter）与 clippy：本 task 写入行
+  **零新增 fmt 告警、零新增 clippy error/warning**；预存告警须逐条给出 blame 证据并按 R0 baseline 规则归类
+  （旧红/新红），不允许在未记录的情况下交付带新红的里程碑；
+- 若因实现需要扩展了 task 写界，**同一 commit 必须更新 Execution Map 的写集记录**；"授权在对话里给过但
+  MAP 没记"不构成合规。
+
 预计超过 30 秒的命令将输出重定向到临时或 durable 文件并可轮询。Development Agent 不自行运行无关全仓
 测试；Acceptance Agent 必须完整运行 Phase Contract 指定的 canonical Gate，中断等于未运行。
+
+### 5.3 Cargo/验证分层
+
+- focused 测试随每次迭代运行；三包/全量矩阵只在 join 点运行，不随每轮修复重复；
+- 跨 worker 的 cargo 一律持目录租约串行（`mkdir <lease>` 抢租、`rmdir` 释放、轮询等待），同一时刻只有
+  一条 cargo；
+- 同一条 cargo 命令的验证结果只由当时运行的 owner 记录一次，不重跑只为找回输出。
 
 ## 6. Semantic Closure，而不是 crate completion
 
@@ -261,6 +292,17 @@ VCP 可以比 whole-product E2E 小，但不能是单 crate 测试，也不能�
 允许注入测试 store、clock、网络 peer 或 fake host completion；不允许注入手工 verified image、linked target、
 VM fiber、内部 owner token 或绕过 production loader/linker/scheduler 的 test-only executor。
 
+#### 7.1.1 Stage-sentinel 矩阵
+
+除了最终一条 full-chain closure，VCP 还包含一个 **stage-sentinel 矩阵**：同一组真实 fixture，在
+source→admission、admission→emission、emission→link、link→verify、verify→VM→response 每个阶段边界各挂一个
+独立 test case。哨兵的输入必须是上一阶段真实生产边界的产出（真实 compiler 产物喂 admission、真实 artifact
+喂 linker），不能 hand-build 内部对象。哨兵用一次 `--no-fail-fast` 并行暴露"所有已到达阶段"的失败；full-chain
+closure 仍负责证明"组合后确实正确"。
+
+各层可在 Proof harness 内提供 opt-in 诊断收集模式（一次报告一层内的全部违反）；**生产路径保持 fail-fast**。
+诊断输出必须区分根因与级联错误，不得把级联当独立失败计数。
+
 Phase Contract 必须在两条线启动前定义 VCP 的入口、终点和预期结果；可执行 harness 由 Proof Line 从第一批
 task 开始实现，并与 production code 并行。找不到可行 VCP 时，只阻塞依赖该 seam 的工作：先 Clarification；
 若需要新增共享 execution authority，再触发 Design 和必要 review。
@@ -293,6 +335,9 @@ manifest、零场景、skip、命令未运行、dirty/stale candidate、tampered
 
 一个 accepted Phase 的 VCP/negative/Gate assets 成为后续 Phase regression。修改 fixture、assertion、observability
 或 checker 会使相关 evidence epoch 失效。
+
+每个 Phase 的 Gate 矩阵从第一天就包含该 Phase 全部 required scenario（含 expected-red）；producer 由红转绿时
+同一 join 把场景收进矩阵，不等 Acceptance 再补。
 
 ## 8. Integration、freeze 和 acceptance
 
