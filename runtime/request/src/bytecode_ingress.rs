@@ -23,10 +23,9 @@ use skiff_runtime_model::{
 };
 use skiff_runtime_scheduler::{
     BytecodeScheduler, BytecodeSchedulerOutcome, PendingOwnerRegistration,
-    RequestExecutionOwnerInventory, RequestExecutionOwnerInventoryFreezePermit,
-    ResourceOwnerRegistration, RootDisposition, RootEscrow, RootEscrowBacking, StreamConsumer,
-    StreamEvent, StreamPoll, VmCompletionHandle, VmPendingRegistry, VmStreamSupervisor,
-    VmStreamTerminal, WakeSignal,
+    RequestExecutionOwnerInventory, RequestExecutionOwnerInventoryFreezePermit, RootDisposition,
+    RootEscrow, RootEscrowBacking, StreamConsumer, StreamEvent, StreamPoll, VmCompletionHandle,
+    VmPendingRegistry, VmStreamSupervisor, VmStreamTerminal, WakeSignal,
 };
 use skiff_runtime_vm::{
     ResumeOutcome, Vm, VmBudget, VmBudgetClosed, VmBudgetTerminal, VmError, VmFiber,
@@ -62,7 +61,6 @@ struct RequestAdapterExecutor {
     next_stream_handle: AtomicU64,
     stream: Mutex<Option<HttpClientStreamState>>,
     resource_table: ResourceTable,
-    resource_owners: ResourceOwnerRegistration,
 }
 
 struct HttpClientStreamState {
@@ -81,7 +79,6 @@ impl RequestAdapterExecutor {
         http_executor: Option<Arc<dyn BytecodeHttpExecutor>>,
         self_ingress: Option<BytecodeSelfIngressContext>,
         resource_table: ResourceTable,
-        resource_owners: ResourceOwnerRegistration,
         queue: BytecodeRequestWakeQueue,
         pending_owners: PendingOwnerRegistration,
         cancellation: CancellationToken,
@@ -99,7 +96,6 @@ impl RequestAdapterExecutor {
             next_stream_handle: AtomicU64::new(1),
             stream: Mutex::new(None),
             resource_table,
-            resource_owners,
         }
     }
 
@@ -134,13 +130,7 @@ impl RequestAdapterExecutor {
             return;
         };
         let handle = skiff_runtime_model::vm_value::VmHandle::new(stream.handle);
-        let entry = {
-            let mut table = self
-                .resource_table
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            table.remove_live(handle)
-        };
+        let entry = self.resource_table.remove_live(handle);
         if let Some(entry) = entry {
             entry.cancel();
         }
@@ -388,33 +378,12 @@ impl RequestAdapterExecutor {
         let vm_handle = skiff_runtime_model::vm_value::VmHandle::new(handle);
         let body = ValueSlot::resource_ref(vm_handle, CompactTypeTag::new(0), ValueFlags::new(0));
         let resource_cancel: Arc<dyn Fn() + Send + Sync> = Arc::new(stream.cancel);
-        let installed = {
-            let mut table = self
-                .resource_table
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if table.contains_live(vm_handle) {
-                drop(table);
-                (resource_cancel)();
-                if is_self_ingress {
-                    self.release_self_ingress();
-                }
-                return Err(BytecodeSchedulerError::Port(
-                    "bytecode resource handle collided".to_string(),
-                ));
-            }
-            self.resource_owners.install(|owner_lease| {
-                table.register(
-                    vm_handle,
-                    crate::vm_heap::ResourceEntry::new(
-                        body.compact_type_tag(),
-                        body.flags(),
-                        Arc::clone(&resource_cancel),
-                        owner_lease,
-                    ),
-                );
-            })
-        };
+        let installed = self.resource_table.register(
+            vm_handle,
+            body.compact_type_tag(),
+            body.flags(),
+            Arc::clone(&resource_cancel),
+        );
         if let Err(error) = installed {
             (resource_cancel)();
             if is_self_ingress {
@@ -1172,7 +1141,9 @@ pub fn start_runtime_bytecode_request_with_ports(
     } = input;
 
     let owner_pin = Arc::clone(target.image());
-    let resource_table: ResourceTable = Default::default();
+    let (owner_registrations, owner_inventory_freeze) =
+        RequestExecutionOwnerInventory::open().into_parts();
+    let resource_table = ResourceTable::new(owner_registrations.resource());
     let mut request_heap = RequestVmHeap::new(handles.request_heap_limits);
     request_heap.set_resource_table(resource_table.clone());
     let arguments = gateway_entry_arguments(&request, &target, &mut request_heap)?;
@@ -1180,8 +1151,6 @@ pub fn start_runtime_bytecode_request_with_ports(
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
 
     let queue = Arc::new(InMemoryWakeQueue::new());
-    let (owner_registrations, owner_inventory_freeze) =
-        RequestExecutionOwnerInventory::open().into_parts();
     let (supervisor, consumer) =
         VmStreamSupervisor::open(owner_pin, queue.clone(), owner_registrations.pending());
     let writer = ResponseStreamWriter::new(request_id, response_events);
@@ -1198,7 +1167,6 @@ pub fn start_runtime_bytecode_request_with_ports(
         handles.http_executor.clone(),
         handles.self_ingress.clone(),
         resource_table,
-        owner_registrations.resource(),
         queue.clone(),
         owner_registrations.pending(),
         cancellation.clone(),
@@ -1588,15 +1556,15 @@ pub fn execute_runtime_bytecode_request_with_ports(
     let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
 
-    let resource_table: ResourceTable = Default::default();
+    let (owner_registrations, _owner_inventory_freeze) =
+        RequestExecutionOwnerInventory::open().into_parts();
+    let resource_table = ResourceTable::new(owner_registrations.resource());
     let mut heap = RequestVmHeap::new(handles.request_heap_limits);
     heap.set_resource_table(resource_table.clone());
     let arguments = gateway_entry_arguments(&request, &target, &mut heap)?;
     let fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
     let queue = Arc::new(InMemoryWakeQueue::new());
-    let (owner_registrations, _owner_inventory_freeze) =
-        RequestExecutionOwnerInventory::open().into_parts();
     let child_cancellation = cancellation.clone();
     let mut budget = execution_budget.attach_vm().map_err(|error| {
         RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
@@ -1607,7 +1575,6 @@ pub fn execute_runtime_bytecode_request_with_ports(
         handles.http_executor.clone(),
         handles.self_ingress.clone(),
         resource_table,
-        owner_registrations.resource(),
         queue.clone(),
         owner_registrations.pending(),
         child_cancellation,

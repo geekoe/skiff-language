@@ -21,7 +21,9 @@ use skiff_runtime_model::{
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
-use skiff_runtime_scheduler::ResourceOwnerLease;
+use skiff_runtime_scheduler::{
+    OwnerCreationError, ResourceOwnerCreationGuard, ResourceOwnerLease, ResourceOwnerRegistration,
+};
 
 const DOMAIN_SHIFT: u64 = 56;
 const DOMAIN_MASK: u64 = (u8::MAX as u64) << DOMAIN_SHIFT;
@@ -48,15 +50,14 @@ struct LiveEntry {
 
 /// Shared registry of native resources and handles released by either the
 /// heap or the adapter executor.
-#[derive(Default)]
-pub struct ResourceRegistry {
+struct ResourceRegistry {
     live: HashMap<VmHandle, ResourceEntry>,
     released: HashSet<VmHandle>,
 }
 
 impl ResourceRegistry {
     /// Registers a live resource before any VM operation can validate it.
-    pub fn register(&mut self, handle: VmHandle, entry: ResourceEntry) {
+    fn register(&mut self, handle: VmHandle, entry: ResourceEntry) {
         self.released.remove(&handle);
         self.live.insert(handle, entry);
     }
@@ -77,15 +78,105 @@ impl ResourceRegistry {
 
     /// Removes a live entry and marks the handle released. A released handle
     /// is idempotent for later VM release, but no longer live.
-    pub fn remove_live(&mut self, handle: VmHandle) -> Option<ResourceEntry> {
+    fn remove_live(&mut self, handle: VmHandle) -> Option<ResourceEntry> {
         let entry = self.live.remove(&handle)?;
         self.released.insert(handle);
         Some(entry)
     }
 }
 
-/// Shared resource table for stream handles and other native resources.
-pub type ResourceTable = Arc<Mutex<ResourceRegistry>>;
+/// Opaque resource registry permanently bound to one request inventory.
+#[derive(Clone)]
+pub struct ResourceTable {
+    registry: Arc<Mutex<ResourceRegistry>>,
+    owners: ResourceOwnerRegistration,
+}
+
+impl ResourceTable {
+    pub fn new(owners: ResourceOwnerRegistration) -> Self {
+        Self {
+            registry: Arc::new(Mutex::new(ResourceRegistry {
+                live: HashMap::new(),
+                released: HashSet::new(),
+            })),
+            owners,
+        }
+    }
+
+    pub fn register(
+        &self,
+        handle: VmHandle,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+        cancel: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(), RegisterResourceError> {
+        let owner = self
+            .owners
+            .prepare()
+            .map_err(RegisterResourceError::OwnerCreation)?;
+        self.register_with_guard(owner, handle, compact_type_tag, flags, cancel)
+    }
+
+    fn register_with_guard(
+        &self,
+        owner: ResourceOwnerCreationGuard<'_>,
+        handle: VmHandle,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+        cancel: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(), RegisterResourceError> {
+        // The non-cloneable guard already owns the inventory lock. The table
+        // is deliberately inaccessible until that fixed lock order exists.
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if registry.contains_live(handle) {
+            return Err(RegisterResourceError::OccupiedHandle);
+        }
+        owner
+            .install(|owner_lease| {
+                registry.register(
+                    handle,
+                    ResourceEntry::new(compact_type_tag, flags, cancel, owner_lease),
+                );
+            })
+            .map_err(RegisterResourceError::OwnerCreation)
+    }
+
+    pub(crate) fn remove_live(&self, handle: VmHandle) -> Option<ResourceEntry> {
+        let mut registry = self
+            .registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = registry.remove_live(handle);
+        drop(registry);
+        entry
+    }
+
+    #[cfg(test)]
+    fn contains_live(&self, handle: VmHandle) -> bool {
+        self.registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains_live(handle)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RegisterResourceError {
+    OccupiedHandle,
+    OwnerCreation(OwnerCreationError),
+}
+
+impl std::fmt::Display for RegisterResourceError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::OccupiedHandle => formatter.write_str("resource handle is already occupied"),
+            Self::OwnerCreation(error) => error.fmt(formatter),
+        }
+    }
+}
 
 /// An entry in the shared resource table.
 pub struct ResourceEntry {
@@ -98,7 +189,7 @@ pub struct ResourceEntry {
 }
 
 impl ResourceEntry {
-    pub fn new(
+    pub(crate) fn new(
         compact_type_tag: CompactTypeTag,
         flags: ValueFlags,
         cancel: Arc<dyn Fn() + Send + Sync>,
@@ -320,10 +411,13 @@ impl RequestVmHeap {
                 operation: VmHeapOperation::ValidateLive,
                 kind: ValueKind::ResourceRef,
             })?;
-        let guard = table.lock().map_err(|_| VmHeapError::HeapOperationFailed {
-            operation: VmHeapOperation::ValidateLive,
-            message: "resource table lock poisoned".to_string(),
-        })?;
+        let guard = table
+            .registry
+            .lock()
+            .map_err(|_| VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ValidateLive,
+                message: "resource table lock poisoned".to_string(),
+            })?;
         match guard.metadata(handle) {
             Some((compact_type_tag, flags))
                 if compact_type_tag == value.compact_type_tag() && flags == value.flags() =>
@@ -346,10 +440,13 @@ impl RequestVmHeap {
                 operation: VmHeapOperation::ReleaseResource,
                 kind: ValueKind::ResourceRef,
             })?;
-        let mut guard = table.lock().map_err(|_| VmHeapError::HeapOperationFailed {
-            operation: VmHeapOperation::ReleaseResource,
-            message: "resource table lock poisoned".to_string(),
-        })?;
+        let mut guard = table
+            .registry
+            .lock()
+            .map_err(|_| VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseResource,
+                message: "resource table lock poisoned".to_string(),
+            })?;
         if guard.is_released(handle) {
             return Ok(());
         }

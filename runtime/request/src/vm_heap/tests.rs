@@ -8,14 +8,17 @@ use skiff_runtime_model::{
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
-use skiff_runtime_scheduler::{RequestExecutionOwnerInventory, ResourceOwnerRegistration};
+use skiff_runtime_scheduler::RequestExecutionOwnerInventory;
 
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Barrier,
+    },
+    time::Duration,
 };
 
-use super::{RequestVmHeap, ResourceEntry, ResourceTable};
+use super::{RegisterResourceError, RequestVmHeap, ResourceTable};
 
 const TAG: CompactTypeTag = CompactTypeTag::new(17);
 const FLAGS: ValueFlags = ValueFlags::new(1);
@@ -28,37 +31,25 @@ fn heap() -> RequestVmHeap {
 
 fn heap_with_resource_table() -> (RequestVmHeap, ResourceTable) {
     let mut heap = RequestVmHeap::with_domain(7, 0, RequestHeapLimits::default());
-    let table: ResourceTable = Default::default();
+    let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+    let table = ResourceTable::new(registrations.resource());
     heap.set_resource_table(table.clone());
     (heap, table)
 }
 
 fn register_resource(table: &ResourceTable, handle: u64, cancels: Arc<AtomicUsize>) -> ValueSlot {
-    let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
-    register_resource_with(table, handle, cancels, &registrations.resource())
-}
-
-fn register_resource_with(
-    table: &ResourceTable,
-    handle: u64,
-    cancels: Arc<AtomicUsize>,
-    resource_owners: &ResourceOwnerRegistration,
-) -> ValueSlot {
     let vm_handle = skiff_runtime_model::vm_value::VmHandle::new(handle);
     let cancels_clone = Arc::clone(&cancels);
-    let entry = resource_owners
-        .install(|owner_lease| {
-            ResourceEntry::new(
-                RESOURCE_TAG,
-                RESOURCE_FLAGS,
-                Arc::new(move || {
-                    cancels_clone.fetch_add(1, Ordering::SeqCst);
-                }),
-                owner_lease,
-            )
-        })
+    table
+        .register(
+            vm_handle,
+            RESOURCE_TAG,
+            RESOURCE_FLAGS,
+            Arc::new(move || {
+                cancels_clone.fetch_add(1, Ordering::SeqCst);
+            }),
+        )
         .unwrap();
-    table.lock().unwrap().register(vm_handle, entry);
     ValueSlot::resource_ref(vm_handle, RESOURCE_TAG, RESOURCE_FLAGS)
 }
 
@@ -414,11 +405,85 @@ fn release_resource_invokes_cancel_exactly_once_and_is_idempotent() {
 fn resource_entry_releases_its_actual_inventory_lease_after_cancel() {
     let inventory = RequestExecutionOwnerInventory::open();
     let (registrations, freeze) = inventory.into_parts();
-    let resource_owners = registrations.resource();
-    let (mut heap, table) = heap_with_resource_table();
-    let slot = register_resource_with(&table, 100, Arc::new(AtomicUsize::new(0)), &resource_owners);
+    let table = ResourceTable::new(registrations.resource());
+    let mut heap = RequestVmHeap::with_domain(7, 0, RequestHeapLimits::default());
+    heap.set_resource_table(table.clone());
+    let slot = register_resource(&table, 100, Arc::new(AtomicUsize::new(0)));
 
     heap.release_resource(&slot).unwrap();
+
+    let frozen = freeze.freeze();
+    assert_eq!(frozen.resource().current(), 0);
+    assert!(frozen.resource().ever_created());
+}
+
+#[test]
+fn occupied_resource_registration_aborts_without_an_inventory_increment() {
+    let inventory = RequestExecutionOwnerInventory::open();
+    let (registrations, freeze) = inventory.into_parts();
+    let table = ResourceTable::new(registrations.resource());
+    let handle = skiff_runtime_model::vm_value::VmHandle::new(101);
+    table
+        .register(handle, RESOURCE_TAG, RESOURCE_FLAGS, Arc::new(|| {}))
+        .unwrap();
+
+    assert_eq!(
+        table.register(handle, RESOURCE_TAG, RESOURCE_FLAGS, Arc::new(|| {})),
+        Err(RegisterResourceError::OccupiedHandle)
+    );
+
+    let frozen = freeze.freeze();
+    assert_eq!(frozen.resource().current(), 1);
+    assert!(frozen.resource().ever_created());
+    table.remove_live(handle).unwrap().cancel();
+}
+
+#[test]
+fn resource_release_unlocks_the_table_before_the_inventory_lease_drops() {
+    let inventory = RequestExecutionOwnerInventory::open();
+    let (registrations, freeze) = inventory.into_parts();
+    let table = ResourceTable::new(registrations.resource());
+    let first = skiff_runtime_model::vm_value::VmHandle::new(102);
+    let cancel_entered = Arc::new(Barrier::new(2));
+    let cancel_release = Arc::new(Barrier::new(2));
+    let callback_entered = Arc::clone(&cancel_entered);
+    let callback_release = Arc::clone(&cancel_release);
+    table
+        .register(
+            first,
+            RESOURCE_TAG,
+            RESOURCE_FLAGS,
+            Arc::new(move || {
+                callback_entered.wait();
+                callback_release.wait();
+            }),
+        )
+        .unwrap();
+
+    let releasing_table = table.clone();
+    let releasing = std::thread::spawn(move || {
+        releasing_table.remove_live(first).unwrap().cancel();
+    });
+    cancel_entered.wait();
+
+    let inspecting_table = table.clone();
+    let (inspected_tx, inspected_rx) = mpsc::channel();
+    let inspecting = std::thread::spawn(move || {
+        inspected_tx
+            .send(inspecting_table.contains_live(first))
+            .unwrap();
+    });
+    let still_live = match inspected_rx.recv_timeout(Duration::from_secs(1)) {
+        Ok(still_live) => still_live,
+        Err(error) => {
+            cancel_release.wait();
+            panic!("resource table stayed locked while its removed lease was live: {error}");
+        }
+    };
+    cancel_release.wait();
+    releasing.join().unwrap();
+    inspecting.join().unwrap();
+    assert!(!still_live);
 
     let frozen = freeze.freeze();
     assert_eq!(frozen.resource().current(), 0);

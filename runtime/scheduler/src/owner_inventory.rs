@@ -72,29 +72,46 @@ impl InventoryShared {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn install<T, L>(
+    fn prepare(
         self: &Arc<Self>,
         domain: OwnerDomain,
-        install: L,
-    ) -> Result<T, OwnerCreationError>
-    where
-        L: FnOnce(OwnerLease) -> T,
-    {
-        let mut state = self.lock();
+    ) -> Result<OwnerCreationGuard<'_>, OwnerCreationError> {
+        let state = self.lock();
         if state.phase == InventoryPhase::Frozen {
             return Err(OwnerCreationError::InventoryFrozen);
         }
-        let next = state
-            .domain(domain)
-            .current
-            .checked_add(1)
-            .ok_or(OwnerCreationError::CountOverflow)?;
-        let domain_state = state.domain_mut(domain);
+        Ok(OwnerCreationGuard {
+            inventory: self,
+            domain,
+            state,
+        })
+    }
+}
+
+struct OwnerCreationGuard<'a> {
+    inventory: &'a Arc<InventoryShared>,
+    domain: OwnerDomain,
+    state: MutexGuard<'a, InventoryState>,
+}
+
+impl OwnerCreationGuard<'_> {
+    fn install<T>(
+        mut self,
+        install: impl FnOnce(OwnerLease) -> T,
+    ) -> Result<T, OwnerCreationError> {
+        let Some(next) = self.state.domain(self.domain).current.checked_add(1) else {
+            // Prepared carrier state is owned by `install`; release the
+            // inventory lock before that state is dropped on rejection.
+            drop(self);
+            drop(install);
+            return Err(OwnerCreationError::CountOverflow);
+        };
+        let domain_state = self.state.domain_mut(self.domain);
         domain_state.current = next;
         domain_state.ever_created = true;
         Ok(install(OwnerLease {
-            inventory: Arc::clone(self),
-            domain,
+            inventory: Arc::clone(self.inventory),
+            domain: self.domain,
         }))
     }
 }
@@ -128,6 +145,13 @@ pub struct PendingOwnerLease(OwnerLease);
 pub struct ResourceOwnerLease(OwnerLease);
 pub struct ChildOwnerLease(OwnerLease);
 
+#[must_use = "a pending creation guard must be installed or explicitly aborted"]
+pub struct PendingOwnerCreationGuard<'a>(OwnerCreationGuard<'a>);
+#[must_use = "a resource creation guard must be installed or explicitly aborted"]
+pub struct ResourceOwnerCreationGuard<'a>(OwnerCreationGuard<'a>);
+#[must_use = "a child creation guard must be installed or explicitly aborted"]
+pub struct ChildOwnerCreationGuard<'a>(OwnerCreationGuard<'a>);
+
 macro_rules! opaque_lease_debug {
     ($lease:ident) => {
         impl fmt::Debug for $lease {
@@ -144,23 +168,43 @@ opaque_lease_debug!(PendingOwnerLease);
 opaque_lease_debug!(ResourceOwnerLease);
 opaque_lease_debug!(ChildOwnerLease);
 
-macro_rules! registration_install {
-    ($registration:ident, $lease:ident, $domain:ident) => {
+macro_rules! registration_guard {
+    ($registration:ident, $guard:ident, $lease:ident, $domain:ident) => {
         impl $registration {
+            pub fn prepare(&self) -> Result<$guard<'_>, OwnerCreationError> {
+                self.0.prepare(OwnerDomain::$domain).map($guard)
+            }
+        }
+
+        impl $guard<'_> {
             pub fn install<T>(
-                &self,
+                self,
                 install: impl FnOnce($lease) -> T,
             ) -> Result<T, OwnerCreationError> {
-                self.0
-                    .install(OwnerDomain::$domain, |lease| install($lease(lease)))
+                self.0.install(|lease| install($lease(lease)))
             }
         }
     };
 }
 
-registration_install!(PendingOwnerRegistration, PendingOwnerLease, Pending);
-registration_install!(ResourceOwnerRegistration, ResourceOwnerLease, Resource);
-registration_install!(ChildOwnerRegistration, ChildOwnerLease, Child);
+registration_guard!(
+    PendingOwnerRegistration,
+    PendingOwnerCreationGuard,
+    PendingOwnerLease,
+    Pending
+);
+registration_guard!(
+    ResourceOwnerRegistration,
+    ResourceOwnerCreationGuard,
+    ResourceOwnerLease,
+    Resource
+);
+registration_guard!(
+    ChildOwnerRegistration,
+    ChildOwnerCreationGuard,
+    ChildOwnerLease,
+    Child
+);
 
 #[derive(Clone)]
 pub struct RequestExecutionOwnerRegistrations {
@@ -309,8 +353,18 @@ mod tests {
     fn live_and_released_owners_freeze_actual_current_and_ever_created_facts() {
         let inventory = RequestExecutionOwnerInventory::open();
         let (registrations, freeze) = inventory.into_parts();
-        let pending = registrations.pending().install(PendingCarrier).unwrap();
-        let resource = registrations.resource().install(ResourceCarrier).unwrap();
+        let pending = registrations
+            .pending()
+            .prepare()
+            .unwrap()
+            .install(PendingCarrier)
+            .unwrap();
+        let resource = registrations
+            .resource()
+            .prepare()
+            .unwrap()
+            .install(ResourceCarrier)
+            .unwrap();
         drop(resource);
 
         let snapshot = freeze.freeze();
@@ -331,11 +385,23 @@ mod tests {
         let snapshot = freeze.freeze();
 
         assert!(matches!(
-            registrations.child().install(ChildCarrier),
+            registrations.child().prepare(),
             Err(OwnerCreationError::InventoryFrozen)
         ));
         assert_eq!(snapshot.child().current(), 0);
         assert!(!snapshot.child().ever_created());
+    }
+
+    #[test]
+    fn aborting_a_prepared_creation_preserves_never_created() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+
+        drop(registrations.resource().prepare().unwrap());
+
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.resource().current(), 0);
+        assert!(!snapshot.resource().ever_created());
     }
 
     #[test]
@@ -349,6 +415,8 @@ mod tests {
         let creating = std::thread::spawn(move || {
             registrations
                 .pending()
+                .prepare()
+                .unwrap()
                 .install(|lease| {
                     create_entered.wait();
                     create_release.wait();

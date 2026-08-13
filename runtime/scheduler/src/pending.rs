@@ -13,7 +13,8 @@ use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 use skiff_runtime_vm::{PendingOperation, PendingTicket, ResumeOutcome, VmResumeToken};
 
 use crate::{
-    OwnerCreationError, PendingOwnerLease, PendingOwnerRegistration, RootDisposition, RootEscrow,
+    OwnerCreationError, PendingOwnerCreationGuard, PendingOwnerLease, PendingOwnerRegistration,
+    RootDisposition, RootEscrow,
 };
 
 static NEXT_PENDING_TICKET: AtomicU64 = AtomicU64::new(1);
@@ -580,14 +581,41 @@ where
         let ticket = PendingTicket::new(
             NonZeroU64::new(raw).expect("pending ticket counter starts at one and never wraps"),
         );
+        self.begin_with_ticket(ticket, roots)
+    }
+
+    fn begin_with_ticket(
+        &self,
+        ticket: PendingTicket,
+        roots: RootEscrow,
+    ) -> Result<CompletionHandle<R, S, O>, BeginPendingError> {
+        let owner = match self.owner_registration.prepare() {
+            Ok(owner) => owner,
+            Err(error) => {
+                roots.discard(RootDisposition::PublicationFailed);
+                return Err(BeginPendingError::OwnerCreation(error));
+            }
+        };
+        self.install_with_guard(ticket, roots, owner)
+    }
+
+    fn install_with_guard(
+        &self,
+        ticket: PendingTicket,
+        roots: RootEscrow,
+        owner: PendingOwnerCreationGuard<'_>,
+    ) -> Result<CompletionHandle<R, S, O>, BeginPendingError> {
+        // The non-cloneable guard already owns the inventory lock. Container
+        // acquisition must remain after it throughout this installation path.
         let mut cells = lock_unpoisoned(&self.inner.cells);
         if cells.contains_key(&ticket) {
             drop(cells);
+            drop(owner);
             roots.discard(RootDisposition::PublicationFailed);
             return Err(BeginPendingError::TicketCollision);
         }
         let mut roots = Some(roots);
-        let installed = self.owner_registration.install(|owner_lease| {
+        let installed = owner.install(|owner_lease| {
             let cell = Arc::new(PendingCell::new(
                 ticket,
                 roots
@@ -730,9 +758,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Barrier, Mutex,
+    use std::{
+        num::NonZeroU64,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc, Barrier, Mutex,
+        },
+        time::Duration,
     };
 
     use skiff_runtime_model::{
@@ -740,11 +772,11 @@ mod tests {
         vm_root::{VmRootSource, VmRootVisitor},
         vm_value::ValueSlot,
     };
-    use skiff_runtime_vm::{ResumeOutcome, VmError};
+    use skiff_runtime_vm::{PendingTicket, ResumeOutcome, VmError};
 
     use super::{
-        PendingCellState, PendingOwnerDraft, PendingPublication, PendingRegistry, PendingWake,
-        PendingWakeQueue, SettleDisposition, SettlementSource,
+        BeginPendingError, PendingCellState, PendingOwnerDraft, PendingPublication,
+        PendingRegistry, PendingWake, PendingWakeQueue, SettleDisposition, SettlementSource,
     };
     use crate::{
         PendingOwnerRegistration, RequestExecutionOwnerInventory, RootDisposition, RootEscrow,
@@ -916,6 +948,84 @@ mod tests {
         assert_eq!(frozen.pending().current(), 1);
         assert!(frozen.pending().ever_created());
         drop(queue.0.lock().unwrap().pop().unwrap());
+    }
+
+    #[test]
+    fn occupied_pending_ticket_aborts_without_an_inventory_increment() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let registry = Registry::new(registrations.pending());
+        let ticket = PendingTicket::new(NonZeroU64::new(41).unwrap());
+        let first_roots = Arc::new(Mutex::new(Vec::new()));
+        let rejected_roots = Arc::new(Mutex::new(Vec::new()));
+        let completion = registry
+            .begin_with_ticket(
+                ticket,
+                RootEscrow::new(Box::new(RecordingRoots(Arc::clone(&first_roots)))),
+            )
+            .unwrap();
+
+        let collision = registry.begin_with_ticket(
+            ticket,
+            RootEscrow::new(Box::new(RecordingRoots(Arc::clone(&rejected_roots)))),
+        );
+
+        assert!(matches!(collision, Err(BeginPendingError::TicketCollision)));
+        assert_eq!(
+            *rejected_roots.lock().unwrap(),
+            [RootEvent::Dropped(RootDisposition::PublicationFailed)]
+        );
+        let frozen = freeze.freeze();
+        assert_eq!(frozen.pending().current(), 1);
+        assert!(frozen.pending().ever_created());
+        assert!(registry.abandon(completion.ticket()));
+    }
+
+    #[test]
+    fn pending_creation_holds_inventory_before_locking_the_registry() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let registry = Arc::new(Registry::new(registrations.pending()));
+        let ticket = PendingTicket::new(NonZeroU64::new(42).unwrap());
+        let roots = Arc::new(Mutex::new(Vec::new()));
+        let registry_lock = lock_unpoisoned(&registry.inner.cells);
+        let (prepared_tx, prepared_rx) = mpsc::channel();
+        let (continue_tx, continue_rx) = mpsc::channel();
+        let creating_registry = Arc::clone(&registry);
+        let creating_roots = Arc::clone(&roots);
+        let creating = std::thread::spawn(move || {
+            let owner = creating_registry.owner_registration.prepare().unwrap();
+            prepared_tx.send(()).unwrap();
+            continue_rx.recv().unwrap();
+            creating_registry.install_with_guard(
+                ticket,
+                RootEscrow::new(Box::new(RecordingRoots(creating_roots))),
+                owner,
+            )
+        });
+        prepared_rx.recv().unwrap();
+
+        let (snapshot_tx, snapshot_rx) = mpsc::channel();
+        let freeze_started = Arc::new(Barrier::new(2));
+        let freezing_started = Arc::clone(&freeze_started);
+        let freezing = std::thread::spawn(move || {
+            freezing_started.wait();
+            snapshot_tx.send(freeze.freeze()).unwrap();
+        });
+        freeze_started.wait();
+        assert_eq!(
+            snapshot_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+
+        continue_tx.send(()).unwrap();
+        drop(registry_lock);
+        let completion = creating.join().unwrap().unwrap();
+        let frozen = snapshot_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        freezing.join().unwrap();
+        assert_eq!(frozen.pending().current(), 1);
+        assert!(frozen.pending().ever_created());
+        assert!(registry.abandon(completion.ticket()));
     }
 
     #[test]

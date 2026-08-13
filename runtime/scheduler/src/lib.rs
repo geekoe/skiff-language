@@ -28,15 +28,17 @@ mod stream_driver;
 mod trampoline;
 
 pub use bytecode::{
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeHandoff, BytecodeScheduler,
-    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
-    BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
+    BytecodeHandoff, BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome,
+    BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
+    BytecodeUnitControl,
 };
 pub use owner_inventory::{
-    ChildOwnerLease, ChildOwnerRegistration, FrozenOwnerDomain, OwnerCreationError,
-    PendingOwnerLease, PendingOwnerRegistration, RequestExecutionOwnerInventory,
-    RequestExecutionOwnerInventoryFreezePermit, RequestExecutionOwnerInventorySnapshot,
-    RequestExecutionOwnerRegistrations, ResourceOwnerLease, ResourceOwnerRegistration,
+    ChildOwnerCreationGuard, ChildOwnerLease, ChildOwnerRegistration, FrozenOwnerDomain,
+    OwnerCreationError, PendingOwnerCreationGuard, PendingOwnerLease, PendingOwnerRegistration,
+    RequestExecutionOwnerInventory, RequestExecutionOwnerInventoryFreezePermit,
+    RequestExecutionOwnerInventorySnapshot, RequestExecutionOwnerRegistrations,
+    ResourceOwnerCreationGuard, ResourceOwnerLease, ResourceOwnerRegistration,
 };
 pub use pending::{
     BeginPendingError, CompletionHandle, PendingCellState, PendingOwner, PendingOwnerDraft,
