@@ -506,3 +506,107 @@ fn phase_2_bytecode_admission_source_facts_export_local_and_publication_nominals
         Some(&expected)
     );
 }
+
+/// Compiles one real `.skiff` fixture through the production bytecode lane.
+///
+/// This mirrors the Phase 1 pipeline fixture helper: real platform sources,
+/// one user module, bytecode enabled. A returned error carries the exact
+/// typed admission/emission rejection and never contains a published artifact.
+fn compile_phase_4_source(
+    package_id: &str,
+    text: &str,
+) -> Result<PackageCompileOutput, PackageCompileError> {
+    let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler manifest must have a repository parent")
+        .to_path_buf();
+    let platform_sources =
+        crate::CompilerPlatformSources::new(&repository_root).expect("repository platform sources");
+    let temp = std::env::temp_dir().join(format!(
+        "skiff-phase4-sleep-{}-{}",
+        std::process::id(),
+        package_id
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>(),
+    ));
+    std::fs::create_dir_all(&temp).expect("create temporary source root");
+    let source_path = temp.join("main.skiff");
+    std::fs::write(&source_path, text).expect("write temporary source");
+    let source_tree = crate::SourceTree {
+        root: temp.clone(),
+        sources: vec![crate::SourceTreeFile {
+            module_path: "main".to_string(),
+            file_path: std::path::PathBuf::from("main.skiff"),
+            is_test_file: false,
+            byte_len: text.len() as u64,
+        }],
+    };
+    let compiler_source = skiff_compiler_source::source_graph::CompilerSourceFile::parse(
+        std::path::PathBuf::from("main.skiff"),
+        "main".to_string(),
+        false,
+        false,
+        text.to_string(),
+        source_path.display().to_string(),
+    )
+    .expect("parse Phase 4 source fixture");
+    let package = crate::PackageSourceInput::new(
+        crate::PublicationManifest::new(
+            skiff_compiler_core::id::PublicationId::parse(package_id)
+                .expect("valid fixture package id"),
+            "1.0.0".to_string(),
+            skiff_compiler_input::PublicationApiSpec::empty(),
+            Vec::new(),
+            crate::ManifestProvenance {
+                owner: crate::ManifestOwner::UserOrBuiltinPackage,
+                path: std::path::PathBuf::new(),
+                synthetic: true,
+            },
+        ),
+        source_tree,
+        crate::PublicationSourceGraph::from_compiler_sources(vec![compiler_source]),
+        Vec::new(),
+    );
+    let aliases = BTreeMap::new();
+    let result = crate::compile_package(crate::PackageCompileInput::new(
+        &platform_sources,
+        &package,
+        &aliases,
+        package_id,
+        true,
+    ));
+    std::fs::remove_dir_all(temp).expect("remove temporary source root");
+    result
+}
+
+#[test]
+fn phase_4_bytecode_lane_rejects_non_sleep_host_binding_with_typed_error() {
+    let error = compile_phase_4_source(
+        "example.com/bytecode-phase4-other-binding",
+        "function run() -> void {\n  std.time.sleep(Duration.milliseconds(1))\n}\n",
+    )
+    .unwrap_err();
+
+    let crate::PackageCompileError::BytecodeEmission {
+        source:
+            crate::BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability,
+                module_path,
+                function_key,
+                ..
+            },
+    } = error
+    else {
+        panic!("expected the stable typed host-binding rejection, got {error:?}");
+    };
+    assert_eq!(capability, crate::Phase1UnsupportedCapability::HostTarget);
+    assert_eq!(module_path, "main");
+    assert_eq!(function_key.as_deref(), Some("main::run"));
+}

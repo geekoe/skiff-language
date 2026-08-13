@@ -3,14 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
-    BytecodeSpecialization, CallLoanBinding, CallLoanLayout, CallTargetIr, CallableMayEffects,
-    CatchMatcher, DbOperandRole, DbOperationKind, DbOperationReference, DbTargetIr,
-    ExceptionRegion, ExprIr, ExprRefIr, FrameLayout, HostEffectReference, HostEffectSignature,
-    InstructionSourceSite, IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef,
-    NativeTarget, Opcode, ParamModeIr, ParameterSlotDecl, PatternIr, PendingEffectCategory,
-    RelocatableBytecodeFunction, RemoteInterfaceMethod, RemoteInterfaceRef, ResumeDescriptor,
-    ResumeErrorMode, SourceMapEntry, StatementAttributionId, StatementEntry,
-    SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, WritablePathSegment,
+    BytecodeSpecialization, CallLoanBinding, CallLoanLayout, CallTargetIr, CatchMatcher,
+    DbOperandRole, DbOperationKind, DbOperationReference, DbTargetIr, ExceptionRegion, ExprIr,
+    ExprRefIr, FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
+    IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
+    ParamModeIr, ParameterSlotDecl, PatternIr, RelocatableBytecodeFunction, RemoteInterfaceMethod,
+    RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, SourceMapEntry, StatementAttributionId,
+    StatementEntry, SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr,
+    WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
@@ -434,7 +434,7 @@ impl<'a> FunctionEmitter<'a> {
             .entries()
             .iter()
             .find(|entry| entry.binding_key == "std.db.operation")
-            .map(|entry| host_effect_effects(entry.signature.effects.clone()))
+            .map(|entry| entry.signature.effects.clone())
             .ok_or_else(|| {
                 unsupported(
                     &self.key,
@@ -1339,7 +1339,7 @@ impl<'a> FunctionEmitter<'a> {
             .entries()
             .iter()
             .find(|entry| entry.binding_key == binding_key)
-            .map(|entry| host_effect_effects(entry.signature.effects.clone()))
+            .map(|entry| entry.signature.effects.clone())
             .ok_or_else(|| {
                 unsupported(
                     &self.key,
@@ -4114,26 +4114,6 @@ fn unsupported(function_key: &str, construct: &'static str, detail: &str) -> Byt
     }
 }
 
-fn host_effect_effects(mut effects: CallableMayEffects) -> CallableMayEffects {
-    if effects
-        .pending_effect_categories
-        .contains(&PendingEffectCategory::NativeCall)
-    {
-        effects
-            .pending_effect_categories
-            .retain(|category| *category != PendingEffectCategory::NativeCall);
-        if !effects
-            .pending_effect_categories
-            .contains(&PendingEffectCategory::HostEffect)
-        {
-            effects
-                .pending_effect_categories
-                .push(PendingEffectCategory::HostEffect);
-        }
-    }
-    effects
-}
-
 fn arithmetic(_function_key: &str, context: &'static str) -> BytecodeEmissionError {
     BytecodeEmissionError::ArithmeticOverflow { context }
 }
@@ -4229,8 +4209,8 @@ mod tests {
 
     use skiff_artifact_model::{
         BinaryOpIr, CallableEffectSummary, ExprIr, ExprRefIr, FileIrUnit, InstructionSourceSite,
-        LiteralIr, PackageCallableId, SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan,
-        ValueTransferPlan,
+        LiteralIr, PackageCallableId, PackageRefIr, PackageSymbolRef, PendingEffectCategory,
+        SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan, ValueTransferPlan,
     };
     use skiff_compiler_lowering::{
         mir::{
@@ -4738,6 +4718,186 @@ mod tests {
                 },
             },
             "the runtime tag must be the nominal leaf, not the union context"
+        );
+    }
+
+    /// Phase 4 gate 1: a canonical `std.time.sleep` invocation emits one
+    /// `HostEffectRef` carrying the canonical binding id and the pinned
+    /// registry signature facts unchanged. The retired `NativeCall` →
+    /// `HostEffect` effect rewrite must not reappear in the artifact.
+    #[test]
+    fn canonical_sleep_emits_pinned_registry_signature_without_effect_rewrite() {
+        let duration = TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: "skiff.run/std".to_string(),
+                },
+                symbol_path: "std.time.Duration".to_string(),
+                abi_expectation: None,
+            },
+        };
+        let mut function = MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:main".to_string(),
+                module_path: "main".to_string(),
+                executable_index: 0,
+            },
+            symbol: "main.run".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("void"),
+            self_type: None,
+            receiver: None,
+            slots: vec![MirSlot {
+                slot: 0,
+                name: "delay".to_string(),
+                kind: MirSlotKind::Local,
+                writable_local: false,
+                ty: Some(duration.clone()),
+            }],
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: vec![
+                MirExpression {
+                    index: 0,
+                    expression: ExprIr::LoadSlot { slot: 0 },
+                    ty: duration.clone(),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 1,
+                    expression: ExprIr::Call {
+                        call: skiff_artifact_model::CallIr {
+                            target: skiff_artifact_model::CallTargetIr::Native {
+                                target: skiff_artifact_model::NativeTarget {
+                                    namespace: "std.time".to_string(),
+                                    symbol: "sleep".to_string(),
+                                    binding_key: Some("std.time.sleep".to_string()),
+                                    metadata: BTreeMap::new(),
+                                },
+                            },
+                            concrete_receiver: None,
+                            site: InstructionSourceSite::Synthetic {
+                                reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                            },
+                            args: vec![ExprRefIr { expression: 0 }],
+                            inout_args: Vec::new(),
+                            type_args: BTreeMap::new(),
+                            metadata: BTreeMap::new(),
+                        },
+                    },
+                    ty: TypeRefIr::builtin("void"),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+            ],
+            blocks: vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Expr {
+                        value: ExprRefIr { expression: 1 },
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            regions: Vec::new(),
+            statements: vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:main:run".to_string()),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+        };
+        function.liveness = compute_liveness(&function).expect("test liveness computes");
+
+        let mut file_ir = FileIrUnit::empty("main", "source-hash");
+        file_ir.file_ir_identity = "file:main".to_string();
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&file_ir)
+            .expect("test bundle evaluates");
+        let unit = MirUnit {
+            file_ir_identity: file_ir.file_ir_identity.clone(),
+            module_path: file_ir.module_path.clone(),
+            actor_declarations: file_ir.actor_declarations.clone(),
+            external_refs: file_ir.external_refs.clone(),
+            source_map: file_ir.source_map.clone(),
+            type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
+            link_targets: file_ir.link_targets.clone(),
+            constants: Vec::new(),
+            functions: vec![function],
+        };
+        let plans = BytecodeValueTransferPlans::new(
+            BTreeMap::from([(
+                "main::run".to_string(),
+                FunctionValueTransferPlans {
+                    slot_plans: vec![ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::Trivial,
+                    }],
+                    result_plans: Vec::new(),
+                },
+            )]),
+            BTreeMap::new(),
+        );
+        let artifact =
+            crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
+                .expect("canonical sleep emission succeeds");
+        let relocation = artifact.image.functions["main::run"]
+            .relocations
+            .iter()
+            .find_map(|relocation| match relocation {
+                BytecodeRelocation::HostEffectRef(effect) => Some(effect),
+                _ => None,
+            })
+            .expect("sleep emits exactly one HostEffectRef");
+
+        assert_eq!(
+            relocation.target.binding_key.as_deref(),
+            Some("std.time.sleep"),
+            "the artifact carries the canonical binding id"
+        );
+        assert_eq!(
+            relocation.signature.parameter_types,
+            vec![duration.clone()],
+            "the pinned Duration parameter type is carried exactly"
+        );
+        assert_eq!(
+            relocation.signature.parameter_modes,
+            vec![skiff_artifact_model::ParamModeIr::Value]
+        );
+        assert_eq!(
+            relocation.signature.parameter_plans,
+            vec![ValueTransferPlan::FromType {
+                ty: duration.clone()
+            }]
+        );
+        assert!(relocation.signature.result_types.is_empty());
+        assert!(relocation.signature.result_plans.is_empty());
+        assert!(
+            relocation.signature.effects.may_pending,
+            "the pinned mayPending fact is carried exactly"
+        );
+        assert_eq!(
+            relocation.signature.effects.pending_effect_categories,
+            vec![PendingEffectCategory::NativeCall],
+            "the registry NativeCall trace is carried without the retired rewrite"
         );
     }
 }
