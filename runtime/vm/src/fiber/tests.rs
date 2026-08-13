@@ -14,8 +14,9 @@ use skiff_artifact_model::{
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     ContractOperationId, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentRevision, Opcode, PackageArtifact, ServiceContract,
-    ServiceDeployment, TypeRefIr, SERVICE_CONTRACT_SCHEMA_VERSION,
+    DeploymentOperationBinding, DeploymentRevision, InstructionSourceSite, Opcode, PackageArtifact,
+    ServiceContract, ServiceDeployment, SourcePosition, SourceSpanRef, TypeRefIr,
+    SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
@@ -25,8 +26,8 @@ use skiff_compiler::{
 };
 use skiff_runtime_bytecode_verifier::VerificationLimits;
 use skiff_runtime_linked_bytecode::{
-    FrameSlotIndex, InstructionBoundaryIndex, InstructionIndex, LinkedCatchMatcher,
-    LinkedExceptionRegion, TypeIndex,
+    FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex, LinkedCatchMatcher,
+    LinkedExceptionRegion, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_linker::{
     link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage,
@@ -38,8 +39,10 @@ use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionObservation, BytecodeExecutionObserver, VmFunctionFrameEntered,
     VmFunctionReturned, VmLocalCallDispatched, VmObservedFrameRole,
 };
-use skiff_runtime_model::service_error::{CatchIdentity, NominalTypeIdentity};
-use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError};
+use skiff_runtime_model::service_error::{
+    CatchIdentity, ErrorCorrelation, ExceptionStackFrame, NominalTypeIdentity, RequestException,
+};
+use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmRecordField};
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
@@ -47,7 +50,11 @@ use super::{
     find_exception_region, linked_type_catch_identity, nominal_tag_index, opcode_supported,
     runtime_leaf_catch_identity, DispatchOutcome, Vm, VmFiber,
 };
-use crate::{VmError, VmLimits};
+use crate::{
+    ChildTarget, ResumeOutcome, VmBudget, VmBudgetClosed, VmControl, VmError, VmFiberState,
+    VmLimits, VmSemanticCharge,
+};
+use crate::control::VmResumeAuthority;
 
 type VmStartFn = fn(
     DeploymentExecutionEntry,
@@ -1315,4 +1322,222 @@ fn structural_scalar_leaves_have_no_runtime_catch_identity() {
     );
     assert!(runtime_leaf_catch_identity(&fixture.image, &ValueSlot::number(1.0)).is_none());
     assert!(runtime_leaf_catch_identity(&fixture.image, &ValueSlot::null()).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 live controlled-resume harness. A real `ResumeOutcome::Throw`
+// enters `VmFiber::resume`, arms the two-phase unwind (Unwinding state plus
+// cursor), and the next heap-bearing run segment continues the frame-exit
+// scan into the catch handler. The exact envelope allocation and every
+// identity field survive the resume unchanged.
+// ---------------------------------------------------------------------------
+
+struct ResumeHeap {
+    next: u64,
+}
+
+impl ResumeHeap {
+    fn fresh(&mut self, tag: CompactTypeTag) -> ValueSlot {
+        let handle = VmHandle::new(self.next);
+        self.next = self.next.wrapping_add(1);
+        ValueSlot::request_heap_ref(handle, tag, ValueFlags::new(0))
+    }
+}
+
+impl VmHeap for ResumeHeap {
+    fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn release_snapshot(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn allocate_array(
+        &mut self,
+        _elements: &[ValueSlot],
+        tag: CompactTypeTag,
+        _flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Ok(self.fresh(tag))
+    }
+
+    fn allocate_record(
+        &mut self,
+        _fields: &[VmRecordField],
+        tag: CompactTypeTag,
+        _flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Ok(self.fresh(tag))
+    }
+
+    fn alloc_string(&mut self, _value: String) -> Result<ValueSlot, VmHeapError> {
+        Ok(self.fresh(CompactTypeTag::new(0)))
+    }
+}
+
+struct ResumeBudget;
+
+impl VmBudget for ResumeBudget {
+    fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed> {
+        Ok(())
+    }
+
+    fn poll_interrupt(&mut self) -> Result<(), VmBudgetClosed> {
+        Ok(())
+    }
+
+    fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetClosed> {
+        Ok(())
+    }
+}
+
+#[test]
+fn controlled_resume_throw_preserves_the_exact_envelope_into_the_catch_handler() {
+    const SOURCE: &str = "type LeafA { marker: number }\n\
+         function run(seed: number) -> number {\n\
+           final attempt = catch<LeafA>(throw LeafA { marker: seed })\n\
+           return 1\n\
+         }\n";
+    let fixture = ObservationFixture::build("test.skiff/fiber-resume", SOURCE);
+    let function_index = FunctionIndex::new(fixture.root_function_index());
+    let function = &fixture.image.functions()[function_index.get() as usize];
+    let region = function.exception_regions()[0].clone();
+    let LinkedCatchMatcher::Type(leaf_type) = region.catch_matchers()[0] else {
+        panic!("the fixture catch region matches the exact LeafA type");
+    };
+
+    let sink = Arc::new(RecordingSink::default());
+    let observer = BytecodeExecutionObserver::new(sink, observation_correlation());
+    let argument = ValueSlot::number(1.0);
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([argument]));
+    let mut heap = ResumeHeap { next: 100 };
+    loop {
+        let current = fiber
+            .frames
+            .last()
+            .expect("root frame exists")
+            .instruction();
+        if current == region.start() {
+            break;
+        }
+        match fiber.dispatch_one(&mut heap) {
+            Ok(DispatchOutcome::Continue) => {}
+            _ => panic!("drive to the resume site must keep continuing"),
+        }
+    }
+
+    let payload = ValueSlot::request_heap_ref(
+        VmHandle::new(7),
+        CompactTypeTag::new(leaf_type.get()),
+        ValueFlags::new(0),
+    );
+    let identity = runtime_leaf_catch_identity(&fixture.image, &payload)
+        .expect("the leaf-tagged payload carries its runtime catch identity");
+    let source = InstructionSourceSite::Source {
+        span: SourceSpanRef {
+            source_id: 0,
+            start: SourcePosition::new(3, 3),
+            end: SourcePosition::new(3, 7),
+        },
+    };
+    let stack = vec![ExceptionStackFrame::Local { site: source.clone() }];
+    let correlation = ErrorCorrelation {
+        trace_id: "fiber-resume-trace".to_string(),
+        error_id: "fiber-resume-error".to_string(),
+    };
+    let envelope = Arc::new(
+        RequestException::local_vm(
+            payload,
+            identity,
+            source.clone(),
+            stack.clone(),
+            correlation.clone(),
+        )
+        .expect("the controlled envelope is well formed"),
+    );
+    fiber.set_error_correlation(correlation.clone());
+
+    let baseline = (
+        envelope.actual_catch_identity().cloned(),
+        envelope.source().clone(),
+        envelope.stack().to_vec(),
+        envelope.correlation().clone(),
+        envelope.vm_local_slot(),
+    );
+
+    let token = fiber
+        .mint_resume(
+            function_index,
+            region.start(),
+            VmResumeAuthority::Child(ChildTarget::StreamNext),
+            ResumeSiteIndex::new(0),
+            region.start(),
+            None,
+            0,
+            0,
+        )
+        .expect("mint a pending resume at the protected throw site");
+    fiber.state = VmFiberState::BlockedOnChild;
+    fiber
+        .resume(token, ResumeOutcome::Throw(Arc::clone(&envelope)))
+        .expect("the throw envelope resumes the pending continuation");
+    assert_eq!(
+        fiber.state(),
+        VmFiberState::Unwinding,
+        "resume_throw must arm the two-phase unwind"
+    );
+
+    let mut budget = ResumeBudget;
+    match fiber.run_segment(&mut heap, &mut budget) {
+        VmControl::Continue => {}
+        _ => panic!("the deferred unwind must continue into the handler"),
+    }
+
+    let caught = fiber
+        .caught_exceptions
+        .values()
+        .next()
+        .expect("the handler keeps the caught envelope");
+    assert!(
+        Arc::ptr_eq(&envelope, &caught.envelope),
+        "resume_throw and the catch reuse the exact envelope allocation"
+    );
+    assert_eq!(caught.envelope.actual_catch_identity(), baseline.0.as_ref());
+    assert_eq!(caught.envelope.source(), &baseline.1);
+    assert_eq!(caught.envelope.stack(), baseline.2.as_slice());
+    assert_eq!(caught.envelope.correlation(), &baseline.3);
+    assert!(caught.envelope.vm_local_slot() == baseline.4);
+    assert_eq!(
+        fiber.frames.last().expect("root frame").instruction(),
+        region.handler(),
+        "the deferred unwind must enter the catch<LeafA> handler"
+    );
+
+    loop {
+        match fiber.run_segment(&mut heap, &mut budget) {
+            VmControl::Continue => {}
+            VmControl::Complete(Ok(values)) => {
+                assert_eq!(
+                    values.values()[0].as_number(),
+                    Some(1.0),
+                    "the caught handler body must run and return its result"
+                );
+                break;
+            }
+            _ => panic!("the caught resume drive must complete normally"),
+        }
+    }
 }
