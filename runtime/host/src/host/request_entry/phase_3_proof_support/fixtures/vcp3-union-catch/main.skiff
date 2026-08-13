@@ -27,8 +27,8 @@ function run(seed: number) -> number {
     }
     return 12
   }
-  final leaf: LeafA | LeafB = LeafB { marker: seed, owner: [seed] }
-  final caught = catch<LeafB>(innerThrow(leaf))
+  final leafB: LeafA | LeafB = LeafB { marker: seed, owner: [seed] }
+  final caught = catch<LeafB>(innerThrow(leafB))
   if caught.tag == "err" {
     return 3
   }

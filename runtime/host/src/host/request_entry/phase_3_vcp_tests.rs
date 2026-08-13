@@ -327,8 +327,8 @@ fn assert_vcp_source_fixture() {
     assert!(source.contains("final exc = inner.exception"));
     assert!(source.contains("final outer = catch<LeafA>(rethrow exc)"));
     assert!(source.contains("final cleanupOwner = [7]"));
-    assert!(source.contains("final leaf: LeafA | LeafB = LeafB { marker: seed, owner: [seed] }"));
-    assert!(source.contains("final caught = catch<LeafB>(innerThrow(leaf))"));
+    assert!(source.contains("final leafB: LeafA | LeafB = LeafB { marker: seed, owner: [seed] }"));
+    assert!(source.contains("final caught = catch<LeafB>(innerThrow(leafB))"));
     assert!(source.contains("return 2"));
     assert!(source.contains("return 3"));
 }
