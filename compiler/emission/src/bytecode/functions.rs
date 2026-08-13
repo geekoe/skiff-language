@@ -2345,6 +2345,10 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_number_constant(0)?;
                 Ok(())
             }
+            TypeRefIr::Builtin { name, args } if name == "number" && args.is_empty() => {
+                self.emit_number_constant(0)?;
+                Ok(())
+            }
             TypeRefIr::Builtin { name, args } if name == "bool" && args.is_empty() => {
                 let pool = self.image.add_literal_constant(
                     self.unit.module_path.as_str(),
@@ -2353,6 +2357,16 @@ impl<'a> FunctionEmitter<'a> {
                     context,
                 )?;
                 self.emit_op(Opcode::Const, vec![pool])?;
+                Ok(())
+            }
+            TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
+                let element_ref = self.image.type_index(
+                    self.unit.module_path.as_str(),
+                    &args[0],
+                    context,
+                )?;
+                self.emit_op(Opcode::NewArrayBuilder, vec![element_ref])?;
+                self.emit_op(Opcode::FreezeArray, Vec::new())?;
                 Ok(())
             }
             _ => {
@@ -2975,7 +2989,10 @@ impl<'a> FunctionEmitter<'a> {
         let try_ty = self.function.expression(try_expression)?.ty.clone();
         let start_instruction = self.instructions.len();
         self.emit_expression(try_expression)?;
-        if !is_void(&try_ty) {
+        // A throw/rethrow try expression is typed `never`: the raise already
+        // consumed its payload and never falls through, so there is no try
+        // value to pop.
+        if !is_void(&try_ty) && !is_never_type(&try_ty) {
             self.emit_op(Opcode::Pop, Vec::new())?;
         }
         let handler_instruction = self.instructions.len();
@@ -3643,11 +3660,28 @@ impl<'a> FunctionEmitter<'a> {
                 ));
             }
             if !covered_instructions.insert(instruction_index) {
-                return Err(unsupported(
-                    &self.key,
-                    "Phase 1 source attribution",
-                    &format!("source event {event_index} does not uniquely anchor an instruction"),
-                ));
+                // Collapsed source keys (a rethrow identifier lowered
+                // directly into its host node) share the host expression's
+                // instruction. The first-recorded event wins the source map
+                // entry; the collapsed key still contributes its statement
+                // charge through the statement schedule.
+                let collapsed_duplicate = matches!(
+                    event.anchor,
+                    MirEmissionAnchor::Expression {
+                        occurrence_ordinal,
+                        ..
+                    } if occurrence_ordinal > 0
+                );
+                if !collapsed_duplicate {
+                    return Err(unsupported(
+                        &self.key,
+                        "Phase 1 source attribution",
+                        &format!(
+                            "source event {event_index} does not uniquely anchor an instruction"
+                        ),
+                    ));
+                }
+                continue;
             }
             let start_pc = *pcs
                 .get(instruction_index)

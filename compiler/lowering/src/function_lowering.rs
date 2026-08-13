@@ -2021,9 +2021,11 @@ impl<'a> FunctionLowerer<'a> {
                 // An expression-form rethrow reads an identifier directly from
                 // its slot instead of emitting an ExprIr node. The identifier
                 // still occupies one canonical source ExpressionKey in the
-                // expression type model, so consume that key before lowering
-                // any following expression to keep fact lookups aligned.
-                self.consume_expression_key()?;
+                // expression type model, so collapse that key into the
+                // rethrow expression: fact lookups stay aligned and the
+                // identifier remains a represented source event anchored on
+                // the Rethrow node.
+                self.take_collapsed_expression_key(&mut collapsed_keys)?;
                 ExprIr::Rethrow { exception_slot }
             }
             Expr::Catch {

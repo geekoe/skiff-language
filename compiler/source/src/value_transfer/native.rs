@@ -80,6 +80,21 @@ impl Classifier<'_, '_> {
                 actual: arguments.len(),
             });
         }
+        if matches!(builtin.canonical_name, "never" | "void") {
+            // `never` is uninhabited and `void` carries no value: no live
+            // value can exist for either, so their exact transfer is the
+            // sidecar-free trivial snapshot-share plan (no heap interaction),
+            // matching the emitter's generated plan for `never`. This unlocks
+            // `CatchResult<never, E>` and `CatchResult<void, E>` slots without
+            // granting any plan to string or other unsupported types.
+            return Ok(Classification::concrete(
+                TypeRefIr::builtin(builtin.canonical_name.to_string()),
+                ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::Trivial,
+                },
+                NativeValueEmbedding::Ordinary,
+            ));
+        }
         let constructor = NativeValueTypeConstructor::Builtin {
             name: builtin.canonical_name.to_string(),
         };

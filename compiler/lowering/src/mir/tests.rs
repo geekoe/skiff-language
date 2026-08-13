@@ -1241,6 +1241,15 @@ fn phase_3_union_catch_fixture_lowers_with_union_bindings_and_aligned_rethrow() 
         .find(|function| function.symbol == format!("{MODULE}.run"))
         .expect("run");
 
+    // The expression-form rethrow must keep its exception identifier as a
+    // represented source event: the plan stays available instead of failing
+    // closed with SourceEventNotRepresentable.
+    assert_eq!(
+        run.source_event_plan.unavailable_reason(),
+        None,
+        "rethrow identifiers must not leave the source event plan unrepresentable"
+    );
+
     // Both `leaf` bindings carry the declared anonymous union, not the
     // constructor branch: the constructor enters the union context.
     let leaf_slots = run
