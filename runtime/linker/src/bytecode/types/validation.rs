@@ -245,6 +245,26 @@ fn first_publication_module(ty: &TypeRefIr) -> Option<&str> {
         concrete_type: &TypeRefIr,
         location: BytecodeLinkLocation,
     ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
+        if is_canonical_sleep_duration_type(concrete_type) {
+            let expected = LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            };
+            let actual = match declared {
+                ValueTransferPlan::FromType { ty } if is_canonical_sleep_duration_type(ty) => {
+                    expected.clone()
+                }
+                concrete => self
+                    .link_transfer_plan(concrete, &BTreeMap::new(), location.clone())
+                    .map_err(|error| constant_plan_error(location.clone(), error.to_string()))?,
+            };
+            if actual != expected {
+                return Err(constant_plan_error(
+                    location,
+                    "std.time.Duration frozen constant plan is not the exact trivial snapshot".to_string(),
+                ));
+            }
+            return Ok(actual);
+        }
         let registry_type = lifecycle_registry_type(concrete_type);
         let resolution = native_value_lifecycle_registry()
             .lookup(&registry_type)
@@ -497,6 +517,25 @@ fn resolver_error(message: impl Into<String>) -> ValueLifecycleResolverError {
     ValueLifecycleResolverError {
         authority: "bytecodeLinker.hydratedValueLifecycle".to_string(),
         message: message.into(),
+    }
+}
+
+fn is_canonical_sleep_duration_type(ty: &TypeRefIr) -> bool {
+    match ty {
+        TypeRefIr::PackageSymbol { symbol } => {
+            symbol.symbol_path == "std.time.Duration"
+                && matches!(
+                    &symbol.package,
+                    PackageRefIr::PackageId { package_id }
+                        if package_id == "skiff.run/std"
+                )
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => arguments.is_empty() && matches!(
+            base,
+            skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol }
+                if is_canonical_sleep_duration_type(&TypeRefIr::PackageSymbol { symbol: symbol.clone() })
+        ),
+        _ => false,
     }
 }
 

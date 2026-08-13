@@ -577,7 +577,7 @@ fn package_checked_constructor_admits_only_exact_token_and_exposes_opaque_getter
 
     assert_eq!(hydrated.reference(), &reference);
     assert!(Arc::ptr_eq(hydrated.artifact(), &artifact));
-    assert!(Arc::ptr_eq(hydrated.bytecode(), &bytecode));
+    assert!(Arc::ptr_eq(hydrated.bytecode().unwrap(), &bytecode));
 }
 
 #[test]
@@ -594,7 +594,7 @@ fn package_checked_constructor_pins_exact_v7_header_view_reference_and_registry(
         Arc::clone(&bytecode),
     )
     .unwrap();
-    let admitted = hydrated.bytecode();
+    let admitted = hydrated.bytecode().unwrap();
     let artifact = admitted.artifact();
     let view = admitted.view();
     let opcode_fingerprint = opcode_table_fingerprint();
@@ -1310,11 +1310,13 @@ fn deployment_checked_constructor_canonicalizes_consumer_facts() {
             && &package.artifact().platform_error_projection_registry == descriptor
             && &package
                 .bytecode()
+                .unwrap()
                 .artifact()
                 .platform_error_projection_registry
                 == descriptor
             && package
                 .bytecode()
+                .unwrap()
                 .view()
                 .platform_error_projection_registry()
                 == descriptor

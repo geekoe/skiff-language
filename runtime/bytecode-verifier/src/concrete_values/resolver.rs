@@ -87,7 +87,9 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
             && package.reference().package_version == package.artifact().package_version
             && package.reference().package_local_abi_identity
                 == package.artifact().package_local_abi.local_abi_identity
-            && candidate_row.artifact_ref() == package.bytecode().reference();
+            && package
+                .bytecode()
+                .is_some_and(|bytecode| candidate_row.artifact_ref() == bytecode.reference());
         if !exact_owner {
             return Err(resolver_error(
                 SCOPE_AUTHORITY,
@@ -135,7 +137,13 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
                 "artifact type index does not fit usize",
             )
         })?;
-        match package.bytecode().view().pools().types.get(index) {
+        let bytecode = package.bytecode().ok_or_else(|| {
+            resolver_error(
+                SOURCE_TYPE_AUTHORITY,
+                "current package is type-only and has no bytecode type pool".to_string(),
+            )
+        })?;
+        match bytecode.view().pools().types.get(index) {
             Some(BytecodePoolEntry::TypeRef { ty }) => Ok(ty),
             Some(_) => Err(resolver_error(
                 SOURCE_TYPE_AUTHORITY,
@@ -192,8 +200,13 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
         }
 
         let function_key = specialization.artifact_function_key().as_str();
-        let mut source_rows = package
-            .bytecode()
+        let bytecode = package.bytecode().ok_or_else(|| {
+            resolver_error(
+                SOURCE_FUNCTION_AUTHORITY,
+                "current package is type-only and has no bytecode functions".to_string(),
+            )
+        })?;
+        let mut source_rows = bytecode
             .view()
             .functions()
             .iter()

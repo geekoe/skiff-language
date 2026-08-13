@@ -57,6 +57,7 @@ fn current_v7_platform_error_registry_getter_matrix_passes_exact_admission() {
         assert_eq!(
             &hydrated_package
                 .bytecode()
+                .unwrap()
                 .artifact()
                 .platform_error_projection_registry,
             current
@@ -64,6 +65,7 @@ fn current_v7_platform_error_registry_getter_matrix_passes_exact_admission() {
         assert_eq!(
             hydrated_package
                 .bytecode()
+                .unwrap()
                 .view()
                 .platform_error_projection_registry(),
             current
@@ -395,6 +397,7 @@ fn wrong_candidate_registry_pin_is_not_repaired_from_hydration_or_runtime() {
     assert_eq!(
         &hydrated_package
             .bytecode()
+            .unwrap()
             .artifact()
             .platform_error_projection_registry,
         current
@@ -402,6 +405,7 @@ fn wrong_candidate_registry_pin_is_not_repaired_from_hydration_or_runtime() {
     assert_eq!(
         hydrated_package
             .bytecode()
+            .unwrap()
             .view()
             .platform_error_projection_registry(),
         current

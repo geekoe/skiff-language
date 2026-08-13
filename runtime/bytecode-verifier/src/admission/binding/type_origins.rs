@@ -87,8 +87,13 @@ fn package_for_type_origin<'a>(
         .filter(|function| function.key() == specialization)
         .count()
         == 1;
-    let exact_source = package
-        .bytecode()
+    let Some(bytecode) = package.bytecode() else {
+        return Err(semantic_violation(
+            location,
+            "type origin specialization owner is type-only".to_string(),
+        ));
+    };
+    let exact_source = bytecode
         .view()
         .functions()
         .iter()
@@ -115,7 +120,13 @@ fn admitted_raw_type(
     let index = usize::try_from(artifact_index.get()).map_err(|_| {
         semantic_violation(location, "artifact type-pool coordinate does not fit usize")
     })?;
-    match package.bytecode().view().pools().types.get(index) {
+    let Some(bytecode) = package.bytecode() else {
+        return Err(semantic_violation(
+            location,
+            "type origin package is type-only".to_string(),
+        ));
+    };
+    match bytecode.view().pools().types.get(index) {
         Some(BytecodePoolEntry::TypeRef { ty }) => Ok(ty),
         Some(_) => Err(semantic_violation(
             location,

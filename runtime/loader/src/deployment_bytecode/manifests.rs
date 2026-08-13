@@ -166,13 +166,15 @@ pub(super) fn validate_deployment_manifests(
     validate_deployment_entry_callables(deployment, packages)?;
     for package in packages.values() {
         validate_package_manifest_type_refs(package, deployment, packages)?;
-        validate_package_bytecode_refs(
-            package,
-            deployment,
-            contracts,
-            service_dependencies,
-            packages,
-        )?;
+        if package.has_bytecode() {
+            validate_package_bytecode_refs(
+                package,
+                deployment,
+                contracts,
+                service_dependencies,
+                packages,
+            )?;
+        }
     }
     Ok(())
 }
@@ -1304,7 +1306,10 @@ fn validate_package_bytecode_refs(
     service_dependencies: &BTreeMap<ServiceRequirementKey, HydratedServiceDependency>,
     packages: &BTreeMap<PackageBuildId, HydratedBytecodePackage>,
 ) -> Result<(), DeploymentBytecodeHydrationError> {
-    let view = package.bytecode().view();
+    let Some(bytecode) = package.bytecode() else {
+        return Ok(());
+    };
+    let view = bytecode.view();
     for entry in &view.pools().types {
         if let BytecodePoolEntry::TypeRef { ty } = entry {
             validate_type_ref(package, ty, deployment, packages)?;
@@ -1390,8 +1395,14 @@ fn validate_relocation(
             specialization,
         } => {
             validate_specialization(package, specialization, deployment, packages)?;
-            let target = package
-                .bytecode()
+            let Some(package_bytecode) = package.bytecode() else {
+                return manifest_error(
+                    package.reference(),
+                    DeploymentBytecodeManifestKind::Callable,
+                    "local callable target uses a type-only caller package".to_string(),
+                );
+            };
+            let target = package_bytecode
                 .view()
                 .functions()
                 .iter()
@@ -1439,8 +1450,17 @@ fn validate_relocation(
                         ),
                     )
                 })?;
-            let function = target
-                .bytecode()
+            let Some(target_bytecode) = target.bytecode() else {
+                return manifest_error(
+                    package.reference(),
+                    DeploymentBytecodeManifestKind::Callable,
+                    format!(
+                        "package callable {package_callable_id} target {} is type-only",
+                        target.reference().package_build_id
+                    ),
+                );
+            };
+            let function = target_bytecode
                 .view()
                 .functions()
                 .iter()
@@ -1577,7 +1597,18 @@ fn validate_package_constant(
             )
         })?;
     let root = format!("{}.{}", export.file.module_path, export.symbol);
-    let Some(pool_index) = target.bytecode().view().constant_roots().get(&root) else {
+    let Some(target_bytecode) = target.bytecode() else {
+        return manifest_error(
+            caller.reference(),
+            DeploymentBytecodeManifestKind::ConstantRoot,
+            format!(
+                "package constant {:?} resolves to type-only package {}",
+                symbol.symbol_path,
+                target.reference().package_build_id
+            ),
+        );
+    };
+    let Some(pool_index) = target_bytecode.view().constant_roots().get(&root) else {
         return manifest_error(
             caller.reference(),
             DeploymentBytecodeManifestKind::ConstantRoot,
@@ -1587,7 +1618,11 @@ fn validate_package_constant(
             ),
         );
     };
-    if !target.manifests.constant_roots.contains(&root) {
+    if !target
+        .manifests
+        .as_ref()
+        .is_some_and(|manifests| manifests.constant_roots.contains(&root))
+    {
         return manifest_error(
             caller.reference(),
             DeploymentBytecodeManifestKind::ConstantRoot,
@@ -1597,7 +1632,7 @@ fn validate_package_constant(
             ),
         );
     }
-    let pools = target.bytecode().view().pools();
+    let pools = target_bytecode.view().pools();
     let Some(BytecodePoolEntry::ConstantRef {
         reference: BytecodeConstantRef::LocalNode { node_index },
         type_ref,
@@ -1623,8 +1658,7 @@ fn validate_package_constant(
             ),
         );
     };
-    if target
-        .bytecode()
+    if target_bytecode
         .view()
         .frozen_constant_graph()
         .nodes
@@ -1688,10 +1722,24 @@ fn validate_actor_relocation(
             ),
         )
     })?;
+    let Some(bytecode) = package.bytecode() else {
+        return manifest_error(
+            package.reference(),
+            DeploymentBytecodeManifestKind::Actor,
+            "actor relocation targets a type-only package".to_string(),
+        );
+    };
+    let Some(manifests) = package.manifests.as_ref() else {
+        return manifest_error(
+            package.reference(),
+            DeploymentBytecodeManifestKind::Actor,
+            "actor relocation targets a package without bytecode manifests".to_string(),
+        );
+    };
     validate_receiver_callable(
         package.reference(),
-        package.bytecode(),
-        &package.manifests.callable_functions,
+        bytecode,
+        &manifests.callable_functions,
         callable,
         DeploymentBytecodeManifestKind::Actor,
     )

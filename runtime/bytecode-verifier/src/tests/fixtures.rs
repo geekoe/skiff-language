@@ -323,8 +323,8 @@ pub(crate) fn candidate_parts(
         .enumerate()
         .map(|(index, package)| {
             let index = u32::try_from(index).unwrap();
-            let artifact = package.bytecode().artifact();
-            let view = package.bytecode().view();
+            let artifact = package.bytecode().unwrap().artifact();
+            let view = package.bytecode().unwrap().view();
             let mut native_registry = view.native_value_lifecycle_registry().clone();
             let mut policy = view.value_lifecycle_policy().clone();
             let mut host_registry = view.host_effect_registry().clone();
@@ -351,7 +351,7 @@ pub(crate) fn candidate_parts(
             LinkedPackageBytecodeProvenance::new(
                 BytecodePackageIndex::new(index),
                 package.reference().package_build_id.clone(),
-                package.bytecode().reference().clone(),
+                package.bytecode().unwrap().reference().clone(),
                 view.bytecode_identity(),
                 artifact.magic.clone(),
                 schema_override.unwrap_or_else(|| view.schema_version()),

@@ -15,8 +15,8 @@ impl DeploymentLinker<'_> {
         let mut constant_count = 0_u64;
         let mut root_count = 0_u64;
         let mut node_count = 0_u64;
-        for package in self.deployment.packages().values() {
-            let view = package.bytecode().view();
+        for package in self.deployment.packages().values().filter(|package| package.has_bytecode()) {
+            let view = package.bytecode().ok_or_else(|| unavailable(self.package_location(package)))?.view();
             let pools = view.pools();
             let location = self.package_location(package);
             let package_constants = count(pools.constants.len(), location.clone())?;
@@ -62,7 +62,7 @@ impl DeploymentLinker<'_> {
             .add_image_table(root_count, deployment_location.clone())?;
         self.tracker
             .add_image_table(node_count, deployment_location)?;
-        for package in self.deployment.packages().values() {
+        for package in self.deployment.packages().values().filter(|package| package.has_bytecode()) {
             self.require_complete_literal_package(package)?;
         }
         Ok(())
@@ -72,7 +72,7 @@ impl DeploymentLinker<'_> {
         &self,
         package: &HydratedBytecodePackage,
     ) -> Result<(), BytecodeLinkError> {
-        let view = package.bytecode().view();
+        let view = package.bytecode().ok_or_else(|| unavailable(self.package_location(package)))?.view();
         let pools = view.pools();
         for (position, entry) in pools.constants.iter().enumerate() {
             let _ = artifact_constant_index(
@@ -116,6 +116,7 @@ pub(super) fn source_literal(
     })?;
     match package
         .bytecode()
+        .ok_or_else(|| unavailable(location.clone()))?
         .view()
         .frozen_constant_graph()
         .nodes
@@ -141,7 +142,7 @@ pub(super) fn source_type(
             format!("constant type row {type_ref} does not fit usize"),
         )
     })?;
-    match package.bytecode().view().pools().types.get(position) {
+    match package.bytecode().ok_or_else(|| unavailable(location.clone()))?.view().pools().types.get(position) {
         Some(BytecodePoolEntry::TypeRef { ty }) => Ok(ty),
         Some(_) => Err(constant_error(
             location,
@@ -182,6 +183,16 @@ pub(super) fn require_literal_carrier(
             } else {
                 Err(unavailable(location))
             }
+        }
+        TypeRefIr::PackageSymbol { symbol }
+            if symbol.symbol_path == "std.time.Duration"
+                && matches!(
+                    &symbol.package,
+                    skiff_artifact_model::PackageRefIr::PackageId { package_id }
+                        if package_id == "skiff.run/std"
+                ) =>
+        {
+            Ok(())
         }
         _ => Err(unavailable(location)),
     }
