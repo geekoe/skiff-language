@@ -275,7 +275,16 @@ fn host_target(
         row.symbol(),
         row.binding_key().as_str()
     ));
-    let may_pending = row.signature().effects().may_pending();
+    // InvokeHost's canonical contract is fixed to
+    // `ActualWithResume{HostEffect}`. The linked entry must declare a
+    // compatible pending effect; its own pending category is the pinned
+    // registry's authority and is never re-derived here.
+    if !row.signature().effects().may_pending() {
+        return Err(violation(
+            location,
+            "linked host effect entry must declare mayPending for the ActualWithResume host contract",
+        ));
+    }
     Ok(RemoteTarget {
         coordinate: ExactTargetCoordinate::HostEffectAdapter(row.index()),
         signature,
@@ -285,16 +294,8 @@ fn host_target(
                 effects: row.signature().effects().clone(),
             },
         ),
-        pending: if may_pending {
-            pending_plan(contract, location)?
-        } else {
-            PendingPlan::Never
-        },
-        resume: if may_pending {
-            resume_coordinate(candidate, caller, site, instruction, contract, location)?
-        } else {
-            None
-        },
+        pending: pending_plan(contract, location)?,
+        resume: resume_coordinate(candidate, caller, site, instruction, contract, location)?,
     })
 }
 
@@ -710,6 +711,18 @@ mod tests {
     }
 
     fn candidate_with_host() -> (LinkedBytecodeCandidate, PackageBuildId) {
+        // The pinned std.time.sleep entry carries the registry's own
+        // NativeCall pending category; the verifier must not rewrite it to a
+        // binding-specific category.
+        let mut effects = bottom();
+        effects.may_pending = true;
+        effects.pending_effect_categories = vec![PendingEffectCategory::NativeCall];
+        candidate_with_host_effects(effects)
+    }
+
+    fn candidate_with_host_effects(
+        effects: CallableMayEffects,
+    ) -> (LinkedBytecodeCandidate, PackageBuildId) {
         let hydrated = exact_hydration();
         let mut parts = candidate_parts(&hydrated, None, None);
         let build = hydrated
@@ -720,14 +733,11 @@ mod tests {
             .reference()
             .package_build_id
             .clone();
-        let mut effects = bottom();
-        effects.may_pending = true;
-        effects.pending_effect_categories = vec![PendingEffectCategory::HostEffect];
         let host = LinkedHostEffectAdapterTarget::new(
             HostEffectAdapterIndex::new(0),
             "std",
-            "telemetry.emit",
-            LinkedHostBindingKey::parse("std.telemetry.emit").unwrap(),
+            "time.sleep",
+            LinkedHostBindingKey::parse("std.time.sleep").unwrap(),
             std::collections::BTreeMap::new(),
             native_signature_effects(effects),
         )
@@ -768,6 +778,24 @@ mod tests {
             LinkedBytecodeCandidate::try_from_parts(parts).unwrap(),
             build,
         )
+    }
+
+    #[test]
+    fn non_pending_host_entry_is_rejected_by_the_pending_contract() {
+        let (candidate, _build) = candidate_with_host_effects(bottom());
+        let flow = cfg::prove_control_flow(&candidate, &generous_limits()).unwrap();
+        let mut dense = vec![vec![None; candidate.functions()[0].instructions().len()]];
+        let error = prove_remote_targets_and_call_plans(
+            &candidate,
+            &ConcreteValueFacts::empty_for_test(),
+            &flow,
+            &mut dense,
+        )
+        .expect_err("a non-pending host entry cannot satisfy ActualWithResume{HostEffect}");
+        assert!(matches!(
+            error,
+            VerificationError::SemanticViolation { detail, .. } if detail.contains("mayPending")
+        ));
     }
 
     fn native_signature_effects(effects: CallableMayEffects) -> LinkedNativeCallableSignature {
