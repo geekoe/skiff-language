@@ -1,0 +1,12 @@
+type HostLeak {
+  marker: number,
+}
+
+function run(seed: number) -> number {
+  return hostThrow(seed)
+}
+
+function hostThrow(seed: number) -> number {
+  std.time.sleep(Duration.milliseconds(1))
+  throw HostLeak { marker: seed }
+}

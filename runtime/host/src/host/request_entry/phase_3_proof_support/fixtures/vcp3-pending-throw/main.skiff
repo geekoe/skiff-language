@@ -1,0 +1,9 @@
+type PendingLeak {
+  marker: number,
+}
+
+function run(seed: number) -> number {
+  return timeout(400ms) value {
+    throw PendingLeak { marker: seed }
+  }
+}
