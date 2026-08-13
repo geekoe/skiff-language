@@ -17,6 +17,7 @@ use super::{
 
 /// Canonical host binding admitted by the Phase 4 gate: `std.time.sleep`.
 const CANONICAL_SLEEP_BINDING_KEY: &str = "std.time.sleep";
+const CANONICAL_DURATION_MILLISECONDS_BINDING_KEY: &str = "core.duration.milliseconds";
 /// Canonical package owner of the pinned `Duration` parameter type.
 const CANONICAL_SLEEP_DURATION_PACKAGE: &str = "skiff.run/std";
 /// Canonical symbol path of the pinned `Duration` parameter type.
@@ -935,15 +936,29 @@ fn admit_call(
             ));
         }
         CallTargetIr::Native { target } => {
-            admit_native_host_effect(
-                units,
-                unit,
-                function_key,
-                function,
-                expression,
-                call,
-                target,
-            )?;
+            if target.binding_key.as_deref()
+                == Some(CANONICAL_DURATION_MILLISECONDS_BINDING_KEY)
+            {
+                admit_duration_milliseconds_constructor(
+                    units,
+                    unit,
+                    function_key,
+                    function,
+                    expression,
+                    call,
+                    target,
+                )?;
+            } else {
+                admit_native_host_effect(
+                    units,
+                    unit,
+                    function_key,
+                    function,
+                    expression,
+                    call,
+                    target,
+                )?;
+            }
             return Ok(());
         }
         CallTargetIr::Builtin { .. } | CallTargetIr::ReceiverBuiltin { .. } => {
@@ -1087,6 +1102,79 @@ fn admit_native_host_effect(
             ),
         ));
     }
+    Ok(())
+}
+
+/// Phase 4 gate 1 companion: admits the pure `Duration.milliseconds`
+/// constructor only when its exact argument and result stay on the pinned
+/// sleep argument face. It is not a host effect, does not carry Pending, and
+/// remains emitted as a synchronous constant/identity operation by the
+/// bytecode emitter rather than an `InvokeHost` adapter.
+fn admit_duration_milliseconds_constructor(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    call: &skiff_artifact_model::CallIr,
+    target: &NativeTarget,
+) -> Result<(), BytecodeEmissionError> {
+    if call.args.len() != 1 {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} Duration.milliseconds arity {} (pinned arity is exactly one integer argument)",
+                expression.index,
+                call.args.len()
+            ),
+        ));
+    }
+    let argument = function.expression(call.args[0])?;
+    let argument_type = &argument.ty;
+    if !matches!(
+        &argument.expression,
+        ExprIr::Literal {
+            value: LiteralIr::Number { .. }
+        }
+    ) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} Duration.milliseconds argument must be a literal integer",
+                expression.index
+            ),
+        ));
+    }
+    if !matches!(
+        argument_type,
+        TypeRefIr::Builtin { name, args } if name == "integer" && args.is_empty()
+    ) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} Duration.milliseconds argument type {argument_type:?} is not the pinned integer",
+                expression.index
+            ),
+        ));
+    }
+    if !is_canonical_sleep_duration_type(units, unit, &expression.ty) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} Duration.milliseconds result type {:?} is not the pinned skiff.run/std::std.time.Duration",
+                expression.index, expression.ty
+            ),
+        ));
+    }
+    let _ = target;
     Ok(())
 }
 

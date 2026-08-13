@@ -1,7 +1,7 @@
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity,
     validate_current_platform_error_projection_registry_ref, BytecodeArtifactRef,
-    BytecodeFunctionStatementManifest, PackageArtifact,
+    BytecodeFunctionStatementManifest, PackageArtifact, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
@@ -20,7 +20,7 @@ use skiff_compiler_projection::package_artifact::{
 use skiff_compiler_source::{
     source_value_transfer_plan, SourceValueTransferFacts, SourceValueTransferNominalFact,
     SourceValueTransferNominalId, SourceValueTransferNominalSemantics,
-    SourceValueTransferPlanInput,
+    SourceValueTransferPackageRef, SourceValueTransferPlanInput,
 };
 
 use crate::shared::package_compile_error::PackageCompileError;
@@ -206,6 +206,25 @@ fn emit_enabled_bytecode(
 /// resolve through the same exact declarations.
 fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransferFacts {
     let mut facts = SourceValueTransferFacts::new();
+    // The Phase 4 pinned sleep argument is the std transparent alias
+    // `Duration = integer`. User packages reference it as a package symbol and
+    // therefore do not contribute a local/publication type-table fact for it.
+    facts.insert_nominal(
+        SourceValueTransferNominalId::PackageSymbol {
+            package: SourceValueTransferPackageRef::PackageId("skiff.run/std".to_string()),
+            symbol_path: "std.time.Duration".to_string(),
+            abi_expectation: None,
+        },
+        SourceValueTransferNominalFact {
+            declaration_module: "std.time".to_string(),
+            type_parameters: Vec::new(),
+            semantics: SourceValueTransferNominalSemantics::Ordinary(
+                TypeDescriptorIr::Alias {
+                    target: TypeRefIr::builtin("integer"),
+                },
+            ),
+        },
+    );
     for unit in units {
         for (type_index, declaration) in unit.type_table.iter().enumerate() {
             let fact = SourceValueTransferNominalFact {
