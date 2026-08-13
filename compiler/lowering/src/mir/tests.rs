@@ -1189,3 +1189,260 @@ fn concurrent_plan_lanes_become_block_ids_and_complete_into_continuation() {
             if message.contains("stores source_order 1")
     ));
 }
+
+#[test]
+fn phase_3_union_catch_fixture_lowers_with_union_bindings_and_aligned_rethrow() {
+    let model = build_model(
+        MODULE,
+        r#"
+  type LeafA {
+    marker: number,
+    owner: Array<number>,
+  }
+
+  type LeafB {
+    marker: number,
+    owner: Array<number>,
+  }
+
+  function innerThrow(leaf: LeafA | LeafB) -> void {
+    final cleanupOwner = [7]
+    throw leaf
+  }
+
+  function run(seed: number) -> number {
+    if seed == 1 {
+      final leaf: LeafA | LeafB = LeafA { marker: seed, owner: [seed] }
+      final inner = catch<LeafA>(innerThrow(leaf))
+      if inner.tag == "err" {
+        final exc = inner.exception
+        final outer = catch<LeafA>(rethrow exc)
+        if outer.tag == "err" {
+          return 2
+        }
+        return 11
+      }
+      return 12
+    }
+    final leaf: LeafA | LeafB = LeafB { marker: seed, owner: [seed] }
+    final caught = catch<LeafB>(innerThrow(leaf))
+    if caught.tag == "err" {
+      return 3
+    }
+    return 13
+  }
+"#,
+    );
+    let lowered = lower(&model).expect("phase 3 union catch fixture should lower");
+    let unit = &lowered.mir_units()[0];
+    let run = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.run"))
+        .expect("run");
+
+    // Both `leaf` bindings carry the declared anonymous union, not the
+    // constructor branch: the constructor enters the union context.
+    let leaf_slots = run
+        .slots
+        .iter()
+        .filter(|slot| slot.name == "leaf")
+        .collect::<Vec<_>>();
+    assert_eq!(leaf_slots.len(), 2);
+    for leaf in leaf_slots {
+        assert!(matches!(
+            leaf.ty,
+            Some(TypeRefIr::Union { .. })
+        ), "leaf binding should widen into the declared union, got {:?}", leaf.ty);
+    }
+
+    // The caught payload binding carries the opaque Exception<LeafA>
+    // envelope and the catch-over-rethrow result is CatchResult<never, LeafA>.
+    let exc = run
+        .slots
+        .iter()
+        .find(|slot| slot.name == "exc")
+        .expect("exc binding");
+    assert_eq!(
+        exc.ty.as_ref(),
+        Some(&TypeRefIr::Builtin {
+            name: "Exception".to_string(),
+            args: vec![TypeRefIr::LocalType { type_index: 0 }],
+        })
+    );
+    let outer = run
+        .slots
+        .iter()
+        .find(|slot| slot.name == "outer")
+        .expect("outer binding");
+    assert_eq!(
+        outer.ty.as_ref(),
+        Some(&TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![
+                TypeRefIr::builtin("never"),
+                TypeRefIr::LocalType { type_index: 0 },
+            ],
+        })
+    );
+
+    // The expression-form rethrow consumed the exception identifier's source
+    // ExpressionKey, so the trailing LeafB constructor fact stays aligned
+    // (this fixture only lowers when the rethrow key bookkeeping is exact).
+    let rethrow_slot = run
+        .slots
+        .iter()
+        .find(|slot| slot.name == "exc")
+        .expect("exc binding")
+        .slot;
+    assert!(
+        run.expressions.iter().any(|expression| {
+            matches!(
+                expression.expression,
+                ExprIr::Rethrow { exception_slot } if exception_slot == rethrow_slot
+            )
+        }),
+        "expression-form rethrow should reference the exc slot"
+    );
+
+    // `throw leaf` in innerThrow carries the union payload type so union
+    // actual-leaf identity stays runtime-captured.
+    let inner_throw = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.innerThrow"))
+        .expect("innerThrow");
+    assert!(inner_throw.blocks.iter().flat_map(|block| &block.statements).any(
+        |statement| matches!(
+            &statement.kind,
+            MirStmtKind::Throw { payload_type, .. }
+                if matches!(payload_type, TypeRefIr::Union { .. })
+        )
+    ));
+}
+
+#[test]
+fn phase_3_catch_result_slot_gets_a_static_type() {
+    let model = build_model(
+        MODULE,
+        r#"
+  type LeafA {
+    marker: number,
+  }
+
+  type LeafB {
+    marker: number,
+  }
+
+  function throwLeaf(leaf: LeafA | LeafB) -> void {
+    throw leaf
+  }
+
+  function run(seed: number) -> number {
+    final attempt = catch<LeafB>(throwLeaf(LeafA { marker: seed }))
+    if attempt.tag == "ok" {
+      return 7
+    }
+    return 99
+  }
+"#,
+    );
+    let lowered = lower(&model).expect("phase 3 mismatch catch fixture should lower");
+    let unit = &lowered.mir_units()[0];
+    let run = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.run"))
+        .expect("run");
+    let attempt = run
+        .slots
+        .iter()
+        .find(|slot| slot.name == "attempt")
+        .expect("attempt binding");
+    assert_eq!(
+        attempt.ty.as_ref(),
+        Some(&TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![
+                TypeRefIr::builtin("void"),
+                TypeRefIr::LocalType { type_index: 1 },
+            ],
+        }),
+        "catch result bindings must receive a concrete slot type"
+    );
+}
+
+#[test]
+fn phase_3_catch_over_throw_binding_gets_a_never_result_slot_type() {
+    let model = build_model(
+        MODULE,
+        r#"
+  type LeafA {
+    marker: number,
+  }
+
+  type LeafB {
+    marker: number,
+  }
+
+  function run(seed: number) -> number {
+    final attempt = catch<LeafB>(throw LeafA { marker: seed })
+    if attempt.tag == "ok" {
+      return 7
+    }
+    return 99
+  }
+"#,
+    );
+    let lowered = lower(&model).expect("converged mismatch fixture should lower");
+    let unit = &lowered.mir_units()[0];
+    let run = unit
+        .functions
+        .iter()
+        .find(|function| function.symbol == format!("{MODULE}.run"))
+        .expect("run");
+    let attempt = run
+        .slots
+        .iter()
+        .find(|slot| slot.name == "attempt")
+        .expect("attempt binding");
+    assert_eq!(
+        attempt.ty.as_ref(),
+        Some(&TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![
+                TypeRefIr::builtin("never"),
+                TypeRefIr::LocalType { type_index: 1 },
+            ],
+        }),
+        "catch over a throw expression should type its slot CatchResult<never, E>"
+    );
+}
+
+#[test]
+fn phase_3_rethrow_with_non_identifier_operand_fails_closed() {
+    let model = build_model(
+        MODULE,
+        r#"
+  type LeafA {
+    marker: number,
+  }
+
+  function run() -> void {
+    final inner = catch<LeafA>(throw LeafA { marker: 1 })
+    final e = rethrow inner.exception
+  }
+"#,
+    );
+    let error = lower(&model).expect_err("field-operand rethrow must fail closed");
+    match error {
+        skiff_compiler_source::SourceCompileError::ContractValidation { message } => {
+            assert!(
+                message
+                    .contains("rethrow in typed File IR requires an exception slot identifier"),
+                "unexpected rethrow diagnostic: {message}"
+            );
+        }
+        other => panic!("expected contract validation failure, got {other:?}"),
+    }
+}

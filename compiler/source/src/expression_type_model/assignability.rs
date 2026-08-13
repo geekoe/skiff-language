@@ -362,6 +362,7 @@ impl<'a> OwnerChecker<'a> {
             },
         };
         if assignable {
+            self.record_union_target_constructor(value, value_key, actual, expected);
             return true;
         }
         let object_source = self
@@ -413,5 +414,37 @@ impl<'a> OwnerChecker<'a> {
             expected,
             actual
         ));
+    }
+
+    /// Records that a nominal record constructor enters an enclosing
+    /// anonymous-union target context.
+    ///
+    /// `final leaf: LeafA | LeafB = LeafA {...}` and union-typed call
+    /// parameters widen the constructor branch into the union for the rest of
+    /// the bytecode lane: the runtime value still carries the concrete leaf
+    /// identity, but the static expression type becomes the union so slot and
+    /// call-argument facts line up with the declared union type. The rewrite
+    /// is deliberately limited to named record constructors whose resolved
+    /// target is an exact member of an anonymous union; no other construct
+    /// gains union behavior here.
+    fn record_union_target_constructor(
+        &mut self,
+        value: &Expr,
+        value_key: &ExpressionKey,
+        actual: &ResolvedTypeRef,
+        expected: &ResolvedTypeRef,
+    ) {
+        if !matches!(value, Expr::Record { .. }) {
+            return;
+        }
+        let TypeRefIr::Union { items } = &expected.ir else {
+            return;
+        };
+        if !items.iter().any(|item| item == &actual.ir) {
+            return;
+        }
+        if let Some(fact) = self.outputs.facts.get_mut(value_key) {
+            fact.ty = Some(expected.clone());
+        }
     }
 }

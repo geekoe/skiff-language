@@ -89,6 +89,7 @@ struct FunctionEmitter<'a> {
     generated_slots: Vec<MirSlot>,
     loop_backedges: BTreeMap<u32, LoopBackedge>,
     value_block_body_blocks: BTreeSet<u32>,
+    throw_source_sites: Vec<(usize, InstructionSourceSite)>,
     operand_depth: usize,
 }
 
@@ -177,6 +178,7 @@ impl<'a> FunctionEmitter<'a> {
             generated_slots: Vec::new(),
             loop_backedges: BTreeMap::new(),
             value_block_body_blocks,
+            throw_source_sites: Vec::new(),
             operand_depth: 0,
         })
     }
@@ -677,7 +679,7 @@ impl<'a> FunctionEmitter<'a> {
             MirStmtKind::Throw {
                 value,
                 payload_type,
-                ..
+                site,
             } => {
                 // Phase 3: the MIR `payload_type` fact is not the exception
                 // identity. The instruction operand carries only the thrown
@@ -699,7 +701,15 @@ impl<'a> FunctionEmitter<'a> {
                     value_type,
                     &format!("statement throw value type in `{}`", self.key),
                 )?;
+                // The throw instruction itself is the raise site: the
+                // statement placement event belongs after the payload
+                // expression, on the raising instruction, so the linked
+                // statement schedule carries the throw source site.
+                let throw_instruction = self.instructions.len();
+                self.reanchor_statement_events(statement.statement_index, throw_instruction);
                 self.emit_op(Opcode::Throw, vec![type_ref])?;
+                self.throw_source_sites
+                    .push((throw_instruction, site.clone()));
             }
             MirStmtKind::Rethrow { exception_slot } => {
                 self.emit_op(Opcode::Rethrow, vec![*exception_slot])?;
@@ -3244,6 +3254,24 @@ impl<'a> FunctionEmitter<'a> {
         }
     }
 
+    /// Moves one statement's placement events onto a later emitted
+    /// instruction. Statement forms of `throw` evaluate their payload before
+    /// the raising instruction, so the raise-site event must leave the
+    /// payload's first instruction and land on the `Throw` instruction.
+    fn reanchor_statement_events(&mut self, statement_index: u32, instruction: usize) {
+        for (index, event) in self.events.iter().enumerate() {
+            if matches!(
+                event.anchor,
+                MirEmissionAnchor::Statement {
+                    statement_index: anchored,
+                    ..
+                } if anchored == statement_index
+            ) {
+                self.event_mapping[index] = Some(instruction);
+            }
+        }
+    }
+
     fn emit_op(
         &mut self,
         opcode: Opcode,
@@ -3632,6 +3660,20 @@ impl<'a> FunctionEmitter<'a> {
                 start_pc,
                 end_pc,
                 site: event.site.clone(),
+            });
+        }
+        for (instruction_index, site) in &self.throw_source_sites {
+            let start_pc = *pcs.get(*instruction_index).ok_or_else(|| {
+                arithmetic(&self.key, "throw source site instruction pc lookup")
+            })?;
+            let end_pc = pcs
+                .get(instruction_index + 1)
+                .copied()
+                .unwrap_or(word_count);
+            rows.push(SourceMapEntry {
+                start_pc,
+                end_pc,
+                site: site.clone(),
             });
         }
         rows.sort_by_key(|entry| entry.start_pc);
@@ -4148,4 +4190,163 @@ fn value_block_body_ids(
 
 fn return_count(function: &MirFunction) -> usize {
     usize::from(!is_void(&function.return_type) && function.stream_result.is_none())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use skiff_artifact_model::{
+        CallableEffectSummary, ExprIr, ExprRefIr, FileIrUnit, InstructionSourceSite, LiteralIr,
+        PackageCallableId, SyntheticInstructionSiteReason, TypeRefIr,
+    };
+    use skiff_compiler_lowering::{
+        mir::{
+            liveness::compute_liveness, MirBlock, MirExecutableKind, MirExpression, MirFunction,
+            MirLiveness, MirSourceEventPlan, MirSourceEventUnavailableReason, MirStatementEntry,
+            MirStmt, MirStmtKind, MirUnit,
+        },
+        Bounds, ConstEvaluator,
+    };
+
+    use super::*;
+    use crate::bytecode::constants::build_constant_image;
+    use crate::{BytecodeValueTransferPlans, FunctionValueTransferPlans};
+
+    /// The statement form of `throw` emits its payload first; the raise
+    /// instruction must still carry exactly one source/synthetic site in the
+    /// function source map, taken from the retained MIR `site`.
+    #[test]
+    fn statement_throw_places_its_site_on_the_raise_instruction() {
+        let throw_site = InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+        };
+        let mut function = MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:main".to_string(),
+                module_path: "main".to_string(),
+                executable_index: 0,
+            },
+            symbol: "main.boom".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("void"),
+            self_type: None,
+            receiver: None,
+            slots: Vec::new(),
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: vec![MirExpression {
+                index: 0,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::Number {
+                        value: serde_json::Number::from(1_u64),
+                    },
+                },
+                ty: TypeRefIr::builtin("number"),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            }],
+            blocks: vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Throw {
+                        value: ExprRefIr { expression: 0 },
+                        payload_type: TypeRefIr::builtin("number"),
+                        site: throw_site.clone(),
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            regions: Vec::new(),
+            statements: vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:main:boom".to_string()),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+        };
+        function.liveness = compute_liveness(&function).expect("test liveness computes");
+
+        let mut file_ir = FileIrUnit::empty("main", "source-hash");
+        file_ir.file_ir_identity = "file:main".to_string();
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&file_ir)
+            .expect("test bundle evaluates");
+        let unit = MirUnit {
+            file_ir_identity: file_ir.file_ir_identity.clone(),
+            module_path: file_ir.module_path.clone(),
+            actor_declarations: file_ir.actor_declarations.clone(),
+            external_refs: file_ir.external_refs.clone(),
+            source_map: file_ir.source_map.clone(),
+            type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
+            link_targets: file_ir.link_targets.clone(),
+            constants: Vec::new(),
+            functions: vec![function],
+        };
+        let plans = BytecodeValueTransferPlans::new(
+            BTreeMap::from([(
+                "main::boom".to_string(),
+                FunctionValueTransferPlans {
+                    slot_plans: Vec::new(),
+                    result_plans: Vec::new(),
+                },
+            )]),
+            BTreeMap::new(),
+        );
+        let units = [unit];
+        let bundles = [bundle];
+        let inputs = ValidatedEmissionInputs::validate(&units, &bundles, &plans)
+            .expect("test inputs validate");
+        let mut image = build_constant_image(&inputs).expect("test image builds");
+        let unit = inputs.units.get("main").expect("test unit is present");
+        let function = unit
+            .functions
+            .iter()
+            .find(|function| function.symbol == "main.boom")
+            .expect("test function is present");
+        let function_plans = inputs
+            .function_plans
+            .get("main::boom")
+            .expect("test function plans are present");
+        let emitter = FunctionEmitter::new(
+            unit,
+            function,
+            "main.boom",
+            function_plans,
+            &mut image,
+            &inputs,
+            SourceAttributionMode::AdmittedPhase1,
+        )
+        .expect("test emitter constructs");
+        let emitted = emitter.emit().expect("test function emits");
+
+        assert_eq!(
+            emitted.source_map.len(),
+            1,
+            "only the raise instruction needs a source site: {emitted:?}"
+        );
+        let row = &emitted.source_map[0];
+        assert_eq!(row.site, throw_site, "the MIR throw site must be retained");
+        assert!(
+            row.start_pc > 0,
+            "the raise site must sit after the payload expression, got pc {}",
+            row.start_pc
+        );
+    }
 }

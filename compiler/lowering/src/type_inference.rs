@@ -280,10 +280,18 @@ impl<'a> FunctionLowerer<'a> {
             | Expr::Ternary { .. }
             | Expr::ObjectLiteral { .. }
             | Expr::Patch { .. }
-            | Expr::Throw { .. }
-            | Expr::Rethrow { .. }
-            | Expr::Catch { .. }
             | Expr::DbQuery(_) => None,
+            Expr::Throw { .. } | Expr::Rethrow { .. } => Some("never".to_string()),
+            Expr::Catch {
+                catch_type,
+                try_expr,
+                ..
+            } => {
+                let try_text = self
+                    .infer_expr_type_text(try_expr)
+                    .unwrap_or_else(|| "never".to_string());
+                Some(format!("CatchResult<{try_text}, {}>", catch_type.name))
+            }
             Expr::DbOperation(operation) => self.db_operation_result_type_text(operation),
             Expr::DbTransaction(transaction) => match transaction.mode {
                 DbBlockMode::Effect => Some("null".to_string()),
@@ -334,6 +342,27 @@ impl<'a> FunctionLowerer<'a> {
             }
             Expr::DbLeaseClaim(_) => Some(TypeRefIr::builtin("bool")),
             Expr::DbLeaseRead(_) => Some(db_lease_read_result_type_ir()),
+            Expr::Throw { .. } | Expr::Rethrow { .. } => Some(TypeRefIr::builtin("never")),
+            Expr::Catch {
+                catch_type,
+                try_expr,
+                ..
+            } => {
+                let try_ty = match try_expr.as_ref() {
+                    Expr::Throw { .. } | Expr::Rethrow { .. } => TypeRefIr::builtin("never"),
+                    other => self.infer_expr_type_ir(other)?,
+                };
+                let catch_ty = lower_type_ref(
+                    catch_type,
+                    self.type_lowering_environment(),
+                    self.value_type_context(),
+                )
+                .ok()?;
+                Some(TypeRefIr::Builtin {
+                    name: "CatchResult".to_string(),
+                    args: vec![try_ty, catch_ty],
+                })
+            }
             _ => self.infer_expr_type_text(expr).and_then(|type_text| {
                 lower_type_text(
                     &type_text,
