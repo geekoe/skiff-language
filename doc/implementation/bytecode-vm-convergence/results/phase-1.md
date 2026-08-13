@@ -6,7 +6,8 @@
 >
 > Accepted tree: `73974228639cc88d025b73698fefe7ab7df097df`
 >
-> Main integration merge: `<recorded after merge>` / tree `<recorded after merge>`
+> Main integration merge: `77ec666518ab26e21f7e2554afc9d0d6ca11da34` / tree
+> `e1354e4476b66281e4a688866b82d3e2fa0c44a0`
 >
 > Evidence epoch: `skiff-bytecode-vm-phase-1-observation-v1`
 >
