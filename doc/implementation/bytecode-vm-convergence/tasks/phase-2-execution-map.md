@@ -1,6 +1,6 @@
 # MAP2：Phase 2 rolling execution map
 
-> Status: active; revision 2; P2G first-day expected-red delivered, K2 heap-seam write set extended
+> Status: active; revision 3; K2 lifecycle kernel delivered, contract amendment 1 recorded, awaiting C2 admission join
 >
 > Phase Contract: [`phase-2-value-lifecycle.md`](../phases/phase-2-value-lifecycle.md)
 >
@@ -48,6 +48,19 @@ Integrator 只做机械 cherry-pick、receipt/MAP 更新、Gate/freeze/Acceptanc
 - join 契约过滤词固定：K2 = `lifecycle`（vm lib）、`vm_heap`（model/request lib）、`capability`（linker lib）；
   C2 = `phase_2_bytecode_admission`（emission 与 compiler lib）。producer 测试必须按词精确命中且非零。
 - VCP fixture 源语义修正：Skiff 别名突变需 `var b = a`（`final` 绑定不可作赋值目标）；fixture 已按此落地。
+
+## 4c. Revision 3
+
+- K2 交付 `cade87e7..b330dff9`：model 两阶段 writable path（opaque `WritablePathPreparation`、atomic commit 返回
+  replacement root）、唯一 linked-plan lifecycle executor（`lifecycle.rs`，`reconcile_frame_slots_at` 已删）、
+  request heap owner 记账 + commit COW + 递归 drop、`BytecodeRequestExecutionInput.heap` spy seam（host 默认 None）、
+  linker capability record/array 放宽。focused 全绿（model 136/vm 56/request 52/linker 54），三包全量 298 过 0 红。
+- 两处编译必要性最小改动记入写集：`websocket_jsonrpc.rs` 与 `runtime/request/tests/bytecode_request.rs` 各加
+  `heap: None`（struct 字面量适配，无语义变化）。
+- Phase Contract §3.4a Amendment 1 定案：单指令 `SetWritablePath` 下 RHS 由前序指令求值；Phase 2 纯值表面内
+  prepare-before-commit + atomic commit 成立，“RHS 宿主副作用不提前发生”是 Phase 5 的发射形状前置；shared
+  container 的 push 在 Phase 2 fail closed，不隐式 COW push。
+- K2 join 契约过滤词：`lifecycle`（vm lib）、`vm_heap`（model/request lib）、`capability`（linker lib），均非零全绿。
 
 ## 4. Task contracts
 

@@ -100,6 +100,20 @@ fn commit_writable_path(
   RHS 按 RHS 位置的 linked plan 转移进入，被替换 leaf 按 leaf plan drop；
 - `WritablePathPreparation` 是 opaque、non-Clone 的 model 类型，VM 只持有不检查。
 
+### 3.4a Amendment 1（MAP2 Revision 3；2026-08-13）
+
+当前 `SetWritablePath` 是单指令形状：selectors 与 RHS 由**前序指令**在 operand stack 上求值，VM handler 再从栈
+取 RHS。因此在 Phase 2 的纯值支持面（RHS 只能是 number/boolean/null 与嵌套 record/array 构造，不含任何宿主效应）
+内，`prepare` 仍先于 `commit` 且 commit 原子；但“RHS 宿主副作用不提前发生”这一条无法由该 opcode 形状证明，也无需
+证明——支持面内 RHS 没有宿主副作用。
+
+本条记为该条的 Phase 5 前置：在把任何可含宿主效应的 RHS（host effect/ResourceRef/stream）接入
+`SetWritablePath` 之前，必须先把发射形状改为 `prepare -> evaluateRhs -> commit` 的显式三阶段（否则回到 VM-02 的
+原始失败模式）。Phase 2 不回退该义务，也不为纯值表面发明第二个执行器。
+
+同时定案：`ArrayPushOwned`/`MapPutOwned` 在 Phase 2 保持 exclusive-owner-only；对 shared container 调用 fail closed
+（`OwnershipViolation`），不做隐式 COW push。共享容器 push 的 COW 语义若进入后续 Phase，需单独决策。
+
 ## 4. 精确支持面
 
 | Dimension | Accepted target |
