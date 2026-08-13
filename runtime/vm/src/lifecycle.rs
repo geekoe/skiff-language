@@ -79,6 +79,9 @@ impl<'heap> LifecycleExecutor<'heap> {
         plan: &LinkedValueTransferPlan,
     ) -> Result<ValueSlot, LifecycleError> {
         match plan {
+            LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            } => Ok(*source),
             LinkedValueTransferPlan::SnapshotShare { .. } => self
                 .heap
                 .snapshot_share(source)
@@ -96,12 +99,24 @@ impl<'heap> LifecycleExecutor<'heap> {
         plan: &LinkedValueTransferPlan,
     ) -> Result<ValueSlot, LifecycleError> {
         match plan {
+            LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            }
+            | LinkedValueTransferPlan::MoveOnly {
+                drop: LinkedValueDropPlan::Trivial,
+            } => Ok(*source),
             LinkedValueTransferPlan::SnapshotShare { .. }
-            | LinkedValueTransferPlan::MoveOnly { .. }
-            | LinkedValueTransferPlan::AffineResource { .. } => self
+            | LinkedValueTransferPlan::MoveOnly { .. } => self
                 .heap
                 .transfer_owner(source)
                 .map_err(LifecycleError::Heap),
+            LinkedValueTransferPlan::AffineResource {
+                drop: LinkedResourceDropPlan::ResourceTableRelease,
+            } => self
+                .heap
+                .transfer_owner(source)
+                .map_err(LifecycleError::Heap),
+            LinkedValueTransferPlan::AffineResource { .. } => Err(LifecycleError::PlanUnavailable),
             LinkedValueTransferPlan::ExplicitCloneLease { .. } => {
                 Err(LifecycleError::PlanUnavailable)
             }
@@ -132,9 +147,8 @@ impl<'heap> LifecycleExecutor<'heap> {
         drop: &LinkedValueDropPlan,
     ) -> Result<(), LifecycleError> {
         match drop {
-            LinkedValueDropPlan::Trivial
-            | LinkedValueDropPlan::SnapshotRelease
-            | LinkedValueDropPlan::RecursiveShape { .. } => self
+            LinkedValueDropPlan::Trivial => Ok(()),
+            LinkedValueDropPlan::SnapshotRelease | LinkedValueDropPlan::RecursiveShape { .. } => self
                 .heap
                 .release_snapshot(owner)
                 .map_err(LifecycleError::Heap),
@@ -341,7 +355,7 @@ mod tests {
         let mut heap = FailingHeap;
         let mut executor = LifecycleExecutor::new(&mut heap);
         let snapshot = LinkedValueTransferPlan::SnapshotShare {
-            drop: LinkedValueDropPlan::Trivial,
+            drop: LinkedValueDropPlan::SnapshotRelease,
         };
         assert!(matches!(
             executor.share(&record(), &snapshot),
@@ -350,5 +364,36 @@ mod tests {
                 ..
             }))
         ));
+    }
+
+    #[test]
+    fn trivial_plans_take_the_sidecar_free_fast_path() {
+        let mut heap = RecordingHeap::default();
+        let mut executor = LifecycleExecutor::new(&mut heap);
+        let scalar = ValueSlot::number(1.0);
+        let trivial_share = LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        };
+        let trivial_move = LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::Trivial,
+        };
+
+        assert!(matches!(
+            executor.share(&scalar, &trivial_share),
+            Ok(value) if value == scalar
+        ));
+        assert!(matches!(
+            executor.transfer(&scalar, &trivial_move),
+            Ok(value) if value == scalar
+        ));
+        assert!(executor.release(&scalar, &trivial_share).is_ok());
+        assert!(executor.release(&scalar, &trivial_move).is_ok());
+
+        // Immediate scalars keep the Phase 1 sidecar-free invariant: no heap
+        // primitive is ever invoked for a trivial plan.
+        assert_eq!(heap.shares, 0);
+        assert_eq!(heap.transfers, 0);
+        assert_eq!(heap.snapshot_releases, 0);
+        assert_eq!(heap.resource_releases, 0);
     }
 }
