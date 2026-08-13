@@ -26,9 +26,9 @@ test('Phase 1 schemas are independent from the accepted Phase 0 epoch', () => {
   assert.equal(PHASE1_DIRECTORY_IDENTITY_FILE, 'phase-1-directory-identities.json');
 });
 
-test('day-one matrix freezes nine commands and every required Proof lane', () => {
+test('day-one matrix freezes twelve commands and every required Proof lane', () => {
   const specs = phase1WorkloadSpecs(ROOT);
-  assert.equal(specs.length, 9);
+  assert.equal(specs.length, 12);
   assert.doesNotThrow(() => assertPhase1LaneCoverage(specs));
   assert.deepEqual(
     [...new Set(specs.flatMap(({ lanes }) => lanes))]
@@ -62,6 +62,69 @@ test('day-one matrix freezes nine commands and every required Proof lane', () =>
       .every(({ command, testFormat }) => command === 'cargo' && testFormat === 'rust-exact'),
     true,
   );
+  const byId = Object.fromEntries(specs.map((entry) => [entry.id, entry]));
+  assert.deepEqual(byId['l4-raw-fuel-exact-boundary'], {
+    id: 'l4-raw-fuel-exact-boundary',
+    command: 'cargo',
+    args: Object.freeze(['test', '-p', 'skiff-runtime-request', '--lib', 'execution_budget']),
+    cwd: ROOT,
+    testFormat: 'rust-suite',
+    lanes: Object.freeze(['L4']),
+  });
+  assert.deepEqual(byId['l5-deterministic-deadline-internal-stop'], {
+    id: 'l5-deterministic-deadline-internal-stop',
+    command: 'cargo',
+    args: Object.freeze([
+      'test', '-p', 'skiff-runtime-host', '--lib', 'request_supervisor::tests',
+    ]),
+    cwd: ROOT,
+    testFormat: 'rust-suite',
+    lanes: Object.freeze(['L5']),
+  });
+  assert.deepEqual(byId['k2-deep-local-call-frame-fuel'], {
+    id: 'k2-deep-local-call-frame-fuel',
+    command: 'cargo',
+    args: Object.freeze(['test', '-p', 'skiff-runtime-vm', '--test', 'vertical']),
+    cwd: ROOT,
+    testFormat: 'rust-suite',
+    lanes: Object.freeze(['K2']),
+  });
+  for (const lane of ['L4', 'L5', 'K2']) {
+    assert.equal(PHASE1_REQUIRED_LANES.includes(lane), true, `${lane} must be required`);
+    assert.equal(specs.some(({ lanes: specLanes }) => specLanes.includes(lane)), true);
+  }
+});
+
+test('new §11.3.6/7/8 suites parse as complete single-binary rust summaries', () => {
+  for (const { name, passed, filtered } of [
+    { name: 'l4-raw-fuel-exact-boundary', passed: 11, filtered: 35 },
+    { name: 'l5-deterministic-deadline-internal-stop', passed: 7, filtered: 171 },
+    { name: 'k2-deep-local-call-frame-fuel', passed: 4, filtered: 0 },
+  ]) {
+    const line = `${passed} passed; 0 failed; 0 ignored; 0 measured; ${filtered} filtered out`;
+    const summary = parsePhase1TestSummary(
+      'rust-suite',
+      `running 1 test\n\ntest result: ok. ${line}; finished in 0.01s\n`,
+    );
+    assert.deepEqual(summary, {
+      format: 'rust',
+      total: passed,
+      passed,
+      failed: 0,
+      ignored: 0,
+      measured: 0,
+      filtered,
+      valid: true,
+    }, name);
+    assert.equal(
+      parsePhase1TestSummary(
+        'rust-suite',
+        `test result: ok. ${line}; finished in 0.01s\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n`,
+      ).valid,
+      false,
+      `${name} must reject a second test result line`,
+    );
+  }
 });
 
 test('candidate closure fixes four receipt-backed identity snapshots', () => {

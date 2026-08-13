@@ -34,6 +34,9 @@ export const PHASE1_REQUIRED_LANES = Object.freeze([
   'T-R',
   'V1',
   'phase-0-regression',
+  'L4',
+  'L5',
+  'K2',
 ]);
 
 export function phase1WorkloadSpecs(root) {
@@ -80,6 +83,15 @@ export function phase1WorkloadSpecs(root) {
       'test', '--manifest-path', 'runtime/request/Cargo.toml', '--test',
       'bytecode_request', 'tests::request_heap_scalar_returns_payload', '--', '--exact',
     ], 'rust-exact', ['phase-0-regression']),
+    spec(root, 'l4-raw-fuel-exact-boundary', 'cargo', [
+      'test', '-p', 'skiff-runtime-request', '--lib', 'execution_budget',
+    ], 'rust-suite', ['L4']),
+    spec(root, 'l5-deterministic-deadline-internal-stop', 'cargo', [
+      'test', '-p', 'skiff-runtime-host', '--lib', 'request_supervisor::tests',
+    ], 'rust-suite', ['L5']),
+    spec(root, 'k2-deep-local-call-frame-fuel', 'cargo', [
+      'test', '-p', 'skiff-runtime-vm', '--test', 'vertical',
+    ], 'rust-suite', ['K2']),
   ]);
 }
 
