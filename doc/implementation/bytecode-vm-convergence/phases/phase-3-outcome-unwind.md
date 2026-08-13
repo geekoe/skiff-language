@@ -68,6 +68,14 @@ accepted：同步普通 `throw`/`catch`/`rethrow`，异常 payload 为 Phase 2 �
 仍 disabled 且 fail closed：host effect、Pending/child/stream 相关 throw、service error 恢复语义、platform error
 envelope、异步 rethrow（live 面）。
 
+### 4a. Amendment 1（MAP3 Revision 3；2026-08-13）
+
+`CatchResult<T,E>` 与命名 union 的 discriminator 依赖唯一 string literal（canonical
+`doc/reference/static-semantics.md`：`tag` 字段为唯一 string literal）。Phase 3 因此放行**最小 string-literal
+切片**：编译期 string literal 只作为 union/`CatchResult` discriminator 常量（`.tag` 相等判别与
+string-literal-union 匹配）进入 admission 与 VM 常量比较。**不放行**通用 string 值（string 变量、拼接、聚合内
+string 字段、boundary string 等仍 fail closed）。该切片是 catch 语义的静态前提，不是为 fixture 开洞。
+
 ## 5. VCP-3
 
 真实 `.skiff` fixture 经 production compiler→linker→VM→request path：`throw union(A|B) 的 A 叶` →

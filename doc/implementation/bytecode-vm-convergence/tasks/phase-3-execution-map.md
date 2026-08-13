@@ -1,6 +1,6 @@
 # MAP3：Phase 3 rolling execution map
 
-> Status: active; revision 2; first-day lanes joined into integration, VCP red iteration starts
+> Status: active; revision 3; C3 converged union/catch/throw-site, string-literal discriminator slice decided
 >
 > Phase Contract: [`phase-3-outcome-unwind.md`](../phases/phase-3-outcome-unwind.md)
 >
@@ -95,3 +95,12 @@ Agent 可出最终 verdict。
   34 workloads：13 P3 场景 + 12 P1 回归 + 9 P2 回归），Node 113/113 绿。
 - 三 lane 已滚入 integration（`fb13148b`/`11a712b6`/`4980d316`）。P3G 在合并树上重跑找真实剩余红；join 契约
   filter：`k3-*`/`c3-*` 由 P3G 的 contract.mjs 指定。
+
+## 9. Revision 3
+
+- P3G 跟进 `7871f97c`/`cfb2c030`（fixture 收敛、K3 投影断言、受控 resume 对齐）；C3 跟进 `dd319a5e`：union
+  分支构造改写为外层匿名 union（runtime identity 仍叶）、rethrow expression-key 漂移修复、`CatchResult<never,E>`
+  槽类型、Throw 指令 source/synthetic site。uncaught/host/Pending negative 已绿。
+- 剩余红：mismatch fixture 的 `attempt.tag == "ok"` 因 Phase 2 无 string 面被 admission 拒绝。契约 §4a
+  Amendment 1 定案：放行编译期 string literal 仅作 discriminator 常量（tag 相等与 string-literal-union 匹配），
+  通用 string 值仍 fail closed。授权 C3 收 admission/emission，K3 收 linker/VM 常量比较（如需）。
