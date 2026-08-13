@@ -273,6 +273,9 @@ stream/backpressure。删除 adapter singleton、字符串 dispatch、blocking `
 初步 VCP：隔离 runtime 中 deterministic host server 分别覆盖 Ready、Pending、timeout/cancel 和两个并存
 stream handle；证明 handle 精确路由、bounded buffer、drop/cancel 和无 worker 阻塞。
 
+Router 侧 owner：Phase 5 的 stream VCP 与 Phase 7 的 whole-system 会触及 router 的 WS→HTTP chunked 传输
+路径；两个 Phase 的 contract 必须显式列出 router 侧 write owner 与其真实 composition 边界。
+
 ### Phase 6 — Cross-owner execution and managed-memory readiness
 
 闭合 child owner/heap/budget/boundary materialization，再按独立 lane 逐项开启 service、task、interface、callback
@@ -280,6 +283,11 @@ stream handle；证明 handle 精确路由、bounded buffer、drop/cancel 和无
 
 初步 VCP：caller 和 provider 使用不同 exact owner/heap，经 production child trampoline 传参、返回和普通
 throw；证明无 raw handle 穿越、parent 同步恢复和 Pending chain root 完整。
+
+拆分标准（提前定死）：6A = cross-owner heap + boundary materialization + 第一个 lane（service）的 VCP；
+6B = 其余 task/interface/callback/Actor 按 per-lane gate 逐个开启；request GC/compaction 只在完整 root graph
+闭合后开。统一 memory ledger 归本 Phase；此前的每个 heap/lifecycle 改动必须保持 per-request 内存上限可观测
+（沿用 Phase 1 raw fuel 的先例）。
 
 ### Phase 7 — Whole-system closure, budget and final acceptance
 
