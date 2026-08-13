@@ -1,0 +1,36 @@
+type LeafA {
+  marker: number,
+  owner: Array<number>,
+}
+
+type LeafB {
+  marker: number,
+  owner: Array<number>,
+}
+
+function innerThrow(leaf: LeafA | LeafB) -> void {
+  final cleanupOwner = [7]
+  throw leaf
+}
+
+function run(seed: number) -> number {
+  if seed == 1 {
+    final leaf: LeafA | LeafB = LeafA { marker: seed, owner: [seed] }
+    final inner = catch<LeafA>(innerThrow(leaf))
+    if inner.tag == "err" {
+      final exc = inner.exception
+      final outer = catch<LeafA>(rethrow exc)
+      if outer.tag == "err" {
+        return 2
+      }
+      return 11
+    }
+    return 12
+  }
+  final leafB: LeafA | LeafB = LeafB { marker: seed, owner: [seed] }
+  final caught = catch<LeafB>(innerThrow(leafB))
+  if caught.tag == "err" {
+    return 3
+  }
+  return 13
+}

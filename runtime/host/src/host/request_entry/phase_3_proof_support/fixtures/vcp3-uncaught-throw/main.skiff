@@ -1,0 +1,10 @@
+type LeafA {
+  marker: number,
+}
+
+function run(seed: number) -> number {
+  if seed == 1 {
+    throw LeafA { marker: seed }
+  }
+  return 99
+}

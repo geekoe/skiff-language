@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
-    AssignTargetIr, BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, LiteralIr,
-    StatementAttributionId, TypeDescriptorIr, TypeRefIr,
+    AssignTargetIr, BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, LiteralIr,
+    NamedUnionBranchIr, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -31,7 +31,8 @@ impl<'a> AdmittedPhase1BytecodeMir<'a> {
 }
 
 /// Admits the Phase 2 record/array MIR surface plus the retained Phase 1
-/// scalar/local-call core.
+/// scalar/local-call core, and the Phase 3 synchronous throw/catch/rethrow
+/// surface (nominal/union payloads over the Phase 2 value face).
 ///
 /// This is the production bytecode lane's source-owned capability boundary.
 /// It runs before constant evaluation, value-transfer derivation, or bytecode
@@ -39,8 +40,18 @@ impl<'a> AdmittedPhase1BytecodeMir<'a> {
 /// typed MIR facts; package names and binding strings never grant capability.
 /// The exact supported value shapes are `record` and `array` recursively over
 /// `number`/`boolean`/`null` and nested record/array; `string`, `bytes`,
-/// `map`, representations, streams, host targets, tail calls, throws,
-/// generics and `InOut` remain rejected at this single boundary.
+/// `map`, representations, streams, host targets, tail calls, generics and
+/// `InOut` remain rejected at this single boundary. Synchronous `throw`,
+/// `catch` and `rethrow` are admitted when their payload types stay on the
+/// Phase 2 record/array/scalar face (directly or as union leaves); host
+/// effect, Pending, child and stream throw producers stay fail closed
+/// through the existing target/effect rejections.
+///
+/// Phase 3 Amendment 1 admits the minimal compile-time string-literal slice:
+/// a string literal is accepted only as a union/`CatchResult` discriminator
+/// constant (`.tag` reads, `tag == "…"` equality and their narrowed types).
+/// General string values (bindings, fields, aggregates, boundary payloads,
+/// concatenation) remain rejected.
 pub fn admit_phase_1_bytecode_mir(
     units: &[MirUnit],
 ) -> Result<AdmittedPhase1BytecodeMir<'_>, BytecodeEmissionError> {
@@ -233,14 +244,7 @@ fn admit_function(
             "value-block source facts",
         ));
     }
-    if !function.regions.is_empty() {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::Exception,
-            "exception regions",
-        ));
-    }
+    admit_exception_regions(unit, function_key, function)?;
     if function.stream_result.is_some() {
         return Err(rejected_function(
             unit,
@@ -250,12 +254,20 @@ fn admit_function(
         ));
     }
     admit_effects(unit, function_key, &function.effect_summary)?;
+    let discriminator_literals = collect_discriminator_literal_positions(function)?;
     for expression in &function.expressions {
-        admit_expression(units, unit, function_key, function, expression)?;
+        admit_expression(
+            units,
+            unit,
+            function_key,
+            function,
+            expression,
+            &discriminator_literals,
+        )?;
     }
     for block in &function.blocks {
         for statement in &block.statements {
-            admit_statement(unit, function_key, function, statement)?;
+            admit_statement(units, unit, function_key, function, statement)?;
         }
     }
     if let Some(reason) = function.source_event_plan.unavailable_reason() {
@@ -266,6 +278,131 @@ fn admit_function(
         });
     }
     Ok(())
+}
+
+/// Admits the Phase 3 exception-region table as exact, function-local facts.
+///
+/// Every region must point at a `Catch` expression, carry the same slot and
+/// catch type as that node, and the slot's frame type must equal the catch
+/// type. Every `Catch` expression must be covered by exactly one region.
+/// Missing, duplicate or drifted facts are stable typed rejections; no
+/// partially admitted function escapes this boundary.
+fn admit_exception_regions(
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+) -> Result<(), BytecodeEmissionError> {
+    let mut region_catch_exprs = BTreeSet::new();
+    for (region_index, region) in function.regions.iter().enumerate() {
+        let expression = function
+            .expression(ExprRefIr {
+                expression: region.catch_expr,
+            })
+            .map_err(|_| {
+                exception_region_fact(
+                    unit,
+                    function_key,
+                    &format!(
+                        "region {region_index} references absent catch expression {}",
+                        region.catch_expr
+                    ),
+                )
+            })?;
+        let ExprIr::Catch {
+            catch_slot,
+            catch_type,
+            ..
+        } = &expression.expression
+        else {
+            return Err(exception_region_fact(
+                unit,
+                function_key,
+                &format!(
+                    "region {region_index} catch expression {} is not a Catch node",
+                    region.catch_expr
+                ),
+            ));
+        };
+        if !region_catch_exprs.insert(region.catch_expr) {
+            return Err(exception_region_fact(
+                unit,
+                function_key,
+                &format!(
+                    "region {region_index} duplicates catch expression {}",
+                    region.catch_expr
+                ),
+            ));
+        }
+        if region.catch_slot != *catch_slot {
+            return Err(exception_region_fact(
+                unit,
+                function_key,
+                &format!(
+                    "region {region_index} catch slot {} diverges from Catch node slot {catch_slot}",
+                    region.catch_slot
+                ),
+            ));
+        }
+        if &region.catch_type != catch_type {
+            return Err(exception_region_fact(
+                unit,
+                function_key,
+                &format!(
+                    "region {region_index} catch type diverges from Catch node type {catch_type:?}"
+                ),
+            ));
+        }
+        let slot_type = function.slot_type(region.catch_slot).map_err(|_| {
+            exception_region_fact(
+                unit,
+                function_key,
+                &format!(
+                    "region {region_index} catch slot {} is absent",
+                    region.catch_slot
+                ),
+            )
+        })?;
+        if slot_type != catch_type {
+            return Err(exception_region_fact(
+                unit,
+                function_key,
+                &format!(
+                    "region {region_index} catch slot {} frame type {slot_type:?} diverges from catch type {catch_type:?}",
+                    region.catch_slot
+                ),
+            ));
+        }
+    }
+    for expression in &function.expressions {
+        if matches!(expression.expression, ExprIr::Catch { .. })
+            && !region_catch_exprs.contains(&expression.index)
+        {
+            return Err(exception_region_fact(
+                unit,
+                function_key,
+                &format!(
+                    "catch expression {} has no exception region",
+                    expression.index
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn exception_region_fact(
+    unit: &MirUnit,
+    function_key: &str,
+    detail: &str,
+) -> BytecodeEmissionError {
+    BytecodeEmissionError::UnsupportedConstruct {
+        function_key: function_key.to_string(),
+        construct: "exception region facts",
+        location: format!(
+            " in module `{}` function `{function_key}`: {detail}",
+            unit.module_path
+        ),
+    }
 }
 
 fn admit_effects(
@@ -316,6 +453,7 @@ fn admit_effects(
 }
 
 fn admit_statement(
+    units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
@@ -356,8 +494,19 @@ fn admit_statement(
                 }
             }
         },
-        MirStmtKind::Throw { .. } | MirStmtKind::Rethrow { .. } => {
-            Some(Phase1UnsupportedCapability::Exception)
+        MirStmtKind::Throw { payload_type, .. } => {
+            admit_throw_payload_type(
+                units,
+                unit,
+                function_key,
+                payload_type,
+                &format!("statement {} throw payload type", statement.statement_index),
+            )?;
+            None
+        }
+        MirStmtKind::Rethrow { exception_slot } => {
+            function.slot(*exception_slot)?;
+            None
         }
         MirStmtKind::Emit { .. } | MirStmtKind::StreamNext { .. } => {
             Some(Phase1UnsupportedCapability::Stream)
@@ -399,12 +548,128 @@ fn is_tail_local_call(function: &MirFunction, expression_index: u32) -> bool {
         })
 }
 
+/// Compile-time string literals are admitted only as union/`CatchResult`
+/// discriminator constants: the right-hand operand of a `tag == "…"`
+/// equality. General string values stay fail closed.
+fn collect_discriminator_literal_positions(
+    function: &MirFunction,
+) -> Result<BTreeSet<u32>, BytecodeEmissionError> {
+    let mut positions = BTreeSet::new();
+    for expression in &function.expressions {
+        let ExprIr::Binary {
+            op: BinaryOpIr::Equal,
+            left,
+            right,
+        } = &expression.expression
+        else {
+            continue;
+        };
+        if is_tag_field_read(function, *left)? && is_string_literal_expression(function, *right)? {
+            positions.insert(right.expression);
+        }
+        if is_tag_field_read(function, *right)? && is_string_literal_expression(function, *left)? {
+            positions.insert(left.expression);
+        }
+    }
+    Ok(positions)
+}
+
+/// A `tag` field read is the discriminator position for a `CatchResult`
+/// (or a tag-shaped named-union accessor whose result is a string-literal
+/// union). Only these reads unlock string-literal type admission.
+fn is_tag_field_read(
+    function: &MirFunction,
+    expression_ref: ExprRefIr,
+) -> Result<bool, BytecodeEmissionError> {
+    let expression = function.expression(expression_ref)?;
+    let ExprIr::Field { object, field } = &expression.expression else {
+        return Ok(false);
+    };
+    if field != "tag" {
+        return Ok(false);
+    }
+    let object_type = &function.expression(*object)?.ty;
+    Ok(is_catch_result_type(object_type) || is_string_literal_union(&expression.ty))
+}
+
+fn is_string_literal_expression(
+    function: &MirFunction,
+    expression_ref: ExprRefIr,
+) -> Result<bool, BytecodeEmissionError> {
+    Ok(matches!(
+        function.expression(expression_ref)?.expression,
+        ExprIr::Literal {
+            value: LiteralIr::String { .. }
+        }
+    ))
+}
+
+fn is_string_literal_union(ty: &TypeRefIr) -> bool {
+    let TypeRefIr::Union { items } = ty else {
+        return false;
+    };
+    !items.is_empty()
+        && items.iter().all(|item| {
+            matches!(
+                item,
+                TypeRefIr::Literal {
+                    value: LiteralIr::String { .. }
+                }
+            )
+        })
+}
+
+fn is_string_literal_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Literal {
+            value: LiteralIr::String { .. }
+        }
+    )
+}
+
+fn is_catch_result_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2
+    )
+}
+
+/// After `result.tag == "err"` narrows a CatchResult binding, the expression
+/// model retypes later loads of that binding as the err-branch record
+/// `{ exception: Exception<E>, tag: "err" }`. The slot's frame type remains
+/// the opaque `CatchResult<T,E>`; this admission recognizes exactly that
+/// narrowed shape and rejects any other slot/load drift.
+fn is_catch_result_narrowed_load(slot_type: &TypeRefIr, load_type: &TypeRefIr) -> bool {
+    let TypeRefIr::Builtin { name, args } = slot_type else {
+        return false;
+    };
+    if name != "CatchResult" || args.len() != 2 {
+        return false;
+    }
+    let TypeRefIr::Record { fields } = load_type else {
+        return false;
+    };
+    if fields.len() != 2 {
+        return false;
+    }
+    let exception_type = TypeRefIr::Builtin {
+        name: "Exception".to_string(),
+        args: vec![args[1].clone()],
+    };
+    fields.get("exception") == Some(&exception_type)
+        && fields
+            .get("tag")
+            .is_some_and(|tag| is_string_literal_type(tag) || is_string_literal_union(tag))
+}
+
 fn admit_expression(
     units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
     expression: &skiff_compiler_lowering::mir::MirExpression,
+    discriminator_literals: &BTreeSet<u32>,
 ) -> Result<(), BytecodeEmissionError> {
     if let ExprIr::Construct { type_ref, .. } = &expression.expression {
         admit_type(
@@ -416,13 +681,21 @@ fn admit_expression(
             &format!("expression {} construct type", expression.index),
         )?;
     }
-    admit_type(
+    let discriminator_context = discriminator_literals.contains(&expression.index)
+        || is_tag_field_read(
+            function,
+            ExprRefIr {
+                expression: expression.index,
+            },
+        )?;
+    admit_type_with_discriminator_flag(
         units,
         unit,
         function_key,
         &expression.ty,
         true,
         &format!("expression {} type", expression.index),
+        discriminator_context,
     )?;
     if expression.writable.is_some() {
         return Err(rejected_function(
@@ -451,11 +724,14 @@ fn admit_expression(
     let capability = match &expression.expression {
         ExprIr::Literal { value } => match value {
             LiteralIr::Null | LiteralIr::Bool { .. } | LiteralIr::Number { .. } => None,
+            LiteralIr::String { .. } if discriminator_literals.contains(&expression.index) => None,
             LiteralIr::String { .. } => Some(Phase1UnsupportedCapability::ValueShape),
         },
         ExprIr::LoadSlot { slot } => {
             let slot_type = function.slot_type(*slot)?;
-            if slot_type != &expression.ty {
+            if slot_type != &expression.ty
+                && !is_catch_result_narrowed_load(slot_type, &expression.ty)
+            {
                 return Err(fact_mismatch(
                     unit,
                     function_key,
@@ -479,8 +755,54 @@ fn admit_expression(
         }
         ExprIr::ActorSelfField { .. } => Some(Phase1UnsupportedCapability::Actor),
         ExprIr::InterfaceBox { .. } => Some(Phase1UnsupportedCapability::Interface),
-        ExprIr::Throw { .. } | ExprIr::Rethrow { .. } | ExprIr::Catch { .. } => {
-            Some(Phase1UnsupportedCapability::Exception)
+        ExprIr::Throw { payload_type, .. } => {
+            admit_throw_payload_type(
+                units,
+                unit,
+                function_key,
+                payload_type,
+                &format!("expression {} throw payload type", expression.index),
+            )?;
+            None
+        }
+        ExprIr::Rethrow { exception_slot } => {
+            function.slot(*exception_slot)?;
+            None
+        }
+        ExprIr::Catch {
+            catch_slot,
+            catch_type,
+            ..
+        } => {
+            admit_type(
+                units,
+                unit,
+                function_key,
+                catch_type,
+                false,
+                &format!("expression {} catch type", expression.index),
+            )?;
+            let slot_type = function.slot_type(*catch_slot).map_err(|_| {
+                BytecodeEmissionError::UnsupportedConstruct {
+                    function_key: function_key.to_string(),
+                    construct: "catch slot facts",
+                    location: format!(
+                        " expression {} catch slot {catch_slot} is absent",
+                        expression.index
+                    ),
+                }
+            })?;
+            if slot_type != catch_type {
+                return Err(BytecodeEmissionError::UnsupportedConstruct {
+                    function_key: function_key.to_string(),
+                    construct: "catch slot facts",
+                    location: format!(
+                        " expression {} catch slot {catch_slot} frame type {slot_type:?} diverges from catch type {catch_type:?}",
+                        expression.index
+                    ),
+                });
+            }
+            None
         }
         ExprIr::Timeout { .. } | ExprIr::ConcurrentValue { .. } => {
             Some(Phase1UnsupportedCapability::PendingEffect)
@@ -787,6 +1109,105 @@ fn admit_slot_value_type(
     Ok(())
 }
 
+/// Phase 3 throw payload leaves must carry a runtime catch identity: local
+/// nominal record types and anonymous unions whose branches are nominal
+/// records. Structural, scalar and literal-branch leaves have no runtime
+/// identity and fail closed here instead of reaching a constant VmFailure.
+/// This tightens the throw face only; catch/rethrow admission is unchanged.
+fn admit_throw_payload_type(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    payload_type: &TypeRefIr,
+    location: &str,
+) -> Result<(), BytecodeEmissionError> {
+    match payload_type {
+        TypeRefIr::Union { items } => {
+            if items.is_empty() {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::ValueShape,
+                    &format!("{location} empty union"),
+                ));
+            }
+            for item in items {
+                admit_throw_payload_type(
+                    units,
+                    unit,
+                    function_key,
+                    item,
+                    &format!("{location} union branch"),
+                )?;
+            }
+            Ok(())
+        }
+        TypeRefIr::LocalType { type_index } => admit_nominal_record_leaf(
+            units,
+            unit,
+            function_key,
+            &unit.module_path,
+            *type_index,
+            location,
+        ),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => admit_nominal_record_leaf(
+            units,
+            unit,
+            function_key,
+            module_path,
+            *type_index,
+            location,
+        ),
+        other => Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::ValueShape,
+            &format!("{location} leaf {other:?} has no runtime catch identity"),
+        )),
+    }
+}
+
+fn admit_nominal_record_leaf(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    module_path: &str,
+    type_index: u32,
+    location: &str,
+) -> Result<(), BytecodeEmissionError> {
+    let owning_unit = units
+        .iter()
+        .find(|candidate| candidate.module_path == module_path)
+        .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+            context: format!("throw payload nominal leaf admission for module `{module_path}`"),
+            message: "owning MIR unit disappeared".to_string(),
+        })?;
+    let declaration = owning_unit
+        .type_table
+        .get(type_index as usize)
+        .ok_or_else(|| BytecodeEmissionError::MissingLocalType {
+            module_path: module_path.to_string(),
+            location: location.to_string(),
+            type_index,
+            type_count: owning_unit.type_table.len(),
+        })?;
+    if !matches!(declaration.descriptor, TypeDescriptorIr::Record { .. }) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::ValueShape,
+            &format!(
+                "{location} nominal `{}` is not a record leaf",
+                declaration.name
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn admit_type(
     units: &[MirUnit],
     unit: &MirUnit,
@@ -795,10 +1216,23 @@ fn admit_type(
     allow_void: bool,
     location: &str,
 ) -> Result<(), BytecodeEmissionError> {
+    admit_type_with_discriminator_flag(units, unit, function_key, ty, allow_void, location, false)
+}
+
+fn admit_type_with_discriminator_flag(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    ty: &TypeRefIr,
+    allow_void: bool,
+    location: &str,
+    allow_discriminator_literal: bool,
+) -> Result<(), BytecodeEmissionError> {
     let mut context = TypeAdmissionContext {
         units,
         function_key,
         nominal_chain: Vec::new(),
+        allow_discriminator_literal,
     };
     admit_type_nested(&mut context, unit, ty, allow_void, location, false)
 }
@@ -812,6 +1246,7 @@ struct TypeAdmissionContext<'a> {
     units: &'a [MirUnit],
     function_key: &'a str,
     nominal_chain: Vec<(String, u32)>,
+    allow_discriminator_literal: bool,
 }
 
 fn admit_type_nested(
@@ -825,14 +1260,22 @@ fn admit_type_nested(
     match ty {
         TypeRefIr::Record { fields } => {
             for (name, field_ty) in fields {
-                admit_type_nested(
+                let saved_flag = context.allow_discriminator_literal;
+                if name == "tag"
+                    && (is_string_literal_type(field_ty) || is_string_literal_union(field_ty))
+                {
+                    context.allow_discriminator_literal = true;
+                }
+                let result = admit_type_nested(
                     context,
                     unit,
                     field_ty,
                     false,
                     &format!("{location} field `{name}`"),
                     true,
-                )?;
+                );
+                context.allow_discriminator_literal = saved_flag;
+                result?;
             }
             Ok(())
         }
@@ -846,13 +1289,70 @@ fn admit_type_nested(
                 true,
             )
         }
+        TypeRefIr::Union { items } => {
+            for item in items {
+                admit_type_nested(
+                    context,
+                    unit,
+                    item,
+                    false,
+                    &format!("{location} union leaf"),
+                    nested,
+                )?;
+            }
+            Ok(())
+        }
+        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
+            admit_type_nested(
+                context,
+                unit,
+                &args[0],
+                true,
+                &format!("{location} result type"),
+                nested,
+            )?;
+            admit_type_nested(
+                context,
+                unit,
+                &args[1],
+                false,
+                &format!("{location} error type"),
+                nested,
+            )
+        }
+        TypeRefIr::Builtin { name, args } if name == "Exception" && args.len() == 1 => {
+            admit_type_nested(
+                context,
+                unit,
+                &args[0],
+                false,
+                &format!("{location} payload type"),
+                nested,
+            )
+        }
+        // Compile-time string literals are admitted only inside a
+        // discriminator context (a `.tag` result union or the constant side
+        // of a `tag == "…"` equality). Everywhere else they stay on the
+        // rejected Phase 2 value-shape face.
+        TypeRefIr::Literal {
+            value: LiteralIr::String { .. },
+        } if context.allow_discriminator_literal => Ok(()),
+        // A `tag` read on a CatchResult whose try expression was a throw or
+        // rethrow is typed `unknown` by the expression model (the catch node
+        // has no recorded result type). The admission admits that honest top
+        // type only in the verified tag-read discriminator position.
+        TypeRefIr::Builtin { name, args }
+            if name == "unknown" && args.is_empty() && context.allow_discriminator_literal =>
+        {
+            Ok(())
+        }
         TypeRefIr::LocalType { type_index } => {
-            admit_record_declaration(context, unit, &unit.module_path, *type_index, location)
+            admit_nominal_declaration(context, unit, &unit.module_path, *type_index, location)
         }
         TypeRefIr::PublicationType {
             module_path,
             type_index,
-        } => admit_record_declaration(context, unit, module_path, *type_index, location),
+        } => admit_nominal_declaration(context, unit, module_path, *type_index, location),
         _ => {
             if let Some(capability) = unsupported_type_capability(ty, allow_void) {
                 return if nested {
@@ -875,7 +1375,10 @@ fn admit_type_nested(
     }
 }
 
-fn admit_record_declaration(
+/// Recursively admits one nominal declaration (record, representation, named
+/// union or transparent alias) against the Phase 2 value face, with a
+/// nominal-recursion guard. Interface declarations stay rejected.
+fn admit_nominal_declaration(
     context: &mut TypeAdmissionContext<'_>,
     unit: &MirUnit,
     module_path: &str,
@@ -907,27 +1410,81 @@ fn admit_record_declaration(
             type_index,
             type_count: owning_unit.type_table.len(),
         })?;
-    let TypeDescriptorIr::Record { fields } = &declaration.descriptor else {
-        return Err(rejected_function(
+    context.nominal_chain.push(key);
+    let result = match &declaration.descriptor {
+        TypeDescriptorIr::Record { fields } => {
+            for (name, field_ty) in fields {
+                admit_type_nested(
+                    context,
+                    owning_unit,
+                    field_ty,
+                    false,
+                    &format!("{location} field `{name}`"),
+                    true,
+                )?;
+            }
+            Ok(())
+        }
+        TypeDescriptorIr::Representation { representation } => admit_type_nested(
+            context,
+            owning_unit,
+            representation,
+            false,
+            &format!("{location} representation"),
+            true,
+        ),
+        TypeDescriptorIr::Union { branches } => {
+            for branch in branches {
+                match branch {
+                    NamedUnionBranchIr::ConcreteNominal { nominal_type } => admit_type_nested(
+                        context,
+                        owning_unit,
+                        nominal_type,
+                        false,
+                        &format!("{location} union branch"),
+                        true,
+                    )?,
+                    NamedUnionBranchIr::SyntheticDiscriminator { payload_type, .. } => {
+                        admit_type_nested(
+                            context,
+                            owning_unit,
+                            payload_type,
+                            false,
+                            &format!("{location} union branch"),
+                            true,
+                        )?
+                    }
+                    NamedUnionBranchIr::Literal { value } => admit_type_nested(
+                        context,
+                        owning_unit,
+                        &TypeRefIr::Literal {
+                            value: value.clone(),
+                        },
+                        false,
+                        &format!("{location} union branch"),
+                        true,
+                    )?,
+                }
+            }
+            Ok(())
+        }
+        TypeDescriptorIr::Alias { target } => admit_type_nested(
+            context,
+            owning_unit,
+            target,
+            false,
+            &format!("{location} alias target"),
+            true,
+        ),
+        TypeDescriptorIr::Interface => Err(rejected_function(
             unit,
             context.function_key,
             Phase1UnsupportedCapability::ValueShape,
             location,
-        ));
+        )),
     };
-    context.nominal_chain.push(key);
-    for (name, field_ty) in fields {
-        admit_type_nested(
-            context,
-            owning_unit,
-            field_ty,
-            false,
-            &format!("{location} field `{name}`"),
-            true,
-        )?;
-    }
     context.nominal_chain.pop();
-    Ok(())
+    result
 }
 
 fn phase_2_nested_shape_rejection(
@@ -947,6 +1504,12 @@ fn unsupported_type_capability(
     allow_void: bool,
 ) -> Option<Phase1UnsupportedCapability> {
     match ty {
+        // Throw/rethrow expressions are typed `never`: the uninhabited type is
+        // admitted only where the language itself places it (expression/result
+        // positions), never as a data-shape leaf.
+        TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty() && allow_void => {
+            None
+        }
         TypeRefIr::Builtin { name, args }
             if args.is_empty()
                 && (matches!(name.as_str(), "integer" | "number" | "bool" | "null")
@@ -1004,5 +1567,646 @@ fn rejected(
         module_path: unit.module_path.clone(),
         function_key: function_key.map(str::to_string),
         location: location.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use skiff_artifact_model::{
+        CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects, ExprIr, ExprRefIr,
+        FileIrUnit, InstructionSourceSite, LiteralIr, PackageCallableId,
+        SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    };
+    use skiff_compiler_lowering::mir::{
+        MirBlock, MirExecutableKind, MirExpression, MirFunction, MirLiveness, MirRegion, MirSlot,
+        MirSlotKind, MirSourceEventPlan, MirSourceEventUnavailableReason, MirStmt, MirStmtKind,
+        MirUnit,
+    };
+
+    use super::*;
+    use crate::Phase1UnsupportedCapability;
+
+    const FUNCTION_KEY: &str = "main::run";
+
+    fn number() -> TypeRefIr {
+        TypeRefIr::builtin("number")
+    }
+
+    fn local(index: u32) -> TypeRefIr {
+        TypeRefIr::LocalType { type_index: index }
+    }
+
+    fn union(items: Vec<TypeRefIr>) -> TypeRefIr {
+        TypeRefIr::Union { items }
+    }
+
+    fn record_declaration(name: &str, fields: BTreeMap<String, TypeRefIr>) -> TypeDeclIr {
+        TypeDeclIr {
+            name: name.to_string(),
+            descriptor: TypeDescriptorIr::Record { fields },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        }
+    }
+
+    fn slot(index: u32, ty: TypeRefIr) -> MirSlot {
+        MirSlot {
+            slot: index,
+            name: format!("slot{index}"),
+            kind: MirSlotKind::Local,
+            writable_local: false,
+            ty: Some(ty),
+        }
+    }
+
+    fn expression(index: u32, expression: ExprIr, ty: TypeRefIr) -> MirExpression {
+        MirExpression {
+            index,
+            expression,
+            ty,
+            writable: None,
+            direct_call: None,
+            stream_result: None,
+            remote_interface: None,
+        }
+    }
+
+    fn statement(index: u32, kind: MirStmtKind) -> MirStmt {
+        MirStmt {
+            statement_index: index,
+            span: None,
+            kind,
+        }
+    }
+
+    fn synthetic_site() -> InstructionSourceSite {
+        InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+        }
+    }
+
+    fn function() -> MirFunction {
+        MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:main".to_string(),
+                module_path: "main".to_string(),
+                executable_index: 0,
+            },
+            symbol: "main.run".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("void"),
+            self_type: None,
+            receiver: None,
+            slots: Vec::new(),
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: Vec::new(),
+            blocks: Vec::new(),
+            regions: Vec::new(),
+            statements: Vec::new(),
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:main:run".to_string()),
+            effect_summary: CallableEffectSummary::Analyzed {
+                effects: CallableMayEffects {
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_pending: false,
+                    pending_effect_categories: Vec::new(),
+                    inout_path_effects: Vec::new(),
+                },
+            },
+            source_span: None,
+        }
+    }
+
+    fn unit(functions: Vec<MirFunction>, type_table: Vec<TypeDeclIr>) -> MirUnit {
+        let mut file_ir = FileIrUnit::empty("main", "source-hash");
+        file_ir.file_ir_identity = "file:main".to_string();
+        file_ir.type_table = type_table;
+        MirUnit {
+            file_ir_identity: file_ir.file_ir_identity,
+            module_path: file_ir.module_path,
+            actor_declarations: file_ir.actor_declarations,
+            external_refs: file_ir.external_refs,
+            source_map: file_ir.source_map,
+            type_table: file_ir.type_table,
+            package_type_records: BTreeMap::new(),
+            link_targets: file_ir.link_targets,
+            constants: Vec::new(),
+            functions,
+        }
+    }
+
+    fn two_nominal_types() -> Vec<TypeDeclIr> {
+        vec![
+            record_declaration("A", BTreeMap::from([("x".to_string(), number())])),
+            record_declaration("B", BTreeMap::from([("y".to_string(), number())])),
+        ]
+    }
+
+    #[test]
+    fn phase_3_admission_accepts_union_throw_statement() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let mut function = function();
+        function.expressions.push(expression(
+            0,
+            ExprIr::Literal {
+                value: LiteralIr::Number {
+                    value: serde_json::Number::from(1_u64),
+                },
+            },
+            local(0),
+        ));
+        let statement = statement(
+            0,
+            MirStmtKind::Throw {
+                value: ExprRefIr { expression: 0 },
+                payload_type: union(vec![local(0), local(1)]),
+                site: synthetic_site(),
+            },
+        );
+        admit_statement(&units, &units[0], FUNCTION_KEY, &function, &statement)
+            .expect("a union throw statement on the Phase 2 face is admitted");
+    }
+
+    #[test]
+    fn phase_3_admission_accepts_catch_expression_and_its_region() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let mut function = function();
+        function.slots.push(slot(0, local(0)));
+        function.expressions.push(expression(
+            0,
+            ExprIr::Literal {
+                value: LiteralIr::Number {
+                    value: serde_json::Number::from(1_u64),
+                },
+            },
+            number(),
+        ));
+        function
+            .expressions
+            .push(expression(1, ExprIr::LoadSlot { slot: 0 }, local(0)));
+        function.expressions.push(expression(
+            2,
+            ExprIr::Catch {
+                try_expression: ExprRefIr { expression: 0 },
+                catch_slot: 0,
+                catch_type: local(0),
+                body: ExprRefIr { expression: 1 },
+            },
+            TypeRefIr::Builtin {
+                name: "CatchResult".to_string(),
+                args: vec![number(), local(0)],
+            },
+        ));
+        function.regions.push(MirRegion {
+            id: 0,
+            catch_expr: 2,
+            catch_slot: 0,
+            catch_type: local(0),
+            cleanup_depth: 0,
+        });
+
+        admit_exception_regions(&units[0], FUNCTION_KEY, &function)
+            .expect("a well-formed catch region is admitted");
+        admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &function,
+            &function.expressions[2],
+            &BTreeSet::new(),
+        )
+        .expect("a catch expression on the Phase 2 face is admitted");
+    }
+
+    #[test]
+    fn phase_3_admission_accepts_rethrow_and_never_types() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let mut function = function();
+        function.slots.push(slot(0, local(0)));
+
+        admit_statement(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &function,
+            &statement(0, MirStmtKind::Rethrow { exception_slot: 0 }),
+        )
+        .expect("a rethrow statement is admitted");
+
+        let rethrow = expression(
+            0,
+            ExprIr::Rethrow { exception_slot: 0 },
+            TypeRefIr::builtin("never"),
+        );
+        function.expressions.push(rethrow.clone());
+        admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &function,
+            &function.expressions[0],
+            &BTreeSet::new(),
+        )
+        .expect("a rethrow expression typed never is admitted");
+    }
+
+    #[test]
+    fn phase_3_admission_rejects_throw_payload_outside_the_phase_2_face() {
+        let units = [unit(Vec::new(), Vec::new())];
+        let function = function();
+        let error = admit_statement(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &function,
+            &statement(
+                0,
+                MirStmtKind::Throw {
+                    value: ExprRefIr { expression: 0 },
+                    payload_type: TypeRefIr::builtin("string"),
+                    site: synthetic_site(),
+                },
+            ),
+        )
+        .expect_err("string payloads stay rejected");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::ValueShape,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn phase_3_admission_rejects_missing_catch_region_facts() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let mut function = function();
+        function.slots.push(slot(0, local(0)));
+        function.expressions.push(expression(
+            0,
+            ExprIr::Catch {
+                try_expression: ExprRefIr { expression: 1 },
+                catch_slot: 0,
+                catch_type: local(0),
+                body: ExprRefIr { expression: 1 },
+            },
+            TypeRefIr::Builtin {
+                name: "CatchResult".to_string(),
+                args: vec![number(), local(0)],
+            },
+        ));
+        function
+            .expressions
+            .push(expression(1, ExprIr::LoadSlot { slot: 0 }, local(0)));
+        let error = admit_exception_regions(&units[0], FUNCTION_KEY, &function)
+            .expect_err("a Catch node without a region must fail closed");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedConstruct {
+                construct: "exception region facts",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn phase_3_admission_keeps_host_effect_throw_fail_closed() {
+        let mut function = function();
+        function.expressions.push(expression(
+            0,
+            ExprIr::Call {
+                call: CallIr {
+                    target: CallTargetIr::Builtin {
+                        op: "hostOp".to_string(),
+                    },
+                    concrete_receiver: None,
+                    site: synthetic_site(),
+                    args: Vec::new(),
+                    inout_args: Vec::new(),
+                    type_args: BTreeMap::new(),
+                    metadata: BTreeMap::new(),
+                },
+            },
+            number(),
+        ));
+        function.blocks.push(MirBlock {
+            id: 0,
+            label: "entry".to_string(),
+            statements: vec![statement(
+                0,
+                MirStmtKind::Throw {
+                    value: ExprRefIr { expression: 0 },
+                    payload_type: local(0),
+                    site: synthetic_site(),
+                },
+            )],
+            successors: Vec::new(),
+        });
+        function
+            .statements
+            .push(skiff_compiler_lowering::mir::MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            });
+        let units = [unit(vec![function], two_nominal_types())];
+        let error = admit_phase_1_bytecode_mir(&units).expect_err("host targets stay rejected");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::HostTarget,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn phase_3_admission_accepts_catch_result_tag_discriminator_reads() {
+        let catch_type = local(1);
+        let catch_result = TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![TypeRefIr::builtin("never"), catch_type.clone()],
+        };
+        let mut function = function();
+        function.slots.push(slot(0, catch_type.clone()));
+        function.slots.push(slot(1, catch_result.clone()));
+        function.expressions.push(expression(
+            0,
+            ExprIr::Literal {
+                value: LiteralIr::Number {
+                    value: serde_json::Number::from(1_u64),
+                },
+            },
+            number(),
+        ));
+        function.expressions.push(expression(
+            1,
+            ExprIr::Construct {
+                type_ref: catch_type.clone(),
+                fields: BTreeMap::from([("marker".to_string(), ExprRefIr { expression: 0 })]),
+            },
+            catch_type.clone(),
+        ));
+        function.expressions.push(expression(
+            2,
+            ExprIr::Throw {
+                value: ExprRefIr { expression: 1 },
+                payload_type: catch_type.clone(),
+                site: synthetic_site(),
+            },
+            TypeRefIr::builtin("never"),
+        ));
+        function.expressions.push(expression(
+            3,
+            ExprIr::LoadSlot { slot: 0 },
+            catch_type.clone(),
+        ));
+        function.expressions.push(expression(
+            4,
+            ExprIr::Catch {
+                try_expression: ExprRefIr { expression: 2 },
+                catch_slot: 0,
+                catch_type: catch_type.clone(),
+                body: ExprRefIr { expression: 3 },
+            },
+            catch_result.clone(),
+        ));
+        function.expressions.push(expression(
+            5,
+            ExprIr::LoadSlot { slot: 1 },
+            catch_result.clone(),
+        ));
+        function.expressions.push(expression(
+            6,
+            ExprIr::Field {
+                object: ExprRefIr { expression: 5 },
+                field: "tag".to_string(),
+            },
+            TypeRefIr::builtin("unknown"),
+        ));
+        function.expressions.push(expression(
+            7,
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "ok".to_string(),
+                },
+            },
+            TypeRefIr::Literal {
+                value: LiteralIr::String {
+                    value: "ok".to_string(),
+                },
+            },
+        ));
+        function.expressions.push(expression(
+            8,
+            ExprIr::Binary {
+                op: skiff_artifact_model::BinaryOpIr::Equal,
+                left: ExprRefIr { expression: 6 },
+                right: ExprRefIr { expression: 7 },
+            },
+            TypeRefIr::builtin("bool"),
+        ));
+        function.regions.push(MirRegion {
+            id: 0,
+            catch_expr: 4,
+            catch_slot: 0,
+            catch_type: catch_type.clone(),
+            cleanup_depth: 0,
+        });
+
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let positions = collect_discriminator_literal_positions(&function)
+            .expect("discriminator positions collect");
+        assert_eq!(
+            positions.iter().copied().collect::<Vec<_>>(),
+            vec![7],
+            "only the tag-equality string literal is a discriminator constant"
+        );
+        for index in 4..=8 {
+            admit_expression(
+                &units,
+                &units[0],
+                FUNCTION_KEY,
+                &function,
+                &function.expressions[index],
+                &positions,
+            )
+            .unwrap_or_else(|error| {
+                panic!("discriminator expression {index} should be admitted: {error:?}")
+            });
+        }
+
+        // The narrowed err-branch record load stays a stable LoadSlot fact.
+        let narrowed_tag = TypeRefIr::Literal {
+            value: LiteralIr::String {
+                value: "err".to_string(),
+            },
+        };
+        let narrowed = expression(
+            9,
+            ExprIr::LoadSlot { slot: 1 },
+            TypeRefIr::Record {
+                fields: BTreeMap::from([
+                    (
+                        "exception".to_string(),
+                        TypeRefIr::Builtin {
+                            name: "Exception".to_string(),
+                            args: vec![catch_type],
+                        },
+                    ),
+                    ("tag".to_string(), narrowed_tag),
+                ]),
+            },
+        );
+        function.expressions.push(narrowed);
+        admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &function,
+            &function.expressions[9],
+            &positions,
+        )
+        .expect("the narrowed CatchResult load is admitted");
+    }
+
+    #[test]
+    fn phase_3_admission_keeps_non_discriminator_string_literals_fail_closed() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let mut function = function();
+        let literal = expression(
+            0,
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "ok".to_string(),
+                },
+            },
+            TypeRefIr::Literal {
+                value: LiteralIr::String {
+                    value: "ok".to_string(),
+                },
+            },
+        );
+        function.expressions.push(literal.clone());
+        let error = admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &function,
+            &function.expressions[0],
+            &BTreeSet::new(),
+        )
+        .expect_err("a bare string literal stays rejected");
+        assert!(
+            matches!(
+                error,
+                BytecodeEmissionError::UnsupportedPhase1Capability {
+                    capability: Phase1UnsupportedCapability::ValueShape,
+                    ..
+                }
+            ),
+            "unexpected rejection: {error:?}"
+        );
+    }
+
+    #[test]
+    fn phase_3_admission_accepts_nominal_record_and_nominal_branch_throws() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let function = function();
+        for payload_type in [local(0), union(vec![local(0), local(1)])] {
+            admit_statement(
+                &units,
+                &units[0],
+                FUNCTION_KEY,
+                &function,
+                &statement(
+                    0,
+                    MirStmtKind::Throw {
+                        value: ExprRefIr { expression: 0 },
+                        payload_type,
+                        site: synthetic_site(),
+                    },
+                ),
+            )
+            .unwrap_or_else(|error| {
+                panic!("nominal record / nominal-branch throw must be admitted: {error:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn phase_3_admission_rejects_identityless_throw_leaves_fail_closed() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let function = function();
+        let cases = vec![
+            ("scalar", TypeRefIr::builtin("number")),
+            (
+                "anonymous structural record",
+                TypeRefIr::Record {
+                    fields: BTreeMap::from([("x".to_string(), number())]),
+                },
+            ),
+            (
+                "literal-branch union",
+                union(vec![
+                    TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "ok".to_string(),
+                        },
+                    },
+                    TypeRefIr::Literal {
+                        value: LiteralIr::Bool { value: true },
+                    },
+                ]),
+            ),
+            (
+                "array leaf",
+                TypeRefIr::Builtin {
+                    name: "Array".to_string(),
+                    args: vec![number()],
+                },
+            ),
+        ];
+        for (name, payload_type) in cases {
+            let error = admit_statement(
+                &units,
+                &units[0],
+                FUNCTION_KEY,
+                &function,
+                &statement(
+                    0,
+                    MirStmtKind::Throw {
+                        value: ExprRefIr { expression: 0 },
+                        payload_type,
+                        site: synthetic_site(),
+                    },
+                ),
+            )
+            .expect_err("identity-less throws must fail closed");
+            assert!(
+                matches!(
+                    error,
+                    BytecodeEmissionError::UnsupportedPhase1Capability {
+                        capability: Phase1UnsupportedCapability::ValueShape,
+                        ..
+                    }
+                ),
+                "{name} throw rejected with the wrong shape: {error:?}"
+            );
+        }
     }
 }

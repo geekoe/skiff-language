@@ -88,6 +88,25 @@ pub(super) fn require_same_type(
     Ok(())
 }
 
+/// The Phase 3 slot-write/call-argument assignability slice: exact semantic
+/// equality, or a concrete leaf flowing into an anonymous union containing it
+/// (with the same lifecycle). Nothing else is accepted.
+pub(super) fn require_assignable(
+    actual: AbstractValue,
+    expected: TypeIndex,
+    facts: &ConcreteValueFacts,
+    location: VerificationLocation,
+    owner: impl AsRef<str>,
+) -> Result<(), VerificationError> {
+    let AbstractValue::Concrete(actual_ty) = actual;
+    if facts.semantically_equal(actual_ty, expected) == Some(true)
+        || facts.union_branch_assignable(actual_ty, expected)
+    {
+        return Ok(());
+    }
+    require_same_type(actual, expected, facts, location, owner)
+}
+
 pub(super) fn require_concrete_fact(
     value: AbstractValue,
     facts: &ConcreteValueFacts,

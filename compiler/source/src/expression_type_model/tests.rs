@@ -221,7 +221,7 @@ fn array_literal_publishes_exact_array_and_item_types() {
             .map(|ty| ty.ir.clone()),
         Some(TypeRefIr::Builtin {
             name: BuiltinShape::Array.name().to_string(),
-            args: vec![TypeRefIr::builtin("integer")],
+            args: vec![TypeRefIr::builtin("number")],
         })
     );
 
@@ -1711,6 +1711,162 @@ fn constructor_validation_error_carries_structured_field_facts() {
     assert!(
         validation.type_mismatches[0].value_span != SourceSpan::synthetic(),
         "field mismatch should retain source value span"
+    );
+}
+
+#[test]
+fn union_target_typed_nominal_constructor_records_the_union_type() {
+    let model = expression_type_result(
+        r#"
+              type LeafA {
+                marker: number,
+              }
+
+              type LeafB {
+                marker: number,
+              }
+
+              function run(seed: number) -> void {
+                final leaf: LeafA | LeafB = LeafB { marker: seed }
+              }
+            "#,
+    )
+    .expect("union target typing should type check");
+    let key = ExpressionKey::new(
+        ANY_INTERFACE_MODULE.to_string(),
+        ExpressionOwnerKey::Function("run".to_string()),
+        0,
+    );
+    let fact = model.fact(&key).expect("constructor fact should exist");
+    assert_eq!(
+        fact.ty.as_ref().map(|ty| &ty.ir),
+        Some(&TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::LocalType { type_index: 0 },
+                TypeRefIr::LocalType { type_index: 1 },
+            ],
+        }),
+        "the constructor branch should widen into the declared union context"
+    );
+    assert!(
+        model.constructor_validation(&key).is_some(),
+        "the structured constructor validation fact must remain"
+    );
+}
+
+#[test]
+fn union_call_argument_constructor_records_the_parameter_union_type() {
+    let model = expression_type_result(
+        r#"
+              type LeafA {
+                marker: number,
+              }
+
+              type LeafB {
+                marker: number,
+              }
+
+              function innerThrow(leaf: LeafA | LeafB) -> void {
+              }
+
+              function run(seed: number) -> void {
+                innerThrow(LeafB { marker: seed })
+              }
+            "#,
+    )
+    .expect("union call argument should type check");
+    // Preorder: 0 = call, 1 = callee identifier, 2 = constructor, 3 = seed.
+    let key = ExpressionKey::new(
+        ANY_INTERFACE_MODULE.to_string(),
+        ExpressionOwnerKey::Function("run".to_string()),
+        2,
+    );
+    let fact = model.fact(&key).expect("constructor fact should exist");
+    assert_eq!(
+        fact.ty.as_ref().map(|ty| &ty.ir),
+        Some(&TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::LocalType { type_index: 0 },
+                TypeRefIr::LocalType { type_index: 1 },
+            ],
+        }),
+        "a union-typed parameter should widen the constructor argument"
+    );
+    assert!(model.constructor_validation(&key).is_some());
+}
+
+#[test]
+fn non_union_target_keeps_the_constructor_nominal_type() {
+    let model = expression_type_result(
+        r#"
+              type LeafA {
+                marker: number,
+              }
+
+              type LeafB {
+                marker: number,
+              }
+
+              function run(seed: number) -> void {
+                final leaf: LeafB = LeafB { marker: seed }
+              }
+            "#,
+    )
+    .expect("nominal binding should type check");
+    let key = ExpressionKey::new(
+        ANY_INTERFACE_MODULE.to_string(),
+        ExpressionOwnerKey::Function("run".to_string()),
+        0,
+    );
+    let fact = model.fact(&key).expect("constructor fact should exist");
+    assert_eq!(
+        fact.ty.as_ref().map(|ty| &ty.ir),
+        Some(&TypeRefIr::LocalType { type_index: 1 }),
+        "outside a union target the constructor keeps its own nominal type"
+    );
+}
+
+#[test]
+fn array_literal_elements_use_number_not_integer_literal_aliases() {
+    let model = expression_type_result(
+        r#"
+              function run(seed: number) -> void {
+                final seeded = [seed]
+                final literals = [7]
+              }
+            "#,
+    )
+    .expect("array literals should type check");
+    // Preorder: 0 = [seed], 1 = seed, 2 = [7], 3 = 7.
+    let seeded = ExpressionKey::new(
+        ANY_INTERFACE_MODULE.to_string(),
+        ExpressionOwnerKey::Function("run".to_string()),
+        0,
+    );
+    let literal_array = ExpressionKey::new(
+        ANY_INTERFACE_MODULE.to_string(),
+        ExpressionOwnerKey::Function("run".to_string()),
+        2,
+    );
+    let array_of = |name| TypeRefIr::Builtin {
+        name: "Array".to_string(),
+        args: vec![TypeRefIr::builtin(name)],
+    };
+    assert_eq!(
+        model
+            .fact(&seeded)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| &ty.ir),
+        Some(&array_of("number")),
+        "a number-typed seed keeps the canonical number element type"
+    );
+    assert_eq!(
+        model
+            .fact(&literal_array)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|ty| &ty.ir),
+        Some(&array_of("number")),
+        "an integer literal must not introduce an Array<integer> element alias"
     );
 }
 

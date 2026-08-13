@@ -13,13 +13,13 @@ use skiff_runtime_model::{
         BytecodeExecutionObserver, RequestExecutionOwnerInventorySnapshot,
     },
     request_heap::RequestHeapLimits,
-    vm_heap::{
-        VmContainerShape, VmHeap, VmHeapError, VmRecordField,
-    },
+    service_error::{ErrorCorrelation, RequestException},
+    vm_heap::{VmContainerShape, VmHeap, VmHeapError, VmRecordField},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
 use skiff_runtime_scheduler::{
-    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts, RequestExecutionContext,
+    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
+    RequestExecutionContext,
 };
 use skiff_runtime_vm::{
     Vm, VmBudget, VmBudgetClosed, VmBudgetTerminal, VmError, VmFiber, VmInternalTerminal, VmLimits,
@@ -115,24 +115,26 @@ pub fn drive_runtime_bytecode_request(
 
     let mut context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
 
-    let start = (|| -> RequestResult<(VmFiber, Box<dyn VmHeap + Send>, Box<dyn VmBudget + Send>)> {
-        validate_bytecode_request(&request)?;
-        ExecutionControl::new(cancellation.clone(), &execution_budget)
-            .check_cancelled()
-            .map_err(RequestError::from)?;
-        let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
-            Some(heap) => heap,
-            None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
-        };
-        let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
-        let fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
-            .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-        let budget = execution_budget.attach_vm().map_err(|error| {
-            RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
-        })?;
-        let budget: Box<dyn VmBudget + Send> = Box::new(budget);
-        Ok((fiber, heap, budget))
-    })();
+    let start =
+        (|| -> RequestResult<(VmFiber, Box<dyn VmHeap + Send>, Box<dyn VmBudget + Send>)> {
+            validate_bytecode_request(&request)?;
+            ExecutionControl::new(cancellation.clone(), &execution_budget)
+                .check_cancelled()
+                .map_err(RequestError::from)?;
+            let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
+                Some(heap) => heap,
+                None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
+            };
+            let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
+            let mut fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
+                .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
+            fiber.set_error_correlation(bytecode_error_correlation(&request));
+            let budget = execution_budget.attach_vm().map_err(|error| {
+                RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
+            })?;
+            let budget: Box<dyn VmBudget + Send> = Box::new(budget);
+            Ok((fiber, heap, budget))
+        })();
 
     let (fiber, mut heap, mut budget) = match start {
         Ok(parts) => parts,
@@ -153,23 +155,24 @@ pub fn drive_runtime_bytecode_request(
     context.install_root(fiber);
     let (outcome, snapshot) = context.drive(&mut *heap, &mut *budget);
     let result = match outcome {
-        Ok(BytecodeSchedulerOutcome::Complete(result)) => {
-            match result.map_err(|error| vm_error_to_request_error(&execution_budget, error)) {
-                Ok(values) => {
-                    if mode == "serverStream" {
-                        Err(RequestError::Decode(
-                            "serverStream request completed without a response stream".to_string(),
-                        ))
-                    } else if raw_http_adapter {
-                        http_response_from_vm_values(&mut *heap, values.values())
-                    } else {
-                        json_payload_from_value_slots(&mut *heap, values.values())
-                            .map(BoundaryResponse::payload)
-                    }
+        Ok(BytecodeSchedulerOutcome::Complete(result)) => match result {
+            Ok(values) => {
+                if mode == "serverStream" {
+                    Err(RequestError::Decode(
+                        "serverStream request completed without a response stream".to_string(),
+                    ))
+                } else if raw_http_adapter {
+                    http_response_from_vm_values(&mut *heap, values.values())
+                } else {
+                    json_payload_from_value_slots(&mut *heap, values.values())
+                        .map(BoundaryResponse::payload)
                 }
-                Err(error) => Err(error),
             }
-        }
+            Err(VmError::Thrown(envelope)) => {
+                Err(uncaught_throw_to_request_error(&mut *heap, &envelope))
+            }
+            Err(error) => Err(vm_error_to_request_error(&execution_budget, error)),
+        },
         Ok(BytecodeSchedulerOutcome::Parked) => Err(RequestError::Unsupported(
             "bytecode VM parked on the synchronous Phase 1 request lane".to_string(),
         )),
@@ -467,8 +470,9 @@ fn json_payload_from_value_slots(
 ) -> RequestResult<Vec<u8>> {
     match values {
         [] => Ok(b"null".to_vec()),
-        [value] => serde_json::to_vec(&json_value_from_slot(heap, value, 0)?)
-            .map_err(|error| RequestError::Decode(format!("bytecode VM JSON encode failed: {error}"))),
+        [value] => serde_json::to_vec(&json_value_from_slot(heap, value, 0)?).map_err(|error| {
+            RequestError::Decode(format!("bytecode VM JSON encode failed: {error}"))
+        }),
         _ => Err(RequestError::Unsupported(format!(
             "bytecode VM returned {} results; expected zero or one",
             values.len()
@@ -490,9 +494,7 @@ fn json_value_from_slot(
     }
     if let Some(number) = value.as_number() {
         let number = serde_json::Number::from_f64(number).ok_or_else(|| {
-            RequestError::Unsupported(format!(
-                "bytecode VM returned a non-JSON number: {number}"
-            ))
+            RequestError::Unsupported(format!("bytecode VM returned a non-JSON number: {number}"))
         })?;
         return Ok(serde_json::Value::Number(number));
     }
@@ -623,7 +625,59 @@ fn vm_error_to_request_error(execution_budget: &ExecutionBudget, error: VmError)
             vm_budget_closed_to_request_error(execution_budget, error)
         }
         VmError::InternalTerminal(VmInternalTerminal::OwnerStopped) => RequestError::Cancelled,
+        // A root throw is intercepted by the scheduler outcome before this
+        // projection; reaching here means the envelope cannot be materialized
+        // on this lane, so the canonical user error is projected without a
+        // payload. Envelope-construction VmFailures must not leak VM
+        // internals and project to the sanitized InternalError; every other
+        // Phase 1 VM error keeps its existing user-facing projection.
+        VmError::Thrown(_) => uncaught_throw_to_request_error_without_payload(),
+        VmError::ThrowEnvelopeUnavailable { .. }
+        | VmError::RethrowEnvelopeUnavailable { .. }
+        | VmError::ResumeThrowEnvelopeUnavailable { .. } => {
+            RequestError::Decode("bytecode VM execution failed".to_string())
+        }
         error => RequestError::Unsupported(format!("bytecode VM execution failed: {error}")),
+    }
+}
+
+fn bytecode_error_correlation(request: &RequestEnvelope) -> ErrorCorrelation {
+    let request_id = if request.request_id.trim().is_empty() {
+        request.target.as_str()
+    } else {
+        request.request_id.as_str()
+    };
+    ErrorCorrelation {
+        trace_id: request_id.to_string(),
+        error_id: request_id.to_string(),
+    }
+}
+
+/// Projects a root uncaught user throw to the canonical ordinary error. The
+/// payload is materialized to JSON when the Phase 2 surface can encode it;
+/// private or unencodable payloads are suppressed rather than leaking fields
+/// or strings.
+fn uncaught_throw_to_request_error(
+    heap: &mut dyn VmHeap,
+    envelope: &RequestException,
+) -> RequestError {
+    let details = envelope
+        .vm_local_slot()
+        .and_then(|slot| json_value_from_slot(heap, &slot, 0).ok());
+    RequestError::ExternalErrorPayload {
+        code: "std.service.InternalError".to_string(),
+        message: "uncaught user exception".to_string(),
+        status: None,
+        details,
+    }
+}
+
+fn uncaught_throw_to_request_error_without_payload() -> RequestError {
+    RequestError::ExternalErrorPayload {
+        code: "std.service.InternalError".to_string(),
+        message: "uncaught user exception".to_string(),
+        status: None,
+        details: None,
     }
 }
 
@@ -688,9 +742,36 @@ mod tests {
     };
 
     #[test]
+    fn user_throw_and_envelope_vm_failure_project_distinct_codes() {
+        let budget = ExecutionBudget::for_runtime_request(None);
+        let user_error = uncaught_throw_to_request_error_without_payload()
+            .ordinary_payload()
+            .expect("user throw is an ordinary response error");
+        assert_eq!(user_error.code, "std.service.InternalError");
+        assert_eq!(user_error.message, "uncaught user exception");
+
+        let envelope_failure = vm_error_to_request_error(
+            &budget,
+            VmError::ThrowEnvelopeUnavailable {
+                function: skiff_runtime_linked_bytecode::FunctionIndex::new(0),
+                instruction: skiff_runtime_linked_bytecode::InstructionIndex::new(0),
+                reason: "fixture".to_string(),
+            },
+        )
+        .ordinary_payload()
+        .expect("envelope VmFailure is an ordinary response error");
+        assert_eq!(envelope_failure.code, "InternalError");
+        assert_eq!(envelope_failure.message, "bytecode VM execution failed");
+        assert_ne!(user_error.code, envelope_failure.code);
+    }
+
+    #[test]
     fn json_payload_encodes_scalar_immediates() {
         let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
-        assert_eq!(json_payload_from_value_slots(&mut heap, &[]).unwrap(), b"null");
+        assert_eq!(
+            json_payload_from_value_slots(&mut heap, &[]).unwrap(),
+            b"null"
+        );
         assert_eq!(
             json_payload_from_value_slots(&mut heap, &[ValueSlot::null()]).unwrap(),
             b"null"
@@ -714,13 +795,12 @@ mod tests {
         let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
         assert!(json_payload_from_value_slots(&mut heap, &[ValueSlot::integer(1)]).is_err());
         assert!(json_payload_from_value_slots(&mut heap, &[ValueSlot::date(1)]).is_err());
-        assert!(
-            json_payload_from_value_slots(&mut heap, &[ValueSlot::null(), ValueSlot::bool(true)])
-                .is_err()
-        );
-        assert!(
-            json_payload_from_value_slots(&mut heap, &[ValueSlot::number(f64::NAN)]).is_err()
-        );
+        assert!(json_payload_from_value_slots(
+            &mut heap,
+            &[ValueSlot::null(), ValueSlot::bool(true)]
+        )
+        .is_err());
+        assert!(json_payload_from_value_slots(&mut heap, &[ValueSlot::number(f64::NAN)]).is_err());
     }
 
     #[test]

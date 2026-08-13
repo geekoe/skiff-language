@@ -1,5 +1,6 @@
 use skiff_artifact_model::{
-    Arity, LiteralIr, SlotAction, SlotContract, TypedStackGroup, TypedTransition, ValueSource,
+    Arity, LiteralIr, SlotAction, SlotContract, TypeRefIr, TypedStackGroup, TypedTransition,
+    ValueSource,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackValue, LinkedValueDropPlan,
@@ -75,10 +76,17 @@ fn apply_region_effects(
                 .resolved_operands()
                 .iter()
                 .find_map(|resolved| match resolved.target() {
-                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::ActiveRegion(index) => Some(index),
+                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::ActiveRegion(index) => {
+                        Some(index)
+                    }
                     _ => None,
                 })
-                .ok_or_else(|| obligation_error(location.clone(), "enter_region has no active region target".to_string()))?;
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "enter_region has no active region target".to_string(),
+                    )
+                })?;
             state.active_regions.push(region);
         }
         Opcode::LeaveRegion => {
@@ -86,10 +94,17 @@ fn apply_region_effects(
                 .resolved_operands()
                 .iter()
                 .find_map(|resolved| match resolved.target() {
-                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::ActiveRegion(index) => Some(index),
+                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::ActiveRegion(index) => {
+                        Some(index)
+                    }
                     _ => None,
                 })
-                .ok_or_else(|| obligation_error(location.clone(), "leave_region has no active region target".to_string()))?;
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "leave_region has no active region target".to_string(),
+                    )
+                })?;
             if state.active_regions.pop() != Some(region) {
                 return Err(obligation_error(
                     location,
@@ -216,7 +231,8 @@ fn validate_input_group(
         | ValueSource::MapValue
         | ValueSource::InterfaceCarrier { .. } => return Ok(()),
         ValueSource::ComparablePair => {
-            if matches!(actual, [left, right] if linked_values_match(&[left.clone()], &[right.clone()], context)) {
+            if matches!(actual, [left, right] if linked_values_match(&[left.clone()], &[right.clone()], context))
+            {
                 return Ok(());
             }
             return Err(obligation_error(
@@ -260,8 +276,68 @@ fn linked_value_matches(
     actual: &LinkedStackValue,
     context: &StackMapContext<'_, '_>,
 ) -> bool {
-    type_refs_match(expected.ty(), actual.ty(), context)
-        && (expected.plan() == actual.plan() || plans_match(expected, actual))
+    (type_refs_match(expected.ty(), actual.ty(), context)
+        && (expected.plan() == actual.plan() || plans_match(expected, actual)))
+        || union_branch_value_matches(expected, actual, context)
+}
+
+/// Narrow anonymous-union branch assignability: the destination type is an
+/// anonymous union and the source runtime leaf type is one of its branches
+/// (nested anonymous unions recurse). Lifecycle plans are not consulted here;
+/// callers require exact plan equality. Every other type inequality remains
+/// a mismatch.
+fn union_branch_assignable(
+    expected: &LinkedStackValue,
+    actual: &LinkedStackValue,
+    context: &StackMapContext<'_, '_>,
+) -> bool {
+    let Some(expected_ref) = context.type_linker.linked_type_ref(expected.ty()) else {
+        return false;
+    };
+    let Some(actual_ref) = context.type_linker.linked_type_ref(actual.ty()) else {
+        return false;
+    };
+    union_branch_assignable_refs(expected_ref, actual_ref)
+}
+
+/// The union-branch slice plus exact lifecycle-plan equality.
+fn union_branch_value_matches(
+    expected: &LinkedStackValue,
+    actual: &LinkedStackValue,
+    context: &StackMapContext<'_, '_>,
+) -> bool {
+    let Some(expected_ref) = context.type_linker.linked_type_ref(expected.ty()) else {
+        return false;
+    };
+    let Some(actual_ref) = context.type_linker.linked_type_ref(actual.ty()) else {
+        return false;
+    };
+    union_branch_value_matches_refs(expected_ref, expected.plan(), actual_ref, actual.plan())
+}
+
+fn union_branch_value_matches_refs(
+    expected_type: &TypeRefIr,
+    expected_plan: &LinkedValueTransferPlan,
+    actual_type: &TypeRefIr,
+    actual_plan: &LinkedValueTransferPlan,
+) -> bool {
+    union_branch_assignable_refs(expected_type, actual_type) && expected_plan == actual_plan
+}
+
+fn union_branch_assignable_refs(expected: &TypeRefIr, actual: &TypeRefIr) -> bool {
+    match expected {
+        TypeRefIr::Union { items } => items
+            .iter()
+            .any(|branch| union_contains_leaf(branch, actual)),
+        _ => false,
+    }
+}
+
+fn union_contains_leaf(union: &TypeRefIr, leaf: &TypeRefIr) -> bool {
+    match union {
+        TypeRefIr::Union { items } => items.iter().any(|item| union_contains_leaf(item, leaf)),
+        other => other == leaf || equivalent_type_ref(other, leaf),
+    }
 }
 
 fn plans_match(expected: &LinkedStackValue, actual: &LinkedStackValue) -> bool {
@@ -292,8 +368,18 @@ fn type_refs_match(
         package: Box::new(context.source.package.reference().clone()),
     };
     if let (Ok(left_n), Ok(right_n)) = (
-        normalize_type(context.type_linker.deployment(), context.source.package, left, &location),
-        normalize_type(context.type_linker.deployment(), context.source.package, right, &location),
+        normalize_type(
+            context.type_linker.deployment(),
+            context.source.package,
+            left,
+            &location,
+        ),
+        normalize_type(
+            context.type_linker.deployment(),
+            context.source.package,
+            right,
+            &location,
+        ),
     ) {
         return left_n == right_n || equivalent_type_ref(&left_n, &right_n);
     }
@@ -365,10 +451,7 @@ fn equivalent_type_ref(
         (
             skiff_artifact_model::TypeRefIr::Builtin { .. },
             skiff_artifact_model::TypeRefIr::Nullable { inner },
-        ) => equivalent_type_ref(
-            left,
-            inner,
-        ),
+        ) => equivalent_type_ref(left, inner),
         (
             skiff_artifact_model::TypeRefIr::Nullable { inner },
             skiff_artifact_model::TypeRefIr::Builtin { .. },
@@ -388,8 +471,14 @@ fn equivalent_type_ref(
                     .all(|(left, right)| equivalent_type_ref(left, right))
         }
         (
-            skiff_artifact_model::TypeRefIr::AppliedNominal { base: left_base, arguments: left_args },
-            skiff_artifact_model::TypeRefIr::AppliedNominal { base: right_base, arguments: right_args },
+            skiff_artifact_model::TypeRefIr::AppliedNominal {
+                base: left_base,
+                arguments: left_args,
+            },
+            skiff_artifact_model::TypeRefIr::AppliedNominal {
+                base: right_base,
+                arguments: right_args,
+            },
         ) => {
             left_base == right_base
                 && left_args.len() == right_args.len()
@@ -416,7 +505,10 @@ fn equivalent_type_ref(
             && args.len() == 2
             && fields.len() == 2
             && fields.contains_key("exception")
-            && fields.contains_key("tag") => true,
+            && fields.contains_key("tag") =>
+        {
+            true
+        }
         (
             skiff_artifact_model::TypeRefIr::Record { fields },
             skiff_artifact_model::TypeRefIr::Builtin { name, args },
@@ -424,7 +516,10 @@ fn equivalent_type_ref(
             && args.len() == 2
             && fields.len() == 2
             && fields.contains_key("exception")
-            && fields.contains_key("tag") => true,
+            && fields.contains_key("tag") =>
+        {
+            true
+        }
         _ => false,
     }
 }
@@ -592,18 +687,28 @@ fn validate_slot_write(
     value: &LinkedStackValue,
     location: BytecodeLinkLocation,
 ) -> Result<LinkedStackValue, BytecodeLinkError> {
-    let expected_type = context.frame.slot_types().get(slot).copied().ok_or_else(|| {
-        obligation_error(
-            location.clone(),
-            format!("frame slot type {slot} is out of bounds"),
-        )
-    })?;
-    let expected_plan = context.frame.slot_plans().get(slot).cloned().ok_or_else(|| {
-        obligation_error(
-            location.clone(),
-            format!("frame slot plan {slot} is out of bounds"),
-        )
-    })?;
+    let expected_type = context
+        .frame
+        .slot_types()
+        .get(slot)
+        .copied()
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("frame slot type {slot} is out of bounds"),
+            )
+        })?;
+    let expected_plan = context
+        .frame
+        .slot_plans()
+        .get(slot)
+        .cloned()
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("frame slot plan {slot} is out of bounds"),
+            )
+        })?;
     let expected = LinkedStackValue::new(expected_type, expected_plan);
     if !linked_value_matches(&expected, value, context) {
         return Err(obligation_error(
@@ -632,5 +737,94 @@ fn resolve_arity(
             })
         }
         Arity::FunctionResultCount => Ok(frame.result_types().len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_artifact_model::{PackageRefIr, PackageSymbolRef, TypeRefIr};
+    use skiff_runtime_linked_bytecode::{LinkedValueDropPlan, LinkedValueTransferPlan};
+
+    use super::{union_branch_assignable_refs, union_branch_value_matches_refs};
+
+    fn leaf(name: &str) -> TypeRefIr {
+        TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: "test.skiff/unions".to_string(),
+                },
+                symbol_path: format!("main.{name}"),
+                abi_expectation: None,
+            },
+        }
+    }
+
+    fn union(items: Vec<TypeRefIr>) -> TypeRefIr {
+        TypeRefIr::Union { items }
+    }
+
+    fn snapshot() -> LinkedValueTransferPlan {
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        }
+    }
+
+    fn trivial() -> LinkedValueTransferPlan {
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        }
+    }
+
+    #[test]
+    fn anonymous_union_accepts_only_its_own_leaf_branches() {
+        let union = union(vec![leaf("LeafA"), leaf("LeafB")]);
+        assert!(union_branch_assignable_refs(&union, &leaf("LeafA")));
+        assert!(union_branch_assignable_refs(&union, &leaf("LeafB")));
+        assert!(!union_branch_assignable_refs(&union, &leaf("LeafC")));
+    }
+
+    #[test]
+    fn nested_anonymous_union_branches_recurse() {
+        let nested = union(vec![
+            union(vec![leaf("LeafA"), leaf("LeafB")]),
+            leaf("LeafC"),
+        ]);
+        assert!(union_branch_assignable_refs(&nested, &leaf("LeafB")));
+        assert!(!union_branch_assignable_refs(&nested, &leaf("LeafD")));
+    }
+
+    #[test]
+    fn non_union_targets_never_accept_union_branch_assignability() {
+        assert!(!union_branch_assignable_refs(
+            &TypeRefIr::builtin("number"),
+            &leaf("LeafA"),
+        ));
+        assert!(!union_branch_assignable_refs(
+            &leaf("LeafA"),
+            &leaf("LeafA")
+        ));
+    }
+
+    #[test]
+    fn union_branch_assignability_requires_exact_lifecycle_plans() {
+        let union = union(vec![leaf("LeafA"), leaf("LeafB")]);
+        assert!(union_branch_value_matches_refs(
+            &union,
+            &snapshot(),
+            &leaf("LeafA"),
+            &snapshot(),
+        ));
+        assert!(!union_branch_value_matches_refs(
+            &union,
+            &snapshot(),
+            &leaf("LeafA"),
+            &trivial(),
+        ));
+        assert!(!union_branch_value_matches_refs(
+            &union,
+            &snapshot(),
+            &leaf("LeafC"),
+            &snapshot(),
+        ));
     }
 }
