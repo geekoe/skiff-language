@@ -6,7 +6,9 @@ use std::{
 use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
     service_error::CatchIdentity,
-    vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmMapEntry, VmRecordField},
+    vm_heap::{
+        VmHeap, VmHeapError, VmHeapPathSegment, VmMapEntry, VmRecordField, WritablePathPreparation,
+    },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
 use skiff_runtime_request::RequestVmHeap;
@@ -71,15 +73,15 @@ pub enum HeapSpyEvent {
     AllocateArray {
         result: SpySlot,
     },
-    /// The Phase 1 heap trait exposes a single-phase mutation primitive. The
-    /// recorded COW fact is the post-call root handle, which cannot change
-    /// until K2 replaces it with `prepare_writable_path`/`commit_writable_path`
-    /// returning a replacement root.
-    SetWritablePath {
+    PrepareWritablePath {
+        root: SpySlot,
+        segments: Vec<VmHeapPathSegment>,
+        selectors: usize,
+    },
+    CommitWritablePath {
         root_before: SpySlot,
         root_after: SpySlot,
-        segments: usize,
-        selectors: usize,
+        cow: bool,
     },
 }
 
@@ -109,10 +111,14 @@ impl HeapSpyTrace {
 ///
 /// Every call is delegated to the production heap and then recorded, so the
 /// VM under test always observes the exact production behavior while the
-/// harness observes the exact share/COW/drop primitive sequence.
+/// harness observes the exact share/prepare/commit/drop primitive sequence.
+/// Prepare/commit are correlated through a pending-root stack: `prepare`
+/// pins the root handle and `commit` reports whether the returned replacement
+/// root changed it (copy-on-write) or kept it (exclusive in-place write).
 pub struct RecordingVmHeap {
     inner: Box<RequestVmHeap>,
     trace: HeapSpyTrace,
+    pending_roots: Vec<SpySlot>,
 }
 
 impl RecordingVmHeap {
@@ -120,6 +126,7 @@ impl RecordingVmHeap {
         Self {
             inner: Box::new(RequestVmHeap::new(limits)),
             trace,
+            pending_roots: Vec::new(),
         }
     }
 }
@@ -270,24 +277,41 @@ impl VmHeap for RecordingVmHeap {
         self.inner.map_put_owned(map, key, value)
     }
 
-    fn set_writable_path(
+    fn prepare_writable_path(
         &mut self,
         root: &ValueSlot,
         segments: &[VmHeapPathSegment],
         selectors: &[ValueSlot],
-        value: ValueSlot,
-    ) -> Result<(), VmHeapError> {
-        let root_before = SpySlot::of(*root);
-        self.inner
-            .set_writable_path(root, segments, selectors, value)?;
-        let root_after = SpySlot::of(*root);
-        self.trace.record(HeapSpyEvent::SetWritablePath {
-            root_before,
-            root_after,
-            segments: segments.len(),
+    ) -> Result<WritablePathPreparation, VmHeapError> {
+        let prepared = self
+            .inner
+            .prepare_writable_path(root, segments, selectors)?;
+        self.trace.record(HeapSpyEvent::PrepareWritablePath {
+            root: SpySlot::of(*root),
+            segments: segments.to_vec(),
             selectors: selectors.len(),
         });
-        Ok(())
+        self.pending_roots.push(SpySlot::of(*root));
+        Ok(prepared)
+    }
+
+    fn commit_writable_path(
+        &mut self,
+        prepared: WritablePathPreparation,
+        value: ValueSlot,
+    ) -> Result<ValueSlot, VmHeapError> {
+        let replacement = self.inner.commit_writable_path(prepared, value)?;
+        let root_before = self
+            .pending_roots
+            .pop()
+            .expect("a successful commit must pair with a successful prepare");
+        let root_after = SpySlot::of(replacement);
+        self.trace.record(HeapSpyEvent::CommitWritablePath {
+            root_before,
+            root_after,
+            cow: root_before.handle != root_after.handle,
+        });
+        Ok(replacement)
     }
 
     fn get_dense_field(
@@ -299,15 +323,15 @@ impl VmHeap for RecordingVmHeap {
     }
 }
 
-/// The precise seam K2 must land before the VCP internal-fact obligations can
-/// close. This text is asserted verbatim by the harness so the expected-red
-/// message always names the exact missing write-boundary item.
-pub fn heap_spy_seam_requirement() -> &'static str {
-    "K2 seam missing: `BytecodeRequestExecutionInput` / `drive_runtime_bytecode_request` must accept \
-     `heap: Option<Box<dyn VmHeap + Send>>` (injecting a recording heap instead of constructing \
-     `RequestVmHeap` internally), and the host request-entry path (`request_entry/assembly.rs` -> \
-     drive) must pass that heap through so `RuntimeHost::spawn_bytecode_request` callers can inject \
-     `RecordingVmHeap`; additionally the model trait must expose two-phase \
-     prepare_writable_path/commit_writable_path returning a replacement root so the spy can prove \
-     the exact share/COW/drop sequence. Until then the VCP internal facts stay expected-red."
+/// The K2 seam landed at `BytecodeRequestExecutionInput.heap`; what remains
+/// unwired is the host spawn path, which keeps `heap: None` at every call
+/// site. The Phase 2 harness therefore injects the recording heap through the
+/// production driver input inside the production route composition and reports
+/// this remaining host-side item here for the integrator.
+pub fn host_passthrough_note() -> &'static str {
+    "K2 heap seam landed (`BytecodeRequestExecutionInput.heap`); the host request-entry \
+     passthrough (`RuntimeHost::spawn_bytecode_request` -> `request_entry/assembly.rs` -> drive) \
+     still hard-codes `heap: None` and is outside the P2G write boundary. The VCP harness injects \
+     `RecordingVmHeap` through the production driver input via the host's own production route \
+     admission (`BytecodeDeploymentRegistry::route`), not through a second executor."
 }

@@ -10,8 +10,8 @@ use std::{
 
 use serde_json::Value;
 use skiff_artifact_model::{
-    GatewayEntryIdentity, IngressProtocol, PackageArtifact, PackageArtifactRef, ServiceDeployment,
-    ServiceDeploymentRef,
+    GatewayEntryIdentity, IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef,
+    ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -63,6 +63,7 @@ pub(in crate::host::request_entry) struct Phase2PublishedFixture {
     deployment: ServiceDeploymentRef,
     deployment_artifact: Arc<ServiceDeployment>,
     gateway_identity: GatewayEntryIdentity,
+    ingress_selector: IngressSelector,
     ingress_path: &'static str,
     request_body: &'static [u8],
 }
@@ -154,6 +155,7 @@ impl Phase2PublishedFixture {
             .expect("fixture ingress pins a gateway entry")
             .gateway_entry_identity
             .clone();
+        let ingress_selector = ingress.selector.clone();
 
         Phase2FixtureBuild::Published(Self {
             artifact_root,
@@ -165,9 +167,34 @@ impl Phase2PublishedFixture {
             deployment,
             deployment_artifact,
             gateway_identity,
+            ingress_selector,
             ingress_path,
             request_body,
         })
+    }
+
+    pub(in crate::host::request_entry) fn deployment_ref(&self) -> &ServiceDeploymentRef {
+        &self.deployment
+    }
+
+    pub(in crate::host::request_entry) fn artifact_root_path(&self) -> &Path {
+        self.artifact_root.path()
+    }
+
+    pub(in crate::host::request_entry) fn gateway_identity(&self) -> &GatewayEntryIdentity {
+        &self.gateway_identity
+    }
+
+    pub(in crate::host::request_entry) fn ingress_selector(&self) -> &IngressSelector {
+        &self.ingress_selector
+    }
+
+    pub(in crate::host::request_entry) fn ingress_path(&self) -> &'static str {
+        self.ingress_path
+    }
+
+    pub(in crate::host::request_entry) fn request_body(&self) -> &'static [u8] {
+        self.request_body
     }
 
     pub(in crate::host::request_entry) fn connection_bootstrap(&self) -> ConnectionBootstrap {
@@ -268,7 +295,7 @@ impl TempRoot {
         Self { path }
     }
 
-    fn path(&self) -> &Path {
+    pub(in crate::host::request_entry) fn path(&self) -> &Path {
         &self.path
     }
 }
