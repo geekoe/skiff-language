@@ -306,6 +306,15 @@ function taskBuilders({
         ['scripts/run-bytecode-vm-phase-2-gate.mjs'],
       ),
     ],
+    'bytecode-vm-phase-3-gate': async () => [
+      task(
+        root,
+        'bytecode-vm-phase-3:gate',
+        'implementation:runtime',
+        'node',
+        ['scripts/run-bytecode-vm-phase-3-gate.mjs'],
+      ),
+    ],
     'router-rust-process-smoke': async () => [
       task(root, 'router-rust:process-smoke', 'implementation:router', 'node', [
         'scripts/run-router-process-smoke.mjs',

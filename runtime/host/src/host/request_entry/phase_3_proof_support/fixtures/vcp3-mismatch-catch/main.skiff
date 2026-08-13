@@ -1,0 +1,19 @@
+type LeafA {
+  marker: number,
+}
+
+type LeafB {
+  marker: number,
+}
+
+function throwLeaf(leaf: LeafA | LeafB) -> void {
+  throw leaf
+}
+
+function run(seed: number) -> number {
+  final attempt = catch<LeafB>(throwLeaf(LeafA { marker: seed }))
+  if attempt.tag == "ok" {
+    return 7
+  }
+  return 99
+}
