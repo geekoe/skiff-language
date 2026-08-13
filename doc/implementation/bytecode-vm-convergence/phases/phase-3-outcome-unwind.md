@@ -76,6 +76,13 @@ envelope、异步 rethrow（live 面）。
 string-literal-union 匹配）进入 admission 与 VM 常量比较。**不放行**通用 string 值（string 变量、拼接、聚合内
 string 字段、boundary string 等仍 fail closed）。该切片是 catch 语义的静态前提，不是为 fixture 开洞。
 
+### 4b. Amendment 2（MAP3 Revision 4；REV3 反馈；2026-08-13）
+
+异常 payload 的 accepted 面收窄为**具有名义叶 identity 的 throw**（本地 nominal record、union 的 nominal 分支）。
+structural/scalar/literal-branch 叶没有运行时 catch identity，因此**在 emission admission 稳定拒绝**（fail closed），
+不再放行进运行时恒 `VmFailure` 的 throw。literal branch 的 identity（由 enclosing type id + payload literal 派生）
+记录为后续 Phase 义务，不在本 Phase 实现。
+
 ## 5. VCP-3
 
 真实 `.skiff` fixture 经 production compiler→linker→VM→request path：`throw union(A|B) 的 A 叶` →

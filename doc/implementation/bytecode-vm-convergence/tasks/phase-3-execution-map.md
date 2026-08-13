@@ -104,3 +104,20 @@ Agent 可出最终 verdict。
 - 剩余红：mismatch fixture 的 `attempt.tag == "ok"` 因 Phase 2 无 string 面被 admission 拒绝。契约 §4a
   Amendment 1 定案：放行编译期 string literal 仅作 discriminator 常量（tag 相等与 string-literal-union 匹配），
   通用 string 值仍 fail closed。授权 C3 收 admission/emission，K3 收 linker/VM 常量比较（如需）。
+
+## 10. Revision 4
+
+独立 reviewer REV3 判 FAIL，三项 routing 后补记（修订非重做）：
+
+1. **写集扩展补记（F1）**：此前经 integrator follow-up 授权、但未写入 MAP3 的文件组，现正式记录为各 lane 写界：
+   K3 = `runtime/linker/src/bytecode/stack_map/*`、`runtime/bytecode-verifier/{src/control_flow/**,src/concrete_values/*}`、
+   `runtime/request/src/bytecode_ingress.rs`（投影）、`runtime/vm/src/{fiber.rs,error.rs,control.rs}`；
+   C3 = `compiler/source/src/{expression_type_model*,assignability*,value_transfer*}`、
+   `compiler/lowering/src/*`、`compiler/emission/src/bytecode/{functions,admission}.rs`。逐 commit 均可追溯。
+2. **受控 resume 闭环（F2）**：K3 补一个 live VM 测试，把 `ResumeOutcome::Throw` 真实送入 `resume_throw`
+   （经 `set_error_correlation`），断言 envelope identity 跨 resume 不变。
+3. **名义叶-only throw 面（F4）**：契约 §4b Amendment 2——emission admission 稳定拒绝 structural/scalar/literal
+   叶 throw（运行时恒 VmFailure 的面移回 fail closed）；literal-branch identity 记后续义务。
+4. F3（linker/verifier union-branch 接受面不对称，verifier 更严即 fail-closed）为非阻塞 advisory，保留记录。
+
+Gate preflight 已 PASS（46/46、267/267）；上三项闭合后重跑 preflight → freeze → 全新 Acceptance。
