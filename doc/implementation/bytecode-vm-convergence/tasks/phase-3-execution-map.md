@@ -1,6 +1,6 @@
 # MAP3：Phase 3 rolling execution map
 
-> Status: active; revision 6; second Acceptance fmt residual fixed, third Acceptance dispatched
+> Status: complete; revision 6; candidate `411da455` accepted by fresh independent Acceptance (PASS, §7 all green), result merged into `main`
 >
 > Phase Contract: [`phase-3-outcome-unwind.md`](../phases/phase-3-outcome-unwind.md)
 >
@@ -131,3 +131,10 @@ Gate preflight 已 PASS（46/46、267/267）；上三项闭合后重跑 prefligh
   R0 旧红 652，且 14 文件零残留；剩余全部为旧漂移）。非阻塞 findings：R-CLIPPY 无 Phase 3 新红；Phase 2 的
   fmt-clean 声明在 Phase 2 tip 不可复现（历史记录，不豁免 Phase 3）。
 - 候选重新 freeze 于 fmt 修复后的新 commit/tree，开新 evidence epoch，派第二轮全新 Acceptance。
+
+## 12. Revision 6 — accepted
+
+第三轮全新独立 Acceptance agent 在 frozen candidate `411da455`/tree `a8c225df` 跑完整 Phase 3 Gate：46/46 commands、
+272/272 tests、candidate exact+clean、`checkerError: null`；fmt 逐文件归因证明 Phase 3 写入行 0 rustfmt 残留；§7
+checklist 全 `[x]`。receipt `add410ea…`，manifest `2c8d1ff6…`。`results/phase-3.md` 记录全字段，Phase 4 在其合入
+`main` 后解禁。
