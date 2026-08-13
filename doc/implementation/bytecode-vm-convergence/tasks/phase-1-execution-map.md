@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 9; L1/L2/K1/L3/K2/L4 accepted, L5 active
+> Status: active; revision 10; L1/L2/K1/L3/K2/L4 accepted, L5 staged for handoff
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -361,3 +361,43 @@ run the complete Phase 1 Gate and issue the final verdict.
 - L5 is now the sole production-ready frontier and remains under the same serialized owner. It may add only the actual
   owner-inventory carrier and physically absent Phase 1 ports; it may not change L4's budget/winner or mint O1 events.
   O1 starts after L5's frozen inventory carrier receives independent review.
+
+## 17. Revision 10 — L5 staged carrier and transfer boundary
+
+- the committed L5 implementation stack `4e037146..1d2c6684` joined rolling integration through merge `6f830f57`.
+  It introduces one fixed-size current/ever-created inventory, typed Pending/resource/child leases in the actual carrier
+  paths, inventory-before-container creation order, container-before-inventory release order, Pending cell-to-wake lease
+  continuity, blocked-child suspension continuity, resource cancellation while its lease remains live, and real frozen
+  `NotStarted`/`Started` driver results. The canonical request path is synchronous, has absent Pending/resource/child/stream
+  ports and treats an unexpected park as failure;
+- focused carrier receipts before the merge were green: owner inventory `3/3`, Pending `11/11`, resource `1/1`, and the
+  L4-derived request/host/VM/scheduler matrices remained green. At the handoff commit, all scheduler, request and host lib
+  and integration-test targets compile with the three-package Cargo `--no-run` command; log
+  `/tmp/skiff-p1-l5-handoff-no-run.log`, SHA-256
+  `4e674df4eb05b255feb1d8ed6c675bddad21df8b1ba9b0adafef5aa716308338`;
+- this merge is an explicitly incomplete rolling-integration milestone, not an L5 acceptance receipt. Independent review
+  found a hard authority counterexample: scheduler still publicly exports the split registrations, creation guards, leases,
+  generic `install` closure, `open` and `into_parts`. A safe caller can install a counted fake carrier, mix registrations
+  from request A with the freeze permit for request B, or panic inside `install` after incrementing; the lease then attempts
+  to re-lock the still-held inventory mutex and deadlocks. Restricting the sole `open` call by lexical checker does not prove
+  same-request data flow and is insufficient;
+- the mandatory correction is structural: expose only one non-cloneable, opaque, owner-bound synchronous execution context.
+  It must consume itself either into `NotStarted(actual snapshot)` or into the sole scheduler drive and `Started(actual
+  snapshot)`; it may not expose independently composable Pending/resource/child factories or raw authority parts. All raw
+  registration/guard/lease/install APIs become scheduler-private. Installation must prepare allocation outside locks, then
+  hold inventory followed by the real container, insert a private unarmed placeholder, and perform only an infallible
+  count/ever/lease commit—never caller code—before unlocking. Pending/resource/child use one domain-tagged typed owner-
+  creation error and one sanitized `InternalError` request projection; ticket collision, occupied handle and child capacity
+  remain distinct container errors;
+- after that API freezes, the request crate owns the sole public `drive_runtime_bytecode_request` composition. It creates the
+  context, starts and runs exactly once, freezes on both start and run failures, and returns only result, an opaque retention
+  carrier and `NotStarted|Started` snapshot. Host must not mint/split/freeze inventory. The old private adapter/Pending/
+  stream/resume implementation and its resource table are outside the Phase 1 synchronous surface and should be deleted,
+  not preserved behind compatibility exports;
+- every admitted supervisor completion must then consume the exact snapshot into `CompletingRequest -> CleanupPermit ->
+  CleanupGuard`. Current host call sites freeze it but discard it after completion, while `RequestCleanupComplete {}` still
+  has no fields. Pre-activation cancel/session-stop/invalid outcomes continue to create no inventory, terminal or cleanup;
+- remaining order is fixed: owner-context correction -> request facade/dead-path deletion -> supervisor snapshot carrier ->
+  fresh independent L5 review -> O1 event projection -> T-R/V1 migration -> merged Gate -> fresh Acceptance. Phase 1 is not
+  complete at this revision, and Phase 2 production remains forbidden. This section is the authoritative transfer handoff;
+  later owners must not interpret the staged compile-green merge as a waiver for any blocker above.
