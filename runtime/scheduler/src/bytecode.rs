@@ -547,6 +547,10 @@ impl BytecodeUnit for VmFiber {
     fn child_completion_to_resume_outcome(completed: VmResult) -> ResumeOutcome {
         match completed {
             Ok(values) => ResumeOutcome::Values(values),
+            // A child's ordinary throw is not a terminal failure: the exact
+            // opaque envelope crosses the child boundary so the parent can
+            // resume its own unwind with the unchanged identity.
+            Err(VmError::Thrown(envelope)) => ResumeOutcome::Throw(envelope),
             Err(error) => ResumeOutcome::Failure(error),
         }
     }

@@ -25,7 +25,7 @@ use crate::{
 type VmSuspended = SuspendedTrampoline<VmFiber, VmResumeToken>;
 
 /// Terminal event delivered to a `VmStreamConsumer` after the producer exits.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VmStreamTerminal {
     End,
     Error(VmError),
