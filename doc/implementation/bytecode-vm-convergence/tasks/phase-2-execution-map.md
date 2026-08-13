@@ -1,6 +1,6 @@
 # MAP2：Phase 2 rolling execution map
 
-> Status: active; revision 3; K2 lifecycle kernel delivered, contract amendment 1 recorded, awaiting C2 admission join
+> Status: active; revision 4; K2/C2/P2G first-day joined into integration, compiler writable-path chain complete, VCP runtime integration in progress
 >
 > Phase Contract: [`phase-2-value-lifecycle.md`](../phases/phase-2-value-lifecycle.md)
 >
@@ -61,6 +61,18 @@ Integrator 只做机械 cherry-pick、receipt/MAP 更新、Gate/freeze/Acceptanc
   prepare-before-commit + atomic commit 成立，“RHS 宿主副作用不提前发生”是 Phase 5 的发射形状前置；shared
   container 的 push 在 Phase 2 fail closed，不隐式 COW push。
 - K2 join 契约过滤词：`lifecycle`（vm lib）、`vm_heap`（model/request lib）、`capability`（linker lib），均非零全绿。
+
+## 4d. Revision 4
+
+- C2 后续 `63f2d597` + `70890379` + `ba0ae27d` 全链打通：admission 放宽到 exact record/array 面（越界稳定
+  `UnsupportedConstruct { construct: "phase 2 record/array value shape" }`）、fresh-root 嵌套 store 的效果分析精确
+  抽象（参数/actor/未知 base 仍 fail closed）、lowering source-event collapse + SetWritablePath 锚定（仍由
+  lowering 权威生成）、VCP fixture 全链 publish（identity-assigned + structural validate，含 `SetWritablePath`）。
+  compiler 侧已无剩余门；landing 边界是 K2 的 linker/VM。
+- 顺带修复预存 authoring 测试红（fixture 改 `-> number`，测试意图不变）；`admission.rs:60` `never_loop` 旧红随重构
+  收敛。`generated_slot_plan` 残留仅可达已禁用构式（for-in/match），记录为后续 Phase 义务。
+- 三 lane 已滚入 integration：`a760437f`（compiler exact-plan）、`bcbb253e`（kernel）、`aeb3292a`（proof+gate）、
+  `dd6e21be`（compiler source-event chain）。P2G 正在把 VCP 接入 K2 heap seam 并跑运行时验证。
 
 ## 4. Task contracts
 
