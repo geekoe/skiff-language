@@ -2048,6 +2048,12 @@ fn scheduler_error_to_request_error(
         BytecodeSchedulerError::UnsupportedPark => RequestError::Unsupported(
             "bytecode VM parking requires stream supervisor integration".to_string(),
         ),
+        BytecodeSchedulerError::ChildCapacityExceeded => RequestError::Decode(
+            "bytecode scheduler blocked child capacity is exhausted".to_string(),
+        ),
+        BytecodeSchedulerError::ChildOwnerCreation(error) => RequestError::Decode(format!(
+            "bytecode scheduler child owner creation failed: {error}"
+        )),
         BytecodeSchedulerError::Vm(error) => vm_error_to_request_error(execution_budget, error),
         BytecodeSchedulerError::Port(message) => {
             RequestError::Unsupported(format!("bytecode scheduler port failed: {message}"))
@@ -3204,6 +3210,23 @@ mod tests {
         assert!(matches!(
             scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedPark),
             RequestError::Unsupported(message) if message.contains("stream supervisor")
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error(
+                &budget,
+                BytecodeSchedulerError::ChildCapacityExceeded
+            ),
+            RequestError::Decode(message) if message == "bytecode scheduler blocked child capacity is exhausted"
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error(
+                &budget,
+                BytecodeSchedulerError::ChildOwnerCreation(
+                    skiff_runtime_scheduler::OwnerCreationError::InventoryFrozen,
+                ),
+            ),
+            RequestError::Decode(message)
+                if message == "bytecode scheduler child owner creation failed: request owner inventory is frozen"
         ));
     }
 
