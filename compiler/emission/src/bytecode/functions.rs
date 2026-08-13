@@ -679,11 +679,25 @@ impl<'a> FunctionEmitter<'a> {
                 payload_type,
                 ..
             } => {
+                // Phase 3: the MIR `payload_type` fact is not the exception
+                // identity. The instruction operand carries only the thrown
+                // value's structural transfer-plan type; the runtime captures
+                // the actual concrete catch identity from the popped value.
+                // A diverging payload fact fails closed instead of leaking a
+                // stale static type into the envelope path.
+                let value_type = &self.function.expression(*value)?.ty;
+                if value_type != payload_type {
+                    return Err(unsupported(
+                        &self.key,
+                        "throw payload type",
+                        "static payload_type diverges from the thrown value's type",
+                    ));
+                }
                 self.emit_expression(*value)?;
                 let type_ref = self.image.type_index(
                     self.unit.module_path.as_str(),
-                    payload_type,
-                    &format!("statement throw type in `{}`", self.key),
+                    value_type,
+                    &format!("statement throw value type in `{}`", self.key),
                 )?;
                 self.emit_op(Opcode::Throw, vec![type_ref])?;
             }
@@ -877,11 +891,19 @@ impl<'a> FunctionEmitter<'a> {
                 payload_type,
                 ..
             } => {
+                let value_type = &self.function.expression(*value)?.ty;
+                if value_type != payload_type {
+                    return Err(unsupported(
+                        &self.key,
+                        "throw payload type",
+                        "static payload_type diverges from the thrown value's type",
+                    ));
+                }
                 self.emit_expression(*value)?;
                 let type_ref = self.image.type_index(
                     self.unit.module_path.as_str(),
-                    payload_type,
-                    &format!("expression throw type in `{}`", self.key),
+                    value_type,
+                    &format!("expression throw value type in `{}`", self.key),
                 )?;
                 self.emit_op(Opcode::Throw, vec![type_ref])?;
             }
