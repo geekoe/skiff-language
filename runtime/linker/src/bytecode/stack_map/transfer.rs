@@ -149,7 +149,14 @@ fn apply_stack_inputs(
                     "typed stack input groups exceed the consumed stack segment".to_string(),
                 )
             })?;
-        validate_input_group(context, instruction, group.value, &values, location.clone())?;
+        validate_input_group(
+            context,
+            instruction,
+            group.value,
+            &values,
+            &inputs,
+            location.clone(),
+        )?;
         offset = end;
         inputs.push(values);
     }
@@ -161,6 +168,7 @@ fn validate_input_group(
     instruction: &LinkedInstruction,
     source: ValueSource,
     actual: &[LinkedStackValue],
+    inputs: &[Vec<LinkedStackValue>],
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     match source {
@@ -180,7 +188,8 @@ fn validate_input_group(
         }
         _ => {}
     }
-    let mut expected = values::source_values(context, instruction, source, &[], location.clone())?;
+    let mut expected =
+        values::source_values(context, instruction, source, inputs, location.clone())?;
     if expected.len() == 1 && actual.len() > 1 {
         expected = actual.iter().map(|_| expected[0].clone()).collect();
     }
