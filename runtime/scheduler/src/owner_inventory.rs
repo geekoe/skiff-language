@@ -168,6 +168,14 @@ opaque_lease_debug!(PendingOwnerLease);
 opaque_lease_debug!(ResourceOwnerLease);
 opaque_lease_debug!(ChildOwnerLease);
 
+impl fmt::Debug for ChildOwnerRegistration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChildOwnerRegistration")
+            .finish_non_exhaustive()
+    }
+}
+
 macro_rules! registration_guard {
     ($registration:ident, $guard:ident, $lease:ident, $domain:ident) => {
         impl $registration {

@@ -54,5 +54,6 @@ pub use stream::{
 };
 pub use stream_driver::{VmStreamConsumerExecutor, VmStreamSupervisor, VmStreamTerminal};
 pub use trampoline::{
-    BlockedUnit, FlatTrampoline, ParentResume, SuspendedTrampoline, TrampolineCompletion,
+    BlockedUnit, EnterChildError, FlatTrampoline, ParentResume, SuspendedTrampoline,
+    TrampolineCompletion,
 };

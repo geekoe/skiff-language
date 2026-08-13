@@ -10,7 +10,10 @@ use skiff_runtime_vm::{
     VmControl, VmError, VmFiber, VmResult, VmResumeToken,
 };
 
-use crate::{FlatTrampoline, PendingWake, RootEscrow, SuspendedTrampoline, TrampolineCompletion};
+use crate::{
+    ChildOwnerRegistration, EnterChildError, FlatTrampoline, OwnerCreationError, PendingWake,
+    RootEscrow, SuspendedTrampoline, TrampolineCompletion,
+};
 
 /// Failure modes owned by the bytecode scheduler.
 #[derive(Debug)]
@@ -19,6 +22,8 @@ pub enum BytecodeSchedulerError {
     UnsupportedAdapter,
     UnsupportedStream,
     UnsupportedPark,
+    ChildCapacityExceeded,
+    ChildOwnerCreation(OwnerCreationError),
     Vm(VmError),
     Port(String),
 }
@@ -34,6 +39,10 @@ impl fmt::Display for BytecodeSchedulerError {
                 formatter.write_str("bytecode stream supervisor port is absent")
             }
             Self::UnsupportedPark => formatter.write_str("bytecode park supervisor port is absent"),
+            Self::ChildCapacityExceeded => {
+                formatter.write_str("bytecode blocked child capacity is exhausted")
+            }
+            Self::ChildOwnerCreation(error) => error.fmt(formatter),
             Self::Vm(error) => write!(formatter, "bytecode VM unit failed: {error}"),
             Self::Port(message) => write!(formatter, "bytecode scheduler port failed: {message}"),
         }
@@ -44,6 +53,7 @@ impl std::error::Error for BytecodeSchedulerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Vm(error) => Some(error),
+            Self::ChildOwnerCreation(error) => Some(error),
             _ => None,
         }
     }
@@ -58,6 +68,15 @@ impl From<VmError> for BytecodeSchedulerError {
 impl From<String> for BytecodeSchedulerError {
     fn from(message: String) -> Self {
         Self::Port(message)
+    }
+}
+
+impl From<EnterChildError> for BytecodeSchedulerError {
+    fn from(error: EnterChildError) -> Self {
+        match error {
+            EnterChildError::CapacityExceeded => Self::ChildCapacityExceeded,
+            EnterChildError::OwnerCreation(error) => Self::ChildOwnerCreation(error),
+        }
     }
 }
 
@@ -306,9 +325,13 @@ impl<U> BytecodeScheduler<U>
 where
     U: BytecodeUnit + VmRootSource + 'static,
 {
-    pub fn new(root: U, ports: BytecodeSchedulerPorts<U>) -> Self {
+    pub fn new(
+        root: U,
+        ports: BytecodeSchedulerPorts<U>,
+        child_owners: ChildOwnerRegistration,
+    ) -> Self {
         Self {
-            trampoline: FlatTrampoline::new(root),
+            trampoline: FlatTrampoline::new(root, child_owners),
             ports,
         }
     }
@@ -381,7 +404,7 @@ where
                         continue;
                     }
                     let start = executor.execute_child(invocation, heap, budget)?;
-                    self.trampoline.enter_child(start.unit, start.resume);
+                    self.trampoline.enter_child(start.unit, start.resume)?;
                 }
                 BytecodeControl::EnterAdapter(invocation) => {
                     let executor = self
@@ -538,14 +561,19 @@ mod tests {
 
     use super::*;
     use crate::{
-        PendingOwnerDraft, PendingOwnerRegistration, PendingPublication, PendingRegistry,
-        PendingWake, PendingWakeQueue, RequestExecutionOwnerInventory, RootDisposition, RootEscrow,
-        RootEscrowBacking, SettleDisposition,
+        ChildOwnerRegistration, PendingOwnerDraft, PendingOwnerRegistration, PendingPublication,
+        PendingRegistry, PendingWake, PendingWakeQueue, RequestExecutionOwnerInventory,
+        RootDisposition, RootEscrow, RootEscrowBacking, SettleDisposition,
     };
 
     fn pending_registration() -> PendingOwnerRegistration {
         let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
         registrations.pending()
+    }
+
+    fn child_registration() -> ChildOwnerRegistration {
+        let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        registrations.child()
     }
 
     struct NoopHeap;
@@ -726,7 +754,7 @@ mod tests {
             ),
         };
 
-        let outcome = BytecodeScheduler::new(TestUnit::parked(7), ports)
+        let outcome = BytecodeScheduler::new(TestUnit::parked(7), ports, child_registration())
             .run(&mut heap, &mut budget)
             .unwrap();
         assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
@@ -778,7 +806,7 @@ mod tests {
             ),
         };
 
-        let outcome = BytecodeScheduler::new(TestUnit::emit(7, 99), ports)
+        let outcome = BytecodeScheduler::new(TestUnit::emit(7, 99), ports, child_registration())
             .run(&mut heap, &mut budget)
             .unwrap();
         assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
@@ -871,6 +899,7 @@ mod tests {
                 finish_after_resume: Some(99),
             },
             ports,
+            child_registration(),
         )
         .run(&mut heap, &mut budget)
         .unwrap();
