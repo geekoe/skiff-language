@@ -14,7 +14,7 @@ mod request_composition;
 pub(super) use fixture::{Phase4FixtureBuild, Phase4PublishedFixture, PHASE4_VCP_FIXTURE_RELATIVE};
 pub(super) use observation::RecordingSink;
 pub(super) use request_composition::{
-    drive_phase_4_vcp_request, park_phase_4_request, Phase4DriveEvidence,
+    drive_phase_4_vcp_request, park_phase_4_request, resume_phase_4_parked, Phase4DriveEvidence,
 };
 
 // The Phase 4 harness reuses the Phase 0/1 wire correlation machinery, the

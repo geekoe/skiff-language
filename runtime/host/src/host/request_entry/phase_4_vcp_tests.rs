@@ -15,9 +15,9 @@ use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
 use super::phase_4_proof_support::{
     await_terminal_without_response, drive_phase_4_vcp_request, park_phase_4_request,
-    phase_4_correlation, run_phase_4_request, runtime_host, spawn_phase_4_request,
-    CorrelatedResponse, HeapSpyTrace, Phase4FixtureBuild, Phase4PublishedFixture, RecordingSink,
-    RecordingVmHeap, PHASE4_VCP_FIXTURE_RELATIVE,
+    phase_4_correlation, resume_phase_4_parked, run_phase_4_request, runtime_host,
+    spawn_phase_4_request, CorrelatedResponse, HeapSpyTrace, Phase4FixtureBuild,
+    Phase4PublishedFixture, RecordingSink, RecordingVmHeap, PHASE4_VCP_FIXTURE_RELATIVE,
 };
 use crate::loader::bytecode_admission::BytecodeDeploymentRegistry;
 
@@ -234,14 +234,13 @@ async fn phase_4_stage_sentinel_verify_to_scheduler() {
         .unwrap_or_else(|error| {
             panic!("verified image must park as actual Pending once K4 joins: {error}")
         });
-    assert_eq!(
-        parked.pending.current, 1,
-        "the parked request must hold exactly one live pending owner"
-    );
     assert!(
-        parked.pending.ever_created,
-        "the parked request must have published its pending owner exactly once"
+        parked.pending_completion().complete(),
+        "the parked request must hand out a completion authority that wins its \
+         single published pending cell (actual Pending, never pseudo-Ready)"
     );
+    resume_phase_4_parked(parked)
+        .expect("the completed parked request must resume to its root completion");
 }
 
 /// Stage sentinel scheduler -> request -> response. The input is the parked
@@ -337,11 +336,22 @@ async fn phase_4_negative_duplicate_wake_drop() {
     let correlation = phase_4_correlation("duplicate");
     let trace = HeapSpyTrace::default();
     let spy = RecordingVmHeap::new(RequestHeapLimits::default(), trace);
-    let evidence = drive_phase_4_vcp_request(&fixture, &correlation, Box::new(spy), b"1")
+    let parked = park_phase_4_request(&fixture, &correlation, Box::new(spy), b"1")
         .await
         .unwrap_or_else(|error| {
-            panic!("duplicate completion must settle once and resume once when K4 joins: {error}")
+            panic!("duplicate completion must park as actual Pending when K4 joins: {error}")
         });
+    let completion = parked.pending_completion();
+    assert!(
+        completion.complete(),
+        "the first competing host completion must win the parked cell"
+    );
+    assert!(
+        !completion.complete(),
+        "the duplicate host completion must be dropped without re-settling the cell"
+    );
+    let evidence = resume_phase_4_parked(parked)
+        .expect("the single winning completion must resume the original site exactly once");
     assert_eq!(
         serde_json::from_slice::<Value>(&evidence.payload).expect("decode duplicate payload"),
         serde_json::json!(2.0),
