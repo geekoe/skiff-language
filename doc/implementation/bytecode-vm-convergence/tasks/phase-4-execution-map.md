@@ -1,6 +1,6 @@
 # MAP4：Phase 4 rolling execution map
 
-> Status: active; revision 2; K4 kernel delivered (317 三包全绿), V4/C4/P4G in progress
+> Status: active; revision 3; all four lanes joined, merged preflight pending; paused at the Duration-construction gap (no new agents per user)
 >
 > Phase Contract: [`phase-4-scheduler-pending.md`](../phases/phase-4-scheduler-pending.md)
 >
@@ -40,6 +40,20 @@
 - 写集扩展记录：`runtime/request/src/lib.rs` 4 行 re-export（受控 seam 的导出点）纳入 K4 写集。
 - 接口结论：sleep binding key `std.time.sleep`；`complete() -> bool`（false=duplicate drop）；P4G 用
   `drive_runtime_bytecode_request_controlled`；VM 无需 diff（`InvokeHost`/`EnterAdapter`/`resume_inner` 已就绪）。
+
+## 3b. Revision 3
+
+- C4 `e69607a2`/`85998881`：admission 单放行 `std.time.sleep`（精确 arity/type/void），删除 emitter effect
+  rewrite；V4 `fe32126a`/`eee75d4a`：typed entry 只从 pinned registry 构造、删 std mismatch 吞掉路径、
+  verifier 证明 `ActualWithResume{HostEffect}`（pending 类别归 registry 权威）；P4G `0caeeb67`/`1e320414`/
+  `2f41cd09`：full-chain VCP + 6 stage sentinels + 4 negatives + Gate（67 命令基线已跑，11 P4 场景真实红、
+  34 回归全绿，baseline `/private/tmp/skiff-p4-gate-baseline`）。
+- 四 lane 已合入 integration（tip `65e3db1c`）。
+- **已知 blocker（转绿前）**：真实 fixture 无法构造 `Duration`——`Duration.milliseconds(...)` 被 admission
+  当作第二个 binding 拒绝，直接接收 `Duration` 参数又缺 std nominal transfer facts。归 C4（构造器常量折叠或
+  纳入 sleep authority 链）。修复前 VCP 在 publish 边界红。
+- **暂停点**：按用户指令，不再派发新 agent。剩余顺序：C4 修 Duration gap → 转绿 → Gate preflight →
+  freeze → 独立 review → 全新 Acceptance → results/phase-4.md 合 main。这些留待恢复后继续。
 
 ## 3. 验证与纪律
 
