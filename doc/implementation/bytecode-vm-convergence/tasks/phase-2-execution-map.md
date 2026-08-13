@@ -1,6 +1,6 @@
 # MAP2：Phase 2 rolling execution map
 
-> Status: active; revision 4; K2/C2/P2G first-day joined into integration, compiler writable-path chain complete, VCP runtime integration in progress
+> Status: active; revision 5; VCP reached runtime surface: negative green, array-builder link join routed to K2
 >
 > Phase Contract: [`phase-2-value-lifecycle.md`](../phases/phase-2-value-lifecycle.md)
 >
@@ -73,6 +73,16 @@ Integrator 只做机械 cherry-pick、receipt/MAP 更新、Gate/freeze/Acceptanc
   收敛。`generated_slot_plan` 残留仅可达已禁用构式（for-in/match），记录为后续 Phase 义务。
 - 三 lane 已滚入 integration：`a760437f`（compiler exact-plan）、`bcbb253e`（kernel）、`aeb3292a`（proof+gate）、
   `dd6e21be`（compiler source-event chain）。P2G 正在把 VCP 接入 K2 heap seam 并跑运行时验证。
+
+## 4e. Revision 5
+
+- P2G `4c2f921b` 把 VCP 接入 K2 heap seam（`BytecodeRequestExecutionInput.heap`，经 host 生产 route admission →
+  production driver，spy 记录 share/COW/drop 序列）。missing-plan negative 转绿；VCP 真实红在 linker：
+  `main::run pc 4: container input is absent`（`stack_map/values.rs` 的 `container_element`，由 record/array 构造链
+  触发）。C2 官方 fixture 逐字复现，确认是 emitter↔linker 通用 join 缺陷，非 harness 问题。
+- 过期 Phase 1 回归 `aggregate_shape_is_rejected_by_typed_compiler_containment`（`Array<number>` 现 admitted）与
+  stack-map 修复一并路由 K2。
+- host→driver heap 透传保持默认 None（P2G 经 input 注入可用）；不在本 Phase 改 host 公开面。
 
 ## 4. Task contracts
 
