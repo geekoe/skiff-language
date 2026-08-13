@@ -1204,7 +1204,7 @@ impl VmHeap for LifecycleRecordingHeap {
 }
 
 #[test]
-fn lifecycle_executor_drives_copy_return_and_frame_exit_primitives() {
+fn lifecycle_executor_keeps_scalar_dispatch_sidecar_free() {
     let fixture = ObservationFixture::build(
         "example.com/fiber-lifecycle-recording",
         "function run(value: number) -> number {\n\
@@ -1226,13 +1226,14 @@ fn lifecycle_executor_drives_copy_return_and_frame_exit_primitives() {
         }
     }
 
-    // The copy of `a` into `b` shares, the returned result transfers, and the
-    // frame exit releases the remaining live locals.
-    assert!(heap.shares >= 1, "copy must share through the executor");
-    assert!(heap.transfers >= 1, "return must transfer through the executor");
-    assert!(
-        heap.snapshot_releases >= 1,
-        "frame exit must release through the executor"
+    // Every scalar transition takes the lifecycle executor's trivial fast
+    // path: copy, return transfer, and frame-exit release all keep the
+    // sidecar-free Phase 1 invariant and never touch a heap primitive.
+    assert_eq!(heap.shares, 0, "scalar copy must not snapshot-share");
+    assert_eq!(heap.transfers, 0, "scalar return must not transfer-owner");
+    assert_eq!(
+        heap.snapshot_releases, 0,
+        "scalar frame exit must not release-snapshot"
     );
     assert_eq!(heap.resource_releases, 0, "no resource owners in a scalar fixture");
 }
