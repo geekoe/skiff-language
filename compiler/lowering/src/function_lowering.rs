@@ -2021,9 +2021,11 @@ impl<'a> FunctionLowerer<'a> {
                 // An expression-form rethrow reads an identifier directly from
                 // its slot instead of emitting an ExprIr node. The identifier
                 // still occupies one canonical source ExpressionKey in the
-                // expression type model, so consume that key before lowering
-                // any following expression to keep fact lookups aligned.
-                self.consume_expression_key()?;
+                // expression type model, so collapse that key into the
+                // rethrow expression: fact lookups stay aligned and the
+                // identifier remains a represented source event anchored on
+                // the Rethrow node.
+                self.take_collapsed_expression_key(&mut collapsed_keys)?;
                 ExprIr::Rethrow { exception_slot }
             }
             Expr::Catch {
@@ -2031,7 +2033,13 @@ impl<'a> FunctionLowerer<'a> {
                 try_expr,
             } => {
                 let catch_name = format!("$catch{}", self.slots.len());
-                let catch_slot = self.declare_slot(&catch_name, SlotKind::Temp, false)?;
+                let catch_slot = self.declare_slot(&catch_name, SlotKind::Local, false)?;
+                // The exception-region handler overwrites the defaulted catch
+                // slot with the caught envelope. The frame slot must therefore
+                // be a writable Local so the dead-or-writable overwrite
+                // releases the default through the slot plan instead of
+                // rejecting a live slot.
+                self.slots[catch_slot as usize].writable_local = true;
                 let lowered_catch_type = lower_type_ref(
                     catch_type,
                     self.type_lowering_environment(),

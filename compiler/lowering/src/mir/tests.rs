@@ -1241,6 +1241,15 @@ fn phase_3_union_catch_fixture_lowers_with_union_bindings_and_aligned_rethrow() 
         .find(|function| function.symbol == format!("{MODULE}.run"))
         .expect("run");
 
+    // The expression-form rethrow must keep its exception identifier as a
+    // represented source event: the plan stays available instead of failing
+    // closed with SourceEventNotRepresentable.
+    assert_eq!(
+        run.source_event_plan.unavailable_reason(),
+        None,
+        "rethrow identifiers must not leave the source event plan unrepresentable"
+    );
+
     // Both `leaf` bindings carry the declared anonymous union, not the
     // constructor branch: the constructor enters the union context.
     let leaf_slots = run
@@ -1258,6 +1267,19 @@ fn phase_3_union_catch_fixture_lowers_with_union_bindings_and_aligned_rethrow() 
 
     // The caught payload binding carries the opaque Exception<LeafA>
     // envelope and the catch-over-rethrow result is CatchResult<never, LeafA>.
+    let catch_slots = run
+        .slots
+        .iter()
+        .filter(|slot| slot.name.starts_with("$catch"))
+        .collect::<Vec<_>>();
+    assert!(catch_slots.len() >= 3, "each catch lowers one temp slot");
+    for catch_slot in &catch_slots {
+        assert!(
+            catch_slot.writable_local,
+            "catch slot `{}` must be writable so the handler overwrite of its default is legal",
+            catch_slot.name
+        );
+    }
     let exc = run
         .slots
         .iter()

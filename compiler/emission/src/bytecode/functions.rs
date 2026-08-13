@@ -2345,6 +2345,10 @@ impl<'a> FunctionEmitter<'a> {
                 self.emit_number_constant(0)?;
                 Ok(())
             }
+            TypeRefIr::Builtin { name, args } if name == "number" && args.is_empty() => {
+                self.emit_number_constant(0)?;
+                Ok(())
+            }
             TypeRefIr::Builtin { name, args } if name == "bool" && args.is_empty() => {
                 let pool = self.image.add_literal_constant(
                     self.unit.module_path.as_str(),
@@ -2353,6 +2357,16 @@ impl<'a> FunctionEmitter<'a> {
                     context,
                 )?;
                 self.emit_op(Opcode::Const, vec![pool])?;
+                Ok(())
+            }
+            TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
+                let element_ref = self.image.type_index(
+                    self.unit.module_path.as_str(),
+                    &args[0],
+                    context,
+                )?;
+                self.emit_op(Opcode::NewArrayBuilder, vec![element_ref])?;
+                self.emit_op(Opcode::FreezeArray, Vec::new())?;
                 Ok(())
             }
             _ => {
@@ -2376,7 +2390,7 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_record_construct(
         &mut self,
-        expression: &MirExpression,
+        _expression: &MirExpression,
         type_ref: &TypeRefIr,
         fields: &BTreeMap<String, ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
@@ -2403,9 +2417,13 @@ impl<'a> FunctionEmitter<'a> {
                 "construct field set does not exactly match the declared shape",
             ));
         }
+        // The runtime tag comes from the constructed nominal leaf, not the
+        // surrounding static context: a union-typed constructor must still
+        // carry its concrete leaf identity so throw/catch match the actual
+        // branch. Slots/parameters/returns keep the union static type.
         let shape = self.image.intern_shape(
             self.unit.module_path.as_str(),
-            &expression.ty,
+            type_ref,
             &declared,
             &format!("record construct in `{}`", self.key),
         )?;
@@ -2975,7 +2993,10 @@ impl<'a> FunctionEmitter<'a> {
         let try_ty = self.function.expression(try_expression)?.ty.clone();
         let start_instruction = self.instructions.len();
         self.emit_expression(try_expression)?;
-        if !is_void(&try_ty) {
+        // A throw/rethrow try expression is typed `never`: the raise already
+        // consumed its payload and never falls through, so there is no try
+        // value to pop.
+        if !is_void(&try_ty) && !is_never_type(&try_ty) {
             self.emit_op(Opcode::Pop, Vec::new())?;
         }
         let handler_instruction = self.instructions.len();
@@ -3643,11 +3664,28 @@ impl<'a> FunctionEmitter<'a> {
                 ));
             }
             if !covered_instructions.insert(instruction_index) {
-                return Err(unsupported(
-                    &self.key,
-                    "Phase 1 source attribution",
-                    &format!("source event {event_index} does not uniquely anchor an instruction"),
-                ));
+                // Collapsed source keys (a rethrow identifier lowered
+                // directly into its host node) share the host expression's
+                // instruction. The first-recorded event wins the source map
+                // entry; the collapsed key still contributes its statement
+                // charge through the statement schedule.
+                let collapsed_duplicate = matches!(
+                    event.anchor,
+                    MirEmissionAnchor::Expression {
+                        occurrence_ordinal,
+                        ..
+                    } if occurrence_ordinal > 0
+                );
+                if !collapsed_duplicate {
+                    return Err(unsupported(
+                        &self.key,
+                        "Phase 1 source attribution",
+                        &format!(
+                            "source event {event_index} does not uniquely anchor an instruction"
+                        ),
+                    ));
+                }
+                continue;
             }
             let start_pc = *pcs
                 .get(instruction_index)
@@ -4197,14 +4235,15 @@ mod tests {
     use std::collections::BTreeMap;
 
     use skiff_artifact_model::{
-        CallableEffectSummary, ExprIr, ExprRefIr, FileIrUnit, InstructionSourceSite, LiteralIr,
-        PackageCallableId, SyntheticInstructionSiteReason, TypeRefIr,
+        BinaryOpIr, CallableEffectSummary, ExprIr, ExprRefIr, FileIrUnit, InstructionSourceSite,
+        LiteralIr, PackageCallableId, SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan,
+        ValueTransferPlan,
     };
     use skiff_compiler_lowering::{
         mir::{
             liveness::compute_liveness, MirBlock, MirExecutableKind, MirExpression, MirFunction,
-            MirLiveness, MirSourceEventPlan, MirSourceEventUnavailableReason, MirStatementEntry,
-            MirStmt, MirStmtKind, MirUnit,
+            MirLiveness, MirSlot, MirSlotKind, MirSourceEventPlan, MirSourceEventUnavailableReason,
+            MirStatementEntry, MirStmt, MirStmtKind, MirUnit,
         },
         Bounds, ConstEvaluator,
     };
@@ -4347,6 +4386,371 @@ mod tests {
             row.start_pc > 0,
             "the raise site must sit after the payload expression, got pc {}",
             row.start_pc
+        );
+    }
+
+    /// `.tag == "ok"` reuses the canonical constant-pool string constant and
+    /// the existing dense-field/Equal paths; it never invents a second
+    /// discriminator opcode.
+    #[test]
+    fn tag_discriminator_equality_emits_a_constant_comparison() {
+        let catch_result = TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![TypeRefIr::builtin("void"), TypeRefIr::builtin("number")],
+        };
+        let tag_type = TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "err".to_string(),
+                    },
+                },
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "ok".to_string(),
+                    },
+                },
+            ],
+        };
+        let mut function = MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:main".to_string(),
+                module_path: "main".to_string(),
+                executable_index: 0,
+            },
+            symbol: "main.run".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("void"),
+            self_type: None,
+            receiver: None,
+            slots: vec![MirSlot {
+                slot: 0,
+                name: "attempt".to_string(),
+                kind: MirSlotKind::Local,
+                writable_local: false,
+                ty: Some(catch_result.clone()),
+            }],
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: vec![
+                MirExpression {
+                    index: 0,
+                    expression: ExprIr::LoadSlot { slot: 0 },
+                    ty: catch_result.clone(),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 1,
+                    expression: ExprIr::Field {
+                        object: ExprRefIr { expression: 0 },
+                        field: "tag".to_string(),
+                    },
+                    ty: tag_type,
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 2,
+                    expression: ExprIr::Literal {
+                        value: LiteralIr::String {
+                            value: "ok".to_string(),
+                        },
+                    },
+                    ty: TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "ok".to_string(),
+                        },
+                    },
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 3,
+                    expression: ExprIr::Binary {
+                        op: BinaryOpIr::Equal,
+                        left: ExprRefIr { expression: 1 },
+                        right: ExprRefIr { expression: 2 },
+                    },
+                    ty: TypeRefIr::builtin("bool"),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+            ],
+            blocks: vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Expr {
+                        value: ExprRefIr { expression: 3 },
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            regions: Vec::new(),
+            statements: vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:main:run".to_string()),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+        };
+        function.liveness = compute_liveness(&function).expect("test liveness computes");
+
+        let mut file_ir = FileIrUnit::empty("main", "source-hash");
+        file_ir.file_ir_identity = "file:main".to_string();
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&file_ir)
+            .expect("test bundle evaluates");
+        let unit = MirUnit {
+            file_ir_identity: file_ir.file_ir_identity.clone(),
+            module_path: file_ir.module_path.clone(),
+            actor_declarations: file_ir.actor_declarations.clone(),
+            external_refs: file_ir.external_refs.clone(),
+            source_map: file_ir.source_map.clone(),
+            type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
+            link_targets: file_ir.link_targets.clone(),
+            constants: Vec::new(),
+            functions: vec![function],
+        };
+        let plans = BytecodeValueTransferPlans::new(
+            BTreeMap::from([(
+                "main::run".to_string(),
+                FunctionValueTransferPlans {
+                    slot_plans: vec![ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::SnapshotRelease,
+                    }],
+                    result_plans: Vec::new(),
+                },
+            )]),
+            BTreeMap::new(),
+        );
+        let artifact = crate::bytecode::emitter::emit_bytecode_artifact_unchecked(
+            &[unit],
+            &[bundle],
+            &plans,
+        )
+        .expect("tag discriminator emission succeeds");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("tag discriminator bytecode validates");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "main::run")
+            .expect("run function validates");
+        let opcodes = function
+            .instructions
+            .iter()
+            .map(|instruction| instruction.descriptor.kind)
+            .collect::<Vec<_>>();
+        assert!(opcodes.contains(&Opcode::GetDenseField));
+        assert!(opcodes.contains(&Opcode::Const));
+        assert!(opcodes.contains(&Opcode::Equal));
+        assert!(
+            artifact
+                .image
+                .frozen_constant_graph
+                .nodes
+                .iter()
+                .any(|node| matches!(
+                    node,
+                    skiff_artifact_model::FrozenConstantNode::Literal {
+                        literal: LiteralIr::String { value }
+                    } if value == "ok"
+                )),
+            "the discriminator constant reuses the constant pool"
+        );
+    }
+
+    /// A union-typed record constructor still tags the runtime value with the
+    /// constructed nominal leaf: the NewRecord shape carries the leaf type so
+    /// throw/catch matches the actual branch identity, while the expression's
+    /// static union type stays a slot/parameter context fact.
+    #[test]
+    fn union_typed_construct_emits_the_nominal_leaf_shape() {
+        let leaf = TypeRefIr::LocalType { type_index: 0 };
+        let union_ty = TypeRefIr::Union {
+            items: vec![leaf.clone(), TypeRefIr::LocalType { type_index: 1 }],
+        };
+        let mut function = MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:main".to_string(),
+                module_path: "main".to_string(),
+                executable_index: 0,
+            },
+            symbol: "main.run".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("void"),
+            self_type: None,
+            receiver: None,
+            slots: Vec::new(),
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: vec![
+                MirExpression {
+                    index: 0,
+                    expression: ExprIr::Literal {
+                        value: LiteralIr::Number {
+                            value: serde_json::Number::from(1_u64),
+                        },
+                    },
+                    ty: TypeRefIr::builtin("number"),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 1,
+                    expression: ExprIr::Construct {
+                        type_ref: leaf.clone(),
+                        fields: BTreeMap::from([(
+                            "marker".to_string(),
+                            ExprRefIr { expression: 0 },
+                        )]),
+                    },
+                    ty: union_ty.clone(),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+            ],
+            blocks: vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Throw {
+                        value: ExprRefIr { expression: 1 },
+                        payload_type: union_ty,
+                        site: InstructionSourceSite::Synthetic {
+                            reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                        },
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            regions: Vec::new(),
+            statements: vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:main:run".to_string()),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+        };
+        function.liveness = compute_liveness(&function).expect("test liveness computes");
+
+        let mut file_ir = FileIrUnit::empty("main", "source-hash");
+        file_ir.file_ir_identity = "file:main".to_string();
+        file_ir.type_table.push(skiff_artifact_model::TypeDeclIr {
+            name: "LeafA".to_string(),
+            descriptor: skiff_artifact_model::TypeDescriptorIr::Record {
+                fields: BTreeMap::from([("marker".to_string(), TypeRefIr::builtin("number"))]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        file_ir.type_table.push(skiff_artifact_model::TypeDeclIr {
+            name: "LeafB".to_string(),
+            descriptor: skiff_artifact_model::TypeDescriptorIr::Record {
+                fields: BTreeMap::from([("marker".to_string(), TypeRefIr::builtin("number"))]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&file_ir)
+            .expect("test bundle evaluates");
+        let unit = MirUnit {
+            file_ir_identity: file_ir.file_ir_identity.clone(),
+            module_path: file_ir.module_path.clone(),
+            actor_declarations: file_ir.actor_declarations.clone(),
+            external_refs: file_ir.external_refs.clone(),
+            source_map: file_ir.source_map.clone(),
+            type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
+            link_targets: file_ir.link_targets.clone(),
+            constants: Vec::new(),
+            functions: vec![function],
+        };
+        let plans = BytecodeValueTransferPlans::new(
+            BTreeMap::from([(
+                "main::run".to_string(),
+                FunctionValueTransferPlans {
+                    slot_plans: Vec::new(),
+                    result_plans: Vec::new(),
+                },
+            )]),
+            BTreeMap::new(),
+        );
+        let artifact = crate::bytecode::emitter::emit_bytecode_artifact_unchecked(
+            &[unit],
+            &[bundle],
+            &plans,
+        )
+        .expect("union-typed construct emission succeeds");
+        let leaf_shape = artifact
+            .image
+            .pools
+            .shapes
+            .iter()
+            .filter_map(|entry| match entry {
+                skiff_artifact_model::BytecodePoolEntry::ShapeRef { shape } => Some(shape),
+                _ => None,
+            })
+            .find(|shape| {
+                shape.fields.len() == 1
+                    && shape
+                        .fields
+                        .first()
+                        .is_some_and(|field| field.name == "marker")
+            })
+            .expect("the construct shape is interned");
+        let tagged_type = &artifact.image.pools.types[leaf_shape.type_ref as usize];
+        assert_eq!(
+            tagged_type,
+            &skiff_artifact_model::BytecodePoolEntry::TypeRef {
+                ty: TypeRefIr::PublicationType {
+                    module_path: "main".to_string(),
+                    type_index: 0,
+                },
+            },
+            "the runtime tag must be the nominal leaf, not the union context"
         );
     }
 }

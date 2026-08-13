@@ -25,6 +25,52 @@ fn pinned_scalars_and_snapshot_roots_produce_complete_drop_plans() {
 }
 
 #[test]
+fn never_and_void_have_exact_trivial_snapshot_plans() {
+    let facts = SourceValueTransferFacts::new();
+    for name in ["never", "void"] {
+        let actual = plan(&facts, &builtin(name))
+            .unwrap_or_else(|error| panic!("{name} must have an exact plan: {error:?}"));
+        assert_eq!(
+            actual,
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
+            },
+            "{name} is uninhabited/value-less and must use the sidecar-free trivial plan"
+        );
+        assert_no_recursive_shape(&actual);
+    }
+    // The first CatchResult argument carries the try type; both uninhabited
+    // and value-less try results now plan exactly instead of Missing.
+    let never_result = generic_builtin("CatchResult", vec![builtin("never"), builtin("number")]);
+    assert_eq!(plan(&facts, &never_result), Ok(snapshot_release()));
+    let void_result = generic_builtin("CatchResult", vec![builtin("void"), builtin("number")]);
+    assert_eq!(plan(&facts, &void_result), Ok(snapshot_release()));
+}
+
+#[test]
+fn unsupported_builtins_still_fail_closed_after_the_never_slice() {
+    let facts = SourceValueTransferFacts::new();
+    let error = plan(&facts, &builtin("notABuiltin"))
+        .expect_err("unknown builtins must keep failing closed");
+    assert!(matches!(
+        root_error(&error),
+        SourceValueTransferError::UnknownBuiltin { .. }
+    ));
+    let error = plan(
+        &facts,
+        &TypeRefIr::Function {
+            params: Vec::new(),
+            return_type: Box::new(builtin("number")),
+        },
+    )
+    .expect_err("callbacks must keep failing closed");
+    assert!(matches!(
+        root_error(&error),
+        SourceValueTransferError::CallbackTypeUnsupported
+    ));
+}
+
+#[test]
 fn array_map_and_stream_are_derived_from_the_pinned_registry() {
     let facts = SourceValueTransferFacts::new();
     let values = generic_builtin("Array", vec![builtin("string")]);

@@ -46,6 +46,12 @@ impl<'a> AdmittedPhase1BytecodeMir<'a> {
 /// Phase 2 record/array/scalar face (directly or as union leaves); host
 /// effect, Pending, child and stream throw producers stay fail closed
 /// through the existing target/effect rejections.
+///
+/// Phase 3 Amendment 1 admits the minimal compile-time string-literal slice:
+/// a string literal is accepted only as a union/`CatchResult` discriminator
+/// constant (`.tag` reads, `tag == "…"` equality and their narrowed types).
+/// General string values (bindings, fields, aggregates, boundary payloads,
+/// concatenation) remain rejected.
 pub fn admit_phase_1_bytecode_mir(
     units: &[MirUnit],
 ) -> Result<AdmittedPhase1BytecodeMir<'_>, BytecodeEmissionError> {
@@ -248,8 +254,16 @@ fn admit_function(
         ));
     }
     admit_effects(unit, function_key, &function.effect_summary)?;
+    let discriminator_literals = collect_discriminator_literal_positions(function)?;
     for expression in &function.expressions {
-        admit_expression(units, unit, function_key, function, expression)?;
+        admit_expression(
+            units,
+            unit,
+            function_key,
+            function,
+            expression,
+            &discriminator_literals,
+        )?;
     }
     for block in &function.blocks {
         for statement in &block.statements {
@@ -532,12 +546,130 @@ fn is_tail_local_call(function: &MirFunction, expression_index: u32) -> bool {
         })
 }
 
+/// Compile-time string literals are admitted only as union/`CatchResult`
+/// discriminator constants: the right-hand operand of a `tag == "…"`
+/// equality. General string values stay fail closed.
+fn collect_discriminator_literal_positions(
+    function: &MirFunction,
+) -> Result<BTreeSet<u32>, BytecodeEmissionError> {
+    let mut positions = BTreeSet::new();
+    for expression in &function.expressions {
+        let ExprIr::Binary {
+            op: BinaryOpIr::Equal,
+            left,
+            right,
+        } = &expression.expression
+        else {
+            continue;
+        };
+        if is_tag_field_read(function, *left)? && is_string_literal_expression(function, *right)?
+        {
+            positions.insert(right.expression);
+        }
+        if is_tag_field_read(function, *right)? && is_string_literal_expression(function, *left)?
+        {
+            positions.insert(left.expression);
+        }
+    }
+    Ok(positions)
+}
+
+/// A `tag` field read is the discriminator position for a `CatchResult`
+/// (or a tag-shaped named-union accessor whose result is a string-literal
+/// union). Only these reads unlock string-literal type admission.
+fn is_tag_field_read(
+    function: &MirFunction,
+    expression_ref: ExprRefIr,
+) -> Result<bool, BytecodeEmissionError> {
+    let expression = function.expression(expression_ref)?;
+    let ExprIr::Field { object, field } = &expression.expression else {
+        return Ok(false);
+    };
+    if field != "tag" {
+        return Ok(false);
+    }
+    let object_type = &function.expression(*object)?.ty;
+    Ok(is_catch_result_type(object_type) || is_string_literal_union(&expression.ty))
+}
+
+fn is_string_literal_expression(
+    function: &MirFunction,
+    expression_ref: ExprRefIr,
+) -> Result<bool, BytecodeEmissionError> {
+    Ok(matches!(
+        function.expression(expression_ref)?.expression,
+        ExprIr::Literal {
+            value: LiteralIr::String { .. }
+        }
+    ))
+}
+
+fn is_string_literal_union(ty: &TypeRefIr) -> bool {
+    let TypeRefIr::Union { items } = ty else {
+        return false;
+    };
+    !items.is_empty()
+        && items.iter().all(|item| {
+            matches!(
+                item,
+                TypeRefIr::Literal {
+                    value: LiteralIr::String { .. }
+                }
+            )
+        })
+}
+
+fn is_string_literal_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Literal {
+            value: LiteralIr::String { .. }
+        }
+    )
+}
+
+fn is_catch_result_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2
+    )
+}
+
+/// After `result.tag == "err"` narrows a CatchResult binding, the expression
+/// model retypes later loads of that binding as the err-branch record
+/// `{ exception: Exception<E>, tag: "err" }`. The slot's frame type remains
+/// the opaque `CatchResult<T,E>`; this admission recognizes exactly that
+/// narrowed shape and rejects any other slot/load drift.
+fn is_catch_result_narrowed_load(slot_type: &TypeRefIr, load_type: &TypeRefIr) -> bool {
+    let TypeRefIr::Builtin { name, args } = slot_type else {
+        return false;
+    };
+    if name != "CatchResult" || args.len() != 2 {
+        return false;
+    }
+    let TypeRefIr::Record { fields } = load_type else {
+        return false;
+    };
+    if fields.len() != 2 {
+        return false;
+    }
+    let exception_type = TypeRefIr::Builtin {
+        name: "Exception".to_string(),
+        args: vec![args[1].clone()],
+    };
+    fields.get("exception") == Some(&exception_type)
+        && fields
+            .get("tag")
+            .is_some_and(|tag| is_string_literal_type(tag) || is_string_literal_union(tag))
+}
+
 fn admit_expression(
     units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
     expression: &skiff_compiler_lowering::mir::MirExpression,
+    discriminator_literals: &BTreeSet<u32>,
 ) -> Result<(), BytecodeEmissionError> {
     if let ExprIr::Construct { type_ref, .. } = &expression.expression {
         admit_type(
@@ -549,13 +681,18 @@ fn admit_expression(
             &format!("expression {} construct type", expression.index),
         )?;
     }
-    admit_type(
+    let discriminator_context = discriminator_literals.contains(&expression.index)
+        || is_tag_field_read(function, ExprRefIr {
+            expression: expression.index,
+        })?;
+    admit_type_with_discriminator_flag(
         units,
         unit,
         function_key,
         &expression.ty,
         true,
         &format!("expression {} type", expression.index),
+        discriminator_context,
     )?;
     if expression.writable.is_some() {
         return Err(rejected_function(
@@ -584,11 +721,14 @@ fn admit_expression(
     let capability = match &expression.expression {
         ExprIr::Literal { value } => match value {
             LiteralIr::Null | LiteralIr::Bool { .. } | LiteralIr::Number { .. } => None,
+            LiteralIr::String { .. } if discriminator_literals.contains(&expression.index) => None,
             LiteralIr::String { .. } => Some(Phase1UnsupportedCapability::ValueShape),
         },
         ExprIr::LoadSlot { slot } => {
             let slot_type = function.slot_type(*slot)?;
-            if slot_type != &expression.ty {
+            if slot_type != &expression.ty
+                && !is_catch_result_narrowed_load(slot_type, &expression.ty)
+            {
                 return Err(fact_mismatch(
                     unit,
                     function_key,
@@ -975,10 +1115,23 @@ fn admit_type(
     allow_void: bool,
     location: &str,
 ) -> Result<(), BytecodeEmissionError> {
+    admit_type_with_discriminator_flag(units, unit, function_key, ty, allow_void, location, false)
+}
+
+fn admit_type_with_discriminator_flag(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    ty: &TypeRefIr,
+    allow_void: bool,
+    location: &str,
+    allow_discriminator_literal: bool,
+) -> Result<(), BytecodeEmissionError> {
     let mut context = TypeAdmissionContext {
         units,
         function_key,
         nominal_chain: Vec::new(),
+        allow_discriminator_literal,
     };
     admit_type_nested(&mut context, unit, ty, allow_void, location, false)
 }
@@ -992,6 +1145,7 @@ struct TypeAdmissionContext<'a> {
     units: &'a [MirUnit],
     function_key: &'a str,
     nominal_chain: Vec<(String, u32)>,
+    allow_discriminator_literal: bool,
 }
 
 fn admit_type_nested(
@@ -1005,14 +1159,22 @@ fn admit_type_nested(
     match ty {
         TypeRefIr::Record { fields } => {
             for (name, field_ty) in fields {
-                admit_type_nested(
+                let saved_flag = context.allow_discriminator_literal;
+                if name == "tag"
+                    && (is_string_literal_type(field_ty) || is_string_literal_union(field_ty))
+                {
+                    context.allow_discriminator_literal = true;
+                }
+                let result = admit_type_nested(
                     context,
                     unit,
                     field_ty,
                     false,
                     &format!("{location} field `{name}`"),
                     true,
-                )?;
+                );
+                context.allow_discriminator_literal = saved_flag;
+                result?;
             }
             Ok(())
         }
@@ -1066,6 +1228,22 @@ fn admit_type_nested(
                 &format!("{location} payload type"),
                 nested,
             )
+        }
+        // Compile-time string literals are admitted only inside a
+        // discriminator context (a `.tag` result union or the constant side
+        // of a `tag == "…"` equality). Everywhere else they stay on the
+        // rejected Phase 2 value-shape face.
+        TypeRefIr::Literal {
+            value: LiteralIr::String { .. },
+        } if context.allow_discriminator_literal => Ok(()),
+        // A `tag` read on a CatchResult whose try expression was a throw or
+        // rethrow is typed `unknown` by the expression model (the catch node
+        // has no recorded result type). The admission admits that honest top
+        // type only in the verified tag-read discriminator position.
+        TypeRefIr::Builtin { name, args }
+            if name == "unknown" && args.is_empty() && context.allow_discriminator_literal =>
+        {
+            Ok(())
         }
         TypeRefIr::LocalType { type_index } => {
             admit_nominal_declaration(context, unit, &unit.module_path, *type_index, location)
@@ -1512,6 +1690,7 @@ mod tests {
             FUNCTION_KEY,
             &function,
             &function.expressions[2],
+            &BTreeSet::new(),
         )
         .expect("a catch expression on the Phase 2 face is admitted");
     }
@@ -1542,6 +1721,7 @@ mod tests {
             FUNCTION_KEY,
             &function,
             &function.expressions[0],
+            &BTreeSet::new(),
         )
         .expect("a rethrow expression typed never is admitted");
     }
@@ -1654,5 +1834,194 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn phase_3_admission_accepts_catch_result_tag_discriminator_reads() {
+        let catch_type = local(1);
+        let catch_result = TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![TypeRefIr::builtin("never"), catch_type.clone()],
+        };
+        let mut function = function();
+        function.slots.push(slot(0, catch_type.clone()));
+        function.slots.push(slot(1, catch_result.clone()));
+        function.expressions.push(expression(
+            0,
+            ExprIr::Literal {
+                value: LiteralIr::Number {
+                    value: serde_json::Number::from(1_u64),
+                },
+            },
+            number(),
+        ));
+        function.expressions.push(expression(
+            1,
+            ExprIr::Construct {
+                type_ref: catch_type.clone(),
+                fields: BTreeMap::from([(
+                    "marker".to_string(),
+                    ExprRefIr { expression: 0 },
+                )]),
+            },
+            catch_type.clone(),
+        ));
+        function.expressions.push(expression(
+            2,
+            ExprIr::Throw {
+                value: ExprRefIr { expression: 1 },
+                payload_type: catch_type.clone(),
+                site: synthetic_site(),
+            },
+            TypeRefIr::builtin("never"),
+        ));
+        function.expressions.push(expression(
+            3,
+            ExprIr::LoadSlot { slot: 0 },
+            catch_type.clone(),
+        ));
+        function.expressions.push(expression(
+            4,
+            ExprIr::Catch {
+                try_expression: ExprRefIr { expression: 2 },
+                catch_slot: 0,
+                catch_type: catch_type.clone(),
+                body: ExprRefIr { expression: 3 },
+            },
+            catch_result.clone(),
+        ));
+        function.expressions.push(expression(
+            5,
+            ExprIr::LoadSlot { slot: 1 },
+            catch_result.clone(),
+        ));
+        function.expressions.push(expression(
+            6,
+            ExprIr::Field {
+                object: ExprRefIr { expression: 5 },
+                field: "tag".to_string(),
+            },
+            TypeRefIr::builtin("unknown"),
+        ));
+        function.expressions.push(expression(
+            7,
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "ok".to_string(),
+                },
+            },
+            TypeRefIr::Literal {
+                value: LiteralIr::String {
+                    value: "ok".to_string(),
+                },
+            },
+        ));
+        function.expressions.push(expression(
+            8,
+            ExprIr::Binary {
+                op: skiff_artifact_model::BinaryOpIr::Equal,
+                left: ExprRefIr { expression: 6 },
+                right: ExprRefIr { expression: 7 },
+            },
+            TypeRefIr::builtin("bool"),
+        ));
+        function.regions.push(MirRegion {
+            id: 0,
+            catch_expr: 4,
+            catch_slot: 0,
+            catch_type: catch_type.clone(),
+            cleanup_depth: 0,
+        });
+
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let positions = collect_discriminator_literal_positions(&function)
+            .expect("discriminator positions collect");
+        assert_eq!(
+            positions.iter().copied().collect::<Vec<_>>(),
+            vec![7],
+            "only the tag-equality string literal is a discriminator constant"
+        );
+        for index in 4..=8 {
+            admit_expression(
+                &units,
+                &units[0],
+                FUNCTION_KEY,
+                &function,
+                &function.expressions[index],
+                &positions,
+            )
+            .unwrap_or_else(|error| {
+                panic!("discriminator expression {index} should be admitted: {error:?}")
+            });
+        }
+
+        // The narrowed err-branch record load stays a stable LoadSlot fact.
+        let narrowed_tag = TypeRefIr::Literal {
+            value: LiteralIr::String {
+                value: "err".to_string(),
+            },
+        };
+        let narrowed = expression(
+            9,
+            ExprIr::LoadSlot { slot: 1 },
+            TypeRefIr::Record {
+                fields: BTreeMap::from([
+                    (
+                        "exception".to_string(),
+                        TypeRefIr::Builtin {
+                            name: "Exception".to_string(),
+                            args: vec![catch_type],
+                        },
+                    ),
+                    ("tag".to_string(), narrowed_tag),
+                ]),
+            },
+        );
+        function.expressions.push(narrowed);
+        admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &function,
+            &function.expressions[9],
+            &positions,
+        )
+        .expect("the narrowed CatchResult load is admitted");
+    }
+
+    #[test]
+    fn phase_3_admission_keeps_non_discriminator_string_literals_fail_closed() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let mut function = function();
+        let literal = expression(
+            0,
+            ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "ok".to_string(),
+                },
+            },
+            TypeRefIr::Literal {
+                value: LiteralIr::String {
+                    value: "ok".to_string(),
+                },
+            },
+        );
+        function.expressions.push(literal.clone());
+        let error = admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &function,
+            &function.expressions[0],
+            &BTreeSet::new(),
+        )
+        .expect_err("a bare string literal stays rejected");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::ValueShape,
+                ..
+            }
+        ), "unexpected rejection: {error:?}");
     }
 }
