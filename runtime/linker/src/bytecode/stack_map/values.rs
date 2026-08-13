@@ -9,6 +9,7 @@ use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkOblig
 
 use super::{obligation_error, StackMapContext};
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn source_values(
     context: &mut StackMapContext<'_, '_>,
     instruction: &LinkedInstruction,

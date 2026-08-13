@@ -5,7 +5,7 @@ use skiff_artifact_model::bytecode::{structurally_validate, Opcode};
 use skiff_runtime_bytecode_verifier::VerifiedResumeKind;
 use skiff_runtime_model::{
     bytecode_execution_observation::{
-        BytecodeExecutionEvent, BytecodeRequestTerminal, RequestExecutionOwnerInventorySnapshot,
+        BytecodeRequestTerminal, RequestExecutionOwnerInventorySnapshot,
     },
     request_heap::RequestHeapLimits,
     vm_heap::VmHeap,
@@ -47,7 +47,11 @@ const NEGATIVE_SLEEP_BODY: &[u8] = b"60000";
 /// producer gap closes.
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_vcp_production_composition() {
-    let fixture = publish_or_panic("phase-4-vcp", PHASE4_VCP_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-vcp",
+        PHASE4_VCP_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     assert_vcp_source_fixture();
     assert_recording_heap_is_vm_heap();
 
@@ -140,7 +144,11 @@ fn phase_4_stage_sentinel_source_to_admission() {
 /// `InvokeHost` call site for the canonical sleep, with no emitter rewrite.
 #[test]
 fn phase_4_stage_sentinel_admission_to_emission() {
-    let fixture = publish_or_panic("phase-4-sentinel-emission", PHASE4_VCP_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-sentinel-emission",
+        PHASE4_VCP_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     let store = fixture.open_store();
     let bytecode_ref = fixture
         .package_bytecode_ref()
@@ -174,7 +182,11 @@ fn phase_4_stage_sentinel_admission_to_emission() {
 /// canonical binding id (no std bypass, no string dispatch).
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_stage_sentinel_emission_to_link() {
-    let fixture = publish_or_panic("phase-4-sentinel-link", PHASE4_VCP_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-sentinel-link",
+        PHASE4_VCP_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     let registry = BytecodeDeploymentRegistry::new();
     let image = registry
         .get_or_load(fixture.deployment_ref(), fixture.artifact_root_path())
@@ -200,7 +212,11 @@ async fn phase_4_stage_sentinel_emission_to_link() {
 /// (`ActualWithResume{HostEffect}`).
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_stage_sentinel_link_to_verify() {
-    let fixture = publish_or_panic("phase-4-sentinel-verify", PHASE4_VCP_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-sentinel-verify",
+        PHASE4_VCP_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     let registry = BytecodeDeploymentRegistry::new();
     let image = registry
         .get_or_load(fixture.deployment_ref(), fixture.artifact_root_path())
@@ -227,7 +243,11 @@ async fn phase_4_stage_sentinel_link_to_verify() {
 /// pseudo-Ready completion.
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_stage_sentinel_verify_to_scheduler() {
-    let fixture = publish_or_panic("phase-4-sentinel-scheduler", PHASE4_VCP_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-sentinel-scheduler",
+        PHASE4_VCP_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     let correlation = phase_4_correlation("scheduler-sentinel");
     let trace = HeapSpyTrace::default();
     let spy = RecordingVmHeap::new(RequestHeapLimits::default(), trace);
@@ -250,7 +270,11 @@ async fn phase_4_stage_sentinel_verify_to_scheduler() {
 /// the boundary response is the deterministic post-sleep payload.
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_stage_sentinel_scheduler_to_request_response() {
-    let fixture = publish_or_panic("phase-4-sentinel-response", PHASE4_VCP_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-sentinel-response",
+        PHASE4_VCP_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     let correlation = phase_4_correlation("response-sentinel");
     let trace = HeapSpyTrace::default();
     let spy = RecordingVmHeap::new(RequestHeapLimits::default(), trace);
@@ -272,7 +296,11 @@ async fn phase_4_stage_sentinel_scheduler_to_request_response() {
 /// exactly one Cancelled terminal and emit zero wire terminal frames.
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_negative_cancel_before_complete() {
-    let fixture = publish_or_panic("phase-4-cancel", PHASE4_NEGATIVE_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-cancel",
+        PHASE4_NEGATIVE_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     let correlation = phase_4_correlation("cancel");
     let sink = Arc::new(RecordingSink::default());
     let mut host = runtime_host(&correlation);
@@ -298,7 +326,11 @@ async fn phase_4_negative_cancel_before_complete() {
 /// projects the canonical TimeoutError exactly once.
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_negative_deadline_race() {
-    let fixture = publish_or_panic("phase-4-deadline", PHASE4_NEGATIVE_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-deadline",
+        PHASE4_NEGATIVE_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     let correlation = phase_4_correlation("deadline");
     let sink = Arc::new(RecordingSink::default());
     let mut host = runtime_host(&correlation);
@@ -335,7 +367,11 @@ async fn phase_4_negative_deadline_race() {
 /// deterministic completion boundary as the VCP (SEAM-4).
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_negative_duplicate_wake_drop() {
-    let fixture = publish_or_panic("phase-4-duplicate", PHASE4_VCP_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-duplicate",
+        PHASE4_VCP_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     let correlation = phase_4_correlation("duplicate");
     let trace = HeapSpyTrace::default();
     let spy = RecordingVmHeap::new(RequestHeapLimits::default(), trace);
@@ -368,7 +404,11 @@ async fn phase_4_negative_duplicate_wake_drop() {
 /// stop-without-response terminal (VM-13 closure).
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_negative_session_disconnect() {
-    let fixture = publish_or_panic("phase-4-disconnect", PHASE4_NEGATIVE_FIXTURE_RELATIVE, PHASE4_VCP_PACKAGE_ID);
+    let fixture = publish_or_panic(
+        "phase-4-disconnect",
+        PHASE4_NEGATIVE_FIXTURE_RELATIVE,
+        PHASE4_VCP_PACKAGE_ID,
+    );
     let correlation = phase_4_correlation("disconnect");
     let sink = Arc::new(RecordingSink::default());
     let mut host = runtime_host(&correlation);
@@ -383,7 +423,11 @@ async fn phase_4_negative_session_disconnect() {
     assert_single_terminal(&sink, &correlation, BytecodeRequestTerminal::Cancelled);
 }
 
-fn publish_or_panic(prefix: &str, fixture_relative: &str, package_id: &str) -> Phase4PublishedFixture {
+fn publish_or_panic(
+    prefix: &str,
+    fixture_relative: &str,
+    package_id: &str,
+) -> Phase4PublishedFixture {
     match Phase4PublishedFixture::build(
         prefix,
         fixture_relative,

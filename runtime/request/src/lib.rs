@@ -14,10 +14,10 @@ pub mod vm_heap;
 
 pub use bytecode_ingress::{
     drive_runtime_bytecode_request, drive_runtime_bytecode_request_async,
-    drive_runtime_bytecode_request_controlled,
-    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, BytecodeRequestRetention,
-    ControlledBytecodeDrive, DrivenBytecodeRequest, DrivenBytecodeRequestOwnerInventory,
-    ParkedBytecodeRequest, RequestPendingCompletion,
+    drive_runtime_bytecode_request_controlled, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, BytecodeRequestRetention, ControlledBytecodeDrive,
+    DrivenBytecodeRequest, DrivenBytecodeRequestOwnerInventory, ParkedBytecodeRequest,
+    RequestPendingCompletion,
 };
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,

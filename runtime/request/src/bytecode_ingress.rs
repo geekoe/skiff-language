@@ -620,7 +620,7 @@ impl ParkedBytecodeRequest {
     }
 
     /// Resumes after the caller has already claimed the wake signal.
-    fn resume_with_claimed_signal(mut self) -> ControlledBytecodeDrive {
+    fn resume_with_claimed_signal(self) -> ControlledBytecodeDrive {
         let wake = self
             .runtime
             .wake_queue
@@ -633,7 +633,7 @@ impl ParkedBytecodeRequest {
     ///
     /// The restored scheduler runs once; a second park suspends the chain
     /// again and returns a fresh [`ControlledBytecodeDrive::Parked`].
-    pub fn resume(mut self) -> ControlledBytecodeDrive {
+    pub fn resume(self) -> ControlledBytecodeDrive {
         self.wake_receiver
             .recv()
             .expect("a parked bytecode request must be completed before resume");
