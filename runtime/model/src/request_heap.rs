@@ -1148,6 +1148,7 @@ impl RequestHeap {
                 RequestExceptionCause::OpaqueService {
                     local_value: None, ..
                 } => false,
+                RequestExceptionCause::VmLocal { .. } => false,
             },
         };
         visiting.remove(&start);
@@ -1742,6 +1743,7 @@ impl CloneContext {
                     RequestExceptionCause::OpaqueService {
                         local_value: None, ..
                     } => exception,
+                    RequestExceptionCause::VmLocal { .. } => exception,
                 };
                 HeapNode::Exception(cloned)
             }
@@ -1881,6 +1883,7 @@ impl CrossHeapCloneContext {
                     RequestExceptionCause::OpaqueService {
                         local_value: None, ..
                     } => exception,
+                    RequestExceptionCause::VmLocal { .. } => exception,
                 };
                 HeapNode::Exception(cloned)
             }

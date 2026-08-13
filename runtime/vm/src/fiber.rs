@@ -4,9 +4,11 @@ mod projection_tests;
 #[cfg(test)]
 mod tests;
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
-use skiff_artifact_model::{descriptor_for_opcode, LiteralIr, Opcode, ParamModeIr};
+use skiff_artifact_model::{
+    descriptor_for_opcode, LiteralIr, Opcode, PackageRefIr, ParamModeIr, TypeRefIr,
+};
 use skiff_runtime_bytecode_verifier::VerifiedResumeSite;
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
@@ -21,6 +23,10 @@ use skiff_runtime_model::{
     bytecode_execution_observation::{
         BytecodeExecutionEvent, BytecodeExecutionObserver, VmFirstInstructionDispatched,
         VmFunctionFrameEntered, VmFunctionReturned, VmLocalCallDispatched, VmObservedFrameRole,
+    },
+    service_error::{
+        CatchIdentity, ErrorCorrelation, ExceptionStackFrame, FileAddr, LocalExecutionTypeIdentity,
+        NominalTypeIdentity, PackageSchemaTypeIdentity, RequestException, TypeAddr, UnitAddr,
     },
     vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmRecordField},
     vm_root::{VmRootSource, VmRootVisitor},
@@ -86,6 +92,8 @@ pub struct VmFiber {
     active_regions: Vec<ActiveRegionIndex>,
     region_depths: Vec<usize>,
     unwind: Option<UnwindState>,
+    caught_exceptions: BTreeMap<usize, CaughtException>,
+    error_correlation: Option<ErrorCorrelation>,
     pending_resume: Option<PendingResume>,
     resume_sequence: u64,
     projection_sequence: u64,
@@ -94,7 +102,33 @@ pub struct VmFiber {
 
 #[derive(Clone)]
 struct UnwindState {
-    payload: ValueSlot,
+    envelope: Arc<RequestException>,
+    cursor: UnwindCursor,
+    phase: UnwindPhase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnwindCursor {
+    function: FunctionIndex,
+    instruction: InstructionIndex,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UnwindPhase {
+    /// Unwind was armed at a heap-free resume boundary; the frame-exit scan
+    /// continues on the next heap-bearing run segment.
+    Pending,
+    /// Frame-exit scan toward a matching catch handler is in progress.
+    Searching,
+}
+
+/// A caught envelope retained for the lifetime of its catch slot. The
+/// envelope keeps the single payload authority while the catch slot holds a
+/// shared snapshot of the payload for the handler body.
+#[derive(Clone)]
+struct CaughtException {
+    envelope: Arc<RequestException>,
+    plan: LinkedValueTransferPlan,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +218,8 @@ impl VmFiber {
             active_regions: Vec::new(),
             region_depths: vec![0],
             unwind: None,
+            caught_exceptions: BTreeMap::new(),
+            error_correlation: None,
             pending_resume: None,
             resume_sequence: 0,
             projection_sequence: 0,
@@ -220,6 +256,13 @@ impl VmFiber {
 
     pub fn allocated_value_slot_count(&self) -> usize {
         self.values.len()
+    }
+
+    /// Supplies the request-local error correlation used when constructing
+    /// throw envelopes. A throw before this is set fails closed with a
+    /// [`VmError::ThrowEnvelopeUnavailable`] rather than fabricating one.
+    pub fn set_error_correlation(&mut self, correlation: ErrorCorrelation) {
+        self.error_correlation = Some(correlation);
     }
 
     /// Dormant VM-only mint seam for one exact inline projection point.
@@ -348,13 +391,17 @@ impl VmFiber {
     }
 
     pub fn run_segment(&mut self, heap: &mut dyn VmHeap, budget: &mut dyn VmBudget) -> VmControl {
-        if self.state != VmFiberState::Runnable {
+        if !matches!(
+            self.state,
+            VmFiberState::Runnable | VmFiberState::Unwinding
+        ) {
             return VmControl::Complete(Err(VmError::FiberNotRunnable { state: self.state }));
         }
 
         match self.run_segment_inner(heap, budget) {
             Ok(SegmentResult::Continue) => VmControl::Continue,
             Ok(SegmentResult::Complete(values)) => VmControl::Complete(Ok(values)),
+            Ok(SegmentResult::Throw(envelope)) => VmControl::Complete(Err(VmError::Thrown(envelope))),
             Ok(SegmentResult::Handoff(control)) => control,
             Err(error) => {
                 self.state = VmFiberState::Terminal;
@@ -388,6 +435,7 @@ impl VmFiber {
         self.active_regions.clear();
         self.region_depths.clear();
         self.unwind = None;
+        self.caught_exceptions.clear();
         self.pending_resume = None;
         Ok(())
     }
@@ -417,7 +465,7 @@ impl VmFiber {
                 self.resume_values(pending, VmOwnedValues::empty(image))
             }
             ResumeOutcome::StreamEnd => self.resume_stream_end(pending),
-            ResumeOutcome::Throw(values) => self.resume_throw(pending, values),
+            ResumeOutcome::Throw(envelope) => self.resume_throw(pending, envelope),
             ResumeOutcome::Failure(error) => {
                 self.state = VmFiberState::Terminal;
                 Err(error)
@@ -493,49 +541,38 @@ impl VmFiber {
     fn resume_throw(
         &mut self,
         pending: PendingResume,
-        values: VmOwnedValues,
+        envelope: Arc<RequestException>,
     ) -> Result<(), VmError> {
-        if !Arc::ptr_eq(values.image(), &pending.image) {
+        if envelope.vm_local_slot().is_none() || envelope.actual_catch_identity().is_none() {
             self.state = VmFiberState::Terminal;
-            return Err(VmError::ResumeTokenMismatch);
-        }
-        if values.len() != 1 {
-            self.state = VmFiberState::Terminal;
-            return Err(VmError::ResumeShapeMismatch {
-                expected: 1,
-                actual: values.len(),
+            return Err(VmError::ResumeThrowEnvelopeUnavailable {
+                function: pending.function,
+                instruction: pending.instruction,
             });
         }
-        let payload = values.values()[0];
-        let payload_type = match payload.kind() {
-            Some(
-                ValueKind::RequestHeapRef
-                | ValueKind::ActorStateRef
-                | ValueKind::ConstRef
-                | ValueKind::ResourceRef
-                | ValueKind::CallbackClosureRef,
-            ) => Some(TypeIndex::new(payload.compact_type_tag().get())),
-            _ => None,
-        };
-        if payload_type.is_none_or(|payload_type| {
-            self.execution_image()
-                .types()
-                .get(payload_type.get() as usize)
-                .is_none_or(|row| row.index() != payload_type)
-        }) {
+        let frame = self.current_frame()?.clone();
+        if frame.function() != pending.function
+            || frame.instruction() != pending.instruction
+            || frame.operand_height()
+                != usize::try_from(pending.expected_stack_height)
+                    .map_err(|_| VmError::ResumeTokenMismatch)?
+        {
             self.state = VmFiberState::Terminal;
             return Err(VmError::ResumeTokenMismatch);
         }
-        // Phase 2 keeps async throw resume fail-closed: the resume boundary
-        // has no heap port, and an unwind must route every frame-exit drop
-        // through the lifecycle executor. The exact local-throw path in
-        // `execute_throw` is the only admitted unwind producer.
-        self.state = VmFiberState::Terminal;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function: pending.function,
-            instruction: pending.instruction,
-            opcode: Opcode::Throw,
-        })
+        // The resume boundary has no heap port, so the frame-exit scan is
+        // armed here and continued by the next run segment, where every live
+        // slot drop still routes through the Phase 2 lifecycle executor.
+        self.unwind = Some(UnwindState {
+            envelope,
+            cursor: UnwindCursor {
+                function: pending.function,
+                instruction: pending.instruction,
+            },
+            phase: UnwindPhase::Pending,
+        });
+        self.state = VmFiberState::Unwinding;
+        Ok(())
     }
 
     fn run_segment_inner(
@@ -544,16 +581,37 @@ impl VmFiber {
         budget: &mut dyn VmBudget,
     ) -> Result<SegmentResult, VmError> {
         budget.poll_interrupt().map_err(VmError::BudgetClosed)?;
+        if self.unwind.is_some() {
+            return self.resume_unwind_segment(heap);
+        }
         for _ in 0..self.limits.max_segment_instructions().get() {
             self.charge_function_entry(budget)?;
             self.charge_statement_events(budget)?;
             match self.dispatch_accounted(heap, budget)? {
                 DispatchOutcome::Continue => {}
                 DispatchOutcome::Complete(values) => return Ok(SegmentResult::Complete(values)),
+                DispatchOutcome::Throw(envelope) => return Ok(SegmentResult::Throw(envelope)),
                 DispatchOutcome::Handoff(control) => return Ok(SegmentResult::Handoff(control)),
             }
         }
         Ok(SegmentResult::Continue)
+    }
+
+    /// Continues an unwind armed by `resume_throw` now that a heap port is
+    /// available. The armed envelope must always be the authority here: the
+    /// frame scan starts at the resume site and never re-derives an identity.
+    fn resume_unwind_segment(
+        &mut self,
+        heap: &mut dyn VmHeap,
+    ) -> Result<SegmentResult, VmError> {
+        let mut lifecycle = LifecycleExecutor::new(heap);
+        self.unwind_loop(&mut lifecycle)
+            .map(|outcome| match outcome {
+                DispatchOutcome::Continue => SegmentResult::Continue,
+                DispatchOutcome::Throw(envelope) => SegmentResult::Throw(envelope),
+                DispatchOutcome::Complete(values) => SegmentResult::Complete(values),
+                DispatchOutcome::Handoff(control) => SegmentResult::Handoff(control),
+            })
     }
 
     fn charge_function_entry(&mut self, budget: &mut dyn VmBudget) -> Result<(), VmError> {
@@ -1219,8 +1277,7 @@ impl VmFiber {
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
     ) -> Result<DispatchOutcome, VmError> {
-        let LinkedInstructionTarget::Type(type_index) =
-            self.resolved_target(function, instruction, decoded, 0)?
+        let LinkedInstructionTarget::Type(_) = self.resolved_target(function, instruction, decoded, 0)?
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
@@ -1230,14 +1287,28 @@ impl VmFiber {
         let payload = executor
             .transfer(&payload, &payload_plan)
             .map_err(|error| error.into_vm_error(function, instruction, Opcode::Throw))?;
-        self.begin_unwind(
-            executor,
-            payload,
-            payload_plan,
-            Some(type_index),
-            function,
-            instruction,
-        )
+        // The envelope identity comes from the runtime value's own concrete
+        // leaf tag, never from the throw instruction's static operand type.
+        let Some(identity) = runtime_leaf_catch_identity(self.execution_image(), &payload) else {
+            let _ = executor.release(&payload, &payload_plan);
+            return Err(VmError::ThrowEnvelopeUnavailable {
+                function,
+                instruction,
+                reason: "thrown value has no actual concrete leaf catch identity".to_string(),
+            });
+        };
+        let envelope = match self.build_throw_envelope(payload, identity, function, instruction) {
+            Ok(envelope) => envelope,
+            Err(reason) => {
+                let _ = executor.release(&payload, &payload_plan);
+                return Err(VmError::ThrowEnvelopeUnavailable {
+                    function,
+                    instruction,
+                    reason,
+                });
+            }
+        };
+        self.begin_unwind(executor, envelope, function, instruction)
     }
 
     fn execute_rethrow(
@@ -1254,25 +1325,24 @@ impl VmFiber {
         };
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
+        let absolute_index = Self::slot_index(&frame, slot_count, slot, frame.function())?;
         let payload = self.read_slot(&frame, slot_count, slot)?;
         let payload_plan = self.slot_plan(frame.function(), slot)?;
-        let payload_type = self
-            .function(frame.function())?
-            .frame()
-            .slot_types()
-            .get(slot.get() as usize)
-            .copied();
-        let payload = executor
-            .transfer(&payload, &payload_plan)
+        let caught = self
+            .caught_exceptions
+            .remove(&absolute_index)
+            .ok_or(VmError::RethrowEnvelopeUnavailable {
+                function,
+                instruction,
+            })?;
+        // The catch slot holds a shared snapshot of the envelope payload; the
+        // envelope itself keeps the single payload authority. Rethrow releases
+        // the handler's share and reuses the exact same envelope.
+        executor
+            .release(&payload, &payload_plan)
             .map_err(|error| error.into_vm_error(function, instruction, Opcode::Rethrow))?;
-        self.begin_unwind(
-            executor,
-            payload,
-            payload_plan,
-            payload_type,
-            function,
-            instruction,
-        )
+        self.clear_slot(&frame, slot_count, slot)?;
+        self.begin_unwind(executor, caught.envelope, function, instruction)
     }
 
     fn execute_enter_region(
@@ -1336,30 +1406,61 @@ impl VmFiber {
     fn begin_unwind(
         &mut self,
         executor: &mut LifecycleExecutor<'_>,
-        payload: ValueSlot,
-        payload_plan: LinkedValueTransferPlan,
-        payload_type: Option<TypeIndex>,
+        envelope: Arc<RequestException>,
         dispatch_function: FunctionIndex,
         dispatch_instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        self.unwind = Some(UnwindState { payload });
+        self.unwind = Some(UnwindState {
+            envelope,
+            cursor: UnwindCursor {
+                function: dispatch_function,
+                instruction: dispatch_instruction,
+            },
+            phase: UnwindPhase::Searching,
+        });
+        self.unwind_loop(executor)
+    }
+
+    /// The single frame-exit scan of one unwind. Every exited frame routes
+    /// its live slots through the Phase 2 lifecycle executor; catch matching
+    /// compares the envelope's actual concrete leaf (the value's runtime
+    /// tag) against the linked catch matchers.
+    fn unwind_loop(
+        &mut self,
+        executor: &mut LifecycleExecutor<'_>,
+    ) -> Result<DispatchOutcome, VmError> {
+        let mut unwind = self
+            .unwind
+            .clone()
+            .ok_or(VmError::FiberNotRunnable { state: self.state })?;
+        if let UnwindPhase::Pending = unwind.phase {
+            let frame = self.current_frame()?;
+            if frame.function() != unwind.cursor.function
+                || frame.instruction() != unwind.cursor.instruction
+            {
+                return Err(VmError::FiberNotRunnable { state: self.state });
+            }
+            unwind.phase = UnwindPhase::Searching;
+            self.unwind = Some(unwind);
+        }
         loop {
             let frame = self.current_frame()?.clone();
             let function = frame.function();
             let instruction = frame.instruction();
+            let envelope = self
+                .unwind
+                .as_ref()
+                .map(|unwind| unwind.envelope.clone())
+                .ok_or(VmError::FiberNotRunnable { state: self.state })?;
+            let leaf = envelope_leaf_type_index(&envelope);
             let regions = self.function(function)?.exception_regions();
-            if let Some(region) = find_exception_region(regions, instruction, payload_type) {
+            if let Some(region) = find_exception_region(regions, instruction, leaf) {
                 let region = region.clone();
-                self.enter_handler(executor, &frame, &region, payload)?;
+                self.enter_handler(executor, &frame, &region, &envelope)?;
                 return Ok(DispatchOutcome::Continue);
             }
             if self.frames.len() == 1 {
                 self.release_frame_exit(executor, &frame, Opcode::Throw)?;
-                executor
-                    .release(&payload, &payload_plan)
-                    .map_err(|error| {
-                        error.into_vm_error(dispatch_function, dispatch_instruction, Opcode::Throw)
-                    })?;
                 self.frames.clear();
                 self.values.clear();
                 self.live_values.clear();
@@ -1367,11 +1468,7 @@ impl VmFiber {
                 self.region_depths.clear();
                 self.unwind = None;
                 self.state = VmFiberState::Terminal;
-                return Err(VmError::UnhandledThrow {
-                    function,
-                    instruction,
-                    payload_type,
-                });
+                return Ok(DispatchOutcome::Throw(envelope));
             }
             self.release_frame_exit(executor, &frame, Opcode::Throw)?;
             self.frames.pop();
@@ -1397,7 +1494,7 @@ impl VmFiber {
         executor: &mut LifecycleExecutor<'_>,
         frame: &VmFrame,
         region: &LinkedExceptionRegion,
-        payload: ValueSlot,
+        envelope: &Arc<RequestException>,
     ) -> Result<(), VmError> {
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
         let handler_height = usize::try_from(region.handler_stack_height()).map_err(|_| {
@@ -1425,19 +1522,103 @@ impl VmFiber {
             self.clear_value(index);
         }
         self.current_frame_mut()?.set_operand_height(handler_height);
+        // The handler receives a shared snapshot of the envelope payload; the
+        // envelope itself remains the single payload authority.
+        let payload = envelope.vm_local_slot().ok_or(VmError::ThrowEnvelopeUnavailable {
+            function: frame.function(),
+            instruction: frame.instruction(),
+            reason: "caught envelope has no opaque VM payload".to_string(),
+        })?;
+        let catch_plan = self.slot_plan(frame.function(), region.catch_slot())?;
+        let shared = executor
+            .share(&payload, &catch_plan)
+            .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw))?;
+        let absolute_index =
+            Self::slot_index(frame, slot_count, region.catch_slot(), frame.function())?;
         self.overwrite_slot(
             executor,
             frame,
             slot_count,
             region.catch_slot(),
-            payload,
+            shared,
             frame.function(),
             frame.instruction(),
             Opcode::Throw,
         )?;
+        if let Some(previous) = self.caught_exceptions.insert(
+            absolute_index,
+            CaughtException {
+                envelope: Arc::clone(envelope),
+                plan: catch_plan,
+            },
+        ) {
+            if let Some(slot) = previous.envelope.vm_local_slot() {
+                executor
+                    .release(&slot, &previous.plan)
+                    .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw))?;
+            }
+        }
         self.current_frame_mut()?.jump_to(region.handler());
         self.unwind = None;
+        self.state = VmFiberState::Runnable;
         Ok(())
+    }
+
+    /// Builds the opaque throw envelope for a VM-local throw. Fails closed
+    /// (VmFailure) when the source site, frame stack or request-local
+    /// correlation is unavailable; there is no static type fallback.
+    fn build_throw_envelope(
+        &self,
+        payload: ValueSlot,
+        identity: CatchIdentity,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> Result<Arc<RequestException>, String> {
+        let source = self.throw_source_site(function, instruction)?;
+        let stack = self.exception_stack()?;
+        let correlation = self
+            .error_correlation
+            .clone()
+            .ok_or_else(|| "no request-local error correlation was supplied".to_string())?;
+        RequestException::local_vm(payload, identity, source, stack, correlation).map(Arc::new)
+    }
+
+    /// The throw instruction's linked source site from the statement schedule.
+    fn throw_source_site(
+        &self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> Result<skiff_artifact_model::InstructionSourceSite, String> {
+        self.entry
+            .image()
+            .statement_schedule()
+            .events_at(function, instruction)
+            .and_then(|events| events.first())
+            .map(|event| event.site().clone())
+            .ok_or_else(|| "throw instruction has no linked source site".to_string())
+    }
+
+    /// The request-local frame stack, oldest frame first. Every frame reports
+    /// the site of its current instruction; the root frame always contributes
+    /// the throw site itself.
+    fn exception_stack(&self) -> Result<Vec<ExceptionStackFrame>, String> {
+        let mut stack = Vec::with_capacity(self.frames.len());
+        for frame in &self.frames {
+            let site = self
+                .entry
+                .image()
+                .statement_schedule()
+                .events_at(frame.function(), frame.instruction())
+                .and_then(|events| events.first())
+                .map(|event| event.site().clone());
+            if let Some(site) = site {
+                stack.push(ExceptionStackFrame::Local { site });
+            }
+        }
+        if stack.is_empty() {
+            return Err("no frame contributed a source site to the exception stack".to_string());
+        }
+        Ok(stack)
     }
 
     fn execute_call_local(
@@ -3687,6 +3868,24 @@ impl VmFiber {
                 self.clear_value(index);
             }
         }
+        // Caught envelopes whose catch slot lives in this frame die with the
+        // frame. Their retained payload authority is released exactly once;
+        // a rethrow has already moved the envelope out of this map.
+        let range = frame.slot_base()..frame.slot_base().saturating_add(slot_count);
+        let caught: Vec<CaughtException> = self
+            .caught_exceptions
+            .range(range.clone())
+            .map(|(_, entry)| entry.clone())
+            .collect();
+        self.caught_exceptions
+            .retain(|index, _| !range.contains(index));
+        for entry in caught {
+            if let Some(slot) = entry.envelope.vm_local_slot() {
+                executor.release(&slot, &entry.plan).map_err(|error| {
+                    error.into_vm_error(frame.function(), frame.instruction(), opcode)
+                })?;
+            }
+        }
         Ok(())
     }
 
@@ -3867,7 +4066,9 @@ impl VmRootSource for VmFiber {
             }
         }
         if let Some(unwind) = &self.unwind {
-            visitor.visit_root(&unwind.payload)?;
+            if let Some(slot) = unwind.envelope.vm_local_slot() {
+                visitor.visit_root(&slot)?;
+            }
         }
         Ok(())
     }
@@ -3876,12 +4077,14 @@ impl VmRootSource for VmFiber {
 enum SegmentResult {
     Continue,
     Complete(VmOwnedValues),
+    Throw(Arc<RequestException>),
     Handoff(VmControl),
 }
 
 enum DispatchOutcome {
     Continue,
     Complete(VmOwnedValues),
+    Throw(Arc<RequestException>),
     Handoff(VmControl),
 }
 
@@ -3911,10 +4114,99 @@ fn nominal_tag_index(value: &ValueSlot) -> u32 {
     }
 }
 
+/// The actual concrete leaf identity of one runtime value, read from the
+/// value's own runtime type tag plus the immutable linked type facts. This is
+/// deliberately not the throw instruction's static operand type: two values
+/// flowing through the same union-typed site carry different tags and yield
+/// different identities.
+fn runtime_leaf_catch_identity(
+    image: &DeploymentExecutionImage,
+    value: &ValueSlot,
+) -> Option<CatchIdentity> {
+    match value.kind()? {
+        ValueKind::RequestHeapRef
+        | ValueKind::ActorStateRef
+        | ValueKind::ConstRef
+        | ValueKind::ResourceRef
+        | ValueKind::CallbackClosureRef => {
+            linked_type_catch_identity(image, TypeIndex::new(value.compact_type_tag().get()))
+        }
+        _ => None,
+    }
+}
+
+/// The opaque envelope's concrete leaf tag for catch matching.
+fn envelope_leaf_type_index(envelope: &RequestException) -> Option<TypeIndex> {
+    let slot = envelope.vm_local_slot()?;
+    match slot.kind()? {
+        ValueKind::RequestHeapRef
+        | ValueKind::ActorStateRef
+        | ValueKind::ConstRef
+        | ValueKind::ResourceRef
+        | ValueKind::CallbackClosureRef => {
+            Some(TypeIndex::new(slot.compact_type_tag().get()))
+        }
+        _ => None,
+    }
+}
+
+/// Derives the domain catch identity of one linked leaf type. Package schema
+/// types keep their canonical schema identity; local execution types keep a
+/// stable linked-execution identity keyed by the owning package slot and the
+/// exact linked type index. Structural and unresolvable shapes have no
+/// concrete leaf identity and fail closed.
+fn linked_type_catch_identity(
+    image: &DeploymentExecutionImage,
+    leaf: TypeIndex,
+) -> Option<CatchIdentity> {
+    let entry = image.types().get(leaf.get() as usize)?;
+    if entry.index() != leaf {
+        return None;
+    }
+    match entry.type_ref() {
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => {
+            let identity = PackageSchemaTypeIdentity::new(
+                package_id.clone(),
+                stable_schema_key.clone(),
+                package_schema_type_id.clone(),
+            )
+            .ok()?;
+            Some(CatchIdentity::Nominal(NominalTypeIdentity::PackageSchema(
+                identity,
+            )))
+        }
+        TypeRefIr::PackageSymbol { symbol } => {
+            let PackageRefIr::PackageId { package_id } = &symbol.package else {
+                return None;
+            };
+            let package_slot = image
+                .packages()
+                .iter()
+                .find(|package| package.package_build_id() == entry.origin().package_build_id())
+                .map(|package| package.index().get() as usize)?;
+            Some(CatchIdentity::Nominal(
+                NominalTypeIdentity::LocalExecution(LocalExecutionTypeIdentity {
+                    addr: TypeAddr {
+                        unit: UnitAddr::Package(package_slot),
+                        file: FileAddr::FileIrIdentity(package_id.clone()),
+                        type_index: leaf.get() as usize,
+                    },
+                    type_arguments: Vec::new(),
+                }),
+            ))
+        }
+        _ => None,
+    }
+}
+
 fn find_exception_region(
     regions: &[LinkedExceptionRegion],
     pc: InstructionIndex,
-    payload_type: Option<TypeIndex>,
+    leaf: Option<TypeIndex>,
 ) -> Option<&LinkedExceptionRegion> {
     regions.iter().rev().find(|region| {
         region.start().get() <= pc.get()
@@ -3922,14 +4214,19 @@ fn find_exception_region(
             && region
                 .catch_matchers()
                 .iter()
-                .any(|matcher| catch_matches(matcher, payload_type))
+                .any(|matcher| catch_matches(matcher, leaf))
     })
 }
 
-fn catch_matches(matcher: &LinkedCatchMatcher, payload_type: Option<TypeIndex>) -> bool {
+/// Matches one linked catch matcher against the thrown value's actual
+/// concrete leaf. `leaf` is the runtime tag of the value itself (its
+/// `compact_type_tag`), never the throw instruction's static payload type, so
+/// an anonymous union `A | B` value whose actual leaf is `A` matches
+/// `catch<A>` and not `catch<B>`.
+fn catch_matches(matcher: &LinkedCatchMatcher, leaf: Option<TypeIndex>) -> bool {
     match matcher {
         LinkedCatchMatcher::CatchAll => true,
-        LinkedCatchMatcher::Type(expected) => payload_type == Some(*expected),
+        LinkedCatchMatcher::Type(expected) => leaf == Some(*expected),
     }
 }
 

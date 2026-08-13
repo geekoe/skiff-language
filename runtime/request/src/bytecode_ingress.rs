@@ -13,6 +13,7 @@ use skiff_runtime_model::{
         BytecodeExecutionObserver, RequestExecutionOwnerInventorySnapshot,
     },
     request_heap::RequestHeapLimits,
+    service_error::{ErrorCorrelation, RequestException},
     vm_heap::{
         VmContainerShape, VmHeap, VmHeapError, VmRecordField,
     },
@@ -125,8 +126,9 @@ pub fn drive_runtime_bytecode_request(
             None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
         };
         let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
-        let fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
+        let mut fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
             .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
+        fiber.set_error_correlation(bytecode_error_correlation(&request));
         let budget = execution_budget.attach_vm().map_err(|error| {
             RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
         })?;
@@ -154,7 +156,7 @@ pub fn drive_runtime_bytecode_request(
     let (outcome, snapshot) = context.drive(&mut *heap, &mut *budget);
     let result = match outcome {
         Ok(BytecodeSchedulerOutcome::Complete(result)) => {
-            match result.map_err(|error| vm_error_to_request_error(&execution_budget, error)) {
+            match result {
                 Ok(values) => {
                     if mode == "serverStream" {
                         Err(RequestError::Decode(
@@ -167,7 +169,10 @@ pub fn drive_runtime_bytecode_request(
                             .map(BoundaryResponse::payload)
                     }
                 }
-                Err(error) => Err(error),
+                Err(VmError::Thrown(envelope)) => {
+                    Err(uncaught_throw_to_request_error(&mut *heap, &envelope))
+                }
+                Err(error) => Err(vm_error_to_request_error(&execution_budget, error)),
             }
         }
         Ok(BytecodeSchedulerOutcome::Parked) => Err(RequestError::Unsupported(
@@ -623,7 +628,59 @@ fn vm_error_to_request_error(execution_budget: &ExecutionBudget, error: VmError)
             vm_budget_closed_to_request_error(execution_budget, error)
         }
         VmError::InternalTerminal(VmInternalTerminal::OwnerStopped) => RequestError::Cancelled,
+        // A root throw is intercepted by the scheduler outcome before this
+        // projection; reaching here means the envelope cannot be materialized
+        // on this lane, so the canonical user error is projected without a
+        // payload. Envelope-construction VmFailures must not leak VM
+        // internals and project to the sanitized InternalError; every other
+        // Phase 1 VM error keeps its existing user-facing projection.
+        VmError::Thrown(_) => uncaught_throw_to_request_error_without_payload(),
+        VmError::ThrowEnvelopeUnavailable { .. }
+        | VmError::RethrowEnvelopeUnavailable { .. }
+        | VmError::ResumeThrowEnvelopeUnavailable { .. } => {
+            RequestError::Decode("bytecode VM execution failed".to_string())
+        }
         error => RequestError::Unsupported(format!("bytecode VM execution failed: {error}")),
+    }
+}
+
+fn bytecode_error_correlation(request: &RequestEnvelope) -> ErrorCorrelation {
+    let request_id = if request.request_id.trim().is_empty() {
+        request.target.as_str()
+    } else {
+        request.request_id.as_str()
+    };
+    ErrorCorrelation {
+        trace_id: request_id.to_string(),
+        error_id: request_id.to_string(),
+    }
+}
+
+/// Projects a root uncaught user throw to the canonical ordinary error. The
+/// payload is materialized to JSON when the Phase 2 surface can encode it;
+/// private or unencodable payloads are suppressed rather than leaking fields
+/// or strings.
+fn uncaught_throw_to_request_error(
+    heap: &mut dyn VmHeap,
+    envelope: &RequestException,
+) -> RequestError {
+    let details = envelope
+        .vm_local_slot()
+        .and_then(|slot| json_value_from_slot(heap, &slot, 0).ok());
+    RequestError::ExternalErrorPayload {
+        code: "std.service.InternalError".to_string(),
+        message: "uncaught user exception".to_string(),
+        status: None,
+        details,
+    }
+}
+
+fn uncaught_throw_to_request_error_without_payload() -> RequestError {
+    RequestError::ExternalErrorPayload {
+        code: "std.service.InternalError".to_string(),
+        message: "uncaught user exception".to_string(),
+        status: None,
+        details: None,
     }
 }
 

@@ -1,10 +1,14 @@
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use skiff_artifact_model::Opcode;
 use skiff_runtime_linked_bytecode::{
     ActiveRegionIndex, CandidateTable, FrameSlotIndex, FunctionIndex, InstructionIndex, TypeIndex,
 };
-use skiff_runtime_model::{vm_heap::VmHeapError, vm_value::ValueKind};
+use skiff_runtime_model::{
+    service_error::RequestException,
+    vm_heap::VmHeapError,
+    vm_value::ValueKind,
+};
 
 use crate::{fiber::VmFiberState, VmBudgetClosed, VmInternalTerminal};
 
@@ -55,7 +59,7 @@ pub enum VmValueLocation {
 }
 
 /// Structured, fail-closed VM failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum VmError {
     EntryArgumentCountMismatch {
         expected: usize,
@@ -106,10 +110,29 @@ pub enum VmError {
         function: FunctionIndex,
         instruction: InstructionIndex,
     },
-    UnhandledThrow {
+    /// Root-level uncaught throw. This is a typed outcome, not a VM failure:
+    /// the scheduler and request driver project it to `ResumeOutcome::Throw`
+    /// and the canonical user error respectively instead of a terminal
+    /// failure. The envelope owns the payload slot.
+    Thrown(Arc<RequestException>),
+    /// The throw site could not construct the opaque exception envelope from
+    /// the runtime value facts. This is a VmFailure; there is no static type
+    /// fallback.
+    ThrowEnvelopeUnavailable {
         function: FunctionIndex,
         instruction: InstructionIndex,
-        payload_type: Option<TypeIndex>,
+        reason: String,
+    },
+    /// A rethrow site has no caught envelope to reuse. Fail closed.
+    RethrowEnvelopeUnavailable {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    },
+    /// A resume throw delivered an envelope that cannot unwind (missing opaque
+    /// payload or actual identity).
+    ResumeThrowEnvelopeUnavailable {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
     },
     RegionLeaveMismatch {
         function: FunctionIndex,
@@ -290,13 +313,34 @@ impl fmt::Display for VmError {
                 function.get(),
                 instruction.get()
             ),
-            Self::UnhandledThrow {
+            Self::Thrown(_) => {
+                formatter.write_str("VM threw an uncaught request-local exception")
+            }
+            Self::ThrowEnvelopeUnavailable {
                 function,
                 instruction,
-                payload_type,
+                reason,
             } => write!(
                 formatter,
-                "VM function {} instruction {} threw unhandled exception {payload_type:?}",
+                "VM function {} instruction {} cannot construct the throw envelope: {reason}",
+                function.get(),
+                instruction.get()
+            ),
+            Self::RethrowEnvelopeUnavailable {
+                function,
+                instruction,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} rethrows without a caught envelope",
+                function.get(),
+                instruction.get()
+            ),
+            Self::ResumeThrowEnvelopeUnavailable {
+                function,
+                instruction,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} resumed with a throw envelope that cannot unwind",
                 function.get(),
                 instruction.get()
             ),
