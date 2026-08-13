@@ -3,18 +3,13 @@ use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
     service_error::{CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity},
     vm_heap::{
-        VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment, VmMapEntry,
+        VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment,
         VmRecordField,
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
 
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-};
-
-use super::{RequestVmHeap, ResourceEntry, ResourceTable};
+use super::RequestVmHeap;
 
 const TAG: CompactTypeTag = CompactTypeTag::new(17);
 const FLAGS: ValueFlags = ValueFlags::new(1);
@@ -23,29 +18,6 @@ const RESOURCE_FLAGS: ValueFlags = ValueFlags::new(2);
 
 fn heap() -> RequestVmHeap {
     RequestVmHeap::with_domain(7, 0, RequestHeapLimits::default())
-}
-
-fn heap_with_resource_table() -> (RequestVmHeap, ResourceTable) {
-    let mut heap = RequestVmHeap::with_domain(7, 0, RequestHeapLimits::default());
-    let table: ResourceTable = Default::default();
-    heap.set_resource_table(table.clone());
-    (heap, table)
-}
-
-fn register_resource(table: &ResourceTable, handle: u64, cancels: Arc<AtomicUsize>) -> ValueSlot {
-    let vm_handle = skiff_runtime_model::vm_value::VmHandle::new(handle);
-    let cancels_clone = Arc::clone(&cancels);
-    table.lock().unwrap().register(
-        vm_handle,
-        ResourceEntry {
-            compact_type_tag: RESOURCE_TAG,
-            flags: RESOURCE_FLAGS,
-            cancel: Arc::new(move || {
-                cancels_clone.fetch_add(1, Ordering::SeqCst);
-            }),
-        },
-    );
-    ValueSlot::resource_ref(vm_handle, RESOURCE_TAG, RESOURCE_FLAGS)
 }
 
 fn resource_ref(handle: u64) -> ValueSlot {
@@ -221,46 +193,7 @@ fn allocation_resource_limits_fail_closed() {
     ));
 }
 
-// --- ResourceRef heap contract tests ---
-
-#[test]
-fn validate_live_accepts_registered_resource_ref() {
-    let (heap, table) = heap_with_resource_table();
-    let cancels = Arc::new(AtomicUsize::new(0));
-    let slot = register_resource(&table, 42, Arc::clone(&cancels));
-
-    assert_eq!(heap.validate_live(&slot), Ok(()));
-}
-
-#[test]
-fn validate_live_rejects_unregistered_resource_ref() {
-    let (heap, _table) = heap_with_resource_table();
-    let slot = resource_ref(99);
-
-    assert!(matches!(
-        heap.validate_live(&slot),
-        Err(VmHeapError::InvalidHandle {
-            reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
-            ..
-        })
-    ));
-}
-
-#[test]
-fn validate_live_rejects_metadata_mismatch() {
-    let (heap, table) = heap_with_resource_table();
-    let cancels = Arc::new(AtomicUsize::new(0));
-    let vm_handle = skiff_runtime_model::vm_value::VmHandle::new(42);
-    let slot = register_resource(&table, 42, cancels);
-    let wrong_metadata =
-        ValueSlot::resource_ref(vm_handle, CompactTypeTag::new(28), RESOURCE_FLAGS);
-
-    assert_eq!(heap.validate_live(&slot), Ok(()));
-    assert_eq!(
-        heap.validate_live(&wrong_metadata),
-        Err(VmHeapError::InvalidValueMetadata)
-    );
-}
+// --- ResourceRef fail-closed heap contract tests ---
 
 #[test]
 fn validate_live_rejects_resource_ref_without_table() {
@@ -278,9 +211,8 @@ fn validate_live_rejects_resource_ref_without_table() {
 
 #[test]
 fn snapshot_share_rejects_resource_ref() {
-    let (mut heap, table) = heap_with_resource_table();
-    let cancels = Arc::new(AtomicUsize::new(0));
-    let slot = register_resource(&table, 1, cancels);
+    let mut heap = heap();
+    let slot = resource_ref(1);
 
     assert!(matches!(
         heap.snapshot_share(&slot),
@@ -293,9 +225,8 @@ fn snapshot_share_rejects_resource_ref() {
 
 #[test]
 fn release_snapshot_rejects_resource_ref() {
-    let (mut heap, table) = heap_with_resource_table();
-    let cancels = Arc::new(AtomicUsize::new(0));
-    let slot = register_resource(&table, 1, cancels);
+    let mut heap = heap();
+    let slot = resource_ref(1);
 
     assert!(matches!(
         heap.release_snapshot(&slot),
@@ -307,91 +238,15 @@ fn release_snapshot_rejects_resource_ref() {
 }
 
 #[test]
-fn transfer_owner_accepts_resource_ref() {
-    let (mut heap, table) = heap_with_resource_table();
-    let cancels = Arc::new(AtomicUsize::new(0));
-    let slot = register_resource(&table, 7, cancels);
+fn transfer_owner_rejects_resource_ref() {
+    let mut heap = heap();
+    let slot = resource_ref(7);
 
-    let transferred = heap.transfer_owner(&slot);
-    assert!(transferred.is_ok());
-    assert!(transferred.unwrap() == slot);
-}
-
-#[test]
-fn record_sidecar_roundtrip_preserves_resource_ref() {
-    let (mut heap, table) = heap_with_resource_table();
-    let cancels = Arc::new(AtomicUsize::new(0));
-    let resource = register_resource(&table, 3, cancels);
-
-    let record = heap
-        .allocate_record(
-            &[VmRecordField {
-                name: "body".to_string(),
-                value: resource,
-            }],
-            TAG,
-            FLAGS,
-        )
-        .expect("record should allocate with a resource sidecar");
-
-    assert!(heap.record_field(&record, "body") == Ok(resource));
-    heap.release_snapshot(&record)
-        .expect("record snapshot should release");
-    assert_eq!(heap.release_resource(&resource), Ok(()));
-}
-
-#[test]
-fn array_and_map_sidecars_preserve_resource_ref() {
-    let (mut heap, table) = heap_with_resource_table();
-    let array_resource = register_resource(&table, 10, Arc::new(AtomicUsize::new(0)));
-    let map_resource = register_resource(&table, 11, Arc::new(AtomicUsize::new(0)));
-
-    let array = heap
-        .allocate_array(&[array_resource], TAG, FLAGS)
-        .expect("array should allocate with a resource sidecar");
-    assert!(heap.array_get(&array, 0) == Ok(array_resource));
-
-    let key = heap
-        .alloc_string("stream")
-        .expect("map key should allocate");
-    let map = heap
-        .allocate_map(
-            &[VmMapEntry {
-                key,
-                value: map_resource,
-            }],
-            TAG,
-            FLAGS,
-        )
-        .expect("map should allocate with a resource sidecar");
-    assert!(heap.map_get(&map, &key) == Ok(map_resource));
-
-    heap.release_snapshot(&array)
-        .expect("array snapshot should release");
-    heap.release_snapshot(&map)
-        .expect("map snapshot should release");
-    assert_eq!(heap.release_resource(&array_resource), Ok(()));
-    assert_eq!(heap.release_resource(&map_resource), Ok(()));
-}
-
-#[test]
-fn release_resource_invokes_cancel_exactly_once_and_is_idempotent() {
-    let (mut heap, table) = heap_with_resource_table();
-    let cancels = Arc::new(AtomicUsize::new(0));
-    let slot = register_resource(&table, 99, Arc::clone(&cancels));
-
-    assert_eq!(cancels.load(Ordering::SeqCst), 0);
-    assert_eq!(heap.release_resource(&slot), Ok(()));
-    assert_eq!(cancels.load(Ordering::SeqCst), 1);
-
-    // Second release is idempotent (handle already removed from table)
-    assert_eq!(heap.release_resource(&slot), Ok(()));
-    assert_eq!(cancels.load(Ordering::SeqCst), 1);
     assert!(matches!(
-        heap.validate_live(&slot),
-        Err(VmHeapError::InvalidHandle {
-            reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
-            ..
+        heap.transfer_owner(&slot),
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::TransferOwner,
+            kind: ValueKind::ResourceRef,
         })
     ));
 }
@@ -406,20 +261,6 @@ fn release_resource_rejects_without_resource_table() {
         Err(VmHeapError::OperationKindMismatch {
             operation: VmHeapOperation::ReleaseResource,
             kind: ValueKind::ResourceRef,
-        })
-    ));
-}
-
-#[test]
-fn release_resource_rejects_unregistered_resource_ref() {
-    let (mut heap, _table) = heap_with_resource_table();
-    let slot = resource_ref(405);
-
-    assert!(matches!(
-        heap.release_resource(&slot),
-        Err(VmHeapError::InvalidHandle {
-            reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
-            ..
         })
     ));
 }

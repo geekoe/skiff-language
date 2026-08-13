@@ -7,8 +7,8 @@ use skiff_artifact_model::{
     BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
-    ActiveRegionIndex, ArtifactFunctionKey, ArtifactTypeIndex, BytecodePackageIndex, FrameSlotIndex,
-    FunctionIndex, InstructionBoundaryIndex, InstructionIndex, LinkedActiveRegion,
+    ActiveRegionIndex, ArtifactFunctionKey, ArtifactTypeIndex, BytecodePackageIndex,
+    FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex, LinkedActiveRegion,
     LinkedActiveRegionKind, LinkedArtifactPoolOrigin, LinkedBytecodeAuthorityPins,
     LinkedBytecodeCandidate, LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts,
     LinkedCallableEffectDeclaration, LinkedFrameLayout, LinkedFunction, LinkedFunctionTables,
@@ -20,7 +20,7 @@ use skiff_runtime_linked_bytecode::{
 };
 
 use crate::{
-    control_flow::prove_control_flow_for_test, verify, VerificationError, VerificationLimit,
+    control_flow::prove_control_flow_for_test, verify_facts, VerificationError, VerificationLimit,
     VerificationLocation, VerificationObligation,
 };
 
@@ -30,9 +30,8 @@ use super::fixtures::{candidate_for, exact_hydration, generous_limits};
 fn empty_hydration_completes_vacuous_effect_proof_after_resume() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
-    let image = verify(hydrated, candidate, &generous_limits())
+    verify_facts(hydrated, candidate, &generous_limits())
         .expect("empty P3 facts must produce a vacuous effect certificate");
-    assert!(image.functions().is_empty());
 }
 
 #[test]
@@ -179,11 +178,8 @@ fn stream_next_without_end_resume_is_rejected_by_candidate_shape() {
         ResumeErrorMode::RaiseAtSite,
     )
     .unwrap();
-    let error = try_stream_candidate(
-        vec![stream_next(0), plain(Opcode::Return)],
-        vec![resume],
-    )
-    .unwrap_err();
+    let error = try_stream_candidate(vec![stream_next(0), plain(Opcode::Return)], vec![resume])
+        .unwrap_err();
     assert!(matches!(
         error,
         LinkedBytecodeCandidateError::StreamNextMissingEndResume { .. }
@@ -204,11 +200,8 @@ fn non_stream_resume_with_end_resume_is_rejected_by_candidate_shape() {
         ResumeErrorMode::RaiseAtSite,
     )
     .unwrap();
-    let error = try_stream_candidate(
-        vec![emit_stream(0), plain(Opcode::Return)],
-        vec![resume],
-    )
-    .unwrap_err();
+    let error = try_stream_candidate(vec![emit_stream(0), plain(Opcode::Return)], vec![resume])
+        .unwrap_err();
     assert!(matches!(
         error,
         LinkedBytecodeCandidateError::EndResumeOnlyValidForStreamNext { .. }
@@ -343,7 +336,10 @@ fn try_stream_candidate(
     })
 }
 
-fn linked_stream_function(build: PackageBuildId, instructions: Vec<LinkedInstruction>) -> LinkedFunction {
+fn linked_stream_function(
+    build: PackageBuildId,
+    instructions: Vec<LinkedInstruction>,
+) -> LinkedFunction {
     let states = (0..instructions.len())
         .map(|instruction| {
             LinkedProgramPointState::new(

@@ -1,13 +1,13 @@
-// The source parser does not accept array literals yet, so this integration test pins
-// the bytecode request seam over RequestVmHeap with a scalar body. RequestVmHeap
-// array operations are covered separately in vm_heap::tests.
+// These integration tests keep the request boundary on the Phase 1 synchronous,
+// immediate-scalar surface. Disabled value shapes and pending effects are covered
+// as typed compiler-containment negatives below.
 
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+        Arc, OnceLock,
     },
 };
 
@@ -16,38 +16,42 @@ use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentOperationBinding,
-    DeploymentRevision, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan,
-    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
+    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentRevision, GatewayAdapterArg,
+    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
+    GatewayEntryIdentity, GatewayEntryKey, GatewayEntryProtocolSurface,
     GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
-    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifact,
-    PackageCallableId, PackageLocalAbiSymbol, ServiceContract, ServiceDeployment,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifact, PackageCallableId,
+    PackageLocalAbiSymbol, ServiceContract, ServiceDeployment, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
-    compile_package, CompilerPlatformSources, ManifestOwner, ManifestProvenance,
-    PackageCompileInput, PackageSourceInput, PublicationManifest, PublicationSourceGraph,
+    compile_package, BytecodeEmissionError, CompilerPlatformSources, ManifestOwner,
+    ManifestProvenance, PackageCompileError, PackageCompileInput, PackageCompileOutput,
+    PackageSourceInput, Phase1UnsupportedCapability, PublicationManifest, PublicationSourceGraph,
     SourceTree, SourceTreeFile,
 };
-use skiff_runtime_bytecode_verifier::{verify, VerificationLimits, VerifiedLinkedBytecodeImage};
+use skiff_runtime_bytecode_verifier::VerificationLimits;
 use skiff_runtime_capability_context::CancellationToken;
-use skiff_runtime_deployment_image::DeploymentImage;
-use skiff_runtime_linker::{link_deployment, LinkLimits};
-use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
-use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
+use skiff_runtime_linker::{
+    link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage,
+    DeploymentExecutionLimits, LinkLimits,
+};
+use skiff_runtime_loader::{
+    DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
+};
 use skiff_runtime_model::{
     bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
     request_heap::RequestHeapLimits,
 };
 use skiff_runtime_request::{
-    execute_runtime_bytecode_request, start_runtime_bytecode_request, BinaryHttpRequest,
-    BinaryHttpRequestMetadata, BoundaryResponse, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, BytecodeRequestRunOutcome, BytecodeRequestTarget,
-    ExecutionBudget, GatewayAdapterArg as RequestGatewayAdapterArg,
+    drive_runtime_bytecode_request, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
+    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
+    DrivenBytecodeRequestOwnerInventory, ExecutionBudget,
+    GatewayAdapterArg as RequestGatewayAdapterArg,
     GatewayAdapterSource as RequestGatewayAdapterSource, HttpAdapter, HttpAdapterCallable,
-    HttpAdapterKind, RequestEnvelope, RequestError, ResponseEnd, ResponseEvent, ResponseEventSink,
-    ResponseStreamEvent,
+    HttpAdapterKind, RequestEnvelope, RequestError, RequestExecutionOwnerInventorySnapshot,
+    ResponseEnd, ResponseEvent,
 };
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
@@ -62,6 +66,16 @@ fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtif
 fn compile_scalar_package_with_source(
     text: &str,
 ) -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
+    let compiled = compile_test_package_with_source(text).unwrap();
+    let handoff = compiled.bytecode_handoff().unwrap();
+    let package_artifact = Arc::new(compiled.package().artifact.clone());
+    let bytecode = Arc::new(ValidatedBytecodeArtifact::admit(handoff.artifact().clone()).unwrap());
+    (package_artifact, bytecode)
+}
+
+fn compile_test_package_with_source(
+    text: &str,
+) -> Result<PackageCompileOutput, PackageCompileError> {
     let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
@@ -126,12 +140,9 @@ fn compile_scalar_package_with_source(
         "example.com/vm-scalar",
         true,
     );
-    let compiled = compile_package(input).unwrap();
-    let handoff = compiled.bytecode_handoff().unwrap();
-    let package_artifact = Arc::new(compiled.package().artifact.clone());
-    let bytecode = Arc::new(ValidatedBytecodeArtifact::admit(handoff.artifact().clone()).unwrap());
+    let compiled = compile_package(input);
     std::fs::remove_dir_all(temp).unwrap();
-    (package_artifact, bytecode)
+    compiled
 }
 
 fn service_contract(
@@ -302,21 +313,12 @@ fn scalar_gateway_deployment(
 ) -> (
     Arc<ServiceDeployment>,
     skiff_artifact_model::ServiceDeploymentRef,
-    BTreeMap<&'static str, GatewayEntryKey>,
+    BTreeMap<&'static str, (IngressSelector, GatewayEntryIdentity)>,
 ) {
     let definitions = [
-        (
-            "number",
-            "main.numberBody",
-            GatewayExternalSchema::Number,
-        ),
+        ("number", "main.numberBody", GatewayExternalSchema::Number),
         ("bool", "main.boolBody", GatewayExternalSchema::Boolean),
         ("null", "main.nullBody", GatewayExternalSchema::Null),
-        (
-            "string",
-            "main.stringBody",
-            GatewayExternalSchema::String,
-        ),
     ];
     let mut gateway_entries = BTreeMap::new();
     let mut ingress = Vec::new();
@@ -324,15 +326,17 @@ fn scalar_gateway_deployment(
     for (name, selector, schema) in definitions {
         let (key, entry) =
             scalar_gateway_entry(name, implementation_callable_id(package, selector), schema);
+        let selector = IngressSelector {
+            protocol: IngressProtocol::Http,
+            method: Some("POST".to_string()),
+            path: format!("/{name}"),
+        };
+        let identity = entry.gateway_entry_identity.clone();
         ingress.push(DeploymentIngressBinding {
-            selector: IngressSelector {
-                protocol: IngressProtocol::Http,
-                method: Some("POST".to_string()),
-                path: format!("/{name}"),
-            },
+            selector: selector.clone(),
             gateway_entry_key: key.clone(),
         });
-        keys.insert(name, key.clone());
+        keys.insert(name, (selector, identity));
         gateway_entries.insert(key, entry);
     }
 
@@ -358,8 +362,8 @@ fn scalar_gateway_deployment(
 }
 
 struct ScalarGatewayFixture {
-    image: Arc<DeploymentImage<VerifiedLinkedBytecodeImage>>,
-    keys: BTreeMap<&'static str, GatewayEntryKey>,
+    image: Arc<DeploymentExecutionImage>,
+    keys: BTreeMap<&'static str, (IngressSelector, GatewayEntryIdentity)>,
 }
 
 impl ScalarGatewayFixture {
@@ -376,10 +380,6 @@ function boolBody(value: bool) -> bool {
 function nullBody(value: null) -> null {
   return value
 }
-
-function stringBody(value: string) -> string {
-  return value
-}
 ",
         );
         let contract = scalar_gateway_contract(package.package_id.as_str());
@@ -394,30 +394,16 @@ function stringBody(value: string) -> string {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_reference)
             .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(verified).unwrap());
+        let image = execution_image(hydrated);
         Self { image, keys }
     }
 
-    fn target(&self, name: &str) -> BytecodeRequestTarget {
-        let key = self
+    fn target(&self, name: &str) -> DeploymentExecutionEntry {
+        let (selector, identity) = self
             .keys
             .get(name)
-            .unwrap_or_else(|| panic!("unknown scalar gateway {name}"))
-            .clone();
-        let program = Arc::clone(self.image.program());
-        let entry = program
-            .gateway_entry(&key, LinkedGatewayCallableRole::Handler)
-            .unwrap();
-        BytecodeRequestTarget::try_new_gateway(
-            Arc::clone(&self.image),
-            entry,
-            key,
-            LinkedGatewayCallableRole::Handler,
-        )
-        .unwrap()
+            .unwrap_or_else(|| panic!("unknown scalar gateway {name}"));
+        self.image.http_gateway_entry(selector, identity).unwrap()
     }
 }
 
@@ -520,6 +506,16 @@ fn generous_verification_limits() -> VerificationLimits {
     }
 }
 
+fn execution_image(hydrated: HydratedDeploymentBytecode) -> Arc<DeploymentExecutionImage> {
+    Arc::new(
+        link_deployment_execution_image(
+            hydrated,
+            &DeploymentExecutionLimits::new(generous_link_limits(), generous_verification_limits()),
+        )
+        .unwrap(),
+    )
+}
+
 fn request_envelope() -> RequestEnvelope {
     RequestEnvelope {
         request_id: "scalar-bytecode-request".to_string(),
@@ -596,37 +592,154 @@ fn noop_observer() -> BytecodeExecutionObserver {
     })
 }
 
+fn run_synchronous_request(
+    input: BytecodeRequestExecutionInput,
+) -> Result<BoundaryResponse, RequestError> {
+    let driven = drive_runtime_bytecode_request(input);
+    let snapshot = driven.owner_inventory.into_snapshot();
+    assert_synchronous_owner_inventory(&snapshot);
+    drop(driven.retention);
+    driven.result
+}
+
+fn assert_synchronous_owner_inventory(snapshot: &RequestExecutionOwnerInventorySnapshot) {
+    for (domain_name, domain) in [
+        ("pending", snapshot.pending),
+        ("resource", snapshot.resource),
+        ("child", snapshot.child),
+    ] {
+        assert_eq!(
+            domain.current, 0,
+            "synchronous Phase 1 request created a live {domain_name} owner"
+        );
+        assert!(
+            !domain.ever_created,
+            "synchronous Phase 1 request ever created a {domain_name} owner"
+        );
+    }
+}
+
 fn execute_scalar_gateway(
     name: &str,
     kind: HttpAdapterKind,
     body: &[u8],
     adapter_args: Vec<RequestGatewayAdapterArg>,
 ) -> Result<BoundaryResponse, RequestError> {
-    execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+    run_synchronous_request(BytecodeRequestExecutionInput {
         target: scalar_gateway_fixture().target(name),
         request: scalar_gateway_request(name, kind, body, adapter_args),
         observer: noop_observer(),
-        cancelled: Arc::new(AtomicBool::new(false)),
         cancellation: CancellationToken::new(),
-        execution_budget: Arc::new(ExecutionBudget::disabled()),
+        execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
-            http_executor: None,
-            self_ingress: None,
         },
     })
 }
 
 fn response_payload(response: BoundaryResponse) -> Vec<u8> {
-    let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) = response else {
+    let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) = response
+    else {
         panic!("scalar gateway returned a non-payload response: {response:?}");
     };
     payload
 }
 
+fn assert_phase_1_compiler_rejection(
+    error: PackageCompileError,
+    expected_capability: Phase1UnsupportedCapability,
+    expected_location: &str,
+) {
+    let PackageCompileError::BytecodeEmission {
+        source:
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability,
+                module_path,
+                function_key,
+                location,
+            },
+    } = error
+    else {
+        panic!("expected typed Phase 1 compiler containment, got {error:?}");
+    };
+    assert_eq!(capability, expected_capability);
+    assert_eq!(module_path, "main");
+    assert_eq!(function_key.as_deref(), Some("main::run"));
+    assert_eq!(location, expected_location);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_request_freezes_started_all_zero_inventory() {
+        let driven = drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            target: scalar_gateway_fixture().target("number"),
+            request: scalar_gateway_request(
+                "number",
+                HttpAdapterKind::TypedJson,
+                b"2",
+                vec![http_body_argument()],
+            ),
+            observer: noop_observer(),
+            cancellation: CancellationToken::new(),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
+            handles: BytecodeRequestExecutionHandles {
+                request_heap_limits: RequestHeapLimits::default(),
+            },
+        });
+
+        match driven.owner_inventory {
+            DrivenBytecodeRequestOwnerInventory::Started(snapshot) => {
+                assert_synchronous_owner_inventory(&snapshot);
+            }
+            DrivenBytecodeRequestOwnerInventory::NotStarted(_) => {
+                panic!("completed drive must freeze a Started owner inventory");
+            }
+        }
+        let response = driven
+            .result
+            .expect("scalar gateway request must complete");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&response_payload(response)).unwrap(),
+            serde_json::json!(3.0)
+        );
+        drop(driven.retention);
+    }
+
+    #[test]
+    fn malformed_typed_json_body_freezes_not_started_all_zero_inventory() {
+        let driven = drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            target: scalar_gateway_fixture().target("number"),
+            request: scalar_gateway_request(
+                "number",
+                HttpAdapterKind::TypedJson,
+                b"{",
+                vec![http_body_argument()],
+            ),
+            observer: noop_observer(),
+            cancellation: CancellationToken::new(),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
+            handles: BytecodeRequestExecutionHandles {
+                request_heap_limits: RequestHeapLimits::default(),
+            },
+        });
+
+        match driven.owner_inventory {
+            DrivenBytecodeRequestOwnerInventory::NotStarted(snapshot) => {
+                assert_synchronous_owner_inventory(&snapshot);
+            }
+            DrivenBytecodeRequestOwnerInventory::Started(_) => {
+                panic!("start failure must freeze a NotStarted owner inventory");
+            }
+        }
+        assert!(matches!(
+            driven.result,
+            Err(RequestError::Decode(ref message)) if message.contains("not valid JSON")
+        ));
+        drop(driven.retention);
+    }
 
     #[test]
     fn typed_json_number_body_materializes_against_pinned_entry() {
@@ -715,31 +828,9 @@ mod tests {
     }
 
     #[test]
-    fn typed_json_unsupported_pinned_scalar_plan_fails_closed() {
-        let error = execute_scalar_gateway(
-            "string",
-            HttpAdapterKind::TypedJson,
-            b"\"value\"",
-            vec![http_body_argument()],
-        )
-        .unwrap_err();
-
-        assert!(matches!(
-            error,
-            RequestError::Unsupported(message)
-                if message.contains("unsupported exact pinned lifecycle plan")
-        ));
-    }
-
-    #[test]
     fn typed_json_adapter_arity_must_match_exact_pinned_entry() {
-        let error = execute_scalar_gateway(
-            "number",
-            HttpAdapterKind::TypedJson,
-            b"2",
-            Vec::new(),
-        )
-        .unwrap_err();
+        let error = execute_scalar_gateway("number", HttpAdapterKind::TypedJson, b"2", Vec::new())
+            .unwrap_err();
 
         assert!(matches!(
             error,
@@ -779,24 +870,16 @@ mod tests {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_reference)
             .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
-        let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
+        let image = execution_image(hydrated);
+        let target = image.operation_entry(&operation_id).unwrap();
+        let response = run_synchronous_request(BytecodeRequestExecutionInput {
             target,
             request: request_envelope(),
             observer: noop_observer(),
-            cancelled: Arc::new(AtomicBool::new(false)),
             cancellation: CancellationToken::new(),
-            execution_budget: Arc::new(ExecutionBudget::disabled()),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
-                http_executor: None,
-                self_ingress: None,
             },
         })
         .unwrap();
@@ -809,236 +892,72 @@ mod tests {
     }
 
     #[test]
-    fn resumable_runtime_request_execution_returns_scalar_payload() {
-        let (package, bytecode) = compile_scalar_package();
-        let (contract, operation_id) = service_contract(package.package_id.as_str());
-        let (deployment, deployment_reference) =
-            service_deployment(&package, &contract, operation_id.clone());
-        let resolver = TestResolver {
-            deployment,
-            contract,
-            package,
-            bytecode,
-        };
-        let hydrated = DeploymentBytecodeLoader::new(&resolver)
-            .load(&deployment_reference)
-            .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
-        let sink = Arc::new(RecordingSink::default());
-        let mut execution = start_runtime_bytecode_request(
-            BytecodeRequestExecutionInput {
-                target,
-                request: request_envelope(),
-                observer: noop_observer(),
-                cancelled: Arc::new(AtomicBool::new(false)),
-                cancellation: CancellationToken::new(),
-                execution_budget: Arc::new(ExecutionBudget::disabled()),
-                handles: BytecodeRequestExecutionHandles {
-                    request_heap_limits: RequestHeapLimits::default(),
-                    http_executor: None,
-                    self_ingress: None,
-                },
-            },
-            sink,
-        )
-        .unwrap();
-
-        match execution.run().unwrap() {
-            BytecodeRequestRunOutcome::Complete(BoundaryResponse::Event(ResponseEvent::End(
-                ResponseEnd::Payload(payload),
-            ))) => {
-                assert_eq!(serde_json::from_slice::<f64>(&payload).unwrap(), 2.0);
-            }
-            BytecodeRequestRunOutcome::Complete(other) => {
-                panic!("resumable scalar request returned a stream response: {other:?}")
-            }
-            BytecodeRequestRunOutcome::Parked => panic!("scalar request must not park"),
-        }
-    }
-
-    #[tokio::test]
-    async fn resumable_sleep_adapter_parks_then_real_timer_wakes() {
-        let (package, bytecode) = compile_scalar_package_with_source(
+    fn sleep_pending_effect_is_rejected_by_typed_compiler_containment() {
+        let error = compile_test_package_with_source(
             "import std
 function run() -> number {
   std.time.sleep(Duration.milliseconds(1))
   return 1.0
 }
 ",
-        );
-        let (contract, operation_id) = service_contract(package.package_id.as_str());
-        let (deployment, deployment_reference) =
-            service_deployment(&package, &contract, operation_id.clone());
-        let resolver = TestResolver {
-            deployment,
-            contract,
-            package,
-            bytecode,
-        };
-        let hydrated = DeploymentBytecodeLoader::new(&resolver)
-            .load(&deployment_reference)
-            .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
-        let sink = Arc::new(RecordingSink::default());
-        let mut execution = start_runtime_bytecode_request(
-            BytecodeRequestExecutionInput {
-                target,
-                request: request_envelope(),
-                observer: noop_observer(),
-                cancelled: Arc::new(AtomicBool::new(false)),
-                cancellation: CancellationToken::new(),
-                execution_budget: Arc::new(ExecutionBudget::disabled()),
-                handles: BytecodeRequestExecutionHandles {
-                    request_heap_limits: RequestHeapLimits::default(),
-                    http_executor: None,
-                    self_ingress: None,
-                },
-            },
-            sink,
         )
-        .unwrap();
+        .unwrap_err();
 
-        assert!(matches!(
-            execution.run().unwrap(),
-            BytecodeRequestRunOutcome::Parked
-        ));
-        let wake = execution.wait_pending_wake().await.unwrap();
-        match execution.resume(wake).unwrap() {
-            BytecodeRequestRunOutcome::Complete(BoundaryResponse::Event(ResponseEvent::End(
-                ResponseEnd::Payload(payload),
-            ))) => {
-                assert_eq!(serde_json::from_slice::<f64>(&payload).unwrap(), 1.0);
-            }
-            BytecodeRequestRunOutcome::Complete(other) => {
-                panic!("sleep request returned a stream response: {other:?}")
-            }
-            BytecodeRequestRunOutcome::Parked => panic!("sleep wake must complete"),
-        }
+        assert_phase_1_compiler_rejection(
+            error,
+            Phase1UnsupportedCapability::PendingEffect,
+            "callable pending effects",
+        );
     }
 
     #[test]
-    fn string_concat_equality_through_request_vm() {
-        let (package, bytecode) = compile_scalar_package_with_source(
-            "function run() -> boolean {
-  return \"a\".concat(\"b\") == \"ab\"
+    fn string_shape_is_rejected_by_typed_compiler_containment() {
+        let error = compile_test_package_with_source(
+            "function run() -> string {
+  return \"disabled\"
 }
 ",
-        );
-        let (contract, operation_id) = service_contract(package.package_id.as_str());
-        let (deployment, deployment_reference) =
-            service_deployment(&package, &contract, operation_id.clone());
-        let resolver = TestResolver {
-            deployment,
-            contract,
-            package,
-            bytecode,
-        };
-        let hydrated = DeploymentBytecodeLoader::new(&resolver)
-            .load(&deployment_reference)
-            .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
-        let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
-            target,
-            request: request_envelope(),
-            observer: noop_observer(),
-            cancelled: Arc::new(AtomicBool::new(false)),
-            cancellation: CancellationToken::new(),
-            execution_budget: Arc::new(ExecutionBudget::disabled()),
-            handles: BytecodeRequestExecutionHandles {
-                request_heap_limits: RequestHeapLimits::default(),
-                http_executor: None,
-                self_ingress: None,
-            },
-        })
-        .unwrap();
+        )
+        .unwrap_err();
 
-        let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) = response
-        else {
-            panic!("string equality request returned a non-payload response: {response:?}");
-        };
-        assert_eq!(serde_json::from_slice::<bool>(&payload).unwrap(), true);
+        assert_phase_1_compiler_rejection(
+            error,
+            Phase1UnsupportedCapability::ValueShape,
+            "return type",
+        );
     }
 
     #[test]
-    fn bytes_from_utf8_round_trips_through_request_vm() {
-        let (package, bytecode) = compile_scalar_package_with_source(
-            "function run() -> boolean {
-  return bytes.fromUtf8(\"abc\").toUtf8String() == \"abc\"
+    fn aggregate_shape_is_rejected_by_typed_compiler_containment() {
+        let error = compile_test_package_with_source(
+            "function run() -> Array<number> {
+  return [1, 2]
 }
 ",
+        )
+        .unwrap_err();
+
+        assert_phase_1_compiler_rejection(
+            error,
+            Phase1UnsupportedCapability::ValueShape,
+            "return type",
         );
-        let (contract, operation_id) = service_contract(package.package_id.as_str());
-        let (deployment, deployment_reference) =
-            service_deployment(&package, &contract, operation_id.clone());
-        let resolver = TestResolver {
-            deployment,
-            contract,
-            package,
-            bytecode,
-        };
-        let hydrated = DeploymentBytecodeLoader::new(&resolver)
-            .load(&deployment_reference)
-            .unwrap();
-        let candidate = link_deployment(&hydrated, &generous_link_limits()).unwrap();
-        let verified =
-            Arc::new(verify(hydrated, candidate, &generous_verification_limits()).unwrap());
-        let image = Arc::new(DeploymentImage::try_new(Arc::clone(&verified)).unwrap());
-        let entry = verified.operation_entry(&operation_id).unwrap();
-        let target =
-            BytecodeRequestTarget::try_new(Arc::clone(&image), entry, operation_id).unwrap();
-        let response = execute_runtime_bytecode_request(BytecodeRequestExecutionInput {
-            target,
-            request: request_envelope(),
-            observer: noop_observer(),
-            cancelled: Arc::new(AtomicBool::new(false)),
-            cancellation: CancellationToken::new(),
-            execution_budget: Arc::new(ExecutionBudget::disabled()),
-            handles: BytecodeRequestExecutionHandles {
-                request_heap_limits: RequestHeapLimits::default(),
-                http_executor: None,
-                self_ingress: None,
-            },
-        })
-        .unwrap();
-
-        let BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) = response
-        else {
-            panic!("bytes round-trip request returned a non-payload response: {response:?}");
-        };
-        assert_eq!(serde_json::from_slice::<bool>(&payload).unwrap(), true);
     }
-}
 
-#[derive(Default)]
-struct RecordingSink {
-    events: Mutex<Vec<ResponseStreamEvent>>,
+    #[test]
+    fn native_bytes_wrapper_is_rejected_by_typed_compiler_containment() {
+        let error = compile_test_package_with_source(
+            "function run() -> bytes {
+  return bytes.fromUtf8(\"disabled\")
 }
+",
+        )
+        .unwrap_err();
 
-impl ResponseEventSink for RecordingSink {
-    fn send_stream_event(
-        &self,
-        _request_id: &str,
-        event: ResponseStreamEvent,
-    ) -> skiff_runtime_request::RequestResult<()> {
-        self.events.lock().unwrap().push(event);
-        Ok(())
+        assert_phase_1_compiler_rejection(
+            error,
+            Phase1UnsupportedCapability::HostTarget,
+            "native executable",
+        );
     }
 }

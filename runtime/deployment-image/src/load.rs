@@ -2,7 +2,7 @@ use std::{fmt, sync::Arc};
 
 use skiff_artifact_model::DeploymentArtifactIdentity;
 
-use crate::{DeploymentImage, DeploymentOwnerIdentity};
+use crate::DeploymentOwnerIdentity;
 
 /// Opaque identity for one deployment-image load attempt.
 #[repr(transparent)]
@@ -230,4 +230,4 @@ where
     }
 }
 
-pub type DeploymentLoadResult<P, E> = Result<Arc<DeploymentImage<P>>, DeploymentLoadError<E>>;
+pub type DeploymentLoadResult<P, E> = Result<Arc<P>, DeploymentLoadError<E>>;

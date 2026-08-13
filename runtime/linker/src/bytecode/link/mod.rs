@@ -1,3 +1,4 @@
+mod capability;
 mod closure;
 mod constants;
 pub(super) mod dispatch;
@@ -34,15 +35,30 @@ impl<'a> DeploymentLinker<'a> {
         }
     }
 
-    pub(super) fn link(mut self) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
+    pub(super) fn link(self) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
+        let deployment = self.deployment;
+        let limits = self.limits;
+        let candidate = self.link_candidate()?;
+        DeploymentLinker::new(deployment, limits).admit_phase_1_capabilities(&candidate)?;
+        Ok(candidate)
+    }
+
+    #[cfg(test)]
+    pub(super) fn link_backend_for_test(
+        self,
+    ) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
+        self.link_candidate()
+    }
+
+    fn link_candidate(mut self) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
         let deployment_location = self.deployment_location();
         self.validate_exact_package_closure()?;
         self.reject_unsupported_global_authorities()?;
         let packages = self.link_package_provenance()?;
         let mut type_linker = TypeLinker::new(self.deployment, self.limits);
-        let mut roots = self.canonical_roots()?;
-        self.extend_target_roots(&mut roots, &mut type_linker)?;
-        let keys = self.discover_closure(roots)?;
+        let roots = self.canonical_roots()?;
+        let keys = self.discover_closure(roots, &mut type_linker)?;
+        let reachable_relocations = self.reachable_relocations(&keys)?;
         let function_indices = canonical_function_indices(&keys, deployment_location.clone())?;
         type_linker.set_function_indices(&function_indices);
 
@@ -51,7 +67,12 @@ impl<'a> DeploymentLinker<'a> {
             .iter()
             .map(|key| self.link_frame(key, &mut type_linker))
             .collect::<Result<Vec<_>, _>>()?;
-        let dispatch_tables = self.link_dispatch_tables(&function_indices, &frames, &mut type_linker)?;
+        let dispatch_tables = self.link_dispatch_tables(
+            &reachable_relocations,
+            &function_indices,
+            &frames,
+            &mut type_linker,
+        )?;
         let functions = keys
             .iter()
             .map(|key| {

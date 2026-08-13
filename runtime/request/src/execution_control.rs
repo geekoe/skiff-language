@@ -6,11 +6,11 @@ use std::{
 use skiff_artifact_model::InstructionSourceSite;
 use skiff_runtime_capability_context::{
     CancellationSignals, CancellationToken, EffectiveDeadline, ExecutionBudgetFailure,
-    ExecutionBudgetReason, ExecutionControlError, ExecutionControlResult, ExecutionDeadlineSource,
-    ExecutionScope, ExecutionScopeDeriveError, ExecutionScopeTerminal, RequestAbortSignal,
+    ExecutionBudgetReason, ExecutionControlError, ExecutionControlResult, ExecutionScope,
+    ExecutionScopeDeriveError, ExecutionScopeTerminal, RequestAbortSignal,
 };
 
-use crate::execution_budget::ExecutionBudget;
+use crate::execution_budget::{ExecutionBudget, ExecutionWinner};
 
 #[derive(Clone)]
 pub struct ExecutionControl<'a> {
@@ -109,26 +109,10 @@ impl<'a> ExecutionControl<'a> {
 
     pub fn check_cancelled(&self) -> ExecutionControlResult<()> {
         if self.scope.is_ancestor_cancelled() {
-            self.execution_budget.record_cancelled();
             Err(ExecutionControlError::Cancelled)
         } else {
             Ok(())
         }
-    }
-
-    pub fn add_instruction_units(&self, units: u64) -> ExecutionControlResult<()> {
-        if self.execution_budget.add_units(units) {
-            self.poll_execution_budget()
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn add_instruction_units_at(&self, units: u64, now: Instant) -> ExecutionControlResult<()> {
-        if self.execution_budget.add_units(units) {
-            self.poll_execution_budget_at(now)?;
-        }
-        Ok(())
     }
 
     pub fn poll_execution_budget(&self) -> ExecutionControlResult<()> {
@@ -138,34 +122,33 @@ impl<'a> ExecutionControl<'a> {
     pub fn poll_execution_budget_at(&self, now: Instant) -> ExecutionControlResult<()> {
         if let Some(terminal) = self.scope_terminal_at(now) {
             return match terminal {
-                ExecutionScopeTerminal::AncestorCancelled => {
-                    self.execution_budget.record_cancelled();
-                    Err(ExecutionControlError::Cancelled)
-                }
+                ExecutionScopeTerminal::AncestorCancelled => Err(ExecutionControlError::Cancelled),
                 ExecutionScopeTerminal::LocalDeadlineExceeded(deadline)
                 | ExecutionScopeTerminal::InheritedDeadlineExceeded(deadline) => {
-                    if matches!(deadline.source(), ExecutionDeadlineSource::Request) {
-                        self.map_budget_poll(self.execution_budget.poll(false, now))
-                    } else {
-                        self.execution_budget.record_scoped_poll();
-                        Err(self.deadline_failure())
-                    }
+                    let _ = deadline;
+                    Err(self.deadline_failure())
                 }
             };
         }
 
-        self.map_budget_poll(self.execution_budget.poll(false, now))
+        self.execution_budget
+            .settlement()
+            .map_or(Ok(()), |settlement| self.map_winner(settlement.winner()))
     }
 
-    fn map_budget_poll(
-        &self,
-        result: Result<(), ExecutionBudgetReason>,
-    ) -> ExecutionControlResult<()> {
-        match result {
-            Ok(()) => Ok(()),
-            Err(ExecutionBudgetReason::Cancelled) => Err(ExecutionControlError::Cancelled),
-            Err(reason) => {
+    fn map_winner(&self, winner: ExecutionWinner) -> ExecutionControlResult<()> {
+        match winner {
+            ExecutionWinner::Succeeded | ExecutionWinner::Failed => Ok(()),
+            ExecutionWinner::Cancelled | ExecutionWinner::InternalStop => {
+                Err(ExecutionControlError::Cancelled)
+            }
+            ExecutionWinner::DeadlineExceeded | ExecutionWinner::InstructionLimitExceeded => {
                 let stats = self.execution_budget.stats_snapshot();
+                let reason = if winner == ExecutionWinner::DeadlineExceeded {
+                    ExecutionBudgetReason::DeadlineExceeded
+                } else {
+                    ExecutionBudgetReason::InstructionLimitExceeded
+                };
                 Err(ExecutionControlError::BudgetExceeded(
                     ExecutionBudgetFailure {
                         reason,
@@ -175,6 +158,14 @@ impl<'a> ExecutionControl<'a> {
                     },
                 ))
             }
+            ExecutionWinner::AccountingFailure => Err(ExecutionControlError::BudgetExceeded(
+                ExecutionBudgetFailure {
+                    reason: ExecutionBudgetReason::InstructionLimitExceeded,
+                    instruction_count: self.execution_budget.stats_snapshot().instruction_count,
+                    limit: self.execution_budget.stats_snapshot().budget_limit,
+                    elapsed_ms: self.execution_budget.stats_snapshot().elapsed_ms,
+                },
+            )),
         }
     }
 

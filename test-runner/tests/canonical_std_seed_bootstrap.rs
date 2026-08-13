@@ -6,7 +6,7 @@ use std::{
 
 use skiff_artifact_identity::{package_artifact_ref, PackageArtifactPointerPath};
 use skiff_artifact_model::PackageArtifactRef;
-use skiff_compiler::{authoring::author_official_std_package_with_bytecode, CompilerPlatformSources};
+use skiff_compiler::{authoring::author_official_std_package, CompilerPlatformSources};
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 fn platform_source_root() -> PathBuf {
@@ -107,13 +107,12 @@ mod tests {
         assert_eq!(first["bootstrap"]["std"], repeated["bootstrap"]["std"]);
 
         let platform_sources = CompilerPlatformSources::new(&platform_root).unwrap();
-        let expected = package_artifact_ref(
-            &author_official_std_package_with_bytecode(&platform_sources)
-                .unwrap()
-                .0
-                .artifact,
-        )
-        .unwrap();
+        let authored = author_official_std_package(&platform_sources).unwrap();
+        assert!(
+            authored.artifact.bytecode.is_none(),
+            "official std must remain a source/type-only dependency"
+        );
+        let expected = package_artifact_ref(&authored.artifact).unwrap();
         assert_eq!(
             first["bootstrap"]["std"]["package"]["artifact"],
             serde_json::to_value(&expected).unwrap()
@@ -145,6 +144,24 @@ mod tests {
             serde_json::to_value(pointer).unwrap(),
             first["bootstrap"]["std"]["pointer"]
         );
-        store.read_package_artifact(&artifact).unwrap();
+        let stored = store.read_package_artifact(&artifact).unwrap();
+        assert!(
+            stored.bytecode.is_none(),
+            "bootstrap std PackageArtifact must not carry a bytecode identity"
+        );
+        let stored_value = serde_json::to_value(stored.as_ref()).unwrap();
+        assert!(
+            stored_value.get("bytecode").is_none(),
+            "bytecode-free bootstrap std record must omit the bytecode field"
+        );
+        let package_record = artifacts.join(
+            first["bootstrap"]["std"]["package"]["recordPath"]
+                .as_str()
+                .unwrap(),
+        );
+        assert!(
+            !package_record.parent().unwrap().join("bytecode").exists(),
+            "bootstrap std seed must not materialize a bytecode record directory"
+        );
     }
 }

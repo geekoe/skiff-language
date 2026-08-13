@@ -4,19 +4,25 @@ use skiff_runtime_linked_bytecode::{
     LinkedValueDropPlan, LinkedValueTransferPlan,
 };
 
-use crate::bytecode::{link_deployment, BytecodeLinkError, BytecodeLinkLimit};
+use crate::bytecode::{
+    link_deployment_execution_image, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
+    DeploymentExecutionImage, DeploymentExecutionImageError, Phase1LinkedCapability,
+};
 
 use super::super::{
+    execution_limits,
     fixtures::{ConstantProgram, Fixture, DEPENDENCY_PACKAGE_ID, ROOT_FUNCTION},
-    generous_limits,
+    generous_execution_limits, generous_limits,
 };
 
 #[test]
 fn two_packages_rebase_local_zero_rows_and_relink_deterministically() {
-    let fixture = Fixture::two_package_constants(ConstantProgram::Number, ConstantProgram::String);
+    let fixture = Fixture::two_package_constants(ConstantProgram::Number, ConstantProgram::Bool);
     let hydrated = fixture.hydrate();
-    let first = link_deployment(&hydrated, &generous_limits()).unwrap();
-    let second = link_deployment(&hydrated, &generous_limits()).unwrap();
+    let first =
+        link_deployment_execution_image(fixture.hydrate(), &generous_execution_limits()).unwrap();
+    let second =
+        link_deployment_execution_image(fixture.hydrate(), &generous_execution_limits()).unwrap();
 
     assert_eq!(first.packages(), second.packages());
     assert_eq!(first.functions(), second.functions());
@@ -79,12 +85,10 @@ fn two_packages_rebase_local_zero_rows_and_relink_deterministically() {
         &first,
         dependency_constant,
         dependency_build,
-        &LiteralIr::String {
-            value: "ready".to_string(),
-        },
-        &TypeRefIr::builtin("string"),
+        &LiteralIr::Bool { value: true },
+        &TypeRefIr::builtin("bool"),
         &LinkedValueTransferPlan::SnapshotShare {
-            drop: LinkedValueDropPlan::SnapshotRelease,
+            drop: LinkedValueDropPlan::Trivial,
         },
     );
 
@@ -104,19 +108,37 @@ fn two_packages_rebase_local_zero_rows_and_relink_deterministically() {
 }
 
 #[test]
+fn unreferenced_dependency_string_reports_its_exact_constant_node() {
+    let fixture = Fixture::two_package_constants(ConstantProgram::Number, ConstantProgram::String);
+    let hydrated = fixture.hydrate();
+    assert!(matches!(
+        link_deployment_execution_image(hydrated, &generous_execution_limits()),
+        Err(DeploymentExecutionImageError::Link(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::ValueShape,
+            location: BytecodeLinkLocation::Constant {
+                package,
+                node_index: 0,
+            },
+        })) if package.package_id == DEPENDENCY_PACKAGE_ID
+    ));
+}
+
+#[test]
 fn graph_limits_sum_nodes_and_edges_across_packages() {
     let nodes = Fixture::two_package_constants(ConstantProgram::Number, ConstantProgram::Number);
     let nodes_hydrated = nodes.hydrate();
     let mut node_limits = generous_limits();
     node_limits.max_constant_graph_nodes = 1;
     assert!(matches!(
-        link_deployment(&nodes_hydrated, &node_limits),
-        Err(BytecodeLinkError::LimitExceeded {
-            limit: BytecodeLinkLimit::ConstantGraphNodes,
-            actual: 2,
-            max: 1,
-            ..
-        })
+        link_deployment_execution_image(nodes_hydrated, &execution_limits(node_limits)),
+        Err(DeploymentExecutionImageError::Link(
+            BytecodeLinkError::LimitExceeded {
+                limit: BytecodeLinkLimit::ConstantGraphNodes,
+                actual: 2,
+                max: 1,
+                ..
+            }
+        ))
     ));
 
     let edges = Fixture::two_package_constants(ConstantProgram::Array, ConstantProgram::Array);
@@ -124,45 +146,44 @@ fn graph_limits_sum_nodes_and_edges_across_packages() {
     let mut edge_limits = generous_limits();
     edge_limits.max_constant_graph_edges = 1;
     assert!(matches!(
-        link_deployment(&edges_hydrated, &edge_limits),
-        Err(BytecodeLinkError::LimitExceeded {
-            limit: BytecodeLinkLimit::ConstantGraphEdges,
-            actual: 2,
-            max: 1,
-            ..
-        })
+        link_deployment_execution_image(edges_hydrated, &execution_limits(edge_limits)),
+        Err(DeploymentExecutionImageError::Link(
+            BytecodeLinkError::LimitExceeded {
+                limit: BytecodeLinkLimit::ConstantGraphEdges,
+                actual: 2,
+                max: 1,
+                ..
+            }
+        ))
     ));
 }
 
 #[test]
 fn all_constant_candidate_tables_participate_in_image_table_limits() {
     let literals = Fixture::two_package_constants(ConstantProgram::Number, ConstantProgram::Number);
-    let literals_hydrated = literals.hydrate();
-
     let mut constants_limit = generous_limits();
     constants_limit.max_image_table_entries = 1;
-    assert_image_limit(&literals_hydrated, &constants_limit, 2, false);
+    assert_image_limit(literals.hydrate(), constants_limit, 2, false);
 
     let mut roots_total = generous_limits();
     roots_total.max_total_image_table_entries = 3;
-    assert_image_limit(&literals_hydrated, &roots_total, 4, true);
+    assert_image_limit(literals.hydrate(), roots_total, 4, true);
 
     let mut nodes_total = generous_limits();
     nodes_total.max_total_image_table_entries = 5;
-    assert_image_limit(&literals_hydrated, &nodes_total, 6, true);
+    assert_image_limit(literals.hydrate(), nodes_total, 6, true);
 
     let arrays = Fixture::two_package_constants(ConstantProgram::Array, ConstantProgram::Array);
-    let arrays_hydrated = arrays.hydrate();
     let mut node_table = generous_limits();
     node_table.max_image_table_entries = 3;
-    assert_image_limit(&arrays_hydrated, &node_table, 4, false);
+    assert_image_limit(arrays.hydrate(), node_table, 4, false);
 }
 
 fn constant_for<'a>(
-    candidate: &'a skiff_runtime_linked_bytecode::LinkedBytecodeCandidate,
+    image: &'a DeploymentExecutionImage,
     build: &skiff_artifact_model::PackageBuildId,
 ) -> &'a skiff_runtime_linked_bytecode::LinkedConstantEntry {
-    candidate
+    image
         .constants()
         .iter()
         .find(|constant| constant.origin().package_build_id() == build)
@@ -170,7 +191,7 @@ fn constant_for<'a>(
 }
 
 fn assert_constant_authority(
-    candidate: &skiff_runtime_linked_bytecode::LinkedBytecodeCandidate,
+    image: &DeploymentExecutionImage,
     constant: &skiff_runtime_linked_bytecode::LinkedConstantEntry,
     build: &skiff_artifact_model::PackageBuildId,
     literal: &LiteralIr,
@@ -185,7 +206,7 @@ fn assert_constant_authority(
         panic!("literal-only linked constant must retain a local node")
     };
     let node_position = usize::try_from(node.get()).unwrap();
-    let linked_node = &candidate.frozen_constant_nodes()[node_position];
+    let linked_node = &image.frozen_constant_nodes()[node_position];
     assert_eq!(linked_node.index(), *node);
     assert_eq!(linked_node.origin().package_build_id(), build);
     assert_eq!(linked_node.origin().artifact_index().get(), 0);
@@ -196,12 +217,12 @@ fn assert_constant_authority(
     ));
 
     let type_position = usize::try_from(constant.ty().get()).unwrap();
-    let linked_type = &candidate.types()[type_position];
+    let linked_type = &image.types()[type_position];
     assert_eq!(linked_type.type_ref(), expected_type);
     assert_eq!(linked_type.origin().package_build_id(), build);
     assert_eq!(linked_type.origin().artifact_index().get(), 0);
     assert!(linked_type.origin().specialization().is_none());
-    let root = candidate
+    let root = image
         .constant_roots()
         .iter()
         .find(|root| root.owner_package_build_id() == build)
@@ -211,8 +232,8 @@ fn assert_constant_authority(
 }
 
 fn assert_image_limit(
-    hydrated: &skiff_runtime_loader::HydratedDeploymentBytecode,
-    limits: &crate::bytecode::LinkLimits,
+    hydrated: skiff_runtime_loader::HydratedDeploymentBytecode,
+    limits: crate::bytecode::LinkLimits,
     actual: u64,
     total: bool,
 ) {
@@ -222,11 +243,11 @@ fn assert_image_limit(
         BytecodeLinkLimit::ImageTableEntries
     };
     assert!(matches!(
-        link_deployment(hydrated, limits),
-        Err(BytecodeLinkError::LimitExceeded {
+        link_deployment_execution_image(hydrated, &execution_limits(limits)),
+        Err(DeploymentExecutionImageError::Link(BytecodeLinkError::LimitExceeded {
             limit,
             actual: observed,
             ..
-        }) if limit == expected && observed == actual
+        })) if limit == expected && observed == actual
     ));
 }

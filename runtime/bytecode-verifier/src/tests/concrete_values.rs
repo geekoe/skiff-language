@@ -14,7 +14,8 @@ use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use crate::{
     concrete_values::{prove_types_and_plans, ImplicitBuiltin},
-    verify, VerificationError, VerificationLimit, VerificationLocation, VerificationObligation,
+    verify_facts, VerificationError, VerificationLimit, VerificationLocation,
+    VerificationObligation,
 };
 
 use super::fixtures::{
@@ -29,9 +30,8 @@ fn package_global_string_and_array_with_exact_plans_complete_empty_effect_proof(
         candidate,
     } = array_candidate(snapshot_release_plan(), false);
     let candidate = candidate.expect("exact concrete type candidate passes local validation");
-    let image = verify(hydrated, candidate, &generous_limits())
+    verify_facts(hydrated, candidate, &generous_limits())
         .expect("function-free concrete values have a vacuous effect proof");
-    assert!(image.functions().is_empty());
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn array_element_with_same_kind_but_trivial_drop_is_rejected() {
         candidate,
     } = array_candidate(wrong, false);
     let candidate = candidate.expect("same-kind drop corruption passes local validation");
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &generous_limits()).unwrap_err();
 
     assert_types_violation(
         error,
@@ -86,7 +86,7 @@ fn residual_type_parameter_is_rejected_as_nonconcrete() {
         name: "T".to_string(),
     };
     let (hydrated, candidate) = scalar_candidate(residual);
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &generous_limits()).unwrap_err();
 
     assert_types_violation(
         error,
@@ -103,7 +103,7 @@ fn exact_raw_origin_with_wrong_normalized_body_is_rejected_by_p2() {
     let linked = type_entry(&hydrated, 0, TypeRefIr::builtin("bytes"), None);
     let candidate = candidate_for_concrete_types(&hydrated, vec![linked], Vec::new())
         .expect("the candidate-local table accepts an independently proved type body");
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &generous_limits()).unwrap_err();
 
     assert_types_violation(
         error,
@@ -118,7 +118,7 @@ fn concrete_type_node_budget_is_enforced_for_a_nonempty_table() {
     let (hydrated, candidate) = scalar_candidate(string_type());
     let mut limits = generous_limits();
     limits.max_value_lifecycle_nodes = 2;
-    let error = verify(hydrated, candidate, &limits).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &limits).unwrap_err();
 
     assert_types_limit(error, VerificationLimit::ValueLifecycleNodes, 0);
 }
@@ -128,7 +128,7 @@ fn concrete_type_canonical_byte_budget_is_enforced_for_a_nonempty_table() {
     let (hydrated, candidate) = scalar_candidate(string_type());
     let mut limits = generous_limits();
     limits.max_value_lifecycle_canonical_bytes = 1;
-    let error = verify(hydrated, candidate, &limits).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &limits).unwrap_err();
 
     assert_types_limit(error, VerificationLimit::ValueLifecycleCanonicalBytes, 0);
 }
@@ -141,7 +141,7 @@ fn concrete_type_depth_budget_is_enforced_for_a_nonempty_table() {
     let (hydrated, candidate) = scalar_candidate(nested);
     let mut limits = generous_limits();
     limits.max_type_nesting_depth = 1;
-    let error = verify(hydrated, candidate, &limits).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &limits).unwrap_err();
 
     assert_types_limit(error, VerificationLimit::TypeNestingDepth, 0);
 }
@@ -158,7 +158,7 @@ fn locally_valid_recursive_shape_drop_is_rejected_by_p2() {
         candidate,
     } = array_candidate(recursive, true);
     let candidate = candidate.expect("bounded recursive-shape plan passes local validation");
-    let error = verify(hydrated, candidate, &generous_limits()).unwrap_err();
+    let error = verify_facts(hydrated, candidate, &generous_limits()).unwrap_err();
 
     assert_types_violation(
         error,

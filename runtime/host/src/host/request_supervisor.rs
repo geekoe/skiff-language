@@ -1,5 +1,6 @@
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, HashSet},
+    fmt,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -10,24 +11,112 @@ use std::{
 use serde_json::{Map, Value};
 use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionEvent, BytecodeExecutionObserver, BytecodeRequestTerminal,
-    RequestCleanupComplete, RequestTerminalClaimed,
+    RequestCleanupComplete, RequestTerminalClaimed, VmBudgetAccounted,
 };
 use skiff_runtime_model::service_error::{
     ErrorCorrelation, OpaqueServiceError, ServiceErrorEnvelope,
 };
 use skiff_runtime_request::{
-    cancellation::CancellationToken, execution_budget::ExecutionBudget,
+    cancellation::CancellationToken,
+    execution_budget::{
+        AdmittedRequestDeadline, CompletionCandidate, ExecutionBudget, ExecutionSettlement,
+        ExecutionWinner,
+    },
     execution_budget_trace_attrs, response_error_to_telemetry_map, RequestCancel, RequestEnvelope,
-    ResponseError,
+    RequestExecutionOwnerInventorySnapshot, ResponseError,
 };
 
 use crate::telemetry::RequestTelemetryContext;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RouterSessionEpoch(String);
+
+impl RouterSessionEpoch {
+    pub(crate) fn from_connection_id(value: String) -> Result<Self, RequestIdentityError> {
+        if value.is_empty() || value.chars().any(char::is_control) {
+            return Err(RequestIdentityError::InvalidRouterSessionEpoch);
+        }
+        Ok(Self(value))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RequestId(String);
+
+impl RequestId {
+    pub(crate) fn parse(value: String) -> Result<Self, RequestIdentityError> {
+        if value.is_empty() || value.chars().any(char::is_control) {
+            return Err(RequestIdentityError::InvalidRequestId);
+        }
+        Ok(Self(value))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestIdentityError {
+    InvalidRouterSessionEpoch,
+    InvalidRequestId,
+}
+
+impl fmt::Display for RequestIdentityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidRouterSessionEpoch => "invalid router session epoch",
+            Self::InvalidRequestId => "invalid bytecode request id",
+        })
+    }
+}
+
+impl std::error::Error for RequestIdentityError {}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct RequestExecutionKey {
+    router_session: RouterSessionEpoch,
+    request_id: RequestId,
+}
+
+impl RequestExecutionKey {
+    pub(crate) const fn new(router_session: RouterSessionEpoch, request_id: RequestId) -> Self {
+        Self {
+            router_session,
+            request_id,
+        }
+    }
+
+    pub(crate) fn router_session(&self) -> &RouterSessionEpoch {
+        &self.router_session
+    }
+
+    pub(crate) fn request_id(&self) -> &RequestId {
+        &self.request_id
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReservationRevocation {
+    Cancel,
+    SessionStop,
+}
 
 #[derive(Clone)]
 struct ReservedRequest {
     row_identity: Arc<()>,
     observer: BytecodeExecutionObserver,
 }
+
+struct RevokedRequest {
+    row_identity: Arc<()>,
+    revocation: ReservationRevocation,
+}
+
 #[derive(Clone)]
 struct ActiveRequest {
     row_identity: Arc<()>,
@@ -35,13 +124,14 @@ struct ActiveRequest {
     execution_budget: Arc<ExecutionBudget>,
     telemetry: RequestTelemetryContext,
     started_at: Instant,
-    cancel_requested: Arc<AtomicBool>,
     cancel_event_emitted: Arc<AtomicBool>,
     observer: BytecodeExecutionObserver,
 }
 
 struct CompletingRequest {
     row_identity: Arc<()>,
+    settlement: Arc<ExecutionSettlement>,
+    owner_inventory: RequestExecutionOwnerInventorySnapshot,
 }
 
 struct CleanupRequest {
@@ -50,52 +140,83 @@ struct CleanupRequest {
 
 enum RequestRow {
     Reserved(ReservedRequest),
+    Revoked(RevokedRequest),
     Active(ActiveRequest),
     Completing(CompletingRequest),
     Cleanup(CleanupRequest),
 }
 
+#[derive(Default)]
+struct SupervisorState {
+    rows: HashMap<RequestExecutionKey, RequestRow>,
+    open_sessions: HashSet<RouterSessionEpoch>,
+}
+
 #[derive(Clone)]
 pub(crate) struct SupervisedRequest {
-    request_id: String,
+    key: RequestExecutionKey,
     active: ActiveRequest,
 }
 
-/// RAII ownership of one vacant request row during fallible admission.
-///
-/// Dropping an unactivated reservation removes only its exact reserved row and
-/// emits no terminal or cleanup observation.
+/// RAII ownership of one exact reserved row during fallible admission.
 pub(crate) struct RequestReservation {
     supervisor: Arc<RequestSupervisor>,
-    request_id: String,
+    key: RequestExecutionKey,
     row_identity: Arc<()>,
     observer: BytecodeExecutionObserver,
+    admitted_deadline: Option<AdmittedRequestDeadline>,
     armed: bool,
 }
 
-/// Uncloneable proof that this lane won the exact active-to-completing transition.
+pub(crate) enum ActivationOutcome {
+    Activated(SupervisedRequest),
+    RevokedByCancel,
+    RevokedBySessionStop,
+    Invalid,
+}
+
 struct CompletionWinner {
     supervisor: Arc<RequestSupervisor>,
-    request_id: String,
+    key: RequestExecutionKey,
     active: ActiveRequest,
-    cancelled: bool,
+    settlement: Arc<ExecutionSettlement>,
+    owner_inventory: RequestExecutionOwnerInventorySnapshot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum CompletionResponseAction {
+    Candidate,
+    DeadlineExceeded {
+        instruction_count: u64,
+        limit: u64,
+        elapsed_ms: f64,
+    },
+    InstructionLimitExceeded {
+        instruction_count: u64,
+        limit: u64,
+    },
+    AccountingFailure,
+    StopWithoutResponse,
 }
 
 /// Uncloneable authority for the request-task finalizer to mint cleanup.
 pub(crate) struct CleanupPermit {
     supervisor: Arc<RequestSupervisor>,
-    request_id: String,
+    key: RequestExecutionKey,
     row_identity: Arc<()>,
     observer: BytecodeExecutionObserver,
-    response_owned: bool,
+    settlement: Arc<ExecutionSettlement>,
+    response_action: CompletionResponseAction,
+    owner_inventory: RequestExecutionOwnerInventorySnapshot,
 }
 
-/// Short-lived exact guard installed before the cleanup observer is called.
 struct CleanupGuard {
     supervisor: Arc<RequestSupervisor>,
-    request_id: String,
+    key: RequestExecutionKey,
     guard_identity: Arc<()>,
     observer: BytecodeExecutionObserver,
+    _settlement: Arc<ExecutionSettlement>,
+    owner_inventory: RequestExecutionOwnerInventorySnapshot,
 }
 
 #[derive(Clone, Copy)]
@@ -113,7 +234,7 @@ impl CompletionTrace {
 
 #[derive(Default)]
 pub(crate) struct RequestSupervisor {
-    rows: Mutex<HashMap<String, RequestRow>>,
+    state: Mutex<SupervisorState>,
 }
 
 impl RequestSupervisor {
@@ -121,27 +242,44 @@ impl RequestSupervisor {
         Self::default()
     }
 
-    /// Atomically inserts a reserved row only when the request id is vacant.
+    pub(crate) fn start_session(&self, router_session: RouterSessionEpoch) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .open_sessions
+            .insert(router_session)
+    }
+
     pub(crate) fn reserve(
         self: &Arc<Self>,
-        request_id: String,
+        key: RequestExecutionKey,
         observer: BytecodeExecutionObserver,
+        admitted_deadline: Option<AdmittedRequestDeadline>,
     ) -> Option<RequestReservation> {
+        if observer.correlation().router_session_id != key.router_session.as_str()
+            || observer.correlation().request_id != key.request_id.as_str()
+        {
+            return None;
+        }
         let row_identity = Arc::new(());
         let reserved = ReservedRequest {
             row_identity: Arc::clone(&row_identity),
             observer: observer.clone(),
         };
-        let mut rows = self.rows.lock().unwrap_or_else(|error| error.into_inner());
-        match rows.entry(request_id.clone()) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !state.open_sessions.contains(&key.router_session) {
+            return None;
+        }
+        match state.rows.entry(key.clone()) {
             Entry::Occupied(_) => None,
             Entry::Vacant(entry) => {
                 entry.insert(RequestRow::Reserved(reserved));
                 Some(RequestReservation {
                     supervisor: Arc::clone(self),
-                    request_id,
+                    key,
                     row_identity,
                     observer,
+                    admitted_deadline,
                     armed: true,
                 })
             }
@@ -151,17 +289,12 @@ impl RequestSupervisor {
     pub(crate) async fn complete_success(
         self: &Arc<Self>,
         request: &SupervisedRequest,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request)?;
-        if winner.cancelled {
-            return Some(finish_cancelled_request(winner, trace));
-        }
-        winner.active.execution_budget.finish(Instant::now());
-        observe_terminal(&winner.active, BytecodeRequestTerminal::Succeeded);
-        let duration_ms = elapsed_ms(winner.active.started_at);
-        emit_request_duration_metric(&winner.active, duration_ms, "ok");
-        Some(winner.into_cleanup_permit(true))
+        let winner =
+            self.claim_completion(request, owner_inventory, CompletionCandidate::Success)?;
+        finish_completion(winner, trace, None, None)
     }
 
     pub(crate) async fn complete_error(
@@ -169,31 +302,17 @@ impl RequestSupervisor {
         request: &SupervisedRequest,
         event_name: &'static str,
         error: &ResponseError,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request)?;
-        if winner.cancelled {
-            return Some(finish_cancelled_request(winner, trace));
-        }
-        winner.active.execution_budget.finish(Instant::now());
-        observe_terminal(&winner.active, BytecodeRequestTerminal::Failed);
-
-        let duration_ms = elapsed_ms(winner.active.started_at);
-        let duplicate_cancel = event_name == "request.cancel"
-            && winner
-                .active
-                .cancel_event_emitted
-                .swap(true, Ordering::SeqCst);
-        if !duplicate_cancel {
-            winner.active.telemetry.emit_trace(
-                event_name,
-                trace.include_duration.then_some(duration_ms),
-                Some(response_error_to_telemetry_map(error)),
-                budget_attrs(&winner.active, duration_ms, trace),
-            );
-            emit_request_duration_metric(&winner.active, duration_ms, "error");
-        }
-        Some(winner.into_cleanup_permit(true))
+        let winner =
+            self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
+        finish_completion(
+            winner,
+            trace,
+            Some(event_name),
+            Some(response_error_to_telemetry_map(error)),
+        )
     }
 
     pub(crate) async fn complete_fixed_service_failure(
@@ -201,20 +320,16 @@ impl RequestSupervisor {
         request: &SupervisedRequest,
         event_name: &'static str,
         error: &OpaqueServiceError,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request)?;
-        if winner.cancelled {
-            return Some(finish_cancelled_request(winner, trace));
-        }
-        winner.active.execution_budget.finish(Instant::now());
-        observe_terminal(&winner.active, BytecodeRequestTerminal::Failed);
-
-        let duration_ms = elapsed_ms(winner.active.started_at);
+        let winner =
+            self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
         let correlation = ErrorCorrelation {
             trace_id: error.envelope().trace_id().to_string(),
             error_id: error.envelope().error_id().to_string(),
         };
+        let duration_ms = elapsed_ms(winner.active.started_at);
         winner.active.telemetry.emit_trace_with_error_correlation(
             event_name,
             trace.include_duration.then_some(duration_ms),
@@ -222,59 +337,128 @@ impl RequestSupervisor {
             budget_attrs(&winner.active, duration_ms, trace),
             &correlation,
         );
-        emit_request_duration_metric(&winner.active, duration_ms, "error");
-        Some(winner.into_cleanup_permit(true))
+        finish_completion(winner, trace, None, None)
     }
 
     pub(crate) async fn complete_cancelled(
         self: &Arc<Self>,
         request: &SupervisedRequest,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        self.claim_completion(request)
-            .map(|winner| finish_cancelled_request(winner, trace))
+        let winner =
+            self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
+        finish_completion(winner, trace, None, None)
     }
 
-    pub(crate) async fn cancel(&self, cancel: &RequestCancel) -> bool {
-        let (active, duration_ms, emit_cancel) = {
-            let rows = self.rows.lock().unwrap_or_else(|error| error.into_inner());
-            let Some(RequestRow::Active(active)) = rows.get(&cancel.request_id) else {
+    pub(crate) async fn cancel(
+        &self,
+        router_session: &RouterSessionEpoch,
+        cancel: &RequestCancel,
+    ) -> bool {
+        let Ok(request_id) = RequestId::parse(cancel.request_id.clone()) else {
+            return false;
+        };
+        let key = RequestExecutionKey::new(router_session.clone(), request_id);
+        let mut active_to_wake = None;
+        let handled = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let Some(row) = state.rows.get_mut(&key) else {
                 return false;
             };
-            active.cancel_requested.store(true, Ordering::SeqCst);
-            active.cancellation.cancel();
-            active.execution_budget.record_cancelled();
-            let duration_ms = elapsed_ms(active.started_at);
-            let emit_cancel = !active.cancel_event_emitted.swap(true, Ordering::SeqCst);
-            (active.clone(), duration_ms, emit_cancel)
+            match row {
+                RequestRow::Reserved(reserved) => {
+                    *row = RequestRow::Revoked(RevokedRequest {
+                        row_identity: Arc::clone(&reserved.row_identity),
+                        revocation: ReservationRevocation::Cancel,
+                    });
+                    true
+                }
+                RequestRow::Revoked(revoked) => revoked.revocation == ReservationRevocation::Cancel,
+                RequestRow::Active(active) => {
+                    let settlement = active.execution_budget.request_cancel().into_settlement();
+                    active_to_wake = Some((
+                        active.clone(),
+                        settlement.winner() == ExecutionWinner::Cancelled,
+                    ));
+                    true
+                }
+                RequestRow::Completing(_) | RequestRow::Cleanup(_) => false,
+            }
         };
 
-        if emit_cancel {
-            let mut attrs = execution_budget_trace_attrs(&active.execution_budget, duration_ms);
-            if let Some(reason) = cancel.reason.as_deref() {
-                attrs.insert("reason".to_string(), Value::String(reason.to_string()));
+        if let Some((active, cancellation_won)) = active_to_wake {
+            active.cancellation.cancel();
+            let duration_ms = elapsed_ms(active.started_at);
+            if cancellation_won && !active.cancel_event_emitted.swap(true, Ordering::SeqCst) {
+                let mut attrs = execution_budget_trace_attrs(&active.execution_budget, duration_ms);
+                if let Some(reason) = cancel.reason.as_deref() {
+                    attrs.insert("reason".to_string(), Value::String(reason.to_string()));
+                }
+                active
+                    .telemetry
+                    .emit_trace("request.cancel", Some(duration_ms), None, Some(attrs));
+                emit_request_duration_metric(&active, duration_ms, "cancel");
             }
-            active
-                .telemetry
-                .emit_trace("request.cancel", Some(duration_ms), None, Some(attrs));
-            emit_request_duration_metric(&active, duration_ms, "cancel");
         }
-        true
+        handled
     }
 
-    /// Reserved rows reject duplicates but are not counted as admitted work.
+    pub(crate) fn stop_session(&self, router_session: &RouterSessionEpoch) {
+        let active_to_wake = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.open_sessions.remove(router_session);
+            let matching_keys = state
+                .rows
+                .keys()
+                .filter(|key| key.router_session() == router_session)
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut active_to_wake = Vec::new();
+            for key in matching_keys {
+                let Some(row) = state.rows.get_mut(&key) else {
+                    continue;
+                };
+                match row {
+                    RequestRow::Reserved(reserved) => {
+                        *row = RequestRow::Revoked(RevokedRequest {
+                            row_identity: Arc::clone(&reserved.row_identity),
+                            revocation: ReservationRevocation::SessionStop,
+                        });
+                    }
+                    RequestRow::Revoked(_) => {}
+                    RequestRow::Active(active) => {
+                        let _ = active.execution_budget.request_internal_stop();
+                        active_to_wake.push(active.clone());
+                    }
+                    RequestRow::Completing(_) | RequestRow::Cleanup(_) => {}
+                }
+            }
+            active_to_wake
+        };
+        for active in active_to_wake {
+            active.cancellation.cancel();
+        }
+    }
+
     pub(crate) async fn active_count(&self) -> usize {
-        self.rows
+        self.state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+            .rows
             .values()
             .filter(|row| matches!(row, RequestRow::Active(_)))
             .count()
     }
 
-    fn claim_completion(self: &Arc<Self>, request: &SupervisedRequest) -> Option<CompletionWinner> {
-        let mut rows = self.rows.lock().unwrap_or_else(|error| error.into_inner());
-        let Entry::Occupied(mut entry) = rows.entry(request.request_id.clone()) else {
+    fn claim_completion(
+        self: &Arc<Self>,
+        request: &SupervisedRequest,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
+        candidate: CompletionCandidate,
+    ) -> Option<CompletionWinner> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let Entry::Occupied(mut entry) = state.rows.entry(request.key.clone()) else {
             return None;
         };
         let RequestRow::Active(current) = entry.get() else {
@@ -283,20 +467,21 @@ impl RequestSupervisor {
         if !Arc::ptr_eq(&current.row_identity, &request.active.row_identity) {
             return None;
         }
+        let settlement = current.execution_budget.settle(candidate).into_settlement();
         let completing = CompletingRequest {
             row_identity: Arc::clone(&current.row_identity),
+            settlement: Arc::clone(&settlement),
+            owner_inventory,
         };
         let RequestRow::Active(active) = entry.insert(RequestRow::Completing(completing)) else {
             unreachable!("matching active row was replaced")
         };
-        // Only an explicit root cancellation may change an ordinary
-        // success/error completion into the cancellation terminal.
-        let cancelled = active.cancel_requested.load(Ordering::SeqCst);
         Some(CompletionWinner {
             supervisor: Arc::clone(self),
-            request_id: request.request_id.clone(),
+            key: request.key.clone(),
             active,
-            cancelled,
+            settlement,
+            owner_inventory,
         })
     }
 }
@@ -306,52 +491,73 @@ impl RequestReservation {
         &self.observer
     }
 
-    /// Activates an admitted request and creates its budget/handles only now.
+    pub(crate) fn key(&self) -> &RequestExecutionKey {
+        &self.key
+    }
+
     pub(crate) fn activate(
         mut self,
+        exact_key: &RequestExecutionKey,
         request: &RequestEnvelope,
         telemetry: RequestTelemetryContext,
-    ) -> Option<SupervisedRequest> {
-        if request.request_id != self.request_id {
-            return None;
+    ) -> ActivationOutcome {
+        if exact_key != &self.key || request.request_id != self.key.request_id.as_str() {
+            return ActivationOutcome::Invalid;
         }
-        let active = ActiveRequest {
-            row_identity: Arc::clone(&self.row_identity),
-            cancellation: CancellationToken::new(),
-            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(&request.extra)),
-            telemetry,
-            started_at: Instant::now(),
-            cancel_requested: Arc::new(AtomicBool::new(false)),
-            cancel_event_emitted: Arc::new(AtomicBool::new(false)),
-            observer: self.observer.clone(),
-        };
-        let activated = {
-            let mut rows = self
+        let outcome = {
+            let mut state = self
                 .supervisor
-                .rows
+                .state
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let matches = matches!(
-                rows.get(&self.request_id),
-                Some(RequestRow::Reserved(reserved))
+            let Some(row) = state.rows.get(&self.key) else {
+                return ActivationOutcome::Invalid;
+            };
+            match row {
+                RequestRow::Reserved(reserved)
                     if Arc::ptr_eq(&reserved.row_identity, &self.row_identity)
-                        && reserved.observer.correlation() == self.observer.correlation()
-            );
-            if matches {
-                rows.insert(self.request_id.clone(), RequestRow::Active(active.clone()));
-                true
-            } else {
-                false
+                        && reserved.observer.correlation() == self.observer.correlation() =>
+                {
+                    let active = ActiveRequest {
+                        row_identity: Arc::clone(&self.row_identity),
+                        cancellation: CancellationToken::new(),
+                        execution_budget: Arc::new(ExecutionBudget::for_runtime_request(
+                            self.admitted_deadline,
+                        )),
+                        telemetry,
+                        started_at: Instant::now(),
+                        cancel_event_emitted: Arc::new(AtomicBool::new(false)),
+                        observer: self.observer.clone(),
+                    };
+                    state
+                        .rows
+                        .insert(self.key.clone(), RequestRow::Active(active.clone()));
+                    ActivationOutcome::Activated(SupervisedRequest {
+                        key: self.key.clone(),
+                        active,
+                    })
+                }
+                RequestRow::Revoked(revoked)
+                    if Arc::ptr_eq(&revoked.row_identity, &self.row_identity) =>
+                {
+                    let revocation = revoked.revocation;
+                    state.rows.remove(&self.key);
+                    match revocation {
+                        ReservationRevocation::Cancel => ActivationOutcome::RevokedByCancel,
+                        ReservationRevocation::SessionStop => {
+                            ActivationOutcome::RevokedBySessionStop
+                        }
+                    }
+                }
+                RequestRow::Reserved(_)
+                | RequestRow::Revoked(_)
+                | RequestRow::Active(_)
+                | RequestRow::Completing(_)
+                | RequestRow::Cleanup(_) => ActivationOutcome::Invalid,
             }
         };
-        if !activated {
-            return None;
-        }
         self.armed = false;
-        Some(SupervisedRequest {
-            request_id: self.request_id.clone(),
-            active,
-        })
+        outcome
     }
 }
 
@@ -360,45 +566,84 @@ impl Drop for RequestReservation {
         if !self.armed {
             return;
         }
-        let mut rows = self
+        let mut state = self
             .supervisor
-            .rows
+            .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let matches = matches!(
-            rows.get(&self.request_id),
-            Some(RequestRow::Reserved(reserved))
-                if Arc::ptr_eq(&reserved.row_identity, &self.row_identity)
-        );
+        let matches = match state.rows.get(&self.key) {
+            Some(RequestRow::Reserved(reserved)) => {
+                Arc::ptr_eq(&reserved.row_identity, &self.row_identity)
+            }
+            Some(RequestRow::Revoked(revoked)) => {
+                Arc::ptr_eq(&revoked.row_identity, &self.row_identity)
+            }
+            Some(RequestRow::Active(_) | RequestRow::Completing(_) | RequestRow::Cleanup(_))
+            | None => false,
+        };
         if matches {
-            rows.remove(&self.request_id);
-        }
-    }
-}
-
-impl CompletionWinner {
-    fn into_cleanup_permit(self, response_owned: bool) -> CleanupPermit {
-        CleanupPermit {
-            supervisor: self.supervisor,
-            request_id: self.request_id,
-            row_identity: self.active.row_identity,
-            observer: self.active.observer,
-            response_owned,
+            state.rows.remove(&self.key);
         }
     }
 }
 
 impl CleanupPermit {
-    pub(crate) fn response_owned(&self) -> bool {
-        self.response_owned
+    pub(crate) const fn response_action(&self) -> CompletionResponseAction {
+        self.response_action
     }
 
-    /// Consumes the unique finalizer authority after request-local pins drop.
-    ///
-    /// The completing row is first replaced by an exact cleanup guard. Both
-    /// transitions happen under the supervisor lock, while the observer call
-    /// happens without it. A stale or dropped permit deliberately leaves the
-    /// completing row occupied rather than releasing a possibly newer row.
+    pub(crate) const fn response_owned(&self) -> bool {
+        !matches!(
+            self.response_action,
+            CompletionResponseAction::StopWithoutResponse
+        )
+    }
+
+    pub(crate) fn response_override(&self) -> Option<ResponseError> {
+        match self.response_action {
+            CompletionResponseAction::Candidate | CompletionResponseAction::StopWithoutResponse => {
+                None
+            }
+            CompletionResponseAction::DeadlineExceeded {
+                instruction_count,
+                limit,
+                elapsed_ms,
+            } => Some(ResponseError {
+                code: "TimeoutError".to_string(),
+                message: "execution deadline exceeded".to_string(),
+                status: None,
+                details: Some(serde_json::json!({
+                    "reason": "deadlineExceeded",
+                    "instructionCount": instruction_count,
+                    "limit": limit,
+                    "elapsedMs": elapsed_ms,
+                })),
+            }),
+            CompletionResponseAction::InstructionLimitExceeded {
+                instruction_count,
+                limit,
+            } => Some(ResponseError {
+                code: "std.error.InstructionLimitExceededError".to_string(),
+                message: "execution instruction limit exceeded".to_string(),
+                status: None,
+                details: Some(serde_json::json!({
+                    "instructionCount": instruction_count,
+                    "limit": limit,
+                })),
+            }),
+            CompletionResponseAction::AccountingFailure => Some(ResponseError {
+                code: "InternalError".to_string(),
+                message: "bytecode execution failed".to_string(),
+                status: None,
+                details: None,
+            }),
+        }
+    }
+
+    pub(crate) fn settlement(&self) -> &Arc<ExecutionSettlement> {
+        &self.settlement
+    }
+
     pub(crate) fn observe_cleanup(self) {
         let Some(guard) = self.begin_cleanup() else {
             return;
@@ -407,29 +652,33 @@ impl CleanupPermit {
     }
 
     fn begin_cleanup(self) -> Option<CleanupGuard> {
-        let CleanupPermit {
+        let Self {
             supervisor,
-            request_id,
+            key,
             row_identity,
             observer,
-            response_owned: _,
+            settlement,
+            response_action: _,
+            owner_inventory,
         } = self;
         let guard_identity = Arc::new(());
         {
-            let mut rows = supervisor
-                .rows
+            let mut state = supervisor
+                .state
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
             let matches = matches!(
-                rows.get(&request_id),
+                state.rows.get(&key),
                 Some(RequestRow::Completing(completing))
                     if Arc::ptr_eq(&completing.row_identity, &row_identity)
+                        && Arc::ptr_eq(&completing.settlement, &settlement)
+                        && completing.owner_inventory == owner_inventory
             );
             if !matches {
                 return None;
             }
-            rows.insert(
-                request_id.clone(),
+            state.rows.insert(
+                key.clone(),
                 RequestRow::Cleanup(CleanupRequest {
                     guard_identity: Arc::clone(&guard_identity),
                 }),
@@ -437,9 +686,11 @@ impl CleanupPermit {
         }
         Some(CleanupGuard {
             supervisor,
-            request_id,
+            key,
             guard_identity,
             observer,
+            _settlement: settlement,
+            owner_inventory,
         })
     }
 }
@@ -448,49 +699,145 @@ impl CleanupGuard {
     fn observe_cleanup(self) {
         self.observer
             .observe(BytecodeExecutionEvent::RequestCleanupComplete(
-                RequestCleanupComplete {},
+                RequestCleanupComplete {
+                    owner_inventory: self.owner_inventory,
+                },
             ));
         self.finish();
     }
 
     fn finish(self) {
-        let mut rows = self
+        let mut state = self
             .supervisor
-            .rows
+            .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         let matches = matches!(
-            rows.get(&self.request_id),
+            state.rows.get(&self.key),
             Some(RequestRow::Cleanup(cleanup))
                 if Arc::ptr_eq(&cleanup.guard_identity, &self.guard_identity)
         );
         if matches {
-            rows.remove(&self.request_id);
+            state.rows.remove(&self.key);
         }
     }
 }
 
-fn finish_cancelled_request(winner: CompletionWinner, trace: CompletionTrace) -> CleanupPermit {
-    winner.active.cancel_requested.store(true, Ordering::SeqCst);
-    winner.active.cancellation.cancel();
-    winner.active.execution_budget.record_cancelled();
-    winner.active.execution_budget.finish(Instant::now());
-    observe_terminal(&winner.active, BytecodeRequestTerminal::Cancelled);
-    let duration_ms = elapsed_ms(winner.active.started_at);
-    if !winner
-        .active
-        .cancel_event_emitted
-        .swap(true, Ordering::SeqCst)
-    {
-        winner.active.telemetry.emit_trace(
-            "request.cancel",
-            trace.include_duration.then_some(duration_ms),
-            None,
-            budget_attrs(&winner.active, duration_ms, trace),
-        );
-        emit_request_duration_metric(&winner.active, duration_ms, "cancel");
+impl SupervisedRequest {
+    pub(crate) fn cancellation_token(&self) -> CancellationToken {
+        self.active.cancellation.clone()
     }
-    winner.into_cleanup_permit(false)
+
+    pub(crate) fn execution_budget(&self) -> Arc<ExecutionBudget> {
+        self.active.execution_budget.clone()
+    }
+}
+
+fn finish_completion(
+    winner: CompletionWinner,
+    trace: CompletionTrace,
+    event_name: Option<&'static str>,
+    error_attrs: Option<Map<String, Value>>,
+) -> Option<CleanupPermit> {
+    let terminal = terminal_for_winner(winner.settlement.winner());
+    winner
+        .active
+        .observer
+        .observe(BytecodeExecutionEvent::VmBudgetAccounted(
+            VmBudgetAccounted {
+                raw_executed_count: winner.settlement.raw_executed_count(),
+                charged_instruction_count: winner.settlement.raw_executed_count(),
+                hard_limit: winner.settlement.hard_raw_limit(),
+                poll_count: winner.settlement.poll_count(),
+            },
+        ));
+    observe_terminal(&winner.active, terminal);
+    let duration_ms = elapsed_ms(winner.active.started_at);
+    let response_action = response_action(&winner.settlement);
+
+    match winner.settlement.winner() {
+        ExecutionWinner::Succeeded => {
+            emit_request_duration_metric(&winner.active, duration_ms, "ok");
+        }
+        ExecutionWinner::Cancelled | ExecutionWinner::InternalStop => {
+            if !winner
+                .active
+                .cancel_event_emitted
+                .swap(true, Ordering::SeqCst)
+            {
+                winner.active.telemetry.emit_trace(
+                    "request.cancel",
+                    trace.include_duration.then_some(duration_ms),
+                    None,
+                    budget_attrs(&winner.active, duration_ms, trace),
+                );
+                emit_request_duration_metric(&winner.active, duration_ms, "cancel");
+            }
+        }
+        ExecutionWinner::Failed
+        | ExecutionWinner::DeadlineExceeded
+        | ExecutionWinner::InstructionLimitExceeded
+        | ExecutionWinner::AccountingFailure => {
+            if let Some(event_name) = event_name {
+                winner.active.telemetry.emit_trace(
+                    event_name,
+                    trace.include_duration.then_some(duration_ms),
+                    error_attrs,
+                    budget_attrs(&winner.active, duration_ms, trace),
+                );
+            }
+            emit_request_duration_metric(&winner.active, duration_ms, "error");
+        }
+    }
+    Some(winner.into_cleanup_permit(response_action))
+}
+
+impl CompletionWinner {
+    fn into_cleanup_permit(self, response_action: CompletionResponseAction) -> CleanupPermit {
+        CleanupPermit {
+            supervisor: self.supervisor,
+            key: self.key,
+            row_identity: self.active.row_identity,
+            observer: self.active.observer,
+            settlement: self.settlement,
+            response_action,
+            owner_inventory: self.owner_inventory,
+        }
+    }
+}
+
+fn terminal_for_winner(winner: ExecutionWinner) -> BytecodeRequestTerminal {
+    match winner {
+        ExecutionWinner::Succeeded => BytecodeRequestTerminal::Succeeded,
+        ExecutionWinner::Cancelled | ExecutionWinner::InternalStop => {
+            BytecodeRequestTerminal::Cancelled
+        }
+        ExecutionWinner::Failed
+        | ExecutionWinner::DeadlineExceeded
+        | ExecutionWinner::InstructionLimitExceeded
+        | ExecutionWinner::AccountingFailure => BytecodeRequestTerminal::Failed,
+    }
+}
+
+fn response_action(settlement: &ExecutionSettlement) -> CompletionResponseAction {
+    match settlement.winner() {
+        ExecutionWinner::Succeeded | ExecutionWinner::Failed => CompletionResponseAction::Candidate,
+        ExecutionWinner::Cancelled | ExecutionWinner::InternalStop => {
+            CompletionResponseAction::StopWithoutResponse
+        }
+        ExecutionWinner::DeadlineExceeded => CompletionResponseAction::DeadlineExceeded {
+            instruction_count: settlement.raw_executed_count(),
+            limit: settlement.hard_raw_limit(),
+            elapsed_ms: settlement.elapsed().as_secs_f64() * 1000.0,
+        },
+        ExecutionWinner::InstructionLimitExceeded => {
+            CompletionResponseAction::InstructionLimitExceeded {
+                instruction_count: settlement.raw_executed_count(),
+                limit: settlement.hard_raw_limit(),
+            }
+        }
+        ExecutionWinner::AccountingFailure => CompletionResponseAction::AccountingFailure,
+    }
 }
 
 fn observe_terminal(active: &ActiveRequest, terminal: BytecodeRequestTerminal) {
@@ -508,20 +855,6 @@ fn emit_request_duration_metric(active: &ActiveRequest, duration_ms: f64, outcom
     active
         .telemetry
         .emit_duration_metric("request.duration", Some(attrs));
-}
-
-impl SupervisedRequest {
-    pub(crate) fn cancelled(&self) -> Arc<AtomicBool> {
-        self.active.cancellation.cancel_flag()
-    }
-
-    pub(crate) fn cancellation_token(&self) -> CancellationToken {
-        self.active.cancellation.clone()
-    }
-
-    pub(crate) fn execution_budget(&self) -> Arc<ExecutionBudget> {
-        self.active.execution_budget.clone()
-    }
 }
 
 fn budget_attrs(
@@ -562,10 +895,29 @@ mod tests {
     use skiff_runtime_model::bytecode_execution_observation::{
         BytecodeExecutionCorrelation, BytecodeExecutionEventSink, BytecodeExecutionObservation,
     };
+    use skiff_runtime_request::FrozenOwnerDomain;
     use std::sync::{
         atomic::AtomicUsize,
         mpsc::{channel, Receiver},
     };
+    use tokio::sync::mpsc::UnboundedSender;
+
+    fn zero_snapshot() -> RequestExecutionOwnerInventorySnapshot {
+        RequestExecutionOwnerInventorySnapshot {
+            pending: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            resource: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            child: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+        }
+    }
 
     #[derive(Default)]
     struct RecordingSink(Mutex<Vec<BytecodeExecutionObservation>>);
@@ -576,15 +928,18 @@ mod tests {
         }
     }
 
+    /// Sink that blocks the inline drainer on the terminal and cleanup
+    /// callbacks while proving callbacks never overlap. `VmBudgetAccounted`
+    /// passes through unblocked.
     struct LifecycleBlockingSink {
         records: Mutex<Vec<BytecodeExecutionObservation>>,
         callbacks: AtomicUsize,
         overlap: AtomicBool,
         block_terminal: AtomicBool,
-        terminal_entered: tokio::sync::mpsc::UnboundedSender<()>,
+        terminal_entered: UnboundedSender<()>,
         terminal_release: Mutex<Receiver<()>>,
         block_cleanup: AtomicBool,
-        cleanup_entered: tokio::sync::mpsc::UnboundedSender<()>,
+        cleanup_entered: UnboundedSender<()>,
         cleanup_release: Mutex<Receiver<()>>,
     }
 
@@ -613,6 +968,17 @@ mod tests {
         }
     }
 
+    fn epoch(id: &str) -> RouterSessionEpoch {
+        RouterSessionEpoch::from_connection_id(id.to_string()).unwrap()
+    }
+
+    fn key(session: &str, request: &str) -> RequestExecutionKey {
+        RequestExecutionKey::new(
+            epoch(session),
+            RequestId::parse(request.to_string()).unwrap(),
+        )
+    }
+
     fn request(request_id: &str) -> RequestEnvelope {
         RequestEnvelope {
             request_id: request_id.to_string(),
@@ -635,15 +1001,15 @@ mod tests {
         }
     }
 
-    fn observer<S>(sink: Arc<S>, request_id: &str) -> BytecodeExecutionObserver
+    fn observer<S>(sink: Arc<S>, key: &RequestExecutionKey) -> BytecodeExecutionObserver
     where
         S: BytecodeExecutionEventSink,
     {
         BytecodeExecutionObserver::new(
             sink,
             BytecodeExecutionCorrelation {
-                router_session_id: "session".to_string(),
-                request_id: request_id.to_string(),
+                router_session_id: key.router_session().as_str().to_string(),
+                request_id: key.request_id().as_str().to_string(),
             },
         )
     }
@@ -655,81 +1021,271 @@ mod tests {
         )))
     }
 
-    #[tokio::test]
-    async fn reservation_is_insert_if_vacant_and_drop_removes_only_reserved_row() {
-        let supervisor = Arc::new(RequestSupervisor::new());
-        let sink = Arc::new(RecordingSink::default());
-        let reservation = supervisor
-            .reserve("request".to_string(), observer(sink.clone(), "request"))
-            .expect("first reservation");
-        assert!(supervisor
-            .reserve("request".to_string(), observer(sink.clone(), "request"))
-            .is_none());
-        assert_eq!(supervisor.active_count().await, 0);
-        drop(reservation);
-        assert!(supervisor
-            .reserve("request".to_string(), observer(sink, "request"))
-            .is_some());
+    fn activate(reservation: RequestReservation, key: &RequestExecutionKey) -> SupervisedRequest {
+        match reservation.activate(key, &request(key.request_id().as_str()), telemetry()) {
+            ActivationOutcome::Activated(request) => request,
+            _ => panic!("expected activation"),
+        }
     }
 
     #[tokio::test]
-    async fn complete_error_mints_failed_once_and_returns_cleanup_only_to_winner() {
+    async fn equal_request_ids_are_independent_across_session_epochs() {
         let supervisor = Arc::new(RequestSupervisor::new());
         let sink = Arc::new(RecordingSink::default());
-        let reservation = supervisor
-            .reserve("request".to_string(), observer(sink.clone(), "request"))
-            .expect("reservation");
-        let supervised = reservation
-            .activate(&request("request"), telemetry())
-            .expect("activation");
-        let error = ResponseError {
-            code: "InternalError".to_string(),
-            message: "json-rpc failure".to_string(),
-            status: None,
-            details: None,
-        };
+        let a = key("session-a", "same");
+        let b = key("session-b", "same");
+        assert!(supervisor.start_session(a.router_session().clone()));
+        assert!(supervisor.start_session(b.router_session().clone()));
+        let a_request = activate(
+            supervisor
+                .reserve(a.clone(), observer(sink.clone(), &a), None)
+                .unwrap(),
+            &a,
+        );
+        let b_request = activate(
+            supervisor
+                .reserve(b.clone(), observer(sink.clone(), &b), None)
+                .unwrap(),
+            &b,
+        );
 
-        let permit = supervisor
-            .complete_error(
-                &supervised,
-                "request.error",
-                &error,
-                CompletionTrace::RUNTIME,
-            )
-            .await
-            .expect("winner cleanup permit");
-        assert!(permit.response_owned());
-        assert!(supervisor
-            .complete_success(&supervised, CompletionTrace::RUNTIME)
-            .await
-            .is_none());
-        let records = sink.0.lock().unwrap();
-        assert_eq!(records.len(), 1);
-        assert!(matches!(
-            records[0].event,
-            BytecodeExecutionEvent::RequestTerminalClaimed(RequestTerminalClaimed {
-                terminal: BytecodeRequestTerminal::Failed
-            })
-        ));
-        drop(records);
-        drop(permit);
-        assert_eq!(sink.0.lock().unwrap().len(), 1);
-        assert!(supervisor
-            .reserve("request".to_string(), observer(sink.clone(), "request"))
-            .is_none());
         assert!(
-            !supervisor
-                .cancel(&RequestCancel {
-                    request_id: "request".to_string(),
-                    reason: None,
-                })
+            supervisor
+                .cancel(
+                    b.router_session(),
+                    &RequestCancel {
+                        request_id: "same".to_string(),
+                        reason: None,
+                    },
+                )
                 .await
         );
+        assert!(a_request.execution_budget().settlement().is_none());
+        assert_eq!(
+            b_request.execution_budget().settlement().unwrap().winner(),
+            ExecutionWinner::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_before_activation_is_stop_without_budget_terminal_or_cleanup() {
+        let supervisor = Arc::new(RequestSupervisor::new());
+        let sink = Arc::new(RecordingSink::default());
+        let key = key("session", "request");
+        assert!(supervisor.start_session(key.router_session().clone()));
+        let reservation = supervisor
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
+            .unwrap();
+
+        assert!(
+            supervisor
+                .cancel(
+                    key.router_session(),
+                    &RequestCancel {
+                        request_id: "request".to_string(),
+                        reason: None,
+                    },
+                )
+                .await
+        );
+        assert!(matches!(
+            reservation.activate(&key, &request("request"), telemetry()),
+            ActivationOutcome::RevokedByCancel
+        ));
+        assert!(sink.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_stop_revokes_reserved_and_stops_only_its_active_rows() {
+        let supervisor = Arc::new(RequestSupervisor::new());
+        let sink = Arc::new(RecordingSink::default());
+        let reserved_key = key("session-a", "reserved");
+        let active_key = key("session-a", "active");
+        let other_key = key("session-b", "active");
+        assert!(supervisor.start_session(active_key.router_session().clone()));
+        assert!(supervisor.start_session(other_key.router_session().clone()));
+        let reserved = supervisor
+            .reserve(
+                reserved_key.clone(),
+                observer(sink.clone(), &reserved_key),
+                None,
+            )
+            .unwrap();
+        let active = activate(
+            supervisor
+                .reserve(
+                    active_key.clone(),
+                    observer(sink.clone(), &active_key),
+                    None,
+                )
+                .unwrap(),
+            &active_key,
+        );
+        let other = activate(
+            supervisor
+                .reserve(other_key.clone(), observer(sink.clone(), &other_key), None)
+                .unwrap(),
+            &other_key,
+        );
+
+        supervisor.stop_session(active_key.router_session());
+        assert!(matches!(
+            reserved.activate(&reserved_key, &request("reserved"), telemetry()),
+            ActivationOutcome::RevokedBySessionStop
+        ));
+        assert_eq!(
+            active.execution_budget().settlement().unwrap().winner(),
+            ExecutionWinner::InternalStop
+        );
+        assert!(other.execution_budget().settlement().is_none());
+    }
+
+    #[tokio::test]
+    async fn one_frozen_winner_mints_one_terminal_and_one_cleanup_permit() {
+        let supervisor = Arc::new(RequestSupervisor::new());
+        let sink = Arc::new(RecordingSink::default());
+        let key = key("session", "request");
+        assert!(supervisor.start_session(key.router_session().clone()));
+        let supervised = activate(
+            supervisor
+                .reserve(key.clone(), observer(sink.clone(), &key), None)
+                .unwrap(),
+            &key,
+        );
+
+        let snapshot = RequestExecutionOwnerInventorySnapshot {
+            pending: FrozenOwnerDomain {
+                current: 1,
+                ever_created: true,
+            },
+            resource: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            child: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+        };
+        let permit = supervisor
+            .complete_success(&supervised, snapshot, CompletionTrace::RUNTIME)
+            .await
+            .unwrap();
+        assert_eq!(
+            permit.response_action(),
+            CompletionResponseAction::Candidate
+        );
+        let settlement = permit.settlement();
+        let settled_raw = settlement.raw_executed_count();
+        let settled_hard_limit = settlement.hard_raw_limit();
+        let settled_poll_count = settlement.poll_count();
+        assert!(supervisor
+            .complete_success(&supervised, zero_snapshot(), CompletionTrace::RUNTIME)
+            .await
+            .is_none());
+        permit.observe_cleanup();
+
+        let records = sink.0.lock().unwrap();
+        assert_eq!(records.len(), 3);
+        assert!(matches!(
+            &records[0].event,
+            BytecodeExecutionEvent::VmBudgetAccounted(VmBudgetAccounted {
+                raw_executed_count,
+                charged_instruction_count,
+                hard_limit,
+                poll_count,
+            }) if raw_executed_count == &settled_raw
+                && charged_instruction_count == &settled_raw
+                && hard_limit == &settled_hard_limit
+                && poll_count == &settled_poll_count
+        ));
+        assert!(matches!(
+            records[1].event,
+            BytecodeExecutionEvent::RequestTerminalClaimed(RequestTerminalClaimed {
+                terminal: BytecodeRequestTerminal::Succeeded
+            })
+        ));
+        assert!(matches!(
+            records[2].event,
+            BytecodeExecutionEvent::RequestCleanupComplete(RequestCleanupComplete {
+                owner_inventory
+            }) if owner_inventory == snapshot
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelled_winner_is_stop_without_response() {
+        let supervisor = Arc::new(RequestSupervisor::new());
+        let sink = Arc::new(RecordingSink::default());
+        let key = key("session", "request");
+        assert!(supervisor.start_session(key.router_session().clone()));
+        let supervised = activate(
+            supervisor
+                .reserve(key.clone(), observer(sink, &key), None)
+                .unwrap(),
+            &key,
+        );
+        supervisor
+            .cancel(
+                key.router_session(),
+                &RequestCancel {
+                    request_id: "request".to_string(),
+                    reason: None,
+                },
+            )
+            .await;
+
+        let permit = supervisor
+            .complete_cancelled(&supervised, zero_snapshot(), CompletionTrace::RUNTIME)
+            .await
+            .unwrap();
+        assert_eq!(
+            permit.response_action(),
+            CompletionResponseAction::StopWithoutResponse
+        );
+        assert!(!permit.response_owned());
+    }
+
+    #[tokio::test]
+    async fn due_deadline_overrides_a_success_candidate_with_frozen_response_facts() {
+        let supervisor = Arc::new(RequestSupervisor::new());
+        let sink = Arc::new(RecordingSink::default());
+        let key = key("session", "deadline");
+        assert!(supervisor.start_session(key.router_session().clone()));
+        let deadline = AdmittedRequestDeadline::new(
+            Instant::now()
+                .checked_sub(std::time::Duration::from_millis(1))
+                .unwrap(),
+        );
+        let supervised = activate(
+            supervisor
+                .reserve(key.clone(), observer(sink, &key), Some(deadline))
+                .unwrap(),
+            &key,
+        );
+
+        let permit = supervisor
+            .complete_success(&supervised, zero_snapshot(), CompletionTrace::RUNTIME)
+            .await
+            .unwrap();
+        assert!(matches!(
+            permit.response_action(),
+            CompletionResponseAction::DeadlineExceeded {
+                instruction_count: 0,
+                limit: skiff_runtime_request::execution_budget::DEFAULT_INSTRUCTION_LIMIT,
+                ..
+            }
+        ));
+        let response = permit.response_override().unwrap();
+        assert_eq!(response.code, "TimeoutError");
+        assert_eq!(response.message, "execution deadline exceeded");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn request_id_stays_guarded_through_terminal_and_cleanup_observers() {
         let supervisor = Arc::new(RequestSupervisor::new());
+        let key = key("session", "request");
+        assert!(supervisor.start_session(key.router_session().clone()));
         let (terminal_entered_tx, mut terminal_entered_rx) = tokio::sync::mpsc::unbounded_channel();
         let (terminal_release_tx, terminal_release_rx) = channel();
         let (cleanup_entered_tx, mut cleanup_entered_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -746,17 +1302,19 @@ mod tests {
             cleanup_release: Mutex::new(cleanup_release_rx),
         });
         let reservation = supervisor
-            .reserve("request".to_string(), observer(sink.clone(), "request"))
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
             .expect("first reservation");
-        let supervised = reservation
-            .activate(&request("request"), telemetry())
-            .expect("first activation");
+        let supervised = activate(reservation, &key);
 
         let completing_supervisor = Arc::clone(&supervisor);
         let completing_request = supervised.clone();
         let completing = tokio::spawn(async move {
             completing_supervisor
-                .complete_success(&completing_request, CompletionTrace::RUNTIME)
+                .complete_success(
+                    &completing_request,
+                    zero_snapshot(),
+                    CompletionTrace::RUNTIME,
+                )
                 .await
                 .expect("winner cleanup permit")
         });
@@ -766,14 +1324,17 @@ mod tests {
             .expect("terminal observer entered");
 
         assert!(supervisor
-            .reserve("request".to_string(), observer(sink.clone(), "request"))
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
             .is_none());
         assert!(
             !supervisor
-                .cancel(&RequestCancel {
-                    request_id: "request".to_string(),
-                    reason: Some("late cancel".to_string()),
-                })
+                .cancel(
+                    key.router_session(),
+                    &RequestCancel {
+                        request_id: "request".to_string(),
+                        reason: Some("late cancel".to_string()),
+                    },
+                )
                 .await
         );
         assert_eq!(supervisor.active_count().await, 0);
@@ -784,14 +1345,17 @@ mod tests {
         let permit = completing.await.expect("completion task");
         assert!(permit.response_owned());
         assert!(supervisor
-            .reserve("request".to_string(), observer(sink.clone(), "request"))
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
             .is_none());
         assert!(
             !supervisor
-                .cancel(&RequestCancel {
-                    request_id: "request".to_string(),
-                    reason: None,
-                })
+                .cancel(
+                    key.router_session(),
+                    &RequestCancel {
+                        request_id: "request".to_string(),
+                        reason: None,
+                    },
+                )
                 .await
         );
 
@@ -801,14 +1365,17 @@ mod tests {
             .await
             .expect("cleanup observer entered");
         assert!(supervisor
-            .reserve("request".to_string(), observer(sink.clone(), "request"))
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
             .is_none());
         assert!(
             !supervisor
-                .cancel(&RequestCancel {
-                    request_id: "request".to_string(),
-                    reason: None,
-                })
+                .cancel(
+                    key.router_session(),
+                    &RequestCancel {
+                        request_id: "request".to_string(),
+                        reason: None,
+                    },
+                )
                 .await
         );
 
@@ -818,16 +1385,13 @@ mod tests {
         cleaning.await.expect("cleanup task");
 
         let next_reservation = supervisor
-            .reserve("request".to_string(), observer(sink.clone(), "request"))
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
             .expect("reuse only after cleanup returned");
-        let next_supervised = next_reservation
-            .activate(&request("request"), telemetry())
-            .expect("next activation");
+        let next_supervised = activate(next_reservation, &key);
         let next_permit = supervisor
-            .complete_success(&next_supervised, CompletionTrace::RUNTIME)
+            .complete_success(&next_supervised, zero_snapshot(), CompletionTrace::RUNTIME)
             .await
             .expect("next completion winner");
-        drop(next_supervised);
         next_permit.observe_cleanup();
 
         let records = sink.records.lock().unwrap();
@@ -836,14 +1400,18 @@ mod tests {
                 .iter()
                 .map(|record| record.ordinal)
                 .collect::<Vec<_>>(),
-            [0, 1, 0, 1]
+            [0, 1, 2, 0, 1, 2]
         );
         assert!(matches!(
-            records[0].event,
+            &records[0].event,
+            BytecodeExecutionEvent::VmBudgetAccounted(_)
+        ));
+        assert!(matches!(
+            &records[1].event,
             BytecodeExecutionEvent::RequestTerminalClaimed(_)
         ));
         assert!(matches!(
-            records[1].event,
+            &records[2].event,
             BytecodeExecutionEvent::RequestCleanupComplete(_)
         ));
         assert!(records.iter().all(|record| {

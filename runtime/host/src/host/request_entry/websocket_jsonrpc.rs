@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
-    BoundaryResponse, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
-    RequestEnvelope, ResponseEnd, ResponseError, ResponseEvent, RouterWriterMessage,
+    self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, RequestEnvelope, RequestExecutionOwnerInventorySnapshot,
+    ResponseEnd, ResponseError, ResponseEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -15,13 +16,13 @@ use skiff_runtime_transport::{
 use tokio::sync::mpsc;
 use tracing::error;
 
-use super::{
-    assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest,
-    resumable::{drive_bytecode_request, DrivenBytecodeRequest, RejectingResponseEventSink},
-};
+use super::assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest;
 use crate::{
     host::{
-        request_supervisor::{CleanupPermit, CompletionTrace, RequestReservation, SupervisedRequest},
+        request_supervisor::{
+            ActivationOutcome, CleanupPermit, CompletionTrace, RequestReservation,
+            SupervisedRequest,
+        },
         RuntimeHost,
     },
     loader::bytecode_admission::BytecodeRoute,
@@ -46,7 +47,6 @@ enum WebSocketJsonRpcTerminal {
 impl RuntimeHost {
     pub(super) async fn task_bytecode_websocket_jsonrpc_request(
         &self,
-        _router_session_id: String,
         reservation: RequestReservation,
         request: AdmittedBytecodeWebSocketJsonRpcRequest,
         _http_response_max_bytes: usize,
@@ -61,38 +61,44 @@ impl RuntimeHost {
         let request_envelope = bytecode_websocket_jsonrpc_request_envelope(&route, &header, params);
         let telemetry = bytecode_websocket_jsonrpc_telemetry_context(self, &header, &route);
         let observer = reservation.observer().clone();
-        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
-            self.send_http_gateway_admission_error(
-                &header.request_id,
-                "bytecode request reservation activation failed",
-                &sender,
-            );
-            return;
-        };
+        let activation_key = reservation.key().clone();
+        let supervised_request =
+            match reservation.activate(&activation_key, &request_envelope, telemetry) {
+                ActivationOutcome::Activated(request) => request,
+                ActivationOutcome::RevokedByCancel | ActivationOutcome::RevokedBySessionStop => {
+                    return
+                }
+                ActivationOutcome::Invalid => {
+                    self.send_http_gateway_admission_error(
+                        &header.request_id,
+                        "bytecode request reservation activation failed",
+                        &sender,
+                    );
+                    return;
+                }
+            };
         route.publish_admission_observations();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
-            http_executor: None,
-            self_ingress: None,
         };
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
-                BytecodeRequestExecutionInput {
-                    target,
-                    request: request_envelope,
-                    observer: observer.clone(),
-                    cancelled: supervised_request.cancelled(),
-                    cancellation,
-                    execution_budget: Arc::clone(&execution_budget),
-                    handles,
-                },
-                Arc::new(RejectingResponseEventSink),
-            )
-            .await;
+            let request_runner::DrivenBytecodeRequest {
+                result,
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+                target,
+                request: request_envelope,
+                observer: observer.clone(),
+                cancellation,
+                execution_budget: Arc::clone(&execution_budget),
+                handles,
+            });
+            let owner_inventory = owner_inventory.into_snapshot();
             let terminal = match result {
                 Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))) => {
                     WebSocketJsonRpcTerminal::Response(WebSocketJsonRpcOutcome::Success { payload })
@@ -105,14 +111,16 @@ impl RuntimeHost {
                     WebSocketJsonRpcTerminal::Response(WebSocketJsonRpcOutcome::InternalError)
                 }
             };
-            let cleanup_permit = host.finish_websocket_jsonrpc_request(
-                &supervised_request,
-                request_id,
-                terminal,
-                &sender,
-            )
-            .await;
-            drop(execution);
+            let cleanup_permit = host
+                .finish_websocket_jsonrpc_request(
+                    &supervised_request,
+                    request_id,
+                    owner_inventory,
+                    terminal,
+                    &sender,
+                )
+                .await;
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -126,18 +134,20 @@ impl RuntimeHost {
         &self,
         supervised_request: &SupervisedRequest,
         request_id: String,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         terminal: WebSocketJsonRpcTerminal,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Option<CleanupPermit> {
         let WebSocketJsonRpcTerminal::Response(outcome) = terminal else {
-            return self.request_supervisor
-                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+            return self
+                .request_supervisor
+                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                 .await;
         };
         let permit = match &outcome {
             WebSocketJsonRpcOutcome::Success { .. } => {
                 self.request_supervisor
-                    .complete_success(supervised_request, CompletionTrace::RUNTIME)
+                    .complete_success(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                     .await
             }
             failed => {
@@ -146,15 +156,29 @@ impl RuntimeHost {
                         supervised_request,
                         "request.error",
                         &websocket_jsonrpc_response_error(failed),
+                        owner_inventory,
                         CompletionTrace::RUNTIME,
                     )
                     .await
             }
         };
-        if !permit
-            .as_ref()
-            .is_some_and(CleanupPermit::response_owned)
-        {
+        if !permit.as_ref().is_some_and(CleanupPermit::response_owned) {
+            return permit;
+        }
+        if let Some(error) = permit.as_ref().and_then(CleanupPermit::response_override) {
+            let override_outcome = if error.code == "TimeoutError" {
+                WebSocketJsonRpcOutcome::DeadlineExceeded
+            } else {
+                WebSocketJsonRpcOutcome::InternalError
+            };
+            let (outcome, payload) = websocket_jsonrpc_response_parts(override_outcome);
+            if let Ok(frame) = bytecode_websocket_jsonrpc_response_into_frame(
+                request_id,
+                BytecodeWebSocketJsonRpcResponseFrameHeader { outcome },
+                payload,
+            ) {
+                let _ = sender.send(RouterWriterMessage::Binary(frame));
+            }
             return permit;
         }
         let (outcome, payload) = websocket_jsonrpc_response_parts(outcome);

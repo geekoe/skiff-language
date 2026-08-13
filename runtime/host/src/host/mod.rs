@@ -1,6 +1,5 @@
 pub mod blob_store;
 mod bytecode_execution_observation;
-mod bytecode_http_executor;
 mod control_plane;
 pub mod file_runtime;
 mod health;
@@ -22,7 +21,6 @@ pub use runtime_host::{RuntimeConfig, RuntimeHost};
 pub use skiff_runtime_capability_context::{DbProviderConfig, DbProviderSource};
 pub use skiff_runtime_request::execution_budget::ExecutionBudget;
 
-pub(crate) use bytecode_http_executor::build_bytecode_http_executor;
 pub(crate) use request_entry::transport_error_into_runtime_error;
 pub use skiff_runtime_request::{
     OutboundRequestRegistry, OutboundResponseReceiver, RouterWriterMessage,

@@ -1,8 +1,8 @@
 use std::{num::NonZeroU64, sync::Arc};
 
 use skiff_artifact_model::InstructionSourceSite;
-use skiff_runtime_bytecode_verifier::VerifiedLinkedBytecodeImage;
 use skiff_runtime_linked_bytecode::{FunctionIndex, InstructionIndex, ResumeSiteIndex};
+use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_request_contract::{
     admit_projection, AdmittedProjection, ProjectionCandidate, ProjectionOperation,
 };
@@ -90,7 +90,7 @@ impl ResumeOwnerKey {
 pub(crate) struct ExecutionImageKey(usize);
 
 impl ExecutionImageKey {
-    fn for_vm(image: &Arc<VerifiedLinkedBytecodeImage>) -> Self {
+    fn for_vm(image: &Arc<DeploymentExecutionImage>) -> Self {
         Self(Arc::as_ptr(image) as usize)
     }
 
@@ -370,7 +370,7 @@ impl CurrentContinuationFacts {
         lane: ContinuationLaneId,
         call_site: ActiveCallSiteKey,
         resume_owner: ResumeOwnerKey,
-        image: &Arc<VerifiedLinkedBytecodeImage>,
+        image: &Arc<DeploymentExecutionImage>,
     ) -> Self {
         Self {
             request_generation,

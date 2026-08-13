@@ -5,8 +5,8 @@ use super::fixtures::{
     generous_limits, loader_backed_tail_case, TailMatrixCase, TailMatrixFixture,
 };
 use crate::{
-    verify, VerificationError, VerificationLocation, VerificationObligation,
-    VerifiedLinkedBytecodeImage,
+    verify_executable_facts, ExecutableFacts, VerificationError, VerificationLocation,
+    VerificationObligation,
 };
 
 #[test]
@@ -67,17 +67,18 @@ fn public_verify_rejects_result_plan_corruption_at_its_first_p2_position() {
 
 fn verify_case(
     case: TailMatrixCase,
-) -> Result<(VerifiedLinkedBytecodeImage, InstructionIndex), VerificationError> {
+) -> Result<(ExecutableFacts, InstructionIndex), VerificationError> {
     let TailMatrixFixture {
         hydrated,
         candidate,
         tail_instruction,
     } = loader_backed_tail_case(case);
-    verify(hydrated, candidate, &generous_limits()).map(|image| (image, tail_instruction))
+    verify_executable_facts(&hydrated, &candidate, &generous_limits())
+        .map(|facts| (facts, tail_instruction))
 }
 
-fn assert_one_tail_hop(image: &VerifiedLinkedBytecodeImage, instruction: InstructionIndex) {
-    let events = image
+fn assert_one_tail_hop(facts: &ExecutableFacts, instruction: InstructionIndex) {
+    let events = facts
         .statement_schedule()
         .events_at(FunctionIndex::new(0), instruction)
         .expect("the public verified image contains the dense tail statement site");

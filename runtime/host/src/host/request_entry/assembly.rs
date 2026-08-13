@@ -3,9 +3,8 @@ use std::sync::{Arc, Mutex};
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
     self as request_runner, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
-    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, BytecodeSelfIngressContext,
-    HttpNameValue, RequestEnvelope, RequestError, ResponseEventSink, ResponseStreamEvent,
-    RouterWriterMessage,
+    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, HttpNameValue, RequestEnvelope,
+    RequestError, RequestExecutionOwnerInventorySnapshot, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -17,7 +16,6 @@ use skiff_runtime_transport::{
 };
 use tokio::sync::mpsc;
 use tracing::error;
-use url::Url;
 
 use super::{
     assembly_wire::{
@@ -26,19 +24,13 @@ use super::{
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
-    resumable::{drive_bytecode_request, DrivenBytecodeRequest, RejectingResponseEventSink},
 };
 use crate::{
-    capability_context::{
-        EffectDispatchContext, HttpClientCapabilityContext, HttpEffectContext, StreamRuntime,
-        TelemetryCapabilityContext, TestEffectDoubleContext,
-    },
     error::RuntimeError,
     host::{
-        build_bytecode_http_executor,
-        http_response_ceiling::HttpResponseCeiling,
         request_supervisor::{
-            CleanupPermit, CompletionTrace, RequestReservation, SupervisedRequest,
+            ActivationOutcome, CleanupPermit, CompletionTrace, RequestReservation,
+            SupervisedRequest,
         },
         RuntimeHost,
     },
@@ -49,7 +41,6 @@ use crate::{
 impl RuntimeHost {
     pub(super) async fn task_bytecode_http_request(
         &self,
-        _router_session_id: String,
         reservation: RequestReservation,
         request: AdmittedBytecodeHttpRequest,
         http_response_max_bytes: usize,
@@ -75,92 +66,57 @@ impl RuntimeHost {
         };
         let telemetry = bytecode_http_telemetry_context(self, &header, &route);
         let observer = reservation.observer().clone();
-        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
-            self.send_http_gateway_admission_error(
-                &header.request_id,
-                "bytecode request reservation activation failed",
-                &sender,
-            );
-            return;
-        };
+        let activation_key = reservation.key().clone();
+        let supervised_request =
+            match reservation.activate(&activation_key, &request_envelope, telemetry) {
+                ActivationOutcome::Activated(request) => request,
+                ActivationOutcome::RevokedByCancel | ActivationOutcome::RevokedBySessionStop => {
+                    return
+                }
+                ActivationOutcome::Invalid => {
+                    self.send_http_gateway_admission_error(
+                        &header.request_id,
+                        "bytecode request reservation activation failed",
+                        &sender,
+                    );
+                    return;
+                }
+            };
         route.publish_admission_observations();
-        let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
-        let http_context = HttpEffectContext::new(
-            header.deadline.as_ref().map(|deadline| deadline.timeout_ms),
-            http_response_max_bytes,
-            cancellation.clone(),
-        );
-        let http_client = HttpClientCapabilityContext::new(
-            EffectDispatchContext::new(
-                http_context,
-                TelemetryCapabilityContext::new(None),
-                self.http_runtime_options.clone(),
-            ),
-            self.http_runtime_options.clone(),
-            StreamRuntime::default(),
-            TestEffectDoubleContext::reusable(
-                std::collections::HashMap::new(),
-                StreamRuntime::default(),
-                request_envelope.test_effects_enabled,
-            ),
-        );
-        let self_ingress_origin = Url::parse(&header.http_request.url)
-            .ok()
-            .map(|url| format!("{}://{}", url.scheme(), url.authority()))
-            .unwrap_or_default();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
-            http_executor: Some(build_bytecode_http_executor(
-                http_client,
-                self.http_runtime_options.clone(),
-            )),
-            self_ingress: Some(BytecodeSelfIngressContext {
-                origin: self_ingress_origin,
-                service_id: header.routing.deployment.service_id.clone(),
-                contract_version: header.routing.deployment.contract_version.clone(),
-                test_case_capability: header.test_case_capability.clone(),
-                test_case_parent_request_id: header.test_case_parent_request_id.clone().or_else(
-                    || {
-                        header
-                            .test_case_capability
-                            .as_ref()
-                            .map(|_| header.request_id.clone())
-                    },
-                ),
-            }),
         };
-        let response_sink = Arc::new(HostHttpGatewayResponseSink::new(
-            sender.clone(),
-            http_response_max_bytes,
-        ));
+        let response_sink = Arc::new(HostHttpGatewayResponseSink::new(sender.clone()));
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
-                BytecodeRequestExecutionInput {
-                    target,
-                    request: request_envelope,
-                    observer: observer.clone(),
-                    cancelled,
-                    cancellation,
-                    execution_budget: Arc::clone(&execution_budget),
-                    handles,
-                },
-                response_sink.clone(),
-            )
-            .await;
-            let cleanup_permit = host.finish_http_gateway_request(
-                &supervised_request,
-                &request_id,
+            let request_runner::DrivenBytecodeRequest {
                 result,
-                http_response_max_bytes,
-                &response_sink,
-                &sender,
-            )
-            .await;
-            drop(execution);
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+                target,
+                request: request_envelope,
+                observer: observer.clone(),
+                cancellation,
+                execution_budget: Arc::clone(&execution_budget),
+                handles,
+            });
+            let owner_inventory = owner_inventory.into_snapshot();
+            let cleanup_permit = host
+                .finish_http_gateway_request(
+                    &supervised_request,
+                    &request_id,
+                    result,
+                    owner_inventory,
+                    http_response_max_bytes,
+                    &response_sink,
+                    &sender,
+                )
+                .await;
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -172,7 +128,6 @@ impl RuntimeHost {
 
     pub(super) async fn task_bytecode_task_request(
         &self,
-        _router_session_id: String,
         reservation: RequestReservation,
         request: AdmittedBytecodeTaskRequest,
         _http_response_max_bytes: usize,
@@ -187,46 +142,59 @@ impl RuntimeHost {
         let request_envelope = bytecode_task_request_envelope(&route, &header, payload);
         let telemetry = bytecode_task_telemetry_context(self, &header, &route);
         let observer = reservation.observer().clone();
-        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
-            self.send_http_gateway_admission_error(
-                &header.request_id,
-                "bytecode request reservation activation failed",
-                &sender,
-            );
-            return;
-        };
+        let activation_key = reservation.key().clone();
+        let supervised_request =
+            match reservation.activate(&activation_key, &request_envelope, telemetry) {
+                ActivationOutcome::Activated(request) => request,
+                ActivationOutcome::RevokedByCancel | ActivationOutcome::RevokedBySessionStop => {
+                    return
+                }
+                ActivationOutcome::Invalid => {
+                    self.send_http_gateway_admission_error(
+                        &header.request_id,
+                        "bytecode request reservation activation failed",
+                        &sender,
+                    );
+                    return;
+                }
+            };
         route.publish_admission_observations();
-        let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
-            http_executor: None,
-            self_ingress: None,
         };
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
-                BytecodeRequestExecutionInput {
-                    target,
-                    request: request_envelope,
-                    observer: observer.clone(),
-                    cancelled,
-                    cancellation,
-                    execution_budget: Arc::clone(&execution_budget),
-                    handles,
-                },
-                Arc::new(RejectingResponseEventSink),
-            )
-            .await;
+            let request_runner::DrivenBytecodeRequest {
+                result,
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+                target,
+                request: request_envelope,
+                observer: observer.clone(),
+                cancellation,
+                execution_budget: Arc::clone(&execution_budget),
+                handles,
+            });
+            let owner_inventory = owner_inventory.into_snapshot();
             let cleanup_permit = match result {
                 Ok(response) => {
                     let permit = host
                         .request_supervisor
-                        .complete_success(&supervised_request, CompletionTrace::RUNTIME)
+                        .complete_success(
+                            &supervised_request,
+                            owner_inventory,
+                            CompletionTrace::RUNTIME,
+                        )
                         .await;
-                    if permit.as_ref().is_some_and(CleanupPermit::response_owned) {
+                    if send_transport_override_or_allow_candidate(
+                        permit.as_ref(),
+                        &request_id,
+                        &sender,
+                    ) {
                         match response_into_transport_message(request_id, response) {
                             Ok(Some(message)) => {
                                 let _ = sender.send(message);
@@ -240,11 +208,17 @@ impl RuntimeHost {
                     permit
                 }
                 Err(error) => {
-                    host.finish_direct_task_error(&supervised_request, request_id, error, &sender)
-                        .await
+                    host.finish_direct_task_error(
+                        &supervised_request,
+                        request_id,
+                        owner_inventory,
+                        error,
+                        &sender,
+                    )
+                    .await
                 }
             };
-            drop(execution);
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -256,7 +230,6 @@ impl RuntimeHost {
 
     pub(super) async fn task_bytecode_websocket_connect_request(
         &self,
-        _router_session_id: String,
         reservation: RequestReservation,
         request: AdmittedBytecodeWebSocketConnectRequest,
         _http_response_max_bytes: usize,
@@ -270,39 +243,44 @@ impl RuntimeHost {
         let request_envelope = bytecode_websocket_connect_request_envelope(&route, &header);
         let telemetry = bytecode_websocket_connect_telemetry_context(self, &header, &route);
         let observer = reservation.observer().clone();
-        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
-            self.send_http_gateway_admission_error(
-                &header.request_id,
-                "bytecode request reservation activation failed",
-                &sender,
-            );
-            return;
-        };
+        let activation_key = reservation.key().clone();
+        let supervised_request =
+            match reservation.activate(&activation_key, &request_envelope, telemetry) {
+                ActivationOutcome::Activated(request) => request,
+                ActivationOutcome::RevokedByCancel | ActivationOutcome::RevokedBySessionStop => {
+                    return
+                }
+                ActivationOutcome::Invalid => {
+                    self.send_http_gateway_admission_error(
+                        &header.request_id,
+                        "bytecode request reservation activation failed",
+                        &sender,
+                    );
+                    return;
+                }
+            };
         route.publish_admission_observations();
-        let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
-            http_executor: None,
-            self_ingress: None,
         };
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
-                BytecodeRequestExecutionInput {
-                    target,
-                    request: request_envelope,
-                    observer: observer.clone(),
-                    cancelled,
-                    cancellation,
-                    execution_budget: Arc::clone(&execution_budget),
-                    handles,
-                },
-                Arc::new(RejectingResponseEventSink),
-            )
-            .await;
+            let request_runner::DrivenBytecodeRequest {
+                result,
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+                target,
+                request: request_envelope,
+                observer: observer.clone(),
+                cancellation,
+                execution_budget: Arc::clone(&execution_budget),
+                handles,
+            });
+            let owner_inventory = owner_inventory.into_snapshot();
             let mapped_error = match result {
                 Ok(_) => RequestError::Unsupported(
                     "bytecode WebSocket connect response mapping is not supported; refusing legacy ActiveAssemblyRoute fallback"
@@ -310,14 +288,16 @@ impl RuntimeHost {
                 ),
                 Err(error) => error,
             };
-            let cleanup_permit = host.finish_websocket_connect_error(
-                &supervised_request,
-                request_id,
-                mapped_error,
-                &sender,
-            )
-            .await;
-            drop(execution);
+            let cleanup_permit = host
+                .finish_websocket_connect_error(
+                    &supervised_request,
+                    request_id,
+                    owner_inventory,
+                    mapped_error,
+                    &sender,
+                )
+                .await;
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -329,7 +309,6 @@ impl RuntimeHost {
 
     pub(super) async fn task_bytecode_websocket_connection_closed_request(
         &self,
-        _router_session_id: String,
         reservation: RequestReservation,
         request: AdmittedBytecodeWebSocketConnectionClosedRequest,
         _http_response_max_bytes: usize,
@@ -345,33 +324,36 @@ impl RuntimeHost {
         let telemetry =
             bytecode_websocket_connection_closed_telemetry_context(self, &header, &route);
         let observer = reservation.observer().clone();
-        let Some(supervised_request) = reservation.activate(&request_envelope, telemetry) else {
-            return;
-        };
+        let activation_key = reservation.key().clone();
+        let supervised_request =
+            match reservation.activate(&activation_key, &request_envelope, telemetry) {
+                ActivationOutcome::Activated(request) => request,
+                ActivationOutcome::RevokedByCancel | ActivationOutcome::RevokedBySessionStop => {
+                    return
+                }
+                ActivationOutcome::Invalid => return,
+            };
         route.publish_admission_observations();
-        let cancelled = supervised_request.cancelled();
         let cancellation = supervised_request.cancellation_token();
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
-            http_executor: None,
-            self_ingress: None,
         };
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
-                BytecodeRequestExecutionInput {
-                    target,
-                    request: request_envelope,
-                    observer: observer.clone(),
-                    cancelled,
-                    cancellation,
-                    execution_budget: Arc::clone(&execution_budget),
-                    handles,
-                },
-                Arc::new(RejectingResponseEventSink),
-            )
-            .await;
+            let request_runner::DrivenBytecodeRequest {
+                result,
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+                target,
+                request: request_envelope,
+                observer: observer.clone(),
+                cancellation,
+                execution_budget: Arc::clone(&execution_budget),
+                handles,
+            });
+            let owner_inventory = owner_inventory.into_snapshot();
             let error = match result {
                 Ok(_) => RequestError::Unsupported(
                     "bytecode WebSocket connection close response mapping is not supported; refusing legacy ActiveAssemblyRoute fallback"
@@ -380,9 +362,13 @@ impl RuntimeHost {
                 Err(error) => error,
             };
             let cleanup_permit = host
-                .finish_websocket_connection_closed_error(&supervised_request, error)
+                .finish_websocket_connection_closed_error(
+                    &supervised_request,
+                    owner_inventory,
+                    error,
+                )
                 .await;
-            drop(execution);
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -397,6 +383,7 @@ impl RuntimeHost {
         supervised_request: &SupervisedRequest,
         request_id: &str,
         result: request_runner::RequestResult<BoundaryResponse>,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         http_response_max_bytes: usize,
         response_sink: &HostHttpGatewayResponseSink,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
@@ -420,33 +407,21 @@ impl RuntimeHost {
                             response_event
                                 .response_error()
                                 .expect("ordinary error event carries response error"),
+                            owner_inventory,
                             CompletionTrace::RUNTIME,
                         )
                         .await;
-                    if permit
-                        .as_ref()
-                        .is_some_and(CleanupPermit::response_owned)
-                    {
+                    if allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
                         response_sink.send_terminal_response(request_id, response_event);
-                    } else {
-                        response_sink.cancel_without_response();
                     }
                     return permit;
                 }
 
                 let permit = self
                     .request_supervisor
-                    .complete_success(supervised_request, CompletionTrace::RUNTIME)
+                    .complete_success(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                     .await;
-                if !permit
-                    .as_ref()
-                    .is_some_and(CleanupPermit::response_owned)
-                {
-                    response_sink.cancel_without_response();
-                    return permit;
-                }
-                if matches!(response, BoundaryResponse::StreamSent) {
-                    response_sink.send_pending_stream_terminal();
+                if !allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
                     return permit;
                 }
                 match response_into_transport_message(request_id.to_string(), response) {
@@ -464,29 +439,9 @@ impl RuntimeHost {
                 if request_error.is_cancellation_terminal() {
                     let permit = self
                         .request_supervisor
-                        .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                        .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                         .await;
-                    response_sink.cancel_without_response();
-                    return permit;
-                }
-                if let Some(response_event) = response_sink.pending_ordinary_error() {
-                    let permit = self
-                        .request_supervisor
-                        .complete_error(
-                            supervised_request,
-                            "request.error",
-                            response_event
-                                .response_error()
-                                .expect("pending ordinary event carries response error"),
-                            CompletionTrace::RUNTIME,
-                        )
-                        .await;
-                    if permit
-                        .as_ref()
-                        .is_some_and(CleanupPermit::response_owned)
-                    {
-                        response_sink.send_terminal_response(request_id, response_event);
-                    } else {
+                    if allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
                         response_sink.cancel_without_response();
                     }
                     return permit;
@@ -504,19 +459,15 @@ impl RuntimeHost {
                             supervised_request,
                             "request.error",
                             failure.error(),
+                            owner_inventory,
                             CompletionTrace::RUNTIME,
                         )
                         .await;
-                    if permit
-                        .as_ref()
-                        .is_some_and(CleanupPermit::response_owned)
-                    {
+                    if allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
                         response_sink.send_terminal_response(
                             request_id,
                             OrdinaryResponseEvent::FixedServiceFailure(failure),
                         );
-                    } else {
-                        response_sink.cancel_without_response();
                     }
                     return permit;
                 }
@@ -537,16 +488,12 @@ impl RuntimeHost {
                         supervised_request,
                         "request.error",
                         &response_error,
+                        owner_inventory,
                         CompletionTrace::RUNTIME,
                     )
                     .await;
-                if permit
-                    .as_ref()
-                    .is_some_and(CleanupPermit::response_owned)
-                {
+                if allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
                     response_sink.send_terminal_response(request_id, response_event);
-                } else {
-                    response_sink.cancel_without_response();
                 }
                 permit
             }
@@ -574,14 +521,18 @@ impl RuntimeHost {
         &self,
         supervised_request: &SupervisedRequest,
         request_id: String,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         request_error: RequestError,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Option<CleanupPermit> {
         if request_error.is_cancellation_terminal() {
-            return self
+            let permit = self
                 .request_supervisor
-                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                 .await;
+            let _ =
+                send_transport_override_or_allow_candidate(permit.as_ref(), &request_id, sender);
+            return permit;
         }
         let response_event = OrdinaryResponseEvent::try_error(&request_error)
             .expect("cancellation was split before ordinary response mapping");
@@ -594,16 +545,12 @@ impl RuntimeHost {
                 supervised_request,
                 "request.error",
                 &response_error,
+                owner_inventory,
                 CompletionTrace::RUNTIME,
             )
             .await;
-        if permit
-            .as_ref()
-            .is_some_and(CleanupPermit::response_owned)
-        {
-            if let Ok(message) =
-                response_event_into_transport_message(request_id, response_event)
-            {
+        if send_transport_override_or_allow_candidate(permit.as_ref(), &request_id, sender) {
+            if let Ok(message) = response_event_into_transport_message(request_id, response_event) {
                 let _ = sender.send(message);
             }
         }
@@ -614,14 +561,18 @@ impl RuntimeHost {
         &self,
         supervised_request: &SupervisedRequest,
         request_id: String,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         request_error: RequestError,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Option<CleanupPermit> {
         if request_error.is_cancellation_terminal() {
-            return self
+            let permit = self
                 .request_supervisor
-                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                 .await;
+            let _ =
+                send_transport_override_or_allow_candidate(permit.as_ref(), &request_id, sender);
+            return permit;
         }
         if let Some(failure) = request_error.fixed_service_response_failure() {
             error!(
@@ -636,13 +587,11 @@ impl RuntimeHost {
                     supervised_request,
                     "request.error",
                     failure.error(),
+                    owner_inventory,
                     CompletionTrace::RUNTIME,
                 )
                 .await;
-            if permit
-                .as_ref()
-                .is_some_and(CleanupPermit::response_owned)
-            {
+            if send_transport_override_or_allow_candidate(permit.as_ref(), &request_id, sender) {
                 if let Ok(message) = response_event_into_transport_message(
                     request_id,
                     OrdinaryResponseEvent::FixedServiceFailure(failure),
@@ -669,16 +618,12 @@ impl RuntimeHost {
                 supervised_request,
                 "request.error",
                 &response_error,
+                owner_inventory,
                 CompletionTrace::RUNTIME,
             )
             .await;
-        if permit
-            .as_ref()
-            .is_some_and(CleanupPermit::response_owned)
-        {
-            if let Ok(message) =
-                response_event_into_transport_message(request_id, response_event)
-            {
+        if send_transport_override_or_allow_candidate(permit.as_ref(), &request_id, sender) {
+            if let Ok(message) = response_event_into_transport_message(request_id, response_event) {
                 let _ = sender.send(message);
             }
         }
@@ -688,12 +633,13 @@ impl RuntimeHost {
     async fn finish_websocket_connection_closed_error(
         &self,
         supervised_request: &SupervisedRequest,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         request_error: RequestError,
     ) -> Option<CleanupPermit> {
         if request_error.is_cancellation_terminal() {
             return self
                 .request_supervisor
-                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                 .await;
         }
         let response_error = request_error
@@ -704,6 +650,7 @@ impl RuntimeHost {
                 supervised_request,
                 "request.error",
                 &response_error,
+                owner_inventory,
                 CompletionTrace::RUNTIME,
             )
             .await
@@ -714,6 +661,48 @@ impl RuntimeHost {
     pub(super) fn observe_bytecode_request_cleanup(&self, permit: CleanupPermit) {
         permit.observe_cleanup();
     }
+}
+
+fn allow_http_candidate_response(
+    permit: Option<&CleanupPermit>,
+    request_id: &str,
+    response_sink: &HostHttpGatewayResponseSink,
+) -> bool {
+    let Some(permit) = permit else {
+        response_sink.cancel_without_response();
+        return false;
+    };
+    if !permit.response_owned() {
+        response_sink.cancel_without_response();
+        return false;
+    }
+    let Some(error) = permit.response_override() else {
+        return true;
+    };
+    let event = OrdinaryResponseEvent::Error(error);
+    response_sink.send_terminal_response(request_id, event);
+    false
+}
+
+fn send_transport_override_or_allow_candidate(
+    permit: Option<&CleanupPermit>,
+    request_id: &str,
+    sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+) -> bool {
+    let Some(permit) = permit else {
+        return false;
+    };
+    if !permit.response_owned() {
+        return false;
+    }
+    let Some(error) = permit.response_override() else {
+        return true;
+    };
+    let event = OrdinaryResponseEvent::Error(error);
+    if let Ok(message) = response_event_into_transport_message(request_id.to_string(), event) {
+        let _ = sender.send(message);
+    }
+    false
 }
 
 fn bytecode_http_request_envelope(
@@ -941,126 +930,33 @@ fn bytecode_deadline_extra(
 
 struct HostHttpGatewayResponseSink {
     sender: mpsc::UnboundedSender<RouterWriterMessage>,
-    state: Mutex<HostHttpGatewayResponseState>,
-}
-
-struct HostHttpGatewayResponseState {
-    ceiling: HttpResponseCeiling,
-    accepting_stream_events: bool,
-    terminal_settled: bool,
-    pending_stream_terminal: Option<RouterWriterMessage>,
-    pending_ordinary_error: Option<OrdinaryResponseEvent>,
+    terminal_settled: Mutex<bool>,
 }
 
 impl HostHttpGatewayResponseSink {
-    fn new(
-        sender: mpsc::UnboundedSender<RouterWriterMessage>,
-        http_response_max_bytes: usize,
-    ) -> Self {
+    fn new(sender: mpsc::UnboundedSender<RouterWriterMessage>) -> Self {
         Self {
             sender,
-            state: Mutex::new(HostHttpGatewayResponseState {
-                ceiling: HttpResponseCeiling::new(http_response_max_bytes),
-                accepting_stream_events: true,
-                terminal_settled: false,
-                pending_stream_terminal: None,
-                pending_ordinary_error: None,
-            }),
+            terminal_settled: Mutex::new(false),
         }
     }
 
     fn send_terminal_response(&self, request_id: &str, event: OrdinaryResponseEvent) {
-        let Ok(mut state) = self.state.lock() else {
+        let Ok(mut terminal_settled) = self.terminal_settled.lock() else {
             return;
         };
-        if state.terminal_settled {
+        if *terminal_settled {
             return;
         }
-        state.accepting_stream_events = false;
-        state.terminal_settled = true;
-        state.pending_stream_terminal = None;
-        state.pending_ordinary_error = None;
+        *terminal_settled = true;
         if let Ok(message) = response_event_into_transport_message(request_id.to_string(), event) {
             let _ = self.sender.send(message);
         }
     }
 
-    fn pending_ordinary_error(&self) -> Option<OrdinaryResponseEvent> {
-        self.state.lock().ok()?.pending_ordinary_error.clone()
-    }
-
-    fn send_pending_stream_terminal(&self) {
-        let Ok(mut state) = self.state.lock() else {
-            return;
-        };
-        if state.terminal_settled {
-            return;
-        }
-        let Some(message) = state.pending_stream_terminal.take() else {
-            return;
-        };
-        state.terminal_settled = true;
-        let _ = self.sender.send(message);
-    }
-
     fn cancel_without_response(&self) {
-        if let Ok(mut state) = self.state.lock() {
-            state.accepting_stream_events = false;
-            state.terminal_settled = true;
-            state.pending_stream_terminal = None;
-            state.pending_ordinary_error = None;
+        if let Ok(mut terminal_settled) = self.terminal_settled.lock() {
+            *terminal_settled = true;
         }
-    }
-}
-
-impl ResponseEventSink for HostHttpGatewayResponseSink {
-    fn send_stream_event(
-        &self,
-        request_id: &str,
-        event: ResponseStreamEvent,
-    ) -> request_runner::RequestResult<()> {
-        let mut state = self.state.lock().map_err(|_| {
-            RequestError::Decode("HTTP gateway response sink lock is poisoned".to_string())
-        })?;
-        if !state.accepting_stream_events {
-            return Err(RequestError::protocol(
-                request_id,
-                "HTTP gateway response emitted after its terminal frame",
-            ));
-        }
-        if let Err(error) = state.ceiling.account_stream_event(&event) {
-            state.pending_ordinary_error = Some(
-                OrdinaryResponseEvent::try_error(&error)
-                    .expect("response ceiling failure is ordinary"),
-            );
-            let payload = error
-                .ordinary_payload()
-                .expect("response ceiling failure is ordinary");
-            let request_error = RequestError::external_error_payload(
-                payload.code,
-                payload.message,
-                payload.status,
-                payload.details,
-            );
-            state.accepting_stream_events = false;
-            return Err(request_error);
-        }
-        let is_terminal = matches!(event, ResponseStreamEvent::End);
-        let frame = skiff_runtime_transport::response_mapper::response_stream_event_into_frame(
-            request_id, event,
-        )
-        .map_err(|error| RequestError::Decode(error.to_string()))?;
-        let message = RouterWriterMessage::Binary(frame);
-        if is_terminal {
-            state.accepting_stream_events = false;
-            state.pending_stream_terminal = Some(message);
-            return Ok(());
-        }
-        if self.sender.send(message).is_err() {
-            state.accepting_stream_events = false;
-            state.terminal_settled = true;
-            return Err(RequestError::Cancelled);
-        }
-        Ok(())
     }
 }

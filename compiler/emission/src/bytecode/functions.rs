@@ -27,9 +27,10 @@ use super::{
     FunctionValueTransferPlans,
 };
 
-pub(crate) fn emit_functions(
+pub(super) fn emit_functions(
     inputs: &ValidatedEmissionInputs<'_>,
     image: &mut ConstantImage,
+    source_attribution: SourceAttributionMode,
 ) -> Result<BTreeMap<String, RelocatableBytecodeFunction>, BytecodeEmissionError> {
     let mut functions = BTreeMap::new();
     for (function_key, function) in &inputs.functions {
@@ -45,10 +46,24 @@ pub(crate) fn emit_functions(
                 function_key: function_key.clone(),
             }
         })?;
-        let emitter = FunctionEmitter::new(unit, function, function_key, plans, image, inputs)?;
+        let emitter = FunctionEmitter::new(
+            unit,
+            function,
+            function_key,
+            plans,
+            image,
+            inputs,
+            source_attribution,
+        )?;
         functions.insert(function_key.clone(), emitter.emit()?);
     }
     Ok(functions)
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum SourceAttributionMode {
+    AdmittedPhase1,
+    PrivateBackend,
 }
 
 struct FunctionEmitter<'a> {
@@ -58,6 +73,7 @@ struct FunctionEmitter<'a> {
     plans: &'a FunctionValueTransferPlans,
     image: &'a mut ConstantImage,
     inputs: &'a ValidatedEmissionInputs<'a>,
+    source_attribution: SourceAttributionMode,
     instructions: Vec<RawInstruction>,
     relocations: Vec<BytecodeRelocation>,
     pending_branches: Vec<PendingBranch>,
@@ -129,6 +145,7 @@ impl<'a> FunctionEmitter<'a> {
         plans: &'a FunctionValueTransferPlans,
         image: &'a mut ConstantImage,
         inputs: &'a ValidatedEmissionInputs<'a>,
+        source_attribution: SourceAttributionMode,
     ) -> Result<Self, BytecodeEmissionError> {
         let events = function
             .source_event_plan
@@ -144,6 +161,7 @@ impl<'a> FunctionEmitter<'a> {
             plans,
             image,
             inputs,
+            source_attribution,
             instructions: Vec::new(),
             relocations: Vec::new(),
             pending_branches: Vec::new(),
@@ -198,7 +216,7 @@ impl<'a> FunctionEmitter<'a> {
             limits::MAX_WORDS_PER_FUNCTION,
         )?;
         let statement_entries = self.build_statement_entries(&instruction_pcs)?;
-        let source_map = self.build_source_map(words.len())?;
+        let source_map = self.build_source_map(&instruction_pcs, words.len())?;
         let frame = self.build_frame()?;
         let self_type_ref = self
             .function
@@ -3384,63 +3402,6 @@ impl<'a> FunctionEmitter<'a> {
             ));
         }
 
-        let max_expression_index = rows
-            .iter()
-            .filter_map(|(_, _, attribution_id, _)| match attribution_id {
-                StatementAttributionId::Expression { expression_index, .. } => {
-                    Some(*expression_index)
-                }
-                _ => None,
-            })
-            .max();
-        let synthetic_expression_index = match max_expression_index {
-            Some(index) => index.checked_add(1).ok_or_else(|| {
-                arithmetic(&self.key, "synthetic expression index overflow")
-            })?,
-            None => 0,
-        };
-        let mut synthetic_occurrence = 0_u32;
-        let mut synthetic_order = usize::MAX;
-        for (instruction_index, instruction) in self.instructions.iter().enumerate() {
-            if !matches!(
-                instruction.opcode,
-                Opcode::CallLocal | Opcode::CallLocalInOut | Opcode::TailCallLocal
-            ) {
-                continue;
-            }
-            let pc = *pcs
-                .get(instruction_index)
-                .ok_or_else(|| arithmetic(&self.key, "call source event pc lookup"))?;
-            let has_expression = rows.iter().any(|(row_pc, _, attribution_id, _)| {
-                *row_pc == pc
-                    && matches!(
-                        attribution_id,
-                        StatementAttributionId::Expression { .. }
-                    )
-            });
-            if has_expression {
-                continue;
-            }
-            let attribution_id = StatementAttributionId::Expression {
-                expression_index: synthetic_expression_index,
-                occurrence_ordinal: synthetic_occurrence,
-            };
-            synthetic_occurrence = synthetic_occurrence.checked_add(1).ok_or_else(|| {
-                arithmetic(&self.key, "synthetic expression occurrence overflow")
-            })?;
-            rows.push((
-                pc,
-                synthetic_order,
-                attribution_id,
-                InstructionSourceSite::Synthetic {
-                    reason: SyntheticInstructionSiteReason::CompilerDesugaring,
-                },
-            ));
-            synthetic_order = synthetic_order.checked_sub(1).ok_or_else(|| {
-                arithmetic(&self.key, "synthetic source event ordering overflow")
-            })?;
-        }
-
         rows.sort_by_key(|row| (row.0, row.1));
         let mut entries = Vec::with_capacity(rows.len());
         let mut previous_pc = None;
@@ -3466,19 +3427,74 @@ impl<'a> FunctionEmitter<'a> {
 
     fn build_source_map(
         &self,
+        pcs: &[u32],
         word_count: usize,
     ) -> Result<Vec<SourceMapEntry>, BytecodeEmissionError> {
         if word_count == 0 {
             return Ok(Vec::new());
         }
-        Ok(vec![SourceMapEntry {
-            start_pc: 0,
-            end_pc: u32::try_from(word_count)
-                .map_err(|_| arithmetic(&self.key, "source map word count"))?,
-            site: InstructionSourceSite::Synthetic {
-                reason: SyntheticInstructionSiteReason::CompilerDesugaring,
-            },
-        }])
+        let word_count = u32::try_from(word_count)
+            .map_err(|_| arithmetic(&self.key, "source map word count"))?;
+        if matches!(
+            self.source_attribution,
+            SourceAttributionMode::PrivateBackend
+        ) {
+            return Ok(vec![SourceMapEntry {
+                start_pc: 0,
+                end_pc: word_count,
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                },
+            }]);
+        }
+
+        let mut covered_instructions = BTreeSet::new();
+        let mut rows = Vec::new();
+        for (event_index, event) in self.events.iter().enumerate() {
+            if !matches!(
+                event.anchor,
+                MirEmissionAnchor::Expression { .. }
+                    | MirEmissionAnchor::LocalCall { .. }
+                    | MirEmissionAnchor::TailLocalCallCandidate { .. }
+                    | MirEmissionAnchor::BudgetCheckpoint { .. }
+            ) {
+                continue;
+            }
+            let instruction_index = self.event_mapping[event_index].ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "Phase 1 source attribution",
+                    &format!("source event {event_index} was not anchored to emitted code"),
+                )
+            })?;
+            if self.instructions.get(instruction_index).is_none() {
+                return Err(arithmetic(
+                    &self.key,
+                    "Phase 1 source event instruction lookup",
+                ));
+            }
+            if !covered_instructions.insert(instruction_index) {
+                return Err(unsupported(
+                    &self.key,
+                    "Phase 1 source attribution",
+                    &format!("source event {event_index} does not uniquely anchor an instruction"),
+                ));
+            }
+            let start_pc = *pcs
+                .get(instruction_index)
+                .ok_or_else(|| arithmetic(&self.key, "Phase 1 source event pc lookup"))?;
+            let end_pc = pcs
+                .get(instruction_index + 1)
+                .copied()
+                .unwrap_or(word_count);
+            rows.push(SourceMapEntry {
+                start_pc,
+                end_pc,
+                site: event.site.clone(),
+            });
+        }
+        rows.sort_by_key(|entry| entry.start_pc);
+        Ok(rows)
     }
 
     fn build_frame(&self) -> Result<FrameLayout, BytecodeEmissionError> {

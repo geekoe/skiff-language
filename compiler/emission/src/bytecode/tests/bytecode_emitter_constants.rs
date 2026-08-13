@@ -10,9 +10,9 @@ mod tests {
         PackageCallableId, StmtIr, StmtRefIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
         ValueTransferPlan,
     };
-    use skiff_compiler_emission::{
-        emit_bytecode_artifact, BytecodeEmissionError, BytecodeValueTransferPlans,
-        FunctionValueTransferPlans,
+    use crate::bytecode::emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact;
+    use crate::{
+        BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTransferPlans,
     };
     use skiff_compiler_lowering::{
         mir::{MirConst, MirExecutableKind, MirFunction, MirLiveness, MirUnit},

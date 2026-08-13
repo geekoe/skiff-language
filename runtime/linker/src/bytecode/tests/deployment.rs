@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use skiff_artifact_identity::{
-    ArtifactIdentityError, ValidatedBytecodeArtifact, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
+    contract_operation_id, ArtifactIdentityError, ValidatedBytecodeArtifact,
+    PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
@@ -9,22 +12,65 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind, LinkedFunction,
-    LinkedInstructionTarget, LinkedIntrinsicKind, LinkedPackageBytecodeProvenance,
-    LinkedSlotState,
+    LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedSlotState,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
 use crate::bytecode::{
-    link_deployment, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
+    link_deployment, link_deployment_backend_for_test, link_deployment_execution_image,
+    BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation, CodeEntryLookupError,
+    Phase1LinkedCapability,
 };
 
 use super::{
     fixtures::{
-        corrupt_relocation_artifact, corrupt_relocation_index_artifact, Fixture, HELPER_FUNCTION,
-        ROOT_FUNCTION,
+        corrupt_relocation_artifact, corrupt_relocation_index_artifact, Fixture, CALLBACK_FUNCTION,
+        HELPER_FUNCTION, ROOT_FUNCTION,
     },
     generous_limits,
 };
+
+#[test]
+fn production_execution_image_links_distinct_operation_entries_to_shared_image() {
+    let (fixture, operation_b) = Fixture::exact_two_operations();
+    let image = Arc::new(
+        link_deployment_execution_image(fixture.hydrate(), &super::generous_execution_limits())
+            .unwrap(),
+    );
+    let root = image
+        .functions()
+        .iter()
+        .find(|function| function.key().artifact_function_key().as_str() == ROOT_FUNCTION)
+        .unwrap()
+        .index();
+    let helper = image
+        .functions()
+        .iter()
+        .find(|function| function.key().artifact_function_key().as_str() == HELPER_FUNCTION)
+        .unwrap()
+        .index();
+    let entry_a = image.operation_entry(&fixture.operation).unwrap();
+    let entry_b = image.operation_entry(&operation_b).unwrap();
+
+    assert_eq!(entry_a.function(), root);
+    assert_eq!(entry_b.function(), helper);
+    assert_ne!(entry_a.function(), entry_b.function());
+    assert!(Arc::ptr_eq(entry_a.image(), &image));
+    assert!(Arc::ptr_eq(entry_b.image(), &image));
+
+    let unknown = contract_operation_id(
+        "example.bytecode-link-service",
+        "1.0.0",
+        "missing",
+    )
+    .unwrap();
+    assert!(matches!(
+        image.operation_entry(&unknown),
+        Err(CodeEntryLookupError::OperationNotFound {
+            contract_operation_id
+        }) if contract_operation_id == unknown
+    ));
+}
 
 #[test]
 fn production_entry_links_exact_ordinary_root_local_call_and_return() {
@@ -187,6 +233,39 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
 }
 
 #[test]
+fn production_entry_rejects_server_stream_gateway_at_exact_entry() {
+    let fixture = Fixture::gateway_server_stream();
+    let hydrated = fixture.hydrate();
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::Stream,
+            location: BytecodeLinkLocation::GatewayEntry {
+                gateway_entry_key,
+                ..
+            },
+        }) if gateway_entry_key.as_str() == "phase-1"
+    ));
+}
+
+#[test]
+fn production_entry_rejects_guard_or_pre_gateway_at_exact_entry() {
+    for fixture in [Fixture::gateway_guard(), Fixture::gateway_pre()] {
+        let hydrated = fixture.hydrate();
+        assert!(matches!(
+            link_deployment(&hydrated, &generous_limits()),
+            Err(BytecodeLinkError::UnsupportedPhase1Capability {
+                capability: Phase1LinkedCapability::HttpGuardOrPre,
+                location: BytecodeLinkLocation::GatewayEntry {
+                    gateway_entry_key,
+                    ..
+                },
+            }) if gateway_entry_key.as_str() == "phase-1"
+        ));
+    }
+}
+
+#[test]
 fn production_entry_rejects_entry_alias_to_canonical_effect_owner() {
     let fixture = Fixture::aliased_entry();
     let hydrated = fixture.hydrate();
@@ -217,62 +296,73 @@ fn production_entry_rejects_synthetic_callback_as_an_ordinary_local_target() {
 }
 
 #[test]
-fn production_entry_links_symbolic_service_authority() {
+fn production_entry_ignores_unreachable_symbolic_service_authority() {
     let fixture = Fixture::service_dependency();
     let hydrated = fixture.hydrate();
     let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
-    assert_eq!(candidate.service_operations().len(), 1);
+    assert_eq!(candidate.service_operations().len(), 0);
     assert_eq!(candidate.interface_tables().len(), 0);
 }
 
 #[test]
-fn production_entry_links_interface_requirement_relocation() {
+fn production_entry_prunes_unreachable_private_interface_and_callback_authority() {
+    // A reachable MakeCallback currently fails earlier in ControlFlowAndStackMap:
+    // the artifact has no callback-interface correlation from which the linker
+    // could populate LinkedSyntheticCallbackTarget::interface_method. This test
+    // deliberately proves only that unreachable private callback authority is
+    // excluded; the reachable interface case below supplies the K0B rejection.
+    for fixture in [Fixture::unreachable_interface(), Fixture::unreachable_callback()] {
+        let hydrated = fixture.hydrate();
+        let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+        assert_eq!(candidate.functions().len(), 1);
+        assert!(candidate.functions().iter().all(|function| {
+            !matches!(
+                function.key().artifact_function_key().as_str(),
+                HELPER_FUNCTION | CALLBACK_FUNCTION
+            )
+        }));
+        assert!(candidate.interface_tables().is_empty());
+        assert!(candidate.synthetic_callbacks().is_empty());
+    }
+}
+
+#[test]
+fn production_entry_rejects_interface_requirement_target_at_exact_pc() {
     let fixture = Fixture::interface();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
-    assert_eq!(candidate.interface_tables().len(), 1);
-    assert_eq!(candidate.resume_sites().len(), 1);
-    let table = &candidate.interface_tables()[0];
-    match table.kind() {
-        skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Requirement(methods) => {
-            assert_eq!(methods.methods().len(), 1);
-            assert_eq!(methods.methods()[0].signature().result_types().len(), 1);
-        }
-        _ => panic!("interface table must be a requirement table"),
-    }
-    let root = function(&candidate, ROOT_FUNCTION);
-    assert_eq!(root.instructions()[1].opcode(), Opcode::CallInterface);
-    assert_eq!(
-        root.instructions()[1].resolved_operands()[0].target(),
-        LinkedInstructionTarget::InterfaceTable(table.index())
-    );
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::Interface,
+            location: BytecodeLinkLocation::Instruction { artifact_pc: 2, .. },
+        })
+    ));
 }
 
 #[test]
-fn production_entry_links_registered_host_effect_relocation() {
+fn production_entry_rejects_registered_host_effect_target_at_exact_pc() {
     let fixture = Fixture::host();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
-    assert_eq!(candidate.host_effect_adapters().len(), 1);
-    assert_eq!(candidate.resume_sites().len(), 1);
-    let host = &candidate.host_effect_adapters()[0];
-    assert_eq!(host.binding_key().as_str(), "core.date.now");
-    assert_eq!(host.signature().result_types().len(), 1);
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::HostTarget,
+            location: BytecodeLinkLocation::Instruction { artifact_pc: 0, .. },
+        })
+    ));
 }
 
 #[test]
-fn production_entry_links_registered_intrinsic_relocation() {
+fn production_entry_rejects_registered_intrinsic_target_at_exact_pc() {
     let fixture = Fixture::intrinsic();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
-    assert_eq!(candidate.intrinsics().len(), 1);
-    let intrinsic = &candidate.intrinsics()[0];
     assert!(matches!(
-        intrinsic.kind(),
-        LinkedIntrinsicKind::Static(target)
-            if target.canonical_key().as_str() == "core.array.empty"
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::IntrinsicTarget,
+            location: BytecodeLinkLocation::Instruction { artifact_pc: 0, .. },
+        })
     ));
-    assert_eq!(intrinsic.signature().result_types().len(), 1);
 }
 
 #[test]
@@ -290,10 +380,10 @@ fn production_entry_rejects_from_type_transfer_authority() {
 }
 
 #[test]
-fn production_entry_links_stream_next_dual_resume_successors() {
+fn backend_links_stream_next_dual_resume_successors() {
     let fixture = Fixture::stream_next();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
     assert_eq!(candidate.resume_sites().len(), 1);
     let resume = &candidate.resume_sites()[0];
     assert_eq!(resume.site(), InstructionIndex::new(0));
@@ -313,7 +403,15 @@ fn production_entry_links_stream_next_dual_resume_successors() {
 fn stream_for_in_loop_header_merges_item_slot_deadness() {
     let fixture = Fixture::stream_next_loop();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::Stream,
+            location: BytecodeLinkLocation::Instruction { artifact_pc: 3, .. },
+        })
+    ));
+
+    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
     let root = function(&candidate, ROOT_FUNCTION);
     assert_eq!(root.instructions().len(), 5);
     assert_eq!(root.instructions()[1].opcode(), Opcode::StreamNext);
@@ -329,10 +427,10 @@ fn stream_for_in_loop_header_merges_item_slot_deadness() {
 }
 
 #[test]
-fn production_entry_links_stream_producer_with_zero_ordinary_results() {
+fn backend_links_stream_producer_with_zero_ordinary_results() {
     let fixture = Fixture::stream_producer();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
     assert_eq!(candidate.resume_sites().len(), 1);
     let resume = &candidate.resume_sites()[0];
     assert_eq!(resume.end_resume(), None);
@@ -345,7 +443,9 @@ fn production_entry_links_stream_producer_with_zero_ordinary_results() {
     assert_eq!(root.instructions()[1].opcode(), Opcode::EmitStream);
     assert!(root.frame().result_types().is_empty());
     assert!(root.frame().result_plans().is_empty());
-    let stream_type = root.stream_result_type_ref().expect("producer stream authority");
+    let stream_type = root
+        .stream_result_type_ref()
+        .expect("producer stream authority");
     assert!(matches!(
         candidate.types()[stream_type.get() as usize].type_ref(),
         TypeRefIr::Builtin { name, .. } if name == "Stream"
@@ -457,10 +557,10 @@ fn assert_exact_v7_provenance(
 }
 
 #[test]
-fn production_entry_links_record_shape_and_dense_field_relocation() {
+fn backend_links_record_shape_and_dense_field_relocation() {
     let fixture = Fixture::record_shape();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
     assert_eq!(candidate.shapes().len(), 1);
     let shape = &candidate.shapes()[0];
     assert_eq!(shape.fields().len(), 1);
@@ -480,10 +580,10 @@ fn production_entry_links_record_shape_and_dense_field_relocation() {
 }
 
 #[test]
-fn production_entry_links_array_builder_with_container_stack_map() {
+fn backend_links_array_builder_with_container_stack_map() {
     let fixture = Fixture::arrays_maps();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
     let array = candidate
         .types()
         .iter()

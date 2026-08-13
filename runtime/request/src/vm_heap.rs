@@ -1,13 +1,12 @@
 //! RequestHeap-backed implementation of the narrow VM heap port.
 //!
-//! The adapter owns the stable `VmHandle` registry and ordinary snapshot share
+//! The heap owns the stable `VmHandle` registry and ordinary snapshot share
 //! accounting. RequestHeap remains the allocation arena for arrays, objects,
 //! maps and representation carrier cells.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap},
     sync::atomic::{AtomicU64, Ordering},
-    sync::{Arc, Mutex},
 };
 
 use skiff_runtime_model::{
@@ -45,52 +44,6 @@ struct LiveEntry {
     owner_transfers: usize,
 }
 
-/// Shared registry of native resources and handles released by either the
-/// heap or the adapter executor.
-#[derive(Default)]
-pub struct ResourceRegistry {
-    live: HashMap<VmHandle, ResourceEntry>,
-    released: HashSet<VmHandle>,
-}
-
-impl ResourceRegistry {
-    /// Registers a live resource before any VM operation can validate it.
-    pub fn register(&mut self, handle: VmHandle, entry: ResourceEntry) {
-        self.released.remove(&handle);
-        self.live.insert(handle, entry);
-    }
-
-    fn metadata(&self, handle: VmHandle) -> Option<(CompactTypeTag, ValueFlags)> {
-        self.live
-            .get(&handle)
-            .map(|entry| (entry.compact_type_tag, entry.flags))
-    }
-
-    fn is_released(&self, handle: VmHandle) -> bool {
-        self.released.contains(&handle)
-    }
-
-    /// Removes a live entry and marks the handle released. A released handle
-    /// is idempotent for later VM release, but no longer live.
-    pub fn remove_live(&mut self, handle: VmHandle) -> Option<ResourceEntry> {
-        let entry = self.live.remove(&handle)?;
-        self.released.insert(handle);
-        Some(entry)
-    }
-}
-
-/// Shared resource table for stream handles and other native resources.
-pub type ResourceTable = Arc<Mutex<ResourceRegistry>>;
-
-/// An entry in the shared resource table.
-pub struct ResourceEntry {
-    /// VM slot metadata that must match a live resource reference.
-    pub compact_type_tag: CompactTypeTag,
-    pub flags: ValueFlags,
-    /// Cancels the underlying native resource (e.g., HTTP stream).
-    pub cancel: Arc<dyn Fn() + Send + Sync>,
-}
-
 pub struct RequestVmHeap {
     heap: RequestHeap,
     domain: u8,
@@ -105,7 +58,6 @@ pub struct RequestVmHeap {
         BTreeMap<skiff_runtime_model::runtime_value::RuntimeValueKey, (ValueSlot, ValueSlot)>,
     >,
     representation_slots: HashMap<HeapHandle, ValueSlot>,
-    resource_table: Option<ResourceTable>,
 }
 
 impl RequestVmHeap {
@@ -129,7 +81,6 @@ impl RequestVmHeap {
             object_slots: HashMap::new(),
             map_slots: HashMap::new(),
             representation_slots: HashMap::new(),
-            resource_table: None,
         }
     }
 
@@ -147,16 +98,6 @@ impl RequestVmHeap {
 
     pub fn limits(&self) -> &RequestHeapLimits {
         self.heap.limits()
-    }
-
-    /// Attaches a shared resource table so this heap can validate and release
-    /// resource references created by the adapter executor.
-    pub fn set_resource_table(&mut self, table: ResourceTable) {
-        self.resource_table = Some(table);
-    }
-
-    pub fn resource_table(&self) -> Option<&ResourceTable> {
-        self.resource_table.as_ref()
     }
 
     /// Wraps an existing RequestHeap handle in a live VM slot.
@@ -266,71 +207,6 @@ impl RequestVmHeap {
             handle: encode_handle(0, u64::from(heap_handle.index())),
             reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
         }
-    }
-
-    fn stale_resource(handle: VmHandle) -> VmHeapError {
-        VmHeapError::InvalidHandle {
-            kind: ValueKind::ResourceRef,
-            handle,
-            reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
-        }
-    }
-
-    fn live_resource(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
-        let handle = value
-            .as_resource_ref()
-            .ok_or(VmHeapError::InvalidValueMetadata)?;
-        let table = self
-            .resource_table
-            .as_ref()
-            .ok_or(VmHeapError::OperationKindMismatch {
-                operation: VmHeapOperation::ValidateLive,
-                kind: ValueKind::ResourceRef,
-            })?;
-        let guard = table.lock().map_err(|_| VmHeapError::HeapOperationFailed {
-            operation: VmHeapOperation::ValidateLive,
-            message: "resource table lock poisoned".to_string(),
-        })?;
-        match guard.metadata(handle) {
-            Some((compact_type_tag, flags))
-                if compact_type_tag == value.compact_type_tag() && flags == value.flags() =>
-            {
-                Ok(())
-            }
-            Some(_) => Err(VmHeapError::InvalidValueMetadata),
-            None => Err(Self::stale_resource(handle)),
-        }
-    }
-
-    fn release_resource_inner(&self, owner: &ValueSlot) -> Result<(), VmHeapError> {
-        let handle = owner
-            .as_resource_ref()
-            .ok_or(VmHeapError::InvalidValueMetadata)?;
-        let table = self
-            .resource_table
-            .as_ref()
-            .ok_or(VmHeapError::OperationKindMismatch {
-                operation: VmHeapOperation::ReleaseResource,
-                kind: ValueKind::ResourceRef,
-            })?;
-        let mut guard = table.lock().map_err(|_| VmHeapError::HeapOperationFailed {
-            operation: VmHeapOperation::ReleaseResource,
-            message: "resource table lock poisoned".to_string(),
-        })?;
-        if guard.is_released(handle) {
-            return Ok(());
-        }
-        if let Some((compact_type_tag, flags)) = guard.metadata(handle) {
-            if compact_type_tag != owner.compact_type_tag() || flags != owner.flags() {
-                return Err(VmHeapError::InvalidValueMetadata);
-            }
-        }
-        let entry = guard
-            .remove_live(handle)
-            .ok_or_else(|| Self::stale_resource(handle))?;
-        drop(guard);
-        (entry.cancel)();
-        Ok(())
     }
 
     fn domain_of(handle: VmHandle) -> u8 {
@@ -636,7 +512,10 @@ impl VmHeap for RequestVmHeap {
                 .ok_or(VmHeapError::InvalidValueMetadata),
             ValueKind::Number | ValueKind::Integer | ValueKind::Date => Ok(()),
             ValueKind::RequestHeapRef => self.live_entry(value).map(|_| ()),
-            ValueKind::ResourceRef => self.live_resource(value),
+            ValueKind::ResourceRef => Err(VmHeapError::OperationKindMismatch {
+                operation: VmHeapOperation::ValidateLive,
+                kind: ValueKind::ResourceRef,
+            }),
             kind => Err(VmHeapError::OperationKindMismatch {
                 operation: VmHeapOperation::ValidateLive,
                 kind,
@@ -682,10 +561,6 @@ impl VmHeap for RequestVmHeap {
             }
             Some(ValueKind::RequestHeapRef) => {
                 self.live_entry_mut(source)?.owner_transfers += 1;
-                Ok(*source)
-            }
-            Some(ValueKind::ResourceRef) => {
-                self.live_resource(source)?;
                 Ok(*source)
             }
             Some(kind) => Err(VmHeapError::OperationKindMismatch {
@@ -754,9 +629,6 @@ impl VmHeap for RequestVmHeap {
         let Some(kind) = owner.kind() else {
             return Err(VmHeapError::InvalidValueMetadata);
         };
-        if kind == ValueKind::ResourceRef {
-            return self.release_resource_inner(owner);
-        }
         Err(VmHeapError::OperationKindMismatch {
             operation: VmHeapOperation::ReleaseResource,
             kind,

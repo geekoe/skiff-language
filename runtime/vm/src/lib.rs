@@ -1,8 +1,8 @@
 //! Synchronous, deployment-pinned bytecode VM core.
 //!
-//! The only production admission type is [`VerifiedVmEntry`], which combines
-//! an opaque verifier seal, a concrete typed entry and an exact deployment
-//! image pin. This crate exposes no candidate/raw-image execution path and no
+//! The only production admission type is [`DeploymentExecutionEntry`], an
+//! image-owned exact entry pin into the sole deployment execution image. This
+//! crate exposes no candidate/raw-image execution path and no
 //! callback capable of performing host effects. External work leaves the core
 //! exclusively through typed [`VmControl`] values.
 
@@ -18,13 +18,16 @@ mod limits;
 mod projection;
 mod statement;
 
-pub use budget::{VmBudget, VmBudgetError, VmSemanticCharge, VmSemanticChargeKind};
+pub use budget::{
+    VmBudget, VmBudgetClosed, VmBudgetTerminal, VmSemanticCharge, VmSemanticChargeKind,
+};
 pub use control::{
     AdapterControl, AdapterInvocation, BoundaryStart, ChildInvocation, ChildTarget, EffectStart,
     PendingOperation, PendingTicket, ResumeOutcome, StreamInvocation, StreamItem, VmControl,
     VmInternalTerminal, VmOwnedValues, VmResult, VmResumeKind, VmResumeToken,
 };
 pub use error::{VmEntryArgumentRejection, VmError, VmValueLocation, VmVerifiedInvariant};
-pub use fiber::{VerifiedVmEntry, Vm, VmFiber, VmFiberState};
+pub use fiber::{Vm, VmFiber, VmFiberState};
 pub use limits::VmLimits;
 pub use projection::VmProjectionHandoff;
+pub use skiff_runtime_linker::DeploymentExecutionEntry;

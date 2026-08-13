@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector, ServiceDeploymentRef};
 use skiff_runtime_capability_context::ExecutionBudgetReason;
-use skiff_runtime_linked_bytecode::LinkedGatewayCallableRole;
+use skiff_runtime_linker::DeploymentExecutionEntry;
 use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionCorrelation, BytecodeExecutionObserver,
 };
-use skiff_runtime_request::{BytecodeRequestTarget, RequestError, RouterWriterMessage};
+use skiff_runtime_request::{
+    execution_budget::admit_request_deadline, RequestError, RouterWriterMessage,
+};
 use skiff_runtime_transport::protocol::{
     BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressProtocol,
     BytecodeRequestStartFrameHeader, BytecodeRequestStartFrameWireHeader,
@@ -23,7 +25,11 @@ use url::Url;
 use super::{request_error_into_runtime_error, response_event_into_transport_message};
 use crate::{
     error::{Result, RuntimeError},
-    host::{router_session::ConnectionBootstrap, RuntimeHost},
+    host::{
+        request_supervisor::{RequestExecutionKey, RequestId, RouterSessionEpoch},
+        router_session::ConnectionBootstrap,
+        RuntimeHost,
+    },
     loader::bytecode_admission::{BytecodeRoute, BytecodeRouteSelector},
 };
 
@@ -31,32 +37,32 @@ pub(super) struct AdmittedBytecodeHttpRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeRequestStartFrameHeader,
     pub(super) body: Vec<u8>,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketConnectRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeWebSocketConnectRequestStartFrameHeader,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketConnectionClosedRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketJsonRpcRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeWebSocketJsonRpcRequestStartFrameHeader,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
     pub(super) params: Vec<u8>,
 }
 
 pub(super) struct AdmittedBytecodeTaskRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeTaskRequestStartFrameHeader,
-    pub(super) target: BytecodeRequestTarget,
+    pub(super) target: DeploymentExecutionEntry,
     pub(super) payload: Vec<u8>,
 }
 
@@ -71,7 +77,7 @@ enum AdmittedBytecodeRequest {
 impl RuntimeHost {
     pub(crate) async fn spawn_bytecode_request(
         &self,
-        router_session_id: &str,
+        router_session: &RouterSessionEpoch,
         header: BytecodeRequestStartFrameWireHeader,
         body: Vec<u8>,
         bootstrap: &ConnectionBootstrap,
@@ -90,16 +96,39 @@ impl RuntimeHost {
             }
             BytecodeRequestStartFrameWireHeader::Task(header) => header.request_id.clone(),
         };
+        if let Err(error) = admit_synchronous_unary_http_lane(&header) {
+            self.send_bytecode_wire_admission_error(&request_id, &error, &sender);
+            return;
+        }
+        let request_id_typed = match RequestId::parse(request_id.clone()) {
+            Ok(request_id) => request_id,
+            Err(error) => {
+                self.send_http_gateway_admission_error(&request_id, error, &sender);
+                return;
+            }
+        };
+        let request_key = RequestExecutionKey::new(router_session.clone(), request_id_typed);
+        let admitted_deadline = match admit_request_deadline(&wire_deadline_extra(&header)) {
+            Ok(deadline) => deadline,
+            Err(error) => {
+                self.send_http_gateway_admission_error(&request_id, error, &sender);
+                return;
+            }
+        };
+        if admitted_deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline.at()) {
+            self.send_bytecode_wire_admission_error(&request_id, &deadline_exceeded(), &sender);
+            return;
+        }
         let observer = BytecodeExecutionObserver::new(
             Arc::clone(&self.bytecode_execution_event_sink),
             BytecodeExecutionCorrelation {
-                router_session_id: router_session_id.to_string(),
+                router_session_id: router_session.as_str().to_string(),
                 request_id: request_id.clone(),
             },
         );
-        let Some(reservation) = self
-            .request_supervisor
-            .reserve(request_id.clone(), observer.clone())
+        let Some(reservation) =
+            self.request_supervisor
+                .reserve(request_key, observer.clone(), admitted_deadline)
         else {
             self.send_http_gateway_admission_error(
                 &request_id,
@@ -125,12 +154,9 @@ impl RuntimeHost {
             }
             BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
                 self.websocket_connection_closed_request_from_wire(
-                    header,
-                    body,
-                    bootstrap,
-                    &observer,
+                    header, body, bootstrap, &observer,
                 )
-                    .await
+                .await
             }
             BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => {
                 self.websocket_jsonrpc_request_from_wire(header, body, bootstrap, &observer)
@@ -147,7 +173,6 @@ impl RuntimeHost {
         match result {
             Ok(AdmittedBytecodeRequest::Http(request)) => {
                 self.task_bytecode_http_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -157,7 +182,6 @@ impl RuntimeHost {
             }
             Ok(AdmittedBytecodeRequest::WebSocketConnect(request)) => {
                 self.task_bytecode_websocket_connect_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -167,7 +191,6 @@ impl RuntimeHost {
             }
             Ok(AdmittedBytecodeRequest::WebSocketConnectionClosed(request)) => {
                 self.task_bytecode_websocket_connection_closed_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -177,7 +200,6 @@ impl RuntimeHost {
             }
             Ok(AdmittedBytecodeRequest::WebSocketJsonRpc(request)) => {
                 self.task_bytecode_websocket_jsonrpc_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -187,7 +209,6 @@ impl RuntimeHost {
             }
             Ok(AdmittedBytecodeRequest::Task(request)) => {
                 self.task_bytecode_task_request(
-                    router_session_id.to_string(),
                     reservation,
                     request,
                     bootstrap.max_response_bytes,
@@ -197,21 +218,30 @@ impl RuntimeHost {
             }
             Err(runtime_error) => {
                 drop(reservation);
-                error!(
-                    event = "runtime.assembly_wire_rejected",
-                    request_id,
-                    error = %runtime_error
-                );
-                let response_event = OrdinaryResponseEvent::try_error(&runtime_error)
-                    .expect("wire admission rejection is ordinary");
-                match response_event_into_transport_message(request_id, response_event) {
-                    Ok(message) => {
-                        let _ = sender.send(message);
-                    }
-                    Err(encode_error) => {
-                        error!(event = "runtime.response_encode_error", error = %encode_error);
-                    }
-                }
+                self.send_bytecode_wire_admission_error(&request_id, &runtime_error, &sender);
+            }
+        }
+    }
+
+    fn send_bytecode_wire_admission_error(
+        &self,
+        request_id: &str,
+        runtime_error: &RuntimeError,
+        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
+    ) {
+        error!(
+            event = "runtime.assembly_wire_rejected",
+            request_id,
+            error = %runtime_error
+        );
+        let response_event = OrdinaryResponseEvent::try_error(runtime_error)
+            .expect("wire admission rejection is ordinary");
+        match response_event_into_transport_message(request_id.to_string(), response_event) {
+            Ok(message) => {
+                let _ = sender.send(message);
+            }
+            Err(encode_error) => {
+                error!(event = "runtime.response_encode_error", error = %encode_error);
             }
         }
     }
@@ -258,7 +288,6 @@ impl RuntimeHost {
                         path: header.routing.ingress.path.clone(),
                     },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
-                    role: LinkedGatewayCallableRole::Handler,
                 },
                 observer,
             )
@@ -307,7 +336,6 @@ impl RuntimeHost {
                         path: header.routing.ingress.path.clone(),
                     },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
-                    role: LinkedGatewayCallableRole::CloseHandler,
                 },
                 observer,
             )
@@ -344,7 +372,6 @@ impl RuntimeHost {
         bootstrap: &ConnectionBootstrap,
         observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
-        validate_http_header(&header)?;
         let route = self
             .resolve_bytecode_request_route(
                 &header.routing.deployment,
@@ -356,7 +383,6 @@ impl RuntimeHost {
                         path: header.routing.ingress.path.clone(),
                     },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
-                    role: LinkedGatewayCallableRole::Handler,
                 },
                 observer,
             )
@@ -386,10 +412,10 @@ impl RuntimeHost {
 
     async fn task_request_from_wire(
         &self,
-        mut header: BytecodeTaskRequestStartFrameHeader,
+        header: BytecodeTaskRequestStartFrameHeader,
         payload: Vec<u8>,
-        bootstrap: &ConnectionBootstrap,
-        observer: &BytecodeExecutionObserver,
+        _bootstrap: &ConnectionBootstrap,
+        _observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
         validate_task_header(&header, &payload)?;
         let deployment = &header.routing.deployment;
@@ -401,30 +427,12 @@ impl RuntimeHost {
                 });
             }
         }
-        let route = self
-            .resolve_bytecode_request_route(
-                deployment,
-                bootstrap,
-                BytecodeRouteSelector::Operation,
-                observer,
-            )
-            .await?
-            .expect("bytecode route is required after resolution");
-        header.deadline = effective_request_deadline(header.deadline.as_ref(), "task")?;
-        if header
-            .deadline
-            .as_ref()
-            .is_some_and(|deadline| deadline.timeout_ms == 0)
-        {
-            return Err(deadline_exceeded());
-        }
-        let target = bytecode_route_target(&route)?;
-        Ok(AdmittedBytecodeRequest::Task(AdmittedBytecodeTaskRequest {
-            route,
-            header,
-            target,
-            payload,
-        }))
+        let _ = payload;
+        Err(RuntimeError::Protocol {
+            target: header.invocation.target,
+            message: "task bytecode routing does not carry an exact typed ContractOperationId"
+                .to_string(),
+        })
     }
 
     async fn websocket_jsonrpc_request_from_wire(
@@ -446,7 +454,6 @@ impl RuntimeHost {
                         path: header.routing.ingress.path.clone(),
                     },
                     gateway_entry_identity: header.routing.gateway_entry_identity.clone(),
-                    role: LinkedGatewayCallableRole::Handler,
                 },
                 observer,
             )
@@ -478,9 +485,9 @@ impl RuntimeHost {
     }
 }
 
-fn bytecode_route_target(route: &BytecodeRoute) -> Result<BytecodeRequestTarget> {
+fn bytecode_route_target(route: &BytecodeRoute) -> Result<DeploymentExecutionEntry> {
     route
-        .request_target()
+        .execution_entry()
         .map_err(|error| RuntimeError::Decode(error.to_string()))
 }
 
@@ -520,6 +527,24 @@ fn wire_routing_build_id(header: &BytecodeRequestStartFrameWireHeader) -> Option
     Some(deployment.deployment_artifact_identity.as_str().to_string())
 }
 
+fn admit_synchronous_unary_http_lane(header: &BytecodeRequestStartFrameWireHeader) -> Result<()> {
+    match header {
+        BytecodeRequestStartFrameWireHeader::Http(header) => validate_http_header(header),
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(_)
+        | BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(_)
+        | BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(_) => Err(
+            RuntimeError::Unsupported(
+                "bytecode request admission supports only exact unary HTTP gateway requests; the WebSocket request lane is disabled"
+                    .to_string(),
+            ),
+        ),
+        BytecodeRequestStartFrameWireHeader::Task(_) => Err(RuntimeError::Unsupported(
+            "bytecode request admission supports only exact unary HTTP gateway requests; the task request lane is disabled"
+                .to_string(),
+        )),
+    }
+}
+
 fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> {
     if header.request_id.is_empty() {
         return Err(RuntimeError::Decode(
@@ -551,6 +576,24 @@ fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> 
     if header.test_case_parent_request_id.is_some() && header.test_case_capability.is_none() {
         return Err(RuntimeError::Decode(
             "canonical HTTP testCaseParentRequestId requires testCaseCapability".to_string(),
+        ));
+    }
+    if header.client_session.is_some() {
+        return Err(RuntimeError::Unsupported(
+            "bytecode request admission supports only the synchronous unary HTTP gateway lane; client-session requests are disabled"
+                .to_string(),
+        ));
+    }
+    if header.test_case_parent_request_id.is_some() {
+        return Err(RuntimeError::Unsupported(
+            "bytecode request admission supports only the synchronous unary HTTP gateway lane; child requests are disabled"
+                .to_string(),
+        ));
+    }
+    if header.test_effects_enabled {
+        return Err(RuntimeError::Unsupported(
+            "bytecode request admission supports only the synchronous unary HTTP gateway lane; host test-effect requests are disabled"
+                .to_string(),
         ));
     }
     let ingress = &header.routing.ingress;
@@ -699,6 +742,29 @@ fn effective_deadline(
     header: &BytecodeRequestStartFrameHeader,
 ) -> Result<Option<BytecodeRequestDeadlineFrameHeader>> {
     effective_request_deadline(header.deadline.as_ref(), "HTTP gateway")
+}
+
+fn wire_deadline_extra(
+    header: &BytecodeRequestStartFrameWireHeader,
+) -> serde_json::Map<String, serde_json::Value> {
+    let deadline = match header {
+        BytecodeRequestStartFrameWireHeader::Http(header) => header.deadline.as_ref(),
+        BytecodeRequestStartFrameWireHeader::WebSocketConnect(header) => header.deadline.as_ref(),
+        BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(header) => {
+            header.deadline.as_ref()
+        }
+        BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(header) => header.deadline.as_ref(),
+        BytecodeRequestStartFrameWireHeader::Task(header) => header.deadline.as_ref(),
+    };
+    let mut extra = serde_json::Map::new();
+    if let Some(deadline) = deadline {
+        extra.insert(
+            "deadline".to_string(),
+            serde_json::to_value(deadline)
+                .expect("typed bytecode request deadline remains serializable"),
+        );
+    }
+    extra
 }
 
 fn effective_request_deadline(

@@ -1,4 +1,4 @@
-use std::{fmt, num::NonZeroU32};
+use std::fmt;
 
 use skiff_artifact_model::Opcode;
 use skiff_runtime_linked_bytecode::{
@@ -6,7 +6,7 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_model::{vm_heap::VmHeapError, vm_value::ValueKind};
 
-use crate::{fiber::VmFiberState, VmBudgetError, VmInternalTerminal};
+use crate::{fiber::VmFiberState, VmBudgetClosed, VmInternalTerminal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VmEntryArgumentRejection {
@@ -80,10 +80,6 @@ pub enum VmError {
     ValueStackLimitExceeded {
         limit: usize,
         requested: usize,
-    },
-    InvalidFuelGrant {
-        requested_maximum: NonZeroU32,
-        granted: NonZeroU32,
     },
     FiberNotRunnable {
         state: VmFiberState,
@@ -221,7 +217,7 @@ pub enum VmError {
         index: u32,
     },
     Heap(VmHeapError),
-    Budget(VmBudgetError),
+    BudgetClosed(VmBudgetClosed),
 }
 
 impl fmt::Display for VmError {
@@ -258,13 +254,6 @@ impl fmt::Display for VmError {
             Self::ValueStackLimitExceeded { limit, requested } => write!(
                 formatter,
                 "VM value stack limit {limit} cannot satisfy requested length {requested}"
-            ),
-            Self::InvalidFuelGrant {
-                requested_maximum,
-                granted,
-            } => write!(
-                formatter,
-                "VM budget granted {granted} raw instructions above requested maximum {requested_maximum}"
             ),
             Self::FiberNotRunnable { state } => {
                 write!(formatter, "VM fiber is not runnable (state {state:?})")
@@ -506,7 +495,7 @@ impl fmt::Display for VmError {
                 instruction.get()
             ),
             Self::Heap(error) => write!(formatter, "VM heap operation failed: {error}"),
-            Self::Budget(error) => write!(formatter, "VM budget operation failed: {error}"),
+            Self::BudgetClosed(error) => write!(formatter, "VM budget is closed: {error}"),
         }
     }
 }
@@ -515,7 +504,7 @@ impl std::error::Error for VmError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Heap(error) => Some(error),
-            Self::Budget(error) => Some(error),
+            Self::BudgetClosed(error) => Some(error),
             _ => None,
         }
     }
@@ -527,8 +516,8 @@ impl From<VmHeapError> for VmError {
     }
 }
 
-impl From<VmBudgetError> for VmError {
-    fn from(error: VmBudgetError) -> Self {
-        Self::Budget(error)
+impl From<VmBudgetClosed> for VmError {
+    fn from(error: VmBudgetClosed) -> Self {
+        Self::BudgetClosed(error)
     }
 }

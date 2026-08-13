@@ -1,6 +1,50 @@
 use skiff_artifact_model::{bytecode::EncodeError, StructuralValidationError};
-use skiff_compiler_lowering::{mir::MirContractError, FrozenConstantLookupError};
+use skiff_compiler_lowering::{
+    mir::{MirContractError, MirSourceEventUnavailableReason},
+    FrozenConstantLookupError,
+};
 use thiserror::Error;
+
+/// A typed source capability rejected by the Phase 1 bytecode admission.
+///
+/// These categories are derived from MIR facts. They are deliberately not
+/// inferred from package ids, binding strings, or eventual opcode selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase1UnsupportedCapability {
+    Actor,
+    Callback,
+    Constant,
+    ControlFlow,
+    Effect,
+    Exception,
+    Generic,
+    HostTarget,
+    InOut,
+    Interface,
+    NonLocalCallTarget,
+    PendingEffect,
+    Receiver,
+    ServiceTarget,
+    Stream,
+    TailCall,
+    ValueShape,
+    Writable,
+}
+
+/// One exact source-owned MIR relation that disagrees at Phase 1 admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase1MirFactMismatch {
+    ParameterSlotKind,
+    ParameterSlotCoverage,
+    LoadSlotType,
+    InitSlotType,
+    LocalCallParameterCount,
+    LocalCallParameterMode,
+    LocalCallArgument,
+    LocalCallArgumentType,
+    LocalCallResultType,
+    LocalCallSourceEvent,
+}
 
 /// A fail-closed bytecode emission failure.
 ///
@@ -9,6 +53,35 @@ use thiserror::Error;
 /// coverage, structural validation and identity assignment all succeed.
 #[derive(Debug, Error)]
 pub enum BytecodeEmissionError {
+    #[error(
+        "Phase 1 bytecode admission rejected {capability:?} in module `{module_path}` function {function_key:?} at {location}"
+    )]
+    UnsupportedPhase1Capability {
+        capability: Phase1UnsupportedCapability,
+        module_path: String,
+        function_key: Option<String>,
+        location: String,
+    },
+
+    #[error(
+        "Phase 1 bytecode admission requires available source events in module `{module_path}` function `{function_key}`; lowering reported {reason:?}"
+    )]
+    Phase1SourceEventsUnavailable {
+        module_path: String,
+        function_key: String,
+        reason: MirSourceEventUnavailableReason,
+    },
+
+    #[error(
+        "Phase 1 bytecode admission found {mismatch:?} in module `{module_path}` function `{function_key}` at {location}"
+    )]
+    Phase1MirFactMismatch {
+        mismatch: Phase1MirFactMismatch,
+        module_path: String,
+        function_key: String,
+        location: String,
+    },
+
     #[error("bytecode emitter received duplicate MIR module `{module_path}`")]
     DuplicateMirModule { module_path: String },
 

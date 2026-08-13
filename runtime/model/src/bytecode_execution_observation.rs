@@ -6,11 +6,22 @@ use std::{
 
 use serde::Serialize;
 use skiff_artifact_model::{
-    ContractOperationId, DeploymentArtifactIdentity, GatewayEntryIdentity, GatewayEntryKey, Opcode,
-    IngressSelector, ServiceDeploymentRef,
+    ContractOperationId, DeploymentArtifactIdentity, GatewayEntryIdentity, GatewayEntryKey,
+    IngressSelector, Opcode, ServiceDeploymentRef,
 };
 
 const OBSERVATION_QUEUE_CAPACITY: usize = 16;
+
+/// Phase 1 production maximum: eleven observations per admitted root request.
+///
+/// The five spare queue slots are headroom, not permission to mint further
+/// events without another decision and evidence-epoch change.
+pub const PHASE_1_PRODUCTION_OBSERVATION_MAX: usize = 11;
+
+const _: () = assert!(
+    PHASE_1_PRODUCTION_OBSERVATION_MAX <= OBSERVATION_QUEUE_CAPACITY,
+    "Phase 1 production observation maximum must fit the bounded queue"
+);
 
 /// Wire-ingress identity shared by every observation for one bytecode request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -52,6 +63,11 @@ struct BytecodeExecutionObserverState {
     queue: VecDeque<BytecodeExecutionObservation>,
     draining: bool,
     dispatch_claimed: bool,
+    root_frame_entry_claimed: bool,
+    root_local_call_claimed: bool,
+    first_root_local_callee_frame_entry_claimed: bool,
+    first_root_local_callee_return_claimed: bool,
+    root_return_claimed: bool,
 }
 
 /// Cloneable per-request handle carrying one correlation and shared ordering.
@@ -84,6 +100,11 @@ impl BytecodeExecutionObserver {
                 queue: VecDeque::with_capacity(OBSERVATION_QUEUE_CAPACITY),
                 draining: false,
                 dispatch_claimed: false,
+                root_frame_entry_claimed: false,
+                root_local_call_claimed: false,
+                first_root_local_callee_frame_entry_claimed: false,
+                first_root_local_callee_return_claimed: false,
+                root_return_claimed: false,
             })),
         }
     }
@@ -153,6 +174,47 @@ impl BytecodeExecutionObserver {
             true
         }
     }
+
+    /// Claims the observed root-frame-entry marker at most once across every
+    /// handle sharing this correlation. Selection state suppresses observation
+    /// only and never participates in execution decisions.
+    pub fn claim_root_frame_entry(&self) -> bool {
+        self.claim_selection_flag(|state| &mut state.root_frame_entry_claimed)
+    }
+
+    /// Claims the first observed root-local call marker at most once.
+    pub fn claim_root_local_call(&self) -> bool {
+        self.claim_selection_flag(|state| &mut state.root_local_call_claimed)
+    }
+
+    /// Claims the first root-local callee frame-entry marker at most once.
+    pub fn claim_first_root_local_callee_frame_entry(&self) -> bool {
+        self.claim_selection_flag(|state| &mut state.first_root_local_callee_frame_entry_claimed)
+    }
+
+    /// Claims the first root-local callee normal-return marker at most once.
+    pub fn claim_first_root_local_callee_return(&self) -> bool {
+        self.claim_selection_flag(|state| &mut state.first_root_local_callee_return_claimed)
+    }
+
+    /// Claims the observed root normal-return marker at most once.
+    pub fn claim_root_return(&self) -> bool {
+        self.claim_selection_flag(|state| &mut state.root_return_claimed)
+    }
+
+    fn claim_selection_flag(
+        &self,
+        select: impl FnOnce(&mut BytecodeExecutionObserverState) -> &mut bool,
+    ) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let flag = select(&mut state);
+        if *flag {
+            false
+        } else {
+            *flag = true;
+            true
+        }
+    }
 }
 
 /// Canonical typed event shape projected by the host telemetry sink.
@@ -165,10 +227,29 @@ pub enum BytecodeExecutionEvent {
     RouteEntryPinned(RouteEntryPinned),
     #[serde(rename = "VmFirstInstructionDispatched")]
     VmFirstInstructionDispatched(VmFirstInstructionDispatched),
+    #[serde(rename = "VmFunctionFrameEntered")]
+    VmFunctionFrameEntered(VmFunctionFrameEntered),
+    #[serde(rename = "VmLocalCallDispatched")]
+    VmLocalCallDispatched(VmLocalCallDispatched),
+    #[serde(rename = "VmFunctionReturned")]
+    VmFunctionReturned(VmFunctionReturned),
+    #[serde(rename = "VmBudgetAccounted")]
+    VmBudgetAccounted(VmBudgetAccounted),
     #[serde(rename = "RequestTerminalClaimed")]
     RequestTerminalClaimed(RequestTerminalClaimed),
     #[serde(rename = "RequestCleanupComplete")]
     RequestCleanupComplete(RequestCleanupComplete),
+}
+
+/// Role of one observed frame inside the bounded Phase 1 observation window.
+///
+/// The role disambiguates the intentionally selected first root-local callee
+/// from the root without carrying a frame handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum VmObservedFrameRole {
+    Root,
+    FirstRootLocalCallee,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -216,6 +297,42 @@ pub struct VmFirstInstructionDispatched {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VmFunctionFrameEntered {
+    pub role: VmObservedFrameRole,
+    pub function_index: u32,
+    pub frame_depth: u32,
+    pub slot_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VmLocalCallDispatched {
+    pub caller_function_index: u32,
+    pub callee_function_index: u32,
+    pub caller_frame_depth: u32,
+    pub callee_frame_depth: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VmFunctionReturned {
+    pub role: VmObservedFrameRole,
+    pub function_index: u32,
+    pub caller_function_index: Option<u32>,
+    pub remaining_frame_depth: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VmBudgetAccounted {
+    pub raw_executed_count: u64,
+    pub charged_instruction_count: u64,
+    pub hard_limit: u64,
+    pub poll_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum BytecodeRequestTerminal {
     Succeeded,
@@ -229,8 +346,32 @@ pub struct RequestTerminalClaimed {
     pub terminal: BytecodeRequestTerminal,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub struct RequestCleanupComplete {}
+/// One frozen, immutable fact about a single request owner domain.
+///
+/// `current` counts owners that are still live at freeze time; `ever_created`
+/// records whether the domain ever minted an owner, even one that has since
+/// been released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenOwnerDomain {
+    pub current: u64,
+    pub ever_created: bool,
+}
+
+/// The actual pending/resource/child owner inventory frozen for one request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestExecutionOwnerInventorySnapshot {
+    pub pending: FrozenOwnerDomain,
+    pub resource: FrozenOwnerDomain,
+    pub child: FrozenOwnerDomain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestCleanupComplete {
+    pub owner_inventory: RequestExecutionOwnerInventorySnapshot,
+}
 
 #[cfg(test)]
 mod tests {
@@ -429,5 +570,185 @@ mod tests {
             &records[0].event,
             BytecodeExecutionEvent::VmFirstInstructionDispatched(_)
         ));
+    }
+
+    #[test]
+    fn new_event_payloads_serialize_exact_field_names_without_extra_keys() {
+        assert_eq!(
+            serde_json::to_value(BytecodeExecutionEvent::VmFunctionFrameEntered(
+                VmFunctionFrameEntered {
+                    role: VmObservedFrameRole::Root,
+                    function_index: 3,
+                    frame_depth: 1,
+                    slot_count: 2,
+                }
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "kind": "VmFunctionFrameEntered",
+                "payload": {
+                    "role": "Root",
+                    "functionIndex": 3,
+                    "frameDepth": 1,
+                    "slotCount": 2,
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(BytecodeExecutionEvent::VmFunctionFrameEntered(
+                VmFunctionFrameEntered {
+                    role: VmObservedFrameRole::FirstRootLocalCallee,
+                    function_index: 7,
+                    frame_depth: 2,
+                    slot_count: 4,
+                }
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "kind": "VmFunctionFrameEntered",
+                "payload": {
+                    "role": "FirstRootLocalCallee",
+                    "functionIndex": 7,
+                    "frameDepth": 2,
+                    "slotCount": 4,
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(BytecodeExecutionEvent::VmLocalCallDispatched(
+                VmLocalCallDispatched {
+                    caller_function_index: 3,
+                    callee_function_index: 7,
+                    caller_frame_depth: 1,
+                    callee_frame_depth: 2,
+                }
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "kind": "VmLocalCallDispatched",
+                "payload": {
+                    "callerFunctionIndex": 3,
+                    "calleeFunctionIndex": 7,
+                    "callerFrameDepth": 1,
+                    "calleeFrameDepth": 2,
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(BytecodeExecutionEvent::VmFunctionReturned(
+                VmFunctionReturned {
+                    role: VmObservedFrameRole::FirstRootLocalCallee,
+                    function_index: 7,
+                    caller_function_index: Some(3),
+                    remaining_frame_depth: 1,
+                }
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "kind": "VmFunctionReturned",
+                "payload": {
+                    "role": "FirstRootLocalCallee",
+                    "functionIndex": 7,
+                    "callerFunctionIndex": 3,
+                    "remainingFrameDepth": 1,
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(BytecodeExecutionEvent::VmFunctionReturned(
+                VmFunctionReturned {
+                    role: VmObservedFrameRole::Root,
+                    function_index: 3,
+                    caller_function_index: None,
+                    remaining_frame_depth: 0,
+                }
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "kind": "VmFunctionReturned",
+                "payload": {
+                    "role": "Root",
+                    "functionIndex": 3,
+                    "callerFunctionIndex": null,
+                    "remainingFrameDepth": 0,
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(BytecodeExecutionEvent::VmBudgetAccounted(
+                VmBudgetAccounted {
+                    raw_executed_count: 11,
+                    charged_instruction_count: 11,
+                    hard_limit: 100_000,
+                    poll_count: 2,
+                }
+            ))
+            .unwrap(),
+            serde_json::json!({
+                "kind": "VmBudgetAccounted",
+                "payload": {
+                    "rawExecutedCount": 11,
+                    "chargedInstructionCount": 11,
+                    "hardLimit": 100000,
+                    "pollCount": 2,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn nested_cleanup_payload_serializes_the_adjudicated_wire_shape() {
+        let event = BytecodeExecutionEvent::RequestCleanupComplete(RequestCleanupComplete {
+            owner_inventory: RequestExecutionOwnerInventorySnapshot {
+                pending: FrozenOwnerDomain {
+                    current: 1,
+                    ever_created: true,
+                },
+                resource: FrozenOwnerDomain {
+                    current: 0,
+                    ever_created: false,
+                },
+                child: FrozenOwnerDomain {
+                    current: 2,
+                    ever_created: true,
+                },
+            },
+        });
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "kind": "RequestCleanupComplete",
+                "payload": {
+                    "ownerInventory": {
+                        "pending": { "current": 1, "everCreated": true },
+                        "resource": { "current": 0, "everCreated": false },
+                        "child": { "current": 2, "everCreated": true },
+                    }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn each_phase_1_selection_claim_succeeds_exactly_once_across_clones() {
+        let observer =
+            BytecodeExecutionObserver::new(Arc::new(RecordingSink::default()), correlation());
+        let clone = observer.clone();
+
+        assert!(observer.claim_root_frame_entry());
+        assert!(!clone.claim_root_frame_entry());
+        assert!(observer.claim_root_local_call());
+        assert!(!clone.claim_root_local_call());
+        assert!(observer.claim_first_root_local_callee_frame_entry());
+        assert!(!clone.claim_first_root_local_callee_frame_entry());
+        assert!(observer.claim_first_root_local_callee_return());
+        assert!(!clone.claim_first_root_local_callee_return());
+        assert!(observer.claim_root_return());
+        assert!(!clone.claim_root_return());
+    }
+
+    #[test]
+    fn phase_1_production_observation_max_fits_the_bounded_queue() {
+        assert!(PHASE_1_PRODUCTION_OBSERVATION_MAX <= OBSERVATION_QUEUE_CAPACITY);
     }
 }

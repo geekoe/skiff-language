@@ -21,7 +21,7 @@ use skiff_runtime_linked_bytecode::{
 
 use crate::{
     concrete_values::ConcreteValueFacts, control_flow::prove_exact_local_call_plan_for_test,
-    verify, VerificationError, VerificationLocation, VerificationObligation,
+    verify_facts, VerificationError, VerificationLocation, VerificationObligation,
 };
 
 use super::fixtures::{
@@ -32,7 +32,7 @@ use super::fixtures::{
 fn loader_backed_target_summary_drift_is_stopped_by_exact_binding() {
     let (hydrated, candidate) =
         loader_backed_local_call(LocalCallCandidateCorruption::TargetDeclarativeSummary);
-    let error = verify(hydrated, candidate, &generous_limits())
+    let error = verify_facts(hydrated, candidate, &generous_limits())
         .expect_err("candidate effect summary drift must fail closed");
 
     assert_exact_function_binding_rejection(error);
@@ -42,7 +42,7 @@ fn loader_backed_target_summary_drift_is_stopped_by_exact_binding() {
 fn loader_backed_target_effect_owner_drift_is_stopped_by_exact_binding() {
     let (hydrated, candidate) =
         loader_backed_local_call(LocalCallCandidateCorruption::TargetEffectOwner);
-    let error = verify(hydrated, candidate, &generous_limits())
+    let error = verify_facts(hydrated, candidate, &generous_limits())
         .expect_err("candidate effect owner drift must fail closed");
 
     assert_exact_function_binding_rejection(error);
@@ -52,7 +52,7 @@ fn loader_backed_target_effect_owner_drift_is_stopped_by_exact_binding() {
 fn loader_backed_wrong_canonical_function_authority_is_stopped_by_exact_binding() {
     let (hydrated, candidate) =
         loader_backed_local_call(LocalCallCandidateCorruption::TargetCanonicalFunction);
-    let error = verify(hydrated, candidate, &generous_limits())
+    let error = verify_facts(hydrated, candidate, &generous_limits())
         .expect_err("candidate canonical-function drift must fail closed");
 
     assert!(matches!(

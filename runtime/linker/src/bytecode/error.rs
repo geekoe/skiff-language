@@ -1,6 +1,9 @@
 use std::fmt;
 
-use skiff_artifact_model::{PackageArtifactRef, ServiceDeploymentRef, ServiceRequirementKey};
+use skiff_artifact_model::{
+    ContractOperationId, GatewayEntryKey, Opcode, PackageArtifactRef, PendingEffectCategory,
+    ServiceDeploymentRef, ServiceRequirementKey,
+};
 
 /// Bounded resource whose configured link ceiling was exceeded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +71,32 @@ pub enum BytecodeLinkObligation {
     CandidateAssembly,
 }
 
+/// Typed category rejected by the Phase 1 post-link capability gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase1LinkedCapability {
+    HostTarget,
+    IntrinsicTarget,
+    ServiceTarget,
+    Actor,
+    Interface,
+    Callback,
+    HttpGuardOrPre,
+    WebSocket,
+    Stream,
+    Resource,
+    Aggregate,
+    Exception,
+    TailCall,
+    InOut,
+    Generic,
+    Writable,
+    Constant,
+    ValueShape,
+    Effect,
+    PendingEffect(PendingEffectCategory),
+    UnsupportedOpcode(Opcode),
+}
+
 impl BytecodeLinkObligation {
     pub const fn name(self) -> &'static str {
         match self {
@@ -100,6 +129,14 @@ pub enum BytecodeLinkLocation {
     },
     ServiceDependency {
         key: ServiceRequirementKey,
+    },
+    OperationEntry {
+        deployment: Box<ServiceDeploymentRef>,
+        contract_operation_id: ContractOperationId,
+    },
+    GatewayEntry {
+        deployment: Box<ServiceDeploymentRef>,
+        gateway_entry_key: GatewayEntryKey,
     },
     Function {
         package: Box<PackageArtifactRef>,
@@ -138,6 +175,22 @@ impl fmt::Display for BytecodeLinkLocation {
                 formatter,
                 "service dependency ({}, slot {})",
                 key.caller_package_build_id, key.service_requirement_slot
+            ),
+            Self::OperationEntry {
+                deployment,
+                contract_operation_id,
+            } => write!(
+                formatter,
+                "deployment {} operation {contract_operation_id}",
+                deployment.deployment_artifact_identity
+            ),
+            Self::GatewayEntry {
+                deployment,
+                gateway_entry_key,
+            } => write!(
+                formatter,
+                "deployment {} gateway entry {gateway_entry_key}",
+                deployment.deployment_artifact_identity
             ),
             Self::Function {
                 package,
@@ -191,6 +244,10 @@ pub enum BytecodeLinkError {
         location: BytecodeLinkLocation,
         detail: String,
     },
+    UnsupportedPhase1Capability {
+        capability: Phase1LinkedCapability,
+        location: BytecodeLinkLocation,
+    },
     /// The crate has not implemented a required link obligation.
     ///
     /// This is never a soft warning and must never publish a candidate or
@@ -222,6 +279,13 @@ impl fmt::Display for BytecodeLinkError {
                 formatter,
                 "bytecode {} linking failed at {location}: {detail}",
                 obligation.name()
+            ),
+            Self::UnsupportedPhase1Capability {
+                capability,
+                location,
+            } => write!(
+                formatter,
+                "Phase 1 linked capability {capability:?} is unsupported at {location}"
             ),
             Self::ImplementationUnavailable {
                 obligation,

@@ -5,8 +5,8 @@ use tokio::{runtime::Handle, sync::Mutex, task::JoinError};
 use crate::attempt::{LoadAttempt, SharedAttemptResult};
 use crate::state::{BeginLoad, CacheState};
 use crate::{
-    DeploymentImage, DeploymentLoadError, DeploymentLoadFailure, DeploymentLoadResult,
-    DeploymentOwnerConflict, DeploymentOwnerIdentity, DeploymentProgramFacts, LoadAttemptId,
+    DeploymentCacheValue, DeploymentLoadError, DeploymentLoadFailure, DeploymentLoadResult,
+    DeploymentOwnerConflict, DeploymentOwnerIdentity, LoadAttemptId,
 };
 
 /// Exact-build cache for immutable deployment images.
@@ -22,7 +22,7 @@ struct CacheInner<P, E> {
 
 impl<P, E> DeploymentImageCache<P, E>
 where
-    P: DeploymentProgramFacts,
+    P: DeploymentCacheValue,
 {
     pub fn new() -> Self {
         Self {
@@ -35,18 +35,18 @@ where
     pub async fn loaded(
         &self,
         owner: &DeploymentOwnerIdentity,
-    ) -> Result<Option<Arc<DeploymentImage<P>>>, DeploymentOwnerConflict> {
+    ) -> Result<Option<Arc<P>>, DeploymentOwnerConflict> {
         self.inner.state.lock().await.loaded(owner)
     }
 
-    pub async fn loaded_snapshot(&self) -> Box<[Arc<DeploymentImage<P>>]> {
+    pub async fn loaded_snapshot(&self) -> Box<[Arc<P>]> {
         self.inner.state.lock().await.loaded_snapshot()
     }
 }
 
 impl<P, E> Default for DeploymentImageCache<P, E>
 where
-    P: DeploymentProgramFacts,
+    P: DeploymentCacheValue,
 {
     fn default() -> Self {
         Self::new()
@@ -55,7 +55,7 @@ where
 
 impl<P, E> DeploymentImageCache<P, E>
 where
-    P: DeploymentProgramFacts + Send + Sync + 'static,
+    P: DeploymentCacheValue + Send + Sync + 'static,
     E: Send + Sync + 'static,
 {
     pub async fn get_or_load<L, F>(
@@ -65,7 +65,7 @@ where
     ) -> DeploymentLoadResult<P, E>
     where
         L: FnOnce(LoadAttemptId, DeploymentOwnerIdentity) -> F + Send + 'static,
-        F: Future<Output = Result<Arc<DeploymentImage<P>>, E>> + Send + 'static,
+        F: Future<Output = Result<Arc<P>, E>> + Send + 'static,
     {
         let runtime = Handle::try_current().ok();
         let begin = {
@@ -135,10 +135,10 @@ fn spawn_loader<P, E, L, F>(
     attempt: Arc<LoadAttempt<P, E>>,
     loader: L,
 ) where
-    P: DeploymentProgramFacts + Send + Sync + 'static,
+    P: DeploymentCacheValue + Send + Sync + 'static,
     E: Send + Sync + 'static,
     L: FnOnce(LoadAttemptId, DeploymentOwnerIdentity) -> F + Send + 'static,
-    F: Future<Output = Result<Arc<DeploymentImage<P>>, E>> + Send + 'static,
+    F: Future<Output = Result<Arc<P>, E>> + Send + 'static,
 {
     let attempt_id = attempt.id();
     let expected_owner = attempt.owner().clone();
@@ -153,10 +153,10 @@ fn spawn_loader<P, E, L, F>(
 fn loader_result<P, E>(
     attempt_id: LoadAttemptId,
     expected_owner: DeploymentOwnerIdentity,
-    task_result: Result<Result<Arc<DeploymentImage<P>>, E>, JoinError>,
+    task_result: Result<Result<Arc<P>, E>, JoinError>,
 ) -> SharedAttemptResult<P, E>
 where
-    P: DeploymentProgramFacts,
+    P: DeploymentCacheValue,
 {
     match task_result {
         Ok(Ok(image)) if image.owner() == &expected_owner => Ok(image),

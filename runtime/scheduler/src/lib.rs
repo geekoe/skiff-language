@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 mod bytecode;
+mod owner_inventory;
 mod pending;
 mod root_escrow;
 mod stream;
@@ -27,9 +28,13 @@ mod stream_driver;
 mod trampoline;
 
 pub use bytecode::{
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeHandoff, BytecodeScheduler,
-    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
-    BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
+    BytecodeHandoff, BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome,
+    BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
+    BytecodeUnitControl,
+};
+pub use owner_inventory::{
+    OwnerCreationError, OwnerCreationErrorKind, OwnerDomain, RequestExecutionContext,
 };
 pub use pending::{
     BeginPendingError, CompletionHandle, PendingCellState, PendingOwner, PendingOwnerDraft,
@@ -38,6 +43,9 @@ pub use pending::{
     VmCompletionHandle, VmPendingOwner, VmPendingRegistry, VmPendingWake,
 };
 pub use root_escrow::{RootDisposition, RootEscrow, RootEscrowBacking};
+pub use skiff_runtime_model::bytecode_execution_observation::{
+    FrozenOwnerDomain, RequestExecutionOwnerInventorySnapshot,
+};
 pub use skiff_runtime_vm::PendingTicket;
 pub use stream::{
     StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll, StreamProducer,
@@ -45,5 +53,6 @@ pub use stream::{
 };
 pub use stream_driver::{VmStreamConsumerExecutor, VmStreamSupervisor, VmStreamTerminal};
 pub use trampoline::{
-    BlockedUnit, FlatTrampoline, ParentResume, SuspendedTrampoline, TrampolineCompletion,
+    BlockedUnit, EnterChildError, FlatTrampoline, ParentResume, SuspendedTrampoline,
+    TrampolineCompletion,
 };

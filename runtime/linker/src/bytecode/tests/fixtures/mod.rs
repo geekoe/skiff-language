@@ -5,11 +5,20 @@ mod records;
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use skiff_artifact_identity::ValidatedBytecodeArtifact;
+use skiff_artifact_identity::{
+    assign_service_deployment_identity, gateway_entry_identity, service_deployment_ref,
+    ValidatedBytecodeArtifact,
+};
 use skiff_artifact_model::{
-    BytecodeArtifact, BytecodeArtifactRef, BytecodePoolEntry, CallableEffectSummary,
+    BoundaryOperationDescriptor, BytecodeArtifact, BytecodeArtifactRef, BytecodePoolEntry,
+    CallableEffectSummary,
     CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, ContractOperationId,
-    ContractTypeDescriptor, PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId,
+    ContractTypeDescriptor, DeploymentGatewayEntry, DeploymentIngressBinding, GatewayAdapterArg,
+    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
+    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
+    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol,
+    DeploymentOperationBinding, IngressSelector, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageBuildId,
     PackageCallableId, PackageRequirement, PackageRequirementKey, PackageSchemaCanonicalDescriptor,
     PackageSchemaTypeRecord, ServiceContract, ServiceContractRef, ServiceDeployment,
     ServiceDeploymentRef, TypeRefIr,
@@ -61,8 +70,10 @@ struct NormalizationDependency {
 pub(super) enum RootProgram {
     LocalCall,
     SyntheticTarget,
+    UnreachableCallback,
     ServiceDependency,
     Interface,
+    UnreachableInterface,
     Host,
     Intrinsic,
     FromType,
@@ -112,6 +123,14 @@ impl Fixture {
         Self::new(RootProgram::Interface, false)
     }
 
+    pub(super) fn unreachable_interface() -> Self {
+        Self::new(RootProgram::UnreachableInterface, false)
+    }
+
+    pub(super) fn unreachable_callback() -> Self {
+        Self::new(RootProgram::UnreachableCallback, false)
+    }
+
     pub(super) fn host() -> Self {
         Self::new(RootProgram::Host, false)
     }
@@ -148,6 +167,18 @@ impl Fixture {
         Self::new(RootProgram::ServiceDependency, false)
     }
 
+    pub(super) fn gateway_server_stream() -> Self {
+        Self::new_gateway(GatewayDispatchMode::ServerStream, false, false)
+    }
+
+    pub(super) fn gateway_guard() -> Self {
+        Self::new_gateway(GatewayDispatchMode::Unary, true, false)
+    }
+
+    pub(super) fn gateway_pre() -> Self {
+        Self::new_gateway(GatewayDispatchMode::Unary, false, true)
+    }
+
     pub(super) fn normalization() -> Self {
         Self::normalization_with(DependencyBuildPin::Exact, None, false)
     }
@@ -174,6 +205,55 @@ impl Fixture {
         self.try_hydrate().unwrap()
     }
 
+    pub(super) fn exact_two_operations() -> (Self, ContractOperationId) {
+        let mut fixture = Self::exact_local();
+        let original_contract_ref = fixture.resolver.deployment.contract.clone();
+        let original_contract = fixture
+            .resolver
+            .contracts
+            .get(&original_contract_ref)
+            .unwrap();
+        let mut contract = original_contract.as_ref().clone();
+        let operation_b = skiff_artifact_identity::contract_operation_id(
+            &contract.service_id,
+            &contract.contract_version,
+            "helper",
+        )
+        .unwrap();
+        contract.operations.insert(
+            operation_b.clone(),
+            BoundaryOperationDescriptor {
+                operation_id: operation_b.clone(),
+                stable_key: "helper".to_string(),
+                contract: records::operation_contract(false),
+            },
+        );
+        contract
+            .diagnostic_text
+            .operations
+            .insert(operation_b.clone(), "helper".to_string());
+        skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
+        let contract = Arc::new(contract);
+        let contract_ref = skiff_artifact_identity::service_contract_ref(&contract).unwrap();
+
+        let mut deployment = fixture.resolver.deployment.as_ref().clone();
+        deployment.contract = contract_ref.clone();
+        deployment.operation_bindings.push(DeploymentOperationBinding {
+            contract_operation_id: operation_b.clone(),
+            package_callable_id: PackageCallableId::new(HELPER_CALLABLE),
+        });
+        assign_service_deployment_identity(&mut deployment).unwrap();
+        let deployment = Arc::new(deployment);
+        let deployment_reference = service_deployment_ref(&deployment);
+
+        fixture.resolver.contracts.remove(&original_contract_ref);
+        fixture.resolver.contracts.insert(contract_ref, contract);
+        fixture.resolver.deployment_reference = deployment_reference.clone();
+        fixture.resolver.deployment = deployment;
+        fixture.deployment_reference = deployment_reference;
+        (fixture, operation_b)
+    }
+
     pub(super) fn try_hydrate(
         &self,
     ) -> Result<HydratedDeploymentBytecode, DeploymentBytecodeHydrationError> {
@@ -182,6 +262,59 @@ impl Fixture {
 
     fn new(program: RootProgram, entry_alias: bool) -> Self {
         Self::new_with_options(program, entry_alias, false, None, false)
+    }
+
+    fn new_gateway(dispatch_mode: GatewayDispatchMode, guard: bool, pre: bool) -> Self {
+        let mut fixture = Self::new(RootProgram::LocalCall, false);
+        let mut deployment = fixture.resolver.deployment.as_ref().clone();
+        let key = GatewayEntryKey::parse("phase-1").unwrap();
+        let protocol_surface = GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+                adapter_kind: GatewayAdapterKind::TypedJson,
+                dispatch_mode,
+                external_sources: vec![GatewayAdapterSource::HttpBody],
+                request_body_schema: Some(GatewayExternalSchema::Number),
+                response_schema: (dispatch_mode == GatewayDispatchMode::Unary)
+                    .then_some(GatewayExternalSchema::Number),
+                stream_item_schema: (dispatch_mode == GatewayDispatchMode::ServerStream)
+                    .then_some(GatewayExternalSchema::Number),
+            }),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        };
+        let callable = PackageCallableId::new(ROOT_CALLABLE);
+        deployment.gateway_entries.insert(
+            key.clone(),
+            DeploymentGatewayEntry {
+                gateway_entry_identity: gateway_entry_identity(&protocol_surface).unwrap(),
+                protocol_surface,
+                handler: Some(callable.clone()),
+                pre: pre.then_some(callable.clone()),
+                guard: guard.then_some(callable),
+                adapter_plan: GatewayAdapterPlan {
+                    kind: GatewayAdapterKind::TypedJson,
+                    args: vec![GatewayAdapterArg {
+                        param: "carrier".to_string(),
+                        source: GatewayAdapterSource::HttpBody,
+                    }],
+                },
+                close_handler: None,
+                close_adapter_plan: None,
+            },
+        );
+        deployment.ingress.push(DeploymentIngressBinding {
+            selector: IngressSelector {
+                protocol: IngressProtocol::Http,
+                method: Some("POST".to_string()),
+                path: "/phase-1".to_string(),
+            },
+            gateway_entry_key: key,
+        });
+        assign_service_deployment_identity(&mut deployment).unwrap();
+        let deployment = Arc::new(deployment);
+        fixture.deployment_reference = service_deployment_ref(&deployment);
+        fixture.resolver.deployment_reference = fixture.deployment_reference.clone();
+        fixture.resolver.deployment = deployment;
+        fixture
     }
 
     fn normalization_with(
@@ -485,10 +618,10 @@ fn analyzed_facts() -> CallableSemanticFacts {
     }
 }
 
-pub(super) fn synthetic_callback_callable() -> PackageCallableId {
+pub(super) fn synthetic_callback_callable_for(owner: &str) -> PackageCallableId {
     skiff_artifact_model::derive_synthetic_callback_callable_id(
         "example.bytecode-link",
-        &PackageCallableId::new(ROOT_CALLABLE),
+        &PackageCallableId::new(owner),
         0,
     )
     .unwrap()

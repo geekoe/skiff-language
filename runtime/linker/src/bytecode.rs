@@ -12,15 +12,23 @@
 
 mod entry;
 mod error;
+mod execution_image;
 mod limits;
 mod link;
 mod stack_map;
 mod types;
 mod worklist;
 
-pub use entry::link_deployment;
+pub(crate) use entry::link_deployment;
+#[cfg(test)]
+use entry::link_deployment_backend_for_test;
 pub use error::{
     BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation, BytecodeLinkObligation,
+    Phase1LinkedCapability,
+};
+pub use execution_image::{
+    link_deployment_execution_image, CodeEntryLookupError, DeploymentExecutionEntry,
+    DeploymentExecutionImage, DeploymentExecutionImageError, DeploymentExecutionLimits,
 };
 pub use limits::LinkLimits;
 

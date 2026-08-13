@@ -2,29 +2,19 @@
 
 mod bytecode_ingress;
 pub mod cancellation;
-mod continuation_handoff;
 mod envelope;
 mod error;
 pub mod execution_budget;
 mod execution_control;
 mod failure_projection;
-mod http_executor;
 mod outbound;
 mod response_event;
-mod response_stream_writer;
-mod response_writer;
 mod runner;
 pub mod vm_heap;
 
 pub use bytecode_ingress::{
-    execute_runtime_bytecode_request, execute_runtime_bytecode_request_with_ports,
-    start_runtime_bytecode_request, start_runtime_bytecode_request_with_ports,
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff, BytecodeInvocationHandoff,
-    BytecodeRequestExecution, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
-    BytecodeRequestExecutionPorts, BytecodeRequestPendingWake, BytecodeRequestRunOutcome,
-    BytecodeRequestSuspended, BytecodeRequestTarget, BytecodeRequestTargetError,
-    BytecodeRequestWakeQueue, BytecodeSchedulerError, BytecodeSchedulerPorts,
-    BytecodeStreamHandoff, BytecodeStreamSupervisor, SuspendedTrampoline,
+    drive_runtime_bytecode_request, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
+    BytecodeRequestRetention, DrivenBytecodeRequest, DrivenBytecodeRequestOwnerInventory,
 };
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
@@ -34,9 +24,6 @@ pub use envelope::{
 pub use error::{OrdinaryRequestError, RequestError, RequestResult};
 pub use execution_budget::ExecutionBudget;
 pub use execution_control::{ExecutionControl, OwnedExecutionControl};
-pub use http_executor::{
-    BytecodeHttpExecutor, BytecodeHttpStream, BytecodeHttpStreamEvent, BytecodeSelfIngressContext,
-};
 pub use failure_projection::{
     ActiveCallSiteKey, ActiveRequestCallSite, AdmittedCallSiteProjection, ContinuationLaneId,
     ContinuationProjectionGuard, FailureProjectionError, FailureSite, RequestGeneration,
@@ -55,6 +42,8 @@ pub use response_event::{
     BoundaryResponse, FixedServiceResponseFailure, HttpResponseMetadata, ResponseEnd,
     ResponseError, ResponseEvent, ResponseStreamEvent,
 };
-pub use response_writer::ResponseEventSink;
 pub use runner::{execution_budget_trace_attrs, response_error_to_telemetry_map};
+pub use skiff_runtime_model::bytecode_execution_observation::{
+    FrozenOwnerDomain, RequestExecutionOwnerInventorySnapshot,
+};
 pub use vm_heap::RequestVmHeap;

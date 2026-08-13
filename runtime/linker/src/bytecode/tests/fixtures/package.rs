@@ -14,7 +14,7 @@ use skiff_artifact_model::{
 };
 
 use super::{
-    analyzed_facts, constants, no_effects, schema_record, synthetic_callback_callable,
+    analyzed_facts, constants, no_effects, schema_record, synthetic_callback_callable_for,
     DependencyTypeSurfaceConflict, RootProgram, DEPENDENCY_PACKAGE_ID, HELPER_CALLABLE,
     OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH, PRIVATE_IMPLEMENTATION_PATH, ROOT_CALLABLE,
 };
@@ -57,12 +57,15 @@ pub(super) fn package(
         ),
         (
             "fixture.helper".to_string(),
-            callable_symbol(helper_callable.clone(), callable_signature(false)),
+            callable_symbol(
+                helper_callable.clone(),
+                callable_signature(program == RootProgram::UnreachableInterface),
+            ),
         ),
     ]);
     implementation_symbols.extend(constants::implementation_symbols(bytecode, package_id));
     let mut public_symbols = BTreeMap::new();
-    if program == RootProgram::Interface {
+    if matches!(program, RootProgram::Interface | RootProgram::UnreachableInterface) {
         implementation_symbols.insert(
             "fixture.Reader".to_string(),
             PackageLocalAbiSymbol::Type {
@@ -117,8 +120,15 @@ pub(super) fn package(
         (root_callable, analyzed_facts()),
         (helper_callable, analyzed_facts()),
     ]);
-    let synthetic_callback =
-        (program == RootProgram::SyntheticTarget).then(synthetic_callback_callable);
+    let synthetic_callback_owner = if program == RootProgram::UnreachableCallback {
+        HELPER_CALLABLE
+    } else {
+        ROOT_CALLABLE
+    };
+    let synthetic_callback = matches!(
+        program,
+        RootProgram::SyntheticTarget | RootProgram::UnreachableCallback
+    ).then(|| synthetic_callback_callable_for(synthetic_callback_owner));
     if let Some(callback) = &synthetic_callback {
         callable_semantic_facts.insert(callback.clone(), analyzed_facts());
     }
@@ -179,7 +189,7 @@ pub(super) fn package(
                 } else {
                     BTreeMap::new()
                 };
-                if program == RootProgram::Interface {
+                if matches!(program, RootProgram::Interface | RootProgram::UnreachableInterface) {
                     types.insert(
                         "fixture.Reader".to_string(),
                         TypeExport {
@@ -220,7 +230,7 @@ pub(super) fn package(
                 owner: PackageExecutableCoordinate {
                     file_ir_identity: "file-ir:fixture".to_string(),
                     module_path: "fixture".to_string(),
-                    executable_index: 0,
+                    executable_index: u32::from(program == RootProgram::UnreachableCallback),
                 },
                 site_ordinal: 0,
                 package_callable_id,

@@ -17,12 +17,23 @@ mod phase_0_negative_tests;
 mod phase_0_proof_support;
 #[cfg(test)]
 mod phase_0_vcp_tests;
-mod resumable;
+#[cfg(test)]
+mod phase_1_runtime_proof_support;
+#[cfg(test)]
+mod phase_1_runtime_proof_tests;
 mod websocket_jsonrpc;
 
 impl RuntimeHost {
-    pub(crate) async fn cancel_request(&self, cancel: RequestCancel) {
-        if self.request_supervisor.cancel(&cancel).await {
+    pub(crate) async fn cancel_request(
+        &self,
+        router_session: &super::request_supervisor::RouterSessionEpoch,
+        cancel: RequestCancel,
+    ) {
+        if self
+            .request_supervisor
+            .cancel(router_session, &cancel)
+            .await
+        {
             info!(
                 event = "runtime.request_cancelled",
                 request_id = %cancel.request_id,

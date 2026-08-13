@@ -1,9 +1,9 @@
 //! Independent semantic verification boundary for linked bytecode.
 //!
 //! [`LinkedBytecodeCandidate`](skiff_runtime_linked_bytecode::LinkedBytecodeCandidate)
-//! is deliberately untrusted and carries no deployment provenance. The only
-//! public transition to [`VerifiedLinkedBytecodeImage`] is [`verify`], which
-//! consumes the exact opaque deployment hydration and candidate together.
+//! is deliberately untrusted and carries no deployment provenance. This crate
+//! returns construction-only [`ExecutableFacts`]; the linker remains the sole
+//! executable-image authority.
 
 mod admission;
 mod attribution;
@@ -22,10 +22,16 @@ pub use error::{
 };
 pub use limits::VerificationLimits;
 pub use resume::{VerifiedResumeKind, VerifiedResumeSite, VerifiedResumeSites};
-pub use verifier::{
-    verify, CodeEntryLookupError, VerifiedCodeEntry, VerifiedCodeEntryKind, VerifiedConstantHeap,
-    VerifiedLinkedBytecodeImage,
-};
+pub use verifier::{verify_executable_facts, ExecutableFacts, VerifiedConstantHeap};
+
+#[cfg(test)]
+pub(crate) fn verify_facts(
+    hydrated: skiff_runtime_loader::HydratedDeploymentBytecode,
+    candidate: skiff_runtime_linked_bytecode::LinkedBytecodeCandidate,
+    limits: &VerificationLimits,
+) -> Result<ExecutableFacts, VerificationError> {
+    verify_executable_facts(&hydrated, &candidate, limits)
+}
 
 #[cfg(test)]
 mod tests;

@@ -8,6 +8,7 @@ use skiff_artifact_model::{
 use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
 use super::{
+    admission::AdmittedPhase1BytecodeMir,
     inputs::{canonical_function_key, is_void},
     BytecodeEmissionError,
 };
@@ -21,6 +22,12 @@ use super::{
 /// `Stream<T>` endpoints use their affine resource plan. Missing or
 /// non-snapshot lifecycle facts fail closed instead of being inferred.
 pub fn derive_bytecode_value_transfer_plans(
+    admitted: &AdmittedPhase1BytecodeMir<'_>,
+) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
+    derive_bytecode_value_transfer_plans_unchecked(admitted.units())
+}
+
+pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
     units: &[MirUnit],
 ) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
     let mut functions = BTreeMap::new();

@@ -133,7 +133,15 @@ impl RequestError {
                     return None;
                 }
                 RuntimeErrorPayload {
-                    code: "TimeoutError".to_string(),
+                    code: match reason {
+                        ExecutionBudgetReason::DeadlineExceeded => "TimeoutError".to_string(),
+                        ExecutionBudgetReason::InstructionLimitExceeded => {
+                            "std.error.InstructionLimitExceededError".to_string()
+                        }
+                        ExecutionBudgetReason::Cancelled => {
+                            unreachable!("cancellation terminal was split above")
+                        }
+                    },
                     message: match reason {
                         ExecutionBudgetReason::DeadlineExceeded => {
                             "execution deadline exceeded".to_string()
@@ -146,12 +154,21 @@ impl RequestError {
                         }
                     },
                     status: None,
-                    details: Some(serde_json::json!({
-                        "reason": reason.as_str(),
-                        "instructionCount": instruction_count,
-                        "limit": limit,
-                        "elapsedMs": elapsed_ms,
-                    })),
+                    details: Some(match reason {
+                        ExecutionBudgetReason::DeadlineExceeded => serde_json::json!({
+                            "reason": reason.as_str(),
+                            "instructionCount": instruction_count,
+                            "limit": limit,
+                            "elapsedMs": elapsed_ms,
+                        }),
+                        ExecutionBudgetReason::InstructionLimitExceeded => serde_json::json!({
+                            "instructionCount": instruction_count,
+                            "limit": limit,
+                        }),
+                        ExecutionBudgetReason::Cancelled => {
+                            unreachable!("cancellation terminal was split above")
+                        }
+                    }),
                 }
             }
             Self::Boundary(error) => error.payload(),

@@ -12,12 +12,11 @@ use skiff_runtime_transport::{
     control_mapper::encode_outbound_control_message,
     protocol::{
         decode_bytecode_request_start_frame, decode_router_bootstrap_frame_header,
-        decode_typed_binary_frame,
-        ActorFindResponseFrameHeader, ActorGetOrCreateResponseFrameHeader,
-        ActorRemoveResponseFrameHeader, ActorReplaceResponseFrameHeader,
-        ActorTaskRuntimeErrorFrameHeader, RequestCancelFrameHeader, RuntimeErrorFramePayload,
-        RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
-        TaskCancelResponseFrameHeader, TaskStatusResponseFrameHeader,
+        decode_typed_binary_frame, ActorFindResponseFrameHeader,
+        ActorGetOrCreateResponseFrameHeader, ActorRemoveResponseFrameHeader,
+        ActorReplaceResponseFrameHeader, ActorTaskRuntimeErrorFrameHeader,
+        RequestCancelFrameHeader, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
+        RuntimeRegisteredFrameHeader, TaskCancelResponseFrameHeader, TaskStatusResponseFrameHeader,
         TaskSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::request_cancel_from_frame_header,
@@ -35,6 +34,7 @@ use crate::error::{Result, RuntimeError};
 mod handshake;
 pub(crate) mod task_submit;
 
+use super::request_supervisor::RouterSessionEpoch;
 use handshake::{
     ClientHandshake, ClientHandshakePhase, ClientTerminalKind, ClientTimeoutKind,
     HandshakeDeadlines,
@@ -115,6 +115,16 @@ async fn run_connected_session_full<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
+    let router_session_epoch = RouterSessionEpoch::from_connection_id(router_session_id)
+        .map_err(|error| RuntimeError::Decode(error.to_string()))?;
+    if !host
+        .request_supervisor
+        .start_session(router_session_epoch.clone())
+    {
+        return Err(RuntimeError::Decode(
+            "router session epoch is already connected".to_string(),
+        ));
+    }
     let mut ws = ws;
     let (sender, receiver) = mpsc::unbounded_channel::<super::RouterWriterMessage>();
     let mut receiver = receiver;
@@ -131,7 +141,7 @@ where
     };
 
     let mut session_guard =
-        ConnectedRouterSessionGuard::new(host.clone(), router_session_id.clone());
+        ConnectedRouterSessionGuard::new(host.clone(), router_session_epoch.clone());
     let session_result = async {
         let mut health_reporter = RuntimeHealthReporter::default();
         let mut bootstrap = initial_bootstrap;
@@ -147,7 +157,7 @@ where
                         &host,
                         &mut ws,
                         message,
-                        &router_session_id,
+                        &router_session_epoch,
                         &sender,
                         &mut health_reporter,
                         &mut bootstrap,
@@ -210,7 +220,7 @@ async fn handle_router_session_message<S>(
     host: &super::RuntimeHost,
     ws: &mut WebSocketStream<S>,
     message: Option<std::result::Result<Message, tokio_tungstenite::tungstenite::Error>>,
-    router_session_id: &str,
+    router_session: &RouterSessionEpoch,
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     health_reporter: &mut RuntimeHealthReporter,
     bootstrap: &mut Option<ConnectionBootstrap>,
@@ -249,7 +259,7 @@ where
             }
             dispatch_router_binary_frame_with_health(
                 host,
-                router_session_id,
+                router_session,
                 &bytes,
                 sender,
                 health_reporter,
@@ -290,15 +300,15 @@ fn router_binary_frame_type(bytes: &[u8]) -> Result<String> {
 
 struct ConnectedRouterSessionGuard {
     host: super::RuntimeHost,
-    router_session_id: String,
+    router_session: RouterSessionEpoch,
     closed: bool,
 }
 
 impl ConnectedRouterSessionGuard {
-    fn new(host: super::RuntimeHost, router_session_id: String) -> Self {
+    fn new(host: super::RuntimeHost, router_session: RouterSessionEpoch) -> Self {
         Self {
             host,
-            router_session_id,
+            router_session,
             closed: false,
         }
     }
@@ -308,7 +318,11 @@ impl ConnectedRouterSessionGuard {
             return Ok(());
         }
         self.closed = true;
-        if let Ok(session) = ConnectionRequestSession::new(self.router_session_id.clone()) {
+        self.host
+            .request_supervisor
+            .stop_session(&self.router_session);
+        if let Ok(session) = ConnectionRequestSession::new(self.router_session.as_str().to_string())
+        {
             self.host.connection_requests.disconnect_session(&session);
         }
         self.host.outbound_requests.fail_all(ResponseError {
@@ -519,9 +533,16 @@ async fn dispatch_router_binary_frame(
         max_response_bytes: 67_108_864,
     });
     let mut handshake = ClientHandshake::registered();
+    let router_session = RouterSessionEpoch::from_connection_id(
+        "skiff-router-session-v1:opaque:test-session".to_string(),
+    )
+    .unwrap();
+    let _ = host
+        .request_supervisor
+        .start_session(router_session.clone());
     dispatch_router_binary_frame_inner(
         host,
-        "skiff-router-session-v1:opaque:test-session",
+        &router_session,
         bytes,
         sender,
         None,
@@ -551,9 +572,16 @@ async fn dispatch_router_binary_frame_with_http_response_max(
         max_response_bytes,
     });
     let mut handshake = ClientHandshake::registered();
+    let router_session = RouterSessionEpoch::from_connection_id(
+        "skiff-router-session-v1:opaque:test-session".to_string(),
+    )
+    .unwrap();
+    let _ = host
+        .request_supervisor
+        .start_session(router_session.clone());
     dispatch_router_binary_frame_inner(
         host,
-        "skiff-router-session-v1:opaque:test-session",
+        &router_session,
         bytes,
         sender,
         None,
@@ -565,7 +593,7 @@ async fn dispatch_router_binary_frame_with_http_response_max(
 
 async fn dispatch_router_binary_frame_with_health(
     host: &super::RuntimeHost,
-    router_session_id: &str,
+    router_session: &RouterSessionEpoch,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     health_reporter: &mut RuntimeHealthReporter,
@@ -574,7 +602,7 @@ async fn dispatch_router_binary_frame_with_health(
 ) -> Result<()> {
     dispatch_router_binary_frame_inner(
         host,
-        router_session_id,
+        router_session,
         bytes,
         sender,
         Some(health_reporter),
@@ -586,7 +614,7 @@ async fn dispatch_router_binary_frame_with_health(
 
 async fn dispatch_router_binary_frame_inner(
     host: &super::RuntimeHost,
-    router_session_id: &str,
+    router_session: &RouterSessionEpoch,
     bytes: &[u8],
     sender: &mpsc::UnboundedSender<super::RouterWriterMessage>,
     health_reporter: Option<&mut RuntimeHealthReporter>,
@@ -658,14 +686,8 @@ async fn dispatch_router_binary_frame_inner(
             let (header, payload) = decode_bytecode_request_start_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
             let bootstrap = bootstrap.as_ref().expect("bootstrap checked above");
-            host.spawn_bytecode_request(
-                router_session_id,
-                header,
-                payload,
-                bootstrap,
-                sender.clone(),
-            )
-            .await;
+            host.spawn_bytecode_request(router_session, header, payload, bootstrap, sender.clone())
+                .await;
         }
         "request.cancel" => {
             let (header, payload) = decode_typed_binary_frame::<RequestCancelFrameHeader>(bytes)
@@ -675,14 +697,14 @@ async fn dispatch_router_binary_frame_inner(
                     "request.cancel binary frame payload must be empty".to_string(),
                 ));
             }
-            host.cancel_request(request_cancel_from_frame_header(header))
+            host.cancel_request(router_session, request_cancel_from_frame_header(header))
                 .await;
         }
         "connection.response" => {
             let (header, payload) = decode_connection_response_frame(bytes)
                 .map_err(super::transport_error_into_runtime_error)?;
             let request_id = header.request_id.clone();
-            let session = ConnectionRequestSession::new(router_session_id.to_string())
+            let session = ConnectionRequestSession::new(router_session.as_str().to_string())
                 .map_err(RuntimeError::Decode)?;
             let terminal = match header.outcome {
                 ConnectionResponseOutcome::Success => ConnectionRequestTerminal::Success(payload),
@@ -719,7 +741,7 @@ async fn dispatch_router_binary_frame_inner(
                 warn!(
                     event = "runtime.unmatched_connection_response",
                     request_id = %request_id,
-                    router_session_id
+                    router_session_id = router_session.as_str(),
                 );
             }
         }

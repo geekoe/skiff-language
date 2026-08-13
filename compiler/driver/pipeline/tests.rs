@@ -4,10 +4,13 @@ use super::*;
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
     current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
-    PackageBuildId, PackageCallableId, PackageCallableRef, PackageImplementationLinks,
-    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
-    PackageSchemaIndexRef, PackageSymbolRef, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    InstructionSourceSite, PackageBuildId, PackageCallableId, PackageCallableRef,
+    PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
+    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageSymbolRef,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
+
+mod phase_1_bytecode_admission;
 
 #[test]
 fn explicitly_enabled_bytecode_emits_and_attaches_an_empty_scalar_handoff() {
@@ -75,7 +78,7 @@ fn explicitly_enabled_bytecode_emits_and_attaches_an_empty_scalar_handoff() {
 }
 
 #[test]
-fn explicitly_enabled_bytecode_emits_a_scalar_function() {
+fn phase_1_bytecode_admission_preserves_scalar_local_call_fixture() {
     let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compiler manifest must have a repository parent")
@@ -94,7 +97,7 @@ fn explicitly_enabled_bytecode_emits_a_scalar_function() {
     ));
     std::fs::create_dir_all(&temp).unwrap();
     let source_path = temp.join("main.skiff");
-    let text = "function helper(value: number) -> number { return value + 1 }\nfunction run(value: number) -> number { return helper(value) }\nfunction choose(value: number) -> number { if value > 0 { return 1 } return 0 }\n";
+    let text = "function helper(value: number) -> number { return value + 5 }\nfunction run(value: number) -> number { final result = helper(value) if result == 7 { return result - 4 } return 0 }\n";
     std::fs::write(&source_path, text).unwrap();
     let source_tree = crate::SourceTree {
         root: temp.clone(),
@@ -141,7 +144,7 @@ fn explicitly_enabled_bytecode_emits_a_scalar_function() {
 
     let output = compile_package(input).unwrap();
     let handoff = output.bytecode_handoff().expect("enabled bytecode handoff");
-    assert_eq!(handoff.receipt().function_count(), 3);
+    assert_eq!(handoff.receipt().function_count(), 2);
     assert!(handoff.receipt().word_count() > 0);
     assert!(handoff.receipt().relocation_count() > 0);
     assert!(handoff.artifact().image.functions.contains_key("main::run"));
@@ -150,12 +153,65 @@ fn explicitly_enabled_bytecode_emits_a_scalar_function() {
         .image
         .functions
         .contains_key("main::helper"));
-    assert!(handoff
-        .artifact()
-        .image
-        .functions
-        .contains_key("main::choose"));
-    assert!(handoff.artifact().image.functions.contains_key("main::run"));
+    let view = skiff_artifact_model::bytecode::structurally_validate(handoff.artifact())
+        .expect("accepted scalar/local-call artifact remains structurally valid");
+    let opcodes = view
+        .functions()
+        .iter()
+        .flat_map(|function| function.instructions.iter())
+        .map(|instruction| instruction.descriptor.kind)
+        .collect::<Vec<_>>();
+    for required in [
+        skiff_artifact_model::Opcode::CallLocal,
+        skiff_artifact_model::Opcode::Add,
+        skiff_artifact_model::Opcode::Equal,
+        skiff_artifact_model::Opcode::JumpIfFalse,
+        skiff_artifact_model::Opcode::Subtract,
+        skiff_artifact_model::Opcode::Return,
+    ] {
+        assert!(
+            opcodes.contains(&required),
+            "missing accepted opcode {required:?}"
+        );
+    }
+    assert!(!opcodes.contains(&skiff_artifact_model::Opcode::TailCallLocal));
+    let run = view
+        .functions()
+        .iter()
+        .find(|function| function.function_key == "main::run")
+        .expect("run function");
+    let call = run
+        .instructions
+        .iter()
+        .find(|instruction| instruction.descriptor.kind == skiff_artifact_model::Opcode::CallLocal)
+        .expect("run has one local call");
+    let call_entries = run
+        .statement_entries
+        .iter()
+        .filter(|entry| {
+            entry.pc == call.pc
+                && matches!(
+                    entry.attribution_id,
+                    skiff_artifact_model::StatementAttributionId::Expression { .. }
+                )
+        })
+        .collect::<Vec<_>>();
+    let [entry] = call_entries.as_slice() else {
+        panic!("CallLocal must retain exactly one lowering-owned expression attribution");
+    };
+    assert!(matches!(&entry.site, InstructionSourceSite::Source { .. }));
+    let call_source_rows = run
+        .source_map
+        .iter()
+        .filter(|row| row.start_pc <= call.pc && call.pc < row.end_pc)
+        .collect::<Vec<_>>();
+    let [call_source] = call_source_rows.as_slice() else {
+        panic!("CallLocal must have exactly one lowering-owned source-map row");
+    };
+    assert!(matches!(
+        &call_source.site,
+        InstructionSourceSite::Source { .. }
+    ));
 
     std::fs::remove_dir_all(temp).unwrap();
 }

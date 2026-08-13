@@ -8,11 +8,14 @@ use skiff_artifact_model::{
 use skiff_compiler_lowering::{mir::MirUnit, FrozenConstantBundle};
 
 use super::{
-    constants::build_constant_image, functions::emit_functions, inputs::ValidatedEmissionInputs,
+    admission::AdmittedPhase1BytecodeMir,
+    constants::build_constant_image,
+    functions::{emit_functions, SourceAttributionMode},
+    inputs::ValidatedEmissionInputs,
     BytecodeEmissionError, BytecodeValueTransferPlans,
 };
 
-/// Emits one canonical package bytecode image from public, self-contained MIR.
+/// Emits one canonical package bytecode image from admitted Phase 1 MIR.
 ///
 /// The emitter requires exact one-to-one constant-bundle ownership and exact
 /// transfer-plan coverage. The artifact header is owned by the emitter and
@@ -22,14 +25,45 @@ use super::{
 /// structural validation, canonical identity assignment and C9 identity
 /// validation.
 pub fn emit_bytecode_artifact(
+    admitted: &AdmittedPhase1BytecodeMir<'_>,
+    constants: &[FrozenConstantBundle],
+    transfer_plans: &BytecodeValueTransferPlans,
+) -> Result<BytecodeArtifact, BytecodeEmissionError> {
+    emit_bytecode_artifact_with_mode(
+        admitted.units(),
+        constants,
+        transfer_plans,
+        SourceAttributionMode::AdmittedPhase1,
+    )
+}
+
+/// Raw backend entry used only by crate-owned backend conformance tests.
+///
+/// Production callers cannot reach this function and must present an opaque
+/// Phase 1 admission proof to [`emit_bytecode_artifact`].
+pub(super) fn emit_bytecode_artifact_unchecked(
     units: &[MirUnit],
     constants: &[FrozenConstantBundle],
     transfer_plans: &BytecodeValueTransferPlans,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
+    emit_bytecode_artifact_with_mode(
+        units,
+        constants,
+        transfer_plans,
+        SourceAttributionMode::PrivateBackend,
+    )
+}
+
+fn emit_bytecode_artifact_with_mode(
+    units: &[MirUnit],
+    constants: &[FrozenConstantBundle],
+    transfer_plans: &BytecodeValueTransferPlans,
+    source_attribution: SourceAttributionMode,
+) -> Result<BytecodeArtifact, BytecodeEmissionError> {
     let inputs = ValidatedEmissionInputs::validate(units, constants, transfer_plans)?;
 
     let mut constants = build_constant_image(&inputs)?;
-    let emitted_functions = emit_functions(&inputs, &mut constants)?;
+    let emitted_functions = emit_functions(&inputs, &mut constants, source_attribution)?;
 
     let mut artifact = BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
@@ -71,9 +105,27 @@ mod tests {
     use crate::bytecode::FunctionValueTransferPlans;
 
     #[test]
+    fn phase_1_bytecode_admission_is_required_by_the_public_emitter_type() {
+        fn require_admitted_signature(
+            _emitter: for<'token, 'units, 'constants, 'plans> fn(
+                &'token AdmittedPhase1BytecodeMir<'units>,
+                &'constants [FrozenConstantBundle],
+                &'plans BytecodeValueTransferPlans,
+            ) -> Result<
+                BytecodeArtifact,
+                BytecodeEmissionError,
+            >,
+        ) {
+        }
+
+        require_admitted_signature(emit_bytecode_artifact);
+    }
+
+    #[test]
     fn empty_package_uses_the_exact_compile_time_header_and_is_identity_assigned() {
+        let admitted = crate::bytecode::admit_phase_1_bytecode_mir(&[]).unwrap();
         let artifact =
-            emit_bytecode_artifact(&[], &[], &BytecodeValueTransferPlans::empty()).unwrap();
+            emit_bytecode_artifact(&admitted, &[], &BytecodeValueTransferPlans::empty()).unwrap();
 
         assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v7");
         assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v4");
@@ -137,7 +189,8 @@ mod tests {
             .collect(),
             Default::default(),
         );
-        let error = emit_bytecode_artifact(&[], &[], &transfer_plans).unwrap_err();
+        let admitted = crate::bytecode::admit_phase_1_bytecode_mir(&[]).unwrap();
+        let error = emit_bytecode_artifact(&admitted, &[], &transfer_plans).unwrap_err();
         assert!(matches!(
             error,
             BytecodeEmissionError::UnexpectedValueTransferPlans { .. }

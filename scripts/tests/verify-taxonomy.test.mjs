@@ -124,6 +124,36 @@ test('bytecode VM phase 0 gate is independently selectable and excluded from def
   }
 });
 
+test('bytecode VM phase 1 gate is independently selectable and excluded from defaults', async () => {
+  const focused = await buildVerifyPlan({
+    root,
+    selectors: ['bytecode-vm-phase-1-gate'],
+  });
+  assert.deepEqual(
+    focused.tasks.map(({ id, kind, command, args, cwd }) => ({
+      id,
+      kind,
+      command,
+      args,
+      cwd,
+    })),
+    [{
+      id: 'bytecode-vm-phase-1:gate',
+      kind: 'implementation:runtime',
+      command: 'node',
+      args: ['scripts/run-bytecode-vm-phase-1-gate.mjs'],
+      cwd: root,
+    }],
+  );
+  for (const selectors of [['tests'], ['verify']]) {
+    const plan = await buildVerifyPlan({ root, selectors });
+    assert.equal(
+      plan.tasks.some((task) => task.id === 'bytecode-vm-phase-1:gate'),
+      false,
+    );
+  }
+});
+
 test('implementation tests expand by subject without static or live tasks', async () => {
   const plan = await buildVerifyPlan({ root, selectors: ['implementation-tests'] });
   for (const id of [
@@ -319,10 +349,15 @@ test('verify help explains subject-oriented test domains', async () => {
   assert.match(result.stdout, /implementation-tests\s+all implementation subjects/);
   assert.match(result.stdout, /foundation\s+shared artifact-model/);
   assert.match(result.stdout, /bytecode-vm-phase-0-gate\s+Phase 0 exact-candidate closure gate/);
+  assert.match(result.stdout, /bytecode-vm-phase-1-gate\s+Phase 1 trusted synchronous core gate/);
   assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_COMMIT\s+literal 40-hex commit/);
   assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE0_CANDIDATE_TREE\s+literal 40-hex tree/);
   assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE0_EVIDENCE_DIR\s+caller-chosen canonical absolute absent path/);
   assert.match(result.stdout, /does not choose them from HEAD or choose a temporary evidence/);
+  assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE1_CANDIDATE_COMMIT\s+literal 40-hex commit/);
+  assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE1_CANDIDATE_TREE\s+literal 40-hex tree/);
+  assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE1_EVIDENCE_DIR\s+caller-chosen canonical absolute absent path/);
+  assert.match(result.stdout, /fixed 21-receipt K0\/T-C\/T-R\/V1\/Phase-0-regression matrix/);
   assert.doesNotMatch(result.stdout, /Phase 1 VCP validation readiness gate/);
   assert.doesNotMatch(result.stdout, /cargo test --workspace|Node\/TypeScript plan/);
 });

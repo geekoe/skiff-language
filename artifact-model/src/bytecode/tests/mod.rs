@@ -5,6 +5,7 @@ pub(crate) use super::*;
 
 mod authority;
 mod corpus;
+mod interface_limits;
 mod limits;
 mod manifests;
 mod property;
