@@ -1,6 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
-use super::{VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation};
+use super::{
+    PinnedWritablePathSegment, VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation,
+    VmHeapPathSegment, WritablePathPreparation,
+};
 use crate::{
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
@@ -361,6 +364,272 @@ fn unadapted_heaps_reject_collection_primitives_conservatively() {
             kind: ValueKind::RequestHeapRef,
         })
     ));
+}
+
+#[test]
+fn unadapted_heaps_reject_the_two_phase_writable_path_conservatively() {
+    let mut heap = FakeHeap::new(2);
+    let root = request_ref(2, 1);
+    heap.register(&root);
+    assert!(matches!(
+        heap.prepare_writable_path(
+            &root,
+            &[VmHeapPathSegment::ArrayIndex],
+            &[ValueSlot::integer(0)]
+        ),
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::PrepareWritablePath,
+            kind: ValueKind::RequestHeapRef,
+        })
+    ));
+
+    let preparation = WritablePathPreparation::new(
+        root,
+        Box::new([PinnedWritablePathSegment::ArrayIndex { index: 0 }]),
+        Box::new([root]),
+        Some(ValueSlot::integer(1)),
+    )
+    .expect("model preparation should construct");
+    assert!(matches!(
+        heap.commit_writable_path(preparation, ValueSlot::integer(2)),
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::CommitWritablePath,
+            kind: ValueKind::RequestHeapRef,
+        })
+    ));
+}
+
+#[test]
+fn writable_path_preparation_pins_exact_facts_and_formats_opaque_debug() {
+    let root = request_ref(4, 7);
+    let container = request_ref(4, 8);
+    let leaf = ValueSlot::integer(3);
+    let preparation = WritablePathPreparation::new(
+        root,
+        Box::new([
+            PinnedWritablePathSegment::DenseField {
+                field: "inner".to_string(),
+            },
+            PinnedWritablePathSegment::ArrayIndex { index: 2 },
+        ]),
+        Box::new([root, container]),
+        Some(leaf),
+    )
+    .expect("model preparation should construct");
+
+    assert!(preparation.root() == root);
+    assert!(preparation.containers() == [root, container]);
+    assert!(preparation.leaf() == Some(leaf));
+    assert_eq!(
+        preparation.segments(),
+        &[
+            PinnedWritablePathSegment::DenseField {
+                field: "inner".to_string()
+            },
+            PinnedWritablePathSegment::ArrayIndex { index: 2 },
+        ]
+    );
+    let debug = format!("{preparation:?}");
+    assert!(debug.contains("WritablePathPreparation"), "{debug}");
+}
+
+#[test]
+fn writable_path_preparation_rejects_malformed_pins() {
+    let root = request_ref(4, 7);
+    assert!(matches!(
+        WritablePathPreparation::new(
+            root,
+            Box::new([PinnedWritablePathSegment::ArrayIndex { index: 0 }]),
+            Box::new([request_ref(4, 9)]),
+            None,
+        ),
+        Err(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::PrepareWritablePath,
+            ..
+        })
+    ));
+    assert!(matches!(
+        WritablePathPreparation::new(root, Box::new([]), Box::new([]), None),
+        Err(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::PrepareWritablePath,
+            ..
+        })
+    ));
+}
+
+/// Minimal heap whose writable path is a single owned root cell. It proves the
+/// two-phase sequencing contract: prepare pins before the right-hand side is
+/// handed over, and commit atomically replaces the cell and returns the
+/// replacement root without consulting the stale root slot.
+struct TwoPhaseHeap {
+    live: bool,
+    value: ValueSlot,
+    fail_prepare: bool,
+    fail_commit: bool,
+}
+
+impl TwoPhaseHeap {
+    fn new(value: ValueSlot) -> Self {
+        Self {
+            live: true,
+            value,
+            fail_prepare: false,
+            fail_commit: false,
+        }
+    }
+}
+
+impl VmHeap for TwoPhaseHeap {
+    fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn release_snapshot(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn prepare_writable_path(
+        &mut self,
+        root: &ValueSlot,
+        segments: &[VmHeapPathSegment],
+        selectors: &[ValueSlot],
+    ) -> Result<WritablePathPreparation, VmHeapError> {
+        if self.fail_prepare {
+            return Err(VmHeapError::ResourceLimitExceeded {
+                operation: VmHeapOperation::PrepareWritablePath,
+                limit: 1,
+                current: 1,
+                requested_delta: 1,
+            });
+        }
+        let resolved = segments
+            .iter()
+            .map(|segment| -> Result<PinnedWritablePathSegment, VmHeapError> {
+                match segment {
+                VmHeapPathSegment::DenseField { field } => {
+                    Ok(PinnedWritablePathSegment::DenseField {
+                        field: field.clone(),
+                    })
+                }
+                VmHeapPathSegment::ArrayIndex => {
+                    let selector = selectors.first().copied().ok_or_else(|| {
+                        VmHeapError::HeapOperationFailed {
+                            operation: VmHeapOperation::PrepareWritablePath,
+                            message: "missing array selector".to_string(),
+                        }
+                    })?;
+                    let index = usize::try_from(
+                        selector
+                            .as_integer()
+                            .ok_or(VmHeapError::InvalidValueMetadata)?,
+                    )
+                    .map_err(|_| VmHeapError::InvalidValueMetadata)?;
+                    Ok(PinnedWritablePathSegment::ArrayIndex {
+                        index,
+                    })
+                }
+                VmHeapPathSegment::MapKey => Ok(PinnedWritablePathSegment::MapKey {
+                    key: selectors.first().copied().unwrap_or(ValueSlot::null()),
+                }),
+            }
+            })
+            .collect::<Result<Vec<_>, VmHeapError>>()?;
+        let containers = vec![*root; resolved.len()];
+        WritablePathPreparation::new(
+            *root,
+            resolved.into_boxed_slice(),
+            containers.into_boxed_slice(),
+            self.live.then_some(self.value),
+        )
+    }
+
+    fn commit_writable_path(
+        &mut self,
+        prepared: WritablePathPreparation,
+        value: ValueSlot,
+    ) -> Result<ValueSlot, VmHeapError> {
+        if self.fail_commit {
+            return Err(VmHeapError::ResourceLimitExceeded {
+                operation: VmHeapOperation::CommitWritablePath,
+                limit: 1,
+                current: 1,
+                requested_delta: 1,
+            });
+        }
+        self.value = value;
+        Ok(prepared.root())
+    }
+}
+
+#[test]
+fn two_phase_writable_path_pins_before_rhs_and_commits_atomically() {
+    let root = request_ref(6, 3);
+    let mut heap = TwoPhaseHeap::new(ValueSlot::integer(1));
+    let prepared = heap
+        .prepare_writable_path(
+            &root,
+            &[VmHeapPathSegment::DenseField {
+                field: "count".to_string(),
+            }],
+            &[],
+        )
+        .expect("prepare should pin");
+    assert!(prepared.root() == root);
+    assert!(prepared.leaf() == Some(ValueSlot::integer(1)));
+
+    // The right-hand side is only handed over at commit time.
+    let replacement = heap
+        .commit_writable_path(prepared, ValueSlot::integer(2))
+        .expect("commit should replace");
+    assert!(replacement == root);
+    assert!(heap.value == ValueSlot::integer(2));
+
+    // A failed commit leaves the cell untouched; retrying is safe.
+    heap.fail_commit = true;
+    let prepared = heap
+        .prepare_writable_path(
+            &root,
+            &[VmHeapPathSegment::DenseField {
+                field: "count".to_string(),
+            }],
+            &[],
+        )
+        .expect("prepare should pin again");
+    assert!(matches!(
+        heap.commit_writable_path(prepared, ValueSlot::integer(9)),
+        Err(VmHeapError::ResourceLimitExceeded {
+            operation: VmHeapOperation::CommitWritablePath,
+            ..
+        })
+    ));
+    assert!(heap.value == ValueSlot::integer(2));
+}
+
+#[test]
+fn prepare_failure_never_observes_or_commits_the_rhs() {
+    let root = request_ref(6, 4);
+    let mut heap = TwoPhaseHeap::new(ValueSlot::integer(1));
+    heap.fail_prepare = true;
+    assert!(matches!(
+        heap.prepare_writable_path(&root, &[VmHeapPathSegment::ArrayIndex], &[]),
+        Err(VmHeapError::ResourceLimitExceeded {
+            operation: VmHeapOperation::PrepareWritablePath,
+            ..
+        })
+    ));
+    assert!(heap.value == ValueSlot::integer(1));
 }
 
 #[test]

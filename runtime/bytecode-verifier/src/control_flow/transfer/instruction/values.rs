@@ -439,11 +439,16 @@ pub(super) fn writable_path_selectors(
                 selector_ordinal, ..
             } => {
                 require_selector_ordinal(*selector_ordinal, selectors.len(), location)?;
-                let integer = context
+                // Array index selectors follow the same authority as the
+                // canonical `CollectionIndex` input: integer-or-number. Using
+                // the number representative accepts an integer selector as
+                // well because semantic equality admits integer/number
+                // interchangeably.
+                let number = context
                     .facts
-                    .implicit_representative(ImplicitBuiltin::Integer)
-                    .ok_or_else(|| violation(location, "integer selector has no concrete class"))?;
-                selectors.push(integer);
+                    .implicit_representative(ImplicitBuiltin::Number)
+                    .ok_or_else(|| violation(location, "number selector has no concrete class"))?;
+                selectors.push(number);
             }
             LinkedWritablePathSegment::MapKey {
                 selector_ordinal,

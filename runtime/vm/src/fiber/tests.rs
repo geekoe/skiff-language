@@ -707,8 +707,10 @@ fn rejected_call_and_return_emit_no_events_and_consume_no_claims() {
         let frame = fiber.frames.last().unwrap();
         (frame.function(), frame.instruction())
     };
+    let mut heap = TestHeap;
+    let mut lifecycle = crate::lifecycle::LifecycleExecutor::new(&mut heap);
     assert!(matches!(
-        fiber.execute_return(function, instruction),
+        fiber.execute_return(&mut lifecycle, function, instruction),
         Err(VmError::OperandStackUnderflow { .. })
     ));
     assert!(sink
@@ -1162,4 +1164,76 @@ fn verification_limits() -> VerificationLimits {
         max_value_lifecycle_canonical_bytes: u64::MAX,
         max_constant_graph_edges: u64::MAX,
     }
+}
+
+/// Recording heap for the lifecycle-focused dispatch test. Every physical
+/// primitive is counted so the test can prove that slot transitions actually
+/// route through the lifecycle executor rather than raw bit copies.
+#[derive(Default)]
+struct LifecycleRecordingHeap {
+    shares: usize,
+    transfers: usize,
+    snapshot_releases: usize,
+    resource_releases: usize,
+}
+
+impl VmHeap for LifecycleRecordingHeap {
+    fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.shares += 1;
+        Ok(*source)
+    }
+
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.transfers += 1;
+        Ok(*source)
+    }
+
+    fn release_snapshot(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        self.snapshot_releases += 1;
+        Ok(())
+    }
+
+    fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        self.resource_releases += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn lifecycle_executor_keeps_scalar_dispatch_sidecar_free() {
+    let fixture = ObservationFixture::build(
+        "example.com/fiber-lifecycle-recording",
+        "function run(value: number) -> number {\n\
+         \x20 final a = value\n\
+         \x20 final b = a\n\
+         \x20 return b\n\
+         }\n",
+    );
+    let sink = Arc::new(RecordingSink::default());
+    let observer = BytecodeExecutionObserver::new(sink, observation_correlation());
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    let mut heap = LifecycleRecordingHeap::default();
+    for _ in 0..10_000 {
+        match fiber.dispatch_one(&mut heap) {
+            Ok(DispatchOutcome::Continue) => {}
+            Ok(DispatchOutcome::Complete(_)) => break,
+            Ok(DispatchOutcome::Handoff(_)) => panic!("lifecycle fixture must not hand off"),
+            Err(error) => panic!("lifecycle fixture failed: {error}"),
+        }
+    }
+
+    // Every scalar transition takes the lifecycle executor's trivial fast
+    // path: copy, return transfer, and frame-exit release all keep the
+    // sidecar-free Phase 1 invariant and never touch a heap primitive.
+    assert_eq!(heap.shares, 0, "scalar copy must not snapshot-share");
+    assert_eq!(heap.transfers, 0, "scalar return must not transfer-owner");
+    assert_eq!(
+        heap.snapshot_releases, 0,
+        "scalar frame exit must not release-snapshot"
+    );
+    assert_eq!(heap.resource_releases, 0, "no resource owners in a scalar fixture");
 }

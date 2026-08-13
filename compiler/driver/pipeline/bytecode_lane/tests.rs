@@ -450,3 +450,59 @@ fn historical_registry_fixture() -> PlatformErrorProjectionRegistryRef {
     }))
     .unwrap()
 }
+
+#[test]
+fn phase_2_bytecode_admission_source_facts_export_local_and_publication_nominals() {
+    let record = skiff_artifact_model::TypeDescriptorIr::Record {
+        fields: BTreeMap::from([(
+            "name".to_string(),
+            skiff_artifact_model::TypeRefIr::builtin("string"),
+        )]),
+    };
+    let unit = skiff_compiler_lowering::mir::MirUnit {
+        file_ir_identity: "file:facts".to_string(),
+        module_path: "facts".to_string(),
+        actor_declarations: Vec::new(),
+        external_refs: skiff_artifact_model::ExternalRefTable::default(),
+        source_map: skiff_artifact_model::SourceMapDto {
+            format: String::new(),
+            sources: Vec::new(),
+            spans: Vec::new(),
+        },
+        type_table: vec![skiff_artifact_model::TypeDeclIr {
+            name: "Person".to_string(),
+            descriptor: record.clone(),
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        }],
+        package_type_records: BTreeMap::new(),
+        link_targets: skiff_artifact_model::FileLinkTargets::default(),
+        constants: Vec::new(),
+        functions: Vec::new(),
+    };
+    let facts = source_value_transfer_facts_for_units(&[unit]);
+    let expected = skiff_compiler_source::SourceValueTransferNominalFact {
+        declaration_module: "facts".to_string(),
+        type_parameters: Vec::new(),
+        semantics: skiff_compiler_source::SourceValueTransferNominalSemantics::Ordinary(record),
+    };
+    assert_eq!(
+        facts.nominal(
+            &skiff_compiler_source::SourceValueTransferNominalId::Local {
+                module_path: "facts".to_string(),
+                type_index: 0,
+            }
+        ),
+        Some(&expected)
+    );
+    assert_eq!(
+        facts.nominal(
+            &skiff_compiler_source::SourceValueTransferNominalId::Publication {
+                module_path: "facts".to_string(),
+                type_index: 0,
+            }
+        ),
+        Some(&expected)
+    );
+}

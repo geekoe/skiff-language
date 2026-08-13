@@ -634,6 +634,7 @@ fn execute_scalar_gateway(
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
         },
+        heap: None,
     })
 }
 
@@ -688,6 +689,7 @@ mod tests {
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
             },
+            heap: None,
         });
 
         match driven.owner_inventory {
@@ -724,6 +726,7 @@ mod tests {
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
             },
+            heap: None,
         });
 
         match driven.owner_inventory {
@@ -881,6 +884,7 @@ mod tests {
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
             },
+            heap: None,
         })
         .unwrap();
 
@@ -930,18 +934,27 @@ function run() -> number {
     #[test]
     fn aggregate_shape_is_rejected_by_typed_compiler_containment() {
         let error = compile_test_package_with_source(
-            "function run() -> Array<number> {
-  return [1, 2]
+            "function run() -> Array<string> {
+  return [\"a\", \"b\"]
 }
 ",
         )
         .unwrap_err();
 
-        assert_phase_1_compiler_rejection(
-            error,
-            Phase1UnsupportedCapability::ValueShape,
-            "return type",
-        );
+        let PackageCompileError::BytecodeEmission {
+            source:
+                BytecodeEmissionError::UnsupportedConstruct {
+                    construct,
+                    location,
+                    ..
+                },
+        } = error
+        else {
+            panic!("expected typed Phase 2 aggregate containment, got {error:?}");
+        };
+        assert_eq!(construct, "phase 2 record/array value shape");
+        assert!(location.contains("return type"), "{location}");
+        assert!(location.contains("ValueShape"), "{location}");
     }
 
     #[test]

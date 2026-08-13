@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
-    BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, LiteralIr, StatementAttributionId,
-    TypeDescriptorIr, TypeRefIr,
+    AssignTargetIr, BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, LiteralIr,
+    StatementAttributionId, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
-    MirStmtKind, MirUnit,
+    MirStmtKind, MirUnit, MirWritableRoot,
 };
 
 use super::{
@@ -30,12 +30,17 @@ impl<'a> AdmittedPhase1BytecodeMir<'a> {
     }
 }
 
-/// Admits only the Phase 1 immediate-scalar, synchronous local-call MIR surface.
+/// Admits the Phase 2 record/array MIR surface plus the retained Phase 1
+/// scalar/local-call core.
 ///
 /// This is the production bytecode lane's source-owned capability boundary.
 /// It runs before constant evaluation, value-transfer derivation, or bytecode
 /// emission and returns no partially emitted state. The admission reads only
 /// typed MIR facts; package names and binding strings never grant capability.
+/// The exact supported value shapes are `record` and `array` recursively over
+/// `number`/`boolean`/`null` and nested record/array; `string`, `bytes`,
+/// `map`, representations, streams, host targets, tail calls, throws,
+/// generics and `InOut` remain rejected at this single boundary.
 pub fn admit_phase_1_bytecode_mir(
     units: &[MirUnit],
 ) -> Result<AdmittedPhase1BytecodeMir<'_>, BytecodeEmissionError> {
@@ -58,29 +63,49 @@ pub fn admit_phase_1_bytecode_mir(
             ));
         }
         for declaration in &unit.type_table {
-            let capability = if !declaration.type_params.is_empty() {
-                Phase1UnsupportedCapability::Generic
-            } else if matches!(declaration.descriptor, TypeDescriptorIr::Interface) {
-                Phase1UnsupportedCapability::Interface
-            } else {
-                Phase1UnsupportedCapability::ValueShape
-            };
-            return Err(rejected(
-                unit,
-                None,
-                capability,
-                &format!("type declaration `{}`", declaration.name),
-            ));
+            if !declaration.type_params.is_empty() {
+                return Err(rejected(
+                    unit,
+                    None,
+                    Phase1UnsupportedCapability::Generic,
+                    &format!("type declaration `{}`", declaration.name),
+                ));
+            }
+            if !declaration.implements.is_empty() {
+                return Err(rejected(
+                    unit,
+                    None,
+                    Phase1UnsupportedCapability::Interface,
+                    &format!(
+                        "type declaration `{}` interface conformance",
+                        declaration.name
+                    ),
+                ));
+            }
+            if !matches!(declaration.descriptor, TypeDescriptorIr::Record { .. }) {
+                let capability = if matches!(declaration.descriptor, TypeDescriptorIr::Interface) {
+                    Phase1UnsupportedCapability::Interface
+                } else {
+                    Phase1UnsupportedCapability::ValueShape
+                };
+                return Err(rejected(
+                    unit,
+                    None,
+                    capability,
+                    &format!("type declaration `{}`", declaration.name),
+                ));
+            }
         }
         for function in &unit.functions {
             let function_key = canonical_function_key(&unit.module_path, &function.symbol)?;
-            admit_function(unit, &function_key, function)?;
+            admit_function(units, unit, &function_key, function)?;
         }
     }
     Ok(AdmittedPhase1BytecodeMir { units })
 }
 
 fn admit_function(
+    units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
@@ -120,6 +145,7 @@ fn admit_function(
         ));
     }
     admit_type(
+        units,
         unit,
         function_key,
         &function.return_type,
@@ -137,6 +163,7 @@ fn admit_function(
             ));
         }
         admit_type(
+            units,
             unit,
             function_key,
             &parameter.ty,
@@ -181,14 +208,6 @@ fn admit_function(
                 &format!("unbound parameter slot {}", slot.slot),
             ));
         }
-        if slot.writable_local {
-            return Err(rejected_function(
-                unit,
-                function_key,
-                Phase1UnsupportedCapability::Writable,
-                &format!("writable slot {}", slot.slot),
-            ));
-        }
         let Some(ty) = slot.ty.as_ref() else {
             return Err(rejected_function(
                 unit,
@@ -198,6 +217,7 @@ fn admit_function(
             ));
         };
         admit_type(
+            units,
             unit,
             function_key,
             ty,
@@ -205,12 +225,12 @@ fn admit_function(
             &format!("slot {} type", slot.slot),
         )?;
     }
-    if !function.index_accesses.is_empty() || !function.expression_blocks.is_empty() {
+    if !function.expression_blocks.is_empty() {
         return Err(rejected_function(
             unit,
             function_key,
             Phase1UnsupportedCapability::ValueShape,
-            "indexed or value-block source facts",
+            "value-block source facts",
         ));
     }
     if !function.regions.is_empty() {
@@ -231,7 +251,7 @@ fn admit_function(
     }
     admit_effects(unit, function_key, &function.effect_summary)?;
     for expression in &function.expressions {
-        admit_expression(unit, function_key, function, expression)?;
+        admit_expression(units, unit, function_key, function, expression)?;
     }
     for block in &function.blocks {
         for statement in &block.statements {
@@ -325,7 +345,17 @@ fn admit_statement(
                 None
             }
         }
-        MirStmtKind::Assign { .. } => Some(Phase1UnsupportedCapability::Writable),
+        MirStmtKind::Assign { target, place, .. } => match target {
+            AssignTargetIr::Slot { .. } => None,
+            AssignTargetIr::ActorSelfField { .. } => Some(Phase1UnsupportedCapability::Actor),
+            AssignTargetIr::Field { .. } | AssignTargetIr::Index { .. } => {
+                if matches!(place.root, MirWritableRoot::ActorSelfField { .. }) {
+                    Some(Phase1UnsupportedCapability::Actor)
+                } else {
+                    None
+                }
+            }
+        },
         MirStmtKind::Throw { .. } | MirStmtKind::Rethrow { .. } => {
             Some(Phase1UnsupportedCapability::Exception)
         }
@@ -370,12 +400,24 @@ fn is_tail_local_call(function: &MirFunction, expression_index: u32) -> bool {
 }
 
 fn admit_expression(
+    units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
     expression: &skiff_compiler_lowering::mir::MirExpression,
 ) -> Result<(), BytecodeEmissionError> {
+    if let ExprIr::Construct { type_ref, .. } = &expression.expression {
+        admit_type(
+            units,
+            unit,
+            function_key,
+            type_ref,
+            false,
+            &format!("expression {} construct type", expression.index),
+        )?;
+    }
     admit_type(
+        units,
         unit,
         function_key,
         &expression.ty,
@@ -451,9 +493,9 @@ fn admit_expression(
         ExprIr::Field { .. }
         | ExprIr::Index { .. }
         | ExprIr::Construct { .. }
-        | ExprIr::RepresentationWrap { .. }
+        | ExprIr::ArrayLiteral { .. } => None,
+        ExprIr::RepresentationWrap { .. }
         | ExprIr::MapLiteral { .. }
-        | ExprIr::ArrayLiteral { .. }
         | ExprIr::ValueBlock { .. } => Some(Phase1UnsupportedCapability::ValueShape),
     };
     if let Some(capability) = capability {
@@ -746,16 +788,158 @@ fn admit_slot_value_type(
 }
 
 fn admit_type(
+    units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     ty: &TypeRefIr,
     allow_void: bool,
     location: &str,
 ) -> Result<(), BytecodeEmissionError> {
-    if let Some(capability) = unsupported_type_capability(ty, allow_void) {
-        return Err(rejected_function(unit, function_key, capability, location));
+    let mut context = TypeAdmissionContext {
+        units,
+        function_key,
+        nominal_chain: Vec::new(),
+    };
+    admit_type_nested(&mut context, unit, ty, allow_void, location, false)
+}
+
+/// Recursive Phase 2 type admission with a nominal-recursion guard.
+///
+/// `nested` distinguishes a record/array leaf from a top-level type: out-of-
+/// surface nested leaves carry the stable Phase 2 record/array rejection,
+/// while top-level rejections keep the legacy capability diagnostics.
+struct TypeAdmissionContext<'a> {
+    units: &'a [MirUnit],
+    function_key: &'a str,
+    nominal_chain: Vec<(String, u32)>,
+}
+
+fn admit_type_nested(
+    context: &mut TypeAdmissionContext<'_>,
+    unit: &MirUnit,
+    ty: &TypeRefIr,
+    allow_void: bool,
+    location: &str,
+    nested: bool,
+) -> Result<(), BytecodeEmissionError> {
+    match ty {
+        TypeRefIr::Record { fields } => {
+            for (name, field_ty) in fields {
+                admit_type_nested(
+                    context,
+                    unit,
+                    field_ty,
+                    false,
+                    &format!("{location} field `{name}`"),
+                    true,
+                )?;
+            }
+            Ok(())
+        }
+        TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
+            admit_type_nested(
+                context,
+                unit,
+                &args[0],
+                false,
+                &format!("{location} element type"),
+                true,
+            )
+        }
+        TypeRefIr::LocalType { type_index } => {
+            admit_record_declaration(context, unit, &unit.module_path, *type_index, location)
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => admit_record_declaration(context, unit, module_path, *type_index, location),
+        _ => {
+            if let Some(capability) = unsupported_type_capability(ty, allow_void) {
+                return if nested {
+                    Err(phase_2_nested_shape_rejection(
+                        context.function_key,
+                        capability,
+                        location,
+                    ))
+                } else {
+                    Err(rejected_function(
+                        unit,
+                        context.function_key,
+                        capability,
+                        location,
+                    ))
+                };
+            }
+            Ok(())
+        }
     }
+}
+
+fn admit_record_declaration(
+    context: &mut TypeAdmissionContext<'_>,
+    unit: &MirUnit,
+    module_path: &str,
+    type_index: u32,
+    location: &str,
+) -> Result<(), BytecodeEmissionError> {
+    let key = (module_path.to_string(), type_index);
+    if context.nominal_chain.contains(&key) {
+        return Err(phase_2_nested_shape_rejection(
+            context.function_key,
+            Phase1UnsupportedCapability::ValueShape,
+            &format!("{location} (recursive record reference)"),
+        ));
+    }
+    let owning_unit = context
+        .units
+        .iter()
+        .find(|candidate| candidate.module_path == module_path)
+        .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+            context: format!("Phase 2 record admission for module `{module_path}`"),
+            message: "owning MIR unit disappeared".to_string(),
+        })?;
+    let declaration = owning_unit
+        .type_table
+        .get(type_index as usize)
+        .ok_or_else(|| BytecodeEmissionError::MissingLocalType {
+            module_path: module_path.to_string(),
+            location: location.to_string(),
+            type_index,
+            type_count: owning_unit.type_table.len(),
+        })?;
+    let TypeDescriptorIr::Record { fields } = &declaration.descriptor else {
+        return Err(rejected_function(
+            unit,
+            context.function_key,
+            Phase1UnsupportedCapability::ValueShape,
+            location,
+        ));
+    };
+    context.nominal_chain.push(key);
+    for (name, field_ty) in fields {
+        admit_type_nested(
+            context,
+            owning_unit,
+            field_ty,
+            false,
+            &format!("{location} field `{name}`"),
+            true,
+        )?;
+    }
+    context.nominal_chain.pop();
     Ok(())
+}
+
+fn phase_2_nested_shape_rejection(
+    function_key: &str,
+    capability: Phase1UnsupportedCapability,
+    location: &str,
+) -> BytecodeEmissionError {
+    BytecodeEmissionError::UnsupportedConstruct {
+        function_key: function_key.to_string(),
+        construct: "phase 2 record/array value shape",
+        location: format!(" {location} ({capability:?})"),
+    }
 }
 
 fn unsupported_type_capability(

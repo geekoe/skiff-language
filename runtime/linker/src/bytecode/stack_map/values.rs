@@ -262,11 +262,14 @@ pub(super) fn source_values(
                 .writable_path(row)
                 .ok_or_else(|| obligation_error(location.clone(), "writable path row is absent".to_string()))?;
             let mut values = Vec::new();
-            for segment in entry.segments() {
+            let segments = entry.segments().to_vec();
+            for segment in segments.iter() {
                 match segment {
-                    skiff_runtime_linked_bytecode::LinkedWritablePathSegment::ArrayIndex { element_type, .. } => {
-                        let concrete = context.type_linker.linked_type_ref(*element_type).cloned().ok_or_else(|| obligation_error(location.clone(), "array selector type is absent".to_string()))?;
-                        values.push(LinkedStackValue::new(*element_type, context.type_linker.plan_for_concrete_type(&concrete, location.clone())?));
+                    skiff_runtime_linked_bytecode::LinkedWritablePathSegment::ArrayIndex { .. } => {
+                        // The selector is the index value itself, not the array
+                        // element: array indices are number-typed exactly like
+                        // the canonical `CollectionIndex` input class.
+                        values.extend(scalar_value(context, "number", location.clone())?);
                     }
                     skiff_runtime_linked_bytecode::LinkedWritablePathSegment::MapKey { key_type, .. } => {
                         let concrete = context.type_linker.linked_type_ref(*key_type).cloned().ok_or_else(|| obligation_error(location.clone(), "map selector type is absent".to_string()))?;

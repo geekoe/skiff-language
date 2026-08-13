@@ -13,8 +13,10 @@ use skiff_runtime_model::{
         BytecodeExecutionObserver, RequestExecutionOwnerInventorySnapshot,
     },
     request_heap::RequestHeapLimits,
-    vm_heap::{VmHeap, VmHeapError, VmRecordField},
-    vm_value::{CompactTypeTag, ValueFlags, ValueSlot},
+    vm_heap::{
+        VmContainerShape, VmHeap, VmHeapError, VmRecordField,
+    },
+    vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
 use skiff_runtime_scheduler::{
     BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts, RequestExecutionContext,
@@ -36,6 +38,12 @@ pub struct BytecodeRequestExecutionInput {
     pub cancellation: CancellationToken,
     pub execution_budget: Arc<ExecutionBudget>,
     pub handles: BytecodeRequestExecutionHandles,
+    /// Optional injected VM heap (production composition or a recording heap
+    /// spy). When `None`, the driver constructs the production
+    /// [`RequestVmHeap`] from `handles.request_heap_limits`. The injected heap
+    /// is exactly the heap driven into the VM and retained for the boundary
+    /// result lifetime.
+    pub heap: Option<Box<dyn VmHeap + Send>>,
 }
 
 pub struct BytecodeRequestExecutionHandles {
@@ -96,6 +104,7 @@ pub fn drive_runtime_bytecode_request(
         cancellation,
         execution_budget,
         handles,
+        heap: injected_heap,
     } = input;
 
     let mode = request.mode.clone();
@@ -111,14 +120,16 @@ pub fn drive_runtime_bytecode_request(
         ExecutionControl::new(cancellation.clone(), &execution_budget)
             .check_cancelled()
             .map_err(RequestError::from)?;
-        let mut request_heap = RequestVmHeap::new(handles.request_heap_limits);
-        let arguments = gateway_entry_arguments(&request, &target, &mut request_heap)?;
+        let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
+            Some(heap) => heap,
+            None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
+        };
+        let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
         let fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
             .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
         let budget = execution_budget.attach_vm().map_err(|error| {
             RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
         })?;
-        let heap: Box<dyn VmHeap + Send> = Box::new(request_heap);
         let budget: Box<dyn VmBudget + Send> = Box::new(budget);
         Ok((fiber, heap, budget))
     })();
@@ -152,7 +163,8 @@ pub fn drive_runtime_bytecode_request(
                     } else if raw_http_adapter {
                         http_response_from_vm_values(&mut *heap, values.values())
                     } else {
-                        json_payload_from_value_slots(values.values()).map(BoundaryResponse::payload)
+                        json_payload_from_value_slots(&mut *heap, values.values())
+                            .map(BoundaryResponse::payload)
                     }
                 }
                 Err(error) => Err(error),
@@ -176,7 +188,7 @@ pub fn drive_runtime_bytecode_request(
 fn gateway_entry_arguments(
     request: &RequestEnvelope,
     entry: &DeploymentExecutionEntry,
-    heap: &mut RequestVmHeap,
+    heap: &mut dyn VmHeap,
 ) -> RequestResult<Vec<ValueSlot>> {
     let Some(adapter) = &request.http_adapter else {
         return Ok(Vec::new());
@@ -308,7 +320,7 @@ fn unsupported_typed_json_parameter_type(ordinal: usize) -> RequestError {
 
 fn materialize_http_request(
     binary: &BinaryHttpRequest,
-    heap: &mut RequestVmHeap,
+    heap: &mut dyn VmHeap,
 ) -> RequestResult<ValueSlot> {
     let method = heap
         .alloc_string(binary.metadata.method.clone())
@@ -356,7 +368,7 @@ fn materialize_http_request(
 
 fn materialize_name_values(
     items: &[HttpNameValue],
-    heap: &mut RequestVmHeap,
+    heap: &mut dyn VmHeap,
 ) -> RequestResult<ValueSlot> {
     let mut records = Vec::with_capacity(items.len());
     for item in items {
@@ -449,50 +461,86 @@ fn validate_bytecode_request_metadata(request: &RequestEnvelope) -> RequestResul
     Ok(())
 }
 
-fn json_payload_from_value_slots(values: &[ValueSlot]) -> RequestResult<Vec<u8>> {
+fn json_payload_from_value_slots(
+    heap: &mut dyn VmHeap,
+    values: &[ValueSlot],
+) -> RequestResult<Vec<u8>> {
     match values {
         [] => Ok(b"null".to_vec()),
-        [value] => json_bytes_from_value(value),
+        [value] => serde_json::to_vec(&json_value_from_slot(heap, value, 0)?)
+            .map_err(|error| RequestError::Decode(format!("bytecode VM JSON encode failed: {error}"))),
         _ => Err(RequestError::Unsupported(format!(
-            "scalar bytecode VM returned {} results; expected zero or one",
+            "bytecode VM returned {} results; expected zero or one",
             values.len()
         ))),
     }
 }
 
-fn json_bytes_from_value(value: &ValueSlot) -> RequestResult<Vec<u8>> {
+fn json_value_from_slot(
+    heap: &mut dyn VmHeap,
+    value: &ValueSlot,
+    depth: usize,
+) -> RequestResult<serde_json::Value> {
+    const MAX_DEPTH: usize = 1024;
     if value.is_null() {
-        return Ok(b"null".to_vec());
+        return Ok(serde_json::Value::Null);
     }
     if let Some(boolean) = value.as_bool() {
-        return Ok(if boolean {
-            b"true".to_vec()
-        } else {
-            b"false".to_vec()
-        });
+        return Ok(serde_json::Value::Bool(boolean));
     }
     if let Some(number) = value.as_number() {
         let number = serde_json::Number::from_f64(number).ok_or_else(|| {
             RequestError::Unsupported(format!(
-                "scalar bytecode VM returned a non-JSON number: {number}"
+                "bytecode VM returned a non-JSON number: {number}"
             ))
         })?;
-        return Ok(number.to_string().into_bytes());
+        return Ok(serde_json::Value::Number(number));
     }
     if value.as_integer().is_some() {
         return Err(RequestError::Unsupported(
-            "integer results are not supported by bytecode scalar JSON ingress yet".to_string(),
+            "integer results are not supported by bytecode JSON ingress".to_string(),
         ));
     }
     if value.as_date().is_some() {
         return Err(RequestError::Unsupported(
-            "Date results are not supported by bytecode scalar JSON ingress yet".to_string(),
+            "Date results are not supported by bytecode JSON ingress".to_string(),
         ));
     }
-    Err(RequestError::Unsupported(format!(
-        "scalar bytecode VM returned unsupported value kind {:?}",
-        value.kind()
-    )))
+    if value.kind() != Some(ValueKind::RequestHeapRef) {
+        return Err(RequestError::Unsupported(format!(
+            "bytecode VM returned unsupported value kind {:?}",
+            value.kind()
+        )));
+    }
+    if depth > MAX_DEPTH {
+        return Err(RequestError::Unsupported(format!(
+            "bytecode VM aggregate exceeds the JSON materialization depth {MAX_DEPTH}"
+        )));
+    }
+    let container = heap
+        .container_elements(value)
+        .map_err(heap_error_to_request_error)?;
+    match container.shape {
+        VmContainerShape::Array => {
+            let mut items = Vec::with_capacity(container.elements.len());
+            for element in container.elements {
+                items.push(json_value_from_slot(heap, &element.value, depth + 1)?);
+            }
+            Ok(serde_json::Value::Array(items))
+        }
+        VmContainerShape::Record => {
+            let mut fields = serde_json::Map::with_capacity(container.elements.len());
+            for element in container.elements {
+                let name = element.field.ok_or_else(|| {
+                    RequestError::Unsupported(
+                        "bytecode VM record element has no canonical field name".to_string(),
+                    )
+                })?;
+                fields.insert(name, json_value_from_slot(heap, &element.value, depth + 1)?);
+            }
+            Ok(serde_json::Value::Object(fields))
+        }
+    }
 }
 
 fn http_response_from_vm_values(
@@ -641,33 +689,85 @@ mod tests {
 
     #[test]
     fn json_payload_encodes_scalar_immediates() {
-        assert_eq!(json_payload_from_value_slots(&[]).unwrap(), b"null");
+        let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
+        assert_eq!(json_payload_from_value_slots(&mut heap, &[]).unwrap(), b"null");
         assert_eq!(
-            json_payload_from_value_slots(&[ValueSlot::null()]).unwrap(),
+            json_payload_from_value_slots(&mut heap, &[ValueSlot::null()]).unwrap(),
             b"null"
         );
         assert_eq!(
-            json_payload_from_value_slots(&[ValueSlot::bool(true)]).unwrap(),
+            json_payload_from_value_slots(&mut heap, &[ValueSlot::bool(true)]).unwrap(),
             b"true"
         );
         assert_eq!(
-            json_payload_from_value_slots(&[ValueSlot::bool(false)]).unwrap(),
+            json_payload_from_value_slots(&mut heap, &[ValueSlot::bool(false)]).unwrap(),
             b"false"
         );
         assert_eq!(
-            json_payload_from_value_slots(&[ValueSlot::number(1.5)]).unwrap(),
+            json_payload_from_value_slots(&mut heap, &[ValueSlot::number(1.5)]).unwrap(),
             b"1.5"
         );
     }
 
     #[test]
     fn json_payload_rejects_unsupported_results() {
-        assert!(json_payload_from_value_slots(&[ValueSlot::integer(1)]).is_err());
-        assert!(json_payload_from_value_slots(&[ValueSlot::date(1)]).is_err());
+        let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
+        assert!(json_payload_from_value_slots(&mut heap, &[ValueSlot::integer(1)]).is_err());
+        assert!(json_payload_from_value_slots(&mut heap, &[ValueSlot::date(1)]).is_err());
         assert!(
-            json_payload_from_value_slots(&[ValueSlot::null(), ValueSlot::bool(true)]).is_err()
+            json_payload_from_value_slots(&mut heap, &[ValueSlot::null(), ValueSlot::bool(true)])
+                .is_err()
         );
-        assert!(json_payload_from_value_slots(&[ValueSlot::number(f64::NAN)]).is_err());
+        assert!(
+            json_payload_from_value_slots(&mut heap, &[ValueSlot::number(f64::NAN)]).is_err()
+        );
+    }
+
+    #[test]
+    fn json_payload_materializes_nested_record_and_array() {
+        let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
+        let leaf = heap
+            .allocate_record(
+                &[VmRecordField {
+                    name: "x".to_string(),
+                    value: ValueSlot::number(1.0),
+                }],
+                CompactTypeTag::new(0),
+                ValueFlags::new(0),
+            )
+            .unwrap();
+        let tags = heap
+            .allocate_array(
+                &[ValueSlot::number(1.0), ValueSlot::number(2.0)],
+                CompactTypeTag::new(0),
+                ValueFlags::new(0),
+            )
+            .unwrap();
+        let inner = heap
+            .allocate_record(
+                &[
+                    VmRecordField {
+                        name: "leaf".to_string(),
+                        value: leaf,
+                    },
+                    VmRecordField {
+                        name: "tags".to_string(),
+                        value: tags,
+                    },
+                ],
+                CompactTypeTag::new(0),
+                ValueFlags::new(0),
+            )
+            .unwrap();
+        let payload = json_payload_from_value_slots(&mut heap, &[inner]).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "leaf": { "x": 1.0 },
+                "tags": [1.0, 2.0],
+            })
+        );
     }
 
     #[test]

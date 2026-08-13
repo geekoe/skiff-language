@@ -1,10 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{
-    native_value_lifecycle_registry, NativeResourceDropPlan, NativeValueDropPlan,
-    NativeValueEmbedding, NativeValueLifecycleConcrete, NativeValueLifecycleResolution,
-    NominalTypeRefBaseIr, ResourceDropPlan, TypeRefIr, ValueDropPlan, ValueTransferPlan,
-};
+use skiff_artifact_model::{TypeRefIr, ValueTransferPlan};
 use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
 use super::{
@@ -13,22 +9,24 @@ use super::{
     BytecodeEmissionError,
 };
 
-/// Derives explicit transfer plans from MIR and the pinned native lifecycle
-/// registry.
+/// Derives explicit transfer plans from the exact source-owned authority.
 ///
-/// Constants retain their owner-qualified `FromType` plan. Function slots and
-/// results are resolved to concrete lifecycle plans from the pinned native
-/// registry. Ordinary snapshot values use `SnapshotShare`; exact authoritative
-/// `Stream<T>` endpoints use their affine resource plan. Missing or
-/// non-snapshot lifecycle facts fail closed instead of being inferred.
+/// The bytecode pipeline injects `plan_for`, which production backs with
+/// `SourceValueTransferFacts` through `source_value_transfer_plan`: every slot
+/// and result therefore receives the exact source plan. Constants retain their
+/// owner-qualified `FromType` plan. The emitter never inspects a MIR slot kind
+/// or type shape to invent a plan, and a missing exact plan becomes a stable
+/// typed [`BytecodeEmissionError`] rather than a `SnapshotRelease` fallback.
 pub fn derive_bytecode_value_transfer_plans(
     admitted: &AdmittedPhase1BytecodeMir<'_>,
+    plan_for: impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
-    derive_bytecode_value_transfer_plans_unchecked(admitted.units())
+    derive_bytecode_value_transfer_plans_unchecked(admitted.units(), plan_for)
 }
 
 pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
     units: &[MirUnit],
+    plan_for: impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
     let mut functions = BTreeMap::new();
     for unit in units {
@@ -40,44 +38,20 @@ pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
                     .ty
                     .as_ref()
                     .ok_or_else(|| unsupported_slot_type(&function_key, slot))?;
-                if function.native {
-                    slot_plans.push(
-                        concrete_value_plan(
-                            units,
-                            &unit.module_path,
-                            &function_key,
-                            &format!("slot `{}`", slot.name),
-                            ty,
-                        )
-                        .unwrap_or_else(|_| snapshot_release_plan()),
-                    );
-                } else {
-                    slot_plans.push(concrete_value_plan(
-                        units,
-                        &unit.module_path,
-                        &function_key,
-                        &format!("slot `{}`", slot.name),
-                        ty,
-                    )?);
-                }
+                slot_plans.push(exact_source_plan(
+                    &plan_for,
+                    &unit.module_path,
+                    &function_key,
+                    &format!("slot `{}`", slot.name),
+                    ty,
+                )?);
             }
-            let result_plans =
-                if is_void(&function.return_type) || function.stream_result.is_some() {
+            let result_plans = if is_void(&function.return_type) || function.stream_result.is_some()
+            {
                 Vec::new()
-            } else if function.native {
-                vec![
-                    concrete_value_plan(
-                        units,
-                        &unit.module_path,
-                        &function_key,
-                        "return value",
-                        &function.return_type,
-                    )
-                    .unwrap_or_else(|_| snapshot_release_plan()),
-                ]
             } else {
-                vec![concrete_value_plan(
-                    units,
+                vec![exact_source_plan(
+                    &plan_for,
                     &unit.module_path,
                     &function_key,
                     "return value",
@@ -108,301 +82,23 @@ pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
     Ok(BytecodeValueTransferPlans::new(functions, constants))
 }
 
-fn concrete_value_plan(
-    units: &[MirUnit],
+/// Consumes one exact plan from the injected source authority.
+///
+/// A missing plan is reported as a stable typed failure keyed to the exact
+/// function and slot/result location. No `SnapshotRelease` or any other
+/// type-shaped fallback is invented on this path.
+fn exact_source_plan(
+    plan_for: &impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
     module_path: &str,
     function_key: &str,
     location: &str,
-    ty: &skiff_artifact_model::TypeRefIr,
+    ty: &TypeRefIr,
 ) -> Result<ValueTransferPlan, BytecodeEmissionError> {
-    if is_record_aggregate(units, module_path, ty)? {
-        return Ok(snapshot_release_plan());
-    }
-    if is_never_type(ty) {
-        return Ok(ValueTransferPlan::SnapshotShare {
-            drop: ValueDropPlan::Trivial,
-        });
-    }
-    if is_void(ty) {
-        return Ok(ValueTransferPlan::SnapshotShare {
-            drop: ValueDropPlan::Trivial,
-        });
-    }
-    if is_type_param_type(ty) {
-        return Ok(snapshot_release_plan());
-    }
-    if is_std_duration_type(units, module_path, ty)? {
-        return Ok(ValueTransferPlan::SnapshotShare {
-            drop: ValueDropPlan::Trivial,
-        });
-    }
-    if is_ordinary_structural_type(ty) {
-        return Ok(snapshot_release_plan());
-    }
-    if is_stream_with_package_symbol_item(ty) {
-        return Ok(ValueTransferPlan::AffineResource {
-            drop: ResourceDropPlan::ResourceTableRelease,
-        });
-    }
-    if contains_package_symbol(ty) {
-        return Ok(snapshot_release_plan());
-    }
-    let resolution = match native_value_lifecycle_registry().lookup(ty) {
-        Ok(resolution) => resolution,
-        Err(error) if is_package_symbol_type(ty) => {
-            let _ = error;
-            return Ok(snapshot_release_plan());
-        }
-        Err(error) => {
-            return Err(BytecodeEmissionError::UnsupportedConstruct {
-                function_key: function_key.to_string(),
-                construct: "value lifecycle lookup",
-                location: format!(" {location}: {error}"),
-            });
-        }
-    };
-    concrete_lifecycle_plan(function_key, location, ty, resolution)
-}
-
-fn snapshot_release_plan() -> ValueTransferPlan {
-    ValueTransferPlan::SnapshotShare {
-        drop: ValueDropPlan::SnapshotRelease,
-    }
-}
-
-fn is_std_duration_type(
-    units: &[MirUnit],
-    module_path: &str,
-    ty: &TypeRefIr,
-) -> Result<bool, BytecodeEmissionError> {
-    let (module_path, type_index) = match ty {
-        TypeRefIr::LocalType { type_index } => (module_path.to_string(), *type_index),
-        TypeRefIr::PublicationType {
-            module_path,
-            type_index,
-        } => (module_path.clone(), *type_index),
-        _ => return Ok(false),
-    };
-    let unit = units
-        .iter()
-        .find(|unit| unit.module_path == module_path)
-        .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
-            context: format!("value lifecycle plan for module `{module_path}`"),
-            message: "owning MIR unit disappeared".to_string(),
-        })?;
-    Ok(unit
-        .type_table
-        .get(type_index as usize)
-        .is_some_and(|declaration| declaration.name == "Duration"))
-}
-
-fn is_type_param_type(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::TypeParam { .. })
-}
-
-fn is_never_type(ty: &TypeRefIr) -> bool {
-    matches!(
-        ty,
-        TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty()
-    )
-}
-
-fn is_ordinary_structural_type(ty: &TypeRefIr) -> bool {
-    matches!(
-        ty,
-        TypeRefIr::Union { .. }
-            | TypeRefIr::Nullable { .. }
-            | TypeRefIr::Literal { .. }
-            | TypeRefIr::AnyInterface { .. }
-    )
-}
-
-fn contains_package_symbol(ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::PackageSymbol { .. } => true,
-        TypeRefIr::Builtin { args, .. } => args.iter().any(contains_package_symbol),
-        TypeRefIr::Nullable { inner } => contains_package_symbol(inner),
-        TypeRefIr::Union { items } => items.iter().any(contains_package_symbol),
-        TypeRefIr::AppliedNominal { arguments, .. } => arguments.iter().any(contains_package_symbol),
-        TypeRefIr::Record { fields } => fields.values().any(contains_package_symbol),
-        TypeRefIr::LocalType { .. }
-        | TypeRefIr::PublicationType { .. }
-        | TypeRefIr::ServiceSymbol { .. }
-        | TypeRefIr::PackageSchema { .. }
-        | TypeRefIr::DbObjectSymbol { .. }
-        | TypeRefIr::Literal { .. }
-        | TypeRefIr::TypeParam { .. }
-        | TypeRefIr::AnyInterface { .. }
-        | TypeRefIr::Function { .. } => false,
-    }
-}
-
-fn is_package_symbol_type(ty: &TypeRefIr) -> bool {
-    matches!(ty, TypeRefIr::PackageSymbol { .. })
-        || matches!(
-            ty,
-            TypeRefIr::AppliedNominal {
-                base: NominalTypeRefBaseIr::PackageSymbol { .. },
-                ..
-            }
-        )
-}
-
-fn is_stream_with_package_symbol_item(ty: &TypeRefIr) -> bool {
-    matches!(
-        ty,
-        TypeRefIr::Builtin { name, args }
-            if name == "Stream"
-                && args.len() == 1
-                && is_package_symbol_type(&args[0])
-    )
-}
-
-fn concrete_lifecycle_plan(
-    function_key: &str,
-    location: &str,
-    ty: &TypeRefIr,
-    resolution: NativeValueLifecycleResolution,
-) -> Result<ValueTransferPlan, BytecodeEmissionError> {
-    match &resolution.lifecycle {
-        NativeValueLifecycleConcrete::SnapshotShare { drop } => {
-            let drop = match drop {
-                NativeValueDropPlan::Trivial => ValueDropPlan::Trivial,
-                NativeValueDropPlan::SnapshotRelease => ValueDropPlan::SnapshotRelease,
-                NativeValueDropPlan::NativeAdapter { .. } => {
-                    return Err(BytecodeEmissionError::UnsupportedConstruct {
-                        function_key: function_key.to_string(),
-                        construct: "native adapter value drop",
-                        location: format!(" {location}"),
-                    });
-                }
-            };
-            Ok(ValueTransferPlan::SnapshotShare { drop })
-        }
-        NativeValueLifecycleConcrete::AffineResource { drop } => {
-            if !is_authoritative_stream(ty, &resolution) {
-                return Err(BytecodeEmissionError::UnsupportedConstruct {
-                    function_key: function_key.to_string(),
-                    construct: "non-Stream affine value lifecycle",
-                    location: format!(" {location}"),
-                });
-            }
-            let drop = match drop {
-                NativeResourceDropPlan::ResourceTableRelease => {
-                    ResourceDropPlan::ResourceTableRelease
-                }
-                NativeResourceDropPlan::NativeAdapter { .. } => {
-                    return Err(BytecodeEmissionError::UnsupportedConstruct {
-                        function_key: function_key.to_string(),
-                        construct: "native stream resource drop",
-                        location: format!(" {location}"),
-                    });
-                }
-            };
-            Ok(ValueTransferPlan::AffineResource { drop })
-        }
-        NativeValueLifecycleConcrete::MoveOnly { .. }
-        | NativeValueLifecycleConcrete::ExplicitCloneLease { .. } => {
-            Err(BytecodeEmissionError::UnsupportedConstruct {
-                function_key: function_key.to_string(),
-                construct: "non-snapshot value lifecycle",
-                location: format!(" {location}"),
-            })
-        }
-    }
-}
-
-fn is_authoritative_stream(
-    ty: &TypeRefIr,
-    resolution: &NativeValueLifecycleResolution,
-) -> bool {
-    matches!(
-        ty,
-        skiff_artifact_model::TypeRefIr::Builtin { name, args }
-            if name == "Stream" && args.len() == 1
-    ) && resolution.embedding == NativeValueEmbedding::Forbidden
-}
-
-fn is_record_aggregate(
-    units: &[MirUnit],
-    module_path: &str,
-    ty: &skiff_artifact_model::TypeRefIr,
-) -> Result<bool, BytecodeEmissionError> {
-    match ty {
-        skiff_artifact_model::TypeRefIr::Record { .. } => Ok(true),
-        skiff_artifact_model::TypeRefIr::LocalType { type_index } => {
-            let unit = units
-                .iter()
-                .find(|unit| unit.module_path == module_path)
-                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
-                    context: format!("value lifecycle plan for module `{module_path}`"),
-                    message: "owning MIR unit disappeared".to_string(),
-                })?;
-            record_declaration(unit, *type_index)
-        }
-        skiff_artifact_model::TypeRefIr::PublicationType {
-            module_path,
-            type_index,
-        } => {
-            let unit = units
-                .iter()
-                .find(|unit| unit.module_path == *module_path)
-                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
-                    context: format!("value lifecycle plan for publication module `{module_path}`"),
-                    message: "publication MIR unit disappeared".to_string(),
-                })?;
-            record_declaration(unit, *type_index)
-        }
-        skiff_artifact_model::TypeRefIr::AppliedNominal {
-            base: skiff_artifact_model::NominalTypeRefBaseIr::LocalType { type_index },
-            arguments,
-        } if arguments.is_empty() => {
-            let unit = units
-                .iter()
-                .find(|unit| unit.module_path == module_path)
-                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
-                    context: format!("value lifecycle plan for module `{module_path}`"),
-                    message: "owning MIR unit disappeared".to_string(),
-                })?;
-            record_declaration(unit, *type_index)
-        }
-        skiff_artifact_model::TypeRefIr::AppliedNominal {
-            base:
-                skiff_artifact_model::NominalTypeRefBaseIr::PublicationType {
-                    module_path,
-                    type_index,
-                },
-            arguments,
-        } if arguments.is_empty() => {
-            let unit = units
-                .iter()
-                .find(|unit| unit.module_path == *module_path)
-                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
-                    context: format!("value lifecycle plan for publication module `{module_path}`"),
-                    message: "publication MIR unit disappeared".to_string(),
-                })?;
-            record_declaration(unit, *type_index)
-        }
-        _ => Ok(false),
-    }
-}
-
-fn record_declaration(unit: &MirUnit, type_index: u32) -> Result<bool, BytecodeEmissionError> {
-    let declaration = unit.type_table.get(type_index as usize).ok_or_else(|| {
-        BytecodeEmissionError::MissingLocalType {
-            module_path: unit.module_path.clone(),
-            location: "value lifecycle record shape".to_string(),
-            type_index,
-            type_count: unit.type_table.len(),
-        }
-    })?;
-    if !declaration.type_params.is_empty() {
-        return Ok(false);
-    }
-    Ok(matches!(
-        declaration.descriptor,
-        skiff_artifact_model::TypeDescriptorIr::Record { .. }
-    ))
+    plan_for(module_path, ty).map_err(|message| BytecodeEmissionError::UnsupportedConstruct {
+        function_key: function_key.to_string(),
+        construct: "exact source value-transfer plan",
+        location: format!(" {location}: {message}"),
+    })
 }
 
 fn unsupported_slot_type(function_key: &str, slot: &MirSlot) -> BytecodeEmissionError {
@@ -482,189 +178,209 @@ pub struct FunctionValueTransferPlans {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use skiff_artifact_model::{
+        CallableEffectSummary, ExternalRefTable, FileLinkTargets, PackageCallableId,
+        PackageExecutableCoordinate, ResourceDropPlan, SourceMapDto, TypeRefIr, ValueDropPlan,
+        ValueTransferPlan,
+    };
+    use skiff_compiler_lowering::mir::{
+        MirConst, MirExecutableKind, MirFunction, MirLiveness, MirSlot, MirSlotKind,
+        MirSourceEventPlan, MirSourceEventUnavailableReason, MirUnit,
+    };
+
     use super::*;
 
-    #[test]
-    fn exact_authoritative_stream_uses_affine_resource_plan() {
-        let ty = TypeRefIr::Builtin {
-            name: "Stream".to_string(),
-            args: vec![TypeRefIr::builtin("number")],
-        };
-        let resolution = NativeValueLifecycleResolution {
-            lifecycle: NativeValueLifecycleConcrete::AffineResource {
-                drop: NativeResourceDropPlan::ResourceTableRelease,
-            },
-            embedding: NativeValueEmbedding::Forbidden,
-        };
-
-        assert_eq!(
-            concrete_lifecycle_plan("streams::run", " return value", &ty, resolution).unwrap(),
-            ValueTransferPlan::AffineResource {
-                drop: ResourceDropPlan::ResourceTableRelease,
-            }
-        );
+    fn slot(index: u32, name: &str, ty: TypeRefIr) -> MirSlot {
+        MirSlot {
+            slot: index,
+            name: name.to_string(),
+            kind: MirSlotKind::Local,
+            writable_local: false,
+            ty: Some(ty),
+        }
     }
 
-    #[test]
-    fn non_stream_affine_lifecycle_fails_closed() {
-        let ty = TypeRefIr::builtin("file");
-        let resolution = NativeValueLifecycleResolution {
-            lifecycle: NativeValueLifecycleConcrete::AffineResource {
-                drop: NativeResourceDropPlan::ResourceTableRelease,
+    fn function(
+        module_path: &str,
+        declaration: &str,
+        return_type: TypeRefIr,
+        slots: Vec<MirSlot>,
+    ) -> MirFunction {
+        MirFunction {
+            executable_index: 0,
+            origin: PackageExecutableCoordinate {
+                file_ir_identity: "plan-fixture".to_string(),
+                module_path: module_path.to_string(),
+                executable_index: 0,
             },
-            embedding: NativeValueEmbedding::Forbidden,
-        };
-
-        let error =
-            concrete_lifecycle_plan("io::read", " slot `handle`", &ty, resolution).unwrap_err();
-        assert!(matches!(
-            error,
-            BytecodeEmissionError::UnsupportedConstruct {
-                construct: "non-Stream affine value lifecycle",
-                ..
-            }
-        ));
+            symbol: format!("{module_path}.{declaration}"),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type,
+            self_type: None,
+            receiver: None,
+            slots,
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: Vec::new(),
+            blocks: Vec::new(),
+            regions: Vec::new(),
+            statements: Vec::new(),
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new(format!(
+                "callable:{module_path}:{declaration}"
+            )),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+        }
     }
 
-    #[test]
-    fn never_and_unregistered_package_symbols_receive_ordinary_snapshot_plans() {
-        assert_eq!(
-            concrete_value_plan(&[], "m", "f", " slot `never`", &TypeRefIr::builtin("never"))
-                .unwrap(),
-            ValueTransferPlan::SnapshotShare {
-                drop: ValueDropPlan::Trivial,
-            }
-        );
-        assert_eq!(
-            concrete_value_plan(
-                &[],
-                "m",
-                "f",
-                " return value",
-                &TypeRefIr::Nullable {
-                    inner: Box::new(TypeRefIr::builtin("string")),
-                },
-            )
-            .unwrap(),
-            ValueTransferPlan::SnapshotShare {
-                drop: ValueDropPlan::SnapshotRelease,
-            }
-        );
-        let symbol = skiff_artifact_model::PackageSymbolRef {
-            package: skiff_artifact_model::PackageRefIr::PackageId {
-                package_id: "skiff.run/std".to_string(),
+    fn unit(module_path: &str, function: MirFunction, constants: Vec<MirConst>) -> MirUnit {
+        MirUnit {
+            file_ir_identity: format!("file:{module_path}"),
+            module_path: module_path.to_string(),
+            actor_declarations: Vec::new(),
+            external_refs: ExternalRefTable::default(),
+            source_map: SourceMapDto {
+                format: String::new(),
+                sources: Vec::new(),
+                spans: Vec::new(),
             },
-            symbol_path: "std.websocket.WebSocketConnectRequest".to_string(),
-            abi_expectation: Some("abi".to_string()),
-        };
-        assert_eq!(
-            concrete_value_plan(
-                &[],
-                "m",
-                "f",
-                " slot `request`",
-                &TypeRefIr::PackageSymbol { symbol },
-            )
-            .unwrap(),
-            ValueTransferPlan::SnapshotShare {
-                drop: ValueDropPlan::SnapshotRelease,
-            }
-        );
-        let dependency_symbol = skiff_artifact_model::PackageSymbolRef {
-            package: skiff_artifact_model::PackageRefIr::Dependency {
-                dependency_ref: "helper".to_string(),
-            },
-            symbol_path: "helper.EffectResponse".to_string(),
-            abi_expectation: None,
-        };
-        assert_eq!(
-            concrete_value_plan(
-                &[],
-                "m",
-                "f",
-                " slot `events`",
-                &TypeRefIr::PackageSymbol {
-                    symbol: dependency_symbol,
-                },
-            )
-            .unwrap(),
-            ValueTransferPlan::SnapshotShare {
-                drop: ValueDropPlan::SnapshotRelease,
-            }
-        );
-        assert_eq!(
-            concrete_value_plan(
-                &[],
-                "m",
-                "f",
-                " slot `events`",
-                &TypeRefIr::Builtin {
-                    name: "Stream".to_string(),
-                    args: vec![TypeRefIr::PackageSymbol {
-                        symbol: skiff_artifact_model::PackageSymbolRef {
-                            package: skiff_artifact_model::PackageRefIr::Dependency {
-                                dependency_ref: "helper".to_string(),
-                            },
-                            symbol_path: "helper.EffectResponse".to_string(),
-                            abi_expectation: None,
-                        },
-                    }],
-                },
-            )
-            .unwrap(),
-            ValueTransferPlan::AffineResource {
-                drop: ResourceDropPlan::ResourceTableRelease,
-            }
-        );
-    }
-
-    #[test]
-    fn void_is_non_value_and_std_task_builtins_are_explicit_snapshots() {
-        assert_eq!(
-            concrete_value_plan(&[], "m", "f", " slot `void`", &TypeRefIr::builtin("void"))
-                .unwrap(),
-            ValueTransferPlan::SnapshotShare {
-                drop: ValueDropPlan::Trivial,
-            }
-        );
-        for name in ["TaskRef", "TaskStatus", "TaskCancelResult"] {
-            assert_eq!(
-                concrete_value_plan(
-                    &[],
-                    "m",
-                    "f",
-                    &format!(" slot `{name}`"),
-                    &TypeRefIr::builtin(name),
-                )
-                .unwrap(),
-                ValueTransferPlan::SnapshotShare {
-                    drop: ValueDropPlan::SnapshotRelease,
-                }
-            );
+            type_table: Vec::new(),
+            package_type_records: BTreeMap::new(),
+            link_targets: FileLinkTargets::default(),
+            constants,
+            functions: vec![function],
         }
     }
 
     #[test]
-    fn stream_spelling_without_forbidden_embedding_fails_closed() {
-        let ty = TypeRefIr::Builtin {
+    fn phase_2_bytecode_admission_exact_plan_is_consumed_field_by_field() {
+        let scalar = TypeRefIr::builtin("number");
+        let aggregate = TypeRefIr::Record {
+            fields: BTreeMap::new(),
+        };
+        let stream = TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![TypeRefIr::builtin("number")],
+            args: vec![scalar.clone()],
         };
-        let resolution = NativeValueLifecycleResolution {
-            lifecycle: NativeValueLifecycleConcrete::AffineResource {
-                drop: NativeResourceDropPlan::ResourceTableRelease,
-            },
-            embedding: NativeValueEmbedding::Ordinary,
-        };
+        let authority = vec![
+            (
+                scalar.clone(),
+                ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::Trivial,
+                },
+            ),
+            (
+                aggregate.clone(),
+                ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::SnapshotRelease,
+                },
+            ),
+            (
+                stream.clone(),
+                ValueTransferPlan::AffineResource {
+                    drop: ResourceDropPlan::ResourceTableRelease,
+                },
+            ),
+        ];
+        let constants = vec![MirConst {
+            index: 0,
+            symbol: "sample.answer".to_string(),
+            ty: scalar.clone(),
+            source_span: None,
+        }];
+        let units = vec![unit(
+            "sample",
+            function(
+                "sample",
+                "run",
+                stream.clone(),
+                vec![
+                    slot(0, "count", scalar.clone()),
+                    slot(1, "holder", aggregate),
+                ],
+            ),
+            constants,
+        )];
 
-        let error =
-            concrete_lifecycle_plan("streams::run", " return value", &ty, resolution).unwrap_err();
-        assert!(matches!(
-            error,
-            BytecodeEmissionError::UnsupportedConstruct {
-                construct: "non-Stream affine value lifecycle",
-                ..
+        let plans = derive_bytecode_value_transfer_plans_unchecked(&units, |module_path, ty| {
+            assert_eq!(module_path, "sample");
+            authority
+                .iter()
+                .find(|(authority_ty, _)| authority_ty == ty)
+                .map(|(_, plan)| plan.clone())
+                .ok_or_else(|| format!("no exact source plan for {ty:?}"))
+        })
+        .expect("the exact authority covers every admitted type");
+
+        assert_eq!(
+            plans.function("sample::run"),
+            Some(&FunctionValueTransferPlans {
+                slot_plans: vec![
+                    ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::Trivial,
+                    },
+                    ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::SnapshotRelease,
+                    },
+                ],
+                result_plans: vec![ValueTransferPlan::AffineResource {
+                    drop: ResourceDropPlan::ResourceTableRelease,
+                }],
+            })
+        );
+        assert_eq!(plans.functions().len(), 1);
+        assert_eq!(
+            plans.constants(),
+            &BTreeMap::from([(
+                "sample.answer".to_string(),
+                ValueTransferPlan::FromType {
+                    ty: TypeRefIr::builtin("number"),
+                },
+            )])
+        );
+    }
+
+    #[test]
+    fn phase_2_bytecode_admission_missing_plan_is_a_stable_typed_rejection() {
+        let units = vec![unit(
+            "sample",
+            function(
+                "sample",
+                "run",
+                TypeRefIr::builtin("void"),
+                vec![slot(0, "value", TypeRefIr::builtin("number"))],
+            ),
+            Vec::new(),
+        )];
+        let reject = || {
+            derive_bytecode_value_transfer_plans_unchecked(&units, |_module_path, _ty| {
+                Err("missing exact source plan".to_string())
+            })
+        };
+        for error in [reject(), reject()] {
+            let error = error.expect_err("a missing exact plan must fail closed");
+            match error {
+                BytecodeEmissionError::UnsupportedConstruct {
+                    function_key,
+                    construct,
+                    location,
+                } => {
+                    assert_eq!(function_key, "sample::run");
+                    assert_eq!(construct, "exact source value-transfer plan");
+                    assert_eq!(location, " slot `value`: missing exact source plan");
+                }
+                other => panic!("expected the stable missing-plan variant, got {other:?}"),
             }
-        ));
+        }
     }
 }

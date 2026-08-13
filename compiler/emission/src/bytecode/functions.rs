@@ -593,10 +593,22 @@ impl<'a> FunctionEmitter<'a> {
                 value,
                 ..
             } => {
+                self.anchor_extra_value_events(value.expression)?;
                 self.emit_slot_value(*slot, *value)?;
             }
-            MirStmtKind::Assign { place, value, .. } => {
-                self.emit_writable_assign(place, *value)?;
+            MirStmtKind::Assign {
+                target,
+                place,
+                value,
+                ..
+            } => {
+                let target_object = match target {
+                    AssignTargetIr::Field { object, .. } | AssignTargetIr::Index { object, .. } => {
+                        Some(*object)
+                    }
+                    AssignTargetIr::Slot { .. } | AssignTargetIr::ActorSelfField { .. } => None,
+                };
+                self.emit_writable_assign(place, *value, target_object)?;
             }
             MirStmtKind::Assert { condition, .. } => {
                 self.emit_expression(*condition)?;
@@ -1947,6 +1959,7 @@ impl<'a> FunctionEmitter<'a> {
         &mut self,
         place: &MirWritablePlace,
         value: ExprRefIr,
+        target_object: Option<ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
         let MirWritableRoot::Slot { slot } = place.root else {
             return Err(unsupported(
@@ -2078,11 +2091,117 @@ impl<'a> FunctionEmitter<'a> {
         )?;
         let selector_count = u32::try_from(selector_expressions.len())
             .map_err(|_| arithmetic(&self.key, "writable selector count conversion"))?;
-        self.emit_op(
+        let writable_pc = self.emit_op(
             Opcode::SetWritablePath,
             vec![slot, path_ref, selector_count],
         )?;
+        if let Some(object) = target_object {
+            // The assign target object expression is never evaluated as a
+            // read: the collapsed target-key event covers the writable-path
+            // opcode, while the object chain's own events anchor to distinct
+            // trailing synthetic instructions.
+            self.anchor_writable_target_chain(object, writable_pc)?;
+        }
         Ok(())
+    }
+
+    fn anchor_extra_value_events(
+        &mut self,
+        expression_index: u32,
+    ) -> Result<(), BytecodeEmissionError> {
+        let indices = self
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(index, event)| {
+                self.event_mapping[*index].is_none()
+                    && matches!(
+                        event.anchor,
+                        MirEmissionAnchor::Expression {
+                            expression_index: anchored,
+                            occurrence_ordinal,
+                        } if anchored == expression_index && occurrence_ordinal > 0
+                    )
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        for index in indices {
+            let instruction = self.instructions.len();
+            self.emit_number_constant(0)?;
+            self.emit_op(Opcode::Pop, Vec::new())?;
+            self.event_mapping[index] = Some(instruction);
+        }
+        Ok(())
+    }
+
+    fn anchor_writable_target_chain(
+        &mut self,
+        object: ExprRefIr,
+        writable_pc: usize,
+    ) -> Result<(), BytecodeEmissionError> {
+        if let Some((index, _)) = self.events.iter().enumerate().find(|(index, event)| {
+            self.event_mapping[*index].is_none()
+                && matches!(
+                    event.anchor,
+                    MirEmissionAnchor::Expression {
+                        expression_index: anchored,
+                        occurrence_ordinal,
+                    } if anchored == object.expression && occurrence_ordinal > 0
+                )
+        }) {
+            self.event_mapping[index] = Some(writable_pc);
+        }
+        let mut indices = Vec::new();
+        self.collect_writable_target_chain(object, &mut indices)?;
+        for expression_index in indices {
+            self.anchor_all_expression_events(expression_index)?;
+        }
+        Ok(())
+    }
+
+    fn collect_writable_target_chain(
+        &mut self,
+        object: ExprRefIr,
+        indices: &mut Vec<u32>,
+    ) -> Result<(), BytecodeEmissionError> {
+        indices.push(object.expression);
+        let expression = self.function.expression(object)?;
+        match &expression.expression {
+            ExprIr::Field { object, .. } => self.collect_writable_target_chain(*object, indices)?,
+            ExprIr::Index { object, .. } => self.collect_writable_target_chain(*object, indices)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn anchor_all_expression_events(
+        &mut self,
+        expression_index: u32,
+    ) -> Result<(), BytecodeEmissionError> {
+        loop {
+            let Some(index) = self
+                .events
+                .iter()
+                .enumerate()
+                .find(|(index, event)| {
+                    self.event_mapping[*index].is_none()
+                        && matches!(
+                            event.anchor,
+                            MirEmissionAnchor::Expression {
+                                expression_index: anchored,
+                                ..
+                            } if anchored == expression_index
+                        )
+                })
+                .map(|(index, _)| index)
+            else {
+                return Ok(());
+            };
+            let instruction = self.instructions.len();
+            self.emit_number_constant(0)?;
+            self.emit_op(Opcode::Pop, Vec::new())?;
+            self.event_mapping[index] = Some(instruction);
+        }
     }
 
     fn emit_field_read(

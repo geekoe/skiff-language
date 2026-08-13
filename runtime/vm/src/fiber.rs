@@ -14,8 +14,7 @@ use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedCallableSignature, LinkedCatchMatcher, LinkedExceptionRegion,
     LinkedFrozenConstantValue, LinkedFunction, LinkedInstruction, LinkedInstructionTarget,
     LinkedInterfaceTableKind, LinkedIntrinsicKind, LinkedNativeCallableSignature,
-    LinkedResourceDropPlan, LinkedSlotState, LinkedValueTransferPlan, LinkedWritablePathSegment,
-    ResumeSiteIndex, TypeIndex,
+    LinkedValueTransferPlan, LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
@@ -36,6 +35,7 @@ use crate::{
     },
     fiber::entry_admission::validate_entry_contract,
     frame::VmFrame,
+    lifecycle::LifecycleExecutor,
     projection::VmProjectionHandoff,
     statement::{charge_frame_entry, charge_instruction_events},
     ResumeOutcome, VmBudget, VmControl, VmError, VmLimits, VmResumeToken, VmValueLocation,
@@ -526,9 +526,16 @@ impl VmFiber {
             self.state = VmFiberState::Terminal;
             return Err(VmError::ResumeTokenMismatch);
         }
-        self.begin_unwind(payload, payload_type)?;
-        self.state = VmFiberState::Runnable;
-        Ok(())
+        // Phase 2 keeps async throw resume fail-closed: the resume boundary
+        // has no heap port, and an unwind must route every frame-exit drop
+        // through the lifecycle executor. The exact local-throw path in
+        // `execute_throw` is the only admitted unwind producer.
+        self.state = VmFiberState::Terminal;
+        Err(VmError::FullValueLifecyclePlanUnavailable {
+            function: pending.function,
+            instruction: pending.instruction,
+            opcode: Opcode::Throw,
+        })
     }
 
     fn run_segment_inner(
@@ -579,8 +586,6 @@ impl VmFiber {
     }
 
     fn dispatch_one(&mut self, heap: &mut dyn VmHeap) -> Result<DispatchOutcome, VmError> {
-        let frame = self.current_frame()?.clone();
-        self.reconcile_frame_slots_at(Some(heap), &frame, frame.instruction(), None)?;
         let (function_index, instruction_index, instruction) = {
             let frame = self.current_frame()?;
             let function = self.function(frame.function())?;
@@ -606,26 +611,44 @@ impl VmFiber {
             });
         }
 
+        let mut lifecycle = LifecycleExecutor::new(heap);
         let outcome = match instruction.opcode() {
             Opcode::Const => self.execute_const(function_index, instruction_index, &instruction),
-            Opcode::CopySlot => {
-                self.execute_copy_slot(function_index, instruction_index, &instruction)
+            Opcode::CopySlot => self.execute_copy_slot(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::MoveSlot => self.execute_move_slot(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::StoreSlot => self.execute_store_slot(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::Drop => {
+                self.execute_drop(&mut lifecycle, function_index, instruction_index, &instruction)
             }
-            Opcode::MoveSlot => {
-                self.execute_move_slot(function_index, instruction_index, &instruction)
-            }
-            Opcode::StoreSlot => {
-                self.execute_store_slot(function_index, instruction_index, &instruction)
-            }
-            Opcode::Drop => self.execute_drop(function_index, instruction_index, &instruction),
-            Opcode::Dup => self.execute_dup(function_index, instruction_index),
-            Opcode::LoadSlot => {
-                self.execute_load_slot(function_index, instruction_index, &instruction)
-            }
-            Opcode::TakeSlot => {
-                self.execute_take_slot(function_index, instruction_index, &instruction)
-            }
-            Opcode::Pop => self.execute_pop(function_index, instruction_index),
+            Opcode::Dup => self.execute_dup(&mut lifecycle, function_index, instruction_index),
+            Opcode::LoadSlot => self.execute_load_slot(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::TakeSlot => self.execute_take_slot(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::Pop => self.execute_pop(&mut lifecycle, function_index, instruction_index),
             Opcode::Jump => self.execute_jump(function_index, instruction_index, &instruction),
             Opcode::JumpIfTrue => {
                 self.execute_jump_if(function_index, instruction_index, &instruction, true)
@@ -638,13 +661,21 @@ impl VmFiber {
             }
             Opcode::Trap => self.execute_trap(function_index, instruction_index, &instruction),
             Opcode::BudgetCheckpoint => self.execute_budget_checkpoint(function_index),
-            Opcode::CallLocal => {
-                self.execute_call_local(function_index, instruction_index, &instruction)
+            Opcode::CallLocal => self.execute_call_local(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::TailCallLocal => self.execute_tail_call_local(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::Return => {
+                self.execute_return(&mut lifecycle, function_index, instruction_index)
             }
-            Opcode::TailCallLocal => {
-                self.execute_tail_call_local(function_index, instruction_index, &instruction)
-            }
-            Opcode::Return => self.execute_return(function_index, instruction_index),
             Opcode::CallService => {
                 self.execute_call_service(function_index, instruction_index, &instruction)
             }
@@ -658,7 +689,12 @@ impl VmFiber {
                 self.execute_invoke_host(function_index, instruction_index, &instruction)
             }
             Opcode::InvokeIntrinsic => {
-                self.execute_invoke_intrinsic(heap, function_index, instruction_index, &instruction)
+                self.execute_invoke_intrinsic(
+                    lifecycle.heap(),
+                    function_index,
+                    instruction_index,
+                    &instruction,
+                )
             }
             Opcode::MakeCallback => {
                 self.execute_make_callback(function_index, instruction_index, &instruction)
@@ -666,65 +702,104 @@ impl VmFiber {
             Opcode::InvokeCallback => {
                 self.execute_invoke_callback(function_index, instruction_index, &instruction)
             }
-            Opcode::Throw => self.execute_throw(function_index, instruction_index, &instruction),
-            Opcode::Rethrow => {
-                self.execute_rethrow(function_index, instruction_index, &instruction)
-            }
+            Opcode::Throw => self.execute_throw(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::Rethrow => self.execute_rethrow(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::EnterRegion => {
                 self.execute_enter_region(function_index, instruction_index, &instruction)
             }
             Opcode::LeaveRegion => {
                 self.execute_leave_region(function_index, instruction_index, &instruction)
             }
-            Opcode::NewRecord => {
-                self.execute_new_record(heap, function_index, instruction_index, &instruction)
-            }
-            Opcode::GetDenseField => {
-                self.execute_get_dense_field(heap, function_index, instruction_index, &instruction)
-            }
+            Opcode::NewRecord => self.execute_new_record(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::GetDenseField => self.execute_get_dense_field(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::SetWritablePath => self.execute_set_writable_path(
-                heap,
+                &mut lifecycle,
                 function_index,
                 instruction_index,
                 &instruction,
             ),
             Opcode::RepresentationWrap => self.execute_representation_wrap(
-                heap,
+                lifecycle.heap(),
                 function_index,
                 instruction_index,
                 &instruction,
             ),
             Opcode::NewArrayBuilder => self.execute_new_array_builder(
-                heap,
+                lifecycle.heap(),
                 function_index,
                 instruction_index,
                 &instruction,
             ),
             Opcode::ArrayBuilderPush => {
-                self.execute_array_builder_push(heap, function_index, instruction_index)
+                self.execute_array_builder_push(
+                    &mut lifecycle,
+                    function_index,
+                    instruction_index,
+                )
             }
             Opcode::FreezeArray => {
-                self.execute_freeze_array(heap, function_index, instruction_index)
+                self.execute_freeze_array(lifecycle.heap(), function_index, instruction_index)
             }
-            Opcode::ArrayGet => self.execute_array_get(heap, function_index, instruction_index),
-            Opcode::ArrayPushOwned => {
-                self.execute_array_push_owned(heap, function_index, instruction_index, &instruction)
+            Opcode::ArrayGet => {
+                self.execute_array_get(&mut lifecycle, function_index, instruction_index)
             }
-            Opcode::ArrayLen => self.execute_array_len(heap, function_index, instruction_index),
+            Opcode::ArrayPushOwned => self.execute_array_push_owned(
+                &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::ArrayLen => {
+                self.execute_array_len(lifecycle.heap(), function_index, instruction_index)
+            }
             Opcode::NewMapBuilder => {
-                self.execute_new_map_builder(heap, function_index, instruction_index, &instruction)
+                self.execute_new_map_builder(
+                    lifecycle.heap(),
+                    function_index,
+                    instruction_index,
+                    &instruction,
+                )
             }
             Opcode::MapBuilderPut => {
-                self.execute_map_builder_put(heap, function_index, instruction_index)
+                self.execute_map_builder_put(lifecycle.heap(), function_index, instruction_index)
             }
-            Opcode::FreezeMap => self.execute_freeze_map(heap, function_index, instruction_index),
-            Opcode::MapGet => self.execute_map_get(heap, function_index, instruction_index),
-            Opcode::MapPutOwned => {
-                self.execute_map_put_owned(heap, function_index, instruction_index, &instruction)
+            Opcode::FreezeMap => {
+                self.execute_freeze_map(lifecycle.heap(), function_index, instruction_index)
             }
-            Opcode::MapLen => self.execute_map_len(heap, function_index, instruction_index),
+            Opcode::MapGet => {
+                self.execute_map_get(lifecycle.heap(), function_index, instruction_index)
+            }
+            Opcode::MapPutOwned => self.execute_map_put_owned(
+                lifecycle.heap(),
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::MapLen => {
+                self.execute_map_len(lifecycle.heap(), function_index, instruction_index)
+            }
             Opcode::MapEntryAt => {
-                self.execute_map_entry_at(heap, function_index, instruction_index)
+                self.execute_map_entry_at(lifecycle.heap(), function_index, instruction_index)
             }
             Opcode::InterfaceBoxLocal => {
                 self.execute_interface_box_local(function_index, instruction_index, &instruction)
@@ -752,7 +827,7 @@ impl VmFiber {
                 instruction.opcode(),
             ),
             Opcode::Equal | Opcode::NotEqual => self.execute_equality(
-                heap,
+                lifecycle.heap(),
                 function_index,
                 instruction_index,
                 instruction.opcode(),
@@ -803,6 +878,7 @@ impl VmFiber {
 
     fn execute_copy_slot(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -820,13 +896,27 @@ impl VmFiber {
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
         let value = self.read_slot(&frame, slot_count, source)?;
-        self.write_slot(&frame, slot_count, destination, value)?;
+        let plan = self.slot_plan(frame.function(), source)?;
+        let shared = executor
+            .share(&value, &plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::CopySlot))?;
+        self.overwrite_slot(
+            executor,
+            &frame,
+            slot_count,
+            destination,
+            shared,
+            function,
+            instruction,
+            Opcode::CopySlot,
+        )?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
 
     fn execute_move_slot(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -844,7 +934,20 @@ impl VmFiber {
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
         let value = self.read_slot(&frame, slot_count, source)?;
-        self.write_slot(&frame, slot_count, destination, value)?;
+        let plan = self.slot_plan(frame.function(), source)?;
+        let moved = executor
+            .transfer(&value, &plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::MoveSlot))?;
+        self.overwrite_slot(
+            executor,
+            &frame,
+            slot_count,
+            destination,
+            moved,
+            function,
+            instruction,
+            Opcode::MoveSlot,
+        )?;
         self.clear_slot(&frame, slot_count, source)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
@@ -852,6 +955,7 @@ impl VmFiber {
 
     fn execute_store_slot(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -863,14 +967,28 @@ impl VmFiber {
         };
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
+        let plan = self.operand_plan(&frame, instruction, 0)?;
         let value = self.pop_operands(1, false)?.remove(0);
-        self.write_slot(&frame, slot_count, destination, value)?;
+        let moved = executor
+            .transfer(&value, &plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::StoreSlot))?;
+        self.overwrite_slot(
+            executor,
+            &frame,
+            slot_count,
+            destination,
+            moved,
+            function,
+            instruction,
+            Opcode::StoreSlot,
+        )?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
 
     fn execute_drop(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -882,7 +1000,11 @@ impl VmFiber {
         };
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        let _ = self.read_slot(&frame, slot_count, slot)?;
+        let value = self.read_slot(&frame, slot_count, slot)?;
+        let plan = self.slot_plan(frame.function(), slot)?;
+        executor
+            .release(&value, &plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::Drop))?;
         self.clear_slot(&frame, slot_count, slot)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
@@ -890,6 +1012,7 @@ impl VmFiber {
 
     fn execute_load_slot(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -901,14 +1024,20 @@ impl VmFiber {
         };
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
+        self.ensure_operand_push(1)?;
         let value = self.read_slot(&frame, slot_count, slot)?;
-        self.push_operand(value)?;
+        let plan = self.slot_plan(frame.function(), slot)?;
+        let shared = executor
+            .share(&value, &plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::LoadSlot))?;
+        self.push_operand(shared)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
 
     fn execute_take_slot(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -922,31 +1051,57 @@ impl VmFiber {
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
         self.ensure_operand_push(1)?;
         let value = self.read_slot(&frame, slot_count, slot)?;
+        let plan = self.slot_plan(frame.function(), slot)?;
+        let moved = executor
+            .transfer(&value, &plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::TakeSlot))?;
         self.clear_slot(&frame, slot_count, slot)?;
-        self.push_operand(value)?;
+        self.push_operand(moved)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
 
     fn execute_pop(
         &mut self,
-        _function: FunctionIndex,
-        _instruction: InstructionIndex,
+        executor: &mut LifecycleExecutor<'_>,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let _ = self.pop_operands(1, false)?;
+        let frame = self.current_frame()?.clone();
+        let plan = self.operand_plan(&frame, instruction, 0)?;
+        let position = frame.operand_base() + frame.operand_height() - 1;
+        if !self.live_values[position] {
+            return Err(VmError::DeadValueRead {
+                location: VmValueLocation::Operand(frame.operand_height() - 1),
+            });
+        }
+        let value = self.values[position];
+        executor
+            .release(&value, &plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::Pop))?;
+        self.pop_operands(1, false)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
 
     fn execute_dup(
         &mut self,
-        _function: FunctionIndex,
-        _instruction: InstructionIndex,
+        executor: &mut LifecycleExecutor<'_>,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        self.ensure_operand_push(1)?;
+        self.ensure_operand_push(2)?;
+        let frame = self.current_frame()?.clone();
+        let plan = self.operand_plan(&frame, instruction, 0)?;
         let value = self.pop_operands(1, false)?.remove(0);
-        self.push_operand(value)?;
-        self.push_operand(value)?;
+        let first = executor
+            .share(&value, &plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::Dup))?;
+        let second = executor
+            .share(&value, &plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::Dup))?;
+        self.push_operand(first)?;
+        self.push_operand(second)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
@@ -1059,6 +1214,7 @@ impl VmFiber {
 
     fn execute_throw(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1068,12 +1224,25 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
+        let frame = self.current_frame()?.clone();
+        let payload_plan = self.operand_plan(&frame, instruction, 0)?;
         let payload = self.pop_operands(1, false)?.remove(0);
-        self.begin_unwind(payload, Some(type_index))
+        let payload = executor
+            .transfer(&payload, &payload_plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::Throw))?;
+        self.begin_unwind(
+            executor,
+            payload,
+            payload_plan,
+            Some(type_index),
+            function,
+            instruction,
+        )
     }
 
     fn execute_rethrow(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1086,13 +1255,24 @@ impl VmFiber {
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
         let payload = self.read_slot(&frame, slot_count, slot)?;
+        let payload_plan = self.slot_plan(frame.function(), slot)?;
         let payload_type = self
             .function(frame.function())?
             .frame()
             .slot_types()
             .get(slot.get() as usize)
             .copied();
-        self.begin_unwind(payload, payload_type)
+        let payload = executor
+            .transfer(&payload, &payload_plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::Rethrow))?;
+        self.begin_unwind(
+            executor,
+            payload,
+            payload_plan,
+            payload_type,
+            function,
+            instruction,
+        )
     }
 
     fn execute_enter_region(
@@ -1155,8 +1335,12 @@ impl VmFiber {
 
     fn begin_unwind(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         payload: ValueSlot,
+        payload_plan: LinkedValueTransferPlan,
         payload_type: Option<TypeIndex>,
+        dispatch_function: FunctionIndex,
+        dispatch_instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
         self.unwind = Some(UnwindState { payload });
         loop {
@@ -1166,10 +1350,16 @@ impl VmFiber {
             let regions = self.function(function)?.exception_regions();
             if let Some(region) = find_exception_region(regions, instruction, payload_type) {
                 let region = region.clone();
-                self.enter_handler(&frame, &region, payload)?;
+                self.enter_handler(executor, &frame, &region, payload)?;
                 return Ok(DispatchOutcome::Continue);
             }
             if self.frames.len() == 1 {
+                self.release_frame_exit(executor, &frame, Opcode::Throw)?;
+                executor
+                    .release(&payload, &payload_plan)
+                    .map_err(|error| {
+                        error.into_vm_error(dispatch_function, dispatch_instruction, Opcode::Throw)
+                    })?;
                 self.frames.clear();
                 self.values.clear();
                 self.live_values.clear();
@@ -1183,6 +1373,7 @@ impl VmFiber {
                     payload_type,
                 });
             }
+            self.release_frame_exit(executor, &frame, Opcode::Throw)?;
             self.frames.pop();
             self.region_depths.pop();
             let caller_end =
@@ -1203,12 +1394,12 @@ impl VmFiber {
 
     fn enter_handler(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         frame: &VmFrame,
         region: &LinkedExceptionRegion,
         payload: ValueSlot,
     ) -> Result<(), VmError> {
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        self.reconcile_frame_slots_at(None, frame, region.handler(), Some(region.catch_slot()))?;
         let handler_height = usize::try_from(region.handler_stack_height()).map_err(|_| {
             VmError::OperandStackOverflow {
                 function: frame.function(),
@@ -1225,10 +1416,25 @@ impl VmFiber {
         let operand_end = operand_base + frame.operand_height();
         let handler_base = operand_base + handler_height;
         for index in handler_base..operand_end {
+            let position = index - operand_base;
+            let plan = self.stack_map_operand_plan(frame.function(), frame.instruction(), position)?;
+            let value = self.values[index];
+            executor
+                .release(&value, &plan)
+                .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw))?;
             self.clear_value(index);
         }
         self.current_frame_mut()?.set_operand_height(handler_height);
-        self.write_slot(frame, slot_count, region.catch_slot(), payload)?;
+        self.overwrite_slot(
+            executor,
+            frame,
+            slot_count,
+            region.catch_slot(),
+            payload,
+            frame.function(),
+            frame.instruction(),
+            Opcode::Throw,
+        )?;
         self.current_frame_mut()?.jump_to(region.handler());
         self.unwind = None;
         Ok(())
@@ -1236,6 +1442,7 @@ impl VmFiber {
 
     fn execute_call_local(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1328,12 +1535,19 @@ impl VmFiber {
                 invariant: VmVerifiedInvariant::FrameLayoutOverflow,
             });
         }
+        let argument_plans = (0..arg_count)
+            .map(|ordinal| self.operand_plan(&caller, instruction, arg_count - 1 - ordinal))
+            .collect::<Result<Vec<_>, VmError>>()?;
         let arguments = self.pop_operands(arg_count, false)?;
         self.values
             .resize(child_start + segment_len, ValueSlot::null());
         self.live_values.resize(child_start + segment_len, false);
         for (ordinal, destination_slot) in transfer_slots.into_iter().enumerate() {
-            let value = arguments[ordinal];
+            let value = executor
+                .transfer(&arguments[ordinal], &argument_plans[ordinal])
+                .map_err(|error| {
+                    error.into_vm_error(function, instruction, Opcode::CallLocal)
+                })?;
             self.values[child_start + destination_slot] = value;
             self.live_values[child_start + destination_slot] = true;
         }
@@ -1371,6 +1585,7 @@ impl VmFiber {
 
     fn execute_tail_call_local(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1442,15 +1657,20 @@ impl VmFiber {
             });
         }
 
+        let argument_plans = (0..arg_count)
+            .map(|ordinal| self.operand_plan(&caller, instruction, arg_count - 1 - ordinal))
+            .collect::<Result<Vec<_>, VmError>>()?;
         let arguments = self.pop_operands(arg_count, true)?;
-        for index in slot_base..caller_end {
-            self.clear_value(index);
-        }
+        self.release_frame_exit(executor, &caller, Opcode::TailCallLocal)?;
         let new_end = slot_base + segment_len;
         self.values.resize(new_end, ValueSlot::null());
         self.live_values.resize(new_end, false);
         for (ordinal, destination_slot) in transfer_slots.into_iter().enumerate() {
-            let value = arguments[ordinal];
+            let value = executor
+                .transfer(&arguments[ordinal], &argument_plans[ordinal])
+                .map_err(|error| {
+                    error.into_vm_error(function, instruction, Opcode::TailCallLocal)
+                })?;
             self.values[slot_base + destination_slot] = value;
             self.live_values[slot_base + destination_slot] = true;
         }
@@ -1480,8 +1700,9 @@ impl VmFiber {
 
     fn execute_return(
         &mut self,
-        _function: FunctionIndex,
-        _instruction: InstructionIndex,
+        executor: &mut LifecycleExecutor<'_>,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
         let frame = self.current_frame()?.clone();
         let depth = self.frames.len();
@@ -1506,9 +1727,22 @@ impl VmFiber {
             }
         }
         let results = self.pop_operands(result_count, true)?;
+        let result_plans = self
+            .function(frame.function())?
+            .frame()
+            .result_plans()
+            .to_vec();
+        let mut transferred = Vec::with_capacity(result_count);
+        for (ordinal, value) in results.iter().enumerate() {
+            let value = executor
+                .transfer(value, &result_plans[ordinal])
+                .map_err(|error| error.into_vm_error(function, instruction, Opcode::Return))?;
+            transferred.push(value);
+        }
         if self.frames.len() == 1 {
+            self.release_frame_exit(executor, &frame, Opcode::Return)?;
             let image = Arc::clone(self.entry.image());
-            let values = results.into_boxed_slice();
+            let values = transferred.into_boxed_slice();
             self.frames.clear();
             self.values.clear();
             self.live_values.clear();
@@ -1529,6 +1763,7 @@ impl VmFiber {
             return Ok(DispatchOutcome::Complete(VmOwnedValues::new(image, values)));
         }
 
+        self.release_frame_exit(executor, &frame, Opcode::Return)?;
         let child = self
             .frames
             .pop()
@@ -1552,7 +1787,7 @@ impl VmFiber {
             .last()
             .ok_or(VmError::FiberNotRunnable { state: self.state })?;
         self.active_regions.truncate(caller_depth);
-        for value in results {
+        for value in transferred {
             self.push_operand(value)?;
         }
         self.current_frame_mut()?.resume_to(resume);
@@ -1578,7 +1813,7 @@ impl VmFiber {
 
     fn execute_new_record(
         &mut self,
-        heap: &mut dyn VmHeap,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1606,23 +1841,28 @@ impl VmFiber {
                 opcode: Opcode::NewRecord,
             });
         }
+        let frame = self.current_frame()?.clone();
         let values = self.pop_operands(field_count, false)?;
         let mut fields = Vec::with_capacity(field_count);
-        for (field, value) in shape.fields().iter().zip(values) {
+        for (ordinal, (field, value)) in shape.fields().iter().zip(values).enumerate() {
             let value = if matches!(value.kind(), Some(ValueKind::ConstRef)) {
-                match self.string_slot_value(heap, &value) {
-                    Ok(string) => heap.alloc_string(string).map_err(VmError::Heap)?,
+                match self.string_slot_value(executor.heap(), &value) {
+                    Ok(string) => executor.heap().alloc_string(string).map_err(VmError::Heap)?,
                     Err(_) => value,
                 }
             } else {
-                value
+                let plan = self.operand_plan(&frame, instruction, field_count - 1 - ordinal)?;
+                executor
+                    .transfer(&value, &plan)
+                    .map_err(|error| error.into_vm_error(function, instruction, Opcode::NewRecord))?
             };
             fields.push(VmRecordField {
                 name: field.name().to_string(),
                 value,
             });
         }
-        let value = heap
+        let value = executor
+            .heap()
             .allocate_record(
                 &fields,
                 CompactTypeTag::new(shape.nominal_type().get()),
@@ -1636,7 +1876,7 @@ impl VmFiber {
 
     fn execute_get_dense_field(
         &mut self,
-        heap: &mut dyn VmHeap,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1657,7 +1897,6 @@ impl VmFiber {
                 table: CandidateTable::Shapes,
                 row: shape_index.get(),
             })?;
-        let record = self.pop_operands(1, false)?.remove(0);
         if field_ordinal >= shape.fields().len() {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
@@ -1665,17 +1904,41 @@ impl VmFiber {
                 opcode: Opcode::GetDenseField,
             });
         }
-        let value = heap
+        let frame = self.current_frame()?.clone();
+        let record_plan = self.operand_plan(&frame, instruction, 0)?;
+        let record = self.pop_operands(1, false)?.remove(0);
+        let value = executor
+            .heap()
             .get_dense_field(&record, field_ordinal)
             .map_err(VmError::Heap)?;
-        self.push_operand(value)?;
+        let next = InstructionIndex::new(
+            instruction
+                .get()
+                .checked_add(1)
+                .ok_or(VmError::InstructionPointerOutOfBounds {
+                    function,
+                    instruction,
+                })?,
+        );
+        let field_plan = self.stack_map_operand_plan(
+            frame.function(),
+            next,
+            frame.operand_height().saturating_sub(1),
+        )?;
+        let shared = executor
+            .share(&value, &field_plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::GetDenseField))?;
+        executor
+            .release(&record, &record_plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::GetDenseField))?;
+        self.push_operand(shared)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
 
     fn execute_set_writable_path(
         &mut self,
-        heap: &mut dyn VmHeap,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1711,13 +1974,22 @@ impl VmFiber {
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
         let root = self.read_slot(&frame, slot_count, root_slot)?;
-        let values = self.pop_operands(selector_count + 1, false)?;
-        let value = *values.last().ok_or(VmError::OperandStackUnderflow {
-            function,
-            needed: selector_count + 1,
-            available: selector_count,
-        })?;
-        let selectors = values[..selector_count].to_vec();
+        let writable = self
+            .function(frame.function())?
+            .frame()
+            .writable_local_slots()
+            .binary_search(&root_slot)
+            .is_ok();
+        if !writable {
+            return Err(VmError::LiveDestination {
+                function,
+                instruction,
+                location: VmValueLocation::FrameSlot(root_slot),
+            });
+        }
+        let rhs_plan = self.operand_plan(&frame, instruction, 0)?;
+        let value = self.pop_operands(1, false)?.remove(0);
+        let selectors = self.pop_operands(selector_count, false)?;
         let mut segments = Vec::with_capacity(path.segments().len());
         for segment in path.segments() {
             segments.push(match segment {
@@ -1749,12 +2021,41 @@ impl VmFiber {
                 LinkedWritablePathSegment::MapKey { .. } => VmHeapPathSegment::MapKey,
             });
         }
-        heap.set_writable_path(&root, &segments, &selectors, value)
-            .map_err(VmError::Heap)?;
-        if self.live_values[Self::slot_index(&frame, slot_count, root_slot, function)?] {
-            self.clear_slot(&frame, slot_count, root_slot)?;
+        let prepared = match executor
+            .heap()
+            .prepare_writable_path(&root, &segments, &selectors)
+        {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let _ = executor.release(&value, &rhs_plan);
+                return Err(VmError::Heap(error));
+            }
+        };
+        let value = match executor.transfer(&value, &rhs_plan) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = executor.release(&value, &rhs_plan);
+                return Err(error.into_vm_error(function, instruction, Opcode::SetWritablePath));
+            }
+        };
+        let replacement = match executor.heap().commit_writable_path(prepared, value) {
+            Ok(root) => root,
+            Err(error) => {
+                let _ = executor.release(&value, &rhs_plan);
+                return Err(VmError::Heap(error));
+            }
+        };
+        if replacement == root {
+            // Exclusive in-place commit: the slot keeps its bits and owner.
+        } else {
+            let root_plan = self.slot_plan(frame.function(), root_slot)?;
+            executor
+                .release(&root, &root_plan)
+                .map_err(|error| {
+                    error.into_vm_error(function, instruction, Opcode::SetWritablePath)
+                })?;
+            self.install_slot_value(&frame, slot_count, root_slot, replacement)?;
         }
-        self.write_slot(&frame, slot_count, root_slot, value)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
@@ -1820,15 +2121,29 @@ impl VmFiber {
 
     fn execute_array_builder_push(
         &mut self,
-        heap: &mut dyn VmHeap,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
+        let frame = self.current_frame()?.clone();
+        let value_plan = self.operand_plan(&frame, instruction, 0)?;
         let values = self.pop_operands(2, false)?;
         let builder = values[0];
         let value = values[1];
-        heap.array_push_owned(&builder, value)
-            .map_err(VmError::Heap)?;
+        let value = match executor.transfer(&value, &value_plan) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = executor.release(&value, &value_plan);
+                return Err(error.into_vm_error(function, instruction, Opcode::ArrayBuilderPush));
+            }
+        };
+        match executor.heap().array_push_owned(&builder, value) {
+            Ok(()) => {}
+            Err(error) => {
+                let _ = executor.release(&value, &value_plan);
+                return Err(VmError::Heap(error));
+            }
+        }
         self.push_operand(builder)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
@@ -1837,8 +2152,8 @@ impl VmFiber {
     fn execute_freeze_array(
         &mut self,
         heap: &mut dyn VmHeap,
-        function: FunctionIndex,
-        instruction: InstructionIndex,
+        _function: FunctionIndex,
+        _instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
         let value = self.pop_operands(1, false)?.remove(0);
         heap.validate_live(&value).map_err(VmError::Heap)?;
@@ -1849,31 +2164,52 @@ impl VmFiber {
 
     fn execute_array_get(
         &mut self,
-        heap: &mut dyn VmHeap,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
+        let frame = self.current_frame()?.clone();
+        let array_plan = self.operand_plan(&frame, instruction, 1)?;
         let values = self.pop_operands(2, false)?;
         let array = values[0];
-        let index = values[1].as_integer().ok_or(VmError::ExpectedNumber {
+        let index =
+            skiff_runtime_model::vm_heap::collection_index(&values[1]).ok_or(VmError::ExpectedNumber {
             function,
             instruction,
             actual: values[1].kind(),
         })?;
-        let index = usize::try_from(index).map_err(|_| VmError::ExpectedNumber {
-            function,
-            instruction,
-            actual: values[1].kind(),
-        })?;
-        let value = heap.array_get(&array, index).map_err(VmError::Heap)?;
-        self.push_operand(value)?;
+        let value = executor
+            .heap()
+            .array_get(&array, index)
+            .map_err(VmError::Heap)?;
+        let next = InstructionIndex::new(
+            instruction
+                .get()
+                .checked_add(1)
+                .ok_or(VmError::InstructionPointerOutOfBounds {
+                    function,
+                    instruction,
+                })?,
+        );
+        let element_plan = self.stack_map_operand_plan(
+            frame.function(),
+            next,
+            frame.operand_height().saturating_sub(2),
+        )?;
+        let shared = executor
+            .share(&value, &element_plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::ArrayGet))?;
+        executor
+            .release(&array, &array_plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::ArrayGet))?;
+        self.push_operand(shared)?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
 
     fn execute_array_push_owned(
         &mut self,
-        heap: &mut dyn VmHeap,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -1883,16 +2219,39 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
-        let value = self.pop_operands(1, false)?.remove(0);
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        let array = self.read_slot(&frame, slot_count, slot)?;
-        heap.array_push_owned(&array, value)
-            .map_err(VmError::Heap)?;
-        if self.live_values[Self::slot_index(&frame, slot_count, slot, function)?] {
-            self.clear_slot(&frame, slot_count, slot)?;
+        let writable = self
+            .function(frame.function())?
+            .frame()
+            .writable_local_slots()
+            .binary_search(&slot)
+            .is_ok();
+        if !writable {
+            return Err(VmError::LiveDestination {
+                function,
+                instruction,
+                location: VmValueLocation::FrameSlot(slot),
+            });
         }
-        self.write_slot(&frame, slot_count, slot, array)?;
+        let array = self.read_slot(&frame, slot_count, slot)?;
+        let value_plan = self.operand_plan(&frame, instruction, 0)?;
+        let value = self.pop_operands(1, false)?.remove(0);
+        let value = match executor.transfer(&value, &value_plan) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = executor.release(&value, &value_plan);
+                return Err(error.into_vm_error(function, instruction, Opcode::ArrayPushOwned));
+            }
+        };
+        match executor.heap().array_push_owned(&array, value) {
+            Ok(()) => {}
+            Err(error) => {
+                let _ = executor.release(&value, &value_plan);
+                return Err(VmError::Heap(error));
+            }
+        }
+        // In-place exclusive push keeps the slot's bits and owner.
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
@@ -1900,8 +2259,8 @@ impl VmFiber {
     fn execute_array_len(
         &mut self,
         heap: &mut dyn VmHeap,
-        function: FunctionIndex,
-        instruction: InstructionIndex,
+        _function: FunctionIndex,
+        _instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
         let array = self.pop_operands(1, false)?.remove(0);
         let len = heap.array_len(&array).map_err(VmError::Heap)?;
@@ -1957,8 +2316,8 @@ impl VmFiber {
     fn execute_map_builder_put(
         &mut self,
         heap: &mut dyn VmHeap,
-        function: FunctionIndex,
-        instruction: InstructionIndex,
+        _function: FunctionIndex,
+        _instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
         let values = self.pop_operands(3, false)?;
         let builder = values[0];
@@ -1974,8 +2333,8 @@ impl VmFiber {
     fn execute_freeze_map(
         &mut self,
         heap: &mut dyn VmHeap,
-        function: FunctionIndex,
-        instruction: InstructionIndex,
+        _function: FunctionIndex,
+        _instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
         let value = self.pop_operands(1, false)?.remove(0);
         heap.validate_live(&value).map_err(VmError::Heap)?;
@@ -1987,8 +2346,8 @@ impl VmFiber {
     fn execute_map_get(
         &mut self,
         heap: &mut dyn VmHeap,
-        function: FunctionIndex,
-        instruction: InstructionIndex,
+        _function: FunctionIndex,
+        _instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
         let values = self.pop_operands(2, false)?;
         let map = values[0];
@@ -2016,13 +2375,23 @@ impl VmFiber {
         let value = values[1];
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
+        let writable = self
+            .function(frame.function())?
+            .frame()
+            .writable_local_slots()
+            .binary_search(&slot)
+            .is_ok();
+        if !writable {
+            return Err(VmError::LiveDestination {
+                function,
+                instruction,
+                location: VmValueLocation::FrameSlot(slot),
+            });
+        }
         let map = self.read_slot(&frame, slot_count, slot)?;
         heap.map_put_owned(&map, key, value)
             .map_err(VmError::Heap)?;
-        if self.live_values[Self::slot_index(&frame, slot_count, slot, function)?] {
-            self.clear_slot(&frame, slot_count, slot)?;
-        }
-        self.write_slot(&frame, slot_count, slot, map)?;
+        // In-place exclusive put keeps the slot's bits and owner.
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
@@ -2030,8 +2399,8 @@ impl VmFiber {
     fn execute_map_len(
         &mut self,
         heap: &mut dyn VmHeap,
-        function: FunctionIndex,
-        instruction: InstructionIndex,
+        _function: FunctionIndex,
+        _instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
         let map = self.pop_operands(1, false)?.remove(0);
         let len = heap.map_len(&map).map_err(VmError::Heap)?;
@@ -2048,12 +2417,8 @@ impl VmFiber {
     ) -> Result<DispatchOutcome, VmError> {
         let values = self.pop_operands(2, false)?;
         let map = values[0];
-        let ordinal = values[1].as_integer().ok_or(VmError::ExpectedNumber {
-            function,
-            instruction,
-            actual: values[1].kind(),
-        })?;
-        let ordinal = usize::try_from(ordinal).map_err(|_| VmError::ExpectedNumber {
+        let ordinal =
+            skiff_runtime_model::vm_heap::collection_index(&values[1]).ok_or(VmError::ExpectedNumber {
             function,
             instruction,
             actual: values[1].kind(),
@@ -3176,12 +3541,73 @@ impl VmFiber {
         Ok(self.values[index])
     }
 
-    fn write_slot(
+    fn slot_plan(
+        &self,
+        function: FunctionIndex,
+        slot: FrameSlotIndex,
+    ) -> Result<LinkedValueTransferPlan, VmError> {
+        self.function(function)?
+            .frame()
+            .slot_plans()
+            .get(slot.get() as usize)
+            .cloned()
+            .ok_or(VmError::SlotOutOfBounds { function, slot })
+    }
+
+    fn operand_plan(
+        &self,
+        frame: &VmFrame,
+        instruction: InstructionIndex,
+        from_top: usize,
+    ) -> Result<LinkedValueTransferPlan, VmError> {
+        let position = frame
+            .operand_height()
+            .checked_sub(from_top + 1)
+            .ok_or(VmError::OperandStackUnderflow {
+                function: frame.function(),
+                needed: from_top + 1,
+                available: frame.operand_height(),
+            })?;
+        self.stack_map_operand_plan(frame.function(), instruction, position)
+    }
+
+    fn stack_map_operand_plan(
+        &self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        position: usize,
+    ) -> Result<LinkedValueTransferPlan, VmError> {
+        let entry = self
+            .function(function)?
+            .stack_map()
+            .entries()
+            .get(instruction.get() as usize)
+            .filter(|entry| entry.instruction() == instruction)
+            .ok_or(VmError::InstructionPointerOutOfBounds {
+                function,
+                instruction,
+            })?;
+        entry
+            .stack_before()
+            .get(position)
+            .map(|value| value.plan().clone())
+            .ok_or(VmError::OperandStackShapeMismatch {
+                function,
+                expected: position + 1,
+                actual: entry.stack_before().len(),
+            })
+    }
+
+    fn overwrite_slot(
         &mut self,
+        executor: &mut LifecycleExecutor<'_>,
         frame: &VmFrame,
         slot_count: usize,
         slot: FrameSlotIndex,
         value: ValueSlot,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        opcode: Opcode,
     ) -> Result<(), VmError> {
         let index = Self::slot_index(frame, slot_count, slot, frame.function())?;
         if self.live_values[index] {
@@ -3193,11 +3619,16 @@ impl VmFiber {
                 .is_ok();
             if !writable {
                 return Err(VmError::LiveDestination {
-                    function: frame.function(),
-                    instruction: frame.instruction(),
+                    function,
+                    instruction,
                     location: VmValueLocation::FrameSlot(slot),
                 });
             }
+            let old = self.values[index];
+            let plan = self.slot_plan(frame.function(), slot)?;
+            executor
+                .release(&old, &plan)
+                .map_err(|error| error.into_vm_error(function, instruction, opcode))?;
             self.clear_value(index);
         }
         self.values[index] = value;
@@ -3205,80 +3636,54 @@ impl VmFiber {
         Ok(())
     }
 
-    fn reconcile_frame_slots_at(
+    fn install_slot_value(
         &mut self,
-        mut heap: Option<&mut dyn VmHeap>,
         frame: &VmFrame,
-        instruction: InstructionIndex,
-        replacement_slot: Option<FrameSlotIndex>,
+        slot_count: usize,
+        slot: FrameSlotIndex,
+        value: ValueSlot,
     ) -> Result<(), VmError> {
-        let (slot_facts, opcode) = {
-            let function = self.function(frame.function())?;
-            let entry = function
-                .stack_map()
-                .entries()
-                .get(instruction.get() as usize)
-                .filter(|entry| entry.instruction() == instruction)
-                .ok_or(VmError::InstructionPointerOutOfBounds {
-                    function: frame.function(),
-                    instruction,
-                })?;
-            if entry.slots_before().len() != function.frame().slot_types().len() {
-                return Err(VmError::VerifiedEntryInvariant {
-                    invariant: VmVerifiedInvariant::ProgramPointSlotCount,
-                });
-            }
-            let opcode = function
-                .instructions()
-                .get(instruction.get() as usize)
-                .map(LinkedInstruction::opcode)
-                .ok_or(VmError::InstructionPointerOutOfBounds {
-                    function: frame.function(),
-                    instruction,
-                })?;
-            let slot_facts = entry
-                .slots_before()
-                .iter()
-                .zip(function.frame().slot_plans())
-                .map(|(state, plan)| (matches!(state, LinkedSlotState::Live(_)), plan.clone()))
-                .collect::<Vec<_>>();
-            (slot_facts, opcode)
-        };
+        let index = Self::slot_index(frame, slot_count, slot, frame.function())?;
+        self.values[index] = value;
+        self.live_values[index] = true;
+        Ok(())
+    }
 
-        let slot_count = slot_facts.len();
-        for (ordinal, (expected_live, plan)) in slot_facts.into_iter().enumerate() {
-            let ordinal = u32::try_from(ordinal).map_err(|_| VmError::VerifiedEntryInvariant {
-                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
-            })?;
-            let slot = FrameSlotIndex::new(ordinal);
-            let index = Self::slot_index(frame, slot_count, slot, frame.function())?;
-            if self.live_values[index] && (!expected_live || replacement_slot == Some(slot)) {
+    /// Releases every live slot and operand of a frame through the lifecycle
+    /// executor, exactly once each, immediately before the frame exits. Slot
+    /// plans come from the frame layout; operand plans come from the program
+    /// point's linked stack map.
+    fn release_frame_exit(
+        &mut self,
+        executor: &mut LifecycleExecutor<'_>,
+        frame: &VmFrame,
+        opcode: Opcode,
+    ) -> Result<(), VmError> {
+        let slot_plans = self.function(frame.function())?.frame().slot_plans().to_vec();
+        let slot_count = slot_plans.len();
+        for ordinal in 0..slot_count {
+            let index = frame.slot_base() + ordinal;
+            if self.live_values.get(index).copied() == Some(true) {
                 let value = self.values[index];
-                if value.kind() == Some(ValueKind::ResourceRef) {
-                    if !matches!(
-                        plan,
-                        LinkedValueTransferPlan::AffineResource {
-                            drop: LinkedResourceDropPlan::ResourceTableRelease,
-                        } | LinkedValueTransferPlan::ExplicitCloneLease {
-                            drop: LinkedResourceDropPlan::ResourceTableRelease,
-                            ..
-                        }
-                    ) {
-                        return Err(VmError::FullValueLifecyclePlanUnavailable {
-                            function: frame.function(),
-                            instruction,
-                            opcode,
-                        });
-                    }
-                    let heap =
-                        heap.as_deref_mut()
-                            .ok_or(VmError::FullValueLifecyclePlanUnavailable {
-                                function: frame.function(),
-                                instruction,
-                                opcode,
-                            })?;
-                    heap.release_resource(&value).map_err(VmError::Heap)?;
-                }
+                let plan = slot_plans[ordinal].clone();
+                executor
+                    .release(&value, &plan)
+                    .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), opcode))?;
+                self.clear_value(index);
+            }
+        }
+        for position in 0..frame.operand_height() {
+            let index = frame.operand_base() + position;
+            if self.live_values.get(index).copied() == Some(true) {
+                let plan = self.stack_map_operand_plan(
+                    frame.function(),
+                    frame.instruction(),
+                    position,
+                )?;
+                let value = self.values[index];
+                executor
+                    .release(&value, &plan)
+                    .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), opcode))?;
                 self.clear_value(index);
             }
         }

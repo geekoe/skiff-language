@@ -13,7 +13,7 @@ mod tests {
         LiteralIr, NativeTarget, PackageCallableId, PatternIr, RemoteOperationSlotPlanIr,
         RemoteOperationTablePlanIr, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
         SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
-        TypeDescriptorIr, TypeRefIr, ResourceDropPlan, ValueTransferPlan,
+        TypeDescriptorIr, TypeRefIr, ResourceDropPlan, ValueDropPlan, ValueTransferPlan,
     };
     use crate::bytecode::{
         emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact,
@@ -164,6 +164,24 @@ mod tests {
             )]),
             BTreeMap::new(),
         )
+    }
+
+    fn stream_plan(ty: &TypeRefIr) -> Result<ValueTransferPlan, String> {
+        let stream_number = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![TypeRefIr::builtin("number")],
+        };
+        if *ty == stream_number {
+            return Ok(ValueTransferPlan::AffineResource {
+                drop: ResourceDropPlan::ResourceTableRelease,
+            });
+        }
+        if *ty == TypeRefIr::builtin("number") {
+            return Ok(ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
+            });
+        }
+        Err(format!("no exact source plan for {ty:?}"))
     }
 
     fn one_return(expression: ExprRefIr) -> Vec<MirStmt> {
@@ -1240,8 +1258,10 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
-        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()])
-            .expect("affine binding plans derive");
+        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()], |_module_path, ty| {
+            stream_plan(ty)
+        })
+        .expect("affine binding plans derive");
         let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
             .expect("affine stream binding emits bytecode");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
@@ -1375,8 +1395,10 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
-        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()])
-            .expect("stream for-in plans derive");
+        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()], |_module_path, ty| {
+            stream_plan(ty)
+        })
+        .expect("stream for-in plans derive");
         assert_eq!(
             plans.function("streams::consume").unwrap().slot_plans[0],
             ValueTransferPlan::AffineResource {
@@ -1491,8 +1513,10 @@ mod tests {
         });
         let (unit, bundle) =
             mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
-        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()])
-            .expect("stream producer plan derives");
+        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()], |_module_path, ty| {
+            stream_plan(ty)
+        })
+        .expect("stream producer plan derives");
         assert!(
             plans.function("streams::produce").unwrap().result_plans.is_empty(),
             "stream producer body return arity is zero"

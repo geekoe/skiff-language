@@ -14,6 +14,7 @@ mod control;
 mod error;
 mod fiber;
 mod frame;
+mod lifecycle;
 mod limits;
 mod projection;
 mod statement;

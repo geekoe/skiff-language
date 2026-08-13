@@ -3,7 +3,7 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_linked_bytecode::{
     LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackValue, LinkedValueDropPlan,
-    LinkedValueTransferPlan, TypeIndex,
+    LinkedValueTransferPlan, LinkedWritableLoanState, TypeIndex,
 };
 
 use crate::bytecode::{
@@ -97,6 +97,44 @@ fn apply_region_effects(
                 ));
             }
         }
+        Opcode::SetWritablePath => {
+            let root_slot = instruction
+                .resolved_operands()
+                .iter()
+                .find_map(|resolved| match resolved.target() {
+                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::FrameSlot(slot) => {
+                        Some(slot)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "set_writable_path has no root slot target".to_string(),
+                    )
+                })?;
+            let path = instruction
+                .resolved_operands()
+                .iter()
+                .find_map(|resolved| match resolved.target() {
+                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::WritablePath(path) => {
+                        Some(path)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "set_writable_path has no writable path target".to_string(),
+                    )
+                })?;
+            let loan = LinkedWritableLoanState::new(root_slot, path);
+            if !state.writable_loans.contains(&loan) {
+                state.writable_loans.push(loan);
+                state.writable_loans.sort_unstable();
+                state.writable_loans.dedup();
+            }
+        }
         _ => {}
     }
     Ok(())
@@ -149,7 +187,14 @@ fn apply_stack_inputs(
                     "typed stack input groups exceed the consumed stack segment".to_string(),
                 )
             })?;
-        validate_input_group(context, instruction, group.value, &values, location.clone())?;
+        validate_input_group(
+            context,
+            instruction,
+            group.value,
+            &values,
+            &inputs,
+            location.clone(),
+        )?;
         offset = end;
         inputs.push(values);
     }
@@ -161,6 +206,7 @@ fn validate_input_group(
     instruction: &LinkedInstruction,
     source: ValueSource,
     actual: &[LinkedStackValue],
+    inputs: &[Vec<LinkedStackValue>],
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     match source {
@@ -180,7 +226,8 @@ fn validate_input_group(
         }
         _ => {}
     }
-    let mut expected = values::source_values(context, instruction, source, &[], location.clone())?;
+    let mut expected =
+        values::source_values(context, instruction, source, inputs, location.clone())?;
     if expected.len() == 1 && actual.len() > 1 {
         expected = actual.iter().map(|_| expected[0].clone()).collect();
     }

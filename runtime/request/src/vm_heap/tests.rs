@@ -57,13 +57,17 @@ fn array_alloc_read_mutate_and_release() {
     assert_eq!(heap.array_len(&array), Ok(3));
     assert!(heap.array_get(&array, 2) == Ok(ValueSlot::bool(true)));
 
-    heap.set_writable_path(
-        &array,
-        &[VmHeapPathSegment::ArrayIndex],
-        &[ValueSlot::integer(0)],
-        ValueSlot::number(9.0),
-    )
-    .expect("writable array path should succeed");
+    let prepared = heap
+        .prepare_writable_path(
+            &array,
+            &[VmHeapPathSegment::ArrayIndex],
+            &[ValueSlot::integer(0)],
+        )
+        .expect("prepare should pin");
+    let replacement = heap
+        .commit_writable_path(prepared, ValueSlot::number(9.0))
+        .expect("commit should apply");
+    assert!(replacement == array, "exclusive commit writes in place");
     assert!(heap.array_get(&array, 0) == Ok(ValueSlot::number(9.0)));
 
     let snapshot = heap.snapshot_share(&array).expect("snapshot should share");
@@ -78,6 +82,265 @@ fn array_alloc_read_mutate_and_release() {
             ..
         })
     ));
+}
+
+#[test]
+fn shared_array_push_fails_closed_without_alias_mutation() {
+    let mut heap = heap();
+    let array = heap
+        .allocate_array(&[ValueSlot::number(1.0)], TAG, FLAGS)
+        .expect("array should allocate");
+    let alias = heap.snapshot_share(&array).expect("alias should share");
+
+    assert!(matches!(
+        heap.array_push_owned(&array, ValueSlot::bool(true)),
+        Err(VmHeapError::OwnershipViolation { .. })
+    ));
+    assert_eq!(heap.array_len(&array), Ok(1));
+    assert!(heap.array_get(&alias, 0) == Ok(ValueSlot::number(1.0)));
+    heap.release_snapshot(&alias).expect("release alias");
+    heap.release_snapshot(&array).expect("release array");
+}
+
+#[test]
+fn writable_path_cow_isolates_shared_aliases() {
+    let mut heap = heap();
+    let leaf = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "x".to_string(),
+                value: ValueSlot::integer(1),
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("leaf record");
+    let record = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "inner".to_string(),
+                value: leaf,
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("outer record");
+    let alias = heap.snapshot_share(&record).expect("alias should share");
+
+    let prepared = heap
+        .prepare_writable_path(
+            &alias,
+            &[
+                VmHeapPathSegment::DenseField {
+                    field: "inner".to_string(),
+                },
+                VmHeapPathSegment::DenseField {
+                    field: "x".to_string(),
+                },
+            ],
+            &[],
+        )
+        .expect("prepare should pin the nested path");
+    let replacement = heap
+        .commit_writable_path(prepared, ValueSlot::integer(2))
+        .expect("shared commit should clone");
+    assert!(
+        !(replacement == record),
+        "COW commit must return a new root handle"
+    );
+
+    let original_inner = heap.record_field(&record, "inner").expect("inner");
+    assert!(
+        heap.record_field(&original_inner, "x") == Ok(ValueSlot::integer(1)),
+        "the alias aggregate must keep the original leaf"
+    );
+    let replaced_inner = heap.record_field(&replacement, "inner").expect("new inner");
+    assert!(
+        heap.record_field(&replaced_inner, "x") == Ok(ValueSlot::integer(2)),
+        "the replacement aggregate must hold the new leaf"
+    );
+
+    heap.release_snapshot(&alias).expect("release alias owner");
+    heap.release_snapshot(&record).expect("release original owner");
+    heap.release_snapshot(&replacement).expect("release replacement owner");
+    assert!(matches!(
+        heap.validate_live(&leaf),
+        Err(VmHeapError::InvalidHandle {
+            reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn writable_path_cow_covers_shared_intermediate_containers() {
+    let mut heap = heap();
+    let shared = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "x".to_string(),
+                value: ValueSlot::integer(1),
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("shared intermediate");
+    let first_container_owner = heap
+        .snapshot_share(&shared)
+        .expect("first container owner should share");
+    let left = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "a".to_string(),
+                value: first_container_owner,
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("left record");
+    let second_container_owner = heap
+        .snapshot_share(&shared)
+        .expect("second container owner should share");
+    let right = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "b".to_string(),
+                value: second_container_owner,
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("right record");
+    heap.release_snapshot(&shared)
+        .expect("the temporary holder owner should release");
+
+    let prepared = heap
+        .prepare_writable_path(
+            &left,
+            &[
+                VmHeapPathSegment::DenseField {
+                    field: "a".to_string(),
+                },
+                VmHeapPathSegment::DenseField {
+                    field: "x".to_string(),
+                },
+            ],
+            &[],
+        )
+        .expect("prepare should pin");
+    let replacement = heap
+        .commit_writable_path(prepared, ValueSlot::integer(2))
+        .expect("shared intermediate must clone");
+    assert!(!(replacement == left));
+
+    let right_shared = heap.record_field(&right, "b").expect("right shared");
+    assert!(
+        heap.record_field(&right_shared, "x") == Ok(ValueSlot::integer(1)),
+        "mutation through the left path must not alias the right record"
+    );
+}
+
+#[test]
+fn recursive_snapshot_drop_releases_nested_aggregate_owners() {
+    let mut heap = heap();
+    let leaf = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "x".to_string(),
+                value: ValueSlot::integer(1),
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("leaf record");
+    let array = heap
+        .allocate_array(&[leaf], TAG, FLAGS)
+        .expect("nested array");
+    let outer = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "field".to_string(),
+                value: array,
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("outer record");
+    let shared = heap.snapshot_share(&outer).expect("outer should share");
+
+    heap.release_snapshot(&shared).expect("release shared owner");
+    assert_eq!(heap.validate_live(&leaf), Ok(()), "leaf stays live");
+    heap.release_snapshot(&outer).expect("release final owner");
+    assert!(matches!(
+        heap.validate_live(&leaf),
+        Err(VmHeapError::InvalidHandle {
+            reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn prepare_failure_leaves_heap_state_unchanged() {
+    let mut heap = heap();
+    let array = heap
+        .allocate_array(&[ValueSlot::number(1.0)], TAG, FLAGS)
+        .expect("array should allocate");
+
+    assert!(matches!(
+        heap.prepare_writable_path(
+            &array,
+            &[VmHeapPathSegment::ArrayIndex],
+            &[ValueSlot::integer(7)],
+        ),
+        Err(VmHeapError::HeapOperationFailed { .. })
+    ));
+    assert!(heap.array_get(&array, 0) == Ok(ValueSlot::number(1.0)));
+
+    let prepared = heap
+        .prepare_writable_path(
+            &array,
+            &[VmHeapPathSegment::ArrayIndex],
+            &[ValueSlot::integer(0)],
+        )
+        .expect("valid prepare should succeed afterwards");
+    let replacement = heap
+        .commit_writable_path(prepared, ValueSlot::number(2.0))
+        .expect("commit should apply");
+    assert!(replacement == array);
+    assert!(heap.array_get(&array, 0) == Ok(ValueSlot::number(2.0)));
+}
+
+#[test]
+fn commit_cow_failure_leaves_the_old_chain_intact() {
+    let limits = RequestHeapLimits {
+        max_nodes: 1,
+        ..RequestHeapLimits::default()
+    };
+    let mut heap = RequestVmHeap::with_domain(7, 0, limits);
+    let array = heap
+        .allocate_array(&[ValueSlot::number(1.0)], TAG, FLAGS)
+        .expect("array should allocate");
+    let alias = heap.snapshot_share(&array).expect("alias should share");
+    let prepared = heap
+        .prepare_writable_path(
+            &alias,
+            &[VmHeapPathSegment::ArrayIndex],
+            &[ValueSlot::integer(0)],
+        )
+        .expect("prepare should pin");
+
+    assert!(matches!(
+        heap.commit_writable_path(prepared, ValueSlot::number(2.0)),
+        Err(VmHeapError::ResourceLimitExceeded {
+            operation: VmHeapOperation::CommitWritablePath,
+            ..
+        })
+    ));
+    assert!(heap.array_get(&alias, 0) == Ok(ValueSlot::number(1.0)));
+    assert_eq!(heap.validate_live(&alias), Ok(()));
+    heap.release_snapshot(&alias).expect("release alias");
+    heap.release_snapshot(&array).expect("release array");
 }
 
 #[test]
@@ -121,15 +384,19 @@ fn record_field_writable_path_and_representation() {
     assert!(heap.record_field(&record, "count") == Ok(ValueSlot::integer(3)));
     assert!(heap.get_dense_field(&record, 0) == Ok(ValueSlot::integer(3)));
 
-    heap.set_writable_path(
-        &record,
-        &[VmHeapPathSegment::DenseField {
-            field: "count".to_string(),
-        }],
-        &[],
-        ValueSlot::bool(true),
-    )
-    .expect("record path should succeed");
+    let prepared = heap
+        .prepare_writable_path(
+            &record,
+            &[VmHeapPathSegment::DenseField {
+                field: "count".to_string(),
+            }],
+            &[],
+        )
+        .expect("prepare should pin");
+    let replacement = heap
+        .commit_writable_path(prepared, ValueSlot::bool(true))
+        .expect("commit should apply");
+    assert!(replacement == record);
     assert!(heap.record_field(&record, "count") == Ok(ValueSlot::bool(true)));
 
     let payload = heap.alloc_string("payload").expect("payload string");
