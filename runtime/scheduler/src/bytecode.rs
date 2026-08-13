@@ -11,8 +11,9 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
-    ChildOwnerRegistration, EnterChildError, FlatTrampoline, OwnerCreationError, PendingWake,
-    RootEscrow, SuspendedTrampoline, TrampolineCompletion,
+    owner_inventory::{ChildOwnerRegistration, OwnerCreationError},
+    EnterChildError, FlatTrampoline, PendingWake, RootEscrow, SuspendedTrampoline,
+    TrampolineCompletion,
 };
 
 /// Failure modes owned by the bytecode scheduler.
@@ -325,7 +326,7 @@ impl<U> BytecodeScheduler<U>
 where
     U: BytecodeUnit + VmRootSource + 'static,
 {
-    pub fn new(
+    pub(crate) fn new(
         root: U,
         ports: BytecodeSchedulerPorts<U>,
         child_owners: ChildOwnerRegistration,
@@ -334,6 +335,13 @@ where
             trampoline: FlatTrampoline::new(root, child_owners),
             ports,
         }
+    }
+
+    pub(crate) fn from_parts(
+        trampoline: FlatTrampoline<U, U::ResumeToken>,
+        ports: BytecodeSchedulerPorts<U>,
+    ) -> Self {
+        Self { trampoline, ports }
     }
 
     pub fn blocked_depth(&self) -> usize {
@@ -561,8 +569,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        ChildOwnerRegistration, PendingOwnerDraft, PendingOwnerRegistration, PendingPublication,
-        PendingRegistry, PendingWake, PendingWakeQueue, RequestExecutionOwnerInventory,
+        owner_inventory::{
+            ChildOwnerRegistration, PendingOwnerRegistration, RequestExecutionOwnerInventory,
+        },
+        PendingOwnerDraft, PendingPublication, PendingRegistry, PendingWake, PendingWakeQueue,
         RootDisposition, RootEscrow, RootEscrowBacking, SettleDisposition,
     };
 

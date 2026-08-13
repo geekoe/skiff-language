@@ -12,7 +12,7 @@ use skiff_runtime_scheduler::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
     BytecodeHandoff, BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome,
     BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
-    ChildOwnerRegistration, RequestExecutionOwnerInventory, RootDisposition, RootEscrow,
+    OwnerCreationErrorKind, OwnerDomain, RequestExecutionContext, RootDisposition, RootEscrow,
     RootEscrowBacking, SuspendedTrampoline,
 };
 use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmSemanticCharge};
@@ -42,11 +42,6 @@ impl VmHeap for NoopHeap {
 }
 
 struct NoopBudget;
-
-fn child_registration() -> ChildOwnerRegistration {
-    let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
-    registrations.child()
-}
 
 impl VmBudget for NoopBudget {
     fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed> {
@@ -170,68 +165,199 @@ mod tests {
         };
         let root = ChainUnit::new(0, DEPTH, Arc::clone(&resumes));
 
-        let outcome = BytecodeScheduler::new(root, ports, child_registration())
-            .run(&mut NoopHeap, &mut NoopBudget)
-            .unwrap();
+        let mut context = RequestExecutionContext::create(ports);
+        context.install_root(root);
+        let (outcome, snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
 
-        assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(0)));
+        assert!(matches!(outcome, Ok(BytecodeSchedulerOutcome::Complete(0))));
         assert_eq!(executor.starts.load(Ordering::SeqCst), DEPTH);
         assert_eq!(resumes.load(Ordering::SeqCst), DEPTH);
+        // Every blocked child owner was released before completion, and the
+        // domain still records that children were ever created.
+        assert_eq!(snapshot.child.current, 0);
+        assert!(snapshot.child.ever_created);
     }
 
-    #[test]
-    fn parent_resumes_exactly_once_for_a_synchronous_child() {
-        let resumes = Arc::new(AtomicUsize::new(0));
-        let executor = Arc::new(ChainExecutor::new(Arc::clone(&resumes)));
-        let inventory = RequestExecutionOwnerInventory::open();
-        let (registrations, freeze) = inventory.into_parts();
-        let ports = BytecodeSchedulerPorts {
-            child_executor: Some(Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ChainUnit>>),
-            stream_supervisor: None,
-        };
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum ParkThenChildMode {
+        Park,
+        EnterChild,
+        Complete,
+    }
 
-        let outcome = BytecodeScheduler::new(
-            ChainUnit::new(0, 1, resumes.clone()),
-            ports,
-            registrations.child(),
-        )
-        .run(&mut NoopHeap, &mut NoopBudget)
-        .unwrap();
+    type ParkThenChildControl = BytecodeControl<usize, usize, usize, usize, usize>;
+    type ParkThenChildSuspended = SuspendedTrampoline<ParkThenChildUnit, usize>;
 
-        assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(0)));
-        assert_eq!(executor.starts.load(Ordering::SeqCst), 1);
-        assert_eq!(resumes.load(Ordering::SeqCst), 1);
-        let snapshot = freeze.freeze();
-        assert_eq!(snapshot.child().current(), 0);
-        assert!(snapshot.child().ever_created());
+    struct ParkThenChildUnit {
+        mode: ParkThenChildMode,
+        resumes: Arc<AtomicUsize>,
+    }
+
+    impl VmRootSource for ParkThenChildUnit {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl BytecodeUnit for ParkThenChildUnit {
+        type ResumeToken = usize;
+        type ResumeOutcome = usize;
+        type RootResult = usize;
+        type ChildInvocation = usize;
+        type AdapterInvocation = usize;
+        type StreamItem = usize;
+        type PendingOperation = usize;
+
+        fn run_segment(
+            &mut self,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> ParkThenChildControl {
+            match std::mem::replace(&mut self.mode, ParkThenChildMode::Complete) {
+                ParkThenChildMode::Park => ParkThenChildControl::Park(7),
+                ParkThenChildMode::EnterChild => ParkThenChildControl::EnterChild(0),
+                ParkThenChildMode::Complete => ParkThenChildControl::Complete(0),
+            }
+        }
+
+        fn resume(&mut self, token: usize, outcome: usize) -> Result<(), BytecodeSchedulerError> {
+            self.resumes.fetch_add(1, Ordering::SeqCst);
+            self.mode = ParkThenChildMode::EnterChild;
+            let _ = (token, outcome);
+            Ok(())
+        }
+
+        fn child_completion_to_resume_outcome(completed: usize) -> usize {
+            completed
+        }
+    }
+
+    struct ParkThenChildExecutor {
+        starts: AtomicUsize,
+        resumes: Arc<AtomicUsize>,
+    }
+
+    impl BytecodeChildExecutor<ParkThenChildUnit> for ParkThenChildExecutor {
+        fn execute_child(
+            &self,
+            invocation: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeChildStart<ParkThenChildUnit>, BytecodeSchedulerError> {
+            self.starts.fetch_add(1, Ordering::SeqCst);
+            Ok(BytecodeChildStart {
+                unit: ParkThenChildUnit {
+                    mode: ParkThenChildMode::Complete,
+                    resumes: Arc::clone(&self.resumes),
+                },
+                resume: invocation,
+            })
+        }
+
+        fn execute_adapter(
+            &self,
+            _invocation: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeAdapterHandoff<ParkThenChildUnit>, BytecodeSchedulerError> {
+            Err(BytecodeSchedulerError::UnsupportedAdapter)
+        }
+    }
+
+    struct ParkCapturingSupervisor {
+        parked: Mutex<Option<(usize, ParkThenChildSuspended)>>,
+    }
+
+    impl BytecodeStreamSupervisor<ParkThenChildUnit> for ParkCapturingSupervisor {
+        fn park(
+            &self,
+            operation: usize,
+            suspended: ParkThenChildSuspended,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<(), BytecodeSchedulerError> {
+            *self.parked.lock().unwrap() = Some((operation, suspended));
+            Ok(())
+        }
+    }
+
+    struct EmptyRoots;
+
+    impl VmRootSource for EmptyRoots {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl RootEscrowBacking for EmptyRoots {
+        fn root_count(&self) -> usize {
+            0
+        }
+
+        fn restore_roots(self: Box<Self>) {}
+
+        fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {}
     }
 
     #[test]
     fn frozen_inventory_rejects_a_started_child_without_installing_it() {
         let resumes = Arc::new(AtomicUsize::new(0));
-        let executor = Arc::new(ChainExecutor::new(Arc::clone(&resumes)));
-        let inventory = RequestExecutionOwnerInventory::open();
-        let (registrations, freeze) = inventory.into_parts();
-        let snapshot = freeze.freeze();
+        let executor = Arc::new(ParkThenChildExecutor {
+            starts: AtomicUsize::new(0),
+            resumes: Arc::clone(&resumes),
+        });
+        let supervisor = Arc::new(ParkCapturingSupervisor {
+            parked: Mutex::new(None),
+        });
         let ports = BytecodeSchedulerPorts {
-            child_executor: Some(Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ChainUnit>>),
-            stream_supervisor: None,
+            child_executor: Some(
+                Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ParkThenChildUnit>>
+            ),
+            stream_supervisor: Some(
+                supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<ParkThenChildUnit>>
+            ),
         };
 
-        let error =
-            BytecodeScheduler::new(ChainUnit::new(0, 1, resumes), ports, registrations.child())
-                .run(&mut NoopHeap, &mut NoopBudget)
-                .unwrap_err();
+        // The context drive parks the root and freezes the Started inventory.
+        let mut context = RequestExecutionContext::create(ports);
+        context.install_root(ParkThenChildUnit {
+            mode: ParkThenChildMode::Park,
+            resumes: Arc::clone(&resumes),
+        });
+        let (outcome, snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        assert!(matches!(outcome, Ok(BytecodeSchedulerOutcome::Parked)));
+        assert_eq!(snapshot.child.current, 0);
+        assert!(!snapshot.child.ever_created);
 
-        assert!(matches!(
-            error,
-            BytecodeSchedulerError::ChildOwnerCreation(
-                skiff_runtime_scheduler::OwnerCreationError::InventoryFrozen
-            )
-        ));
+        // Resume the parked chain through the public scheduler surface and run
+        // a unit that tries to enter a child against the frozen inventory.
+        let (operation, suspended) = supervisor.parked.lock().unwrap().take().unwrap();
+        assert_eq!(operation, 7);
+        let resumed = BytecodeScheduler::<ParkThenChildUnit>::resume_from_suspended(
+            suspended,
+            operation,
+            0,
+            RootEscrow::new(Box::new(EmptyRoots)),
+            BytecodeSchedulerPorts {
+                child_executor: Some(
+                    Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ParkThenChildUnit>>
+                ),
+                stream_supervisor: None,
+            },
+        )
+        .unwrap();
+        let error = resumed.run(&mut NoopHeap, &mut NoopBudget).unwrap_err();
+
+        let BytecodeSchedulerError::ChildOwnerCreation(error) = error else {
+            panic!("expected a child owner creation rejection");
+        };
+        assert_eq!(error.kind(), OwnerCreationErrorKind::InventoryFrozen);
+        assert_eq!(error.domain(), OwnerDomain::Child);
+        // The executor did start the child once, but no blocked unit and no
+        // child owner were installed afterwards.
         assert_eq!(executor.starts.load(Ordering::SeqCst), 1);
-        assert_eq!(snapshot.child().current(), 0);
-        assert!(!snapshot.child().ever_created());
+        assert_eq!(snapshot.child.current, 0);
+        assert!(!snapshot.child.ever_created);
     }
 
     type StreamResult = Result<usize, &'static str>;
@@ -341,7 +467,7 @@ mod tests {
         fn park(
             &self,
             _operation: usize,
-            _suspended: skiff_runtime_scheduler::SuspendedTrampoline<StreamUnit, usize>,
+            _suspended: SuspendedTrampoline<StreamUnit, usize>,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
         ) -> Result<(), BytecodeSchedulerError> {
@@ -361,17 +487,13 @@ mod tests {
             stream_supervisor: Some(stream.clone() as Arc<dyn BytecodeStreamSupervisor<StreamUnit>>),
         };
 
-        let outcome = BytecodeScheduler::new(
-            StreamUnit::new(StreamMode::Emit(7)),
-            ports,
-            child_registration(),
-        )
-        .run(&mut NoopHeap, &mut NoopBudget)
-        .unwrap();
+        let mut context = RequestExecutionContext::create(ports);
+        context.install_root(StreamUnit::new(StreamMode::Emit(7)));
+        let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
 
         assert!(matches!(
             outcome,
-            BytecodeSchedulerOutcome::Complete(Ok(99))
+            Ok(BytecodeSchedulerOutcome::Complete(Ok(99)))
         ));
         assert_eq!(*stream.emitted.lock().unwrap(), [7]);
         assert_eq!(*stream.finished.lock().unwrap(), [Ok(99)]);
@@ -389,17 +511,13 @@ mod tests {
             stream_supervisor: Some(stream.clone() as Arc<dyn BytecodeStreamSupervisor<StreamUnit>>),
         };
 
-        let outcome = BytecodeScheduler::new(
-            StreamUnit::new(StreamMode::Emit(9)),
-            ports,
-            child_registration(),
-        )
-        .run(&mut NoopHeap, &mut NoopBudget)
-        .unwrap();
+        let mut context = RequestExecutionContext::create(ports);
+        context.install_root(StreamUnit::new(StreamMode::Emit(9)));
+        let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
 
         assert!(matches!(
             outcome,
-            BytecodeSchedulerOutcome::Complete(Err("stream failed"))
+            Ok(BytecodeSchedulerOutcome::Complete(Err("stream failed")))
         ));
         assert_eq!(*stream.emitted.lock().unwrap(), [9]);
         assert_eq!(*stream.finished.lock().unwrap(), [Err("stream failed")]);
@@ -407,25 +525,17 @@ mod tests {
 
     #[test]
     fn absent_ports_fail_closed() {
-        let ports = BytecodeSchedulerPorts::<ChainUnit>::default();
-        let child = BytecodeScheduler::new(
-            ChainUnit::new(0, 1, Arc::new(AtomicUsize::new(0))),
-            ports,
-            child_registration(),
-        )
-        .run(&mut NoopHeap, &mut NoopBudget)
-        .unwrap_err();
-        assert!(matches!(child, BytecodeSchedulerError::UnsupportedChild));
+        let mut context =
+            RequestExecutionContext::create(BytecodeSchedulerPorts::<ChainUnit>::default());
+        context.install_root(ChainUnit::new(0, 1, Arc::new(AtomicUsize::new(0))));
+        let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        assert!(matches!(outcome, Err(BytecodeSchedulerError::UnsupportedChild)));
 
-        let ports = BytecodeSchedulerPorts::<StreamUnit>::default();
-        let stream = BytecodeScheduler::new(
-            StreamUnit::new(StreamMode::Emit(1)),
-            ports,
-            child_registration(),
-        )
-        .run(&mut NoopHeap, &mut NoopBudget)
-        .unwrap_err();
-        assert!(matches!(stream, BytecodeSchedulerError::UnsupportedStream));
+        let mut context =
+            RequestExecutionContext::create(BytecodeSchedulerPorts::<StreamUnit>::default());
+        context.install_root(StreamUnit::new(StreamMode::Emit(1)));
+        let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        assert!(matches!(outcome, Err(BytecodeSchedulerError::UnsupportedStream)));
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -589,24 +699,6 @@ mod tests {
         }
     }
 
-    struct EmptyNextRoots;
-
-    impl VmRootSource for EmptyNextRoots {
-        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
-            Ok(())
-        }
-    }
-
-    impl RootEscrowBacking for EmptyNextRoots {
-        fn root_count(&self) -> usize {
-            0
-        }
-
-        fn restore_roots(self: Box<Self>) {}
-
-        fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {}
-    }
-
     fn next_ports(executor: Arc<NextExecutor>) -> BytecodeSchedulerPorts<NextUnit> {
         BytecodeSchedulerPorts {
             child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<NextUnit>>),
@@ -621,17 +713,13 @@ mod tests {
             pending: Mutex::new(None),
         });
 
-        let outcome = BytecodeScheduler::new(
-            NextUnit::stream_next(),
-            next_ports(executor),
-            child_registration(),
-        )
-        .run(&mut NoopHeap, &mut NoopBudget)
-        .unwrap();
+        let mut context = RequestExecutionContext::create(next_ports(executor));
+        context.install_root(NextUnit::stream_next());
+        let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
 
         assert!(matches!(
             outcome,
-            BytecodeSchedulerOutcome::Complete(NextOutcome::Values(7))
+            Ok(BytecodeSchedulerOutcome::Complete(NextOutcome::Values(7)))
         ));
     }
 
@@ -642,17 +730,13 @@ mod tests {
             pending: Mutex::new(None),
         });
 
-        let outcome = BytecodeScheduler::new(
-            NextUnit::stream_next(),
-            next_ports(executor),
-            child_registration(),
-        )
-        .run(&mut NoopHeap, &mut NoopBudget)
-        .unwrap();
+        let mut context = RequestExecutionContext::create(next_ports(executor));
+        context.install_root(NextUnit::stream_next());
+        let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
 
         assert!(matches!(
             outcome,
-            BytecodeSchedulerOutcome::Complete(NextOutcome::End)
+            Ok(BytecodeSchedulerOutcome::Complete(NextOutcome::End))
         ));
     }
 
@@ -663,17 +747,15 @@ mod tests {
             pending: Mutex::new(None),
         });
 
-        let outcome = BytecodeScheduler::new(
-            NextUnit::stream_next(),
-            next_ports(executor),
-            child_registration(),
-        )
-        .run(&mut NoopHeap, &mut NoopBudget)
-        .unwrap();
+        let mut context = RequestExecutionContext::create(next_ports(executor));
+        context.install_root(NextUnit::stream_next());
+        let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
 
         assert!(matches!(
             outcome,
-            BytecodeSchedulerOutcome::Complete(NextOutcome::Failure("stream failed"))
+            Ok(BytecodeSchedulerOutcome::Complete(NextOutcome::Failure(
+                "stream failed"
+            )))
         ));
     }
 
@@ -683,12 +765,11 @@ mod tests {
             mode: NextExecutorMode::Pending,
             pending: Mutex::new(None),
         });
-        let ports = next_ports(Arc::clone(&executor));
 
-        let outcome = BytecodeScheduler::new(NextUnit::stream_next(), ports, child_registration())
-            .run(&mut NoopHeap, &mut NoopBudget)
-            .unwrap();
-        assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
+        let mut context = RequestExecutionContext::create(next_ports(Arc::clone(&executor)));
+        context.install_root(NextUnit::stream_next());
+        let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        assert!(matches!(outcome, Ok(BytecodeSchedulerOutcome::Parked)));
 
         let (operation, suspended) = executor.pending.lock().unwrap().take().unwrap();
         assert_eq!(operation, NextResume::Pending);
@@ -697,7 +778,7 @@ mod tests {
             suspended,
             operation,
             NextOutcome::End,
-            RootEscrow::new(Box::new(EmptyNextRoots)),
+            RootEscrow::new(Box::new(EmptyRoots)),
             next_ports(Arc::clone(&executor)),
         )
         .unwrap();

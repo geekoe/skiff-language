@@ -1,7 +1,7 @@
 use skiff_runtime_model::vm_heap::VmHeapError;
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 
-use crate::{ChildOwnerLease, ChildOwnerRegistration, OwnerCreationError};
+use crate::owner_inventory::{ChildOwnerLease, ChildOwnerRegistration, OwnerCreationError};
 
 /// Failure to install another actual blocked-child owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,7 +26,7 @@ impl std::error::Error for EnterChildError {}
 pub struct BlockedUnit<U, R> {
     parent: U,
     resume: R,
-    owner_lease: ChildOwnerLease,
+    owner_lease: Option<ChildOwnerLease>,
 }
 
 impl<U, R> BlockedUnit<U, R> {
@@ -85,20 +85,25 @@ impl<U, R> FlatTrampoline<U, R> {
         self.blocked
             .try_reserve(1)
             .map_err(|_| EnterChildError::CapacityExceeded)?;
-        let child_owners = self.child_owners.clone();
-        let owner = child_owners
+        let guard = self
+            .child_owners
             .prepare()
             .map_err(EnterChildError::OwnerCreation)?;
-        owner
-            .install(|owner_lease| {
-                let parent = std::mem::replace(&mut self.active, child);
-                self.blocked.push(BlockedUnit {
-                    parent,
-                    resume,
-                    owner_lease,
-                });
-            })
-            .map_err(EnterChildError::OwnerCreation)
+        // The inventory lock is held from `prepare` until `commit`. Between the
+        // two, only an unarmed placeholder is pushed: no caller code runs and
+        // the guard's commit is infallible.
+        let parent = std::mem::replace(&mut self.active, child);
+        self.blocked.push(BlockedUnit {
+            parent,
+            resume,
+            owner_lease: None,
+        });
+        let lease = guard.commit();
+        self.blocked
+            .last_mut()
+            .expect("a blocked unit was just pushed")
+            .owner_lease = Some(lease);
+        Ok(())
     }
 
     pub fn complete_active<O>(mut self, outcome: O) -> TrampolineCompletion<U, R, O> {
@@ -214,7 +219,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{EnterChildError, FlatTrampoline, TrampolineCompletion};
-    use crate::{OwnerCreationError, RequestExecutionOwnerInventory};
+    use crate::owner_inventory::{
+        OwnerCreationErrorKind, OwnerDomain, RequestExecutionOwnerInventory,
+    };
 
     #[test]
     fn deep_child_chain_uses_a_flat_vector() {
@@ -244,8 +251,8 @@ mod tests {
             TrampolineCompletion::RootComplete(())
         ));
         let snapshot = freeze.freeze();
-        assert_eq!(snapshot.child().current(), 0);
-        assert!(snapshot.child().ever_created());
+        assert_eq!(snapshot.child.current, 0);
+        assert!(snapshot.child.ever_created);
     }
 
     #[test]
@@ -258,8 +265,8 @@ mod tests {
         let suspended = trampoline.suspend();
         assert_eq!(suspended.blocked_depth(), 1);
         let snapshot = freeze.freeze();
-        assert_eq!(snapshot.child().current(), 1);
-        assert!(snapshot.child().ever_created());
+        assert_eq!(snapshot.child.current, 1);
+        assert!(snapshot.child.ever_created);
         let resumed = suspended.resume();
         assert_eq!(resumed.active(), &"child");
         assert_eq!(resumed.blocked_depth(), 1);
@@ -272,15 +279,15 @@ mod tests {
         let mut trampoline = FlatTrampoline::new("root", registrations.child());
         let snapshot = freeze.freeze();
 
-        assert!(matches!(
-            trampoline.enter_child("child", "resume-root"),
-            Err(EnterChildError::OwnerCreation(
-                OwnerCreationError::InventoryFrozen
-            ))
-        ));
+        let error = match trampoline.enter_child("child", "resume-root") {
+            Err(EnterChildError::OwnerCreation(error)) => error,
+            other => panic!("expected an owner creation rejection, got {other:?}"),
+        };
+        assert_eq!(error.domain(), OwnerDomain::Child);
+        assert_eq!(error.kind(), OwnerCreationErrorKind::InventoryFrozen);
         assert_eq!(trampoline.active(), &"root");
         assert_eq!(trampoline.blocked_depth(), 0);
-        assert_eq!(snapshot.child().current(), 0);
-        assert!(!snapshot.child().ever_created());
+        assert_eq!(snapshot.child.current, 0);
+        assert!(!snapshot.child.ever_created);
     }
 }

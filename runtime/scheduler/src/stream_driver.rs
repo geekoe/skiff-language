@@ -14,11 +14,12 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
+    owner_inventory::PendingOwnerRegistration,
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
-    BytecodeSchedulerError, BytecodeStreamHandoff, BytecodeStreamSupervisor,
-    PendingOwnerRegistration, PendingWakeQueue, RootDisposition, RootEscrow, RootEscrowBacking,
-    StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll, StreamProducer,
-    StreamSupervisor, SuspendedTrampoline, VmCompletionHandle, VmPendingRegistry, WakeSignal,
+    BytecodeSchedulerError, BytecodeStreamHandoff, BytecodeStreamSupervisor, PendingWakeQueue,
+    RootDisposition, RootEscrow, RootEscrowBacking, StreamConsumer, StreamEmit, StreamError,
+    StreamEvent, StreamPoll, StreamProducer, StreamSupervisor, SuspendedTrampoline,
+    VmCompletionHandle, VmPendingRegistry, WakeSignal,
 };
 
 type VmSuspended = SuspendedTrampoline<VmFiber, VmResumeToken>;
@@ -162,7 +163,7 @@ impl<P> VmStreamConsumerExecutor<P>
 where
     P: Send + Sync + 'static,
 {
-    pub fn open(
+    pub(crate) fn open(
         consumer: StreamConsumer<P, VmOwnedValues, VmStreamTerminal>,
         queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome>>,
         pending_owners: PendingOwnerRegistration,
@@ -350,7 +351,7 @@ impl<P> VmStreamSupervisor<P>
 where
     P: Clone + Send + Sync + 'static,
 {
-    pub fn open(
+    pub(crate) fn open(
         owner_pin: P,
         queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome>>,
         pending_owners: PendingOwnerRegistration,

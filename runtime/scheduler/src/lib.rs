@@ -34,11 +34,7 @@ pub use bytecode::{
     BytecodeUnitControl,
 };
 pub use owner_inventory::{
-    ChildOwnerCreationGuard, ChildOwnerLease, ChildOwnerRegistration, FrozenOwnerDomain,
-    OwnerCreationError, PendingOwnerCreationGuard, PendingOwnerLease, PendingOwnerRegistration,
-    RequestExecutionOwnerInventory, RequestExecutionOwnerInventoryFreezePermit,
-    RequestExecutionOwnerInventorySnapshot, RequestExecutionOwnerRegistrations,
-    ResourceOwnerCreationGuard, ResourceOwnerLease, ResourceOwnerRegistration,
+    OwnerCreationError, OwnerCreationErrorKind, OwnerDomain, RequestExecutionContext,
 };
 pub use pending::{
     BeginPendingError, CompletionHandle, PendingCellState, PendingOwner, PendingOwnerDraft,
@@ -47,6 +43,9 @@ pub use pending::{
     VmCompletionHandle, VmPendingOwner, VmPendingRegistry, VmPendingWake,
 };
 pub use root_escrow::{RootDisposition, RootEscrow, RootEscrowBacking};
+pub use skiff_runtime_model::bytecode_execution_observation::{
+    FrozenOwnerDomain, RequestExecutionOwnerInventorySnapshot,
+};
 pub use skiff_runtime_vm::PendingTicket;
 pub use stream::{
     StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll, StreamProducer,

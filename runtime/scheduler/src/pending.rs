@@ -13,7 +13,9 @@ use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 use skiff_runtime_vm::{PendingOperation, PendingTicket, ResumeOutcome, VmResumeToken};
 
 use crate::{
-    OwnerCreationError, PendingOwnerCreationGuard, PendingOwnerLease, PendingOwnerRegistration,
+    owner_inventory::{
+        OwnerCreationError, PendingOwnerCreationGuard, PendingOwnerLease, PendingOwnerRegistration,
+    },
     RootDisposition, RootEscrow,
 };
 
@@ -53,7 +55,7 @@ impl<R, S> PendingOwnerDraft<R, S> {
         self,
         ticket: PendingTicket,
         roots: RootEscrow,
-        owner_lease: PendingOwnerLease,
+        owner_lease: Option<PendingOwnerLease>,
     ) -> PendingOwner<R, S> {
         PendingOwner {
             ticket,
@@ -75,7 +77,7 @@ pub struct PendingOwner<R, S> {
     roots: RootEscrow,
     resume: R,
     suspended: S,
-    owner_lease: PendingOwnerLease,
+    owner_lease: Option<PendingOwnerLease>,
 }
 
 impl<R, S> PendingOwner<R, S> {
@@ -87,7 +89,7 @@ impl<R, S> PendingOwner<R, S> {
         &self.roots
     }
 
-    pub fn into_parts(self) -> (R, S, RootEscrow, PendingOwnerLease) {
+    pub fn into_parts(self) -> (R, S, RootEscrow, Option<PendingOwnerLease>) {
         (self.resume, self.suspended, self.roots, self.owner_lease)
     }
 }
@@ -266,7 +268,7 @@ impl std::error::Error for BeginPendingError {}
 enum CellState<R, S, O> {
     Open {
         roots: RootEscrow,
-        owner_lease: PendingOwnerLease,
+        owner_lease: Option<PendingOwnerLease>,
     },
     Waiting {
         queue: Arc<dyn PendingWakeQueue<R, S, O>>,
@@ -275,7 +277,7 @@ enum CellState<R, S, O> {
     Settled {
         settlement: PendingSettlement<O>,
         roots: RootEscrow,
-        owner_lease: PendingOwnerLease,
+        owner_lease: Option<PendingOwnerLease>,
     },
     Claimed,
 }
@@ -341,11 +343,30 @@ where
     S: Send + 'static,
     O: Send + 'static,
 {
-    fn new(ticket: PendingTicket, roots: RootEscrow, owner_lease: PendingOwnerLease) -> Self {
+    fn new(ticket: PendingTicket, roots: RootEscrow) -> Self {
         Self {
             ticket,
-            state: Mutex::new(CellState::Open { roots, owner_lease }),
+            state: Mutex::new(CellState::Open {
+                roots,
+                owner_lease: None,
+            }),
         }
+    }
+
+    /// Arms the freshly inserted unarmed cell with its owner lease.
+    ///
+    /// Called exactly once, while the registry table lock and the inventory
+    /// guard are still held, immediately after the infallible commit. The cell
+    /// is not reachable by any other operation before this completes.
+    fn arm(&self, owner_lease: PendingOwnerLease) {
+        let mut state = lock_unpoisoned(&self.state);
+        let CellState::Open {
+            owner_lease: slot, ..
+        } = &mut *state
+        else {
+            unreachable!("a pending cell arms exactly once while still open");
+        };
+        *slot = Some(owner_lease);
     }
 
     fn state(&self) -> PendingCellState {
@@ -614,32 +635,18 @@ where
             roots.discard(RootDisposition::PublicationFailed);
             return Err(BeginPendingError::TicketCollision);
         }
-        let mut roots = Some(roots);
-        let installed = owner.install(|owner_lease| {
-            let cell = Arc::new(PendingCell::new(
-                ticket,
-                roots
-                    .take()
-                    .expect("pending roots move into exactly one installed owner"),
-                owner_lease,
-            ));
-            cells.insert(ticket, Arc::clone(&cell));
-            CompletionHandle {
-                cell,
-                registry: Arc::downgrade(&self.inner),
-            }
-        });
+        let cell = Arc::new(PendingCell::new(ticket, roots));
+        cells.insert(ticket, Arc::clone(&cell));
+        // Commit is infallible: it mints the lease and releases the inventory
+        // lock. The cell is armed before the table lock is released, so no
+        // other operation can observe an unarmed cell.
+        let lease = owner.commit();
+        cell.arm(lease);
         drop(cells);
-        match installed {
-            Ok(handle) => Ok(handle),
-            Err(error) => {
-                roots
-                    .take()
-                    .expect("rejected owner installation retains pending roots")
-                    .discard(RootDisposition::PublicationFailed);
-                Err(BeginPendingError::OwnerCreation(error))
-            }
-        }
+        Ok(CompletionHandle {
+            cell,
+            registry: Arc::downgrade(&self.inner),
+        })
     }
 
     /// Scheduler-internal transition used only after a typed envelope has
@@ -780,8 +787,8 @@ mod tests {
         SettlementSource,
     };
     use crate::{
-        PendingOwnerRegistration, RequestExecutionOwnerInventory, RootDisposition, RootEscrow,
-        RootEscrowBacking,
+        owner_inventory::{PendingOwnerRegistration, RequestExecutionOwnerInventory},
+        RootDisposition, RootEscrow, RootEscrowBacking,
     };
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -920,8 +927,8 @@ mod tests {
         assert_eq!(completion_clone.state(), PendingCellState::Claimed);
 
         let frozen = freeze.freeze();
-        assert_eq!(frozen.pending().current(), 0);
-        assert!(frozen.pending().ever_created());
+        assert_eq!(frozen.pending.current, 0);
+        assert!(frozen.pending.ever_created);
     }
 
     #[test]
@@ -946,8 +953,8 @@ mod tests {
         assert_eq!(registry.live_count(), 0);
 
         let frozen = freeze.freeze();
-        assert_eq!(frozen.pending().current(), 1);
-        assert!(frozen.pending().ever_created());
+        assert_eq!(frozen.pending.current, 1);
+        assert!(frozen.pending.ever_created);
         drop(queue.0.lock().unwrap().pop().unwrap());
     }
 
@@ -977,8 +984,8 @@ mod tests {
             [RootEvent::Dropped(RootDisposition::PublicationFailed)]
         );
         let frozen = freeze.freeze();
-        assert_eq!(frozen.pending().current(), 1);
-        assert!(frozen.pending().ever_created());
+        assert_eq!(frozen.pending.current, 1);
+        assert!(frozen.pending.ever_created);
         assert!(registry.abandon(completion.ticket()));
     }
 
@@ -1024,8 +1031,8 @@ mod tests {
         let completion = creating.join().unwrap().unwrap();
         let frozen = snapshot_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         freezing.join().unwrap();
-        assert_eq!(frozen.pending().current(), 1);
-        assert!(frozen.pending().ever_created());
+        assert_eq!(frozen.pending.current, 1);
+        assert!(frozen.pending.ever_created);
         assert!(registry.abandon(completion.ticket()));
     }
 

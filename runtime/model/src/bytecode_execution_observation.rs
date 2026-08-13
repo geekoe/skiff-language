@@ -229,8 +229,32 @@ pub struct RequestTerminalClaimed {
     pub terminal: BytecodeRequestTerminal,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
-pub struct RequestCleanupComplete {}
+/// One frozen, immutable fact about a single request owner domain.
+///
+/// `current` counts owners that are still live at freeze time; `ever_created`
+/// records whether the domain ever minted an owner, even one that has since
+/// been released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrozenOwnerDomain {
+    pub current: u64,
+    pub ever_created: bool,
+}
+
+/// The actual pending/resource/child owner inventory frozen for one request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestExecutionOwnerInventorySnapshot {
+    pub pending: FrozenOwnerDomain,
+    pub resource: FrozenOwnerDomain,
+    pub child: FrozenOwnerDomain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestCleanupComplete {
+    pub owner_inventory: RequestExecutionOwnerInventorySnapshot,
+}
 
 #[cfg(test)]
 mod tests {
