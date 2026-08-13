@@ -41,19 +41,18 @@ impl Evaluator<'_, '_> {
             Stmt::Assign { target, value } => {
                 let _target_value = self.eval_expr(target, env);
                 let assigned = self.eval_expr(value, env);
-                if let crate::shared::ast::Expr::Identifier(name) = target {
-                    env.insert(name.clone(), assigned);
-                } else if let crate::shared::ast::Expr::Field { object, .. } = target {
-                    let base = self.eval_store_base(object, env);
-                    self.transfer_field_store(&base, &assigned);
-                } else {
-                    // The current abstract environment has no heap/points-to
-                    // store transfer. Updating only the syntactic owner would
-                    // be unsound through aliases (`alias = holder`) and later
-                    // nested loads. Until a complete heap model exists, every
-                    // post-construction container/field store poisons the whole
-                    // callable instead of emitting false safe facts.
-                    self.mark_unsupported_heap_store();
+                match target {
+                    crate::shared::ast::Expr::Identifier(name) => {
+                        env.insert(name.clone(), assigned);
+                    }
+                    crate::shared::ast::Expr::Field { object, .. }
+                    | crate::shared::ast::Expr::Index { object, .. } => {
+                        let base = self.eval_store_base(object, env);
+                        self.transfer_field_store(&base, &assigned);
+                    }
+                    _ => {
+                        self.mark_unsupported_heap_store();
+                    }
                 }
             }
             Stmt::Timeout { body, .. } => {
@@ -243,7 +242,7 @@ impl Evaluator<'_, '_> {
     }
 
     fn eval_store_base(
-        &self,
+        &mut self,
         object: &crate::shared::ast::Expr,
         env: &Environment,
     ) -> AbstractValue {
@@ -252,8 +251,62 @@ impl Evaluator<'_, '_> {
                 .get(name)
                 .cloned()
                 .unwrap_or_else(|| AbstractValue::unknown(true)),
+            crate::shared::ast::Expr::Field { .. } | crate::shared::ast::Expr::Index { .. } => {
+                let base = self.walk_store_base(object, env);
+                self.guard_nested_store_base(base)
+            }
             _ => AbstractValue::unknown(true),
         }
+    }
+
+    /// Projects a nested store base through its known field/index chain
+    /// without evaluating the chain a second time. The surrounding `Assign`
+    /// target evaluation already consumed those expression indices and
+    /// selector effects; re-evaluating here would desynchronize the preorder
+    /// index used for resolved-call-target lookups.
+    fn walk_store_base(
+        &mut self,
+        object: &crate::shared::ast::Expr,
+        env: &Environment,
+    ) -> AbstractValue {
+        match object {
+            crate::shared::ast::Expr::Identifier(name) => env
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| AbstractValue::unknown(true)),
+            crate::shared::ast::Expr::Field { object, field } => {
+                let value = self.walk_store_base(object, env);
+                match ValueProjectionPath::field(field.clone()) {
+                    Ok(path) => self.project_value(&value, &path, true, true),
+                    Err(_) => {
+                        self.mark_unsupported_heap_store();
+                        AbstractValue::unknown(true)
+                    }
+                }
+            }
+            crate::shared::ast::Expr::Index { object, .. } => {
+                let value = self.walk_store_base(object, env);
+                self.project_value(
+                    &value,
+                    &ValueProjectionPath::container_element(),
+                    true,
+                    true,
+                )
+            }
+            _ => AbstractValue::unknown(true),
+        }
+    }
+
+    /// A projected store base stays precise only while its direct identity is
+    /// a fresh local root with a known field/index chain. A caller-owned,
+    /// unknown, or root-less intermediate keeps the store fail closed.
+    fn guard_nested_store_base(&mut self, base: AbstractValue) -> AbstractValue {
+        if base.unknown || base.fresh_roots.is_empty() || !base.direct_caller_references.is_empty()
+        {
+            self.mark_unsupported_heap_store();
+            return AbstractValue::unknown(true);
+        }
+        base
     }
 
     fn transfer_field_store(&mut self, base: &AbstractValue, assigned: &AbstractValue) {

@@ -254,6 +254,59 @@ fn nested_heap_store_remains_fail_closed_and_direct_reference_store_is_precise()
 }
 
 #[test]
+fn nested_fresh_local_field_and_index_store_is_precise() {
+    let model = AnalysisFixture::new(
+        r#"
+            type Inner { x: number, tags: Array<number> }
+            type Payload { inner: Inner, rows: Array<Inner> }
+            type Probe { original: Payload, mutated: Payload }
+
+            function stamp(value: Payload) -> Payload { return value }
+
+            function run(seed: number) -> Probe {
+              final a = Payload {
+                inner: Inner { x: seed, tags: [1, 2] },
+                rows: [Inner { x: seed, tags: [1, 2] }],
+              }
+              var b = a
+              b.inner.x = 2
+              b.rows[0].x = 3
+              final carried = stamp(a)
+              return Probe { original: carried, mutated: b }
+            }
+        "#,
+    )
+    .analyze();
+
+    assert_eq!(
+        effects(&model, "run"),
+        no_effects(),
+        "a nested store on a fresh local aggregate must stay a precise internal write"
+    );
+    assert!(matches!(
+        provenance(&model, "run"),
+        CallableProvenanceSummary::Analyzed { .. }
+    ));
+}
+
+#[test]
+fn nested_index_store_through_parameter_remains_fail_closed() {
+    let model = AnalysisFixture::new(
+        r#"
+            type Item { value: string }
+
+            function nestedIndex(input: Array<Item>) -> void {
+              var target = input
+              target[0].value = "changed"
+            }
+        "#,
+    )
+    .analyze();
+
+    assert_heap_store_fail_closed(&model, "nestedIndex");
+}
+
+#[test]
 fn mutated_fresh_root_can_enter_acyclic_local_containers_but_database_escape_fails_closed() {
     let model = AnalysisFixture::new(
         r#"
