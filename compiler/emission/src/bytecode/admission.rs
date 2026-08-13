@@ -272,7 +272,7 @@ fn admit_function(
             "stream result facts",
         ));
     }
-    admit_effects(unit, function_key, &function.effect_summary)?;
+    admit_effects(unit, function_key, function, &function.effect_summary)?;
     let discriminator_literals = collect_discriminator_literal_positions(function)?;
     for expression in &function.expressions {
         admit_expression(
@@ -424,9 +424,17 @@ fn exception_region_fact(
     }
 }
 
+fn function_contains_throw(function: &MirFunction) -> bool {
+    function
+        .expressions
+        .iter()
+        .any(|expression| matches!(expression.expression, ExprIr::Throw { .. }))
+}
+
 fn admit_effects(
     unit: &MirUnit,
     function_key: &str,
+    function: &MirFunction,
     summary: &CallableEffectSummary,
 ) -> Result<(), BytecodeEmissionError> {
     let effects = match summary {
@@ -450,6 +458,18 @@ fn admit_effects(
     }
     if effects.may_pending || effects.may_pending() || !effects.pending_effect_categories.is_empty()
     {
+        // A throw inside a may-pending function remains fail-closed until
+        // Phase 5 host/Pending rethrow support, and its rejection must still
+        // name the throwing function rather than falling through to a tail
+        // call or value-shape diagnostic.
+        if function_contains_throw(function) {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::PendingEffect,
+                "throw inside a may-pending function",
+            ));
+        }
         // Phase 4 gate 1 narrows the pending face to the exact trace produced
         // by a canonical `std.time.sleep` call: `mayPending` plus the single
         // `NativeCall` category. Every other pending trace (service, stream,
@@ -2059,7 +2079,7 @@ mod tests {
         let units = [unit(vec![function], Vec::new())];
         let function = &units[0].functions[0];
 
-        admit_effects(&units[0], FUNCTION_KEY, &function.effect_summary)
+        admit_effects(&units[0], FUNCTION_KEY, function, &function.effect_summary)
             .expect("the canonical sleep pending trace is admitted");
         admit_expression(
             &units,
@@ -2254,7 +2274,8 @@ mod tests {
                 inout_path_effects: Vec::new(),
             },
         };
-        let error = admit_effects(&units[0], FUNCTION_KEY, &summary)
+        let function = function();
+        let error = admit_effects(&units[0], FUNCTION_KEY, &function, &summary)
             .expect_err("a mayPending flag without a category trace is a drifted fact");
         assert!(matches!(
             error,
@@ -2278,7 +2299,8 @@ mod tests {
                 inout_path_effects: Vec::new(),
             },
         };
-        admit_effects(&units[0], FUNCTION_KEY, &summary)
+        let function = function();
+        admit_effects(&units[0], FUNCTION_KEY, &function, &summary)
             .expect("the production std.time.sleep trace is the canonical HostEffect pending category");
     }
 
