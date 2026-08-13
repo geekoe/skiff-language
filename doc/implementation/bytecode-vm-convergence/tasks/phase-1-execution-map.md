@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 13; merged preflight PASS and candidate frozen at `6234d602`, awaiting fresh independent Acceptance
+> Status: active; revision 14; first Acceptance FAIL routed to the Gate owner, matrix closed and candidate re-frozen at `18412953`, second fresh Acceptance dispatched
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -517,3 +517,38 @@ red set is still R-FMT (workspace rustfmt 1.8.0 drift, 652 diffs) and R-CLIPPY
 Next action is §12.3: a fresh Acceptance agent runs the canonical Phase 1 Gate in a new detached worktree at the frozen
 commit, reviews the candidate and every triggered shared decision receipt against the Phase Contract, verifies raw evidence
 against the manifest, answers the §13 checklist, and issues the sole verdict. It may not modify the candidate.
+
+## 21. Revision 14 — first Acceptance FAIL, §11.3.6/7/8 Gate closure, re-freeze
+
+The first fresh Acceptance agent (independent, read-only) ran the complete Gate at `6234d602` and issued **FAIL** for one
+reason while everything else passed: the canonical Gate ran `21/21` commands and `83/83` tests green (candidate exact and
+clean, evidence closure independently re-verified, all five decision receipts conform), but the frozen matrix did not run
+Phase Contract §11.3 items 6 (raw fuel exact-boundary success/exhausted terminal), 7 (internal-stop poll), and 8 (deep local
+calls bounded by frame/fuel). Those facts existed only in focused suites outside the Gate's durable evidence closure, and
+`runtime/vm/tests/vertical/k2_scalar_core.rs` had been changed by `b731dbf8` after its last recorded green run. The FAIL
+receipt is `/Users/geek/workspace/skiff-bcvm-p1-acceptance-evidence/acceptance-receipt.md` (kept as evidence history).
+
+Per §12.3 the failure was routed to the Gate owner (no candidate edits by the Acceptance agent). The owner added three
+receipt-backed `rust-suite` workloads to the canonical matrix as `18412953`:
+
+- `l4-raw-fuel-exact-boundary` = `cargo test -p skiff-runtime-request --lib execution_budget` (lane `L4`);
+- `l5-deterministic-deadline-internal-stop` = `cargo test -p skiff-runtime-host --lib request_supervisor::tests` (lane `L5`);
+- `k2-deep-local-call-frame-fuel` = `cargo test -p skiff-runtime-vm --test vertical` (lane `K2`).
+
+`PHASE1_REQUIRED_LANES` now includes `L4`, `L5` and `K2`; Node self-tests were updated and stay green (`63/63`). The merged
+preflight on the new tree PASSed: `24/24` commands, `106/106` tests, 0 failed/skipped/todo/cancelled/ignored, candidate
+exact and clean, `checkerError: null`; evidence root
+`/Users/geek/workspace/skiff-bcvm-p1-preflight-evidence-r4b`. This starts a new candidate/evidence epoch per §12.2.
+
+The candidate is re-frozen at:
+
+| Freeze field | Value |
+| --- | --- |
+| candidate commit | `184129533c219ea9a20ceca01e84b122940451af` |
+| candidate tree | `73974228639cc88d025b73698fefe7ab7df097df` |
+| branch / worktree | `codex/bcvm-p1-integration` / `/Users/geek/workspace/skiff-bcvm-p1-integration`（clean） |
+| preflight evidence | `/Users/geek/workspace/skiff-bcvm-p1-preflight-evidence-r4b` |
+| observation schema | `skiff-bytecode-vm-phase-1-observation-v1`，sha256 `88e261ee444e9742683194a2f5592841f070aed6204b04f197eddef3630a4d0e`（与上一 epoch 相同） |
+
+A second, distinct fresh Acceptance agent must now re-run the complete Gate at this commit in a new detached worktree and
+issue the verdict. Phase 1 remains not accepted until that receipt is PASS and the §15 result commit is merged into `main`.
