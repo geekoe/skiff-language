@@ -1,6 +1,6 @@
 # Bytecode VM 架构收敛重构总计划
 
-> Status: project plan; Phase 0 and Phase 1 accepted; Phase 2 activation authorized from the Phase 1 result
+> Status: project plan; Phase 0/1/2 accepted; Phase 3 activation authorized from the Phase 2 result
 >
 > Created: 2026-08-12
 >
@@ -341,8 +341,9 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 | Phase 0 | accepted; [`results/phase-0-closure.md`](./results/phase-0-closure.md) |
 | Phase 0 supplemental closure | accepted; durable Gate receipt recorded |
 | Phase 1 | accepted; [`results/phase-1.md`](./results/phase-1.md) |
-| Phase 2–7 | outline only; not implementation-ready |
+| Phase 2 | accepted; [`results/phase-2.md`](./results/phase-2.md) |
+| Phase 3–7 | outline only; not implementation-ready |
 
-Phase 0 与 Phase 1 均已由独立 Acceptance Agent 在 exact detached candidate 上通过 canonical Gate。Phase 1 的
-result commit 已合入 `main`（`results/phase-1.md` 记录 accepted candidate、merge commit/tree 与独立 Acceptance
-receipt）。Phase 2 只有从该 accepted main receipt 建立新 MAP 后才可派发 production task；Phase 3–7 仍未授权。
+Phase 0/1/2 均已由独立 Acceptance Agent 在 exact detached candidate 上通过 canonical Gate，且各 result commit 已
+合入 `main`（`results/phase-*.md` 记录 accepted candidate、merge commit/tree 与独立 Acceptance receipt）。Phase 3
+只有从 Phase 2 的 accepted main receipt 建立新 MAP 后才可派发 production task；Phase 4–7 仍未授权。

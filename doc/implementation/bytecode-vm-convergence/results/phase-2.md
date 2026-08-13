@@ -6,7 +6,8 @@
 >
 > Accepted tree: `5d5698e9ae1db7f9792e5993bd8275c99ace4677`
 >
-> Main integration merge: `<recorded after merge>` / tree `<recorded after merge>`
+> Main integration merge: `41ee6355593357f5e4003d7c0664754dd8f723ef` / tree
+> `6250d45950292828c7c6d7ece583fe1c336e0d1f`
 >
 > Acceptance verdict: `PASS`; waivers limited to the R0 R-FMT baseline red
 
