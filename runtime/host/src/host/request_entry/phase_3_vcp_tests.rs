@@ -349,15 +349,14 @@ fn assert_internal_facts(events: &[HeapSpyEvent], scenario: f64) {
         })
         .collect::<Vec<_>>();
     assert!(
-        records.len() >= 1,
-        "{scenario}: the thrown leaf record must be allocated"
+        records.len() >= 2,
+        "{scenario}: the thrown leaf record and its catch-slot default record must be allocated"
     );
     assert!(
-        arrays.len() >= 2,
-        "{scenario}: payload owner array and unwind cleanup array must both be allocated"
+        arrays.len() >= 3,
+        "{scenario}: payload owner array, catch-slot default array and unwind cleanup array \
+         must all be allocated"
     );
-    let payload = records[0];
-    let cleanup_owner = arrays[1];
 
     let release_index = |slot: SpySlot| {
         events.iter().position(|event| {
@@ -369,6 +368,26 @@ fn assert_internal_facts(events: &[HeapSpyEvent], scenario: f64) {
             )
         })
     };
+    // Owner identification is derived from the unwind release sequence, never
+    // from a bare allocation index: C3's catch-slot default (a record with an
+    // empty owner array) is allocated between the payload and the cleanup
+    // owner, so allocation order shifts as emission changes.
+    //
+    // - The cleanup owner is the FIRST array released: `innerThrow`'s frame
+    //   exits first during unwind, before the catch handler overwrites the
+    //   slot default and long before the final frame exit.
+    // - The payload record is the LAST record released: it survives the whole
+    //   throw -> catch -> rethrow -> catch chain to the final frame exit.
+    let cleanup_owner = arrays
+        .iter()
+        .copied()
+        .min_by_key(|slot| release_index(*slot).unwrap_or(usize::MAX))
+        .unwrap_or_else(|| panic!("{scenario}: at least one array must be released"));
+    let payload = records
+        .iter()
+        .copied()
+        .max_by_key(|slot| release_index(*slot).unwrap_or(0))
+        .unwrap_or_else(|| panic!("{scenario}: at least one record must be released"));
     let cleanup_release = release_index(cleanup_owner)
         .unwrap_or_else(|| panic!("{scenario}: unwind cleanup owner array must be released"));
     let payload_release = release_index(payload).unwrap_or_else(|| {
@@ -381,10 +400,20 @@ fn assert_internal_facts(events: &[HeapSpyEvent], scenario: f64) {
     );
 
     let mut payload_moves = 0;
+    let mut payload_shares = 0;
     for event in events {
         match event {
-            HeapSpyEvent::SnapshotShare { source, result }
-            | HeapSpyEvent::TransferOwner { source, result } => {
+            HeapSpyEvent::SnapshotShare { source, result } => {
+                if source.handle == payload.handle {
+                    payload_moves += 1;
+                    payload_shares += 1;
+                    assert_eq!(
+                        result.handle, source.handle,
+                        "{scenario}: throw/catch/rethrow must never reallocate the envelope payload handle"
+                    );
+                }
+            }
+            HeapSpyEvent::TransferOwner { source, result } => {
                 if source.handle == payload.handle {
                     payload_moves += 1;
                     assert_eq!(
@@ -400,6 +429,12 @@ fn assert_internal_facts(events: &[HeapSpyEvent], scenario: f64) {
         payload_moves >= 1,
         "{scenario}: the envelope payload must travel through the production \
          share/transfer seam along throw -> catch -> rethrow -> catch"
+    );
+    assert!(
+        payload_shares >= 1,
+        "{scenario}: the caught payload must gain a second owner through a production \
+         snapshot share (rethrow keeps the same physical record handle while a live \
+         owner continues to observe it)"
     );
 }
 
