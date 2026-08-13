@@ -11,12 +11,12 @@ use serde::Deserialize;
 use serde_json::Value;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
+};
+use skiff_runtime_transport::protocol::{
     decode_typed_binary_frame, encode_binary_frame, validate_response_error_frame,
     RequestCancelFrameHeader, ResponseChunkFrameHeader, ResponseEndFrameHeader,
     ResponseErrorFrameHeader, ResponseStartFrameHeader,
-};
-use skiff_runtime_transport::protocol::{
-    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
 };
 
 const REQUIRED_FRAMES: [&str; 12] = [
@@ -292,9 +292,8 @@ fn frames_round_trip_byte_exact_with_real_codec() {
         let expected_payload = decode_hex(&entry.payload_hex);
         let reencoded = match entry.decode_as.as_str() {
             "RequestStartHttpUnary" | "RequestStartHttpStream" => {
-                let (header, payload) =
-                    decode_bytecode_request_start_frame(&expected_bytes)
-                        .unwrap_or_else(|error| panic!("{name} start decode: {error}"));
+                let (header, payload) = decode_bytecode_request_start_frame(&expected_bytes)
+                    .unwrap_or_else(|error| panic!("{name} start decode: {error}"));
                 let mode = match &header {
                     BytecodeRequestStartFrameWireHeader::Http(http) => http.mode.as_str(),
                     other => panic!("{name} must decode as HTTP start, got {other:?}"),

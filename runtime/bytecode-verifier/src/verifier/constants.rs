@@ -87,10 +87,15 @@ fn prove_authority_counts(
     let mut source_constants = 0_usize;
     let mut source_roots = 0_usize;
     let mut source_nodes = 0_usize;
-    for package in hydrated.packages().values().filter(|package| package.has_bytecode()) {
-        let view = package.bytecode().ok_or_else(|| {
-            authority_overflow()
-        })?.view();
+    for package in hydrated
+        .packages()
+        .values()
+        .filter(|package| package.has_bytecode())
+    {
+        let view = package
+            .bytecode()
+            .ok_or_else(|| authority_overflow())?
+            .view();
         source_constants = source_constants
             .checked_add(view.pools().constants.len())
             .ok_or_else(authority_overflow)?;
@@ -145,10 +150,22 @@ fn prove_constant_roots(
     hydrated: &HydratedDeploymentBytecode,
     candidate: &LinkedBytecodeCandidate,
 ) -> Result<(), VerificationError> {
-    for (build_id, package) in hydrated.packages().iter().filter(|(_, package)| package.has_bytecode()) {
-        for (symbol_path, artifact_index) in package.bytecode().ok_or_else(|| {
-            violation(VerificationLocation::Image, "bytecode package has no hydrated bytecode".to_string())
-        })?.view().constant_roots() {
+    for (build_id, package) in hydrated
+        .packages()
+        .iter()
+        .filter(|(_, package)| package.has_bytecode())
+    {
+        for (symbol_path, artifact_index) in package
+            .bytecode()
+            .ok_or_else(|| {
+                violation(
+                    VerificationLocation::Image,
+                    "bytecode package has no hydrated bytecode".to_string(),
+                )
+            })?
+            .view()
+            .constant_roots()
+        {
             let root = candidate.constant_roots().iter().find(|root| {
                 root.owner_package_build_id() == build_id
                     && root.symbol_path().as_str() == symbol_path
@@ -327,7 +344,14 @@ fn source_type_ref(
 ) -> Result<&TypeRefIr, VerificationError> {
     let position = usize::try_from(type_ref)
         .map_err(|_| violation(location, "type row does not fit usize"))?;
-    match package.bytecode().ok_or_else(|| violation(location, "constant origin package is type-only".to_string()))?.view().pools().types.get(position) {
+    match package
+        .bytecode()
+        .ok_or_else(|| violation(location, "constant origin package is type-only".to_string()))?
+        .view()
+        .pools()
+        .types
+        .get(position)
+    {
         Some(BytecodePoolEntry::TypeRef { ty }) => Ok(ty),
         Some(_) => Err(violation(
             location,

@@ -11,17 +11,15 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     BoundaryOperationDescriptor, BytecodeArtifact, BytecodeArtifactRef, BytecodePoolEntry,
-    CallableEffectSummary,
-    CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts, ContractOperationId,
-    ContractTypeDescriptor, DeploymentGatewayEntry, DeploymentIngressBinding, GatewayAdapterArg,
-    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
-    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
-    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol,
-    DeploymentOperationBinding, IngressSelector, PackageArtifact, PackageArtifactRef,
-    PackageBinding, PackageBuildId,
-    PackageCallableId, PackageRequirement, PackageRequirementKey, PackageSchemaCanonicalDescriptor,
-    PackageSchemaTypeRecord, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceDeploymentRef, TypeRefIr,
+    CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary, CallableSemanticFacts,
+    ContractOperationId, ContractTypeDescriptor, DeploymentGatewayEntry, DeploymentIngressBinding,
+    DeploymentOperationBinding, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan,
+    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
+    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageBuildId, PackageCallableId, PackageRequirement, PackageRequirementKey,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceDeploymentRef, TypeRefIr,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeHydrationError, DeploymentBytecodeLoader,
@@ -238,10 +236,12 @@ impl Fixture {
 
         let mut deployment = fixture.resolver.deployment.as_ref().clone();
         deployment.contract = contract_ref.clone();
-        deployment.operation_bindings.push(DeploymentOperationBinding {
-            contract_operation_id: operation_b.clone(),
-            package_callable_id: PackageCallableId::new(HELPER_CALLABLE),
-        });
+        deployment
+            .operation_bindings
+            .push(DeploymentOperationBinding {
+                contract_operation_id: operation_b.clone(),
+                package_callable_id: PackageCallableId::new(HELPER_CALLABLE),
+            });
         assign_service_deployment_identity(&mut deployment).unwrap();
         let deployment = Arc::new(deployment);
         let deployment_reference = service_deployment_ref(&deployment);

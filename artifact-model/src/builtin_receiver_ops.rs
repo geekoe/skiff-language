@@ -264,7 +264,7 @@ const fn detached_scalar_receiver(
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-},
+        },
         return_provenance: ValueProvenance::Fresh,
     }
 }
@@ -288,7 +288,7 @@ const fn mutating_array_push() -> BuiltinReceiverCallableSemantics {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-},
+        },
         return_provenance: ValueProvenance::Constant,
     }
 }
@@ -312,7 +312,7 @@ const fn mutating_json_object_set() -> BuiltinReceiverCallableSemantics {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-},
+        },
         return_provenance: ValueProvenance::Constant,
     }
 }
@@ -332,7 +332,7 @@ const fn mutating_map_set() -> BuiltinReceiverCallableSemantics {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-},
+        },
         return_provenance: ValueProvenance::Constant,
     }
 }
@@ -356,7 +356,7 @@ const fn mutating_json_object_delete() -> BuiltinReceiverCallableSemantics {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-},
+        },
         return_provenance: ValueProvenance::Constant,
     }
 }
@@ -376,7 +376,7 @@ const fn receiver_reachable_get(receiver: BuiltinReceiverRoot) -> BuiltinReceive
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-},
+        },
         return_provenance: ValueProvenance::CallerParameter { index: 0 },
     }
 }

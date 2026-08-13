@@ -159,7 +159,7 @@ fn map_empty_semantics_matches_exact_generic_signature_and_runtime_handler() {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
 }
 
@@ -258,7 +258,7 @@ fn json_decode_semantics_matches_exact_generic_signature_and_json_route() {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
 }
 
@@ -368,7 +368,7 @@ fn json_merge_semantics_match_only_the_exact_non_generic_json_signature() {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
 
     let cases = [
@@ -465,7 +465,7 @@ fn date_parse_semantics_matches_exact_native_signature_and_runtime_handler() {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
 }
 
@@ -579,7 +579,7 @@ fn date_compare_receiver_semantics_matches_exact_native_signature() {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
 }
 
@@ -679,7 +679,7 @@ fn date_add_milliseconds_receiver_semantics_matches_exact_native_signature() {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
 }
 
@@ -779,7 +779,7 @@ fn date_diff_milliseconds_receiver_semantics_matches_exact_native_signature() {
             may_pending: false,
             pending_effect_categories: Vec::new(),
             inout_path_effects: Vec::new(),
-}
+        }
     );
 }
 
@@ -1095,7 +1095,7 @@ fn file_create_semantics_match_exact_signatures_and_file_routes() {
                 may_pending: true,
                 pending_effect_categories: vec![PendingEffectCategory::NativeCall],
                 inout_path_effects: Vec::new(),
-        }
+            }
         );
         assert_eq!(
             NativeRequiredContext::for_binding_key(binding_key),

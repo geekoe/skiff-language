@@ -257,7 +257,8 @@ impl RouterComponents {
         // rust.profile sampling (contract §2): starts the skiff-profiling
         // sampler and spawns the take_window -> PlatformEvent loop when the
         // `profileSampling` block is enabled; fail-soft on start errors.
-        let profile_sampling = crate::telemetry::start_profile_sampling(config, task_telemetry.clone());
+        let profile_sampling =
+            crate::telemetry::start_profile_sampling(config, task_telemetry.clone());
         let task_clock: Arc<dyn skiff_task_control::TaskClock> =
             Arc::new(skiff_task_control::SystemClock);
         let ws_clock: Arc<dyn crate::ws::Clock> = Arc::new(WsSystemClock);
@@ -322,7 +323,9 @@ impl RouterComponents {
                     usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
                     Arc::new(SessionCandidateViewSource::new(
                         session_handle.clone(),
-                        Some(crate::config::canonicalize_artifact_root(&config.artifacts_path)),
+                        Some(crate::config::canonicalize_artifact_root(
+                            &config.artifacts_path,
+                        )),
                     )),
                     Arc::new(DirectoryLeaseRevalidate::new(session_handle.clone())),
                     Arc::new(SessionRuntimePeer::new(session_handle.clone())),
@@ -343,7 +346,9 @@ impl RouterComponents {
         let production_selector = Arc::new(ProductionWsConnectSelector::new(
             Arc::new(SessionCandidateViewSource::new(
                 session_handle.clone(),
-                Some(crate::config::canonicalize_artifact_root(&config.artifacts_path)),
+                Some(crate::config::canonicalize_artifact_root(
+                    &config.artifacts_path,
+                )),
             )),
             usize::try_from(config.runtime_max_concurrency).unwrap_or(usize::MAX),
         ));
@@ -499,10 +504,7 @@ impl RouterComponents {
                     .map(|telemetry| telemetry.endpoint.trim().to_string())
                     .unwrap_or_default();
                 if endpoint.is_empty() {
-                    (
-                        None,
-                        Some(RouterTelemetryFileSink::new(producer).start()),
-                    )
+                    (None, Some(RouterTelemetryFileSink::new(producer).start()))
                 } else {
                     (
                         Some(RouterTelemetryExporter::new(endpoint, producer).start()),
@@ -632,8 +634,7 @@ impl RouterSupervisor {
         config: &RouterConfig,
         task_store: Arc<dyn TaskStore>,
     ) -> Result<Self, SupervisorError> {
-        let components =
-            RouterComponents::assemble_with_task_store(config, task_store).await?;
+        let components = RouterComponents::assemble_with_task_store(config, task_store).await?;
         Ok(Self { components })
     }
 

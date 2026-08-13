@@ -75,10 +75,12 @@ fn validate_stream_producer_authority(
     )?;
     let result_count = function.frame().result_types().len();
     if result_count != 0 {
-        return Err(LinkedBytecodeCandidateError::StreamProducerResultCountNotZero {
-            function: function.index(),
-            result_count,
-        });
+        return Err(
+            LinkedBytecodeCandidateError::StreamProducerResultCountNotZero {
+                function: function.index(),
+                result_count,
+            },
+        );
     }
     let Some(row) = parts.types.get(stream_type.get() as usize) else {
         return Ok(());

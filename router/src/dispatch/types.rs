@@ -85,11 +85,13 @@ impl RequestAuthority {
         session_epoch: &RuntimeSessionEpoch,
     ) -> Self {
         Self {
-            build_id: header
-                .routing
-                .build_id
-                .clone()
-                .unwrap_or_else(|| header.routing.deployment.deployment_artifact_identity.to_string()),
+            build_id: header.routing.build_id.clone().unwrap_or_else(|| {
+                header
+                    .routing
+                    .deployment
+                    .deployment_artifact_identity
+                    .to_string()
+            }),
             deployment: header.routing.deployment.clone(),
             session_epoch: session_epoch.clone(),
         }
@@ -131,18 +133,13 @@ impl TaskAttemptSubmit {
 
     pub fn authority(&self, session_epoch: &RuntimeSessionEpoch) -> RequestAuthority {
         RequestAuthority {
-            build_id: self
-                .header
-                .routing
-                .build_id
-                .clone()
-                .unwrap_or_else(|| {
-                    self.header
-                        .routing
-                        .deployment
-                        .deployment_artifact_identity
-                        .to_string()
-                }),
+            build_id: self.header.routing.build_id.clone().unwrap_or_else(|| {
+                self.header
+                    .routing
+                    .deployment
+                    .deployment_artifact_identity
+                    .to_string()
+            }),
             deployment: self.header.routing.deployment.clone(),
             session_epoch: session_epoch.clone(),
         }

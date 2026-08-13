@@ -18,8 +18,8 @@ use crate::{
     semantic::impl_method_declaration_name,
     shared::ast::{
         BinaryOp, Block, CallArg, DbBlockMode, DbBody, DbChangeOp, DbQueryBlock, DbSelector,
-        DbWhereClause, DispatchTiming, Expr, ForBinding, FunctionDecl, LocalBindingKind, Literal, Param,
-        SourceFile, Stmt, TypeRef, UnaryOp,
+        DbWhereClause, DispatchTiming, Expr, ForBinding, FunctionDecl, Literal, LocalBindingKind,
+        Param, SourceFile, Stmt, TypeRef, UnaryOp,
     },
     shared::ast_utils::{dependency_source_address_parts, expr_path},
     shared::error::SourceSpan,
@@ -1648,7 +1648,8 @@ impl<'a> OwnerChecker<'a> {
         let mut value_types = Vec::new();
         for entry in entries {
             if let Some(ty) = fields.get(&entry.key) {
-                value_types.push(self.map_literal_value_candidate(ResolvedTypeRef::new(ty.clone())));
+                value_types
+                    .push(self.map_literal_value_candidate(ResolvedTypeRef::new(ty.clone())));
             }
         }
         let value = if value_types.is_empty() {
@@ -2773,12 +2774,11 @@ fn transparent_value_target(expression: &Expr) -> &Expr {
 fn object_literal_field_value<'a>(value: &'a Expr, name: &str) -> Option<&'a Expr> {
     match value {
         Expr::ObjectLiteral { entries } => entries.iter().find_map(|entry| {
-            (object_literal_key_text(&entry.key).as_deref() == Some(name))
-                .then_some(&entry.value)
+            (object_literal_key_text(&entry.key).as_deref() == Some(name)).then_some(&entry.value)
         }),
-        Expr::MapLiteral { entries } => entries.iter().find_map(|entry| {
-            (entry.key.as_str() == name).then_some(&entry.value)
-        }),
+        Expr::MapLiteral { entries } => entries
+            .iter()
+            .find_map(|entry| (entry.key.as_str() == name).then_some(&entry.value)),
         _ => None,
     }
 }

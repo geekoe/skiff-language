@@ -946,9 +946,9 @@ pub fn expr_contains_with(expr: &Expr, predicate: &mut impl FnMut(&Expr) -> bool
         Expr::MapLiteral { entries } => entries
             .iter()
             .any(|entry| expr_contains_with(&entry.value, predicate)),
-        Expr::ArrayLiteral { items } => items
-            .iter()
-            .any(|item| expr_contains_with(item, predicate)),
+        Expr::ArrayLiteral { items } => {
+            items.iter().any(|item| expr_contains_with(item, predicate))
+        }
         Expr::Patch { operations, .. } => operations.iter().any(|operation| match operation {
             crate::ast::PatchOperation::Set { value, .. }
             | crate::ast::PatchOperation::Inc { value, .. } => expr_contains_with(value, predicate),
@@ -1657,9 +1657,7 @@ fn collect_stmt_dotted_root_imports(stmt: &Stmt, root: &str, imports: &mut BTree
             }
             collect_test_effect_step_outcome_dotted_root_imports(outcome, root, imports);
         }
-        Stmt::LocalBinding { value, .. } => {
-            collect_expr_dotted_root_imports(value, root, imports)
-        }
+        Stmt::LocalBinding { value, .. } => collect_expr_dotted_root_imports(value, root, imports),
         Stmt::Assign { target, value } => {
             collect_expr_dotted_root_imports(target, root, imports);
             collect_expr_dotted_root_imports(value, root, imports);

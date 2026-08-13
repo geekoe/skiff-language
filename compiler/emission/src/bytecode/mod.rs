@@ -22,13 +22,11 @@ mod plans;
 
 pub use admission::{admit_phase_1_bytecode_mir, AdmittedPhase1BytecodeMir};
 pub use emitter::emit_bytecode_artifact;
-pub use error::{
-    BytecodeEmissionError, Phase1MirFactMismatch, Phase1UnsupportedCapability,
-};
-pub use skiff_compiler_lowering::mir::MirSourceEventUnavailableReason;
+pub use error::{BytecodeEmissionError, Phase1MirFactMismatch, Phase1UnsupportedCapability};
 pub use plans::{
     derive_bytecode_value_transfer_plans, BytecodeValueTransferPlans, FunctionValueTransferPlans,
 };
+pub use skiff_compiler_lowering::mir::MirSourceEventUnavailableReason;
 
 #[cfg(test)]
 #[path = "tests/bytecode_emitter_constants.rs"]

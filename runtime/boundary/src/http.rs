@@ -85,11 +85,7 @@ impl<'a> IntoHttpBoundaryPlan<'a> for &'a RuntimeTypePlan {
         direction: BoundaryDirection,
     ) -> HttpBoundaryPlanInput<'a> {
         HttpBoundaryPlanInput::Owned(Box::new(
-            RuntimeBoundaryContract::default().conversion_plan(
-                self.clone(),
-                use_case,
-                direction,
-            ),
+            RuntimeBoundaryContract::default().conversion_plan(self.clone(), use_case, direction),
         ))
     }
 }

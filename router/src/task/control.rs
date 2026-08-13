@@ -403,11 +403,7 @@ impl DurableTaskControl {
                     "reason".to_string(),
                     Value::String("storeUnavailable".to_string()),
                 );
-                let mut event = task_event(
-                    "task.settle.uncertain",
-                    Some(task_id.as_str()),
-                    attrs,
-                );
+                let mut event = task_event("task.settle.uncertain", Some(task_id.as_str()), attrs);
                 event.request_id = Some(request_id.to_string());
                 self.telemetry.emit(event);
             }
@@ -417,11 +413,7 @@ impl DurableTaskControl {
     fn emit_settle_stale(&self, request_id: &str, task_id: &TaskId, reason: &str) {
         let mut attrs = Map::new();
         attrs.insert("reason".to_string(), Value::String(reason.to_string()));
-        let mut event = task_event(
-            "task.settle.stale",
-            Some(task_id.as_str()),
-            attrs,
-        );
+        let mut event = task_event("task.settle.stale", Some(task_id.as_str()), attrs);
         event.request_id = Some(request_id.to_string());
         self.telemetry.emit(event);
     }
@@ -429,11 +421,7 @@ impl DurableTaskControl {
     fn emit_uncertain_attempt(&self, request_id: &str, task_id: &TaskId, reason: &str) {
         let mut attrs = Map::new();
         attrs.insert("reason".to_string(), Value::String(reason.to_string()));
-        let mut event = task_event(
-            "task.attempt.uncertain",
-            Some(task_id.as_str()),
-            attrs,
-        );
+        let mut event = task_event("task.attempt.uncertain", Some(task_id.as_str()), attrs);
         event.request_id = Some(request_id.to_string());
         self.telemetry.emit(event);
     }

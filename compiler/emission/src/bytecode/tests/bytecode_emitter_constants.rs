@@ -3,16 +3,14 @@ mod tests {
 
     use std::collections::BTreeMap;
 
+    use crate::bytecode::emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact;
+    use crate::{BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTransferPlans};
     use skiff_artifact_identity::validate_bytecode_identity;
     use skiff_artifact_model::{
         BlockIr, BytecodeConstantRef, BytecodePoolEntry, CallableEffectSummary, ConstIr,
         ExecutableBody, ExprIr, ExprRefIr, FileIrUnit, FrozenConstantNode, LiteralIr,
         PackageCallableId, StmtIr, StmtRefIr, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
         ValueTransferPlan,
-    };
-    use crate::bytecode::emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact;
-    use crate::{
-        BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTransferPlans,
     };
     use skiff_compiler_lowering::{
         mir::{MirConst, MirExecutableKind, MirFunction, MirLiveness, MirUnit},

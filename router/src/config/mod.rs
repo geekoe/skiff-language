@@ -505,8 +505,8 @@ fn read_profile_config(
         return Ok(None);
     };
     reject_unknown_keys(Some(value), PROFILE_SAMPLING_KEYS, "profileSampling")?;
-    let enabled = read_optional_boolean(value.get("enabled"), "profileSampling.enabled")?
-        .unwrap_or(false);
+    let enabled =
+        read_optional_boolean(value.get("enabled"), "profileSampling.enabled")?.unwrap_or(false);
     if !enabled {
         return Ok(None);
     }

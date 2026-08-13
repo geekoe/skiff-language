@@ -587,14 +587,12 @@ impl RequestVmHeap {
             .map_err(|error| self.map_error(error, operation))?;
         let (children, names): (Vec<ValueSlot>, Option<Vec<String>>) = match node {
             HeapNode::Array(_) => {
-                let slots = self
-                    .array_slots
-                    .get(&heap_handle)
-                    .cloned()
-                    .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                let slots = self.array_slots.get(&heap_handle).cloned().ok_or_else(|| {
+                    VmHeapError::HeapOperationFailed {
                         operation,
                         message: "array container has no slot sidecar".to_string(),
-                    })?;
+                    }
+                })?;
                 (slots, None)
             }
             HeapNode::Object(_) => {
@@ -651,26 +649,22 @@ impl RequestVmHeap {
                 return Err(error);
             }
         };
-        let slot = match self.register_handle(
-            new_handle,
-            container.compact_type_tag(),
-            container.flags(),
-        ) {
-            Ok(slot) => slot,
-            Err(error) => {
-                self.restore_shares(&shared)?;
-                return Err(error);
-            }
-        };
+        let slot =
+            match self.register_handle(new_handle, container.compact_type_tag(), container.flags())
+            {
+                Ok(slot) => slot,
+                Err(error) => {
+                    self.restore_shares(&shared)?;
+                    return Err(error);
+                }
+            };
         match names {
             None => {
                 self.array_slots.insert(new_handle, shared);
             }
             Some(names) => {
-                self.object_slots.insert(
-                    new_handle,
-                    names.into_iter().zip(shared).collect(),
-                );
+                self.object_slots
+                    .insert(new_handle, names.into_iter().zip(shared).collect());
             }
         }
         Ok(slot)
@@ -733,12 +727,11 @@ impl RequestVmHeap {
                     self.record_field(&current, field)?
                 }
                 VmHeapPathSegment::ArrayIndex => {
-                    let selector =
-                        selectors.get(selector_index).ok_or_else(|| {
-                            VmHeapError::HeapOperationFailed {
-                                operation,
-                                message: "missing array selector".to_string(),
-                            }
+                    let selector = selectors.get(selector_index).ok_or_else(|| {
+                        VmHeapError::HeapOperationFailed {
+                            operation,
+                            message: "missing array selector".to_string(),
+                        }
                     })?;
                     selector_index += 1;
                     let index = skiff_runtime_model::vm_heap::collection_index(selector)
@@ -747,13 +740,12 @@ impl RequestVmHeap {
                     self.array_get(&current, index)?
                 }
                 VmHeapPathSegment::MapKey => {
-                    let selector =
-                        selectors.get(selector_index).ok_or_else(|| {
-                            VmHeapError::HeapOperationFailed {
-                                operation,
-                                message: "missing map selector".to_string(),
-                            }
-                        })?;
+                    let selector = selectors.get(selector_index).ok_or_else(|| {
+                        VmHeapError::HeapOperationFailed {
+                            operation,
+                            message: "missing map selector".to_string(),
+                        }
+                    })?;
                     selector_index += 1;
                     resolved.push(PinnedWritablePathSegment::MapKey { key: *selector });
                     self.map_get(&current, selector)?
@@ -1295,10 +1287,7 @@ impl VmHeap for RequestVmHeap {
                     .cloned()
                     .unwrap_or_default()
                     .into_iter()
-                    .map(|value| VmContainerElement {
-                        field: None,
-                        value,
-                    })
+                    .map(|value| VmContainerElement { field: None, value })
                     .collect();
                 Ok(VmContainerElements {
                     shape: VmContainerShape::Array,
@@ -1405,18 +1394,22 @@ impl VmHeap for RequestVmHeap {
             .iter()
             .all(|container| self.snapshot_owner_count(container) == Ok(1));
         if exclusive {
-            let terminal = *prepared.containers().last().ok_or_else(|| {
-                VmHeapError::HeapOperationFailed {
-                    operation,
-                    message: "writable path preparation has no terminal container".to_string(),
-                }
-            })?;
-            let segment = prepared.segments().last().ok_or_else(|| {
-                VmHeapError::HeapOperationFailed {
-                    operation,
-                    message: "writable path preparation has no terminal segment".to_string(),
-                }
-            })?;
+            let terminal =
+                *prepared
+                    .containers()
+                    .last()
+                    .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                        operation,
+                        message: "writable path preparation has no terminal container".to_string(),
+                    })?;
+            let segment =
+                prepared
+                    .segments()
+                    .last()
+                    .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                        operation,
+                        message: "writable path preparation has no terminal segment".to_string(),
+                    })?;
             self.replace_child_slot(&terminal, segment, value)?;
             Ok(prepared.root())
         } else {

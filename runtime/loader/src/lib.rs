@@ -7,4 +7,4 @@ pub use deployment_bytecode::{
 };
 pub use filesystem_resolver::{
     load_deployment_bytecode_from_store, FilesystemDeploymentBytecodeContentResolver,
-    };
+};

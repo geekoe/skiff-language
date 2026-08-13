@@ -120,9 +120,7 @@ fn apply_stream_next(
     let endpoint_slot = values::resolve_slot(context, OperandRole::Slot)?;
     let endpoint = values::live_slot(before, endpoint_slot, context.location)?;
     let AbstractValue::Concrete(endpoint) = endpoint;
-    let item = context
-        .facts
-        .stream_item_type(endpoint, context.location)?;
+    let item = context.facts.stream_item_type(endpoint, context.location)?;
     let mut item_stack = stack.clone();
     item_stack.push(AbstractValue::Concrete(item));
     Ok(InstructionTransfer::ContinueDual(
@@ -699,18 +697,13 @@ fn validate_input_source(
         }
         ValueSource::FunctionStreamItem => {
             require_one(input, context)?;
-            let stream = context
-                .function
-                .stream_result_type_ref()
-                .ok_or_else(|| {
-                    violation(
-                        context.location,
-                        "EmitStream requires the explicit producer stream authority",
-                    )
-                })?;
-            let item = context
-                .facts
-                .stream_item_type(stream, context.location)?;
+            let stream = context.function.stream_result_type_ref().ok_or_else(|| {
+                violation(
+                    context.location,
+                    "EmitStream requires the explicit producer stream authority",
+                )
+            })?;
+            let item = context.facts.stream_item_type(stream, context.location)?;
             values::require_same_type(
                 input[0],
                 item,

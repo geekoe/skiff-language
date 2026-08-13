@@ -218,11 +218,9 @@ fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransf
         SourceValueTransferNominalFact {
             declaration_module: "std.time".to_string(),
             type_parameters: Vec::new(),
-            semantics: SourceValueTransferNominalSemantics::Ordinary(
-                TypeDescriptorIr::Alias {
-                    target: TypeRefIr::builtin("integer"),
-                },
-            ),
+            semantics: SourceValueTransferNominalSemantics::Ordinary(TypeDescriptorIr::Alias {
+                target: TypeRefIr::builtin("integer"),
+            }),
         },
     );
     for unit in units {

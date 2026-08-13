@@ -16,8 +16,8 @@ use skiff_runtime_transport::protocol::{
     decode_router_bootstrap_frame, decode_runtime_capabilities_frame, decode_runtime_health_frame,
     decode_runtime_registered_frame, encode_router_bootstrap_frame,
     encode_runtime_capabilities_frame, encode_runtime_health_frame,
-    encode_runtime_registered_frame, ROUTER_BOOTSTRAP_FRAME_TYPE,
-    RUNTIME_CAPABILITIES_FRAME_TYPE, RUNTIME_HEALTH_FRAME_TYPE, RUNTIME_REGISTERED_FRAME_TYPE,
+    encode_runtime_registered_frame, ROUTER_BOOTSTRAP_FRAME_TYPE, RUNTIME_CAPABILITIES_FRAME_TYPE,
+    RUNTIME_HEALTH_FRAME_TYPE, RUNTIME_REGISTERED_FRAME_TYPE,
 };
 
 const REQUIRED_FRAMES: [&str; 6] = [
@@ -201,7 +201,9 @@ mod tests {
             "corpus must contain the accept-sequence scenario"
         );
         assert!(
-            found.iter().any(|name| name == "capabilities-refresh-same-replica"),
+            found
+                .iter()
+                .any(|name| name == "capabilities-refresh-same-replica"),
             "corpus must contain the capabilities-refresh scenario"
         );
         assert!(

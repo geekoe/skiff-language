@@ -38,8 +38,7 @@ mod tests {
             mongo_url: "mongodb://127.0.0.1:27017/skiff".to_string(),
         };
         let value = serde_json::to_value(&service_db).expect("serialize");
-        let decoded: AssemblyActivationServiceDb =
-            serde_json::from_value(value).expect("decode");
+        let decoded: AssemblyActivationServiceDb = serde_json::from_value(value).expect("decode");
         assert_eq!(decoded, service_db);
         let invalid = serde_json::json!({ "mongoUrl": "  " });
         assert!(serde_json::from_value::<AssemblyActivationServiceDb>(invalid).is_err());

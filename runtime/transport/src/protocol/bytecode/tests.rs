@@ -4,10 +4,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use super::{
-    decode_bytecode_request_start_frame,
-    decode_bytecode_websocket_connect_response_end_frame,
-    decode_bytecode_websocket_jsonrpc_response_end_frame,
-    BytecodeRequestStartFrameHeader, BytecodeRequestStartFrameWireHeader,
+    decode_bytecode_request_start_frame, decode_bytecode_websocket_connect_response_end_frame,
+    decode_bytecode_websocket_jsonrpc_response_end_frame, BytecodeRequestStartFrameHeader,
+    BytecodeRequestStartFrameWireHeader,
 };
 use crate::protocol::{
     encode_binary_frame, RequestStartFrameHeader, BINARY_FRAME_HEADER_ENCODING_JSON,
@@ -291,16 +290,11 @@ fn bytecode_request_start_decodes_shared_http_headers() {
             .entry("testEffectsEnabled")
             .or_insert(Value::Bool(false));
         assert_eq!(serialized, normalized);
-        let reparsed: BytecodeRequestStartFrameHeader =
-            serde_json::from_value(serialized).unwrap();
+        let reparsed: BytecodeRequestStartFrameHeader = serde_json::from_value(serialized).unwrap();
         assert_eq!(reparsed, expected);
         let frame = encode_binary_frame(&expected, &[]).unwrap();
-        let (decoded, decoded_payload) =
-            decode_bytecode_request_start_frame(&frame).unwrap();
-        assert_eq!(
-            decoded,
-            BytecodeRequestStartFrameWireHeader::Http(expected)
-        );
+        let (decoded, decoded_payload) = decode_bytecode_request_start_frame(&frame).unwrap();
+        assert_eq!(decoded, BytecodeRequestStartFrameWireHeader::Http(expected));
         assert!(decoded_payload.is_empty());
     }
     assert_eq!(
@@ -469,8 +463,7 @@ fn bytecode_request_start_mutations_fail_closed() {
         let mut value = corpus.request_start_headers[mutation.base_index].clone();
         apply_mutation(&mut value, &mutation);
         assert!(
-            serde_json::from_value::<BytecodeRequestStartFrameWireHeader>(value.clone())
-                .is_err(),
+            serde_json::from_value::<BytecodeRequestStartFrameWireHeader>(value.clone()).is_err(),
             "{}",
             mutation.name
         );
@@ -510,9 +503,7 @@ fn bytecode_request_start_preserves_legacy_decoder_baseline() {
         let decoded: RequestStartFrameHeader =
             serde_json::from_value(value.clone()).expect("legacy request baseline");
         assert_eq!(serde_json::to_value(decoded).unwrap(), value);
-        assert!(
-            serde_json::from_value::<BytecodeRequestStartFrameWireHeader>(value).is_err()
-        );
+        assert!(serde_json::from_value::<BytecodeRequestStartFrameWireHeader>(value).is_err());
     }
 }
 
@@ -561,10 +552,7 @@ fn bytecode_request_current_http_and_websocket_json_match_shared_goldens() {
         assert_eq!(decoded_payload, payload, "{} payload", case.name);
         match (&*case.kind, &decoded) {
             ("http", BytecodeRequestStartFrameWireHeader::Http(_))
-            | (
-                "websocketConnect",
-                BytecodeRequestStartFrameWireHeader::WebSocketConnect(_),
-            ) => {}
+            | ("websocketConnect", BytecodeRequestStartFrameWireHeader::WebSocketConnect(_)) => {}
             other => panic!("{} has wrong request branch {other:?}", case.name),
         }
         assert_eq!(
@@ -872,9 +860,8 @@ fn bytecode_websocket_jsonrpc_request_mutations_fail_closed() {
 fn bytecode_websocket_jsonrpc_response_outcomes_enforce_payload_presence() {
     let success = websocket_jsonrpc_response_header("success", true);
     let success_frame = encode_binary_frame(&success, b"null").unwrap();
-    let (decoded, payload) =
-        decode_bytecode_websocket_jsonrpc_response_end_frame(&success_frame)
-            .expect("success with JSON null payload must decode");
+    let (decoded, payload) = decode_bytecode_websocket_jsonrpc_response_end_frame(&success_frame)
+        .expect("success with JSON null payload must decode");
     assert_eq!(payload, b"null");
     assert_eq!(serde_json::to_value(decoded).unwrap(), success);
 

@@ -271,9 +271,7 @@ where
     deserialize_exact_string(deserializer, "gateway", "runtimeAssembly caller.kind")
 }
 
-pub(super) fn deserialize_bytecode_routing_kind<'de, D>(
-    deserializer: D,
-) -> Result<String, D::Error>
+pub(super) fn deserialize_bytecode_routing_kind<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {

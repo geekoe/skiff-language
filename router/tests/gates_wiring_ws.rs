@@ -286,8 +286,8 @@ mod tests {
             .expect("connect begin");
         let frames = writer.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 1);
-        let (header, payload) = decode_bytecode_request_start_frame(&frames[0].1)
-            .expect("connect frame decodes");
+        let (header, payload) =
+            decode_bytecode_request_start_frame(&frames[0].1).expect("connect frame decodes");
         let skiff_runtime_transport::protocol::BytecodeRequestStartFrameWireHeader::WebSocketConnect(connect) = header else {
             panic!("expected websocketConnect request.start");
         };
@@ -413,8 +413,8 @@ mod tests {
         assert!(ws_lane.handle_peer_text("wsconn-1", second_frame).is_none());
         let frames = writer.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 1);
-        let (header, payload) = decode_bytecode_request_start_frame(&frames[0].1)
-            .expect("jsonrpc frame decodes");
+        let (header, payload) =
+            decode_bytecode_request_start_frame(&frames[0].1).expect("jsonrpc frame decodes");
         let skiff_runtime_transport::protocol::BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(jsonrpc) = header else {
             panic!("expected websocketJsonRpc request.start");
         };
@@ -446,8 +446,8 @@ mod tests {
             .is_none());
         assert_eq!(store.pending_inbound_count(), 1);
         let frames = writer.frames.lock().unwrap().clone();
-        let (header, _) = decode_bytecode_request_start_frame(&frames[1].1)
-            .expect("jsonrpc frame decodes");
+        let (header, _) =
+            decode_bytecode_request_start_frame(&frames[1].1).expect("jsonrpc frame decodes");
         let skiff_runtime_transport::protocol::BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(jsonrpc) = header else {
             panic!("expected websocketJsonRpc request.start");
         };

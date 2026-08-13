@@ -279,7 +279,9 @@ fn prove_pool_target(
             let exact = resume.function() == function.index()
                 && package
                     .bytecode()
-                    .ok_or_else(|| semantic_violation(location, "resume owner is type-only".to_string()))?
+                    .ok_or_else(|| {
+                        semantic_violation(location, "resume owner is type-only".to_string())
+                    })?
                     .view()
                     .resume_sites()
                     .iter()

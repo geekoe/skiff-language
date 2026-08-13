@@ -210,7 +210,9 @@ fn runtime_telemetry(
         file_max_files: None,
     });
     Ok(Some(RuntimeTelemetryConfig {
-        endpoint: telemetry.endpoint.filter(|endpoint| !endpoint.trim().is_empty()),
+        endpoint: telemetry
+            .endpoint
+            .filter(|endpoint| !endpoint.trim().is_empty()),
         file_path: telemetry.file_path.map(PathBuf::from),
         file_max_bytes: telemetry.file_max_bytes,
         file_max_files: telemetry.file_max_files,

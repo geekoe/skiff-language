@@ -87,10 +87,7 @@ impl Evaluator<'_, '_> {
                 let iterable_key = self.current_key();
                 let iterable = self.eval_expr(iterable, env);
                 if self.expression_type_is_stream(&iterable_key) {
-                    record_pending_category(
-                        &mut self.state.effects,
-                        PendingEffectCategory::Stream,
-                    );
+                    record_pending_category(&mut self.state.effects, PendingEffectCategory::Stream);
                 }
                 let element_value = self.project_value(
                     &iterable,

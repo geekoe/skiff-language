@@ -1,17 +1,16 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_identity::{
-    assign_service_deployment_identity, gateway_entry_identity,
-};
+use skiff_artifact_identity::{assign_service_deployment_identity, gateway_entry_identity};
 use skiff_artifact_model::{
-    ContractOperationId, DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentGatewayEntry,
-    DeploymentIngressBinding, DeploymentOperationBinding, DeploymentRevision, GatewayAdapterArg,
-    GatewayAdapterKind, GatewayAdapterPlan, GatewayAdapterSource, GatewayDispatchMode,
-    GatewayEntryKey, GatewayEntryProtocolSurface, GatewayExternalErrorProjection,
-    GatewayExternalSchema, GatewayHttpProtocolSurface, GatewayProtocolSurface, IngressProtocol,
-    IngressSelector, PackageArtifactRef, PackageBuildId, PackageCallableId, PackageLocalAbiIdentity,
-    ServiceContractRef, ServiceDeployment, ServiceDeploymentOperationInput,
-    ServiceProtocolIdentity, SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    ContractOperationId, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentGatewayEntry, DeploymentIngressBinding, DeploymentOperationBinding,
+    DeploymentRevision, GatewayAdapterArg, GatewayAdapterKind, GatewayAdapterPlan,
+    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryKey, GatewayEntryProtocolSurface,
+    GatewayExternalErrorProjection, GatewayExternalSchema, GatewayHttpProtocolSurface,
+    GatewayProtocolSurface, IngressProtocol, IngressSelector, PackageArtifactRef, PackageBuildId,
+    PackageCallableId, PackageLocalAbiIdentity, ServiceContractRef, ServiceDeployment,
+    ServiceDeploymentOperationInput, ServiceProtocolIdentity,
+    SERVICE_DEPLOYMENT_INPUT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use crate::Result;

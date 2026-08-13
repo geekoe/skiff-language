@@ -6,9 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use base64::Engine;
-use skiff_artifact_identity::{
-    ArtifactRelativePath, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
-};
+use skiff_artifact_identity::{ArtifactRelativePath, PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX};
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingMethod, ActorRoutingProjection, ActorRoutingRef,
     ACTOR_ROUTING_PROJECTION_RECORD_PATH, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,

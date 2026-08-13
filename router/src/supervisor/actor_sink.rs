@@ -170,7 +170,10 @@ impl ActorFrameSink {
 
     /// Deployment-anchored route authority for one actor method invocation
     /// (M4: resolved from the actor routing catalog; no epoch).
-    fn route_authority(&self, query: &CatalogQuery) -> Result<ActorOwnerRouteAuthority, TerminalKind> {
+    fn route_authority(
+        &self,
+        query: &CatalogQuery,
+    ) -> Result<ActorOwnerRouteAuthority, TerminalKind> {
         let build_id = self
             .components
             .catalog_view
@@ -358,9 +361,7 @@ impl ActorFrameSink {
             ActorOwnerUnitFrameHeader::Package(_slot) => {
                 let actor = ActorRoutingRef {
                     service_id: header.actor_key.service_id.clone(),
-                    actor_abi_identity: ActorAbiIdentity::new(
-                        header.actor_abi_identity.clone(),
-                    ),
+                    actor_abi_identity: ActorAbiIdentity::new(header.actor_abi_identity.clone()),
                 };
                 let catalog = self
                     .components
@@ -371,10 +372,9 @@ impl ActorFrameSink {
                     .methods_for_actor(&actor)
                     .next()
                     .or_else(|| {
-                        catalog
-                            .entries()
-                            .iter()
-                            .find(|entry| entry.actor.actor_abi_identity == actor.actor_abi_identity)
+                        catalog.entries().iter().find(|entry| {
+                            entry.actor.actor_abi_identity == actor.actor_abi_identity
+                        })
                     })
                     .ok_or("ActorOwnerServiceUnresolved")?;
                 Ok(owning.deployment.service_id.clone())

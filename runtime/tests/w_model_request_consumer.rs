@@ -14,14 +14,14 @@ use serde::Deserialize;
 use serde_json::Value;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
+};
+use skiff_runtime_transport::protocol::{
     decode_request_cancel_frame, decode_response_chunk_frame, decode_response_end_frame,
     decode_response_start_frame, decode_typed_binary_frame, encode_binary_frame,
     encode_request_cancel_frame, encode_response_chunk_frame, encode_response_end_frame,
     encode_response_start_frame, validate_response_error_frame, ResponseErrorFrameHeader,
     ValidatedResponseErrorFrame,
-};
-use skiff_runtime_transport::protocol::{
-    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
 };
 
 const REQUIRED_FRAMES: [&str; 12] = [
@@ -128,9 +128,7 @@ mod tests {
                     let (header, payload) = decode_bytecode_request_start_frame(&bytes)
                         .unwrap_or_else(|error| panic!("{name} start decode: {error}"));
                     let request_id = match &header {
-                        BytecodeRequestStartFrameWireHeader::Http(http) => {
-                            http.request_id.as_str()
-                        }
+                        BytecodeRequestStartFrameWireHeader::Http(http) => http.request_id.as_str(),
                         other => panic!("{name} must decode as HTTP start, got {other:?}"),
                     };
                     assert_eq!(

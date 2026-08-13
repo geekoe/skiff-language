@@ -2,9 +2,9 @@
 //! C-session §6, C-model-registration §2.2).
 
 use serde_json::json;
-use skiff_router::session::TerminalKind;
 use skiff_router::session::demux::{DemuxEvent, DemuxOutcome, RuntimeFrameDemux};
-use skiff_runtime_transport::protocol::{RuntimeFrameFamily, encode_binary_frame};
+use skiff_router::session::TerminalKind;
+use skiff_runtime_transport::protocol::{encode_binary_frame, RuntimeFrameFamily};
 
 fn hex_decode(hex: &str) -> Vec<u8> {
     (0..hex.len())

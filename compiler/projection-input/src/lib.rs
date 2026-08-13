@@ -985,9 +985,9 @@ mod resolved_package_schema_tests {
     use super::*;
     use serde_json::{json, Value};
     use skiff_artifact_model::{
-        current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
-        ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor,
-        PackageSchemaIndexEntry,
+        current_platform_error_projection_registry_ref,
+        derive_bytecode_statement_manifest_identity, ContractTypeDescriptor, ContractTypeRef,
+        PackageSchemaCanonicalDescriptor, PackageSchemaIndexEntry,
     };
 
     const PACKAGE_ID: &str = "example.com/models";

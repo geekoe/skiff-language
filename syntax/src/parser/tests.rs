@@ -2716,7 +2716,8 @@ function make() -> void {
     )
     .unwrap();
 
-    let crate::ast::Stmt::LocalBinding { value: call, .. } = &ast.functions[0].body.statements[0] else {
+    let crate::ast::Stmt::LocalBinding { value: call, .. } = &ast.functions[0].body.statements[0]
+    else {
         panic!("expected call final binding");
     };
     let crate::ast::Expr::Call { callee, .. } = call else {
@@ -2733,7 +2734,8 @@ function make() -> void {
                 && source.public_path == "managedLlm"
     ));
 
-    let crate::ast::Stmt::LocalBinding { value: boxed, .. } = &ast.functions[0].body.statements[1] else {
+    let crate::ast::Stmt::LocalBinding { value: boxed, .. } = &ast.functions[0].body.statements[1]
+    else {
         panic!("expected boxed final binding");
     };
     assert!(matches!(
@@ -3356,8 +3358,7 @@ fn rejects_local_const_and_top_level_final_var() {
         "got {error:?}"
     );
 
-    let error = parse_source("function run() -> void {\n  let x = 1\n}\n")
-        .unwrap_err();
+    let error = parse_source("function run() -> void {\n  let x = 1\n}\n").unwrap_err();
     assert!(
         error
             .to_string()

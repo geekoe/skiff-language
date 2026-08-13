@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{BytecodePoolEntry, PackageBuildId, TypeRefIr};
 use skiff_runtime_linked_bytecode::{
-    ArtifactCallbackCaptureIndex, ArtifactShapeIndex, ArtifactTypeIndex,
-    ArtifactWritablePathIndex, CallbackCaptureLayoutIndex, FunctionIndex, InstructionIndex,
-    LinkedArtifactPoolOrigin, LinkedCallbackCapture, LinkedCallbackCaptureLayout,
-    LinkedContainerLayout, LinkedContainerPosition, LinkedResumeSite, LinkedShapeEntry,
-    LinkedShapeField, LinkedTypeEntry, LinkedWritablePathEntry, LinkedWritablePathSegment,
-    ResumeSiteIndex, ShapeIndex, SpecializationKey, TypeIndex, WritablePathIndex,
+    ArtifactCallbackCaptureIndex, ArtifactShapeIndex, ArtifactTypeIndex, ArtifactWritablePathIndex,
+    CallbackCaptureLayoutIndex, FunctionIndex, InstructionIndex, LinkedArtifactPoolOrigin,
+    LinkedCallbackCapture, LinkedCallbackCaptureLayout, LinkedContainerLayout,
+    LinkedContainerPosition, LinkedResumeSite, LinkedShapeEntry, LinkedShapeField, LinkedTypeEntry,
+    LinkedWritablePathEntry, LinkedWritablePathSegment, ResumeSiteIndex, ShapeIndex,
+    SpecializationKey, TypeIndex, WritablePathIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -206,20 +206,14 @@ impl<'a> TypeLinker<'a> {
         substitutions: &BTreeMap<String, TypeRefIr>,
         location: BytecodeLinkLocation,
     ) -> Result<TypeIndex, BytecodeLinkError> {
-        let artifact_index = find_pool_type_after_substitution(
-            self.deployment,
-            package,
-            expected,
-            substitutions,
-        )?
-        .ok_or_else(|| {
-            obligation_error(
-                location.clone(),
-                format!(
-                    "concrete type {expected:?} has no exact admitted type-pool origin"
-                ),
-            )
-        })?;
+        let artifact_index =
+            find_pool_type_after_substitution(self.deployment, package, expected, substitutions)?
+                .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("concrete type {expected:?} has no exact admitted type-pool origin"),
+                )
+            })?;
         self.intern_pool_type(
             package,
             specialization,
@@ -313,7 +307,12 @@ impl<'a> TypeLinker<'a> {
         })?;
         let entry = package
             .bytecode()
-            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode type pool".to_string()))?
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "type-only package has no bytecode type pool".to_string(),
+                )
+            })?
             .view()
             .pools()
             .types
@@ -396,7 +395,12 @@ impl<'a> TypeLinker<'a> {
         }
         let entry = package
             .bytecode()
-            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode shape pool".to_string()))?
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "type-only package has no bytecode shape pool".to_string(),
+                )
+            })?
             .view()
             .pools()
             .shapes
@@ -441,9 +445,10 @@ impl<'a> TypeLinker<'a> {
                 )
             })?;
             let plan = self.link_plan_for_type(&field.plan, &concrete, location.clone())?;
-            fields.push(LinkedShapeField::new(field.name.clone(), ty, plan).map_err(
-                |error| obligation_error(location.clone(), error.to_string()),
-            )?);
+            fields.push(
+                LinkedShapeField::new(field.name.clone(), ty, plan)
+                    .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
+            );
         }
         let raw_index = self.reserve_shape(origin_key, location.clone())?;
         let index = ShapeIndex::new(raw_index);
@@ -482,7 +487,12 @@ impl<'a> TypeLinker<'a> {
         }
         let entry = package
             .bytecode()
-            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode writable-path pool".to_string()))?
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "type-only package has no bytecode writable-path pool".to_string(),
+                )
+            })?
             .view()
             .pools()
             .writable_paths
@@ -579,8 +589,14 @@ impl<'a> TypeLinker<'a> {
         )
         .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
         self.writable_path_entries.push(
-            LinkedWritablePathEntry::new(index, origin, root_type, leaf_type, segments.into_boxed_slice())
-                .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
+            LinkedWritablePathEntry::new(
+                index,
+                origin,
+                root_type,
+                leaf_type,
+                segments.into_boxed_slice(),
+            )
+            .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
         );
         Ok(index)
     }
@@ -600,7 +616,12 @@ impl<'a> TypeLinker<'a> {
     ) -> Result<CallbackCaptureLayoutIndex, BytecodeLinkError> {
         let entry = package
             .bytecode()
-            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode callback-capture pool".to_string()))?
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "type-only package has no bytecode callback-capture pool".to_string(),
+                )
+            })?
             .view()
             .pools()
             .callback_capture
@@ -624,7 +645,9 @@ impl<'a> TypeLinker<'a> {
         };
         let target_specialization = self
             .function_indices
-            .and_then(|indices| self.specialization_for_function_key(package, &layout.function_key, indices))
+            .and_then(|indices| {
+                self.specialization_for_function_key(package, &layout.function_key, indices)
+            })
             .ok_or_else(|| {
                 obligation_error(
                     location.clone(),
@@ -728,7 +751,12 @@ impl<'a> TypeLinker<'a> {
     ) -> Result<ResumeSiteIndex, BytecodeLinkError> {
         let descriptor = package
             .bytecode()
-            .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode resume pool".to_string()))?
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "type-only package has no bytecode resume pool".to_string(),
+                )
+            })?
             .view()
             .resume_sites()
             .get(usize::try_from(artifact_index).map_err(|_| {
@@ -764,15 +792,17 @@ impl<'a> TypeLinker<'a> {
         function: skiff_runtime_linked_bytecode::FunctionIndex,
         location: BytecodeLinkLocation,
     ) -> Result<ResumeSiteIndex, BytecodeLinkError> {
-        let source = self.source_function_for_key(specialization).ok_or_else(|| {
-            obligation_error(
-                location.clone(),
-                format!(
-                    "resume descriptor {:?} has no admitted source function",
-                    descriptor.function_key
-                ),
-            )
-        })?;
+        let source = self
+            .source_function_for_key(specialization)
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!(
+                        "resume descriptor {:?} has no admitted source function",
+                        descriptor.function_key
+                    ),
+                )
+            })?;
         let site = instruction_index_for_pc(source, descriptor.site_pc, location.clone())?;
         let resume = instruction_index_for_pc(source, descriptor.resume_pc, location.clone())?;
         let end_resume = descriptor
@@ -833,7 +863,11 @@ impl<'a> TypeLinker<'a> {
         location: BytecodeLinkLocation,
     ) -> Result<u32, BytecodeLinkError> {
         let raw_index = self.reserve_table(&self.shape_entries.len(), location.clone())?;
-        if self.shape_origins.insert(origin_key, ShapeIndex::new(raw_index)).is_some() {
+        if self
+            .shape_origins
+            .insert(origin_key, ShapeIndex::new(raw_index))
+            .is_some()
+        {
             return Err(obligation_error(
                 location,
                 "duplicate shape pool origin".to_string(),
@@ -848,7 +882,11 @@ impl<'a> TypeLinker<'a> {
         location: BytecodeLinkLocation,
     ) -> Result<u32, BytecodeLinkError> {
         let raw_index = self.reserve_table(&self.writable_path_entries.len(), location.clone())?;
-        if self.writable_path_origins.insert(origin_key, WritablePathIndex::new(raw_index)).is_some() {
+        if self
+            .writable_path_origins
+            .insert(origin_key, WritablePathIndex::new(raw_index))
+            .is_some()
+        {
             return Err(obligation_error(
                 location,
                 "duplicate writable path origin".to_string(),
@@ -863,7 +901,11 @@ impl<'a> TypeLinker<'a> {
         location: BytecodeLinkLocation,
     ) -> Result<u32, BytecodeLinkError> {
         let raw_index = self.reserve_table(&self.callback_entries.len(), location.clone())?;
-        if self.callback_origins.insert(origin_key, CallbackCaptureLayoutIndex::new(raw_index)).is_some() {
+        if self
+            .callback_origins
+            .insert(origin_key, CallbackCaptureLayoutIndex::new(raw_index))
+            .is_some()
+        {
             return Err(obligation_error(
                 location,
                 "duplicate callback capture origin".to_string(),
@@ -883,7 +925,9 @@ impl<'a> TypeLinker<'a> {
     ) -> Result<u32, BytecodeLinkError> {
         let next = (u64::try_from(*len).unwrap_or(u64::MAX))
             .checked_add(1)
-            .ok_or_else(|| obligation_error(location.clone(), "table row count overflowed".to_string()))?;
+            .ok_or_else(|| {
+                obligation_error(location.clone(), "table row count overflowed".to_string())
+            })?;
         self.tracker
             .check_image_table_entries(next, location.clone())?;
         self.tracker.add_image_table(1, location.clone())?;
@@ -1031,13 +1075,18 @@ fn concrete_type_equivalent(left: &TypeRefIr, right: &TypeRefIr) -> bool {
         return true;
     }
     match (left, right) {
+        (TypeRefIr::PackageSymbol { symbol: left }, TypeRefIr::PackageSymbol { symbol: right }) => {
+            left.package == right.package && left.symbol_path == right.symbol_path
+        }
         (
-            TypeRefIr::PackageSymbol { symbol: left },
-            TypeRefIr::PackageSymbol { symbol: right },
-        ) => left.package == right.package && left.symbol_path == right.symbol_path,
-        (
-            TypeRefIr::Builtin { name: left_name, args: left_args },
-            TypeRefIr::Builtin { name: right_name, args: right_args },
+            TypeRefIr::Builtin {
+                name: left_name,
+                args: left_args,
+            },
+            TypeRefIr::Builtin {
+                name: right_name,
+                args: right_args,
+            },
         ) => {
             left_name == right_name
                 && left_args.len() == right_args.len()
@@ -1057,8 +1106,14 @@ fn concrete_type_equivalent(left: &TypeRefIr, right: &TypeRefIr) -> bool {
                     .all(|(left, right)| concrete_type_equivalent(left, right))
         }
         (
-            TypeRefIr::AppliedNominal { base: left_base, arguments: left_args },
-            TypeRefIr::AppliedNominal { base: right_base, arguments: right_args },
+            TypeRefIr::AppliedNominal {
+                base: left_base,
+                arguments: left_args,
+            },
+            TypeRefIr::AppliedNominal {
+                base: right_base,
+                arguments: right_args,
+            },
         ) => {
             left_base == right_base
                 && left_args.len() == right_args.len()
@@ -1089,7 +1144,10 @@ fn find_pool_type_after_substitution(
         package: Box::new(package.reference().clone()),
     };
     let bytecode = package.bytecode().ok_or_else(|| {
-        obligation_error(location.clone(), "type-only package has no bytecode type pool".to_string())
+        obligation_error(
+            location.clone(),
+            "type-only package has no bytecode type pool".to_string(),
+        )
     })?;
     for (index, entry) in bytecode.view().pools().types.iter().enumerate() {
         let BytecodePoolEntry::TypeRef { ty } = entry else {
@@ -1116,7 +1174,6 @@ fn obligation_error(location: BytecodeLinkLocation, detail: String) -> BytecodeL
     }
 }
 
-
 fn instruction_index_for_pc(
     source: &skiff_artifact_model::ValidatedFunction,
     pc: u32,
@@ -1141,7 +1198,6 @@ fn instruction_index_for_pc(
     Ok(InstructionIndex::new(raw))
 }
 
-
 fn descriptor_index(
     package: &HydratedBytecodePackage,
     descriptor: &skiff_artifact_model::ResumeDescriptor,
@@ -1149,7 +1205,12 @@ fn descriptor_index(
 ) -> Result<u32, BytecodeLinkError> {
     package
         .bytecode()
-        .ok_or_else(|| obligation_error(location.clone(), "type-only package has no bytecode resume pool".to_string()))?
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "type-only package has no bytecode resume pool".to_string(),
+            )
+        })?
         .view()
         .resume_sites()
         .iter()

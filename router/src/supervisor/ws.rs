@@ -27,20 +27,16 @@ use skiff_runtime_transport::protocol::{encode_binary_frame, RUNTIME_FRAME_SCHEM
 use skiff_runtime_transport::protocol::{
     BytecodeRequestCallerFrameHeader, BytecodeRequestDeadlineFrameHeader,
     BytecodeRequestNameValueFrameHeader, BytecodeRequestTraceFrameHeader,
-    BytecodeWebSocketConnectIngressFrameHeader,
-    BytecodeWebSocketConnectIngressProtocol,
-    BytecodeWebSocketConnectRequestFrameHeader,
-    BytecodeWebSocketConnectRequestStartFrameHeader,
+    BytecodeWebSocketConnectIngressFrameHeader, BytecodeWebSocketConnectIngressProtocol,
+    BytecodeWebSocketConnectRequestFrameHeader, BytecodeWebSocketConnectRequestStartFrameHeader,
     BytecodeWebSocketConnectRoutingFrameHeader,
     BytecodeWebSocketConnectionClosedIngressFrameHeader,
     BytecodeWebSocketConnectionClosedRequestFrameHeader,
     BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
     BytecodeWebSocketConnectionClosedRoutingFrameHeader,
     BytecodeWebSocketJsonRpcIngressFrameHeader, BytecodeWebSocketJsonRpcProfile,
-    BytecodeWebSocketJsonRpcRequestFrameHeader,
-    BytecodeWebSocketJsonRpcRequestStartFrameHeader,
-    BytecodeWebSocketJsonRpcResponseOutcome,
-    BytecodeWebSocketJsonRpcRoutingFrameHeader,
+    BytecodeWebSocketJsonRpcRequestFrameHeader, BytecodeWebSocketJsonRpcRequestStartFrameHeader,
+    BytecodeWebSocketJsonRpcResponseOutcome, BytecodeWebSocketJsonRpcRoutingFrameHeader,
 };
 
 use crate::dispatch::{Reservation, RuntimeAdmissionPool};
@@ -143,12 +139,14 @@ pub fn ws_surface_view_from_store(
         .all_deployments(profile)
         .map_err(|error| format!("scan release pointers for WS surface: {error}"))?
     {
-        let record = store.read_service_deployment(&deployment).map_err(|error| {
-            format!(
-                "read deployment record {} for WS surface: {error}",
-                deployment.service_id
-            )
-        })?;
+        let record = store
+            .read_service_deployment(&deployment)
+            .map_err(|error| {
+                format!(
+                    "read deployment record {} for WS surface: {error}",
+                    deployment.service_id
+                )
+            })?;
         for ingress in &record.ingress {
             if ingress.selector.protocol != IngressProtocol::WebSocket {
                 continue;
@@ -302,7 +300,11 @@ impl WsConnectSelector for ProductionWsConnectSelector {
         let view = self.view.view();
         let query = CandidateQuery {
             mode: DispatchMode::Unary,
-            build_id: binding.deployment.deployment_artifact_identity.as_str().to_string(),
+            build_id: binding
+                .deployment
+                .deployment_artifact_identity
+                .as_str()
+                .to_string(),
         };
         let leases = RuntimeCandidateQuery.query(&view, &query);
         let selected = self
@@ -553,15 +555,14 @@ impl WsDispatchStore {
                 parent_span_id: None,
                 sampled: None,
             },
-            websocket_connection_closed:
-                BytecodeWebSocketConnectionClosedRequestFrameHeader {
-                    connection_id: record.connection_id.clone(),
-                    websocket_entry_id,
-                    gateway_entry_identity: binding.gateway_entry_identity.clone(),
-                    business_identity: record.business_identity.clone(),
-                    close_code: None,
-                    close_reason: None,
-                },
+            websocket_connection_closed: BytecodeWebSocketConnectionClosedRequestFrameHeader {
+                connection_id: record.connection_id.clone(),
+                websocket_entry_id,
+                gateway_entry_identity: binding.gateway_entry_identity.clone(),
+                business_identity: record.business_identity.clone(),
+                close_code: None,
+                close_reason: None,
+            },
             test_effects_enabled: false,
         };
         let bytes = match encode_binary_frame(&header, &[]) {
@@ -709,7 +710,11 @@ impl WsDispatchStore {
                 assembly_generation: None,
                 deployment: record.binding.deployment.clone(),
                 build_id: Some(
-                    record.binding.deployment.deployment_artifact_identity.to_string(),
+                    record
+                        .binding
+                        .deployment
+                        .deployment_artifact_identity
+                        .to_string(),
                 ),
                 gateway_entry_identity: method_binding.gateway_entry_identity.clone(),
                 ingress: BytecodeWebSocketJsonRpcIngressFrameHeader {

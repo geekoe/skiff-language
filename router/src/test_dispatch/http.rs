@@ -23,14 +23,14 @@ use serde_json::{json, Value};
 use skiff_artifact_model::IngressProtocol;
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::protocol::{
-    ResponseEndFrameHeader, ResponseEndFrameMetadata, RuntimeHttpResponseFrameHeader,
-    RUNTIME_FRAME_SCHEMA_VERSION,
-};
-use skiff_runtime_transport::protocol::{
     decode_bytecode_request_start_frame, BytecodeHttpRequestFrameHeader,
     BytecodeRequestCallerFrameHeader, BytecodeRequestDeadlineFrameHeader,
     BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
     BytecodeRequestTraceFrameHeader,
+};
+use skiff_runtime_transport::protocol::{
+    ResponseEndFrameHeader, ResponseEndFrameMetadata, RuntimeHttpResponseFrameHeader,
+    RUNTIME_FRAME_SCHEMA_VERSION,
 };
 
 use crate::http::dispatch::{
@@ -190,9 +190,7 @@ impl TestDispatchHttpHandler {
             &self.options.profile,
         )
         .map(Arc::new)
-        .map_err(|message| {
-            format!("runtime assembly test dispatch surface load failed: {message}")
-        })
+        .map_err(|message| format!("runtime assembly test dispatch surface load failed: {message}"))
     }
 }
 
@@ -287,9 +285,7 @@ fn decode_test_dispatch(bytes: &[u8]) -> Result<DecodedTestDispatch, String> {
 
 /// TS canonical-field parity for the HTTP request metadata projected into
 /// the test `request.start` frame.
-fn validate_http_request_metadata(
-    metadata: &BytecodeHttpRequestFrameHeader,
-) -> Result<(), String> {
+fn validate_http_request_metadata(metadata: &BytecodeHttpRequestFrameHeader) -> Result<(), String> {
     let canonical = |value: &str| {
         !value.is_empty() && !value.chars().any(|c| c.is_control() || c.is_whitespace())
     };
@@ -328,10 +324,15 @@ fn exact_test_dispatch_binding(
     // M4: the test dispatch routing names an exact deployment; it must be
     // currently published by the release pointer table and carry the
     // matching build id.
-    let release: Arc<dyn crate::release::ReleaseResolver> =
-        Arc::new(crate::release::StoreReleaseResolver::new(artifact_store.clone()));
+    let release: Arc<dyn crate::release::ReleaseResolver> = Arc::new(
+        crate::release::StoreReleaseResolver::new(artifact_store.clone()),
+    );
     let published = release
-        .resolve(profile, &routing.deployment.service_id, &routing.deployment.contract_version)
+        .resolve(
+            profile,
+            &routing.deployment.service_id,
+            &routing.deployment.contract_version,
+        )
         .map_err(|error| format!("runtime assembly test dispatch release resolve failed: {error}"))?
         .ok_or_else(|| {
             "runtime assembly test dispatch does not match a published release pointer".to_string()
@@ -360,9 +361,7 @@ fn exact_test_dispatch_binding(
         record
             .gateway_entries
             .get(&binding.gateway_entry_key)
-            .is_some_and(|entry| {
-                entry.gateway_entry_identity == routing.gateway_entry_identity
-            })
+            .is_some_and(|entry| entry.gateway_entry_identity == routing.gateway_entry_identity)
     });
     let Some(binding) = candidates.first() else {
         return Err(

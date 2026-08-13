@@ -153,8 +153,14 @@ impl PublishedService {
             &mut package.package_local_abi.implementation_symbols,
         ] {
             for symbol in symbols.values_mut() {
-                if let PackageLocalAbiSymbol::Callable { signature, .. } = symbol {
-                    signature.may_suspend = true;
+                if let PackageLocalAbiSymbol::Callable {
+                    callable_id,
+                    signature,
+                } = symbol
+                {
+                    if callable_id == &owner {
+                        signature.may_suspend = true;
+                    }
                 }
             }
         }

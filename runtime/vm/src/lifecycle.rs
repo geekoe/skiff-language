@@ -16,10 +16,7 @@ use skiff_runtime_linked_bytecode::{
     FunctionIndex, InstructionIndex, LinkedResourceDropPlan, LinkedValueDropPlan,
     LinkedValueTransferPlan,
 };
-use skiff_runtime_model::{
-    vm_heap::VmHeap,
-    vm_value::ValueSlot,
-};
+use skiff_runtime_model::{vm_heap::VmHeap, vm_value::ValueSlot};
 
 use crate::VmError;
 use skiff_artifact_model::Opcode;
@@ -132,9 +129,7 @@ impl<'heap> LifecycleExecutor<'heap> {
         match plan {
             LinkedValueTransferPlan::SnapshotShare { drop }
             | LinkedValueTransferPlan::MoveOnly { drop } => self.release_value(owner, drop),
-            LinkedValueTransferPlan::AffineResource { drop } => {
-                self.release_resource(owner, drop)
-            }
+            LinkedValueTransferPlan::AffineResource { drop } => self.release_resource(owner, drop),
             LinkedValueTransferPlan::ExplicitCloneLease { drop, .. } => {
                 self.release_resource(owner, drop)
             }
@@ -148,10 +143,11 @@ impl<'heap> LifecycleExecutor<'heap> {
     ) -> Result<(), LifecycleError> {
         match drop {
             LinkedValueDropPlan::Trivial => Ok(()),
-            LinkedValueDropPlan::SnapshotRelease | LinkedValueDropPlan::RecursiveShape { .. } => self
-                .heap
-                .release_snapshot(owner)
-                .map_err(LifecycleError::Heap),
+            LinkedValueDropPlan::SnapshotRelease | LinkedValueDropPlan::RecursiveShape { .. } => {
+                self.heap
+                    .release_snapshot(owner)
+                    .map_err(LifecycleError::Heap)
+            }
             LinkedValueDropPlan::NativeAdapter { .. } => Err(LifecycleError::PlanUnavailable),
         }
     }
@@ -219,11 +215,7 @@ mod tests {
     }
 
     fn record() -> ValueSlot {
-        ValueSlot::request_heap_ref(
-            VmHandle::new(1),
-            CompactTypeTag::new(7),
-            ValueFlags::new(0),
-        )
+        ValueSlot::request_heap_ref(VmHandle::new(1), CompactTypeTag::new(7), ValueFlags::new(0))
     }
 
     fn resource() -> ValueSlot {
@@ -294,9 +286,12 @@ mod tests {
         };
 
         assert!(matches!(
-            executor.share(&record, &LinkedValueTransferPlan::MoveOnly {
-                drop: LinkedValueDropPlan::Trivial,
-            }),
+            executor.share(
+                &record,
+                &LinkedValueTransferPlan::MoveOnly {
+                    drop: LinkedValueDropPlan::Trivial,
+                }
+            ),
             Err(LifecycleError::PlanUnavailable)
         ));
         assert!(matches!(
@@ -326,20 +321,14 @@ mod tests {
                 Ok(())
             }
 
-            fn snapshot_share(
-                &mut self,
-                _source: &ValueSlot,
-            ) -> Result<ValueSlot, VmHeapError> {
+            fn snapshot_share(&mut self, _source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
                 Err(VmHeapError::OperationKindMismatch {
                     operation: VmHeapOperation::SnapshotShare,
                     kind: ValueKind::RequestHeapRef,
                 })
             }
 
-            fn transfer_owner(
-                &mut self,
-                _source: &ValueSlot,
-            ) -> Result<ValueSlot, VmHeapError> {
+            fn transfer_owner(&mut self, _source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
                 Ok(*_source)
             }
 

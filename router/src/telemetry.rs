@@ -180,7 +180,10 @@ impl RouterTelemetryProducer {
             }
         }
         Some(Self {
-            config: Arc::new(RouterTelemetryConfig::from_router(config, config.telemetry.as_ref())),
+            config: Arc::new(RouterTelemetryConfig::from_router(
+                config,
+                config.telemetry.as_ref(),
+            )),
             events: Arc::new(Mutex::new(VecDeque::new())),
             next_seq: Arc::new(AtomicU64::new(1)),
             notify: Arc::new(Notify::new()),
@@ -348,10 +351,7 @@ impl RouterTelemetryFileSinkHandle {
     }
 }
 
-async fn file_sink_loop(
-    producer: RouterTelemetryProducer,
-    mut shutdown: watch::Receiver<bool>,
-) {
+async fn file_sink_loop(producer: RouterTelemetryProducer, mut shutdown: watch::Receiver<bool>) {
     let mut interval = tokio::time::interval(Duration::from_millis(
         producer.config_snapshot().flush_interval_ms.max(1),
     ));
@@ -422,7 +422,9 @@ fn file_sink_path(config: &RouterTelemetryConfig) -> std::path::PathBuf {
     match &config.file_path {
         Some(path) if path.is_absolute() => path.clone(),
         Some(path) => config.file_root.join(path),
-        None => config.file_root.join(format!("{}.jsonl", config.producer_id)),
+        None => config
+            .file_root
+            .join(format!("{}.jsonl", config.producer_id)),
     }
 }
 
@@ -589,11 +591,7 @@ where
         .map_err(|error| error.to_string())
 }
 
-pub fn task_event(
-    name: &str,
-    task_id: Option<&str>,
-    attrs: Map<String, Value>,
-) -> TelemetryEvent {
+pub fn task_event(name: &str, task_id: Option<&str>, attrs: Map<String, Value>) -> TelemetryEvent {
     let mut attrs = attrs;
     if let Some(task_id) = task_id {
         attrs.insert("taskId".to_string(), Value::String(task_id.to_string()));
@@ -689,7 +687,10 @@ async fn profile_window_loop(
 pub fn profile_window_event(window: &skiff_profiling::ProfileWindow) -> TelemetryEvent {
     let mut attrs = Map::new();
     attrs.insert("producer".to_string(), json!("router"));
-    attrs.insert("intervalStartMs".to_string(), json!(window.interval_start_ms));
+    attrs.insert(
+        "intervalStartMs".to_string(),
+        json!(window.interval_start_ms),
+    );
     attrs.insert("intervalMs".to_string(), json!(window.interval_ms));
     attrs.insert("wallMs".to_string(), json!(window.wall_ms));
     attrs.insert("cpuMs".to_string(), json!(window.cpu_ms));

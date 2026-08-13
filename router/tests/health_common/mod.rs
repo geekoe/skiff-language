@@ -238,7 +238,8 @@ pub fn capabilities_bytes(replica_id: &str) -> Vec<u8> {
             artifact_root: None,
             lazy_load: false,
             loaded_build_ids: Vec::new(),
-            platform_error_projection_registry: current_platform_error_projection_registry_ref().clone(),
+            platform_error_projection_registry: current_platform_error_projection_registry_ref()
+                .clone(),
         },
     };
     encode_binary_frame(&header, &[]).expect("capabilities encodes")

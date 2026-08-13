@@ -101,9 +101,9 @@ mod tests {
             http_common::fixture_entry_identity("items").as_str()
         );
         assert!(matches!(
-        header.routing.ingress.protocol,
-        skiff_runtime_transport::protocol::BytecodeRequestIngressProtocol::Http
-    ));
+            header.routing.ingress.protocol,
+            skiff_runtime_transport::protocol::BytecodeRequestIngressProtocol::Http
+        ));
         assert_eq!(header.routing.ingress.method, "POST");
         assert_eq!(header.routing.ingress.path, "/items");
         assert_eq!(recorded[0].payload_bytes.as_ref(), b"{\"msg\":\"hi\"}");

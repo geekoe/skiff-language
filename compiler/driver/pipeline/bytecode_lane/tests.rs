@@ -585,4 +585,3 @@ fn compile_phase_4_source(
     std::fs::remove_dir_all(temp).expect("remove temporary source root");
     result
 }
-

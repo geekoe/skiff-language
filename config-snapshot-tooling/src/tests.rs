@@ -58,14 +58,9 @@ fn cli_rejects_retired_environment_flag() {
 #[test]
 fn cli_accepts_an_explicit_empty_service_source_set() {
     let arguments = Arguments::parse(
-        [
-            "--artifact-root",
-            "/tmp/artifacts",
-            "--profile",
-            "dev",
-        ]
-        .into_iter()
-        .map(str::to_string),
+        ["--artifact-root", "/tmp/artifacts", "--profile", "dev"]
+            .into_iter()
+            .map(str::to_string),
     )
     .unwrap();
     assert!(arguments.sources.is_empty());
@@ -86,5 +81,8 @@ fn cli_rejects_retired_assembly_record_flag() {
         .map(str::to_string),
     )
     .unwrap_err();
-    assert!(error.contains("unknown option --assembly-record"), "{error}");
+    assert!(
+        error.contains("unknown option --assembly-record"),
+        "{error}"
+    );
 }

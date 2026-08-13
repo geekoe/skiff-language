@@ -80,8 +80,12 @@ pub(super) fn require_same_type(
                 owner.as_ref(),
                 actual.get(),
                 expected.get(),
-                facts.type_fact(actual).map(|fact| (fact.normalized_type(), fact.lifecycle())),
-                facts.type_fact(expected).map(|fact| (fact.normalized_type(), fact.lifecycle())),
+                facts
+                    .type_fact(actual)
+                    .map(|fact| (fact.normalized_type(), fact.lifecycle())),
+                facts
+                    .type_fact(expected)
+                    .map(|fact| (fact.normalized_type(), fact.lifecycle())),
             ),
         ));
     }

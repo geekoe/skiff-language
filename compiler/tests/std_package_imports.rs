@@ -303,7 +303,7 @@ function truncate(value: string, maxBytes: number) -> string {
                     may_pending: false,
                     pending_effect_categories: Vec::new(),
                     inout_path_effects: Vec::new(),
-},
+                },
             }
         );
         assert_eq!(
@@ -393,7 +393,7 @@ function handler(request: std.http.HttpRequest) -> std.http.HttpResponse {
                     may_pending: false,
                     pending_effect_categories: Vec::new(),
                     inout_path_effects: Vec::new(),
-},
+                },
             }
         );
         assert_eq!(

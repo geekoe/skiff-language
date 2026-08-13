@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    classify_value_lifecycle, native_value_lifecycle_registry, ContractTypeRef, InterfaceInstantiationRef,
-    LiteralIr, NativeResourceDropPlan, NativeValueAdapterRole, NativeValueDropPlan,
-    NativeValueEmbedding, NativeValueLifecycleConcrete, PackageLocalAbiSymbol, PackageRefIr,
-    PackageSchemaTypeRecord, PositionalTypeEnvironment, ResolvedPackageValueType, ResourceDropPlan,
-    TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget,
-    ValueLifecycleResolverError, ValueTransferPlan,
+    classify_value_lifecycle, native_value_lifecycle_registry, ContractTypeRef,
+    InterfaceInstantiationRef, LiteralIr, NativeResourceDropPlan, NativeValueAdapterRole,
+    NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete, PackageLocalAbiSymbol,
+    PackageRefIr, PackageSchemaTypeRecord, PositionalTypeEnvironment, ResolvedPackageValueType,
+    ResourceDropPlan, TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueLifecycleFactResolver,
+    ValueLifecyclePolicyBudget, ValueLifecycleResolverError, ValueTransferPlan,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
@@ -65,7 +65,9 @@ impl TypeLinker<'_> {
         location: BytecodeLinkLocation,
     ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
         match declared {
-            ValueTransferPlan::FromType { .. } => self.plan_for_concrete_type(concrete_type, location),
+            ValueTransferPlan::FromType { .. } => {
+                self.plan_for_concrete_type(concrete_type, location)
+            }
             concrete => self.link_transfer_plan(concrete, &BTreeMap::new(), location),
         }
     }
@@ -76,11 +78,11 @@ impl TypeLinker<'_> {
         location: BytecodeLinkLocation,
     ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
         match ty {
-            TypeRefIr::Record { .. }
-            | TypeRefIr::Union { .. }
-            | TypeRefIr::Nullable { .. } => Ok(LinkedValueTransferPlan::SnapshotShare {
-                drop: LinkedValueDropPlan::SnapshotRelease,
-            }),
+            TypeRefIr::Record { .. } | TypeRefIr::Union { .. } | TypeRefIr::Nullable { .. } => {
+                Ok(LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::SnapshotRelease,
+                })
+            }
             TypeRefIr::Literal { .. } => {
                 let resolution = native_value_lifecycle_registry()
                     .lookup(&lifecycle_registry_type(ty))
@@ -93,9 +95,7 @@ impl TypeLinker<'_> {
                     })?;
                 Ok(link_native_lifecycle(resolution.lifecycle))
             }
-            TypeRefIr::PackageSymbol { symbol }
-                if symbol.symbol_path == "std.time.Duration" =>
-            {
+            TypeRefIr::PackageSymbol { symbol } if symbol.symbol_path == "std.time.Duration" => {
                 Ok(LinkedValueTransferPlan::SnapshotShare {
                     drop: LinkedValueDropPlan::Trivial,
                 })
@@ -131,14 +131,14 @@ impl TypeLinker<'_> {
                         )
                     })?;
                 let mut resolver = ValidationLifecycleResolver::new(self.deployment(), owner);
-                let mut budget = ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64)
-                    .map_err(|error| {
-                            obligation_error(
-                                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?;
+                let mut budget =
+                    ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64).map_err(|error| {
+                        obligation_error(
+                            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                            location.clone(),
+                            error.to_string(),
+                        )
+                    })?;
                 let resolution = classify_value_lifecycle(
                     ty,
                     &PositionalTypeEnvironment::empty(),
@@ -146,14 +146,14 @@ impl TypeLinker<'_> {
                     &mut budget,
                 )
                 .map_err(|error| {
-                            obligation_error(
-                                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?;
+                    obligation_error(
+                        BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                        location.clone(),
+                        error.to_string(),
+                    )
+                })?;
                 Ok(link_native_lifecycle(resolution.lifecycle))
-            },
+            }
             TypeRefIr::Builtin { name, args }
                 if (name == "Exception" || name == "CatchResult") && !args.is_empty() =>
             {
@@ -167,9 +167,7 @@ impl TypeLinker<'_> {
                     drop: LinkedValueDropPlan::SnapshotRelease,
                 })
             }
-            TypeRefIr::Builtin { name, args }
-                if name == "Map" && args.len() == 2 =>
-            {
+            TypeRefIr::Builtin { name, args } if name == "Map" && args.len() == 2 => {
                 self.plan_for_concrete_type(&args[0], location.clone())?;
                 self.plan_for_concrete_type(&args[1], location.clone())?;
                 Ok(LinkedValueTransferPlan::SnapshotShare {
@@ -200,9 +198,7 @@ impl TypeLinker<'_> {
             TypeRefIr::Builtin { args, .. } => {
                 args.iter().find_map(Self::first_package_symbol_package_id)
             }
-            TypeRefIr::Nullable { inner } => {
-                Self::first_package_symbol_package_id(inner)
-            }
+            TypeRefIr::Nullable { inner } => Self::first_package_symbol_package_id(inner),
             TypeRefIr::Union { items } => {
                 items.iter().find_map(Self::first_package_symbol_package_id)
             }
@@ -216,25 +212,21 @@ impl TypeLinker<'_> {
         }
     }
 
-fn first_publication_module(ty: &TypeRefIr) -> Option<&str> {
-    match ty {
-        TypeRefIr::PublicationType { module_path, .. } => Some(module_path.as_str()),
-        TypeRefIr::Builtin { args, .. } => {
-            args.iter().find_map(Self::first_publication_module)
+    fn first_publication_module(ty: &TypeRefIr) -> Option<&str> {
+        match ty {
+            TypeRefIr::PublicationType { module_path, .. } => Some(module_path.as_str()),
+            TypeRefIr::Builtin { args, .. } => args.iter().find_map(Self::first_publication_module),
+            TypeRefIr::Nullable { inner } => Self::first_publication_module(inner),
+            TypeRefIr::Union { items } => items.iter().find_map(Self::first_publication_module),
+            TypeRefIr::AppliedNominal { arguments, .. } => {
+                arguments.iter().find_map(Self::first_publication_module)
+            }
+            TypeRefIr::Record { fields } => {
+                fields.values().find_map(Self::first_publication_module)
+            }
+            _ => None,
         }
-        TypeRefIr::Nullable { inner } => Self::first_publication_module(inner),
-        TypeRefIr::Union { items } => {
-            items.iter().find_map(Self::first_publication_module)
-        }
-        TypeRefIr::AppliedNominal { arguments, .. } => {
-            arguments.iter().find_map(Self::first_publication_module)
-        }
-        TypeRefIr::Record { fields } => {
-            fields.values().find_map(Self::first_publication_module)
-        }
-        _ => None,
     }
-}
 
     /// Eliminates a constant-local `FromType` only after checking that it names
     /// the exact linked type and that the authoritative lifecycle is an
@@ -260,7 +252,8 @@ fn first_publication_module(ty: &TypeRefIr) -> Option<&str> {
             if actual != expected {
                 return Err(constant_plan_error(
                     location,
-                    "std.time.Duration frozen constant plan is not the exact trivial snapshot".to_string(),
+                    "std.time.Duration frozen constant plan is not the exact trivial snapshot"
+                        .to_string(),
                 ));
             }
             return Ok(actual);
@@ -360,10 +353,7 @@ struct ValidationLifecycleResolver<'a> {
 }
 
 impl<'a> ValidationLifecycleResolver<'a> {
-    fn new(
-        deployment: &'a HydratedDeploymentBytecode,
-        owner: &'a HydratedBytecodePackage,
-    ) -> Self {
+    fn new(deployment: &'a HydratedDeploymentBytecode, owner: &'a HydratedBytecodePackage) -> Self {
         Self { deployment, owner }
     }
 }
@@ -381,7 +371,9 @@ impl ValueLifecycleFactResolver for ValidationLifecycleResolver<'_> {
                 .find(|package| package.reference().package_id == *package_id)
                 .ok_or_else(|| resolver_error("package owner absent"))?,
             PackageRefIr::Dependency { .. } => {
-                return Err(resolver_error("package symbol retains an unresolved dependency alias"));
+                return Err(resolver_error(
+                    "package symbol retains an unresolved dependency alias",
+                ));
             }
         };
         let resolved = owner
@@ -389,16 +381,28 @@ impl ValueLifecycleFactResolver for ValidationLifecycleResolver<'_> {
             .package_local_abi
             .implementation_symbols
             .get(&symbol.symbol_path)
-            .or_else(|| owner.artifact().package_local_abi.public_symbols.get(&symbol.symbol_path))
+            .or_else(|| {
+                owner
+                    .artifact()
+                    .package_local_abi
+                    .public_symbols
+                    .get(&symbol.symbol_path)
+            })
             .ok_or_else(|| resolver_error("package symbol absent"))?;
-        let PackageLocalAbiSymbol::Type { descriptor, type_params, .. } = resolved else {
+        let PackageLocalAbiSymbol::Type {
+            descriptor,
+            type_params,
+            ..
+        } = resolved
+        else {
             return Err(resolver_error("package symbol is not a type"));
         };
         let location = BytecodeLinkLocation::Package {
             package: Box::new(owner.reference().clone()),
         };
-        let descriptor = normalize_resolved_descriptor(self.deployment, owner, descriptor, &location)
-            .map_err(|error| resolver_error(error.to_string()))?;
+        let descriptor =
+            normalize_resolved_descriptor(self.deployment, owner, descriptor, &location)
+                .map_err(|error| resolver_error(error.to_string()))?;
         Ok(ResolvedPackageValueType {
             type_parameters: type_params.clone(),
             descriptor,
@@ -415,7 +419,9 @@ impl ValueLifecycleFactResolver for ValidationLifecycleResolver<'_> {
             .artifact()
             .bytecode_schema_records
             .get(package_schema_type_id)
-            .filter(|record| record.package_id == package_id && record.stable_schema_key == stable_schema_key)
+            .filter(|record| {
+                record.package_id == package_id && record.stable_schema_key == stable_schema_key
+            })
             .cloned()
             .ok_or_else(|| resolver_error("schema record absent"))
     }
@@ -445,7 +451,8 @@ impl ValueLifecycleFactResolver for ValidationLifecycleResolver<'_> {
         else {
             return Err(resolver_error("contract interface is not PackageSchema"));
         };
-        let record = self.resolve_package_schema(package_id, stable_schema_key, package_schema_type_id)?;
+        let record =
+            self.resolve_package_schema(package_id, stable_schema_key, package_schema_type_id)?;
         if !matches!(
             record.canonical_descriptor.descriptor,
             skiff_artifact_model::ContractTypeDescriptor::CallbackInterface { .. }
@@ -473,20 +480,18 @@ fn normalize_resolved_descriptor(
                 .map(|(name, ty)| Ok((name.clone(), normalize_ty(ty)?)))
                 .collect::<Result<_, BytecodeLinkError>>()?,
         },
-        TypeDescriptorIr::Representation { representation } => {
-            TypeDescriptorIr::Representation {
-                representation: normalize_ty(representation)?,
-            }
-        }
+        TypeDescriptorIr::Representation { representation } => TypeDescriptorIr::Representation {
+            representation: normalize_ty(representation)?,
+        },
         TypeDescriptorIr::Union { branches } => TypeDescriptorIr::Union {
             branches: branches
                 .iter()
                 .map(|branch| match branch {
-                    skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
-                        nominal_type,
-                    } => Ok(skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
-                        nominal_type: normalize_ty(nominal_type)?,
-                    }),
+                    skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal { nominal_type } => {
+                        Ok(skiff_artifact_model::NamedUnionBranchIr::ConcreteNominal {
+                            nominal_type: normalize_ty(nominal_type)?,
+                        })
+                    }
                     skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
                         payload_type,
                         discriminator_field,
@@ -530,11 +535,14 @@ fn is_canonical_sleep_duration_type(ty: &TypeRefIr) -> bool {
                         if package_id == "skiff.run/std"
                 )
         }
-        TypeRefIr::AppliedNominal { base, arguments } => arguments.is_empty() && matches!(
-            base,
-            skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol }
-                if is_canonical_sleep_duration_type(&TypeRefIr::PackageSymbol { symbol: symbol.clone() })
-        ),
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            arguments.is_empty()
+                && matches!(
+                    base,
+                    skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol }
+                        if is_canonical_sleep_duration_type(&TypeRefIr::PackageSymbol { symbol: symbol.clone() })
+                )
+        }
         _ => false,
     }
 }

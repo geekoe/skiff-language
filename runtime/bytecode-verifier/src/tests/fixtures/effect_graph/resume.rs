@@ -9,7 +9,9 @@ use super::{identities::function_key, EffectGraphCallKind, EffectGraphFunction};
 
 pub(super) const fn max_operand_depth(kind: EffectGraphCallKind) -> u32 {
     match kind {
-        EffectGraphCallKind::Resume | EffectGraphCallKind::StreamProducer | EffectGraphCallKind::StreamRead => 1,
+        EffectGraphCallKind::Resume
+        | EffectGraphCallKind::StreamProducer
+        | EffectGraphCallKind::StreamRead => 1,
         EffectGraphCallKind::StreamReadTwice => 2,
         EffectGraphCallKind::Ordinary | EffectGraphCallKind::Tail | EffectGraphCallKind::InOut => 0,
     }
@@ -149,7 +151,11 @@ fn push_linked_site(
     );
 }
 
-pub(super) fn linked_emit_stream(descriptor: u32, target: u32, artifact_pc: u32) -> LinkedInstruction {
+pub(super) fn linked_emit_stream(
+    descriptor: u32,
+    target: u32,
+    artifact_pc: u32,
+) -> LinkedInstruction {
     LinkedInstruction::new(
         skiff_artifact_model::Opcode::EmitStream,
         Box::new([descriptor]),
@@ -262,8 +268,6 @@ pub(super) fn linked_states(
         .map(|instruction| program_point(instruction as u32, Box::new([]), kind))
         .collect()
 }
-
-
 
 fn program_point(
     instruction: u32,

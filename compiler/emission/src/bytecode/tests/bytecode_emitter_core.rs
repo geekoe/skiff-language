@@ -2,24 +2,23 @@
 mod tests {
     use std::collections::BTreeMap;
 
-    use skiff_artifact_model::{
-        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssignTargetIr,
-        BoxSourceIr, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodeRelocation, CallIr,
-        CallTargetIr,
-        CallableEffectSummary, ContractOperationId, DbBodyIr, DbOpKindIr, DbOperandRole,
-        DbOperationIr, DbOperationKind, DbTargetIr, ExprIr, ExprRefIr, ExternalRefTable,
-        FileIrUnit, FunctionTypeParamIr,
-        InstructionSourceSite, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
-        LiteralIr, NativeTarget, PackageCallableId, PatternIr, RemoteOperationSlotPlanIr,
-        RemoteOperationTablePlanIr, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
-        SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
-        TypeDescriptorIr, TypeRefIr, ResourceDropPlan, ValueDropPlan, ValueTransferPlan,
-    };
     use crate::bytecode::{
         emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact,
         plans::derive_bytecode_value_transfer_plans_unchecked as derive_bytecode_value_transfer_plans,
     };
     use crate::{BytecodeValueTransferPlans, FunctionValueTransferPlans};
+    use skiff_artifact_model::{
+        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssignTargetIr,
+        BoxSourceIr, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodeRelocation, CallIr,
+        CallTargetIr, CallableEffectSummary, ContractOperationId, DbBodyIr, DbOpKindIr,
+        DbOperandRole, DbOperationIr, DbOperationKind, DbTargetIr, ExprIr, ExprRefIr,
+        ExternalRefTable, FileIrUnit, FunctionTypeParamIr, InstructionSourceSite,
+        InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, NativeTarget,
+        PackageCallableId, PatternIr, RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr,
+        ResourceDropPlan, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
+        SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
+        TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    };
     use skiff_compiler_lowering::{
         mir::{
             liveness::compute_liveness, MirBlock, MirExecutableKind, MirExpression,
@@ -616,9 +615,7 @@ mod tests {
         assert_eq!(
             opcodes
                 .iter()
-                .filter(
-                    |opcode| **opcode == skiff_artifact_model::bytecode::Opcode::MapBuilderPut
-                )
+                .filter(|opcode| **opcode == skiff_artifact_model::bytecode::Opcode::MapBuilderPut)
                 .count(),
             1
         );
@@ -662,12 +659,9 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("maps", Vec::new(), ExternalRefTable::default(), function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("maps::empty", &[], &map_ty),
-        )
-        .expect("empty map body emits");
+        let artifact =
+            emit_bytecode_artifact(&[unit], &[bundle], &plans("maps::empty", &[], &map_ty))
+                .expect("empty map body emits");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("empty map body must validate");
         let function = view
@@ -1518,7 +1512,11 @@ mod tests {
         })
         .expect("stream producer plan derives");
         assert!(
-            plans.function("streams::produce").unwrap().result_plans.is_empty(),
+            plans
+                .function("streams::produce")
+                .unwrap()
+                .result_plans
+                .is_empty(),
             "stream producer body return arity is zero"
         );
 
@@ -1853,12 +1851,8 @@ mod tests {
             },
         );
         function.liveness = compute_liveness(&function).expect("ValueBlock liveness computes");
-        let (unit, bundle) = mir_and_bundle(
-            "blocks",
-            Vec::new(),
-            ExternalRefTable::default(),
-            function,
-        );
+        let (unit, bundle) =
+            mir_and_bundle("blocks", Vec::new(), ExternalRefTable::default(), function);
         let artifact = emit_bytecode_artifact(
             &[unit],
             &[bundle],
@@ -1910,10 +1904,17 @@ mod tests {
                 instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::StoreSlot
             })
             .collect::<Vec<_>>();
-        assert_eq!(stores.len(), 2, "both ternary branches write the result slot");
+        assert_eq!(
+            stores.len(),
+            2,
+            "both ternary branches write the result slot"
+        );
         for (index, _) in stores {
             let jump = &function.instructions[index + 1];
-            assert_eq!(jump.descriptor.kind, skiff_artifact_model::bytecode::Opcode::Jump);
+            assert_eq!(
+                jump.descriptor.kind,
+                skiff_artifact_model::bytecode::Opcode::Jump
+            );
             assert_eq!(branch_target(jump), completion_jump.pc);
         }
     }
@@ -1921,10 +1922,7 @@ mod tests {
     #[test]
     fn db_operation_emits_one_structured_host_insert() {
         let record_ty = TypeRefIr::Record {
-            fields: BTreeMap::from([(
-                "value".to_string(),
-                TypeRefIr::builtin("number"),
-            )]),
+            fields: BTreeMap::from([("value".to_string(), TypeRefIr::builtin("number"))]),
         };
         let operation = DbOperationIr {
             op: DbOpKindIr::Insert,
@@ -2191,12 +2189,9 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("config", Vec::new(), ExternalRefTable::default(), function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("config::load", &[], &string_ty),
-        )
-        .expect("config.require host call emits");
+        let artifact =
+            emit_bytecode_artifact(&[unit], &[bundle], &plans("config::load", &[], &string_ty))
+                .expect("config.require host call emits");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("config.require artifact validates");
         let function = view

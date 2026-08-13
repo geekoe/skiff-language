@@ -15,8 +15,16 @@ impl DeploymentLinker<'_> {
         let mut constant_count = 0_u64;
         let mut root_count = 0_u64;
         let mut node_count = 0_u64;
-        for package in self.deployment.packages().values().filter(|package| package.has_bytecode()) {
-            let view = package.bytecode().ok_or_else(|| unavailable(self.package_location(package)))?.view();
+        for package in self
+            .deployment
+            .packages()
+            .values()
+            .filter(|package| package.has_bytecode())
+        {
+            let view = package
+                .bytecode()
+                .ok_or_else(|| unavailable(self.package_location(package)))?
+                .view();
             let pools = view.pools();
             let location = self.package_location(package);
             let package_constants = count(pools.constants.len(), location.clone())?;
@@ -62,7 +70,12 @@ impl DeploymentLinker<'_> {
             .add_image_table(root_count, deployment_location.clone())?;
         self.tracker
             .add_image_table(node_count, deployment_location)?;
-        for package in self.deployment.packages().values().filter(|package| package.has_bytecode()) {
+        for package in self
+            .deployment
+            .packages()
+            .values()
+            .filter(|package| package.has_bytecode())
+        {
             self.require_complete_literal_package(package)?;
         }
         Ok(())
@@ -72,7 +85,10 @@ impl DeploymentLinker<'_> {
         &self,
         package: &HydratedBytecodePackage,
     ) -> Result<(), BytecodeLinkError> {
-        let view = package.bytecode().ok_or_else(|| unavailable(self.package_location(package)))?.view();
+        let view = package
+            .bytecode()
+            .ok_or_else(|| unavailable(self.package_location(package)))?
+            .view();
         let pools = view.pools();
         for (position, entry) in pools.constants.iter().enumerate() {
             let _ = artifact_constant_index(
@@ -142,7 +158,14 @@ pub(super) fn source_type(
             format!("constant type row {type_ref} does not fit usize"),
         )
     })?;
-    match package.bytecode().ok_or_else(|| unavailable(location.clone()))?.view().pools().types.get(position) {
+    match package
+        .bytecode()
+        .ok_or_else(|| unavailable(location.clone()))?
+        .view()
+        .pools()
+        .types
+        .get(position)
+    {
         Some(BytecodePoolEntry::TypeRef { ty }) => Ok(ty),
         Some(_) => Err(constant_error(
             location,

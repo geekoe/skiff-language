@@ -6,9 +6,8 @@ use skiff_artifact_model::{
     PackageRefIr, TypeRefIr, ValidatedFunction,
 };
 use skiff_runtime_linked_bytecode::{
-    ArtifactFunctionKey, FrameSlotIndex, FunctionIndex,
-    LinkedInstruction, LinkedInstructionTarget, LinkedResolvedOperand,
-    SpecializationKey, SwitchTableIndex,
+    ArtifactFunctionKey, FrameSlotIndex, FunctionIndex, LinkedInstruction, LinkedInstructionTarget,
+    LinkedResolvedOperand, SpecializationKey, SwitchTableIndex,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -485,7 +484,8 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                     )
                 }),
             BytecodeRelocation::InterfaceRequirementRef { interface } => {
-                let kind = if instruction.descriptor.kind == skiff_artifact_model::Opcode::InvokeCallback
+                let kind = if instruction.descriptor.kind
+                    == skiff_artifact_model::Opcode::InvokeCallback
                 {
                     InterfaceKind::Callback
                 } else {
@@ -511,7 +511,8 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                     unsatisfied(
                         BytecodeLinkObligation::RelocationResolution,
                         location,
-                        "local interface target is absent from the linked dispatch table".to_string(),
+                        "local interface target is absent from the linked dispatch table"
+                            .to_string(),
                     )
                 }),
             BytecodeRelocation::RemoteInterfaceRef { interface } => self
@@ -522,7 +523,8 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                     unsatisfied(
                         BytecodeLinkObligation::RelocationResolution,
                         location,
-                        "remote interface target is absent from the linked dispatch table".to_string(),
+                        "remote interface target is absent from the linked dispatch table"
+                            .to_string(),
                     )
                 }),
             BytecodeRelocation::SyntheticCallbackRef { function_key } => self
@@ -557,7 +559,8 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                         unsatisfied(
                             BytecodeLinkObligation::RelocationResolution,
                             location,
-                            "host effect target is absent from the linked dispatch table".to_string(),
+                            "host effect target is absent from the linked dispatch table"
+                                .to_string(),
                         )
                     })
             }
@@ -592,12 +595,12 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                     location,
                 )
                 .map(LinkedInstructionTarget::Shape),
-            BytecodeRelocation::FrozenConstantRef { .. } => Err(
-                BytecodeLinkError::ImplementationUnavailable {
+            BytecodeRelocation::FrozenConstantRef { .. } => {
+                Err(BytecodeLinkError::ImplementationUnavailable {
                     obligation: BytecodeLinkObligation::ConstantInitializationPlan,
                     location,
-                },
-            ),
+                })
+            }
         }
     }
 }

@@ -160,7 +160,10 @@ fn duration_metric_event_is_metric_shaped_with_context_fields() {
     assert_eq!(event.trace_id.as_deref(), Some("trace"));
     assert_eq!(event.target.as_deref(), Some("svc.main.run"));
     assert_eq!(event.duration_ms, None);
-    assert!(event.span_id.is_none(), "metric events must not carry a span id");
+    assert!(
+        event.span_id.is_none(),
+        "metric events must not carry a span id"
+    );
     let attrs = event.attrs.as_ref().expect("metric attrs must be present");
     assert_eq!(attrs["durationMs"], 12.5);
     assert_eq!(attrs["outcome"], "ok");

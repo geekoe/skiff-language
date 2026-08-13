@@ -10,9 +10,9 @@ use crate::error as runtime_error;
 use bytes::Bytes;
 use promoted_runtime::{
     capability::{
-        NativeActorCapability, NativeCapabilityFuture, NativeConfigCapability,
-        NativeDbCapability, NativeFileCapability, NativeFileCapabilityBundle,
-        NativeFileChunkSource, NativeFileSourceStreamCapability, NativeHttpClientCapability,
+        NativeActorCapability, NativeCapabilityFuture, NativeConfigCapability, NativeDbCapability,
+        NativeFileCapability, NativeFileCapabilityBundle, NativeFileChunkSource,
+        NativeFileSourceStreamCapability, NativeHttpClientCapability,
         NativeHttpResponseStreamCapability, NativeTelemetryCapability, NativeTimeCapability,
         NativeWebsocketCapability,
     },
@@ -130,10 +130,7 @@ impl NativeDbCapability for RuntimeNativeDbCapabilityContext {
         let target = operation.target.type_name.clone();
         let store = self
             .db_context
-            .require_store(
-                &target,
-                "serviceDb is not configured for std.db.operation",
-            )
+            .require_store(&target, "serviceDb is not configured for std.db.operation")
             .map_err(|error| runtime_error_to_native(error.into()))?;
         let value = args.into_iter().next().ok_or_else(|| {
             RuntimeError::Decode(

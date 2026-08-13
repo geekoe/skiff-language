@@ -98,8 +98,7 @@ pub fn package_actor_routing_input(
         .map_err(|error| {
             invalid_input(format!(
                 "actor routing projection: read package artifact for {}@{}: {error}",
-                artifact.package_id,
-                artifact.package_version
+                artifact.package_id, artifact.package_version
             ))
         })?;
     let mut actor_inputs = Vec::new();
@@ -109,8 +108,7 @@ pub fn package_actor_routing_input(
             .map_err(|error| {
                 invalid_input(format!(
                     "actor routing projection: read File IR record for package {}@{}: {error}",
-                    artifact.package_id,
-                    artifact.package_version
+                    artifact.package_id, artifact.package_version
                 ))
             })?;
         collect_actor_inputs(&unit, &mut actor_inputs);
@@ -176,13 +174,13 @@ pub fn project_assembly_actor_routing_from_inputs(
         .map_err(projection_error)?;
         methods.extend(projection.methods);
     }
-    let projection = ActorRoutingProjection::new(
-        ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(),
-        methods,
-    )
-    .map_err(projection_error)?;
+    let projection =
+        ActorRoutingProjection::new(ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION.to_string(), methods)
+            .map_err(projection_error)?;
     serde_json::to_value(projection).map_err(|error| {
-        invalid_input(format!("actor routing projection: encode projection: {error}"))
+        invalid_input(format!(
+            "actor routing projection: encode projection: {error}"
+        ))
     })
 }
 

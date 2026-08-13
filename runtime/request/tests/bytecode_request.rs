@@ -700,9 +700,7 @@ mod tests {
                 panic!("completed drive must freeze a Started owner inventory");
             }
         }
-        let response = driven
-            .result
-            .expect("scalar gateway request must complete");
+        let response = driven.result.expect("scalar gateway request must complete");
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&response_payload(response)).unwrap(),
             serde_json::json!(3.0)

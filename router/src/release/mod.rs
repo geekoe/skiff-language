@@ -67,24 +67,20 @@ impl ReleaseResolver for StoreReleaseResolver {
         if !base.exists() {
             return Ok(deployments);
         }
-        let services = std::fs::read_dir(&base).map_err(|error| {
-            format!("scan release pointers for {profile}: {error}")
-        })?;
+        let services = std::fs::read_dir(&base)
+            .map_err(|error| format!("scan release pointers for {profile}: {error}"))?;
         for service in services {
-            let service = service.map_err(|error| {
-                format!("scan release pointers for {profile}: {error}")
-            })?;
+            let service =
+                service.map_err(|error| format!("scan release pointers for {profile}: {error}"))?;
             let service_dir = service.path();
             if !service_dir.is_dir() {
                 continue;
             }
-            let versions = std::fs::read_dir(&service_dir).map_err(|error| {
-                format!("scan release pointers for {profile}: {error}")
-            })?;
+            let versions = std::fs::read_dir(&service_dir)
+                .map_err(|error| format!("scan release pointers for {profile}: {error}"))?;
             for version in versions {
-                let version = version.map_err(|error| {
-                    format!("scan release pointers for {profile}: {error}")
-                })?;
+                let version = version
+                    .map_err(|error| format!("scan release pointers for {profile}: {error}"))?;
                 let version_file = version.path();
                 if version_file.extension().and_then(|ext| ext.to_str()) != Some("json") {
                     continue;
@@ -93,21 +89,23 @@ impl ReleaseResolver for StoreReleaseResolver {
                     service_dir
                         .file_name()
                         .and_then(|name| name.to_str())
-                        .ok_or_else(|| "release pointer service segment is not UTF-8".to_string())?,
+                        .ok_or_else(|| {
+                            "release pointer service segment is not UTF-8".to_string()
+                        })?,
                 );
                 let version = decode_segment(
                     version_file
                         .file_stem()
                         .and_then(|name| name.to_str())
-                        .ok_or_else(|| "release pointer version segment is not UTF-8".to_string())?,
+                        .ok_or_else(|| {
+                            "release pointer version segment is not UTF-8".to_string()
+                        })?,
                 );
                 let pointer = self
                     .artifact_store
                     .read_release_pointer(profile, &service_id, &version)
                     .map_err(|error| {
-                        format!(
-                            "read release pointer {profile} {service_id} {version}: {error}"
-                        )
+                        format!("read release pointer {profile} {service_id} {version}: {error}")
                     })?;
                 if let Some(pointer) = pointer {
                     deployments.push(pointer.deployment);
@@ -140,7 +138,9 @@ fn profile_segment(profile: &str) -> Result<String, String> {
             )
         })
     {
-        return Err(format!("profile {profile:?} is not a valid release pointer segment"));
+        return Err(format!(
+            "profile {profile:?} is not a valid release pointer segment"
+        ));
     }
     Ok(profile.to_string())
 }

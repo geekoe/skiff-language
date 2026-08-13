@@ -403,14 +403,13 @@ fn prove_exact_remote_call(
                     return Err(unavailable(location));
                 }
                 boundary => pending_category(boundary)
-                    .is_some_and(|expected| {
-                        effects.pending_effect_categories.contains(&expected)
-                    }),
+                    .is_some_and(|expected| effects.pending_effect_categories.contains(&expected)),
             };
             if !control_flow_and_calls.proves_pending_resume(caller_index, instruction, mode)
                 || !category_ok
             {
-                let resume_ok = control_flow_and_calls.proves_pending_resume(caller_index, instruction, mode);
+                let resume_ok =
+                    control_flow_and_calls.proves_pending_resume(caller_index, instruction, mode);
                 let categories = &caller.effects().pending_effect_categories;
                 return Err(violation_error(
                     location,
@@ -436,9 +435,7 @@ fn pending_category(mode: PendingMode) -> Option<PendingEffectCategory> {
         PendingMode::InterfaceBoundary | PendingMode::CallbackBoundary => {
             Some(PendingEffectCategory::InterfaceCall)
         }
-        PendingMode::HostEffect | PendingMode::StreamRead | PendingMode::StreamBackpressure => {
-            None
-        }
+        PendingMode::HostEffect | PendingMode::StreamRead | PendingMode::StreamBackpressure => None,
     }
 }
 

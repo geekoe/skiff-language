@@ -718,8 +718,12 @@ mod tests {
             lease_expires_at: 15_000,
             ..fence.clone()
         };
-        let outcome =
-            registry.renew(&key, &stale_continuation, DEFAULT_OWNER_LEASE_TTL_MS, 10_000);
+        let outcome = registry.renew(
+            &key,
+            &stale_continuation,
+            DEFAULT_OWNER_LEASE_TTL_MS,
+            10_000,
+        );
         assert!(
             matches!(outcome, Err(OwnershipError::FenceMismatch)),
             "a continuation that cannot prove the exact build passed owner \

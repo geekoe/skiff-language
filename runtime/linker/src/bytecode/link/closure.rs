@@ -145,13 +145,13 @@ impl<'a> DeploymentLinker<'a> {
                     location: self.deployment_location(),
                 })?;
                 let Some(bytecode) = package.bytecode() else {
-            return Err(unsatisfied(
-                BytecodeLinkObligation::ExactPackageClosure,
-                self.package_location(package),
-                "type-only package cannot provide bytecode provenance".to_string(),
-            ));
-        };
-        let view = bytecode.view();
+                    return Err(unsatisfied(
+                        BytecodeLinkObligation::ExactPackageClosure,
+                        self.package_location(package),
+                        "type-only package cannot provide bytecode provenance".to_string(),
+                    ));
+                };
+                let view = bytecode.view();
                 let authorities = LinkedBytecodeAuthorityPins::new(
                     view.native_value_lifecycle_registry().clone(),
                     view.value_lifecycle_policy().clone(),

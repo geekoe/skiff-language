@@ -1,16 +1,12 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use skiff_artifact_model::{
-    DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef,
-};
+use skiff_artifact_model::{DeploymentArtifactIdentity, DeploymentRevision, ServiceDeploymentRef};
 use skiff_runtime_config_snapshot::{
     RuntimeConfigSnapshotStore, RUNTIME_CONFIG_SNAPSHOT_RECORD_SCHEMA_VERSION,
 };
 use tempfile::tempdir;
 
-use super::{
-    produce_runtime_config_snapshot, ConfigSnapshotProductionInput, ServiceConfigSource,
-};
+use super::{produce_runtime_config_snapshot, ConfigSnapshotProductionInput, ServiceConfigSource};
 
 #[test]
 fn empty_deployments_produce_and_securely_publish_an_empty_snapshot() {

@@ -346,7 +346,10 @@ fn db_operation_reference_round_trips_camel_case_without_metadata_strings() {
         serde_json::json!(["objectFields"])
     );
     assert_eq!(value["dbOperation"]["resultType"]["kind"], "builtin");
-    assert_eq!(value["dbOperation"]["resultPlans"][0]["kind"], "snapshotShare");
+    assert_eq!(
+        value["dbOperation"]["resultPlans"][0]["kind"],
+        "snapshotShare"
+    );
     let decoded: HostEffectReference =
         serde_json::from_value(value).expect("decode DB host effect");
     assert_eq!(decoded, effect);
@@ -354,14 +357,16 @@ fn db_operation_reference_round_trips_camel_case_without_metadata_strings() {
 
 #[test]
 fn db_operation_wire_rejects_unsupported_ops_and_roles() {
-    assert!(serde_json::from_value::<crate::bytecode::dto::DbOperationKind>(
-        serde_json::json!("update")
-    )
-    .is_err());
-    assert!(serde_json::from_value::<crate::bytecode::dto::DbOperandRole>(
-        serde_json::json!("query")
-    )
-    .is_err());
+    assert!(
+        serde_json::from_value::<crate::bytecode::dto::DbOperationKind>(serde_json::json!(
+            "update"
+        ))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<crate::bytecode::dto::DbOperandRole>(serde_json::json!("query"))
+            .is_err()
+    );
 }
 
 #[test]

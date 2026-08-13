@@ -38,9 +38,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use serde_json::Value;
-use skiff_artifact_model::{
-    GatewayEntryIdentity, IngressProtocol, RuntimeConfigSnapshotRef,
-};
+use skiff_artifact_model::{GatewayEntryIdentity, IngressProtocol, RuntimeConfigSnapshotRef};
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingProjection, ACTOR_ROUTING_PROJECTION_SCHEMA_VERSION,

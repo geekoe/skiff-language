@@ -227,7 +227,10 @@ mod tests {
             hydrated_package.artifact().bytecode.as_ref(),
             Some(&bytecode_ref)
         );
-        assert_eq!(hydrated_package.bytecode().unwrap().reference(), &bytecode_ref);
+        assert_eq!(
+            hydrated_package.bytecode().unwrap().reference(),
+            &bytecode_ref
+        );
         assert_eq!(
             hydrated_package.platform_error_projection_registry(),
             skiff_artifact_model::current_platform_error_projection_registry_ref()

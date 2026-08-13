@@ -1,5 +1,5 @@
-use serde_json::Value;
 use crate::{execution_budget::ExecutionStats, ExecutionBudget, ResponseError};
+use serde_json::Value;
 
 pub fn response_error_to_telemetry_map(error: &ResponseError) -> serde_json::Map<String, Value> {
     let mut map = serde_json::Map::new();

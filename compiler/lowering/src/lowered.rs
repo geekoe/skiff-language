@@ -17,9 +17,7 @@ use crate::file_ir::{
     ServiceSymbolRef, TypeDescriptorIr, TypeLinkTargetIr, TypeRefIr,
 };
 use skiff_artifact_identity::type_ref_abi_key;
-use skiff_artifact_model::{
-    ContractTypeDescriptor, NamedUnionBranchIr, NominalTypeRefBaseIr,
-};
+use skiff_artifact_model::{ContractTypeDescriptor, NamedUnionBranchIr, NominalTypeRefBaseIr};
 use skiff_compiler_core::{
     id::SKIFF_STD_PUBLICATION_ID, source_role::PublicationSourceRole,
     type_ref::contract_type_ref_to_ir,
@@ -213,7 +211,10 @@ impl LoweredPackage {
                         (alias.to_string(), record.stable_schema_key.clone()),
                         fields.clone(),
                     ),
-                    ((package_id.clone(), symbol_path.to_string()), fields.clone()),
+                    (
+                        (package_id.clone(), symbol_path.to_string()),
+                        fields.clone(),
+                    ),
                     ((package_id, record.stable_schema_key.clone()), fields),
                 ])
             })

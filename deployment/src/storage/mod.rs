@@ -12,8 +12,7 @@ pub use records::ResolvedPackageSchema;
 mod pointers;
 
 pub use pointers::{
-    PackageArtifactPointer, ReleasePointer, ServiceContractPointer,
-    ServiceDeploymentPointer,
+    PackageArtifactPointer, ReleasePointer, ServiceContractPointer, ServiceDeploymentPointer,
 };
 
 #[cfg(test)]

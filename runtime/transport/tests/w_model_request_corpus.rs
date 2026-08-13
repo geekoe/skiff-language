@@ -16,6 +16,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
+    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
+};
+use skiff_runtime_transport::protocol::{
     decode_request_cancel_frame, decode_response_chunk_frame, decode_response_end_frame,
     decode_response_start_frame, decode_typed_binary_frame, encode_binary_frame,
     encode_request_cancel_frame, encode_response_chunk_frame, encode_response_end_frame,
@@ -25,9 +28,6 @@ use skiff_runtime_transport::protocol::{
     ResponseStartFrameHeader, REQUEST_CANCEL_FRAME_TYPE, REQUEST_START_FRAME_TYPE,
     RESPONSE_CHUNK_FRAME_TYPE, RESPONSE_END_FRAME_TYPE, RESPONSE_ERROR_FRAME_TYPE,
     RESPONSE_START_FRAME_TYPE, RUNTIME_FRAME_SCHEMA_VERSION,
-};
-use skiff_runtime_transport::protocol::{
-    decode_bytecode_request_start_frame, BytecodeRequestStartFrameWireHeader,
 };
 
 const REQUIRED_FRAMES: [&str; 12] = [
@@ -225,13 +225,10 @@ mod tests {
             let expected_payload = decode_hex(&entry.payload_hex);
             let reencoded = match entry.decode_as.as_str() {
                 "RequestStartHttpUnary" | "RequestStartHttpStream" => {
-                    let (header, payload) =
-                        decode_bytecode_request_start_frame(&expected_bytes)
-                            .unwrap_or_else(|error| panic!("{name} start decode: {error}"));
+                    let (header, payload) = decode_bytecode_request_start_frame(&expected_bytes)
+                        .unwrap_or_else(|error| panic!("{name} start decode: {error}"));
                     let mode = match &header {
-                        BytecodeRequestStartFrameWireHeader::Http(http) => {
-                            http.mode.as_str()
-                        }
+                        BytecodeRequestStartFrameWireHeader::Http(http) => http.mode.as_str(),
                         other => panic!("{name} must decode as HTTP start, got {other:?}"),
                     };
                     let expected_mode = if entry.decode_as == "RequestStartHttpUnary" {

@@ -1164,7 +1164,9 @@ impl<'a> FunctionEmitter<'a> {
         };
         let pool = self.image.add_literal_constant(
             self.unit.module_path.as_str(),
-            &LiteralIr::Number { value: value.clone() },
+            &LiteralIr::Number {
+                value: value.clone(),
+            },
             &expression.ty,
             &format!(
                 "function `{key}` Duration.milliseconds expression {index}",

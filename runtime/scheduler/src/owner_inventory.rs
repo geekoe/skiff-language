@@ -86,7 +86,11 @@ impl OwnerCreationError {
 
 impl fmt::Display for OwnerCreationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{} owner creation failed: {}", self.domain, self.kind)
+        write!(
+            formatter,
+            "{} owner creation failed: {}",
+            self.domain, self.kind
+        )
     }
 }
 

@@ -528,18 +528,13 @@ fn admit_statement(
         MirStmtKind::Return { value } => {
             if let Some(value) = value.as_ref() {
                 if is_tail_local_call(function, value.expression) {
-                    if let Some(callee) =
-                        tail_local_call_callee(unit, function, value.expression)
-                    {
+                    if let Some(callee) = tail_local_call_callee(unit, function, value.expression) {
                         if callee_effect_may_pending(callee) {
                             return Err(rejected_function(
                                 unit,
                                 function_key,
                                 Phase1UnsupportedCapability::PendingEffect,
-                                &format!(
-                                    "tail call to pending function {}",
-                                    callee.symbol
-                                ),
+                                &format!("tail call to pending function {}", callee.symbol),
                             ));
                         }
                     }
@@ -999,9 +994,7 @@ fn admit_call(
             ));
         }
         CallTargetIr::Native { target } => {
-            if target.binding_key.as_deref()
-                == Some(CANONICAL_DURATION_MILLISECONDS_BINDING_KEY)
-            {
+            if target.binding_key.as_deref() == Some(CANONICAL_DURATION_MILLISECONDS_BINDING_KEY) {
                 admit_duration_milliseconds_constructor(
                     units,
                     unit,
@@ -2340,8 +2333,9 @@ mod tests {
             },
         };
         let function = function();
-        admit_effects(&units[0], FUNCTION_KEY, &function, &summary)
-            .expect("the production std.time.sleep trace is the canonical HostEffect pending category");
+        admit_effects(&units[0], FUNCTION_KEY, &function, &summary).expect(
+            "the production std.time.sleep trace is the canonical HostEffect pending category",
+        );
     }
 
     #[test]

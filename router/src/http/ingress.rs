@@ -291,8 +291,7 @@ impl HttpIngressResolver for StoreHttpIngressResolver {
             return false;
         };
         record.ingress.iter().any(|binding| {
-            binding.selector.protocol == IngressProtocol::Http
-                && binding.selector.path == path
+            binding.selector.protocol == IngressProtocol::Http && binding.selector.path == path
         })
     }
 }
@@ -330,14 +329,12 @@ impl StoreHttpIngressResolver {
         let store = self.artifact_store.as_ref().ok_or_else(|| {
             HttpError::internal("HTTP ingress resolver has no artifact store configured")
         })?;
-        store
-            .read_service_deployment(deployment)
-            .map_err(|error| {
-                HttpError::internal(format!(
-                    "read deployment record {} for HTTP ingress: {error}",
-                    deployment.service_id
-                ))
-            })
+        store.read_service_deployment(deployment).map_err(|error| {
+            HttpError::internal(format!(
+                "read deployment record {} for HTTP ingress: {error}",
+                deployment.service_id
+            ))
+        })
     }
 }
 
@@ -349,7 +346,10 @@ pub(crate) fn http_surface_view_from_pointers(
 ) -> Result<HttpGatewaySurfaceView, String> {
     let release = crate::release::StoreReleaseResolver::new(artifact_store.clone());
     let mut entries = BTreeMap::new();
-    for deployment in release.all_deployments(profile).map_err(|error| error.to_string())? {
+    for deployment in release
+        .all_deployments(profile)
+        .map_err(|error| error.to_string())?
+    {
         let record = artifact_store
             .read_service_deployment(&deployment)
             .map_err(|error| {

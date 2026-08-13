@@ -10,15 +10,14 @@ use crate::{
     ActiveRegionIndex, ActorMethodIndex, ArtifactCallbackCaptureIndex, ArtifactConstantIndex,
     ArtifactConstantNodeIndex, ArtifactShapeIndex, ArtifactWritablePathIndex, CallLoanLayoutIndex,
     CallbackCaptureLayoutIndex, CandidateLocation, CandidateReferenceKind, CandidateTable,
-    ConstantIndex,
-    FrameSlotIndex, FrozenConstantNodeIndex, FunctionIndex, HostEffectAdapterIndex,
+    ConstantIndex, FrameSlotIndex, FrozenConstantNodeIndex, FunctionIndex, HostEffectAdapterIndex,
     InstructionBoundaryIndex, InstructionIndex, InterfaceTableIndex, IntrinsicIndex,
     LinkedActiveRegion, LinkedActiveRegionKind, LinkedArtifactPoolOrigin, LinkedBytecodeCandidate,
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedBytecodeHeaderField,
-    LinkedCallLoanBinding, LinkedCallLoanLayout, LinkedCallLoanLayoutError, LinkedCallableSignature,
-    LinkedCallableSignatureError, LinkedCallbackCapture, LinkedCallbackCaptureLayout,
-    LinkedCatchMatcher, LinkedConstantEntry, LinkedConstantReference, LinkedConstantRoot,
-    LinkedConstantSymbolPath, LinkedContainerLayout, LinkedContainerLayoutKind,
+    LinkedCallLoanBinding, LinkedCallLoanLayout, LinkedCallLoanLayoutError,
+    LinkedCallableSignature, LinkedCallableSignatureError, LinkedCallbackCapture,
+    LinkedCallbackCaptureLayout, LinkedCatchMatcher, LinkedConstantEntry, LinkedConstantReference,
+    LinkedConstantRoot, LinkedConstantSymbolPath, LinkedContainerLayout, LinkedContainerLayoutKind,
     LinkedContainerPosition, LinkedContainerPositionKind, LinkedExceptionRegion, LinkedFrameLayout,
     LinkedFrameLayoutError, LinkedFrozenConstantNode, LinkedFrozenConstantValue,
     LinkedFunctionTables, LinkedInstruction, LinkedInstructionError, LinkedInstructionTarget,
@@ -1261,9 +1260,8 @@ fn function_with_instructions(instructions: Box<[LinkedInstruction]>) -> crate::
 fn parts_with_stream_next_resume(
     end_resume: Option<InstructionIndex>,
 ) -> LinkedBytecodeCandidateParts {
-    let budget =
-        LinkedInstruction::new(Opcode::BudgetCheckpoint, Box::new([]), Box::new([]), 0)
-            .expect("fixture budget checkpoint has no operands");
+    let budget = LinkedInstruction::new(Opcode::BudgetCheckpoint, Box::new([]), Box::new([]), 0)
+        .expect("fixture budget checkpoint has no operands");
     let function = function_with_instructions(Box::new([
         stream_next_instruction(),
         budget.clone(),
@@ -1370,10 +1368,9 @@ fn candidate_rejects_stream_producer_with_ordinary_results() {
 fn candidate_rejects_stream_producer_type_that_is_not_stream() {
     let frame = frame_with_stream_result(Some(TypeIndex::new(0)), Box::new([]));
 
-    let error = LinkedBytecodeCandidate::try_from_parts(minimal_parts(vec![function_with_frame(
-        frame,
-    )]))
-    .expect_err("stream producer authority must select Stream<T>");
+    let error =
+        LinkedBytecodeCandidate::try_from_parts(minimal_parts(vec![function_with_frame(frame)]))
+            .expect_err("stream producer authority must select Stream<T>");
     assert!(matches!(
         error,
         LinkedBytecodeCandidateError::StreamProducerTypeMismatch {
@@ -1394,7 +1391,10 @@ fn resume_site_retains_stream_next_end_resume_path() {
         candidate.resume_sites()[0].end_resume(),
         Some(InstructionIndex::new(2))
     );
-    assert_eq!(candidate.resume_sites()[0].resume(), InstructionIndex::new(1));
+    assert_eq!(
+        candidate.resume_sites()[0].resume(),
+        InstructionIndex::new(1)
+    );
 }
 
 #[test]

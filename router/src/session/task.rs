@@ -29,7 +29,9 @@ use super::handshake::{
     CapabilitiesEvent, HandshakePhase, HandshakeState, HealthEvent, TerminalKind, TimeoutKind,
 };
 use super::identity::{RuntimeConnectionEpoch, RuntimeSessionEpoch};
-use super::layer::{SessionCloseReason, SessionFrameWriter, SessionLayer, SessionRegistrationFacts};
+use super::layer::{
+    SessionCloseReason, SessionFrameWriter, SessionLayer, SessionRegistrationFacts,
+};
 
 pub type RuntimeSocket = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
 pub type RuntimeSocketRead = SplitStream<RuntimeSocket>;
@@ -409,9 +411,11 @@ fn registration_facts(header: &RuntimeCapabilitiesFrameHeader) -> SessionRegistr
                 .dispatch_modes
                 .iter()
                 .any(|mode| matches!(mode, RuntimeDispatchModeCapability::Unary)),
-            server_stream: header.capabilities.dispatch_modes.iter().any(|mode| {
-                matches!(mode, RuntimeDispatchModeCapability::ServerStream)
-            }),
+            server_stream: header
+                .capabilities
+                .dispatch_modes
+                .iter()
+                .any(|mode| matches!(mode, RuntimeDispatchModeCapability::ServerStream)),
         },
         registration: super::directory::RegistrationFacts {
             registered_build_ids: header.capabilities.loaded_build_ids.clone(),

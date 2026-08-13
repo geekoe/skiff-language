@@ -15,15 +15,15 @@ use bytes::Bytes;
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_transport::cancel_reason::RequestCancelReason;
 use skiff_runtime_transport::protocol::{
-    decode_request_cancel_frame, decode_response_chunk_frame, decode_response_end_frame,
-    decode_response_error_frame, decode_response_start_frame, ResponseErrorFrameHeader,
-    RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
-};
-use skiff_runtime_transport::protocol::{
     decode_bytecode_websocket_connect_response_end_frame,
     decode_bytecode_websocket_jsonrpc_response_end_frame,
     BytecodeWebSocketConnectResponseFrameHeader,
     BytecodeWebSocketConnectionPolicyOverflowFrameHeader,
+};
+use skiff_runtime_transport::protocol::{
+    decode_request_cancel_frame, decode_response_chunk_frame, decode_response_end_frame,
+    decode_response_error_frame, decode_response_start_frame, ResponseErrorFrameHeader,
+    RuntimeHttpNameValueFrameHeader, RuntimeHttpResponseFrameHeader,
 };
 use tokio::sync::mpsc;
 
@@ -265,8 +265,7 @@ impl InboundFrameSink for RequestFrameSink {
             }
             // WS inbound JSON-RPC response (E-ws): the broker owns the peer
             // terminal; the store owns the runtime correlation.
-            if let Ok((header, payload)) =
-                decode_bytecode_websocket_jsonrpc_response_end_frame(raw)
+            if let Ok((header, payload)) = decode_bytecode_websocket_jsonrpc_response_end_frame(raw)
             {
                 ws.on_inbound_response(
                     &header.request_id,

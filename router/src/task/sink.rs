@@ -69,8 +69,7 @@ pub trait TaskExecutionImageSource: Send + Sync + fmt::Debug {
 
     /// True when the exact deployment is currently published by the release
     /// pointer table (attempt admission membership gate, M4).
-    fn contains_deployment(&self, deployment: &skiff_artifact_model::ServiceDeploymentRef)
-        -> bool;
+    fn contains_deployment(&self, deployment: &skiff_artifact_model::ServiceDeploymentRef) -> bool;
 }
 
 /// Production image source backed by the release pointer table.
@@ -127,10 +126,7 @@ impl TaskExecutionImageSource for ReleaseTaskExecutionImageSource {
             })
     }
 
-    fn contains_deployment(
-        &self,
-        deployment: &skiff_artifact_model::ServiceDeploymentRef,
-    ) -> bool {
+    fn contains_deployment(&self, deployment: &skiff_artifact_model::ServiceDeploymentRef) -> bool {
         self.release
             .resolve(
                 &self.profile,
@@ -322,7 +318,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_submit_event(
                     "task.submit.rejected",
-                                                &header,
+                    &header,
                     header.task_id.as_deref(),
                     Self::attrs(json!({ "reason": message })),
                 );
@@ -337,7 +333,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_submit_event(
                 "task.submit.rejected",
-                                        &header,
+                &header,
                 header.task_id.as_deref(),
                 Self::attrs(json!({
                     "reason": "task activation identity does not match the active routing epoch",
@@ -356,7 +352,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_submit_event(
                 "task.submit.uncertain",
-                                        &header,
+                &header,
                 header.task_id.as_deref(),
                 Self::attrs(json!({ "code": "storeUnavailable" })),
             );
@@ -373,7 +369,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_submit_event(
                 "task.submit.rejected",
-                                        &header,
+                &header,
                 header.task_id.as_deref(),
                 Self::attrs(json!({ "code": "invalidTiming" })),
             );
@@ -390,7 +386,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_submit_event(
                 "task.submit.rejected",
-                                        &header,
+                &header,
                 header.task_id.as_deref(),
                 Self::attrs(json!({ "code": "quotaExceeded" })),
             );
@@ -455,7 +451,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_submit_event(
                     "task.submit.accepted",
-                                                            &header,
+                    &header,
                     Some(task_id.as_str()),
                     Self::attrs(json!({ "dueAtMs": due_at.millis() })),
                 );
@@ -489,7 +485,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_submit_event(
                     "task.submit.uncertain",
-                                                &header,
+                    &header,
                     Some(task_id.as_str()),
                     Self::attrs(json!({ "code": "storeUnavailable" })),
                 );
@@ -508,7 +504,7 @@ impl DurableTaskFrameSink {
                         .fetch_add(1, Ordering::Relaxed);
                     self.emit_submit_event(
                         "task.submit.accepted",
-                                                                    &header,
+                        &header,
                         Some(task_id.as_str()),
                         Self::attrs(json!({ "dueAtMs": due_at.millis(), "recovered": true })),
                     );
@@ -531,7 +527,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_submit_event(
                     "task.submit.rejected",
-                                                &header,
+                    &header,
                     Some(task_id.as_str()),
                     Self::attrs(json!({ "reason": "durable task store rejected the submission" })),
                 );
@@ -640,7 +636,7 @@ impl DurableTaskFrameSink {
                 .fetch_add(1, Ordering::Relaxed);
             self.emit_cancel_event(
                 "task.cancel.notFound",
-                                        &request,
+                &request,
                 Self::attrs(json!({
                     "reason": "owner scope is not a service of the active routing epoch",
                 })),
@@ -669,39 +665,23 @@ impl DurableTaskFrameSink {
                         self.counters
                             .cancel_canceled
                             .fetch_add(1, Ordering::Relaxed);
-                        self.emit_cancel_event(
-                            "task.cancel.canceled",
-                                                                            &request,
-                            Map::new(),
-                        );
+                        self.emit_cancel_event("task.cancel.canceled", &request, Map::new());
                     }
                     TaskCancelResultKindWire::AlreadyStarted => {
                         self.counters
                             .cancel_already_started
                             .fetch_add(1, Ordering::Relaxed);
-                        self.emit_cancel_event(
-                            "task.cancel.alreadyStarted",
-                                                                            &request,
-                            Map::new(),
-                        );
+                        self.emit_cancel_event("task.cancel.alreadyStarted", &request, Map::new());
                     }
                     TaskCancelResultKindWire::AlreadyTerminal => {
                         self.counters
                             .cancel_already_terminal
                             .fetch_add(1, Ordering::Relaxed);
-                        self.emit_cancel_event(
-                            "task.cancel.alreadyTerminal",
-                                                                            &request,
-                            Map::new(),
-                        );
+                        self.emit_cancel_event("task.cancel.alreadyTerminal", &request, Map::new());
                     }
                     TaskCancelResultKindWire::Expired => {
                         self.counters.cancel_expired.fetch_add(1, Ordering::Relaxed);
-                        self.emit_cancel_event(
-                            "task.cancel.expired",
-                                                                            &request,
-                            Map::new(),
-                        );
+                        self.emit_cancel_event("task.cancel.expired", &request, Map::new());
                     }
                 }
                 let header = TaskCancelResponseFrameHeader {
@@ -721,7 +701,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_cancel_event(
                     "task.cancel.notFound",
-                                                &request,
+                    &request,
                     Self::attrs(json!({
                         "reason": "task record is not found in the durable task store",
                     })),
@@ -740,7 +720,7 @@ impl DurableTaskFrameSink {
                     .fetch_add(1, Ordering::Relaxed);
                 self.emit_cancel_event(
                     "task.cancel.unavailable",
-                                                &request,
+                    &request,
                     Self::attrs(json!({ "reason": "task store is unavailable" })),
                 );
                 let bytes = Self::control_error_frame(

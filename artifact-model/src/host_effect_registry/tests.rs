@@ -277,7 +277,11 @@ fn constructor_rejects_nonadjacent_bindings_and_alias_collisions() {
 
 #[test]
 fn config_host_effect_entries_are_fresh_non_pending_and_config_scoped() {
-    for binding_key in ["std.config.require", "std.config.optional", "std.config.has"] {
+    for binding_key in [
+        "std.config.require",
+        "std.config.optional",
+        "std.config.has",
+    ] {
         let entry = host_effect_registry()
             .entries()
             .iter()

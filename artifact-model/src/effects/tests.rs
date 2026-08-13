@@ -78,7 +78,10 @@ fn analyzed_pending_categories_round_trip_and_drive_may_pending() {
     assert!(effects.may_pending());
     assert_eq!(
         effects.pending_effect_categories,
-        vec![PendingEffectCategory::ServiceCall, PendingEffectCategory::Unknown]
+        vec![
+            PendingEffectCategory::ServiceCall,
+            PendingEffectCategory::Unknown
+        ]
     );
     assert_eq!(
         effects.inout_path_effects[0].read[0].steps(),

@@ -99,9 +99,7 @@ impl NativeRequiredContext {
             | "std.file.delete"
             | "std.file.createFromStream" => Self::File,
             "std.telemetry.emit" => Self::Telemetry,
-            "std.config.require"
-            | "std.config.optional"
-            | "std.config.has" => Self::Config,
+            "std.config.require" | "std.config.optional" | "std.config.has" => Self::Config,
             "std.db.operation" => Self::Db,
             "std.websocket.sendTextToConnection"
             | "std.websocket.sendBinaryToConnection"

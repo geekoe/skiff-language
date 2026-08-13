@@ -713,10 +713,7 @@ mod tests {
             producer.emit(1, Arc::new(Counter::default())),
             StreamEmit::Ready
         );
-        assert_eq!(
-            producer.emit(2, producer_wake.clone()),
-            StreamEmit::Pending
-        );
+        assert_eq!(producer.emit(2, producer_wake.clone()), StreamEmit::Pending);
         assert!(supervisor.is_backpressured());
 
         assert_eq!(
@@ -740,10 +737,7 @@ mod tests {
             consumer.poll_next(Arc::new(Counter::default())),
             StreamPoll::Ready(StreamEvent::End)
         );
-        assert_eq!(
-            producer.finish_end(),
-            Err(StreamError::AlreadyTerminal)
-        );
+        assert_eq!(producer.finish_end(), Err(StreamError::AlreadyTerminal));
     }
 
     #[test]

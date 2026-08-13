@@ -320,7 +320,9 @@ fn map_literal_rejects_duplicate_keys() {
     )
     .expect_err("duplicate map literal keys should fail");
     assert!(
-        model.message().contains("duplicate map literal key `alpha`"),
+        model
+            .message()
+            .contains("duplicate map literal key `alpha`"),
         "unexpected model error: {}",
         model.message()
     );

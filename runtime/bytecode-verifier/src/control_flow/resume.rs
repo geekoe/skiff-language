@@ -215,7 +215,10 @@ fn prove_stream_read(
         .get(row.resume().get() as usize)
         .ok_or_else(|| violation(resume_location, "resume PC has no input state"))?;
     let end_resume = row.end_resume().ok_or_else(|| {
-        violation(location, "StreamNext descriptor has no natural-end resume path")
+        violation(
+            location,
+            "StreamNext descriptor has no natural-end resume path",
+        )
     })?;
     if end_resume == row.resume() {
         return Err(violation(
@@ -283,14 +286,7 @@ fn prove_stream_read(
             "resume result is not the independently derived Stream<T> item",
         ));
     }
-    prove_stream_next_path_isomorphism(
-        before,
-        resumed,
-        item,
-        true,
-        concrete,
-        resume_location,
-    )?;
+    prove_stream_next_path_isomorphism(before, resumed, item, true, concrete, resume_location)?;
     prove_stream_next_path_isomorphism(
         before,
         ended,

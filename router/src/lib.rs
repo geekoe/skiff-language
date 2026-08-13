@@ -39,10 +39,9 @@ pub use dispatch::{
     NoopTaskAttemptTerminalSink, PendingHealth, PendingTerminal, Permit, PermitLedger,
     RequestAuthority, RequestDeadline, RequestDispatcher, RequestOutcome, Reservation,
     RevalidateOutcome, RuntimeAdmissionPool, RuntimeDispatcherOptions, RuntimePeer,
-    RuntimeResponseFrame, SessionAbortControl, SubmitRejectReason, SubmitResult,
-    TaskAttemptSubmit, TaskAttemptSubmitResult, TaskAttemptTerminalOutcome,
-    TaskAttemptTerminalSink, TaskHealth, TerminalHealth, TerminalSource, TimeoutCheck,
-    WireTimeoutCheck,
+    RuntimeResponseFrame, SessionAbortControl, SubmitRejectReason, SubmitResult, TaskAttemptSubmit,
+    TaskAttemptSubmitResult, TaskAttemptTerminalOutcome, TaskAttemptTerminalSink, TaskHealth,
+    TerminalHealth, TerminalSource, TimeoutCheck, WireTimeoutCheck,
 };
 pub use health::{
     project_capability_connections, project_loop_risk_runtimes, project_replicas, render_base,
@@ -62,11 +61,11 @@ pub use listener::{
     run_router, start_listeners, ClientWsContext, ListenerError, ListenerHandle,
     ListenerStartOptions, RouterListeners, WsTaskRegistry,
 };
+pub use release::{ReleaseResolver, StoreReleaseResolver};
 pub use routing::{
     CandidateDirectoryView, CandidateQuery, CandidateSession, DispatchCapabilities, DispatchMode,
     RegisteredSessionLease, RoutingQueryCounters, RuntimeCandidateQuery, SessionCancellation,
 };
-pub use release::{ReleaseResolver, StoreReleaseResolver};
 pub use session::{
     ConsumerKind, ConsumerManifest, RegistrationObserver, RuntimeRegistrationDirectory,
     RuntimeSessionEpoch, SessionLayer, SessionLayerError, SessionLayerOptions, TerminalKind,
@@ -89,7 +88,7 @@ pub use ws::{
     InboundDispatchAction, InboundDispatchResult, InboundExecutionToken, JsonRpc20TextProfile,
     MethodCatalog, NoopNotificationObserver, NoopRuntimeViolationSink, NotificationObserver,
     OverflowPolicy, PeerResponseTerminal, PeerTextOutcome, PeerWriter, PlatformErrorKind,
-    ProfileLimits, RuntimeRequest, RuntimeRequestOutcome, RuntimeResponder,
-    RuntimeViolationSink, WebSocketLane, WebSocketLaneOptions, WebSocketLifecycleClose,
-    WebSocketRequestBroker, WebSocketRequestBrokerOptions, WriteBudget, WsHealthSnapshot,
+    ProfileLimits, RuntimeRequest, RuntimeRequestOutcome, RuntimeResponder, RuntimeViolationSink,
+    WebSocketLane, WebSocketLaneOptions, WebSocketLifecycleClose, WebSocketRequestBroker,
+    WebSocketRequestBrokerOptions, WriteBudget, WsHealthSnapshot,
 };

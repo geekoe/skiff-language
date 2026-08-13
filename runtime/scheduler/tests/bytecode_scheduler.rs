@@ -529,13 +529,19 @@ mod tests {
             RequestExecutionContext::create(BytecodeSchedulerPorts::<ChainUnit>::default());
         context.install_root(ChainUnit::new(0, 1, Arc::new(AtomicUsize::new(0))));
         let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
-        assert!(matches!(outcome, Err(BytecodeSchedulerError::UnsupportedChild)));
+        assert!(matches!(
+            outcome,
+            Err(BytecodeSchedulerError::UnsupportedChild)
+        ));
 
         let mut context =
             RequestExecutionContext::create(BytecodeSchedulerPorts::<StreamUnit>::default());
         context.install_root(StreamUnit::new(StreamMode::Emit(1)));
         let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
-        assert!(matches!(outcome, Err(BytecodeSchedulerError::UnsupportedStream)));
+        assert!(matches!(
+            outcome,
+            Err(BytecodeSchedulerError::UnsupportedStream)
+        ));
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

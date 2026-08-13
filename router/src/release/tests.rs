@@ -90,7 +90,9 @@ fn fixture() -> (Fixture, Guard) {
 
 fn write_pointer(store: &CanonicalArtifactStore, reference: &ServiceDeploymentRef) {
     let pointer = ReleasePointer::new(PROFILE, reference.clone()).expect("release pointer");
-    store.write_release_pointer(&pointer).expect("write release pointer");
+    store
+        .write_release_pointer(&pointer)
+        .expect("write release pointer");
 }
 
 #[test]
@@ -140,7 +142,12 @@ fn unknown_service_or_version_resolves_to_none() {
         .expect("write deployment record");
 
     let resolver = StoreReleaseResolver::new(fixture.store.clone());
-    assert_eq!(resolver.resolve(PROFILE, "example.com/other", CONTRACT_VERSION).expect("ok"), None);
+    assert_eq!(
+        resolver
+            .resolve(PROFILE, "example.com/other", CONTRACT_VERSION)
+            .expect("ok"),
+        None
+    );
     assert_eq!(
         resolver.resolve(PROFILE, SERVICE_ID, "9.9.9").expect("ok"),
         None
@@ -197,19 +204,28 @@ fn tampered_pointer_fails_closed() {
         .expect("write release pointer");
 
     let pointer_root = store.root();
-    let pointer_path = pointer_root.join(skiff_artifact_identity::ReleasePointerPath::new(
-        PROFILE,
-        SERVICE_ID,
-        CONTRACT_VERSION,
-    )
-    .expect("pointer path")
-    .as_relative_path()
-    .as_path());
+    let pointer_path = pointer_root.join(
+        skiff_artifact_identity::ReleasePointerPath::new(PROFILE, SERVICE_ID, CONTRACT_VERSION)
+            .expect("pointer path")
+            .as_relative_path()
+            .as_path(),
+    );
     let mut bytes = std::fs::read(&pointer_path).expect("read pointer file");
     let tampered = bytes
-        .windows(pointer.deployment.deployment_artifact_identity.as_str().len())
+        .windows(
+            pointer
+                .deployment
+                .deployment_artifact_identity
+                .as_str()
+                .len(),
+        )
         .position(|window| {
-            window == pointer.deployment.deployment_artifact_identity.as_str().as_bytes()
+            window
+                == pointer
+                    .deployment
+                    .deployment_artifact_identity
+                    .as_str()
+                    .as_bytes()
         })
         .expect("find identity bytes");
     for byte in &mut bytes[tampered..tampered + 8] {
@@ -235,8 +251,7 @@ fn pointer_overwrite_resolves_new_reference() {
 
     let mut replacement = fixture.deployment.clone();
     replacement.deployment_revision = DeploymentRevision::new("2");
-    assign_service_deployment_identity(&mut replacement)
-        .expect("assign replacement identity");
+    assign_service_deployment_identity(&mut replacement).expect("assign replacement identity");
     let replacement_ref = skiff_artifact_identity::service_deployment_ref(&replacement);
     assert_ne!(replacement_ref, fixture.reference);
     fixture

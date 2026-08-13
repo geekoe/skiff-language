@@ -193,11 +193,11 @@ mod tests {
         let rig = Rig::new(2);
         let mut dispatch_request = request("req-1", "unary");
         dispatch_request.header.deadline = Some(
-        skiff_runtime_transport::protocol::BytecodeRequestDeadlineFrameHeader {
-            timeout_ms: 0,
-            expires_at: "2026-08-02T00:00:00Z".to_string(),
-        },
-    );
+            skiff_runtime_transport::protocol::BytecodeRequestDeadlineFrameHeader {
+                timeout_ms: 0,
+                expires_at: "2026-08-02T00:00:00Z".to_string(),
+            },
+        );
         let reason = match rig.dispatcher.submit(dispatch_request) {
             SubmitResult::Rejected { reason, .. } => reason,
             other => panic!("expected reject, got {other:?}"),
@@ -215,11 +215,11 @@ mod tests {
         );
         let mut dispatch_request = request("req-1", "unary");
         dispatch_request.header.deadline = Some(
-        skiff_runtime_transport::protocol::BytecodeRequestDeadlineFrameHeader {
-            timeout_ms: 1000,
-            expires_at: "2026-08-02T00:00:00Z".to_string(),
-        },
-    );
+            skiff_runtime_transport::protocol::BytecodeRequestDeadlineFrameHeader {
+                timeout_ms: 1000,
+                expires_at: "2026-08-02T00:00:00Z".to_string(),
+            },
+        );
         let reason = match rig.dispatcher.submit(dispatch_request) {
             SubmitResult::Rejected { reason, .. } => reason,
             other => panic!("expected reject, got {other:?}"),
@@ -598,11 +598,11 @@ mod tests {
         let rig = Rig::new(2);
         let mut dispatch_request = request("req-1", "unary");
         dispatch_request.header.deadline = Some(
-        skiff_runtime_transport::protocol::BytecodeRequestDeadlineFrameHeader {
-            timeout_ms: 5000,
-            expires_at: "2026-08-02T00:01:00Z".to_string(),
-        },
-    );
+            skiff_runtime_transport::protocol::BytecodeRequestDeadlineFrameHeader {
+                timeout_ms: 5000,
+                expires_at: "2026-08-02T00:01:00Z".to_string(),
+            },
+        );
         let session_epoch = match rig.dispatcher.submit(dispatch_request) {
             SubmitResult::Accepted { session_epoch, .. } => session_epoch,
             other => panic!("expected accept, got {other:?}"),

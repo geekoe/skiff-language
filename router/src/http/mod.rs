@@ -30,8 +30,8 @@ pub use dispatch::{
 };
 pub use error::HttpError;
 pub use ingress::{
-    StoreHttpIngressResolver, HttpAdapterKind, HttpDispatchMode, HttpGatewaySurface,
-    HttpGatewaySurfaceView, HttpIngressBinding, HttpIngressResolver,
+    HttpAdapterKind, HttpDispatchMode, HttpGatewaySurface, HttpGatewaySurfaceView,
+    HttpIngressBinding, HttpIngressResolver, StoreHttpIngressResolver,
 };
 pub use server::{
     start_http_gateway, GatewayUpgradeHandler, GatewayUpgradeOptions, HttpGatewayServer,

@@ -727,10 +727,7 @@ where
             validate_package_service_slot_uniqueness(&package_reference, &artifact)?;
             let requirements = artifact.package_requirements.clone();
             let hydrated = if artifact.bytecode.is_none() {
-                HydratedBytecodePackage::checked_type_only(
-                    package_reference.clone(),
-                    artifact,
-                )?
+                HydratedBytecodePackage::checked_type_only(package_reference.clone(), artifact)?
             } else {
                 let bytecode_reference = artifact
                     .bytecode

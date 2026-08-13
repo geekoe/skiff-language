@@ -219,7 +219,9 @@ impl IdleEvictControlPort for ActorIdleEvictControlPort {
                 &fence.actor_abi_identity,
                 &fence.actor_implementation_identity,
             )
-            .ok_or_else(|| "actor routing catalog cannot resolve the actor deployment".to_string())?;
+            .ok_or_else(|| {
+                "actor routing catalog cannot resolve the actor deployment".to_string()
+            })?;
         let fence_header = ActorOwnerControlFenceFrameHeader {
             service_id: key.service_id.clone(),
             actor_type_identity: key.actor_type_identity.clone(),

@@ -131,7 +131,10 @@ impl ProfileHandle {
 
     /// 取回最近完成的窗口（按完成时间顺序，最早完成的先返回）。
     pub fn take_window(&mut self) -> Option<ProfileWindow> {
-        let mut queue = self.queue.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut queue = self
+            .queue
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         queue.pop_front()
     }
 
@@ -206,7 +209,8 @@ struct CounterCell {
 ///
 /// key 为函数名的 FNV-1a 64 位哈希；不同 name 落入同一 key 的冲突概率低，
 /// 容忍合并：units 相加、name 保留先写入者。
-static FUNCTION_TABLE: OnceLock<[Mutex<HashMap<u64, CounterCell>>; FUNCTION_SHARDS]> = OnceLock::new();
+static FUNCTION_TABLE: OnceLock<[Mutex<HashMap<u64, CounterCell>>; FUNCTION_SHARDS]> =
+    OnceLock::new();
 
 /// 取全局计数表，首次调用时惰性初始化全部 shard。
 fn function_table() -> &'static [Mutex<HashMap<u64, CounterCell>>; FUNCTION_SHARDS] {
@@ -252,7 +256,9 @@ pub fn record_function_units(name: &str, units: u64) {
 pub fn function_units_snapshot() -> HashMap<u64, u64> {
     let mut snapshot = HashMap::new();
     for shard in function_table() {
-        let cells = shard.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cells = shard
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for (key, cell) in cells.iter() {
             snapshot.insert(*key, cell.units);
         }
@@ -300,7 +306,11 @@ fn function_name(key: u64) -> String {
 /// 逐窗口累积漂移：60s 名义推进配 61s 实际周期，两小时后窗口实际起点落后名义
 /// 起点两分多钟，profile 图表横轴整体滞后。以实际起点为锚保证窗口连续覆盖
 /// 且 `interval_start_ms` 始终是真实采样起点。
-fn sampling_loop(config: ProfileConfig, stop: Arc<AtomicBool>, queue: Arc<Mutex<VecDeque<ProfileWindow>>>) {
+fn sampling_loop(
+    config: ProfileConfig,
+    stop: Arc<AtomicBool>,
+    queue: Arc<Mutex<VecDeque<ProfileWindow>>>,
+) {
     let interval_ms = config.export_interval_ms;
     let mut next_start_ms = (unix_now_ms() / interval_ms + 1) * interval_ms;
 
@@ -430,7 +440,9 @@ fn collect(
             continue;
         }
         total_samples += count;
-        *thread_samples.entry(frames.thread_name_or_id()).or_insert(0) += count;
+        *thread_samples
+            .entry(frames.thread_name_or_id())
+            .or_insert(0) += count;
 
         if folded.chars().count() > max_folded_chars {
             // 折叠栈字符串超长截断（截到 max_folded_chars 即可，无标记）。
@@ -458,7 +470,11 @@ fn collect(
         .into_iter()
         .map(|(folded, samples)| StackSample { folded, samples })
         .collect();
-    stacks.sort_by(|a, b| b.samples.cmp(&a.samples).then_with(|| a.folded.cmp(&b.folded)));
+    stacks.sort_by(|a, b| {
+        b.samples
+            .cmp(&a.samples)
+            .then_with(|| a.folded.cmp(&b.folded))
+    });
 
     // 字节预算从高 samples 侧逐条累加（`len(folded) + 32`），保留预算内的栈；
     // retain 保持降序，随后仍按 max_stacks 条数上限截断（两者取更严格者）。

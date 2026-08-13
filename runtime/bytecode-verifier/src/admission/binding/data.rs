@@ -30,7 +30,9 @@ fn prove_shape_origins(
         let package = package_for_origin(hydrated, candidate, row.origin(), location)?;
         let source = package
             .bytecode()
-            .ok_or_else(|| semantic_violation(location, "artifact origin package is type-only".to_string()))?
+            .ok_or_else(|| {
+                semantic_violation(location, "artifact origin package is type-only".to_string())
+            })?
             .view()
             .pools()
             .shapes
@@ -81,7 +83,9 @@ fn prove_constant_origins(
         let package = package_for_origin(hydrated, candidate, row.origin(), location)?;
         let source = package
             .bytecode()
-            .ok_or_else(|| semantic_violation(location, "artifact origin package is type-only".to_string()))?
+            .ok_or_else(|| {
+                semantic_violation(location, "artifact origin package is type-only".to_string())
+            })?
             .view()
             .pools()
             .constants
@@ -250,7 +254,9 @@ fn prove_node_origins(
         let package = package_for_origin(hydrated, candidate, row.origin(), location)?;
         if package
             .bytecode()
-            .ok_or_else(|| semantic_violation(location, "artifact origin package is type-only".to_string()))?
+            .ok_or_else(|| {
+                semantic_violation(location, "artifact origin package is type-only".to_string())
+            })?
             .view()
             .frozen_constant_graph()
             .nodes
@@ -272,7 +278,9 @@ fn prove_capture_origins(
         let package = package_for_origin(hydrated, candidate, row.origin(), location)?;
         let source = package
             .bytecode()
-            .ok_or_else(|| semantic_violation(location, "artifact origin package is type-only".to_string()))?
+            .ok_or_else(|| {
+                semantic_violation(location, "artifact origin package is type-only".to_string())
+            })?
             .view()
             .pools()
             .callback_capture
@@ -324,7 +332,9 @@ fn prove_path_origins(
         let package = package_for_origin(hydrated, candidate, row.origin(), location)?;
         let source = package
             .bytecode()
-            .ok_or_else(|| semantic_violation(location, "artifact origin package is type-only".to_string()))?
+            .ok_or_else(|| {
+                semantic_violation(location, "artifact origin package is type-only".to_string())
+            })?
             .view()
             .pools()
             .writable_paths
@@ -529,12 +539,15 @@ pub(super) fn prove_constant_roots(
         .values()
         .filter(|package| package.has_bytecode())
     {
-        let view = package.bytecode().ok_or_else(|| {
-            semantic_violation(
-                VerificationLocation::Image,
-                "bytecode package has no hydrated bytecode".to_string(),
-            )
-        })?.view();
+        let view = package
+            .bytecode()
+            .ok_or_else(|| {
+                semantic_violation(
+                    VerificationLocation::Image,
+                    "bytecode package has no hydrated bytecode".to_string(),
+                )
+            })?
+            .view();
         expected_count = expected_count
             .checked_add(view.constant_roots().len())
             .ok_or_else(|| {
@@ -554,13 +567,22 @@ pub(super) fn prove_constant_roots(
         ));
     }
 
-    for (build_id, package) in hydrated.packages().iter().filter(|(_, package)| package.has_bytecode()) {
-        for (symbol_path, artifact_index) in package.bytecode().ok_or_else(|| {
-            semantic_violation(
-                VerificationLocation::Image,
-                "bytecode package has no hydrated bytecode".to_string(),
-            )
-        })?.view().constant_roots() {
+    for (build_id, package) in hydrated
+        .packages()
+        .iter()
+        .filter(|(_, package)| package.has_bytecode())
+    {
+        for (symbol_path, artifact_index) in package
+            .bytecode()
+            .ok_or_else(|| {
+                semantic_violation(
+                    VerificationLocation::Image,
+                    "bytecode package has no hydrated bytecode".to_string(),
+                )
+            })?
+            .view()
+            .constant_roots()
+        {
             let root = candidate.constant_roots().iter().find(|root| {
                 root.owner_package_build_id() == build_id
                     && root.symbol_path().as_str() == symbol_path

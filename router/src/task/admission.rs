@@ -184,10 +184,7 @@ impl RouterTaskAttemptAdmission {
         }
     }
 
-    fn build_request(
-        &self,
-        record: &TaskRecord,
-    ) -> Option<BytecodeTaskRequestStartFrameHeader> {
+    fn build_request(&self, record: &TaskRecord) -> Option<BytecodeTaskRequestStartFrameHeader> {
         let lease = record.active_lease.as_ref()?;
         let now = self.clock.now_ms();
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
@@ -222,7 +219,11 @@ impl RouterTaskAttemptAdmission {
                 assembly_generation: None,
                 deployment: record.execution.deployment.clone(),
                 build_id: Some(
-                    record.execution.deployment.deployment_artifact_identity.to_string(),
+                    record
+                        .execution
+                        .deployment
+                        .deployment_artifact_identity
+                        .to_string(),
                 ),
             },
             invocation: BytecodeTaskInvocationFrameHeader {
@@ -345,11 +346,8 @@ impl RouterTaskAttemptAdmission {
     fn emit_artifact_event(&self, record: &TaskRecord, name: &str, reason: &str) {
         let mut attrs = Map::new();
         attrs.insert("reason".to_string(), Value::String(reason.to_string()));
-        self.telemetry.emit(task_event(
-            name,
-            Some(record.task_id.as_str()),
-            attrs,
-        ));
+        self.telemetry
+            .emit(task_event(name, Some(record.task_id.as_str()), attrs));
     }
 
     /// Actor-method get-or-activate admission (authoritative design
@@ -426,9 +424,7 @@ impl RouterTaskAttemptAdmission {
                 reason: "actor method is absent from the current routing catalog".to_string(),
             };
         }
-        let candidates = self
-            .actor_port
-            .candidates_by_build_id(&authority.build_id);
+        let candidates = self.actor_port.candidates_by_build_id(&authority.build_id);
         let owner = if let Some(authority) = test_case {
             // Execute on the exact origin Runtime connection so the method
             // shares the case's in-memory effect registry; any other owner is
