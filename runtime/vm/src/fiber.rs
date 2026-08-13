@@ -4,7 +4,10 @@ mod projection_tests;
 #[cfg(test)]
 mod tests;
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use skiff_artifact_model::{
     descriptor_for_opcode, LiteralIr, Opcode, PackageRefIr, ParamModeIr, TypeRefIr,
@@ -93,6 +96,7 @@ pub struct VmFiber {
     region_depths: Vec<usize>,
     unwind: Option<UnwindState>,
     caught_exceptions: BTreeMap<usize, CaughtException>,
+    caught_by_payload: HashMap<u64, usize>,
     error_correlation: Option<ErrorCorrelation>,
     pending_resume: Option<PendingResume>,
     resume_sequence: u64,
@@ -129,6 +133,7 @@ enum UnwindPhase {
 struct CaughtException {
     envelope: Arc<RequestException>,
     plan: LinkedValueTransferPlan,
+    payload_handle: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -219,6 +224,7 @@ impl VmFiber {
             region_depths: vec![0],
             unwind: None,
             caught_exceptions: BTreeMap::new(),
+            caught_by_payload: HashMap::new(),
             error_correlation: None,
             pending_resume: None,
             resume_sequence: 0,
@@ -436,6 +442,7 @@ impl VmFiber {
         self.region_depths.clear();
         self.unwind = None;
         self.caught_exceptions.clear();
+        self.caught_by_payload.clear();
         self.pending_resume = None;
         Ok(())
     }
@@ -1325,9 +1332,29 @@ impl VmFiber {
         };
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        let absolute_index = Self::slot_index(&frame, slot_count, slot, frame.function())?;
-        let payload = self.read_slot(&frame, slot_count, slot)?;
-        let payload_plan = self.slot_plan(frame.function(), slot)?;
+        let exception_record = self.read_slot(&frame, slot_count, slot)?;
+        let exception_plan = self.slot_plan(frame.function(), slot)?;
+        // The rethrow source slot holds the canonical `Exception<E>` record
+        // that wraps the caught payload. Unwrap the payload to find the exact
+        // envelope authority by its runtime handle; the original envelope is
+        // then reused unchanged.
+        let payload = executor
+            .heap()
+            .record_field(&exception_record, "error")
+            .map_err(VmError::Heap)?;
+        let payload_handle = payload.as_handle().map(|handle| handle.get()).ok_or(
+            VmError::RethrowEnvelopeUnavailable {
+                function,
+                instruction,
+            },
+        )?;
+        let absolute_index = self
+            .caught_by_payload
+            .remove(&payload_handle)
+            .ok_or(VmError::RethrowEnvelopeUnavailable {
+                function,
+                instruction,
+            })?;
         let caught = self
             .caught_exceptions
             .remove(&absolute_index)
@@ -1335,11 +1362,11 @@ impl VmFiber {
                 function,
                 instruction,
             })?;
-        // The catch slot holds a shared snapshot of the envelope payload; the
-        // envelope itself keeps the single payload authority. Rethrow releases
-        // the handler's share and reuses the exact same envelope.
+        // The rethrow source slot releases its `Exception<E>` record share;
+        // the envelope keeps its payload authority and reuses the exact same
+        // envelope, so the actual catch identity stays unchanged.
         executor
-            .release(&payload, &payload_plan)
+            .release(&exception_record, &exception_plan)
             .map_err(|error| error.into_vm_error(function, instruction, Opcode::Rethrow))?;
         self.clear_slot(&frame, slot_count, slot)?;
         self.begin_unwind(executor, caught.envelope, function, instruction)
@@ -1466,6 +1493,8 @@ impl VmFiber {
                 self.live_values.clear();
                 self.active_regions.clear();
                 self.region_depths.clear();
+                self.caught_exceptions.clear();
+                self.caught_by_payload.clear();
                 self.unwind = None;
                 self.state = VmFiberState::Terminal;
                 return Ok(DispatchOutcome::Throw(envelope));
@@ -1545,19 +1574,29 @@ impl VmFiber {
             frame.instruction(),
             Opcode::Throw,
         )?;
-        if let Some(previous) = self.caught_exceptions.insert(
-            absolute_index,
-            CaughtException {
-                envelope: Arc::clone(envelope),
-                plan: catch_plan,
-            },
-        ) {
+        let payload_handle = payload
+            .as_handle()
+            .map(|handle| handle.get())
+            .ok_or(VmError::ThrowEnvelopeUnavailable {
+                function: frame.function(),
+                instruction: frame.instruction(),
+                reason: "caught envelope payload has no heap handle".to_string(),
+            })?;
+        let entry = CaughtException {
+            envelope: Arc::clone(envelope),
+            plan: catch_plan,
+            payload_handle,
+        };
+        if let Some(previous) = self.caught_exceptions.insert(absolute_index, entry) {
             if let Some(slot) = previous.envelope.vm_local_slot() {
                 executor
                     .release(&slot, &previous.plan)
                     .map_err(|error| error.into_vm_error(frame.function(), frame.instruction(), Opcode::Throw))?;
             }
+            self.caught_by_payload.remove(&previous.payload_handle);
         }
+        self.caught_by_payload
+            .insert(payload_handle, absolute_index);
         self.current_frame_mut()?.jump_to(region.handler());
         self.unwind = None;
         self.state = VmFiberState::Runnable;
@@ -1929,6 +1968,8 @@ impl VmFiber {
             self.live_values.clear();
             self.active_regions.clear();
             self.region_depths.clear();
+            self.caught_exceptions.clear();
+            self.caught_by_payload.clear();
             self.state = VmFiberState::Terminal;
             if self.observer.claim_root_return() {
                 self.observer
@@ -3880,6 +3921,7 @@ impl VmFiber {
         self.caught_exceptions
             .retain(|index, _| !range.contains(index));
         for entry in caught {
+            self.caught_by_payload.remove(&entry.payload_handle);
             if let Some(slot) = entry.envelope.vm_local_slot() {
                 executor.release(&slot, &entry.plan).map_err(|error| {
                     error.into_vm_error(frame.function(), frame.instruction(), opcode)

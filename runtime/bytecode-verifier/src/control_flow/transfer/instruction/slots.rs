@@ -24,14 +24,23 @@ pub(super) fn apply(
         let slot = values::resolve_slot(context, effect.operand)?;
         match effect.action {
             SlotAction::Read | SlotAction::ReadShare | SlotAction::Take | SlotAction::Drop => {
-                if effect.value
-                    != (ValueSource::Slot {
-                        operand: effect.operand,
-                    })
-                {
-                    return Err(unavailable(context.location));
-                }
-                let value = values::live_slot(before, slot, context.location)?;
+                let value = match effect.value {
+                    ValueSource::Slot { operand } if operand == effect.operand => {
+                        values::live_slot(before, slot, context.location)?
+                    }
+                    // `Rethrow` reads its exception slot as the opaque
+                    // `Exception<E>` envelope; the same provenance check as
+                    // the stack-input path, without touching the slot.
+                    ValueSource::ExceptionEnvelope { source_slot }
+                        if matches!(effect.action, SlotAction::Read) =>
+                    {
+                        let source = values::resolve_slot(context, source_slot)?;
+                        let value = values::live_slot(before, source, context.location)?;
+                        values::require_exception_envelope(value, context, context.location)?;
+                        value
+                    }
+                    _ => return Err(unavailable(context.location)),
+                };
                 if effect.action == SlotAction::ReadShare {
                     values::require_shareable(value, context.facts, context.location)?;
                 }
@@ -156,7 +165,7 @@ fn write_slot(
         .get(slot.get() as usize)
         .copied()
         .ok_or_else(|| violation(context.location, "slot write destination is out of bounds"))?;
-    values::require_same_type(
+    values::require_assignable(
         value,
         declared,
         context.facts,
@@ -164,10 +173,18 @@ fn write_slot(
         "slot write",
     )?;
     let AbstractValue::Concrete(value_ty) = value;
-    context
-        .facts
-        .merge_coordinate(value_ty, declared)
-        .map_err(|_| violation(context.location, "slot write has no exact class coordinate"))?;
+    // A leaf stored into an anonymous-union slot keeps the declared union
+    // type as the live state; the leaf and union coordinates deliberately
+    // belong to different concrete classes, so the class merge only applies
+    // to exact/equivalent writes.
+    if context.facts.semantically_equal(value_ty, declared) != Some(true)
+        && !context.facts.union_branch_assignable(value_ty, declared)
+    {
+        context
+            .facts
+            .merge_coordinate(value_ty, declared)
+            .map_err(|_| violation(context.location, "slot write has no exact class coordinate"))?;
+    }
     values::set_slot(
         slots,
         slot,

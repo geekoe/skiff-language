@@ -398,7 +398,7 @@ fn validate_input_source(
             }
             for (ordinal, (value, expected)) in input.iter().zip(call.parameters.iter()).enumerate()
             {
-                values::require_same_type(
+                values::require_assignable(
                     *value,
                     *expected,
                     context.facts,
