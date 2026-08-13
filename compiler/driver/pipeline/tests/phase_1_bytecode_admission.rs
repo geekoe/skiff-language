@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use skiff_artifact_model::{ValueDropPlan, ValueTransferPlan};
+
 use super::*;
 
 #[test]
@@ -78,6 +80,30 @@ fn phase_1_bytecode_admission_rejects_tail_local_call_with_typed_error() {
     assert_eq!(module_path, "main");
     assert_eq!(function_key.as_deref(), Some("main::run"));
     assert_eq!(location, "statement 0");
+}
+
+#[test]
+fn phase_2_bytecode_admission_persists_exact_source_plans_in_frame_layouts() {
+    let output = compile_phase_1_source(
+        "example.com/bytecode-phase2-exact-plans",
+        "function helper(value: number) -> number { return value + 5 }\nfunction run(value: number) -> number { final result = helper(value) if result == 7 { return result - 4 } return 0 }\n",
+    )
+    .expect("scalar/local-call fixture compiles through the exact plan authority");
+    let handoff = output.bytecode_handoff().expect("enabled bytecode handoff");
+    let number_plan = ValueTransferPlan::SnapshotShare {
+        drop: ValueDropPlan::Trivial,
+    };
+
+    let run = &handoff.artifact().image.functions["main::run"];
+    assert_eq!(
+        run.frame_layout.slot_plans,
+        vec![number_plan.clone(), number_plan.clone()]
+    );
+    assert_eq!(run.frame_layout.result_plans, vec![number_plan.clone()]);
+
+    let helper = &handoff.artifact().image.functions["main::helper"];
+    assert_eq!(helper.frame_layout.slot_plans, vec![number_plan.clone()]);
+    assert_eq!(helper.frame_layout.result_plans, vec![number_plan]);
 }
 
 fn compile_phase_1_source(
