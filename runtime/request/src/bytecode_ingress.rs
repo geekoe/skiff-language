@@ -631,10 +631,16 @@ fn vm_error_to_request_error(execution_budget: &ExecutionBudget, error: VmError)
         // A root throw is intercepted by the scheduler outcome before this
         // projection; reaching here means the envelope cannot be materialized
         // on this lane, so the canonical user error is projected without a
-        // payload. Every other VM error is a VmFailure and must not leak VM
-        // internals: it projects to the sanitized InternalError.
+        // payload. Envelope-construction VmFailures must not leak VM
+        // internals and project to the sanitized InternalError; every other
+        // Phase 1 VM error keeps its existing user-facing projection.
         VmError::Thrown(_) => uncaught_throw_to_request_error_without_payload(),
-        _ => RequestError::Decode("bytecode VM execution failed".to_string()),
+        VmError::ThrowEnvelopeUnavailable { .. }
+        | VmError::RethrowEnvelopeUnavailable { .. }
+        | VmError::ResumeThrowEnvelopeUnavailable { .. } => {
+            RequestError::Decode("bytecode VM execution failed".to_string())
+        }
+        error => RequestError::Unsupported(format!("bytecode VM execution failed: {error}")),
     }
 }
 
