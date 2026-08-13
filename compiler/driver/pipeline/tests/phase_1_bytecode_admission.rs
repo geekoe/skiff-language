@@ -160,29 +160,33 @@ fn phase_2_bytecode_admission_rejects_record_with_string_field() {
 }
 
 #[test]
-fn phase_2_bytecode_admission_crosses_effects_for_nested_writable_path() {
-    let error = compile_phase_1_source(
+fn phase_2_bytecode_admission_publishes_nested_writable_mutation_fixture() {
+    let output = compile_phase_1_source(
         "example.com/bytecode-phase2-writable-mutation",
-        "type Inner {\n  x: number,\n  tags: Array<number>,\n}\ntype Payload {\n  inner: Inner,\n  rows: Array<Inner>,\n}\ntype Probe {\n  original: Payload,\n  mutated: Payload,\n}\nfunction stamp(value: Payload) -> Payload { return value }\nfunction run(seed: number) -> Probe {\n  final a = Payload {\n    inner: Inner { x: seed, tags: [1, 2] },\n    rows: [],\n  }\n  var b = a\n  b.inner.x = 2\n  final carried = stamp(a)\n  return Probe { original: carried, mutated: b }\n}\n",
+        "type Inner {\n  x: number,\n  tags: Array<number>,\n}\ntype Payload {\n  inner: Inner,\n  rows: Array<Inner>,\n}\ntype Probe {\n  original: Payload,\n  mutated: Payload,\n}\nfunction stamp(value: Payload) -> Payload { return value }\nfunction run(seed: number) -> Probe {\n  final a = Payload {\n    inner: Inner { x: seed, tags: [1, 2] },\n    rows: [Inner { x: seed, tags: [1, 2] }],\n  }\n  var b = a\n  b.inner.x = 2\n  b.rows[0].x = 3\n  final carried = stamp(a)\n  return Probe { original: carried, mutated: b }\n}\n",
     )
-    .unwrap_err();
-
-    // The nested writable path now crosses the callable-effects boundary. The
-    // next compiler-side gate is lowering-owned source-event availability for
-    // the mutation expression, outside the C2 effects write boundary.
-    let PackageCompileError::BytecodeEmission {
-        source:
-            crate::BytecodeEmissionError::Phase1SourceEventsUnavailable {
-                module_path,
-                function_key,
-                reason: crate::MirSourceEventUnavailableReason::SourceEventNotRepresentable { .. },
-            },
-    } = error
-    else {
-        panic!("expected the post-effects source-event boundary, got {error:?}");
-    };
-    assert_eq!(module_path, "main");
-    assert_eq!(function_key, "main::run");
+    .expect("nested record/array writable-path mutation admits, plans, and publishes");
+    let handoff = output.bytecode_handoff().expect("enabled bytecode handoff");
+    let view = skiff_artifact_model::bytecode::structurally_validate(handoff.artifact())
+        .expect("writable-path bytecode must validate");
+    let run = view
+        .functions()
+        .iter()
+        .find(|function| function.function_key == "main::run")
+        .expect("run function");
+    assert!(
+        run.instructions.iter().any(|instruction| {
+            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::SetWritablePath
+        }),
+        "the writable-path mutation must emit SetWritablePath"
+    );
+    assert_eq!(
+        handoff.artifact().image.functions["main::run"]
+            .frame_layout
+            .writable_local_slots,
+        vec![2],
+        "the mutated local alias is the single writable root"
+    );
 }
 
 fn compile_phase_1_source(

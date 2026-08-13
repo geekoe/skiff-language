@@ -639,8 +639,20 @@ impl<'a> FunctionLowerer<'a> {
                 StmtIr::InitSlot { slot, value }
             }
             Stmt::Assign { target, value } => {
-                let target = self.lower_assign_target(target)?;
+                let (target, target_key) = self.lower_assign_target(target)?;
                 let value = self.lower_expr(value)?;
+                let target_anchor = match &target {
+                    AssignTargetIr::Slot { .. } => Some(value.expression),
+                    AssignTargetIr::Field { object, .. } | AssignTargetIr::Index { object, .. } => {
+                        Some(object.expression)
+                    }
+                    AssignTargetIr::ActorSelfField { .. } => None,
+                };
+                if let (Some(key), Some(anchor)) = (target_key, target_anchor) {
+                    self.source_event_collector
+                        .record_expression(Some(key), anchor, ExpressionEventKind::Expression)
+                        .map_err(source_event_error)?;
+                }
                 StmtIr::Assign { target, value }
             }
             Stmt::Timeout { body, .. } => self.lower_timeout_statement(body)?,
@@ -1123,10 +1135,13 @@ impl<'a> FunctionLowerer<'a> {
         self.readonly_flags_for_value_with_locals(value, &locals)
     }
 
-    fn lower_assign_target(&mut self, target: &Expr) -> Result<AssignTargetIr> {
+    fn lower_assign_target(
+        &mut self,
+        target: &Expr,
+    ) -> Result<(AssignTargetIr, Option<ExpressionKey>)> {
         match target {
             Expr::Identifier(name) => {
-                self.next_expression_key()?;
+                let key = self.take_expression_key()?;
                 let Some(binding) = self.bindings.get(name) else {
                     return Err(CompileError::Semantic(format!(
                         "unresolved assignment target `{name}` in File IR unit function"
@@ -1137,10 +1152,10 @@ impl<'a> FunctionLowerer<'a> {
                         "cannot assign to immutable binding `{name}` in File IR unit function"
                     )));
                 }
-                Ok(AssignTargetIr::Slot { slot: binding.slot })
+                Ok((AssignTargetIr::Slot { slot: binding.slot }, key))
             }
             Expr::Field { object, field } => {
-                self.next_expression_key()?;
+                let key = self.take_expression_key()?;
                 if matches!(object.as_ref(), Expr::Identifier(name) if name == "self") {
                     if let Some(field_type) =
                         self.actor_self_fields.and_then(|fields| fields.get(field))
@@ -1155,14 +1170,18 @@ impl<'a> FunctionLowerer<'a> {
                         // preorder expression key here to keep every later
                         // fact lookup aligned.
                         self.consume_expression_key()?;
-                        return Ok(AssignTargetIr::ActorSelfField {
-                            field: field.clone(),
-                            field_type: field_type.clone(),
-                        });
+                        return Ok((
+                            AssignTargetIr::ActorSelfField {
+                                field: field.clone(),
+                                field_type: field_type.clone(),
+                            },
+                            key,
+                        ));
                     }
                 }
-                Ok(AssignTargetIr::Field {
-                    object: {
+                Ok((
+                    AssignTargetIr::Field {
+                        object: {
                         if let Some(name) = self.readonly_assignment_base_identifier(object) {
                             return Err(CompileError::Semantic(format!(
                             "cannot assign to field of readonly binding `{name}` in File IR unit function"
@@ -1175,11 +1194,13 @@ impl<'a> FunctionLowerer<'a> {
                         }
                         self.lower_expr(object)?
                     },
-                    field: field.clone(),
-                })
+                        field: field.clone(),
+                    },
+                    key,
+                ))
             }
             Expr::Index { object, index } => {
-                let expression_key = self.next_expression_key()?;
+                let expression_key = self.take_expression_key()?;
                 if let Some(name) = self.readonly_assignment_base_identifier(object) {
                     return Err(CompileError::Semantic(format!(
                         "cannot assign through index of readonly binding `{name}` in File IR unit function"
@@ -1198,10 +1219,13 @@ impl<'a> FunctionLowerer<'a> {
                     Some(object_ref),
                     selector_ref,
                 )?;
-                Ok(AssignTargetIr::Index {
-                    object: object_ref,
-                    index: selector_ref,
-                })
+                Ok((
+                    AssignTargetIr::Index {
+                        object: object_ref,
+                        index: selector_ref,
+                    },
+                    expression_key,
+                ))
             }
             _ => Err(unsupported(
                 "only slot, field, and index assignment targets are supported by the File IR unit emitter",
