@@ -2390,7 +2390,7 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_record_construct(
         &mut self,
-        expression: &MirExpression,
+        _expression: &MirExpression,
         type_ref: &TypeRefIr,
         fields: &BTreeMap<String, ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
@@ -2417,9 +2417,13 @@ impl<'a> FunctionEmitter<'a> {
                 "construct field set does not exactly match the declared shape",
             ));
         }
+        // The runtime tag comes from the constructed nominal leaf, not the
+        // surrounding static context: a union-typed constructor must still
+        // carry its concrete leaf identity so throw/catch match the actual
+        // branch. Slots/parameters/returns keep the union static type.
         let shape = self.image.intern_shape(
             self.unit.module_path.as_str(),
-            &expression.ty,
+            type_ref,
             &declared,
             &format!("record construct in `{}`", self.key),
         )?;
@@ -4576,6 +4580,177 @@ mod tests {
                     } if value == "ok"
                 )),
             "the discriminator constant reuses the constant pool"
+        );
+    }
+
+    /// A union-typed record constructor still tags the runtime value with the
+    /// constructed nominal leaf: the NewRecord shape carries the leaf type so
+    /// throw/catch matches the actual branch identity, while the expression's
+    /// static union type stays a slot/parameter context fact.
+    #[test]
+    fn union_typed_construct_emits_the_nominal_leaf_shape() {
+        let leaf = TypeRefIr::LocalType { type_index: 0 };
+        let union_ty = TypeRefIr::Union {
+            items: vec![leaf.clone(), TypeRefIr::LocalType { type_index: 1 }],
+        };
+        let mut function = MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:main".to_string(),
+                module_path: "main".to_string(),
+                executable_index: 0,
+            },
+            symbol: "main.run".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("void"),
+            self_type: None,
+            receiver: None,
+            slots: Vec::new(),
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: vec![
+                MirExpression {
+                    index: 0,
+                    expression: ExprIr::Literal {
+                        value: LiteralIr::Number {
+                            value: serde_json::Number::from(1_u64),
+                        },
+                    },
+                    ty: TypeRefIr::builtin("number"),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 1,
+                    expression: ExprIr::Construct {
+                        type_ref: leaf.clone(),
+                        fields: BTreeMap::from([(
+                            "marker".to_string(),
+                            ExprRefIr { expression: 0 },
+                        )]),
+                    },
+                    ty: union_ty.clone(),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+            ],
+            blocks: vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Throw {
+                        value: ExprRefIr { expression: 1 },
+                        payload_type: union_ty,
+                        site: InstructionSourceSite::Synthetic {
+                            reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                        },
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            regions: Vec::new(),
+            statements: vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:main:run".to_string()),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+        };
+        function.liveness = compute_liveness(&function).expect("test liveness computes");
+
+        let mut file_ir = FileIrUnit::empty("main", "source-hash");
+        file_ir.file_ir_identity = "file:main".to_string();
+        file_ir.type_table.push(skiff_artifact_model::TypeDeclIr {
+            name: "LeafA".to_string(),
+            descriptor: skiff_artifact_model::TypeDescriptorIr::Record {
+                fields: BTreeMap::from([("marker".to_string(), TypeRefIr::builtin("number"))]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        file_ir.type_table.push(skiff_artifact_model::TypeDeclIr {
+            name: "LeafB".to_string(),
+            descriptor: skiff_artifact_model::TypeDescriptorIr::Record {
+                fields: BTreeMap::from([("marker".to_string(), TypeRefIr::builtin("number"))]),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&file_ir)
+            .expect("test bundle evaluates");
+        let unit = MirUnit {
+            file_ir_identity: file_ir.file_ir_identity.clone(),
+            module_path: file_ir.module_path.clone(),
+            actor_declarations: file_ir.actor_declarations.clone(),
+            external_refs: file_ir.external_refs.clone(),
+            source_map: file_ir.source_map.clone(),
+            type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
+            link_targets: file_ir.link_targets.clone(),
+            constants: Vec::new(),
+            functions: vec![function],
+        };
+        let plans = BytecodeValueTransferPlans::new(
+            BTreeMap::from([(
+                "main::run".to_string(),
+                FunctionValueTransferPlans {
+                    slot_plans: Vec::new(),
+                    result_plans: Vec::new(),
+                },
+            )]),
+            BTreeMap::new(),
+        );
+        let artifact = crate::bytecode::emitter::emit_bytecode_artifact_unchecked(
+            &[unit],
+            &[bundle],
+            &plans,
+        )
+        .expect("union-typed construct emission succeeds");
+        let leaf_shape = artifact
+            .image
+            .pools
+            .shapes
+            .iter()
+            .filter_map(|entry| match entry {
+                skiff_artifact_model::BytecodePoolEntry::ShapeRef { shape } => Some(shape),
+                _ => None,
+            })
+            .find(|shape| {
+                shape.fields.len() == 1
+                    && shape
+                        .fields
+                        .first()
+                        .is_some_and(|field| field.name == "marker")
+            })
+            .expect("the construct shape is interned");
+        let tagged_type = &artifact.image.pools.types[leaf_shape.type_ref as usize];
+        assert_eq!(
+            tagged_type,
+            &skiff_artifact_model::BytecodePoolEntry::TypeRef {
+                ty: TypeRefIr::PublicationType {
+                    module_path: "main".to_string(),
+                    type_index: 0,
+                },
+            },
+            "the runtime tag must be the nominal leaf, not the union context"
         );
     }
 }
