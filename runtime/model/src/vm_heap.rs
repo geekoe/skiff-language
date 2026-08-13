@@ -11,6 +11,22 @@ use crate::{
     service_error::CatchIdentity,
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
+use std::fmt;
+
+/// Debug projection for [`ValueSlot`], which intentionally has no `Debug`
+/// impl of its own. Exposing only kind and handle keeps the projection free of
+/// any artifact/type identity that a heap-neutral model must not interpret.
+struct ValueSlotDebug<'a>(&'a ValueSlot);
+
+impl fmt::Debug for ValueSlotDebug<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ValueSlot")
+            .field("kind", &self.0.kind())
+            .field("handle", &self.0.as_handle())
+            .finish()
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct VmMapEntry {
@@ -31,6 +47,132 @@ pub enum VmHeapPathSegment {
     MapKey,
 }
 
+/// One fully resolved writable path segment pinned by
+/// [`VmHeap::prepare_writable_path`].
+///
+/// Resolution consumes the positionally ordered selectors: every `ArrayIndex`
+/// and `MapKey` resolves against the next selector at prepare time, so commit
+/// never re-resolves an intermediate path fact.
+#[derive(Clone, PartialEq, Eq)]
+pub enum PinnedWritablePathSegment {
+    DenseField { field: String },
+    ArrayIndex { index: usize },
+    MapKey { key: ValueSlot },
+}
+
+impl fmt::Debug for PinnedWritablePathSegment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DenseField { field } => formatter
+                .debug_struct("DenseField")
+                .field("field", field)
+                .finish(),
+            Self::ArrayIndex { index } => formatter
+                .debug_struct("ArrayIndex")
+                .field("index", index)
+                .finish(),
+            Self::MapKey { key } => formatter
+                .debug_struct("MapKey")
+                .field("key", &ValueSlotDebug(key))
+                .finish(),
+        }
+    }
+}
+
+/// Single-use pinned path facts produced by [`VmHeap::prepare_writable_path`]
+/// and consumed exactly once by [`VmHeap::commit_writable_path`].
+///
+/// The type is deliberately opaque to the VM: the fiber holds it without
+/// inspecting its contents, and it is intentionally not `Clone` so a pin can
+/// never be split into two competing commits. The concrete heap owns every
+/// meaning; the model only carries the neutral facts every implementation
+/// pins: the owned root, the fully resolved segment chain, the container slot
+/// each segment applies to, and the terminal leaf being replaced.
+pub struct WritablePathPreparation {
+    root: ValueSlot,
+    segments: Box<[PinnedWritablePathSegment]>,
+    containers: Box<[ValueSlot]>,
+    leaf: Option<ValueSlot>,
+}
+
+impl fmt::Debug for WritablePathPreparation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let containers = self
+            .containers
+            .iter()
+            .map(ValueSlotDebug)
+            .collect::<Vec<_>>();
+        formatter
+            .debug_struct("WritablePathPreparation")
+            .field("root", &ValueSlotDebug(&self.root))
+            .field("segments", &self.segments)
+            .field("containers", &containers)
+            .field("leaf", &self.leaf.as_ref().map(ValueSlotDebug))
+            .finish()
+    }
+}
+
+impl WritablePathPreparation {
+    /// Pins one non-empty resolved path. `containers[i]` is the aggregate slot
+    /// that `segments[i]` applies to; `containers[0]` must equal `root`.
+    pub fn new(
+        root: ValueSlot,
+        segments: Box<[PinnedWritablePathSegment]>,
+        containers: Box<[ValueSlot]>,
+        leaf: Option<ValueSlot>,
+    ) -> Result<Self, VmHeapError> {
+        if segments.is_empty() {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::PrepareWritablePath,
+                message: "writable path preparation must pin at least one segment".to_string(),
+            });
+        }
+        if segments.len() != containers.len() {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::PrepareWritablePath,
+                message: format!(
+                    "writable path preparation pins {} segments for {} containers",
+                    segments.len(),
+                    containers.len()
+                ),
+            });
+        }
+        if containers.first().copied() != Some(root) {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::PrepareWritablePath,
+                message: "writable path preparation root does not match its first container"
+                    .to_string(),
+            });
+        }
+        Ok(Self {
+            root,
+            segments,
+            containers,
+            leaf,
+        })
+    }
+
+    /// The owned root slot pinned by prepare.
+    pub fn root(&self) -> ValueSlot {
+        self.root
+    }
+
+    /// The fully resolved segment chain, in path order.
+    pub fn segments(&self) -> &[PinnedWritablePathSegment] {
+        &self.segments
+    }
+
+    /// The container slot each segment applies to; `containers[0] == root`.
+    pub fn containers(&self) -> &[ValueSlot] {
+        &self.containers
+    }
+
+    /// The terminal leaf being replaced, when the terminal container held one.
+    pub fn leaf(&self) -> Option<ValueSlot> {
+        self.leaf
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VmHeapOperation {
     ValidateLive,
@@ -47,7 +189,8 @@ pub enum VmHeapOperation {
     RepresentationPayload,
     ArrayPushOwned,
     MapPutOwned,
-    SetWritablePath,
+    PrepareWritablePath,
+    CommitWritablePath,
     SnapshotShare,
     TransferOwner,
     ReleaseSnapshot,
@@ -311,19 +454,42 @@ pub trait VmHeap {
         })
     }
 
-    /// Mutates one already-live owned path transactionally.
+    /// Pins the intermediate path facts for one owned writable path before the
+    /// right-hand side is evaluated.
     ///
     /// `selectors` is ordered by `segments`: every `ArrayIndex` and `MapKey`
     /// consumes the next selector. Dense-field segments consume no selector.
-    fn set_writable_path(
+    /// Prepare validates liveness, ownership, and segment shape and resolves
+    /// every selector into a concrete [`PinnedWritablePathSegment`]. On error
+    /// heap state is unchanged and no observable side effect of the
+    /// right-hand side has happened yet.
+    fn prepare_writable_path(
         &mut self,
         _root: &ValueSlot,
         _segments: &[VmHeapPathSegment],
         _selectors: &[ValueSlot],
-        _value: ValueSlot,
-    ) -> Result<(), VmHeapError> {
+    ) -> Result<WritablePathPreparation, VmHeapError> {
         Err(VmHeapError::OperationKindMismatch {
-            operation: VmHeapOperation::SetWritablePath,
+            operation: VmHeapOperation::PrepareWritablePath,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Atomically applies the pinned writable path and returns the replacement
+    /// root slot.
+    ///
+    /// When every pinned container has exactly one snapshot owner the leaf is
+    /// written in place; otherwise the affected containers are cloned
+    /// (copy-on-write) and a new root is returned while every alias keeps its
+    /// original aggregate unchanged. A failure leaves the old chain and all
+    /// owner counts intact. `prepared` is consumed exactly once.
+    fn commit_writable_path(
+        &mut self,
+        _prepared: WritablePathPreparation,
+        _value: ValueSlot,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::CommitWritablePath,
             kind: ValueKind::RequestHeapRef,
         })
     }
