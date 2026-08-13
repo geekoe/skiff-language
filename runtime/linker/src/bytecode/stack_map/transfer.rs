@@ -3,7 +3,7 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_linked_bytecode::{
     LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackValue, LinkedValueDropPlan,
-    LinkedValueTransferPlan, TypeIndex,
+    LinkedValueTransferPlan, LinkedWritableLoanState, TypeIndex,
 };
 
 use crate::bytecode::{
@@ -95,6 +95,44 @@ fn apply_region_effects(
                     location,
                     "leave_region does not match the innermost active region".to_string(),
                 ));
+            }
+        }
+        Opcode::SetWritablePath => {
+            let root_slot = instruction
+                .resolved_operands()
+                .iter()
+                .find_map(|resolved| match resolved.target() {
+                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::FrameSlot(slot) => {
+                        Some(slot)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "set_writable_path has no root slot target".to_string(),
+                    )
+                })?;
+            let path = instruction
+                .resolved_operands()
+                .iter()
+                .find_map(|resolved| match resolved.target() {
+                    skiff_runtime_linked_bytecode::LinkedInstructionTarget::WritablePath(path) => {
+                        Some(path)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "set_writable_path has no writable path target".to_string(),
+                    )
+                })?;
+            let loan = LinkedWritableLoanState::new(root_slot, path);
+            if !state.writable_loans.contains(&loan) {
+                state.writable_loans.push(loan);
+                state.writable_loans.sort_unstable();
+                state.writable_loans.dedup();
             }
         }
         _ => {}

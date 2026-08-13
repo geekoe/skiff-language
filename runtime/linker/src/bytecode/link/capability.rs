@@ -106,9 +106,6 @@ impl DeploymentLinker<'_> {
                 if !state.active_regions().is_empty() {
                     return rejected(Phase1LinkedCapability::Exception, location);
                 }
-                if !state.writable_loans().is_empty() {
-                    return rejected(Phase1LinkedCapability::InOut, location);
-                }
                 for value in state.stack_before() {
                     admit_stack_value(
                         self,
