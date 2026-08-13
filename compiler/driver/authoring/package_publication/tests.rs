@@ -196,7 +196,7 @@ fn default_package_authoring_persists_bytecode_with_the_package_record() {
     fs::write(root.join("api.yml"), "{}\n").unwrap();
     fs::write(
         root.join("main.skiff"),
-        "function ping() -> string { return \"pong\" }\n",
+        "function ping() -> number { return 7 }\n",
     )
     .unwrap();
 
