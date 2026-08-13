@@ -51,4 +51,7 @@ pub use response_event::{
 };
 pub use response_writer::ResponseEventSink;
 pub use runner::{execution_budget_trace_attrs, response_error_to_telemetry_map};
+pub use skiff_runtime_scheduler::{
+    RequestExecutionOwnerInventory, RequestExecutionOwnerInventorySnapshot,
+};
 pub use vm_heap::RequestVmHeap;
