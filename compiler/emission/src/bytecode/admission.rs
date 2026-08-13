@@ -530,6 +530,16 @@ fn admit_statement(
                 .as_ref()
                 .is_some_and(|value| is_tail_local_call(function, value.expression))
             {
+                if let Some(callee) = tail_local_call_callee(unit, function, value.expression) {
+                    if callee_effect_may_pending(callee) {
+                        return Err(rejected_function(
+                            unit,
+                            function_key,
+                            Phase1UnsupportedCapability::PendingEffect,
+                            &format!("tail call to pending function {}", callee.symbol),
+                        ));
+                    }
+                }
                 Some(Phase1UnsupportedCapability::TailCall)
             } else {
                 None
@@ -584,6 +594,28 @@ fn admit_statement(
         ));
     }
     Ok(())
+}
+
+fn tail_local_call_callee<'a>(
+    unit: &'a MirUnit,
+    function: &MirFunction,
+    expression_index: u32,
+) -> Option<&'a MirFunction> {
+    let expression = function.expressions.get(expression_index as usize)?;
+    let ExprIr::Call { call } = &expression.expression else {
+        return None;
+    };
+    let CallTargetIr::LocalExecutable { executable_index } = call.target else {
+        return None;
+    };
+    unit.function_by_executable_index(executable_index).ok()
+}
+
+fn callee_effect_may_pending(callee: &MirFunction) -> bool {
+    matches!(
+        &callee.effect_summary,
+        CallableEffectSummary::Analyzed { effects } if effects.may_pending || effects.may_pending()
+    )
 }
 
 fn is_tail_local_call(function: &MirFunction, expression_index: u32) -> bool {
