@@ -7,9 +7,12 @@
    哨兵矩阵（哨兵输入必须是上一阶段真实生产边界的产出，不能 hand-build）。
 2. **执行地图**：`tasks/phase-N-execution-map.md` 一张表：lane / worktree / 写集 / join 顺序 / Gate 矩阵。
    这是写集的唯一权威，任何其它载体不重复文件清单。
-3. **派发**：2–3 个 lane 并行（kernel 单一 owner；compiler；proof+gate）。派发前花几分钟做只读 gate-map
-   预调查：目标面会经过哪些 pipeline 门、门在谁家，写进 MAP。任务信封 = 引用契约/MAP 条目 + 验收判据 +
-   预算 + 上报格式。写集外需求先上报，获准后**先改 MAP 再动代码**。
+3. **派发**：把本 Phase 写面拆成互不重叠的 lane，能拆几个就并行几个，**不设固定数量和固定角色模板**
+   （Phase 4 的写面可能是 scheduler kernel / session-request owner / VM control，Phase 6 是 service/task/
+   interface/callback/Actor 各 lane）。唯一硬约束：每个中央状态机只有一个 write owner；proof lane 独立。
+   lane 数量由写面分区推导，不由角色名决定。派发前花几分钟做只读 gate-map 预调查：目标面会经过哪些
+   pipeline 门、门在谁家，写进 MAP。任务信封 = 引用契约/MAP 条目 + 验收判据 + 预算 + 上报格式。写集外
+   需求先上报，获准后**先改 MAP 再动代码**。
 4. **验证**：focused 每轮跑；三包/全量只在 join 点跑；跨 worker cargo 用目录租约串行；>30s 重定向轮询；
    结果只跑一次。
 5. **收敛**：逐 gate 转绿；每扇门转绿时同一 join 收进 Gate 矩阵（含 fmt/clippy 自检命令）。
