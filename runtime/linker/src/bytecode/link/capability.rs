@@ -51,9 +51,6 @@ impl DeploymentLinker<'_> {
             if frame.stream_result_type_ref().is_some() {
                 return rejected(Phase1LinkedCapability::Stream, function_location);
             }
-            if !frame.writable_local_slots().is_empty() {
-                return rejected(Phase1LinkedCapability::Writable, function_location);
-            }
             if frame
                 .parameters()
                 .iter()
@@ -67,7 +64,7 @@ impl DeploymentLinker<'_> {
                 .chain(frame.result_plans())
                 .chain(frame.parameters().iter().map(|parameter| parameter.plan()))
             {
-                admit_trivial_plan(plan, function_location.clone())?;
+                admit_transfer_plan(plan, function_location.clone())?;
             }
             for ty in frame.slot_types().iter().chain(frame.result_types()) {
                 admit_type_index(candidate, *ty, false, function_location.clone())?;
@@ -213,8 +210,13 @@ impl DeploymentLinker<'_> {
             }
         }
         for ty in candidate.types() {
-            if ty.container_layout().is_some() {
-                return rejected(Phase1LinkedCapability::ValueShape, location);
+            if let Some(layout) = ty.container_layout() {
+                if !matches!(
+                    layout.kind(),
+                    skiff_runtime_linked_bytecode::LinkedContainerLayoutKind::Array
+                ) {
+                    return rejected(Phase1LinkedCapability::ValueShape, location);
+                }
             }
             admit_type(ty.type_ref(), true, location.clone())?;
         }
@@ -274,7 +276,7 @@ fn admit_constant(
         return rejected(Phase1LinkedCapability::Constant, location);
     }
     admit_type_index(candidate, constant.ty(), false, location.clone())?;
-    admit_trivial_plan(constant.plan(), location)
+    admit_transfer_plan(constant.plan(), location)
 }
 
 fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), BytecodeLinkError> {
@@ -294,6 +296,7 @@ fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), By
             | Opcode::BudgetCheckpoint
             | Opcode::CallLocal
             | Opcode::Return
+            | Opcode::Drop
             | Opcode::Not
             | Opcode::Negate
             | Opcode::Add
@@ -306,6 +309,15 @@ fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), By
             | Opcode::LessOrEqual
             | Opcode::GreaterThan
             | Opcode::GreaterOrEqual
+            | Opcode::NewRecord
+            | Opcode::GetDenseField
+            | Opcode::SetWritablePath
+            | Opcode::NewArrayBuilder
+            | Opcode::ArrayBuilderPush
+            | Opcode::FreezeArray
+            | Opcode::ArrayGet
+            | Opcode::ArrayLen
+            | Opcode::ArrayPushOwned
     ) {
         return Ok(());
     }
@@ -320,29 +332,20 @@ fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), By
         Opcode::InvokeCallback | Opcode::MakeCallback => Phase1LinkedCapability::Callback,
         Opcode::StreamNext | Opcode::EmitStream => Phase1LinkedCapability::Stream,
         Opcode::TailCallLocal => Phase1LinkedCapability::TailCall,
-        Opcode::CallLocalInOut | Opcode::SetWritablePath => Phase1LinkedCapability::InOut,
+        Opcode::CallLocalInOut => Phase1LinkedCapability::InOut,
         Opcode::Throw
         | Opcode::Rethrow
         | Opcode::EnterRegion
         | Opcode::LeaveRegion
         | Opcode::Trap => Phase1LinkedCapability::Exception,
         Opcode::SwitchTag
-        | Opcode::NewRecord
-        | Opcode::GetDenseField
-        | Opcode::NewArrayBuilder
-        | Opcode::ArrayBuilderPush
-        | Opcode::FreezeArray
         | Opcode::NewMapBuilder
         | Opcode::MapBuilderPut
         | Opcode::FreezeMap
-        | Opcode::ArrayGet
         | Opcode::MapGet
-        | Opcode::ArrayLen
         | Opcode::MapLen
         | Opcode::MapEntryAt
-        | Opcode::ArrayPushOwned
         | Opcode::MapPutOwned => Phase1LinkedCapability::Aggregate,
-        Opcode::Drop => Phase1LinkedCapability::Resource,
         Opcode::RepresentationWrap => Phase1LinkedCapability::ValueShape,
         unsupported => Phase1LinkedCapability::UnsupportedOpcode(unsupported),
     };
@@ -365,13 +368,11 @@ fn admit_resolved_target(
             };
             return admit_constant_reference(linker, candidate, constant, location);
         }
-        LinkedInstructionTarget::SwitchTable(_) | LinkedInstructionTarget::Shape(_) => {
-            Phase1LinkedCapability::Aggregate
-        }
+        LinkedInstructionTarget::Shape(_) => return Ok(()),
+        LinkedInstructionTarget::SwitchTable(_) => Phase1LinkedCapability::Aggregate,
         LinkedInstructionTarget::ActiveRegion(_) => Phase1LinkedCapability::Exception,
-        LinkedInstructionTarget::CallLoanLayout(_) | LinkedInstructionTarget::WritablePath(_) => {
-            Phase1LinkedCapability::InOut
-        }
+        LinkedInstructionTarget::WritablePath(_) => return Ok(()),
+        LinkedInstructionTarget::CallLoanLayout(_) => Phase1LinkedCapability::InOut,
         LinkedInstructionTarget::ServiceOperation(_) => Phase1LinkedCapability::ServiceTarget,
         LinkedInstructionTarget::ActorMethod(_) => Phase1LinkedCapability::Actor,
         LinkedInstructionTarget::InterfaceTable(_) => Phase1LinkedCapability::Interface,
@@ -407,7 +408,7 @@ fn admit_constant_reference(
         return rejected(Phase1LinkedCapability::Constant, location);
     }
     admit_type_index(candidate, constant.ty(), false, location.clone())?;
-    admit_trivial_plan(constant.plan(), location.clone())?;
+    admit_transfer_plan(constant.plan(), location.clone())?;
     match node.value() {
         LinkedFrozenConstantValue::Literal(value) if immediate_literal(value) => Ok(()),
         LinkedFrozenConstantValue::Literal(_) => {
@@ -417,19 +418,15 @@ fn admit_constant_reference(
     }
 }
 
-fn admit_trivial_plan(
+fn admit_transfer_plan(
     plan: &LinkedValueTransferPlan,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
-    if matches!(
-        plan,
+    match plan {
         LinkedValueTransferPlan::SnapshotShare {
-            drop: LinkedValueDropPlan::Trivial
-        }
-    ) {
-        Ok(())
-    } else {
-        rejected(Phase1LinkedCapability::Resource, location)
+            drop: LinkedValueDropPlan::Trivial | LinkedValueDropPlan::SnapshotRelease,
+        } => Ok(()),
+        _ => rejected(Phase1LinkedCapability::Resource, location),
     }
 }
 
@@ -457,7 +454,7 @@ fn admit_signature(
         .iter()
         .chain(signature.result_plans())
     {
-        admit_trivial_plan(plan, location.clone())?;
+        admit_transfer_plan(plan, location.clone())?;
     }
     admit_effect_summary(signature.effect_summary(), location)
 }
@@ -502,7 +499,7 @@ fn admit_stack_value(
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     admit_type_index(candidate, ty, false, location.clone())?;
-    admit_trivial_plan(plan, location)
+    admit_transfer_plan(plan, location)
 }
 
 fn admit_type_index(
@@ -531,6 +528,16 @@ fn admit_type(
             return Ok(());
         }
         TypeRefIr::Literal { value } if immediate_literal(value) => return Ok(()),
+        TypeRefIr::Record { fields } => {
+            for field in fields.values() {
+                admit_type(field, false, location.clone())?;
+            }
+            return Ok(());
+        }
+        TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
+            admit_type(&args[0], false, location.clone())?;
+            return Ok(());
+        }
         TypeRefIr::TypeParam { .. } | TypeRefIr::AppliedNominal { .. } => {
             Phase1LinkedCapability::Generic
         }
@@ -559,4 +566,171 @@ fn rejected<T>(
         capability,
         location,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use skiff_artifact_model::{
+        PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, TypeRefIr,
+    };
+    use skiff_runtime_linked_bytecode::{LinkedValueDropPlan, LinkedValueTransferPlan};
+
+    use super::{admit_opcode, admit_transfer_plan, admit_type};
+    use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability};
+
+    fn location() -> BytecodeLinkLocation {
+        BytecodeLinkLocation::Package {
+            package: Box::new(PackageArtifactRef {
+                package_id: "example.com/admission".to_string(),
+                package_version: "0.1.0".to_string(),
+                package_build_id: PackageBuildId::new("build"),
+                package_local_abi_identity: PackageLocalAbiIdentity::new("abi"),
+            }),
+        }
+    }
+
+    #[test]
+    fn capability_admission_admits_record_and_array_opcodes() {
+        for opcode in [
+            skiff_artifact_model::Opcode::NewRecord,
+            skiff_artifact_model::Opcode::GetDenseField,
+            skiff_artifact_model::Opcode::SetWritablePath,
+            skiff_artifact_model::Opcode::NewArrayBuilder,
+            skiff_artifact_model::Opcode::ArrayBuilderPush,
+            skiff_artifact_model::Opcode::FreezeArray,
+            skiff_artifact_model::Opcode::ArrayGet,
+            skiff_artifact_model::Opcode::ArrayLen,
+            skiff_artifact_model::Opcode::ArrayPushOwned,
+            skiff_artifact_model::Opcode::Drop,
+        ] {
+            assert!(admit_opcode(opcode, location()).is_ok(), "{opcode:?}");
+        }
+    }
+
+    #[test]
+    fn capability_admission_keeps_other_aggregate_lanes_fail_closed() {
+        let expectations = [
+            (
+                skiff_artifact_model::Opcode::NewMapBuilder,
+                Phase1LinkedCapability::Aggregate,
+            ),
+            (
+                skiff_artifact_model::Opcode::MapPutOwned,
+                Phase1LinkedCapability::Aggregate,
+            ),
+            (
+                skiff_artifact_model::Opcode::RepresentationWrap,
+                Phase1LinkedCapability::ValueShape,
+            ),
+            (
+                skiff_artifact_model::Opcode::TailCallLocal,
+                Phase1LinkedCapability::TailCall,
+            ),
+            (
+                skiff_artifact_model::Opcode::Throw,
+                Phase1LinkedCapability::Exception,
+            ),
+        ];
+        for (opcode, expected) in expectations {
+            assert!(matches!(
+                admit_opcode(opcode, location()),
+                Err(BytecodeLinkError::UnsupportedPhase1Capability {
+                    capability,
+                    ..
+                }) if capability == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn capability_admission_admits_nested_record_and_array_types() {
+        let nested = TypeRefIr::Record {
+            fields: BTreeMap::from([
+                ("count".to_string(), TypeRefIr::builtin("number")),
+                (
+                    "inner".to_string(),
+                    TypeRefIr::Record {
+                        fields: BTreeMap::from([(
+                            "ok".to_string(),
+                            TypeRefIr::builtin("bool"),
+                        )]),
+                    },
+                ),
+                (
+                    "items".to_string(),
+                    TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::builtin("number")],
+                    },
+                ),
+            ]),
+        };
+        assert!(admit_type(&nested, false, location()).is_ok());
+    }
+
+    #[test]
+    fn capability_admission_keeps_unsupported_value_shapes_fail_closed() {
+        let cases = [
+            (
+                TypeRefIr::Record {
+                    fields: BTreeMap::from([("name".to_string(), TypeRefIr::builtin("string"))]),
+                },
+                Phase1LinkedCapability::ValueShape,
+            ),
+            (
+                TypeRefIr::Builtin {
+                    name: "Map".to_string(),
+                    args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("number")],
+                },
+                Phase1LinkedCapability::ValueShape,
+            ),
+            (
+                TypeRefIr::Nullable {
+                    inner: Box::new(TypeRefIr::builtin("number")),
+                },
+                Phase1LinkedCapability::ValueShape,
+            ),
+        ];
+        for (ty, expected) in cases {
+            assert!(matches!(
+                admit_type(&ty, false, location()),
+                Err(BytecodeLinkError::UnsupportedPhase1Capability {
+                    capability,
+                    ..
+                }) if capability == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn capability_admission_admits_exact_snapshot_plans_only() {
+        assert!(admit_transfer_plan(
+            &LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            },
+            location(),
+        )
+        .is_ok());
+        assert!(admit_transfer_plan(
+            &LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::SnapshotRelease,
+            },
+            location(),
+        )
+        .is_ok());
+        assert!(matches!(
+            admit_transfer_plan(
+                &LinkedValueTransferPlan::MoveOnly {
+                    drop: LinkedValueDropPlan::SnapshotRelease,
+                },
+                location(),
+            ),
+            Err(BytecodeLinkError::UnsupportedPhase1Capability {
+                capability: Phase1LinkedCapability::Resource,
+                ..
+            })
+        ));
+    }
 }

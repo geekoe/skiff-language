@@ -97,6 +97,7 @@ impl RuntimeHost {
                 cancellation,
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
+                heap: None,
             });
             let owner_inventory = owner_inventory.into_snapshot();
             let terminal = match result {
