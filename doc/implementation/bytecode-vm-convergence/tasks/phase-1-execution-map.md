@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 11; L1/L2/K1/L3/K2/L4 accepted, L5 owner-context/facade/cleanup correction landed, awaiting fresh independent L5 review
+> Status: active; revision 12; L1/L2/K1/L3/K2/L4 accepted, fresh independent L5 review PASS, O1 event projection is the sole ready owner
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -447,3 +447,35 @@ L5 acceptance receipt.
   event projection -> T-R/V1 migration -> merged Gate -> fresh Acceptance. Phase 1 is not complete at this revision, and
   Phase 2 production remains forbidden. Compile-green at this revision is not a waiver; it is the corrected surface that the
   fresh L5 reviewer must now read.
+
+## 19. Revision 12 — fresh L5 review PASS, cleanup wire-shape decision, O1-ready frontier
+
+This revision closes the L5 acceptance gate and records the single deviation decision that all downstream typed consumers
+must share. The authoritative review is
+[`rev1-l5-owner-inventory-review.md`](../reviews/rev1-l5-owner-inventory-review.md).
+
+- R0 acceptance baseline was recorded and committed as `e2e19233`
+  ([`phase-1-acceptance-baseline.md`](./phase-1-acceptance-baseline.md)): code baseline commit `2be7d126` / tree
+  `92c6920b`; green baseline is the three-package `cargo test` (log `/tmp/skiff-p1-l5-correction-full.log`, SHA-256
+  `851d52fa168f6b21f58bb31d90256e17d798c1b4af09fc393f844355c392c476`); old red is R-FMT (workspace `cargo fmt --check`
+  under rustfmt 1.8.0, 652 diffs) and R-CLIPPY (`clippy::never_loop` @
+  `compiler/emission/src/bytecode/admission.rs:60`). Every later step must distinguish new red from those two waived items.
+- A fresh independent read-only reviewer examined `296462db^..6d0d215b` and returned **PASS**: opaque owner-bound
+  `RequestExecutionContext` with `into_not_started()`/sole `drive()` consumption, lock-ordered prepare → inventory →
+  container → unarmed placeholder → infallible `commit()`, domain-tagged `OwnerCreationError`, sole public
+  `drive_runtime_bytecode_request`, and byte-for-byte snapshot propagation through `CompletingRequest → CleanupPermit →
+  CleanupGuard → RequestCleanupComplete`. DEC1-O questions 6/7/8/9 and every Revision 10 blocker answered PASS with
+  file:line evidence; the receipt is committed as `cb4ecf76`.
+- Deviation decision: **nested (N)**. `RequestCleanupComplete` keeps the frozen snapshot as one nested payload field; the
+  binding wire shape is `payload.ownerInventory.{pending,resource,child}.{current,everCreated}`. DEC1-O carries the
+  amendment; R2 (production), R3 (T-R typed matching) and R4 (Gate JS schema) must all use these exact names. No flat
+  `pendingOwnerCount`/`resourceOwnerCount`/`childOwnerCount` top-level field is emitted.
+- One blocker-level pre-existing finding is routed to R2: the accepted DEC1-O blocked-callback/finalizing-race test
+  (`request_id_stays_guarded_through_terminal_and_cleanup_observers` + `LifecycleBlockingSink`) was removed by L4
+  `2e24763b` and is absent from the current tree. R2 must restore a typed-key-equivalent version in
+  `runtime/host/src/host/request_supervisor.rs` before O1 lands; the four-commit L5 chain itself is not re-FAILed for it.
+- Frontier: O1 event projection (R2) is the sole production-ready owner. After R2 lands,
+  `phase_0_vcp_tests.rs` (exact five-event assertion) is expected red until R3 migrates it to five-base-plus-six-bounded
+  instances; this window is planned and must not be mistaken for a new regression.
+- Remaining order is unchanged and serial: R2 O1 → R3 T-R/V1 → R4 Gate schema/matrix → R5 freeze + fresh Acceptance →
+  R6 cleanup. Phase 1 is not complete at this revision, and Phase 2 production remains forbidden.

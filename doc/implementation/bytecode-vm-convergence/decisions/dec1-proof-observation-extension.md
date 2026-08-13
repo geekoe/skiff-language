@@ -465,3 +465,28 @@ but the single lock, uncloneable carrier leases, three literal installation site
 freeze point, propagation and write-set above are fixed. If any actual constructor cannot be made lease-bearing, or the
 canonical Phase 1 driver cannot keep all three owner-producing capabilities physically absent, L5 is blocked and must
 return to Design; it may not add a second ledger, synthesize zeroes, default a token or weaken the Proof.
+
+## Amendment (MAP1 Revision 12; REV1-L5; 2026-08-13)
+
+The typed event contract's six flat cleanup fields are delivered as one nested payload object: the frozen
+`RequestExecutionOwnerInventorySnapshot` is carried byte-for-byte as `RequestCleanupComplete { ownerInventory: ... }`.
+Serde continues to use the existing `kind`/`payload` envelope and camel-case payload fields. The binding wire shape is:
+
+```json
+{
+  "kind": "RequestCleanupComplete",
+  "payload": {
+    "ownerInventory": {
+      "pending":  { "current": "<u64>", "everCreated": "<bool>" },
+      "resource": { "current": "<u64>", "everCreated": "<bool>" },
+      "child":    { "current": "<u64>", "everCreated": "<bool>" }
+    }
+  }
+}
+```
+
+This is the L5-chosen snapshot layout authorized above ("L5 may choose private names/layout for the fixed-size inventory
+state and snapshot") and is the binding wire contract for O1 production, T-R typed matching and the Gate schema. The six
+facts map 1:1: `pendingOwnerCount -> ownerInventory.pending.current`,
+`pendingOwnerEverCreated -> ownerInventory.pending.everCreated`, and likewise for `resource` and `child`. No flat
+`pendingOwnerCount`/`resourceOwnerCount`/`childOwnerCount` top-level field is emitted.
