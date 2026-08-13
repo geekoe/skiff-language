@@ -4197,14 +4197,15 @@ mod tests {
     use std::collections::BTreeMap;
 
     use skiff_artifact_model::{
-        CallableEffectSummary, ExprIr, ExprRefIr, FileIrUnit, InstructionSourceSite, LiteralIr,
-        PackageCallableId, SyntheticInstructionSiteReason, TypeRefIr,
+        BinaryOpIr, CallableEffectSummary, ExprIr, ExprRefIr, FileIrUnit, InstructionSourceSite,
+        LiteralIr, PackageCallableId, SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan,
+        ValueTransferPlan,
     };
     use skiff_compiler_lowering::{
         mir::{
             liveness::compute_liveness, MirBlock, MirExecutableKind, MirExpression, MirFunction,
-            MirLiveness, MirSourceEventPlan, MirSourceEventUnavailableReason, MirStatementEntry,
-            MirStmt, MirStmtKind, MirUnit,
+            MirLiveness, MirSlot, MirSlotKind, MirSourceEventPlan, MirSourceEventUnavailableReason,
+            MirStatementEntry, MirStmt, MirStmtKind, MirUnit,
         },
         Bounds, ConstEvaluator,
     };
@@ -4347,6 +4348,200 @@ mod tests {
             row.start_pc > 0,
             "the raise site must sit after the payload expression, got pc {}",
             row.start_pc
+        );
+    }
+
+    /// `.tag == "ok"` reuses the canonical constant-pool string constant and
+    /// the existing dense-field/Equal paths; it never invents a second
+    /// discriminator opcode.
+    #[test]
+    fn tag_discriminator_equality_emits_a_constant_comparison() {
+        let catch_result = TypeRefIr::Builtin {
+            name: "CatchResult".to_string(),
+            args: vec![TypeRefIr::builtin("void"), TypeRefIr::builtin("number")],
+        };
+        let tag_type = TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "err".to_string(),
+                    },
+                },
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "ok".to_string(),
+                    },
+                },
+            ],
+        };
+        let mut function = MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:main".to_string(),
+                module_path: "main".to_string(),
+                executable_index: 0,
+            },
+            symbol: "main.run".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("void"),
+            self_type: None,
+            receiver: None,
+            slots: vec![MirSlot {
+                slot: 0,
+                name: "attempt".to_string(),
+                kind: MirSlotKind::Local,
+                writable_local: false,
+                ty: Some(catch_result.clone()),
+            }],
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: vec![
+                MirExpression {
+                    index: 0,
+                    expression: ExprIr::LoadSlot { slot: 0 },
+                    ty: catch_result.clone(),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 1,
+                    expression: ExprIr::Field {
+                        object: ExprRefIr { expression: 0 },
+                        field: "tag".to_string(),
+                    },
+                    ty: tag_type,
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 2,
+                    expression: ExprIr::Literal {
+                        value: LiteralIr::String {
+                            value: "ok".to_string(),
+                        },
+                    },
+                    ty: TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "ok".to_string(),
+                        },
+                    },
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 3,
+                    expression: ExprIr::Binary {
+                        op: BinaryOpIr::Equal,
+                        left: ExprRefIr { expression: 1 },
+                        right: ExprRefIr { expression: 2 },
+                    },
+                    ty: TypeRefIr::builtin("bool"),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+            ],
+            blocks: vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Expr {
+                        value: ExprRefIr { expression: 3 },
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            regions: Vec::new(),
+            statements: vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:main:run".to_string()),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+        };
+        function.liveness = compute_liveness(&function).expect("test liveness computes");
+
+        let mut file_ir = FileIrUnit::empty("main", "source-hash");
+        file_ir.file_ir_identity = "file:main".to_string();
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&file_ir)
+            .expect("test bundle evaluates");
+        let unit = MirUnit {
+            file_ir_identity: file_ir.file_ir_identity.clone(),
+            module_path: file_ir.module_path.clone(),
+            actor_declarations: file_ir.actor_declarations.clone(),
+            external_refs: file_ir.external_refs.clone(),
+            source_map: file_ir.source_map.clone(),
+            type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
+            link_targets: file_ir.link_targets.clone(),
+            constants: Vec::new(),
+            functions: vec![function],
+        };
+        let plans = BytecodeValueTransferPlans::new(
+            BTreeMap::from([(
+                "main::run".to_string(),
+                FunctionValueTransferPlans {
+                    slot_plans: vec![ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::SnapshotRelease,
+                    }],
+                    result_plans: Vec::new(),
+                },
+            )]),
+            BTreeMap::new(),
+        );
+        let artifact = crate::bytecode::emitter::emit_bytecode_artifact_unchecked(
+            &[unit],
+            &[bundle],
+            &plans,
+        )
+        .expect("tag discriminator emission succeeds");
+        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+            .expect("tag discriminator bytecode validates");
+        let function = view
+            .functions()
+            .iter()
+            .find(|function| function.function_key == "main::run")
+            .expect("run function validates");
+        let opcodes = function
+            .instructions
+            .iter()
+            .map(|instruction| instruction.descriptor.kind)
+            .collect::<Vec<_>>();
+        assert!(opcodes.contains(&Opcode::GetDenseField));
+        assert!(opcodes.contains(&Opcode::Const));
+        assert!(opcodes.contains(&Opcode::Equal));
+        assert!(
+            artifact
+                .image
+                .frozen_constant_graph
+                .nodes
+                .iter()
+                .any(|node| matches!(
+                    node,
+                    skiff_artifact_model::FrozenConstantNode::Literal {
+                        literal: LiteralIr::String { value }
+                    } if value == "ok"
+                )),
+            "the discriminator constant reuses the constant pool"
         );
     }
 }
