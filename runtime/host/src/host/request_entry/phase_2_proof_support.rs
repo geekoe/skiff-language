@@ -8,14 +8,16 @@ use skiff_runtime_transport::protocol::decode_binary_frame;
 use tokio::{sync::mpsc, time::timeout};
 
 mod fixture;
+mod request_composition;
 mod spy_heap;
 
 pub(super) use fixture::{
     Phase2FixtureBuild, Phase2PublishedFixture, PHASE2_NEGATIVE_FIXTURE_RELATIVE,
     PHASE2_VCP_FIXTURE_RELATIVE,
 };
+pub(super) use request_composition::drive_phase_2_vcp_request;
 pub(super) use spy_heap::{
-    heap_spy_seam_requirement, HeapSpyEvent, HeapSpyTrace, RecordingVmHeap, SpySlot,
+    host_passthrough_note, HeapSpyEvent, HeapSpyTrace, RecordingVmHeap, SpySlot,
 };
 
 pub(super) use super::phase_0_proof_support::{

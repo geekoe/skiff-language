@@ -24,6 +24,7 @@ function run(seed: number) -> Probe {
   }
   var b = a
   b.inner.x = 2
+  b.inner.tags[0] = 9
   final carried = stamp(a)
   return Probe { original: carried, mutated: b }
 }
