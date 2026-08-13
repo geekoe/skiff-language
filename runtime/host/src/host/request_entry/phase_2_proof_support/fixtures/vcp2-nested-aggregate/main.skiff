@@ -1,0 +1,29 @@
+type Inner {
+  x: number,
+  tags: Array<number>,
+}
+
+type Payload {
+  inner: Inner,
+  rows: Array<Inner>,
+}
+
+type Probe {
+  original: Payload,
+  mutated: Payload,
+}
+
+function stamp(value: Payload) -> Payload {
+  return value
+}
+
+function run(seed: number) -> Probe {
+  final a = Payload {
+    inner: Inner { x: seed, tags: [1, 2] },
+    rows: [],
+  }
+  var b = a
+  b.inner.x = 2
+  final carried = stamp(a)
+  return Probe { original: carried, mutated: b }
+}

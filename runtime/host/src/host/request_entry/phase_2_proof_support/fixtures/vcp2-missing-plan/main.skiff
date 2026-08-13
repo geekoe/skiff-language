@@ -1,0 +1,8 @@
+type Bad {
+  label: string,
+}
+
+function run(value: number) -> Bad {
+  final item = Bad { label: "unplanned" }
+  return item
+}

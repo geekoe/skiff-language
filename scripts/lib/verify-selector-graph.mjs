@@ -34,6 +34,7 @@ const selectorGraph = {
     'rust-quality',
     'bytecode-vm-phase-0-gate',
     'bytecode-vm-phase-1-gate',
+    'bytecode-vm-phase-2-gate',
     'scripts-dev-sync',
     'scripts-syntax',
     'checks',
