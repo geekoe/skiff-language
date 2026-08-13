@@ -1,6 +1,6 @@
 # MAP3：Phase 3 rolling execution map
 
-> Status: active; revision 1; initial frontier dispatched
+> Status: active; revision 2; first-day lanes joined into integration, VCP red iteration starts
 >
 > Phase Contract: [`phase-3-outcome-unwind.md`](../phases/phase-3-outcome-unwind.md)
 >
@@ -81,3 +81,17 @@ checkpoint = 可见 code/test/decision 输出 + 当前 blocker。首 checkpoint 
 integration line 不是 acceptance 候选。全绿后 integrator 跑 merged preflight、freeze exact commit/tree、创建
 detached Acceptance worktree；此后任何 production/test/fixture/Gate/schema 变化开新 epoch。只有全新 Acceptance
 Agent 可出最终 verdict。
+
+## 8. Revision 2
+
+- C3 `1a2e1882`/`5d94d1cd`：Throw operand 去静态 payload_type（收敛为 value-derived transfer fact）、同步
+  throw/catch/rethrow admission 放宽（union 叶、异常 region 精确 fact、host/Pending throw 拒绝），6 个新测试。
+- K3 `e7354a3a..ef680916`（共 5 commit）：`UnwindState` 携带 `Arc<RequestException>`+cursor+phase；throw 从运行时
+  叶 tag 派生 `CatchIdentity`；rethrow 复用同一 Arc；resume_throw 两阶段 unwind；`VmError::UnhandledThrow` 删除、
+  `VmError::Thrown` typed outcome；scheduler/request 投影（Throw→user error、envelope VmFailure→sanitized
+  InternalError、PlatformTerminal 不变）；linker 放行 Throw/Rethrow/异常 region/匿名 Union。三包 301 全绿。
+  `runtime/vm/src/control.rs`（35 行，ResumeOutcome::Throw 类型与 VmRootSource）按上报阈值记入 K3 写集。
+- P3G `6d2e84c3`/`071bc917`：VCP-3 + 4 negative expected-red、受控 resume substrate、Phase 3 Gate（12 probes +
+  34 workloads：13 P3 场景 + 12 P1 回归 + 9 P2 回归），Node 113/113 绿。
+- 三 lane 已滚入 integration（`fb13148b`/`11a712b6`/`4980d316`）。P3G 在合并树上重跑找真实剩余红；join 契约
+  filter：`k3-*`/`c3-*` 由 P3G 的 contract.mjs 指定。
