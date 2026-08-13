@@ -55,6 +55,25 @@
 - **暂停点**：按用户指令，不再派发新 agent。剩余顺序：C4 修 Duration gap → 转绿 → Gate preflight →
   freeze → 独立 review → 全新 Acceptance → results/phase-4.md 合 main。这些留待恢复后继续。
 
+## 3c. Duration gap 的精确修法（恢复时按此执行，归 C4 lane）
+
+根因已定位（integrator 只读调查）：
+
+1. `core.duration.milliseconds` 是 `Context::Time` 的**纯构造器**（非宿主副作用），`after(200ms)` 在 source
+   层 desugar 成它；当前 emission admission 只放行 `std.time.sleep`，把该纯构造器当第二个 binding 拒绝；
+2. `compiler/lowering/src/const_evaluator.rs` 没有 Duration 常量折叠；`std.time.Duration` 是 prelude 名义类型，
+   `SourceValueTransferFacts` 无其 nominal facts，导致 transfer-plan 失败。
+
+修法（三处，同属 compiler 写面）：
+
+- admission：把 `core.duration.milliseconds` 放行为纯构造器（无 pending、无宿主效应），不并入 sleep authority；
+- lowering：`Duration.milliseconds(<literal>)` 常量折叠为 Duration 常量（或可物化的 immediate 表示），不产生
+  运行时宿主调用；
+- value-transfer：为 `std.time.Duration` 注册 exact source plan（沿用 native lifecycle registry 路径），使
+  sleep 的参数槽可链接。
+
+完成后 VCP-4 的 11 个场景（full-chain + 6 哨兵 + 4 negative）应转绿；否则逐 gate 收敛。
+
 ## 3. 验证与纪律
 
 - cargo 租约 `/tmp/skiff-p4-cargo-lease`（mkdir 抢租/rmdir 释放）；focused 每轮跑，三包/全量只在 join 点跑；
