@@ -1715,6 +1715,118 @@ fn constructor_validation_error_carries_structured_field_facts() {
 }
 
 #[test]
+fn union_target_typed_nominal_constructor_records_the_union_type() {
+    let model = expression_type_result(
+        r#"
+              type LeafA {
+                marker: number,
+              }
+
+              type LeafB {
+                marker: number,
+              }
+
+              function run(seed: number) -> void {
+                final leaf: LeafA | LeafB = LeafB { marker: seed }
+              }
+            "#,
+    )
+    .expect("union target typing should type check");
+    let key = ExpressionKey::new(
+        ANY_INTERFACE_MODULE.to_string(),
+        ExpressionOwnerKey::Function("run".to_string()),
+        0,
+    );
+    let fact = model.fact(&key).expect("constructor fact should exist");
+    assert_eq!(
+        fact.ty.as_ref().map(|ty| &ty.ir),
+        Some(&TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::LocalType { type_index: 0 },
+                TypeRefIr::LocalType { type_index: 1 },
+            ],
+        }),
+        "the constructor branch should widen into the declared union context"
+    );
+    assert!(
+        model.constructor_validation(&key).is_some(),
+        "the structured constructor validation fact must remain"
+    );
+}
+
+#[test]
+fn union_call_argument_constructor_records_the_parameter_union_type() {
+    let model = expression_type_result(
+        r#"
+              type LeafA {
+                marker: number,
+              }
+
+              type LeafB {
+                marker: number,
+              }
+
+              function innerThrow(leaf: LeafA | LeafB) -> void {
+              }
+
+              function run(seed: number) -> void {
+                innerThrow(LeafB { marker: seed })
+              }
+            "#,
+    )
+    .expect("union call argument should type check");
+    // Preorder: 0 = call, 1 = callee identifier, 2 = constructor, 3 = seed.
+    let key = ExpressionKey::new(
+        ANY_INTERFACE_MODULE.to_string(),
+        ExpressionOwnerKey::Function("run".to_string()),
+        2,
+    );
+    let fact = model.fact(&key).expect("constructor fact should exist");
+    assert_eq!(
+        fact.ty.as_ref().map(|ty| &ty.ir),
+        Some(&TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::LocalType { type_index: 0 },
+                TypeRefIr::LocalType { type_index: 1 },
+            ],
+        }),
+        "a union-typed parameter should widen the constructor argument"
+    );
+    assert!(model.constructor_validation(&key).is_some());
+}
+
+#[test]
+fn non_union_target_keeps_the_constructor_nominal_type() {
+    let model = expression_type_result(
+        r#"
+              type LeafA {
+                marker: number,
+              }
+
+              type LeafB {
+                marker: number,
+              }
+
+              function run(seed: number) -> void {
+                final leaf: LeafB = LeafB { marker: seed }
+              }
+            "#,
+    )
+    .expect("nominal binding should type check");
+    let key = ExpressionKey::new(
+        ANY_INTERFACE_MODULE.to_string(),
+        ExpressionOwnerKey::Function("run".to_string()),
+        0,
+    );
+    let fact = model.fact(&key).expect("constructor fact should exist");
+    assert_eq!(
+        fact.ty.as_ref().map(|ty| &ty.ir),
+        Some(&TypeRefIr::LocalType { type_index: 1 }),
+        "outside a union target the constructor keeps its own nominal type"
+    );
+}
+
+#[test]
 fn db_upsert_result_fields_are_static_expression_type_facts() {
     let source = CompilerSourceFile::parse(
         PathBuf::from("internal/db_upsert_result_fields.test.skiff"),

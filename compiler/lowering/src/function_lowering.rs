@@ -2016,9 +2016,16 @@ impl<'a> FunctionLowerer<'a> {
                     site,
                 }
             }
-            Expr::Rethrow { exception } => ExprIr::Rethrow {
-                exception_slot: self.exception_slot(exception)?,
-            },
+            Expr::Rethrow { exception } => {
+                let exception_slot = self.exception_slot(exception)?;
+                // An expression-form rethrow reads an identifier directly from
+                // its slot instead of emitting an ExprIr node. The identifier
+                // still occupies one canonical source ExpressionKey in the
+                // expression type model, so consume that key before lowering
+                // any following expression to keep fact lookups aligned.
+                self.consume_expression_key()?;
+                ExprIr::Rethrow { exception_slot }
+            }
             Expr::Catch {
                 catch_type,
                 try_expr,
