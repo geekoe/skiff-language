@@ -775,8 +775,9 @@ mod tests {
     use skiff_runtime_vm::{PendingTicket, ResumeOutcome, VmError};
 
     use super::{
-        BeginPendingError, PendingCellState, PendingOwnerDraft, PendingPublication,
-        PendingRegistry, PendingWake, PendingWakeQueue, SettleDisposition, SettlementSource,
+        lock_unpoisoned, BeginPendingError, PendingCellState, PendingOwnerDraft,
+        PendingPublication, PendingRegistry, PendingWake, PendingWakeQueue, SettleDisposition,
+        SettlementSource,
     };
     use crate::{
         PendingOwnerRegistration, RequestExecutionOwnerInventory, RootDisposition, RootEscrow,
