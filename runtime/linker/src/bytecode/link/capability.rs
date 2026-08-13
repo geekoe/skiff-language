@@ -1,14 +1,20 @@
+use std::collections::BTreeSet;
+
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryStreamContract, CallableEffectSummary, GatewayDispatchMode,
-    GatewayProtocolSurface, LiteralIr, Opcode, ParamModeIr, TypeRefIr,
+    GatewayProtocolSurface, LiteralIr, Opcode, PackageLocalAbiSymbol, PackageRefIr,
+    PackageSymbolRef, ParamModeIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedBytecodeCandidate, LinkedCallableSignature, LinkedConstantReference,
     LinkedFrozenConstantValue, LinkedGatewayCallableRole, LinkedInstructionTarget, LinkedSlotState,
     LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
 };
+use skiff_runtime_loader::HydratedBytecodePackage;
 
-use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability};
+use crate::bytecode::{
+    types::normalize_type, BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability,
+};
 
 use super::DeploymentLinker;
 
@@ -20,6 +26,7 @@ impl DeploymentLinker<'_> {
         &self,
         candidate: &LinkedBytecodeCandidate,
     ) -> Result<(), BytecodeLinkError> {
+        let mut admitted_symbols = BTreeSet::new();
         self.admit_public_roots(candidate)?;
 
         for function in candidate.functions() {
@@ -38,7 +45,13 @@ impl DeploymentLinker<'_> {
                 // for otherwise admitted opcodes.
                 admit_opcode(instruction.opcode(), location.clone())?;
                 for resolved in instruction.resolved_operands() {
-                    admit_resolved_target(self, candidate, resolved.target(), location.clone())?;
+                    admit_resolved_target(
+                        self,
+                        candidate,
+                        resolved.target(),
+                        &mut admitted_symbols,
+                        location.clone(),
+                    )?;
                 }
             }
 
@@ -67,7 +80,14 @@ impl DeploymentLinker<'_> {
                 admit_transfer_plan(plan, function_location.clone())?;
             }
             for ty in frame.slot_types().iter().chain(frame.result_types()) {
-                admit_type_index(candidate, *ty, false, function_location.clone())?;
+            admit_type_index(
+                self,
+                candidate,
+                *ty,
+                false,
+                &mut admitted_symbols,
+                function_location.clone(),
+            )?;
             }
             if !function.exception_regions().is_empty() || !function.active_regions().is_empty() {
                 return rejected(Phase1LinkedCapability::Exception, function_location);
@@ -90,11 +110,25 @@ impl DeploymentLinker<'_> {
                     return rejected(Phase1LinkedCapability::InOut, location);
                 }
                 for value in state.stack_before() {
-                    admit_stack_value(candidate, value.ty(), value.plan(), location.clone())?;
+                    admit_stack_value(
+                        self,
+                        candidate,
+                        value.ty(),
+                        value.plan(),
+                        &mut admitted_symbols,
+                        location.clone(),
+                    )?;
                 }
                 for slot in state.slots_before() {
                     if let LinkedSlotState::Live(value) = slot {
-                        admit_stack_value(candidate, value.ty(), value.plan(), location.clone())?;
+                        admit_stack_value(
+                            self,
+                            candidate,
+                            value.ty(),
+                            value.plan(),
+                            &mut admitted_symbols,
+                            location.clone(),
+                        )?;
                     }
                 }
             }
@@ -107,8 +141,10 @@ impl DeploymentLinker<'_> {
         // capability diagnostic.
         for entry in candidate.operation_entries() {
             admit_signature(
+                self,
                 candidate,
                 entry.signature(),
+                &mut admitted_symbols,
                 BytecodeLinkLocation::OperationEntry {
                     deployment: Box::new(self.deployment.reference().clone()),
                     contract_operation_id: entry.contract_operation_id().clone(),
@@ -118,8 +154,10 @@ impl DeploymentLinker<'_> {
         for entry in candidate.gateway_entries() {
             for callable in entry.callables() {
                 admit_signature(
+                    self,
                     candidate,
                     callable.signature(),
+                    &mut admitted_symbols,
                     BytecodeLinkLocation::GatewayEntry {
                         deployment: Box::new(self.deployment.reference().clone()),
                         gateway_entry_key: entry.gateway_entry_key().clone(),
@@ -127,7 +165,7 @@ impl DeploymentLinker<'_> {
                 )?;
             }
         }
-        self.admit_global_tables(candidate)
+        self.admit_global_tables(candidate, &mut admitted_symbols)
     }
 
     fn admit_public_roots(
@@ -195,10 +233,11 @@ impl DeploymentLinker<'_> {
     fn admit_global_tables(
         &self,
         candidate: &LinkedBytecodeCandidate,
+        admitted_symbols: &mut BTreeSet<String>,
     ) -> Result<(), BytecodeLinkError> {
         let location = self.deployment_location();
         for constant in candidate.constants() {
-            admit_constant(self, candidate, constant)?;
+            admit_constant(self, candidate, constant, admitted_symbols)?;
         }
         for node in candidate.frozen_constant_nodes() {
             let location = frozen_node_location(self, node);
@@ -218,7 +257,13 @@ impl DeploymentLinker<'_> {
                     return rejected(Phase1LinkedCapability::ValueShape, location);
                 }
             }
-            admit_type(ty.type_ref(), true, location.clone())?;
+            admit_type(
+                self,
+                ty.type_ref(),
+                true,
+                admitted_symbols,
+                location.clone(),
+            )?;
         }
         Ok(())
     }
@@ -267,6 +312,7 @@ fn admit_constant(
     linker: &DeploymentLinker<'_>,
     candidate: &LinkedBytecodeCandidate,
     constant: &skiff_runtime_linked_bytecode::LinkedConstantEntry,
+    admitted_symbols: &mut BTreeSet<String>,
 ) -> Result<(), BytecodeLinkError> {
     let location = constant_location(linker, candidate, constant);
     if matches!(
@@ -275,7 +321,14 @@ fn admit_constant(
     ) {
         return rejected(Phase1LinkedCapability::Constant, location);
     }
-    admit_type_index(candidate, constant.ty(), false, location.clone())?;
+    admit_type_index(
+        linker,
+        candidate,
+        constant.ty(),
+        false,
+        admitted_symbols,
+        location.clone(),
+    )?;
     admit_transfer_plan(constant.plan(), location)
 }
 
@@ -356,6 +409,7 @@ fn admit_resolved_target(
     linker: &DeploymentLinker<'_>,
     candidate: &LinkedBytecodeCandidate,
     target: LinkedInstructionTarget,
+    admitted_symbols: &mut BTreeSet<String>,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     let capability = match target {
@@ -366,7 +420,13 @@ fn admit_resolved_target(
             let Some(constant) = candidate.constants().get(index.get() as usize) else {
                 return rejected(Phase1LinkedCapability::Constant, location);
             };
-            return admit_constant_reference(linker, candidate, constant, location);
+            return admit_constant_reference(
+                linker,
+                candidate,
+                constant,
+                admitted_symbols,
+                location,
+            );
         }
         LinkedInstructionTarget::Shape(_) => return Ok(()),
         LinkedInstructionTarget::SwitchTable(_) => Phase1LinkedCapability::Aggregate,
@@ -380,7 +440,16 @@ fn admit_resolved_target(
         | LinkedInstructionTarget::CallbackCaptureLayout(_) => Phase1LinkedCapability::Callback,
         LinkedInstructionTarget::HostEffectAdapter(_) => Phase1LinkedCapability::HostTarget,
         LinkedInstructionTarget::Intrinsic(_) => Phase1LinkedCapability::IntrinsicTarget,
-        LinkedInstructionTarget::Type(_) => Phase1LinkedCapability::ValueShape,
+        LinkedInstructionTarget::Type(index) => {
+            return admit_type_index(
+                linker,
+                candidate,
+                index,
+                false,
+                admitted_symbols,
+                location,
+            );
+        }
         LinkedInstructionTarget::ResumeSite(_) => Phase1LinkedCapability::PendingEffect(
             skiff_artifact_model::PendingEffectCategory::Unknown,
         ),
@@ -392,6 +461,7 @@ fn admit_constant_reference(
     linker: &DeploymentLinker<'_>,
     candidate: &LinkedBytecodeCandidate,
     constant: &skiff_runtime_linked_bytecode::LinkedConstantEntry,
+    admitted_symbols: &mut BTreeSet<String>,
     fallback_location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     let Some(node) = candidate
@@ -407,7 +477,14 @@ fn admit_constant_reference(
     ) {
         return rejected(Phase1LinkedCapability::Constant, location);
     }
-    admit_type_index(candidate, constant.ty(), false, location.clone())?;
+    admit_type_index(
+        linker,
+        candidate,
+        constant.ty(),
+        false,
+        admitted_symbols,
+        location.clone(),
+    )?;
     admit_transfer_plan(constant.plan(), location.clone())?;
     match node.value() {
         LinkedFrozenConstantValue::Literal(value) if immediate_literal(value) => Ok(()),
@@ -431,8 +508,10 @@ fn admit_transfer_plan(
 }
 
 fn admit_signature(
+    linker: &DeploymentLinker<'_>,
     candidate: &LinkedBytecodeCandidate,
     signature: &LinkedCallableSignature,
+    admitted_symbols: &mut BTreeSet<String>,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     if signature
@@ -447,7 +526,14 @@ fn admit_signature(
         .iter()
         .chain(signature.result_types())
     {
-        admit_type_index(candidate, *ty, false, location.clone())?;
+        admit_type_index(
+            linker,
+            candidate,
+            *ty,
+            false,
+            admitted_symbols,
+            location.clone(),
+        )?;
     }
     for plan in signature
         .parameter_plans()
@@ -493,62 +579,198 @@ fn admit_effect_summary(
 }
 
 fn admit_stack_value(
+    linker: &DeploymentLinker<'_>,
     candidate: &LinkedBytecodeCandidate,
     ty: TypeIndex,
     plan: &LinkedValueTransferPlan,
+    admitted_symbols: &mut BTreeSet<String>,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
-    admit_type_index(candidate, ty, false, location.clone())?;
+    admit_type_index(
+        linker,
+        candidate,
+        ty,
+        false,
+        admitted_symbols,
+        location.clone(),
+    )?;
     admit_transfer_plan(plan, location)
 }
 
 fn admit_type_index(
+    linker: &DeploymentLinker<'_>,
     candidate: &LinkedBytecodeCandidate,
     index: TypeIndex,
     allow_void: bool,
+    admitted_symbols: &mut BTreeSet<String>,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     let Some(ty) = candidate.types().get(index.get() as usize) else {
         return rejected(Phase1LinkedCapability::ValueShape, location);
     };
-    admit_type(ty.type_ref(), allow_void, location)
+    admit_type(
+        linker,
+        ty.type_ref(),
+        allow_void,
+        admitted_symbols,
+        location,
+    )
 }
 
 fn admit_type(
+    linker: &DeploymentLinker<'_>,
+    ty: &TypeRefIr,
+    allow_void: bool,
+    admitted_symbols: &mut BTreeSet<String>,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    match ty {
+        TypeRefIr::Record { fields } => {
+            for field in fields.values() {
+                admit_type(
+                    linker,
+                    field,
+                    false,
+                    admitted_symbols,
+                    location.clone(),
+                )?;
+            }
+            return Ok(());
+        }
+        TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
+            admit_type(
+                linker,
+                &args[0],
+                false,
+                admitted_symbols,
+                location.clone(),
+            )?;
+            return Ok(());
+        }
+        TypeRefIr::PackageSymbol { symbol } => {
+            return admit_package_symbol(linker, symbol, admitted_symbols, location);
+        }
+        other => admit_structural_leaf(other, allow_void, location),
+    }
+}
+
+/// Linker-free admission for the immediate leaf shapes. Anonymous record and
+/// array recursion is handled by [`admit_type`] so nested package nominals can
+/// be resolved; every other shape is rejected at this single boundary.
+fn admit_structural_leaf(
     ty: &TypeRefIr,
     allow_void: bool,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
-    let capability = match ty {
+    match ty {
         TypeRefIr::Builtin { name, args }
             if args.is_empty()
                 && (matches!(name.as_str(), "integer" | "number" | "bool" | "null")
                     || (allow_void && name == "void")) =>
         {
-            return Ok(());
+            Ok(())
         }
-        TypeRefIr::Literal { value } if immediate_literal(value) => return Ok(()),
-        TypeRefIr::Record { fields } => {
-            for field in fields.values() {
-                admit_type(field, false, location.clone())?;
-            }
-            return Ok(());
-        }
-        TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
-            admit_type(&args[0], false, location.clone())?;
-            return Ok(());
-        }
+        TypeRefIr::Literal { value } if immediate_literal(value) => Ok(()),
         TypeRefIr::TypeParam { .. } | TypeRefIr::AppliedNominal { .. } => {
-            Phase1LinkedCapability::Generic
+            rejected(Phase1LinkedCapability::Generic, location)
         }
-        TypeRefIr::AnyInterface { .. } => Phase1LinkedCapability::Interface,
-        TypeRefIr::Function { .. } => Phase1LinkedCapability::Callback,
+        TypeRefIr::AnyInterface { .. } => {
+            rejected(Phase1LinkedCapability::Interface, location)
+        }
+        TypeRefIr::Function { .. } => {
+            rejected(Phase1LinkedCapability::Callback, location)
+        }
         TypeRefIr::ServiceSymbol { .. } | TypeRefIr::DbObjectSymbol { .. } => {
-            Phase1LinkedCapability::ServiceTarget
+            rejected(Phase1LinkedCapability::ServiceTarget, location)
         }
-        _ => Phase1LinkedCapability::ValueShape,
+        _ => rejected(Phase1LinkedCapability::ValueShape, location),
+    }
+}
+
+fn admit_package_symbol(
+    linker: &DeploymentLinker<'_>,
+    symbol: &PackageSymbolRef,
+    admitted_symbols: &mut BTreeSet<String>,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let PackageRefIr::PackageId { package_id } = &symbol.package else {
+        return rejected(Phase1LinkedCapability::ValueShape, location);
     };
-    rejected(capability, location)
+    let Some(owner) = linker
+        .deployment
+        .packages()
+        .values()
+        .find(|package| package.reference().package_id == *package_id)
+    else {
+        return rejected(Phase1LinkedCapability::ValueShape, location);
+    };
+    if symbol.abi_expectation.as_deref().is_some_and(|expected| {
+        expected != owner.reference().package_local_abi_identity.as_str()
+    }) {
+        return rejected(Phase1LinkedCapability::ValueShape, location);
+    }
+    let path = format!("{package_id}::{}", symbol.symbol_path);
+    if !admitted_symbols.insert(path.clone()) {
+        // Recursive or self-referential record reference: fail closed, the
+        // compiler admission already rejects it upstream.
+        return rejected(Phase1LinkedCapability::ValueShape, location);
+    }
+    let resolved = owner
+        .artifact()
+        .package_local_abi
+        .implementation_symbols
+        .get(&symbol.symbol_path)
+        .or_else(|| {
+            owner
+                .artifact()
+                .package_local_abi
+                .public_symbols
+                .get(&symbol.symbol_path)
+        });
+    let admission = match resolved {
+        Some(PackageLocalAbiSymbol::Type {
+            descriptor,
+            type_params,
+            is_alias,
+            is_interface,
+            ..
+        }) if type_params.is_empty() && !*is_alias && !*is_interface => {
+            admit_package_type_descriptor(linker, owner, descriptor, admitted_symbols)
+        }
+        _ => Err(BytecodeLinkError::UnsupportedPhase1Capability {
+            capability: Phase1LinkedCapability::ValueShape,
+            location: location.clone(),
+        }),
+    };
+    admitted_symbols.remove(&path);
+    admission
+}
+
+fn admit_package_type_descriptor(
+    linker: &DeploymentLinker<'_>,
+    owner: &HydratedBytecodePackage,
+    descriptor: &TypeDescriptorIr,
+    admitted_symbols: &mut BTreeSet<String>,
+) -> Result<(), BytecodeLinkError> {
+    let location = BytecodeLinkLocation::Package {
+        package: Box::new(owner.reference().clone()),
+    };
+    match descriptor {
+        TypeDescriptorIr::Record { fields } => {
+            for field in fields.values() {
+                let concrete = normalize_type(linker.deployment, owner, field, &location)?;
+                admit_type(
+                    linker,
+                    &concrete,
+                    false,
+                    admitted_symbols,
+                    location.clone(),
+                )?;
+            }
+            Ok(())
+        }
+        _ => rejected(Phase1LinkedCapability::ValueShape, location),
+    }
 }
 
 fn immediate_literal(value: &LiteralIr) -> bool {
@@ -570,14 +792,12 @@ fn rejected<T>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use skiff_artifact_model::{
-        PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, TypeRefIr,
+        LiteralIr, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, TypeRefIr,
     };
     use skiff_runtime_linked_bytecode::{LinkedValueDropPlan, LinkedValueTransferPlan};
 
-    use super::{admit_opcode, admit_transfer_plan, admit_type};
+    use super::{admit_opcode, admit_structural_leaf, admit_transfer_plan};
     use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability};
 
     fn location() -> BytecodeLinkLocation {
@@ -645,38 +865,29 @@ mod tests {
     }
 
     #[test]
-    fn capability_admission_admits_nested_record_and_array_types() {
-        let nested = TypeRefIr::Record {
-            fields: BTreeMap::from([
-                ("count".to_string(), TypeRefIr::builtin("number")),
-                (
-                    "inner".to_string(),
-                    TypeRefIr::Record {
-                        fields: BTreeMap::from([(
-                            "ok".to_string(),
-                            TypeRefIr::builtin("bool"),
-                        )]),
-                    },
-                ),
-                (
-                    "items".to_string(),
-                    TypeRefIr::Builtin {
-                        name: "Array".to_string(),
-                        args: vec![TypeRefIr::builtin("number")],
-                    },
-                ),
-            ]),
-        };
-        assert!(admit_type(&nested, false, location()).is_ok());
+    fn capability_admission_admits_immediate_scalar_leaves() {
+        for (ty, allow_void) in [
+            (TypeRefIr::builtin("number"), false),
+            (TypeRefIr::builtin("integer"), false),
+            (TypeRefIr::builtin("bool"), false),
+            (TypeRefIr::builtin("null"), false),
+            (TypeRefIr::builtin("void"), true),
+            (
+                TypeRefIr::Literal {
+                    value: LiteralIr::Bool { value: true },
+                },
+                false,
+            ),
+        ] {
+            assert!(admit_structural_leaf(&ty, allow_void, location()).is_ok(), "{ty:?}");
+        }
     }
 
     #[test]
     fn capability_admission_keeps_unsupported_value_shapes_fail_closed() {
         let cases = [
             (
-                TypeRefIr::Record {
-                    fields: BTreeMap::from([("name".to_string(), TypeRefIr::builtin("string"))]),
-                },
+                TypeRefIr::builtin("string"),
                 Phase1LinkedCapability::ValueShape,
             ),
             (
@@ -695,7 +906,7 @@ mod tests {
         ];
         for (ty, expected) in cases {
             assert!(matches!(
-                admit_type(&ty, false, location()),
+                admit_structural_leaf(&ty, false, location()),
                 Err(BytecodeLinkError::UnsupportedPhase1Capability {
                     capability,
                     ..
