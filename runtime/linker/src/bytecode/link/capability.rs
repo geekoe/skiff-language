@@ -6,7 +6,7 @@ use skiff_artifact_model::{
     PackageSymbolRef, ParamModeIr, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedBytecodeCandidate, LinkedCallableSignature, LinkedConstantReference,
+    LinkedBytecodeCandidate, LinkedCallableSignature, LinkedCatchMatcher, LinkedConstantReference,
     LinkedFrozenConstantValue, LinkedGatewayCallableRole, LinkedInstructionTarget, LinkedSlotState,
     LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
 };
@@ -89,8 +89,22 @@ impl DeploymentLinker<'_> {
                 function_location.clone(),
             )?;
             }
-            if !function.exception_regions().is_empty() || !function.active_regions().is_empty() {
+            if !function.active_regions().is_empty() {
                 return rejected(Phase1LinkedCapability::Exception, function_location);
+            }
+            for region in function.exception_regions() {
+                for matcher in region.catch_matchers() {
+                    if let LinkedCatchMatcher::Type(index) = matcher {
+                        admit_type_index(
+                            self,
+                            candidate,
+                            *index,
+                            false,
+                            &mut admitted_symbols,
+                            function_location.clone(),
+                        )?;
+                    }
+                }
             }
             if !function.switch_tables().is_empty() {
                 return rejected(Phase1LinkedCapability::Aggregate, function_location);
@@ -368,6 +382,8 @@ fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), By
             | Opcode::ArrayGet
             | Opcode::ArrayLen
             | Opcode::ArrayPushOwned
+            | Opcode::Throw
+            | Opcode::Rethrow
     ) {
         return Ok(());
     }
@@ -383,11 +399,9 @@ fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), By
         Opcode::StreamNext | Opcode::EmitStream => Phase1LinkedCapability::Stream,
         Opcode::TailCallLocal => Phase1LinkedCapability::TailCall,
         Opcode::CallLocalInOut => Phase1LinkedCapability::InOut,
-        Opcode::Throw
-        | Opcode::Rethrow
-        | Opcode::EnterRegion
-        | Opcode::LeaveRegion
-        | Opcode::Trap => Phase1LinkedCapability::Exception,
+        Opcode::EnterRegion | Opcode::LeaveRegion | Opcode::Trap => {
+            Phase1LinkedCapability::Exception
+        }
         Opcode::SwitchTag
         | Opcode::NewMapBuilder
         | Opcode::MapBuilderPut
@@ -644,6 +658,21 @@ fn admit_type(
             )?;
             return Ok(());
         }
+        TypeRefIr::Union { items } => {
+            if items.is_empty() {
+                return rejected(Phase1LinkedCapability::ValueShape, location);
+            }
+            for item in items {
+                admit_type(
+                    linker,
+                    item,
+                    false,
+                    admitted_symbols,
+                    location.clone(),
+                )?;
+            }
+            return Ok(());
+        }
         TypeRefIr::PackageSymbol { symbol } => {
             return admit_package_symbol(linker, symbol, admitted_symbols, location);
         }
@@ -821,13 +850,15 @@ mod tests {
             skiff_artifact_model::Opcode::ArrayLen,
             skiff_artifact_model::Opcode::ArrayPushOwned,
             skiff_artifact_model::Opcode::Drop,
+            skiff_artifact_model::Opcode::Throw,
+            skiff_artifact_model::Opcode::Rethrow,
         ] {
             assert!(admit_opcode(opcode, location()).is_ok(), "{opcode:?}");
         }
     }
 
     #[test]
-    fn capability_admission_keeps_other_aggregate_lanes_fail_closed() {
+    fn capability_admission_keeps_timeout_regions_and_trap_fail_closed() {
         let expectations = [
             (
                 skiff_artifact_model::Opcode::NewMapBuilder,
@@ -846,7 +877,15 @@ mod tests {
                 Phase1LinkedCapability::TailCall,
             ),
             (
-                skiff_artifact_model::Opcode::Throw,
+                skiff_artifact_model::Opcode::EnterRegion,
+                Phase1LinkedCapability::Exception,
+            ),
+            (
+                skiff_artifact_model::Opcode::LeaveRegion,
+                Phase1LinkedCapability::Exception,
+            ),
+            (
+                skiff_artifact_model::Opcode::Trap,
                 Phase1LinkedCapability::Exception,
             ),
         ];
