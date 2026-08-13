@@ -11,7 +11,7 @@ use std::{
 use serde_json::{Map, Value};
 use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionEvent, BytecodeExecutionObserver, BytecodeRequestTerminal,
-    RequestCleanupComplete, RequestTerminalClaimed,
+    RequestCleanupComplete, RequestTerminalClaimed, VmBudgetAccounted,
 };
 use skiff_runtime_model::service_error::{
     ErrorCorrelation, OpaqueServiceError, ServiceErrorEnvelope,
@@ -292,7 +292,8 @@ impl RequestSupervisor {
         owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request, owner_inventory, CompletionCandidate::Success)?;
+        let winner =
+            self.claim_completion(request, owner_inventory, CompletionCandidate::Success)?;
         finish_completion(winner, trace, None, None)
     }
 
@@ -304,7 +305,8 @@ impl RequestSupervisor {
         owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
+        let winner =
+            self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
         finish_completion(
             winner,
             trace,
@@ -321,7 +323,8 @@ impl RequestSupervisor {
         owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
+        let winner =
+            self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
         let correlation = ErrorCorrelation {
             trace_id: error.envelope().trace_id().to_string(),
             error_id: error.envelope().error_id().to_string(),
@@ -343,7 +346,8 @@ impl RequestSupervisor {
         owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
+        let winner =
+            self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
         finish_completion(winner, trace, None, None)
     }
 
@@ -736,6 +740,17 @@ fn finish_completion(
     error_attrs: Option<Map<String, Value>>,
 ) -> Option<CleanupPermit> {
     let terminal = terminal_for_winner(winner.settlement.winner());
+    winner
+        .active
+        .observer
+        .observe(BytecodeExecutionEvent::VmBudgetAccounted(
+            VmBudgetAccounted {
+                raw_executed_count: winner.settlement.raw_executed_count(),
+                charged_instruction_count: winner.settlement.raw_executed_count(),
+                hard_limit: winner.settlement.hard_raw_limit(),
+                poll_count: winner.settlement.poll_count(),
+            },
+        ));
     observe_terminal(&winner.active, terminal);
     let duration_ms = elapsed_ms(winner.active.started_at);
     let response_action = response_action(&winner.settlement);
@@ -881,6 +896,11 @@ mod tests {
         BytecodeExecutionCorrelation, BytecodeExecutionEventSink, BytecodeExecutionObservation,
     };
     use skiff_runtime_request::FrozenOwnerDomain;
+    use std::sync::{
+        atomic::AtomicUsize,
+        mpsc::{channel, Receiver},
+    };
+    use tokio::sync::mpsc::UnboundedSender;
 
     fn zero_snapshot() -> RequestExecutionOwnerInventorySnapshot {
         RequestExecutionOwnerInventorySnapshot {
@@ -905,6 +925,46 @@ mod tests {
     impl BytecodeExecutionEventSink for RecordingSink {
         fn observe(&self, observation: BytecodeExecutionObservation) {
             self.0.lock().unwrap().push(observation);
+        }
+    }
+
+    /// Sink that blocks the inline drainer on the terminal and cleanup
+    /// callbacks while proving callbacks never overlap. `VmBudgetAccounted`
+    /// passes through unblocked.
+    struct LifecycleBlockingSink {
+        records: Mutex<Vec<BytecodeExecutionObservation>>,
+        callbacks: AtomicUsize,
+        overlap: AtomicBool,
+        block_terminal: AtomicBool,
+        terminal_entered: UnboundedSender<()>,
+        terminal_release: Mutex<Receiver<()>>,
+        block_cleanup: AtomicBool,
+        cleanup_entered: UnboundedSender<()>,
+        cleanup_release: Mutex<Receiver<()>>,
+    }
+
+    impl BytecodeExecutionEventSink for LifecycleBlockingSink {
+        fn observe(&self, observation: BytecodeExecutionObservation) {
+            if self.callbacks.fetch_add(1, Ordering::SeqCst) != 0 {
+                self.overlap.store(true, Ordering::SeqCst);
+            }
+            self.records.lock().unwrap().push(observation.clone());
+            match observation.event {
+                BytecodeExecutionEvent::RequestTerminalClaimed(_)
+                    if self.block_terminal.swap(false, Ordering::SeqCst) =>
+                {
+                    let _ = self.terminal_entered.send(());
+                    let _ = self.terminal_release.lock().unwrap().recv();
+                }
+                BytecodeExecutionEvent::RequestCleanupComplete(_)
+                    if self.block_cleanup.swap(false, Ordering::SeqCst) =>
+                {
+                    let _ = self.cleanup_entered.send(());
+                    let _ = self.cleanup_release.lock().unwrap().recv();
+                }
+                _ => {}
+            }
+            self.callbacks.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
@@ -941,7 +1001,10 @@ mod tests {
         }
     }
 
-    fn observer(sink: Arc<RecordingSink>, key: &RequestExecutionKey) -> BytecodeExecutionObserver {
+    fn observer<S>(sink: Arc<S>, key: &RequestExecutionKey) -> BytecodeExecutionObserver
+    where
+        S: BytecodeExecutionEventSink,
+    {
         BytecodeExecutionObserver::new(
             sink,
             BytecodeExecutionCorrelation {
@@ -1112,6 +1175,10 @@ mod tests {
             permit.response_action(),
             CompletionResponseAction::Candidate
         );
+        let settlement = permit.settlement();
+        let settled_raw = settlement.raw_executed_count();
+        let settled_hard_limit = settlement.hard_raw_limit();
+        let settled_poll_count = settlement.poll_count();
         assert!(supervisor
             .complete_success(&supervised, zero_snapshot(), CompletionTrace::RUNTIME)
             .await
@@ -1119,15 +1186,27 @@ mod tests {
         permit.observe_cleanup();
 
         let records = sink.0.lock().unwrap();
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 3);
         assert!(matches!(
-            records[0].event,
+            &records[0].event,
+            BytecodeExecutionEvent::VmBudgetAccounted(VmBudgetAccounted {
+                raw_executed_count,
+                charged_instruction_count,
+                hard_limit,
+                poll_count,
+            }) if raw_executed_count == &settled_raw
+                && charged_instruction_count == &settled_raw
+                && hard_limit == &settled_hard_limit
+                && poll_count == &settled_poll_count
+        ));
+        assert!(matches!(
+            records[1].event,
             BytecodeExecutionEvent::RequestTerminalClaimed(RequestTerminalClaimed {
                 terminal: BytecodeRequestTerminal::Succeeded
             })
         ));
         assert!(matches!(
-            records[1].event,
+            records[2].event,
             BytecodeExecutionEvent::RequestCleanupComplete(RequestCleanupComplete {
                 owner_inventory
             }) if owner_inventory == snapshot
@@ -1200,5 +1279,146 @@ mod tests {
         let response = permit.response_override().unwrap();
         assert_eq!(response.code, "TimeoutError");
         assert_eq!(response.message, "execution deadline exceeded");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn request_id_stays_guarded_through_terminal_and_cleanup_observers() {
+        let supervisor = Arc::new(RequestSupervisor::new());
+        let key = key("session", "request");
+        assert!(supervisor.start_session(key.router_session().clone()));
+        let (terminal_entered_tx, mut terminal_entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (terminal_release_tx, terminal_release_rx) = channel();
+        let (cleanup_entered_tx, mut cleanup_entered_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (cleanup_release_tx, cleanup_release_rx) = channel();
+        let sink = Arc::new(LifecycleBlockingSink {
+            records: Mutex::new(Vec::new()),
+            callbacks: AtomicUsize::new(0),
+            overlap: AtomicBool::new(false),
+            block_terminal: AtomicBool::new(true),
+            terminal_entered: terminal_entered_tx,
+            terminal_release: Mutex::new(terminal_release_rx),
+            block_cleanup: AtomicBool::new(true),
+            cleanup_entered: cleanup_entered_tx,
+            cleanup_release: Mutex::new(cleanup_release_rx),
+        });
+        let reservation = supervisor
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
+            .expect("first reservation");
+        let supervised = activate(reservation, &key);
+
+        let completing_supervisor = Arc::clone(&supervisor);
+        let completing_request = supervised.clone();
+        let completing = tokio::spawn(async move {
+            completing_supervisor
+                .complete_success(
+                    &completing_request,
+                    zero_snapshot(),
+                    CompletionTrace::RUNTIME,
+                )
+                .await
+                .expect("winner cleanup permit")
+        });
+        terminal_entered_rx
+            .recv()
+            .await
+            .expect("terminal observer entered");
+
+        assert!(supervisor
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
+            .is_none());
+        assert!(
+            !supervisor
+                .cancel(
+                    key.router_session(),
+                    &RequestCancel {
+                        request_id: "request".to_string(),
+                        reason: Some("late cancel".to_string()),
+                    },
+                )
+                .await
+        );
+        assert_eq!(supervisor.active_count().await, 0);
+
+        terminal_release_tx
+            .send(())
+            .expect("release terminal observer");
+        let permit = completing.await.expect("completion task");
+        assert!(permit.response_owned());
+        assert!(supervisor
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
+            .is_none());
+        assert!(
+            !supervisor
+                .cancel(
+                    key.router_session(),
+                    &RequestCancel {
+                        request_id: "request".to_string(),
+                        reason: None,
+                    },
+                )
+                .await
+        );
+
+        let cleaning = tokio::task::spawn_blocking(move || permit.observe_cleanup());
+        cleanup_entered_rx
+            .recv()
+            .await
+            .expect("cleanup observer entered");
+        assert!(supervisor
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
+            .is_none());
+        assert!(
+            !supervisor
+                .cancel(
+                    key.router_session(),
+                    &RequestCancel {
+                        request_id: "request".to_string(),
+                        reason: None,
+                    },
+                )
+                .await
+        );
+
+        cleanup_release_tx
+            .send(())
+            .expect("release cleanup observer");
+        cleaning.await.expect("cleanup task");
+
+        let next_reservation = supervisor
+            .reserve(key.clone(), observer(sink.clone(), &key), None)
+            .expect("reuse only after cleanup returned");
+        let next_supervised = activate(next_reservation, &key);
+        let next_permit = supervisor
+            .complete_success(&next_supervised, zero_snapshot(), CompletionTrace::RUNTIME)
+            .await
+            .expect("next completion winner");
+        next_permit.observe_cleanup();
+
+        let records = sink.records.lock().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.ordinal)
+                .collect::<Vec<_>>(),
+            [0, 1, 2, 0, 1, 2]
+        );
+        assert!(matches!(
+            &records[0].event,
+            BytecodeExecutionEvent::VmBudgetAccounted(_)
+        ));
+        assert!(matches!(
+            &records[1].event,
+            BytecodeExecutionEvent::RequestTerminalClaimed(_)
+        ));
+        assert!(matches!(
+            &records[2].event,
+            BytecodeExecutionEvent::RequestCleanupComplete(_)
+        ));
+        assert!(records.iter().all(|record| {
+            record.correlation.router_session_id == "session"
+                && record.correlation.request_id == "request"
+        }));
+        assert!(!sink.overlap.load(Ordering::SeqCst));
+        assert_eq!(sink.callbacks.load(Ordering::SeqCst), 0);
     }
 }
