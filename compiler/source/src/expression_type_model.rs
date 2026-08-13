@@ -1545,6 +1545,22 @@ impl<'a> OwnerChecker<'a> {
             } => self
                 .resolve_builtin(BuiltinShape::Bool.name())
                 .unwrap_or(ty),
+            // Number literals and integer immediates carry an integer/number
+            // type, but an array element fact must stay the single canonical
+            // `number` element type: `integer` is the collection index type,
+            // and introducing `Array<integer>` from a literal shadows the
+            // semantically-equal `Array<number>` row at link time.
+            TypeRefIr::Literal {
+                value: LiteralIr::Number { .. },
+            } => self
+                .resolve_builtin(BuiltinShape::Number.name())
+                .unwrap_or(ty),
+            TypeRefIr::Builtin { name, args }
+                if name == BuiltinShape::Integer.name() && args.is_empty() =>
+            {
+                self.resolve_builtin(BuiltinShape::Number.name())
+                    .unwrap_or(ty)
+            }
             _ => ty,
         }
     }
