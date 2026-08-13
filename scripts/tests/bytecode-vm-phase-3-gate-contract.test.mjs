@@ -67,6 +67,38 @@ test('day-one matrix contains thirteen Phase 3 scenarios and every required lane
     '--test', '--test-reporter=tap',
     'scripts/tests/bytecode-vm-phase-3-gate-*.test.mjs',
   ]);
+  // The three focused join-contract filters must match the exact test names
+  // K3 and C3 landed: zero-hit filters are rejected by the real Gate.
+  assert.deepEqual(byId['k3-vm-throw-unwind'], {
+    id: 'k3-vm-throw-unwind',
+    command: 'cargo',
+    args: Object.freeze([
+      'test', '-p', 'skiff-runtime-vm', '--lib', 'catch',
+    ]),
+    cwd: ROOT,
+    testFormat: 'rust-suite',
+    lanes: Object.freeze(['K3']),
+  });
+  assert.deepEqual(byId['c3-emission-throw-admission'], {
+    id: 'c3-emission-throw-admission',
+    command: 'cargo',
+    args: Object.freeze([
+      'test', '-p', 'skiff-compiler-emission', '--lib', 'phase_3_admission',
+    ]),
+    cwd: ROOT,
+    testFormat: 'rust-suite',
+    lanes: Object.freeze(['C3']),
+  });
+  assert.deepEqual(byId['c3-emission-throw-emission'], {
+    id: 'c3-emission-throw-emission',
+    command: 'cargo',
+    args: Object.freeze([
+      'test', '-p', 'skiff-compiler-emission', '--lib', 'throw',
+    ]),
+    cwd: ROOT,
+    testFormat: 'rust-suite',
+    lanes: Object.freeze(['C3']),
+  });
 });
 
 test('Phase 1 and Phase 2 full regression are reused verbatim under the Phase 3 epoch', () => {
