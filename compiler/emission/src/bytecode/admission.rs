@@ -489,12 +489,11 @@ fn admit_statement(
             }
         },
         MirStmtKind::Throw { payload_type, .. } => {
-            admit_type(
+            admit_throw_payload_type(
                 units,
                 unit,
                 function_key,
                 payload_type,
-                false,
                 &format!(
                     "statement {} throw payload type",
                     statement.statement_index
@@ -753,12 +752,11 @@ fn admit_expression(
         ExprIr::ActorSelfField { .. } => Some(Phase1UnsupportedCapability::Actor),
         ExprIr::InterfaceBox { .. } => Some(Phase1UnsupportedCapability::Interface),
         ExprIr::Throw { payload_type, .. } => {
-            admit_type(
+            admit_throw_payload_type(
                 units,
                 unit,
                 function_key,
                 payload_type,
-                false,
                 &format!("expression {} throw payload type", expression.index),
             )?;
             None
@@ -1103,6 +1101,100 @@ fn admit_slot_value_type(
     let value_type = &function.expression(value)?.ty;
     if slot_type != value_type {
         return Err(fact_mismatch(unit, function_key, mismatch, location));
+    }
+    Ok(())
+}
+
+/// Phase 3 throw payload leaves must carry a runtime catch identity: local
+/// nominal record types and anonymous unions whose branches are nominal
+/// records. Structural, scalar and literal-branch leaves have no runtime
+/// identity and fail closed here instead of reaching a constant VmFailure.
+/// This tightens the throw face only; catch/rethrow admission is unchanged.
+fn admit_throw_payload_type(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    payload_type: &TypeRefIr,
+    location: &str,
+) -> Result<(), BytecodeEmissionError> {
+    match payload_type {
+        TypeRefIr::Union { items } => {
+            if items.is_empty() {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::ValueShape,
+                    &format!("{location} empty union"),
+                ));
+            }
+            for item in items {
+                admit_throw_payload_type(
+                    units,
+                    unit,
+                    function_key,
+                    item,
+                    &format!("{location} union branch"),
+                )?;
+            }
+            Ok(())
+        }
+        TypeRefIr::LocalType { type_index } => admit_nominal_record_leaf(
+            units,
+            unit,
+            function_key,
+            &unit.module_path,
+            *type_index,
+            location,
+        ),
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => admit_nominal_record_leaf(
+            units, unit, function_key, module_path, *type_index, location,
+        ),
+        other => Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::ValueShape,
+            &format!("{location} leaf {other:?} has no runtime catch identity"),
+        )),
+    }
+}
+
+fn admit_nominal_record_leaf(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    module_path: &str,
+    type_index: u32,
+    location: &str,
+) -> Result<(), BytecodeEmissionError> {
+    let owning_unit = units
+        .iter()
+        .find(|candidate| candidate.module_path == module_path)
+        .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+            context: format!("throw payload nominal leaf admission for module `{module_path}`"),
+            message: "owning MIR unit disappeared".to_string(),
+        })?;
+    let declaration = owning_unit
+        .type_table
+        .get(type_index as usize)
+        .ok_or_else(|| BytecodeEmissionError::MissingLocalType {
+            module_path: module_path.to_string(),
+            location: location.to_string(),
+            type_index,
+            type_count: owning_unit.type_table.len(),
+        })?;
+    if !matches!(declaration.descriptor, TypeDescriptorIr::Record { .. }) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::ValueShape,
+            &format!(
+                "{location} nominal `{}` is not a record leaf",
+                declaration.name
+            ),
+        ));
     }
     Ok(())
 }
@@ -2023,5 +2115,92 @@ mod tests {
                 ..
             }
         ), "unexpected rejection: {error:?}");
+    }
+
+    #[test]
+    fn phase_3_admission_accepts_nominal_record_and_nominal_branch_throws() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let function = function();
+        for payload_type in [local(0), union(vec![local(0), local(1)])] {
+            admit_statement(
+                &units,
+                &units[0],
+                FUNCTION_KEY,
+                &function,
+                &statement(
+                    0,
+                    MirStmtKind::Throw {
+                        value: ExprRefIr { expression: 0 },
+                        payload_type,
+                        site: synthetic_site(),
+                    },
+                ),
+            )
+            .unwrap_or_else(|error| {
+                panic!("nominal record / nominal-branch throw must be admitted: {error:?}")
+            });
+        }
+    }
+
+    #[test]
+    fn phase_3_admission_rejects_identityless_throw_leaves_fail_closed() {
+        let units = [unit(Vec::new(), two_nominal_types())];
+        let function = function();
+        let cases = vec![
+            ("scalar", TypeRefIr::builtin("number")),
+            (
+                "anonymous structural record",
+                TypeRefIr::Record {
+                    fields: BTreeMap::from([("x".to_string(), number())]),
+                },
+            ),
+            (
+                "literal-branch union",
+                union(vec![
+                    TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "ok".to_string(),
+                        },
+                    },
+                    TypeRefIr::Literal {
+                        value: LiteralIr::Bool { value: true },
+                    },
+                ]),
+            ),
+            (
+                "array leaf",
+                TypeRefIr::Builtin {
+                    name: "Array".to_string(),
+                    args: vec![number()],
+                },
+            ),
+        ];
+        for (name, payload_type) in cases {
+            let error = admit_statement(
+                &units,
+                &units[0],
+                FUNCTION_KEY,
+                &function,
+                &statement(
+                    0,
+                    MirStmtKind::Throw {
+                        value: ExprRefIr { expression: 0 },
+                        payload_type,
+                        site: synthetic_site(),
+                    },
+                ),
+            )
+            .expect_err("identity-less throws must fail closed");
+            assert!(
+                matches!(
+                    error,
+                    BytecodeEmissionError::UnsupportedPhase1Capability {
+                        capability: Phase1UnsupportedCapability::ValueShape,
+                        ..
+                    }
+                ),
+                "{name} throw rejected with the wrong shape: {error:?}"
+            );
+        }
     }
 }
