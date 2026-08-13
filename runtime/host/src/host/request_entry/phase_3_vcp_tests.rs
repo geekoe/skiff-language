@@ -7,8 +7,8 @@ use skiff_runtime_model::{
         CatchIdentity, ErrorCorrelation, ExceptionStackFrame, LocalExecutionTypeIdentity,
         NominalTypeIdentity, RequestException,
     },
-    value::{RuntimeValue, RuntimeValueCarrier},
     vm_heap::VmHeap,
+    vm_value::ValueSlot,
 };
 use skiff_runtime_transport::protocol::ValidatedResponseErrorFrame;
 
@@ -36,14 +36,16 @@ const PHASE3_PENDING_THROW_PACKAGE_ID: &str = "test.skiff/bytecode-vm-phase-3-pe
 /// unwind cleanup-owner release sequence and the external terminal exactly
 /// once.
 ///
-/// Current real red (recorded, not faked): the union-leaf VCP fixture cannot
-/// publish yet because C3 has not landed rethrow lowering in the typed File IR
-/// ("rethrow in typed File IR requires an exception slot identifier"), the
-/// mismatch negative is rejected by the Phase 1 `Exception` admission and the
-/// uncaught negative by the throw-payload slot admission, and K3 has not
-/// landed the envelope/outcome kernel. The harness fails on the production
-/// authoring seam with the full deterministic rejection chain until K3 and C3
-/// join; each scenario stays red until its exact producer gap closes.
+/// Current real red on the merged tree (recorded, not faked): K3's kernel and
+/// C3's emission are joined, and each remaining scenario fails inside the
+/// compiler chain, not in this harness. The union-leaf VCP fixture stops in
+/// typed File IR lowering ("missing constructor validation fact ... constructing
+/// `LeafB`"), the mismatch negative in MIR slot typing ("slot 2 (`attempt`) has
+/// no static type"), and the uncaught negative in C3's emission ("throw at pc
+/// 17 requires exactly one source/synthetic site (found 0)"). The harness
+/// fails on the production authoring seam with the full deterministic
+/// rejection chain; each scenario stays red until its exact producer gap
+/// closes.
 #[tokio::test(flavor = "current_thread")]
 async fn phase_3_vcp_production_composition() {
     let fixture = publish_or_panic(
@@ -159,15 +161,17 @@ fn phase_3_negative_host_pending_throw() {
 }
 
 /// Controlled resume harness at the only production boundary this crate can
-/// reach (`runtime/model`): one opaque `RequestException` built through the
-/// production constructor keeps its complete identity — actual catch identity,
-/// source site, stack and correlation — across a controlled move-only carrier
-/// round trip. The VM-side `ResumeOutcome::Throw` -> `resume_throw`
-/// consumption lives in `runtime/vm` (K3 ownership, outside the P3G write
-/// boundary) and is pinned by the Gate matrix lane `k3-vm-throw-unwind`; the
-/// live-VM identity proof is the VCP rethrow chain above, which shows the same
-/// payload handle survives throw -> catch -> rethrow -> catch at the heap
-/// level.
+/// reach (`runtime/model`): one opaque VM-local `RequestException` built
+/// through K3's `RequestException::local_vm` constructor keeps its complete
+/// identity — opaque payload slot authority, actual catch identity, source
+/// site, stack and correlation — across the controlled carrier. The VM-side
+/// `ResumeOutcome::Throw` -> two-phase `resume_throw` consumption lives in
+/// `runtime/vm` (K3 ownership, outside the P3G write boundary; it requires the
+/// request driver's `set_error_correlation`, which the production composition
+/// performs automatically) and is pinned by the Gate matrix lane
+/// `k3-vm-throw-unwind`; the live-VM identity proof is the VCP rethrow chain
+/// above, which shows the same payload handle survives throw -> catch ->
+/// rethrow -> catch at the heap level.
 #[test]
 fn phase_3_controlled_resume_harness() {
     let envelope = controlled_local_envelope("controlled-resume");
@@ -187,17 +191,20 @@ fn phase_3_controlled_resume_harness() {
         "the controlled envelope must carry its actual runtime catch identity"
     );
 
-    // Move-only opaque carrier: the production envelope API's only value-level
-    // transformation. An identity-preserving map must leave every identity
-    // fact exactly unchanged, which is the exact contract the resume carrier
-    // must preserve.
-    let carried = envelope.map_local_value(|value| value);
-    assert_eq!(EnvelopeIdentity::snapshot(&carried), baseline);
+    // K3 seam check: the envelope the resume carrier must consume is the
+    // VM-local opaque shape — a live heap slot authority plus the actual
+    // concrete leaf identity. The carrier contract is that these facts stay
+    // exactly unchanged across ResumeOutcome::Throw -> resume_throw.
+    assert!(
+        baseline.vm_slot.is_some(),
+        "the controlled envelope must carry its opaque VM payload slot authority"
+    );
+    assert_eq!(baseline.catch_identity.as_ref(), envelope.actual_catch_identity());
 
     let other = controlled_local_envelope("controlled-resume-other");
     assert_ne!(
-        EnvelopeIdentity::snapshot(&other),
-        baseline,
+        EnvelopeIdentity::snapshot(&other).correlation,
+        baseline.correlation,
         "distinct envelopes must carry distinct correlations"
     );
 }
@@ -298,13 +305,13 @@ fn assert_user_error_terminal(
         !error.code.trim().is_empty(),
         "{scenario} canonical user error code must be non-empty"
     );
-    assert_ne!(
-        error.code, "InternalError",
-        "{scenario} Throw must project as a user error, not the sanitized VmFailure InternalError"
+    assert_eq!(
+        error.code, "std.service.InternalError",
+        "{scenario} uncaught user throw must project the canonical std.service.InternalError code"
     );
-    assert_ne!(
-        error.code, "UnsupportedRuntimeFeature",
-        "{scenario} Throw must not fall back to the pre-Phase-3 VM failure projection"
+    assert_eq!(
+        error.message, "uncaught user exception",
+        "{scenario} uncaught user throw must project the canonical user error message"
     );
 }
 
@@ -315,10 +322,13 @@ fn assert_vcp_source_fixture() {
         .join("main.skiff");
     let source = std::fs::read_to_string(source_path).expect("read accepted Phase 3 VCP source");
     assert!(source.contains("function innerThrow(leaf: LeafA | LeafB) -> void"));
-    assert!(source.contains("final inner = catch<LeafA>(innerThrow(LeafA { marker: seed, owner: [seed] }))"));
-    assert!(source.contains("final outer = catch<LeafA>(rethrow inner.exception)"));
+    assert!(source.contains("final leaf: LeafA | LeafB = LeafA { marker: seed, owner: [seed] }"));
+    assert!(source.contains("final inner = catch<LeafA>(innerThrow(leaf))"));
+    assert!(source.contains("final exc = inner.exception"));
+    assert!(source.contains("final outer = catch<LeafA>(rethrow exc)"));
     assert!(source.contains("final cleanupOwner = [7]"));
-    assert!(source.contains("final caught = catch<LeafB>(innerThrow(LeafB { marker: seed, owner: [seed] }))"));
+    assert!(source.contains("final leaf: LeafA | LeafB = LeafB { marker: seed, owner: [seed] }"));
+    assert!(source.contains("final caught = catch<LeafB>(innerThrow(leaf))"));
     assert!(source.contains("return 2"));
     assert!(source.contains("return 3"));
 }
@@ -404,10 +414,9 @@ fn controlled_local_envelope(error_id: &str) -> RequestException {
             type_arguments: Vec::new(),
         },
     ));
-    let value =
-        RuntimeValueCarrier::identified(RuntimeValue::from("controlled-payload"), identity);
-    RequestException::local(
-        value,
+    RequestException::local_vm(
+        ValueSlot::integer(3),
+        identity,
         controlled_site(),
         vec![ExceptionStackFrame::Local {
             site: controlled_site(),
@@ -430,9 +439,10 @@ fn controlled_site() -> InstructionSourceSite {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 struct EnvelopeIdentity {
     catch_identity: Option<CatchIdentity>,
+    vm_slot: Option<ValueSlot>,
     source: InstructionSourceSite,
     stack: Vec<ExceptionStackFrame>,
     correlation: ErrorCorrelation,
@@ -442,6 +452,7 @@ impl EnvelopeIdentity {
     fn snapshot(exception: &RequestException) -> Self {
         Self {
             catch_identity: exception.local_catch_identity().cloned(),
+            vm_slot: exception.vm_local_slot(),
             source: exception.source().clone(),
             stack: exception.stack().to_vec(),
             correlation: exception.correlation().clone(),

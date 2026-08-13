@@ -15,9 +15,11 @@ function innerThrow(leaf: LeafA | LeafB) -> void {
 
 function run(seed: number) -> number {
   if seed == 1 {
-    final inner = catch<LeafA>(innerThrow(LeafA { marker: seed, owner: [seed] }))
+    final leaf: LeafA | LeafB = LeafA { marker: seed, owner: [seed] }
+    final inner = catch<LeafA>(innerThrow(leaf))
     if inner.tag == "err" {
-      final outer = catch<LeafA>(rethrow inner.exception)
+      final exc = inner.exception
+      final outer = catch<LeafA>(rethrow exc)
       if outer.tag == "err" {
         return 2
       }
@@ -25,7 +27,8 @@ function run(seed: number) -> number {
     }
     return 12
   }
-  final caught = catch<LeafB>(innerThrow(LeafB { marker: seed, owner: [seed] }))
+  final leaf: LeafA | LeafB = LeafB { marker: seed, owner: [seed] }
+  final caught = catch<LeafB>(innerThrow(leaf))
   if caught.tag == "err" {
     return 3
   }
