@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 14; first Acceptance FAIL routed to the Gate owner, matrix closed and candidate re-frozen at `18412953`, second fresh Acceptance dispatched
+> Status: complete; revision 15; candidate `18412953` accepted by a fresh independent Acceptance receipt (PASS, 19/19 checklist), result committed and merged into `main`
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -552,3 +552,19 @@ The candidate is re-frozen at:
 
 A second, distinct fresh Acceptance agent must now re-run the complete Gate at this commit in a new detached worktree and
 issue the verdict. Phase 1 remains not accepted until that receipt is PASS and the §15 result commit is merged into `main`.
+
+## 22. Revision 15 — accepted
+
+The second fresh independent Acceptance agent re-ran the complete canonical Gate at the re-frozen candidate
+`18412953`/tree `73974228` and issued **PASS**. Gate: `24/24` commands, `106/106` tests, 0 failed/skipped/todo/cancelled/
+ignored, candidate exact and clean, `checkerError: null`; the §11.3.6/7/8 gap from the first round is closed by the three
+new workloads; evidence root `/Users/geek/workspace/skiff-bcvm-p1-acceptance-evidence-r2/gate`, manifest SHA-256
+`cf97ec4bc340683b7f6ad2caa3716b67056cc05cd4081a01dc01572aa725df27`; receipt
+`df5e62c8bb7eea10ead0a97f6f23978c152c09d2fb89a433ce8b542ab6d5a7a9` (in-repo copy
+`../results/phase-1-acceptance-receipt.md`). The §13 checklist is `19/19 [x]`.
+
+The §15 result [`../results/phase-1.md`](../results/phase-1.md) records baseline, contract, design/review receipts, integrated
+lanes, accepted support/authority matrix, canonical Gate command and matrix, durable evidence hashes, the disabled
+capability ledger and the Phase 2 handoff. Phase 1 becomes `accepted` only when that result commit is merged into `main`;
+the merge commit and tree are recorded in the result header by the post-merge acceptance commit on `main`. Phase 2
+production implementation is unblocked only from that accepted main receipt.
