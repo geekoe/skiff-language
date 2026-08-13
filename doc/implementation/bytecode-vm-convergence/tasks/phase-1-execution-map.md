@@ -1,6 +1,6 @@
 # MAP1：Phase 1 rolling execution map
 
-> Status: active; revision 10; L1/L2/K1/L3/K2/L4 accepted, L5 staged for handoff
+> Status: active; revision 11; L1/L2/K1/L3/K2/L4 accepted, L5 owner-context/facade/cleanup correction landed, awaiting fresh independent L5 review
 >
 > Phase Contract: [`phase-1-trusted-synchronous-core.md`](../phases/phase-1-trusted-synchronous-core.md)
 >
@@ -401,3 +401,49 @@ run the complete Phase 1 Gate and issue the final verdict.
   fresh independent L5 review -> O1 event projection -> T-R/V1 migration -> merged Gate -> fresh Acceptance. Phase 1 is not
   complete at this revision, and Phase 2 production remains forbidden. This section is the authoritative transfer handoff;
   later owners must not interpret the staged compile-green merge as a waiver for any blocker above.
+
+## 18. Revision 11 — L5 owner-context correction, sole request facade and supervisor snapshot carrier
+
+The three mandatory corrections from Revision 10 landed as `296462db..6d0d215b` atop `deaed8ea` and are described here in
+order; this section supersedes Revision 10 for those blockers. The four commits remain rolling-integration milestones, not an
+L5 acceptance receipt.
+
+- `296462db` (scheduler) removes every public split inventory surface. `RequestExecutionOwnerInventory`, its registrations,
+  guards, leases, `open`, `into_parts` and the generic `install` closure are scheduler-private. The only public entry is the
+  non-cloneable, opaque, owner-bound `RequestExecutionContext`, which consumes itself either into
+  `into_not_started()` (`NotStarted(actual snapshot)`) or into the sole `drive(heap, budget)` that runs exactly once and
+  freezes the `Started(actual snapshot)` on every outcome including parks and drive errors. Installation now prepares
+  allocation outside locks, holds the inventory followed by the real container, inserts a private unarmed placeholder, and
+  performs only an infallible count/ever/lease commit (`guard.commit()`)—never caller code—before unlocking; the panic-under-
+  lock deadlock is structurally impossible. Pending/resource/child creation share one domain-tagged `OwnerCreationError {
+  domain, kind }` (`OwnerDomain::{Pending,Resource,Child}` × `OwnerCreationErrorKind::{InventoryFrozen,CountOverflow}`);
+  `BeginPendingError::TicketCollision` and `EnterChildError::CapacityExceeded` remain distinct container errors.
+  `BytecodeScheduler::new` and the two `open` constructors that consumed registrations are `pub(crate)`; the frozen snapshot
+  types moved to the model as serializable observation payloads (`FrozenOwnerDomain`,
+  `RequestExecutionOwnerInventorySnapshot` in `bytecode_execution_observation.rs`).
+- `add921ac` + `86164aef` (request) make `drive_runtime_bytecode_request` the request crate's sole public composition: it
+  creates the context, starts and runs exactly once, freezes on both start and run failures, and returns only result, the
+  opaque `BytecodeRequestRetention` carrier and `NotStarted|Started` snapshots. The old private adapter executor, Pending/
+  stream/resume driver, wake queue, continuation handoff, HTTP executor, response stream writer/sink and the resource table
+  are deleted, not preserved behind compatibility exports; resource references fail closed on the synchronous lane. Owner
+  creation failures project as one sanitized `InternalError` (`Decode("bytecode scheduler owner creation failed")`) with no
+  internal details. One stale containment expectation was realigned with canonical compiler admission: the native
+  `bytes.fromUtf8` wrapper is rejected as `HostTarget` @ `native executable`, not `ValueShape`.
+- `6d0d215b` (host) threads the exact frozen snapshot through every admitted supervisor completion:
+  `complete_*` -> `CompletingRequest` -> `CleanupPermit` -> `CleanupGuard`, and `RequestCleanupComplete { owner_inventory }`
+  now carries the real frozen facts. Host no longer mints, splits or freezes inventory; its `drive_bytecode_request`
+  composition and the orphaned `bytecode_http_executor` are deleted. Pre-activation cancel/session-stop/invalid outcomes
+  still create no inventory, terminal or cleanup. Two stale host tests were realigned with the current v2 gateway-entry
+  identity prefix and gateway lookup error wording without touching production.
+- evidence: three-package test `cargo test -p skiff-runtime-scheduler -p skiff-runtime-request -p skiff-runtime-host` exit 0 —
+  scheduler 36 lib + 9 integration, request 46 lib + 14 integration, host 176 lib + 1 integration, 9 doc-tests, zero failed/
+  ignored/skipped; log `/tmp/skiff-p1-l5-correction-full.log`, SHA-256
+  `851d52fa168f6b21f58bb31d90256e17d798c1b4af09fc393f844355c392c476`. L4-derived receipts (request budget, supervisor
+  session/winner, host/VM matrices) remain inside these green suites. Pre-existing, out-of-write-set observations recorded
+  for the next owners: raw `cargo fmt --check` under local rustfmt 1.8.0 reports 652 workspace diffs including untouched
+  crates (baseline drift, not introduced here), and raw `cargo clippy --all-targets` fails on the untouched
+  `compiler/emission/src/bytecode/admission.rs:60` `never_loop` lint.
+- remaining order is unchanged: fresh independent L5 review of the frozen inventory carrier and the opaque context -> O1
+  event projection -> T-R/V1 migration -> merged Gate -> fresh Acceptance. Phase 1 is not complete at this revision, and
+  Phase 2 production remains forbidden. Compile-green at this revision is not a waiver; it is the corrected surface that the
+  fresh L5 reviewer must now read.
