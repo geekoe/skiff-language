@@ -114,6 +114,13 @@ fn commit_writable_path(
 同时定案：`ArrayPushOwned`/`MapPutOwned` 在 Phase 2 保持 exclusive-owner-only；对 shared container 调用 fail closed
 （`OwnershipViolation`），不做隐式 COW push。共享容器 push 的 COW 语义若进入后续 Phase，需单独决策。
 
+### 3.4b Amendment 2（MAP2 Revision 6；2026-08-13）
+
+writable path 的 `ArrayIndex` 选择器类型以 **`number`** 为权威：emission 已把索引常量类型化为 `number`（只 intern
+element type 行），linker 的 `WritablePathSelectors` 取选择器自身类型（不得错取 `element_type`），verifier 的
+`writable_path_selectors` 按 `CollectionIndex` 同款规则接受 integer-or-number。这与既有 `ArrayGet` 的索引语义一致；
+不引入新的 `integer` source 类型，也不在 emission 侧新增池行。
+
 ## 4. 精确支持面
 
 | Dimension | Accepted target |

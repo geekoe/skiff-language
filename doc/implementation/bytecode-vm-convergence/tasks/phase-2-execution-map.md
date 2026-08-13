@@ -1,6 +1,6 @@
 # MAP2：Phase 2 rolling execution map
 
-> Status: active; revision 5; VCP reached runtime surface: negative green, array-builder link join routed to K2
+> Status: active; revision 6; linker join fixed, array-index selector authority decided, verifier fix authorized to K2
 >
 > Phase Contract: [`phase-2-value-lifecycle.md`](../phases/phase-2-value-lifecycle.md)
 >
@@ -83,6 +83,17 @@ Integrator 只做机械 cherry-pick、receipt/MAP 更新、Gate/freeze/Acceptanc
 - 过期 Phase 1 回归 `aggregate_shape_is_rejected_by_typed_compiler_containment`（`Array<number>` 现 admitted）与
   stack-map 修复一并路由 K2。
 - host→driver heap 透传保持默认 None（P2G 经 input 注入可用）；不在本 Phase 改 host 公开面。
+
+## 4f. Revision 6
+
+- K2 `75cdf450` 修掉 `container input is absent`：根因是 `stack_map/transfer.rs::apply_stack_inputs` 把累积输入组
+  错传为 `&[]`（不是 values.rs 推导本身）；另修两个 admission 缺口（`LinkedInstructionTarget::Type` 放行、
+  PackageSymbol 命名 record 递归放行）。VCP 推进到 verifier 红：
+  `function 0 instruction 22: integer selector has no concrete class`。
+- Phase Contract §3.4b Amendment 2 定案：`ArrayIndex` 选择器类型权威 = `number`（emission 已如此）、linker 取选择器
+  自身类型、verifier 按 integer-or-number 接受。授权 K2 修 linker 与 `runtime/bytecode-verifier/.../values.rs` 两处
+  （verifier 该文件仅此最小一致修复）。
+- P2G `4c2f921b`（两阶段 spy + VCP harness）已并入 integration（`65b07e09`），host lib 恢复可编译。
 
 ## 4. Task contracts
 
