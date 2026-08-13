@@ -222,6 +222,19 @@ Execution Map 初始版本只记录当前 ready frontier：
 同一 worktree 同时只有一个 write Agent。takeover 前先停止旧 owner；可并行派多个 read-only diagnostic task，
 但中央状态机不能因为超时拆成多个 write authority。
 
+### 5.2a 单一权威（Single Source of Truth）
+
+Execution Map 是以下事实的**唯一权威记录**：baseline、lane/task ID、write set、join 顺序、Gate 矩阵、
+freeze candidate、review/acceptance receipt locator。其它载体不得重述这些事实：
+
+- 任务信封只引用 Map 里的 task/lane ID 与写集条目，不再抄一遍文件清单；
+- Decision receipt 只写语义决策与接口契约，不写文件清单（Map 负责归属）；
+- follow-up 授权需要改变写集时，**先**在 Map 落一条写集更新 commit，再动代码；
+- review/acceptance receipt 引用 Map 的条目与 commit，不重新枚举归属。
+
+integrator 在每次 join 时用 `git diff --name-only` 对 Map 权威写集做机械核对（可脚本化），不一致在合流前
+退回；这不是独立 review 的职责。
+
 ### 5.2 Task handoff
 
 非只读 task 交付一个可独立合流的 commit，并报告：input/output commit、实际 write set、合同 disposition、
@@ -351,6 +364,13 @@ event/schema 变化都开始新 evidence epoch。
 Acceptance Agent 在 detached clean worktree 执行完整 Gate，核对 raw evidence 而非只看 exit code。`FAIL` 返回
 对应 Development/Proof owner；修复后重新 freeze，旧 verdict 不可复用。
 
+### 8.1 机械-only 修复的 delta acceptance
+
+当一轮 Acceptance 的唯一 FAIL 原因是机械问题（如格式化、文档簿记、无关语义的资产对齐），修复后仍须重新
+freeze 并由**全新** Acceptance owner 出 verdict，但验收信封可以缩为 delta：明确声明"语义审查已在第 N 轮
+PASS，本轮只复核变更面（逐文件）+ 完整 Gate"，无需整份重读契约与全量反假绿。语义类 FAIL 不适用本
+捷径——任何语义改动都要全量复核。
+
 ## 9. Worktree 规则
 
 Worktree 按并发写入和版本隔离创建，不按角色或任务机械一一对应：
@@ -390,6 +410,13 @@ Clarification、Design、专项 Reviewer 都是 conditional task。强制分离�
 
 设计者可以成为开发者；开发者可以写局部 unit tests；同一 Agent 可以串行拥有多个不冲突的 leaf。不要为了
 形式上的角色纯度增加 handoff 和全局 barrier。
+
+### 10.1 独立 reviewer 的审查范围
+
+独立 reviewer 只审**语义**：候选是否落实契约与所有触发的 decision、是否破坏已接受 Phase 的不变式、是否
+存在假绿/第二权威/fallback、负面面是否 fail closed。它**不审簿记**：写集是否记进 Map、授权是否落文档、
+格式是否漂移，一律属于 integrator 的机械 L1 检查（§5.2a、§5.2 的 handoff 必交项），由脚本/命令兜住，不
+成为 reviewer 的 FAIL 理由。reviewer 发现语义之外的疑问时记 finding，不判 FAIL。
 
 ## 11. 支持面、状态和 retirement
 

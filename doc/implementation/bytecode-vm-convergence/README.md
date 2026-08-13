@@ -312,7 +312,9 @@ authority/ownership/failure 语义、公共/持久边界或难以撤销时启动
 
 派发 production lane 前必须完成 §4.4 的 gate-map 预调查；每扇门由红转绿时同一 join 收进 Gate 矩阵。
 VCP 由 stage-sentinel 矩阵 + 最终 full-chain closure 组成（原则文档 §7.1.1）；每个非只读 task 的 handoff
-必交 fmt/clippy 自检与写集扩展的同步 MAP 记录（原则文档 §5.2）。
+必交 fmt/clippy 自检与写集扩展的同步 MAP 记录（原则文档 §5.2）。写集/baseline/join/Gate/freeze/receipt
+只在 MAP 一处权威（§5.2a）；独立 reviewer 只判语义不判簿记（§10.1）；机械-only 修复可用 delta acceptance
+（§8.1）。
 
 下一 Phase 可以提前做只读调查，不能在前一 Phase 未 `accepted` 时启动 production implementation。
 
