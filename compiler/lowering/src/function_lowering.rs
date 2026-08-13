@@ -2033,7 +2033,13 @@ impl<'a> FunctionLowerer<'a> {
                 try_expr,
             } => {
                 let catch_name = format!("$catch{}", self.slots.len());
-                let catch_slot = self.declare_slot(&catch_name, SlotKind::Temp, false)?;
+                let catch_slot = self.declare_slot(&catch_name, SlotKind::Local, false)?;
+                // The exception-region handler overwrites the defaulted catch
+                // slot with the caught envelope. The frame slot must therefore
+                // be a writable Local so the dead-or-writable overwrite
+                // releases the default through the slot plan instead of
+                // rejecting a live slot.
+                self.slots[catch_slot as usize].writable_local = true;
                 let lowered_catch_type = lower_type_ref(
                     catch_type,
                     self.type_lowering_environment(),

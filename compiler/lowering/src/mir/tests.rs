@@ -1267,6 +1267,19 @@ fn phase_3_union_catch_fixture_lowers_with_union_bindings_and_aligned_rethrow() 
 
     // The caught payload binding carries the opaque Exception<LeafA>
     // envelope and the catch-over-rethrow result is CatchResult<never, LeafA>.
+    let catch_slots = run
+        .slots
+        .iter()
+        .filter(|slot| slot.name.starts_with("$catch"))
+        .collect::<Vec<_>>();
+    assert!(catch_slots.len() >= 3, "each catch lowers one temp slot");
+    for catch_slot in &catch_slots {
+        assert!(
+            catch_slot.writable_local,
+            "catch slot `{}` must be writable so the handler overwrite of its default is legal",
+            catch_slot.name
+        );
+    }
     let exc = run
         .slots
         .iter()
