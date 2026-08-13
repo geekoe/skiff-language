@@ -45,12 +45,13 @@ use skiff_runtime_model::{
     request_heap::RequestHeapLimits,
 };
 use skiff_runtime_request::{
-    start_runtime_bytecode_request, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
-    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, ExecutionBudget,
+    drive_runtime_bytecode_request, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
+    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
+    DrivenBytecodeRequestOwnerInventory, ExecutionBudget,
     GatewayAdapterArg as RequestGatewayAdapterArg,
     GatewayAdapterSource as RequestGatewayAdapterSource, HttpAdapter, HttpAdapterCallable,
-    HttpAdapterKind, RequestEnvelope, RequestError, RequestExecutionOwnerInventory,
-    RequestExecutionOwnerInventorySnapshot, ResponseEnd, ResponseEvent,
+    HttpAdapterKind, RequestEnvelope, RequestError, RequestExecutionOwnerInventorySnapshot,
+    ResponseEnd, ResponseEvent,
 };
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
@@ -594,36 +595,25 @@ fn noop_observer() -> BytecodeExecutionObserver {
 fn run_synchronous_request(
     input: BytecodeRequestExecutionInput,
 ) -> Result<BoundaryResponse, RequestError> {
-    let (owner_registrations, owner_inventory_freeze) =
-        RequestExecutionOwnerInventory::open().into_parts();
-    match start_runtime_bytecode_request(input, owner_registrations) {
-        Ok(mut execution) => {
-            let result = execution.run();
-            let snapshot = owner_inventory_freeze.freeze();
-            assert_synchronous_owner_inventory(&snapshot);
-            result
-        }
-        Err(error) => {
-            let snapshot = owner_inventory_freeze.freeze();
-            assert_synchronous_owner_inventory(&snapshot);
-            Err(error)
-        }
-    }
+    let driven = drive_runtime_bytecode_request(input);
+    let snapshot = driven.owner_inventory.into_snapshot();
+    assert_synchronous_owner_inventory(&snapshot);
+    drop(driven.retention);
+    driven.result
 }
 
 fn assert_synchronous_owner_inventory(snapshot: &RequestExecutionOwnerInventorySnapshot) {
     for (domain_name, domain) in [
-        ("pending", snapshot.pending()),
-        ("resource", snapshot.resource()),
-        ("child", snapshot.child()),
+        ("pending", snapshot.pending),
+        ("resource", snapshot.resource),
+        ("child", snapshot.child),
     ] {
         assert_eq!(
-            domain.current(),
-            0,
+            domain.current, 0,
             "synchronous Phase 1 request created a live {domain_name} owner"
         );
         assert!(
-            !domain.ever_created(),
+            !domain.ever_created,
             "synchronous Phase 1 request ever created a {domain_name} owner"
         );
     }
@@ -681,6 +671,75 @@ fn assert_phase_1_compiler_rejection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_request_freezes_started_all_zero_inventory() {
+        let driven = drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            target: scalar_gateway_fixture().target("number"),
+            request: scalar_gateway_request(
+                "number",
+                HttpAdapterKind::TypedJson,
+                b"2",
+                vec![http_body_argument()],
+            ),
+            observer: noop_observer(),
+            cancellation: CancellationToken::new(),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
+            handles: BytecodeRequestExecutionHandles {
+                request_heap_limits: RequestHeapLimits::default(),
+            },
+        });
+
+        match driven.owner_inventory {
+            DrivenBytecodeRequestOwnerInventory::Started(snapshot) => {
+                assert_synchronous_owner_inventory(&snapshot);
+            }
+            DrivenBytecodeRequestOwnerInventory::NotStarted(_) => {
+                panic!("completed drive must freeze a Started owner inventory");
+            }
+        }
+        let response = driven
+            .result
+            .expect("scalar gateway request must complete");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&response_payload(response)).unwrap(),
+            serde_json::json!(3.0)
+        );
+        drop(driven.retention);
+    }
+
+    #[test]
+    fn malformed_typed_json_body_freezes_not_started_all_zero_inventory() {
+        let driven = drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            target: scalar_gateway_fixture().target("number"),
+            request: scalar_gateway_request(
+                "number",
+                HttpAdapterKind::TypedJson,
+                b"{",
+                vec![http_body_argument()],
+            ),
+            observer: noop_observer(),
+            cancellation: CancellationToken::new(),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
+            handles: BytecodeRequestExecutionHandles {
+                request_heap_limits: RequestHeapLimits::default(),
+            },
+        });
+
+        match driven.owner_inventory {
+            DrivenBytecodeRequestOwnerInventory::NotStarted(snapshot) => {
+                assert_synchronous_owner_inventory(&snapshot);
+            }
+            DrivenBytecodeRequestOwnerInventory::Started(_) => {
+                panic!("start failure must freeze a NotStarted owner inventory");
+            }
+        }
+        assert!(matches!(
+            driven.result,
+            Err(RequestError::Decode(ref message)) if message.contains("not valid JSON")
+        ));
+        drop(driven.retention);
+    }
 
     #[test]
     fn typed_json_number_body_materializes_against_pinned_entry() {
