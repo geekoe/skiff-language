@@ -245,7 +245,6 @@ fn vm_limits_with_segment(
     VmLimits::new(
         NonZeroUsize::new(max_frames).unwrap(),
         NonZeroUsize::new(max_value_slots).unwrap(),
-        NonZeroU32::new(1024).unwrap(),
         NonZeroU32::new(max_segment_instructions).unwrap(),
     )
 }
