@@ -291,32 +291,9 @@ throw；证明无 raw handle 穿越、parent 同步恢复和 Pending chain root 
 
 ## 8. Phase 内核心流程
 
-每个 Phase 使用：
-
-```text
-Phase Contract
-  -> gate-map 预调查（只读，枚举本 Phase 目标面的 pipeline 各层门）
-  -> initial Execution Map（含 gate 清单与各门 owner）
-  ├─ Development Line: containment / kernel / leaves
-  └─ Proof Line: expected-red 点（按 gate 钉）/ stage-sentinel VCP / Gate / evidence
-conditional Clarification / Design / focused Review feed affected tasks only
-  -> rolling integration proof
-  -> frozen candidate
-  -> independent Acceptance runs canonical Gate
-  -> result / next-phase handoff
-```
-
-Clarification 只回答具体当前事实；Design 只在未决定选择影响多个 write owner、两条线共同合同、
-authority/ownership/failure 语义、公共/持久边界或难以撤销时启动。它们不是固定前置角色，也不形成默认
-全局 join。详细条件见[原则文档 §4](./large-change-execution-principles.md#4-条件支持任务)。
-
-派发 production lane 前必须完成 §4.4 的 gate-map 预调查；每扇门由红转绿时同一 join 收进 Gate 矩阵。
-VCP 由 stage-sentinel 矩阵 + 最终 full-chain closure 组成（原则文档 §7.1.1）；每个非只读 task 的 handoff
-必交 fmt/clippy 自检与写集扩展的同步 MAP 记录（原则文档 §5.2）。写集/baseline/join/Gate/freeze/receipt
-只在 MAP 一处权威（§5.2a）；独立 reviewer 只判语义不判簿记（§10.1）；机械-only 修复可用 delta acceptance
-（§8.1）。
-
-下一 Phase 可以提前做只读调查，不能在前一 Phase 未 `accepted` 时启动 production implementation。
+每个 Phase 按 [`runbook.md`](./runbook.md) 的 9 步执行；该文件是流程的唯一权威。Clarification/Design 的
+触发条件见[原则文档 §4](./large-change-execution-principles.md#4-条件支持任务)。下一 Phase 可以提前做只读
+调查，不能在前一 Phase 未 `accepted` 时启动 production implementation。
 
 ## 9. Worktree 和 Agent 约束
 
