@@ -7,7 +7,7 @@ use skiff_artifact_model::{IngressProtocol, Opcode};
 use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionCorrelation, BytecodeExecutionEvent, BytecodeExecutionEventSink,
     BytecodeExecutionObservation, BytecodeGatewayCallableRole, BytecodeRequestTerminal,
-    BytecodeRouteEntrySelector,
+    BytecodeRouteEntrySelector, RequestCleanupComplete,
 };
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::protocol::decode_binary_frame;
@@ -188,8 +188,25 @@ async fn phase_0_vcp_production_composition() {
         other => panic!("ordinal 3 must claim the request terminal, got {other:?}"),
     };
     assert_eq!(terminal.terminal, BytecodeRequestTerminal::Succeeded);
-    assert!(matches!(
-        &observations[4].event,
-        BytecodeExecutionEvent::RequestCleanupComplete(_)
-    ));
+    let cleanup = match &observations[4].event {
+        BytecodeExecutionEvent::RequestCleanupComplete(RequestCleanupComplete { owner_inventory }) => {
+            owner_inventory
+        }
+        other => panic!("ordinal 4 must report request cleanup completion, got {other:?}"),
+    };
+    assert_eq!(cleanup.pending.current, 0, "pending domain must be empty");
+    assert!(
+        !cleanup.pending.ever_created,
+        "pending domain must never have minted an owner"
+    );
+    assert_eq!(cleanup.resource.current, 0, "resource domain must be empty");
+    assert!(
+        !cleanup.resource.ever_created,
+        "resource domain must never have minted an owner"
+    );
+    assert_eq!(cleanup.child.current, 0, "child domain must be empty");
+    assert!(
+        !cleanup.child.ever_created,
+        "child domain must never have minted an owner"
+    );
 }

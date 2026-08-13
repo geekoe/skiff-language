@@ -4,7 +4,7 @@ use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
     self as request_runner, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
     BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, HttpNameValue, RequestEnvelope,
-    RequestError, RouterWriterMessage,
+    RequestError, RequestExecutionOwnerInventorySnapshot, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -24,7 +24,6 @@ use super::{
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
-    resumable::{drive_bytecode_request, DrivenBytecodeRequest},
 };
 use crate::{
     error::RuntimeError,
@@ -93,11 +92,11 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest {
+            let request_runner::DrivenBytecodeRequest {
                 result,
-                execution,
-                owner_inventory: _owner_inventory,
-            } = drive_bytecode_request(BytecodeRequestExecutionInput {
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -105,18 +104,19 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
             });
+            let owner_inventory = owner_inventory.into_snapshot();
             let cleanup_permit = host
                 .finish_http_gateway_request(
                     &supervised_request,
                     &request_id,
                     result,
+                    owner_inventory,
                     http_response_max_bytes,
                     &response_sink,
                     &sender,
                 )
                 .await;
-            let _owner_inventory_snapshot = _owner_inventory.into_snapshot();
-            drop(execution);
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -167,11 +167,11 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest {
+            let request_runner::DrivenBytecodeRequest {
                 result,
-                execution,
-                owner_inventory: _owner_inventory,
-            } = drive_bytecode_request(BytecodeRequestExecutionInput {
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -179,11 +179,16 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
             });
+            let owner_inventory = owner_inventory.into_snapshot();
             let cleanup_permit = match result {
                 Ok(response) => {
                     let permit = host
                         .request_supervisor
-                        .complete_success(&supervised_request, CompletionTrace::RUNTIME)
+                        .complete_success(
+                            &supervised_request,
+                            owner_inventory,
+                            CompletionTrace::RUNTIME,
+                        )
                         .await;
                     if send_transport_override_or_allow_candidate(
                         permit.as_ref(),
@@ -203,12 +208,17 @@ impl RuntimeHost {
                     permit
                 }
                 Err(error) => {
-                    host.finish_direct_task_error(&supervised_request, request_id, error, &sender)
-                        .await
+                    host.finish_direct_task_error(
+                        &supervised_request,
+                        request_id,
+                        owner_inventory,
+                        error,
+                        &sender,
+                    )
+                    .await
                 }
             };
-            let _owner_inventory_snapshot = _owner_inventory.into_snapshot();
-            drop(execution);
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -258,11 +268,11 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest {
+            let request_runner::DrivenBytecodeRequest {
                 result,
-                execution,
-                owner_inventory: _owner_inventory,
-            } = drive_bytecode_request(BytecodeRequestExecutionInput {
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -270,6 +280,7 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
             });
+            let owner_inventory = owner_inventory.into_snapshot();
             let mapped_error = match result {
                 Ok(_) => RequestError::Unsupported(
                     "bytecode WebSocket connect response mapping is not supported; refusing legacy ActiveAssemblyRoute fallback"
@@ -281,12 +292,12 @@ impl RuntimeHost {
                 .finish_websocket_connect_error(
                     &supervised_request,
                     request_id,
+                    owner_inventory,
                     mapped_error,
                     &sender,
                 )
                 .await;
-            let _owner_inventory_snapshot = _owner_inventory.into_snapshot();
-            drop(execution);
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -330,11 +341,11 @@ impl RuntimeHost {
         };
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest {
+            let request_runner::DrivenBytecodeRequest {
                 result,
-                execution,
-                owner_inventory: _owner_inventory,
-            } = drive_bytecode_request(BytecodeRequestExecutionInput {
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -342,6 +353,7 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
             });
+            let owner_inventory = owner_inventory.into_snapshot();
             let error = match result {
                 Ok(_) => RequestError::Unsupported(
                     "bytecode WebSocket connection close response mapping is not supported; refusing legacy ActiveAssemblyRoute fallback"
@@ -350,10 +362,13 @@ impl RuntimeHost {
                 Err(error) => error,
             };
             let cleanup_permit = host
-                .finish_websocket_connection_closed_error(&supervised_request, error)
+                .finish_websocket_connection_closed_error(
+                    &supervised_request,
+                    owner_inventory,
+                    error,
+                )
                 .await;
-            let _owner_inventory_snapshot = _owner_inventory.into_snapshot();
-            drop(execution);
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -368,6 +383,7 @@ impl RuntimeHost {
         supervised_request: &SupervisedRequest,
         request_id: &str,
         result: request_runner::RequestResult<BoundaryResponse>,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         http_response_max_bytes: usize,
         response_sink: &HostHttpGatewayResponseSink,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
@@ -391,6 +407,7 @@ impl RuntimeHost {
                             response_event
                                 .response_error()
                                 .expect("ordinary error event carries response error"),
+                            owner_inventory,
                             CompletionTrace::RUNTIME,
                         )
                         .await;
@@ -402,7 +419,7 @@ impl RuntimeHost {
 
                 let permit = self
                     .request_supervisor
-                    .complete_success(supervised_request, CompletionTrace::RUNTIME)
+                    .complete_success(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                     .await;
                 if !allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
                     return permit;
@@ -422,7 +439,7 @@ impl RuntimeHost {
                 if request_error.is_cancellation_terminal() {
                     let permit = self
                         .request_supervisor
-                        .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                        .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                         .await;
                     if allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
                         response_sink.cancel_without_response();
@@ -442,6 +459,7 @@ impl RuntimeHost {
                             supervised_request,
                             "request.error",
                             failure.error(),
+                            owner_inventory,
                             CompletionTrace::RUNTIME,
                         )
                         .await;
@@ -470,6 +488,7 @@ impl RuntimeHost {
                         supervised_request,
                         "request.error",
                         &response_error,
+                        owner_inventory,
                         CompletionTrace::RUNTIME,
                     )
                     .await;
@@ -502,13 +521,14 @@ impl RuntimeHost {
         &self,
         supervised_request: &SupervisedRequest,
         request_id: String,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         request_error: RequestError,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Option<CleanupPermit> {
         if request_error.is_cancellation_terminal() {
             let permit = self
                 .request_supervisor
-                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                 .await;
             let _ =
                 send_transport_override_or_allow_candidate(permit.as_ref(), &request_id, sender);
@@ -525,6 +545,7 @@ impl RuntimeHost {
                 supervised_request,
                 "request.error",
                 &response_error,
+                owner_inventory,
                 CompletionTrace::RUNTIME,
             )
             .await;
@@ -540,13 +561,14 @@ impl RuntimeHost {
         &self,
         supervised_request: &SupervisedRequest,
         request_id: String,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         request_error: RequestError,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Option<CleanupPermit> {
         if request_error.is_cancellation_terminal() {
             let permit = self
                 .request_supervisor
-                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                 .await;
             let _ =
                 send_transport_override_or_allow_candidate(permit.as_ref(), &request_id, sender);
@@ -565,6 +587,7 @@ impl RuntimeHost {
                     supervised_request,
                     "request.error",
                     failure.error(),
+                    owner_inventory,
                     CompletionTrace::RUNTIME,
                 )
                 .await;
@@ -595,6 +618,7 @@ impl RuntimeHost {
                 supervised_request,
                 "request.error",
                 &response_error,
+                owner_inventory,
                 CompletionTrace::RUNTIME,
             )
             .await;
@@ -609,12 +633,13 @@ impl RuntimeHost {
     async fn finish_websocket_connection_closed_error(
         &self,
         supervised_request: &SupervisedRequest,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         request_error: RequestError,
     ) -> Option<CleanupPermit> {
         if request_error.is_cancellation_terminal() {
             return self
                 .request_supervisor
-                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                 .await;
         }
         let response_error = request_error
@@ -625,6 +650,7 @@ impl RuntimeHost {
                 supervised_request,
                 "request.error",
                 &response_error,
+                owner_inventory,
                 CompletionTrace::RUNTIME,
             )
             .await

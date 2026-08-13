@@ -23,7 +23,7 @@ use skiff_runtime_request::{
         ExecutionWinner,
     },
     execution_budget_trace_attrs, response_error_to_telemetry_map, RequestCancel, RequestEnvelope,
-    ResponseError,
+    RequestExecutionOwnerInventorySnapshot, ResponseError,
 };
 
 use crate::telemetry::RequestTelemetryContext;
@@ -131,6 +131,7 @@ struct ActiveRequest {
 struct CompletingRequest {
     row_identity: Arc<()>,
     settlement: Arc<ExecutionSettlement>,
+    owner_inventory: RequestExecutionOwnerInventorySnapshot,
 }
 
 struct CleanupRequest {
@@ -179,6 +180,7 @@ struct CompletionWinner {
     key: RequestExecutionKey,
     active: ActiveRequest,
     settlement: Arc<ExecutionSettlement>,
+    owner_inventory: RequestExecutionOwnerInventorySnapshot,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -205,6 +207,7 @@ pub(crate) struct CleanupPermit {
     observer: BytecodeExecutionObserver,
     settlement: Arc<ExecutionSettlement>,
     response_action: CompletionResponseAction,
+    owner_inventory: RequestExecutionOwnerInventorySnapshot,
 }
 
 struct CleanupGuard {
@@ -213,6 +216,7 @@ struct CleanupGuard {
     guard_identity: Arc<()>,
     observer: BytecodeExecutionObserver,
     _settlement: Arc<ExecutionSettlement>,
+    owner_inventory: RequestExecutionOwnerInventorySnapshot,
 }
 
 #[derive(Clone, Copy)]
@@ -285,9 +289,10 @@ impl RequestSupervisor {
     pub(crate) async fn complete_success(
         self: &Arc<Self>,
         request: &SupervisedRequest,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request, CompletionCandidate::Success)?;
+        let winner = self.claim_completion(request, owner_inventory, CompletionCandidate::Success)?;
         finish_completion(winner, trace, None, None)
     }
 
@@ -296,9 +301,10 @@ impl RequestSupervisor {
         request: &SupervisedRequest,
         event_name: &'static str,
         error: &ResponseError,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request, CompletionCandidate::Failure)?;
+        let winner = self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
         finish_completion(
             winner,
             trace,
@@ -312,9 +318,10 @@ impl RequestSupervisor {
         request: &SupervisedRequest,
         event_name: &'static str,
         error: &OpaqueServiceError,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request, CompletionCandidate::Failure)?;
+        let winner = self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
         let correlation = ErrorCorrelation {
             trace_id: error.envelope().trace_id().to_string(),
             error_id: error.envelope().error_id().to_string(),
@@ -333,9 +340,10 @@ impl RequestSupervisor {
     pub(crate) async fn complete_cancelled(
         self: &Arc<Self>,
         request: &SupervisedRequest,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         trace: CompletionTrace,
     ) -> Option<CleanupPermit> {
-        let winner = self.claim_completion(request, CompletionCandidate::Failure)?;
+        let winner = self.claim_completion(request, owner_inventory, CompletionCandidate::Failure)?;
         finish_completion(winner, trace, None, None)
     }
 
@@ -442,6 +450,7 @@ impl RequestSupervisor {
     fn claim_completion(
         self: &Arc<Self>,
         request: &SupervisedRequest,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         candidate: CompletionCandidate,
     ) -> Option<CompletionWinner> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -458,6 +467,7 @@ impl RequestSupervisor {
         let completing = CompletingRequest {
             row_identity: Arc::clone(&current.row_identity),
             settlement: Arc::clone(&settlement),
+            owner_inventory,
         };
         let RequestRow::Active(active) = entry.insert(RequestRow::Completing(completing)) else {
             unreachable!("matching active row was replaced")
@@ -467,6 +477,7 @@ impl RequestSupervisor {
             key: request.key.clone(),
             active,
             settlement,
+            owner_inventory,
         })
     }
 }
@@ -644,6 +655,7 @@ impl CleanupPermit {
             observer,
             settlement,
             response_action: _,
+            owner_inventory,
         } = self;
         let guard_identity = Arc::new(());
         {
@@ -656,6 +668,7 @@ impl CleanupPermit {
                 Some(RequestRow::Completing(completing))
                     if Arc::ptr_eq(&completing.row_identity, &row_identity)
                         && Arc::ptr_eq(&completing.settlement, &settlement)
+                        && completing.owner_inventory == owner_inventory
             );
             if !matches {
                 return None;
@@ -673,6 +686,7 @@ impl CleanupPermit {
             guard_identity,
             observer,
             _settlement: settlement,
+            owner_inventory,
         })
     }
 }
@@ -681,7 +695,9 @@ impl CleanupGuard {
     fn observe_cleanup(self) {
         self.observer
             .observe(BytecodeExecutionEvent::RequestCleanupComplete(
-                RequestCleanupComplete {},
+                RequestCleanupComplete {
+                    owner_inventory: self.owner_inventory,
+                },
             ));
         self.finish();
     }
@@ -770,6 +786,7 @@ impl CompletionWinner {
             observer: self.active.observer,
             settlement: self.settlement,
             response_action,
+            owner_inventory: self.owner_inventory,
         }
     }
 }
@@ -863,6 +880,24 @@ mod tests {
     use skiff_runtime_model::bytecode_execution_observation::{
         BytecodeExecutionCorrelation, BytecodeExecutionEventSink, BytecodeExecutionObservation,
     };
+    use skiff_runtime_request::FrozenOwnerDomain;
+
+    fn zero_snapshot() -> RequestExecutionOwnerInventorySnapshot {
+        RequestExecutionOwnerInventorySnapshot {
+            pending: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            resource: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            child: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+        }
+    }
 
     #[derive(Default)]
     struct RecordingSink(Mutex<Vec<BytecodeExecutionObservation>>);
@@ -1055,8 +1090,22 @@ mod tests {
             &key,
         );
 
+        let snapshot = RequestExecutionOwnerInventorySnapshot {
+            pending: FrozenOwnerDomain {
+                current: 1,
+                ever_created: true,
+            },
+            resource: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            child: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+        };
         let permit = supervisor
-            .complete_success(&supervised, CompletionTrace::RUNTIME)
+            .complete_success(&supervised, snapshot, CompletionTrace::RUNTIME)
             .await
             .unwrap();
         assert_eq!(
@@ -1064,7 +1113,7 @@ mod tests {
             CompletionResponseAction::Candidate
         );
         assert!(supervisor
-            .complete_success(&supervised, CompletionTrace::RUNTIME)
+            .complete_success(&supervised, zero_snapshot(), CompletionTrace::RUNTIME)
             .await
             .is_none());
         permit.observe_cleanup();
@@ -1079,7 +1128,9 @@ mod tests {
         ));
         assert!(matches!(
             records[1].event,
-            BytecodeExecutionEvent::RequestCleanupComplete(_)
+            BytecodeExecutionEvent::RequestCleanupComplete(RequestCleanupComplete {
+                owner_inventory
+            }) if owner_inventory == snapshot
         ));
     }
 
@@ -1106,7 +1157,7 @@ mod tests {
             .await;
 
         let permit = supervisor
-            .complete_cancelled(&supervised, CompletionTrace::RUNTIME)
+            .complete_cancelled(&supervised, zero_snapshot(), CompletionTrace::RUNTIME)
             .await
             .unwrap();
         assert_eq!(
@@ -1135,7 +1186,7 @@ mod tests {
         );
 
         let permit = supervisor
-            .complete_success(&supervised, CompletionTrace::RUNTIME)
+            .complete_success(&supervised, zero_snapshot(), CompletionTrace::RUNTIME)
             .await
             .unwrap();
         assert!(matches!(

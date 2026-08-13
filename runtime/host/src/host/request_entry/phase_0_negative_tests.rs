@@ -94,8 +94,8 @@ async fn wrong_gateway_identity_fails_before_observation() {
         .clone();
     let wrong_identity = different_gateway_identity(&fixture.gateway_identity);
     let expected_message = format!(
-        "bytecode deployment {} ingress entry {} does not match routed gateway identity {}",
-        fixture.deployment.deployment_artifact_identity, gateway_key, wrong_identity,
+        "bytecode gateway lookup failed: deployment HTTP gateway entry {} identity mismatch: expected {}, got {}",
+        gateway_key, fixture.gateway_identity, wrong_identity,
     );
 
     run_negative_request(

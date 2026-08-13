@@ -220,7 +220,7 @@ fn websocket_connect_header(
     request_id: &str,
 ) -> BytecodeWebSocketConnectRequestStartFrameHeader {
     let gateway_entry_identity =
-        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v1:sha256:{}", "0".repeat(64)))
+        GatewayEntryIdentity::parse(format!("skiff-gateway-entry-v2:sha256:{}", "0".repeat(64)))
             .expect("mismatched WebSocket gateway identity");
     BytecodeWebSocketConnectRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -639,7 +639,7 @@ async fn gateway_route_fails_closed_on_missing_or_mismatched_pinned_facts() {
                     path: "/phase-0/vcp".to_string(),
                 },
                 gateway_entry_identity: GatewayEntryIdentity::parse(format!(
-                    "skiff-gateway-entry-v1:sha256:{}",
+                    "skiff-gateway-entry-v2:sha256:{}",
                     "0".repeat(64)
                 ))
                 .expect("mismatched gateway identity"),

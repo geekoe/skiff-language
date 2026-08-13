@@ -2,8 +2,9 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
-    BoundaryResponse, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
-    RequestEnvelope, ResponseEnd, ResponseError, ResponseEvent, RouterWriterMessage,
+    self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, RequestEnvelope, RequestExecutionOwnerInventorySnapshot,
+    ResponseEnd, ResponseError, ResponseEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -15,10 +16,7 @@ use skiff_runtime_transport::{
 use tokio::sync::mpsc;
 use tracing::error;
 
-use super::{
-    assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest,
-    resumable::{drive_bytecode_request, DrivenBytecodeRequest},
-};
+use super::assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest;
 use crate::{
     host::{
         request_supervisor::{
@@ -88,11 +86,11 @@ impl RuntimeHost {
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest {
+            let request_runner::DrivenBytecodeRequest {
                 result,
-                execution,
-                owner_inventory: _owner_inventory,
-            } = drive_bytecode_request(BytecodeRequestExecutionInput {
+                retention,
+                owner_inventory,
+            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -100,6 +98,7 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
             });
+            let owner_inventory = owner_inventory.into_snapshot();
             let terminal = match result {
                 Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))) => {
                     WebSocketJsonRpcTerminal::Response(WebSocketJsonRpcOutcome::Success { payload })
@@ -116,12 +115,12 @@ impl RuntimeHost {
                 .finish_websocket_jsonrpc_request(
                     &supervised_request,
                     request_id,
+                    owner_inventory,
                     terminal,
                     &sender,
                 )
                 .await;
-            let _owner_inventory_snapshot = _owner_inventory.into_snapshot();
-            drop(execution);
+            drop(retention);
             drop(execution_budget);
             drop(supervised_request);
             drop(route);
@@ -135,19 +134,20 @@ impl RuntimeHost {
         &self,
         supervised_request: &SupervisedRequest,
         request_id: String,
+        owner_inventory: RequestExecutionOwnerInventorySnapshot,
         terminal: WebSocketJsonRpcTerminal,
         sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Option<CleanupPermit> {
         let WebSocketJsonRpcTerminal::Response(outcome) = terminal else {
             return self
                 .request_supervisor
-                .complete_cancelled(supervised_request, CompletionTrace::RUNTIME)
+                .complete_cancelled(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                 .await;
         };
         let permit = match &outcome {
             WebSocketJsonRpcOutcome::Success { .. } => {
                 self.request_supervisor
-                    .complete_success(supervised_request, CompletionTrace::RUNTIME)
+                    .complete_success(supervised_request, owner_inventory, CompletionTrace::RUNTIME)
                     .await
             }
             failed => {
@@ -156,6 +156,7 @@ impl RuntimeHost {
                         supervised_request,
                         "request.error",
                         &websocket_jsonrpc_response_error(failed),
+                        owner_inventory,
                         CompletionTrace::RUNTIME,
                     )
                     .await
