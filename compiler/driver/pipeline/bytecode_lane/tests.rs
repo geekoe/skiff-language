@@ -586,27 +586,3 @@ fn compile_phase_4_source(
     result
 }
 
-#[test]
-fn phase_4_bytecode_lane_rejects_non_sleep_host_binding_with_typed_error() {
-    let error = compile_phase_4_source(
-        "example.com/bytecode-phase4-other-binding",
-        "function run() -> void {\n  std.time.sleep(Duration.milliseconds(1))\n}\n",
-    )
-    .unwrap_err();
-
-    let crate::PackageCompileError::BytecodeEmission {
-        source:
-            crate::BytecodeEmissionError::UnsupportedPhase1Capability {
-                capability,
-                module_path,
-                function_key,
-                ..
-            },
-    } = error
-    else {
-        panic!("expected the stable typed host-binding rejection, got {error:?}");
-    };
-    assert_eq!(capability, crate::Phase1UnsupportedCapability::HostTarget);
-    assert_eq!(module_path, "main");
-    assert_eq!(function_key.as_deref(), Some("main::run"));
-}

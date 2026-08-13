@@ -958,6 +958,12 @@ impl<'a> FunctionEmitter<'a> {
         &mut self,
         expression: &MirExpression,
     ) -> Result<(), BytecodeEmissionError> {
+        if let ExprIr::Call { call } = &expression.expression {
+            if is_duration_milliseconds_target(call) {
+                self.emit_duration_milliseconds_constructor(expression)?;
+                return Ok(());
+            }
+        }
         if self.try_emit_ordinary_call(expression)? {
             self.anchor_extra_call_expression_events(expression.index)?;
             return Ok(());
@@ -1124,6 +1130,55 @@ impl<'a> FunctionEmitter<'a> {
         };
         result?;
         self.anchor_extra_call_expression_events(expression.index)?;
+        Ok(())
+    }
+
+    fn emit_duration_milliseconds_constructor(
+        &mut self,
+        expression: &MirExpression,
+    ) -> Result<(), BytecodeEmissionError> {
+        let ExprIr::Call { call } = &expression.expression else {
+            return Err(unsupported(
+                &self.key,
+                "Duration.milliseconds constructor",
+                "expression is not a call",
+            ));
+        };
+        if call.args.len() != 1 {
+            return Err(unsupported(
+                &self.key,
+                "Duration.milliseconds constructor",
+                "constructor requires exactly one literal integer argument",
+            ));
+        }
+        let argument = self.function.expression(call.args[0])?;
+        let ExprIr::Literal {
+            value: LiteralIr::Number { value },
+        } = &argument.expression
+        else {
+            return Err(unsupported(
+                &self.key,
+                "Duration.milliseconds constructor",
+                "constructor argument is not a literal number",
+            ));
+        };
+        let pool = self.image.add_literal_constant(
+            self.unit.module_path.as_str(),
+            &LiteralIr::Number { value: value.clone() },
+            &expression.ty,
+            &format!(
+                "function `{key}` Duration.milliseconds expression {index}",
+                key = self.key,
+                index = expression.index
+            ),
+        )?;
+        self.emit_op(Opcode::Const, vec![pool])?;
+        self.map_call_event(call.args[0].expression);
+        // The constructor is an identity alias. Emit a no-value-changing
+        // instruction pair so the constructor source event has its own exact
+        // program point while the operand stack remains one Duration value.
+        self.emit_op(Opcode::Dup, Vec::new())?;
+        self.emit_op(Opcode::Pop, Vec::new())?;
         Ok(())
     }
 
@@ -3941,6 +3996,14 @@ fn native_binding_registered(target: &NativeTarget) -> bool {
         .entries()
         .iter()
         .any(|entry| entry.binding_key == binding_key)
+}
+
+fn is_duration_milliseconds_target(call: &skiff_artifact_model::CallIr) -> bool {
+    matches!(
+        &call.target,
+        CallTargetIr::Native { target }
+            if target.binding_key.as_deref() == Some("core.duration.milliseconds")
+    )
 }
 
 fn static_intrinsic_canonical_key(target: &str) -> Option<&'static str> {
