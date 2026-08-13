@@ -11,6 +11,7 @@ import {
   loadAndValidatePhase1CommandReceipts,
   writeJsonExclusive,
 } from './bytecode-vm-phase-1-receipts.mjs';
+import { phase1ObservationSchemaIdentity } from './bytecode-vm-phase-1-observation-schema.mjs';
 
 const MANIFEST_NAME = 'manifest.json';
 
@@ -40,6 +41,7 @@ export async function finalizePhase1Evidence({
       startedAt,
       finishedAt,
     },
+    observationSchema: phase1ObservationSchemaIdentity(),
     ...assessment,
     evidenceFiles,
   };
@@ -54,6 +56,10 @@ export async function checkPhase1Evidence(outputDir, request) {
   const manifest = await readJson(evidenceRoot, MANIFEST_NAME, 'manifest');
   if (manifest?.schemaVersion !== PHASE1_MANIFEST_SCHEMA) {
     throw new Error(`manifest schemaVersion must be ${PHASE1_MANIFEST_SCHEMA}`);
+  }
+  const expectedObservationSchema = phase1ObservationSchemaIdentity();
+  if (JSON.stringify(manifest.observationSchema) !== JSON.stringify(expectedObservationSchema)) {
+    throw new Error('manifest observationSchema does not match the Phase 1 observation schema');
   }
   const expectedRequest = {
     repoRoot: request.repoRoot,
