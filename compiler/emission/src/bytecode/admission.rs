@@ -457,7 +457,10 @@ fn admit_effects(
         // `mayPending` flag that disagrees with the category trace is a fact
         // drift and keeps the same stable rejection.
         let canonical_sleep_pending = effects.may_pending
-            && effects.pending_effect_categories == [PendingEffectCategory::NativeCall];
+            && matches!(
+                effects.pending_effect_categories.as_slice(),
+                [PendingEffectCategory::NativeCall] | [PendingEffectCategory::HostEffect]
+            );
         if !canonical_sleep_pending {
             return Err(rejected_function(
                 unit,
@@ -2263,7 +2266,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_4_admission_rejects_non_native_pending_category() {
+    fn phase_4_admission_admits_canonical_host_effect_pending_trace() {
         let units = [unit(Vec::new(), Vec::new())];
         let summary = CallableEffectSummary::Analyzed {
             effects: CallableMayEffects {
@@ -2275,15 +2278,8 @@ mod tests {
                 inout_path_effects: Vec::new(),
             },
         };
-        let error = admit_effects(&units[0], FUNCTION_KEY, &summary)
-            .expect_err("non-canonical pending categories stay rejected");
-        assert!(matches!(
-            error,
-            BytecodeEmissionError::UnsupportedPhase1Capability {
-                capability: Phase1UnsupportedCapability::PendingEffect,
-                ..
-            }
-        ));
+        admit_effects(&units[0], FUNCTION_KEY, &summary)
+            .expect("the production std.time.sleep trace is the canonical HostEffect pending category");
     }
 
     #[test]
