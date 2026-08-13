@@ -96,7 +96,7 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            } = request_runner::drive_runtime_bytecode_request_async(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -104,7 +104,7 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
                 heap: None,
-            });
+            }).await;
             let owner_inventory = owner_inventory.into_snapshot();
             let cleanup_permit = host
                 .finish_http_gateway_request(
@@ -172,7 +172,7 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            } = request_runner::drive_runtime_bytecode_request_async(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -180,7 +180,7 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
                 heap: None,
-            });
+            }).await;
             let owner_inventory = owner_inventory.into_snapshot();
             let cleanup_permit = match result {
                 Ok(response) => {
@@ -274,7 +274,7 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            } = request_runner::drive_runtime_bytecode_request_async(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -282,7 +282,7 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
                 heap: None,
-            });
+            }).await;
             let owner_inventory = owner_inventory.into_snapshot();
             let mapped_error = match result {
                 Ok(_) => RequestError::Unsupported(
@@ -348,7 +348,7 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            } = request_runner::drive_runtime_bytecode_request_async(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -356,7 +356,7 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
                 heap: None,
-            });
+            }).await;
             let owner_inventory = owner_inventory.into_snapshot();
             let error = match result {
                 Ok(_) => RequestError::Unsupported(

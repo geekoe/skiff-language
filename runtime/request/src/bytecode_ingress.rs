@@ -1,6 +1,7 @@
 use std::{
     num::{NonZeroU32, NonZeroUsize},
     sync::{mpsc, Arc, Mutex},
+    time::Duration,
 };
 
 use skiff_artifact_model::TypeRefIr;
@@ -172,6 +173,58 @@ pub fn drive_runtime_bytecode_request(
     }
 }
 
+/// Async production driver for the Phase 4 pending lane.
+///
+/// The controlled driver still owns park/publish/wake/claim/resume. This
+/// wrapper waits for the request's budget terminal or the pinned sleep
+/// duration, whichever is the single winner, instead of synchronously
+/// completing every parked effect. That keeps cancel/deadline/session-stop
+/// races observable while a successful sleep still resumes on its
+/// deterministic timer.
+pub async fn drive_runtime_bytecode_request_async(
+    input: BytecodeRequestExecutionInput,
+) -> DrivenBytecodeRequest {
+    let mut drive = drive_runtime_bytecode_request_controlled(input);
+    loop {
+        match drive {
+            ControlledBytecodeDrive::Complete(driven) => return driven,
+            ControlledBytecodeDrive::Parked(parked) => {
+                let sleep_millis = parked.sleep_millis();
+                let sleep = tokio::time::sleep(Duration::from_millis(sleep_millis));
+                tokio::pin!(sleep);
+                loop {
+                    let _ = parked
+                        .pending_completion()
+                        .runtime
+                        .budget
+                        .pending_terminal_winner();
+                    match parked.wake_receiver.try_recv() {
+                        Ok(()) => {
+                            drive = parked.resume_with_claimed_signal();
+                            break;
+                        }
+                        Err(mpsc::TryRecvError::Empty) => {}
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            drive = parked.terminal(BytecodeSchedulerError::Port(
+                                "pending wake queue disconnected before terminal".to_string(),
+                            ));
+                            break;
+                        }
+                    }
+                    tokio::select! {
+                        _ = &mut sleep => {
+                            parked.pending_completion().complete();
+                            drive = parked.resume();
+                            break;
+                        }
+                        _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// One controlled-drive step.
 ///
 /// `Parked` carries the live request and its completion authority so a host
@@ -216,6 +269,7 @@ pub fn drive_runtime_bytecode_request_controlled(
         wake_queue,
         budget: Arc::clone(&start.execution_budget),
         completion: Mutex::new(None),
+        sleep_millis: Mutex::new(None),
     });
     let mut context = context.with_ports(BytecodeSchedulerPorts {
         child_executor: Some(Arc::new(SleepHostExecutor {
@@ -335,6 +389,7 @@ struct RequestPendingRuntime {
     wake_queue: Arc<RequestPendingWakeQueue>,
     budget: Arc<ExecutionBudget>,
     completion: Mutex<Option<VmCompletionHandle<VmSuspended>>>,
+    sleep_millis: Mutex<Option<u64>>,
 }
 
 /// Converts the budget's single authoritative winner into the exact pending
@@ -421,6 +476,30 @@ impl BytecodeChildExecutor<VmFiber> for SleepHostExecutor {
             return Err(BytecodeSchedulerError::UnsupportedAdapter);
         }
         let (_adapter, arguments, resume) = invocation.into_parts();
+        let sleep_millis = arguments
+            .values()
+            .first()
+            .and_then(|value| {
+                if let Some(millis) = value.as_integer() {
+                    u64::try_from(millis).ok()
+                } else {
+                    let number = value.as_number()?;
+                    if !number.is_finite()
+                        || number < 0.0
+                        || number.fract() != 0.0
+                        || number > u64::MAX as f64
+                    {
+                        return None;
+                    }
+                    Some(number as u64)
+                }
+            })
+            .unwrap_or(0);
+        *self
+            .runtime
+            .sleep_millis
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sleep_millis);
         let escrow = RootEscrow::new(Box::new(SleepArgumentRoots(arguments.values().to_vec())));
         let completion = self
             .runtime
@@ -524,11 +603,30 @@ impl ParkedBytecodeRequest {
         }
     }
 
+    /// Deterministic sleep duration for the currently parked effect.
+    fn sleep_millis(&self) -> u64 {
+        self.runtime
+            .sleep_millis
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or(0)
+    }
+
     /// Completes the parked effect deterministically and resumes the request.
     pub fn complete_and_resume(self) -> ControlledBytecodeDrive {
         let parked = self;
         parked.pending_completion().complete();
         parked.resume()
+    }
+
+    /// Resumes after the caller has already claimed the wake signal.
+    fn resume_with_claimed_signal(mut self) -> ControlledBytecodeDrive {
+        let wake = self
+            .runtime
+            .wake_queue
+            .pop()
+            .expect("a claimed pending wake queue must hold exactly one wake");
+        self.resume_wake(wake)
     }
 
     /// Drains exactly one claimed wake and restores the original VM site.
@@ -544,6 +642,10 @@ impl ParkedBytecodeRequest {
             .wake_queue
             .pop()
             .expect("a signaled pending wake queue must hold exactly one wake");
+        self.resume_wake(wake)
+    }
+
+    fn resume_wake(mut self, wake: VmPendingWake<VmSuspended>) -> ControlledBytecodeDrive {
         match BytecodeScheduler::<VmFiber>::resume_from_pending_wake(wake, self.context.ports()) {
             Ok(scheduler) => {
                 let outcome =
@@ -1545,6 +1647,7 @@ mod tests {
             wake_queue,
             budget: Arc::clone(&budget),
             completion: Mutex::new(Some(completion.clone())),
+            sleep_millis: Mutex::new(None),
         });
         let authority = RequestPendingCompletion {
             runtime: Arc::clone(&runtime),

@@ -90,7 +90,7 @@ impl RuntimeHost {
                 result,
                 retention,
                 owner_inventory,
-            } = request_runner::drive_runtime_bytecode_request(BytecodeRequestExecutionInput {
+            } = request_runner::drive_runtime_bytecode_request_async(BytecodeRequestExecutionInput {
                 target,
                 request: request_envelope,
                 observer: observer.clone(),
@@ -98,7 +98,7 @@ impl RuntimeHost {
                 execution_budget: Arc::clone(&execution_budget),
                 handles,
                 heap: None,
-            });
+            }).await;
             let owner_inventory = owner_inventory.into_snapshot();
             let terminal = match result {
                 Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))) => {

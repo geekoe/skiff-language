@@ -1,0 +1,8 @@
+run:
+  method: POST
+  path: /phase-4/vcp
+  kind: typedJson
+  handler: main.run
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }
