@@ -292,6 +292,15 @@ pub struct BytecodeSchedulerPorts<U: BytecodeUnit> {
     pub stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor<U>>>,
 }
 
+impl<U: BytecodeUnit> Clone for BytecodeSchedulerPorts<U> {
+    fn clone(&self) -> Self {
+        Self {
+            child_executor: self.child_executor.clone(),
+            stream_supervisor: self.stream_supervisor.clone(),
+        }
+    }
+}
+
 impl<U: BytecodeUnit> Default for BytecodeSchedulerPorts<U> {
     fn default() -> Self {
         Self {

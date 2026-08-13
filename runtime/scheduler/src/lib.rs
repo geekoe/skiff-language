@@ -34,7 +34,8 @@ pub use bytecode::{
     BytecodeUnitControl,
 };
 pub use owner_inventory::{
-    OwnerCreationError, OwnerCreationErrorKind, OwnerDomain, RequestExecutionContext,
+    OwnerCreationError, OwnerCreationErrorKind, OwnerDomain, PendingOwnerRegistration,
+    RequestExecutionContext,
 };
 pub use pending::{
     BeginPendingError, CompletionHandle, PendingCellState, PendingOwner, PendingOwnerDraft,

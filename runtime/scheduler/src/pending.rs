@@ -94,8 +94,17 @@ impl<R, S> PendingOwner<R, S> {
     }
 }
 
-impl<R, S> VmRootSource for PendingOwner<R, S> {
+impl<R, S> VmRootSource for PendingOwner<R, S>
+where
+    S: VmRootSource,
+{
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        // The suspended invocation chain stays enumerable while parked: its
+        // active and blocked fibers own live handles that must survive a
+        // safepoint GC. The transferred escrow covers roots that already left
+        // the chain (adapter arguments, stream items), so the two walks never
+        // alias each other.
+        self.suspended.visit_roots(visitor)?;
         self.roots.visit_roots(visitor)
     }
 }
@@ -120,6 +129,7 @@ impl<R, S, O> PendingWake<R, S, O> {
 
 impl<R, S, O> VmRootSource for PendingWake<R, S, O>
 where
+    S: VmRootSource,
     O: VmRootSource,
 {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
@@ -320,6 +330,7 @@ impl<R, S, O> PendingCell<R, S, O> {
 
 impl<R, S, O> VmRootSource for PendingCell<R, S, O>
 where
+    S: VmRootSource,
     O: VmRootSource,
 {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
@@ -749,6 +760,7 @@ where
 
 impl<R, S, O> VmRootSource for PendingRegistry<R, S, O>
 where
+    S: VmRootSource,
     O: VmRootSource,
 {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
@@ -821,7 +833,7 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
+    #[derive(Debug, Default)]
     struct RootWalkCounts {
         source_visits: AtomicUsize,
         backing_drops: AtomicUsize,
@@ -852,6 +864,7 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
     struct NoRoots;
 
     impl VmRootSource for NoRoots {
@@ -872,8 +885,8 @@ mod tests {
 
     struct CountingQueue(Arc<RootWalkCounts>);
 
-    impl PendingWakeQueue<u64, (), NoRoots> for CountingQueue {
-        fn enqueue(&self, _wake: PendingWake<u64, (), NoRoots>) {
+    impl PendingWakeQueue<u64, NoRoots, NoRoots> for CountingQueue {
+        fn enqueue(&self, _wake: PendingWake<u64, NoRoots, NoRoots>) {
             self.0.queue_enqueues.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -1038,7 +1051,7 @@ mod tests {
 
     #[test]
     fn safepoint_root_walk_neither_enqueues_nor_drops_pending_payloads() {
-        let registry = PendingRegistry::<u64, (), NoRoots>::new(pending_registration());
+        let registry = PendingRegistry::<u64, NoRoots, NoRoots>::new(pending_registration());
         let counts = Arc::new(RootWalkCounts::default());
         let completion = registry
             .begin(RootEscrow::new(Box::new(SafepointRoots {
@@ -1049,7 +1062,11 @@ mod tests {
         let queue = Arc::new(CountingQueue(Arc::clone(&counts)));
         assert_eq!(
             registry
-                .publish(completion.ticket(), PendingOwnerDraft::new(1, ()), queue)
+                .publish(
+                    completion.ticket(),
+                    PendingOwnerDraft::new(1, NoRoots),
+                    queue
+                )
                 .unwrap(),
             PendingPublication::Waiting
         );
@@ -1303,5 +1320,108 @@ mod tests {
         ));
         assert_eq!(registry.live_count(), 0);
         assert_eq!(queue.0.lock().unwrap().len(), 1);
+    }
+
+    struct SafepointSuspended {
+        root: ValueSlot,
+        counts: Arc<RootWalkCounts>,
+    }
+
+    impl std::fmt::Debug for SafepointSuspended {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("SafepointSuspended")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl VmRootSource for SafepointSuspended {
+        fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            self.counts.source_visits.fetch_add(1, Ordering::Relaxed);
+            visitor.visit_root(&self.root)
+        }
+    }
+
+    struct SafepointSettlement {
+        root: ValueSlot,
+        counts: Arc<RootWalkCounts>,
+    }
+
+    impl std::fmt::Debug for SafepointSettlement {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter
+                .debug_struct("SafepointSettlement")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl VmRootSource for SafepointSettlement {
+        fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            self.counts.source_visits.fetch_add(1, Ordering::Relaxed);
+            visitor.visit_root(&self.root)
+        }
+    }
+
+    struct SafepointQueue(Mutex<Vec<PendingWake<u64, SafepointSuspended, SafepointSettlement>>>);
+
+    impl PendingWakeQueue<u64, SafepointSuspended, SafepointSettlement> for SafepointQueue {
+        fn enqueue(&self, wake: PendingWake<u64, SafepointSuspended, SafepointSettlement>) {
+            self.0.lock().unwrap().push(wake);
+        }
+    }
+
+    #[test]
+    fn pending_owner_root_walk_combines_suspended_chain_escrow_and_wake_values() {
+        let registry = PendingRegistry::<u64, SafepointSuspended, SafepointSettlement>::new(
+            pending_registration(),
+        );
+        let counts = Arc::new(RootWalkCounts::default());
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(SafepointRoots {
+                root: ValueSlot::integer(1),
+                counts: Arc::clone(&counts),
+            })))
+            .unwrap();
+        let queue = Arc::new(SafepointQueue(Mutex::new(Vec::new())));
+        assert_eq!(
+            registry
+                .publish(
+                    completion.ticket(),
+                    PendingOwnerDraft::new(
+                        7,
+                        SafepointSuspended {
+                            root: ValueSlot::integer(2),
+                            counts: Arc::clone(&counts),
+                        },
+                    ),
+                    queue.clone(),
+                )
+                .unwrap(),
+            PendingPublication::Waiting
+        );
+
+        // A waiting owner enumerates both the suspended invocation chain and
+        // the transferred escrow.
+        let mut waiting_visitor = CountingVisitor::default();
+        registry.visit_roots(&mut waiting_visitor).unwrap();
+        assert_eq!(waiting_visitor.0, 2);
+        assert_eq!(counts.source_visits.load(Ordering::Relaxed), 2);
+
+        assert!(matches!(
+            completion.complete(SafepointSettlement {
+                root: ValueSlot::integer(3),
+                counts: Arc::clone(&counts),
+            }),
+            SettleDisposition::Enqueued
+        ));
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+
+        // A claimed wake enumerates the suspended chain, the escrow and the
+        // completion value in one walk.
+        let mut wake_visitor = CountingVisitor::default();
+        wake.visit_roots(&mut wake_visitor).unwrap();
+        assert_eq!(wake_visitor.0, 3);
+        assert_eq!(counts.source_visits.load(Ordering::Relaxed), 5);
+        assert_eq!(counts.backing_drops.load(Ordering::Relaxed), 0);
     }
 }

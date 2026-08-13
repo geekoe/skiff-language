@@ -10,8 +10,8 @@ use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmBudgetTerminal};
 
 use super::{
     admit_request_deadline, AdmittedRequestDeadline, CompletionCandidate, ExecutionBudget,
-    ExecutionBudgetPolicy, ExecutionWinner, SettlementDisposition, TrustedMonotonicClock,
-    VmAdapterAttachError,
+    ExecutionBudgetPolicy, ExecutionWinner, RequestPendingSink, SettlementDisposition,
+    TrustedMonotonicClock, VmAdapterAttachError,
 };
 use crate::{cancellation::CancellationToken, ExecutionControl};
 
@@ -95,6 +95,15 @@ impl TrustedMonotonicClock for BlockingClock {
             }
         }
         now
+    }
+}
+
+#[derive(Default)]
+struct RecordingSink(Mutex<Vec<ExecutionWinner>>);
+
+impl RequestPendingSink for RecordingSink {
+    fn on_terminal(&self, winner: ExecutionWinner) {
+        self.0.lock().unwrap().push(winner);
     }
 }
 
@@ -323,4 +332,78 @@ fn signed_i64_max_timeout_is_inside_the_canonical_millisecond_domain() {
     );
 
     assert!(admit_request_deadline(&extra).unwrap().is_some());
+}
+
+#[test]
+fn registered_pending_sink_is_notified_exactly_once_on_the_budget_winner() {
+    let budget = budget(10, 2, None, Arc::new(FakeClock::new(Instant::now())));
+    let sink = Arc::new(RecordingSink::default());
+    assert_eq!(budget.register_pending_sink(sink.clone()), None);
+    assert!(sink.0.lock().unwrap().is_empty());
+
+    let settlement = budget.request_cancel().into_settlement();
+    assert_eq!(settlement.winner(), ExecutionWinner::Cancelled);
+    assert_eq!(*sink.0.lock().unwrap(), [ExecutionWinner::Cancelled]);
+
+    let later = budget.request_internal_stop().into_settlement();
+    assert!(Arc::ptr_eq(&settlement, &later));
+    assert_eq!(*sink.0.lock().unwrap(), [ExecutionWinner::Cancelled]);
+}
+
+#[test]
+fn registering_a_sink_after_a_terminal_reports_the_frozen_winner_inline() {
+    let budget = budget(10, 2, None, Arc::new(FakeClock::new(Instant::now())));
+    budget.request_internal_stop();
+    let sink = Arc::new(RecordingSink::default());
+
+    assert_eq!(
+        budget.register_pending_sink(sink.clone()),
+        Some(ExecutionWinner::InternalStop)
+    );
+    assert!(sink.0.lock().unwrap().is_empty());
+}
+
+#[test]
+fn registering_a_sink_after_the_deadline_freezes_deadline_and_reports_it() {
+    let start = Instant::now();
+    let deadline = start + Duration::from_millis(5);
+    let clock = Arc::new(FakeClock::new(start));
+    let budget = budget(10, 2, Some(deadline), clock.clone());
+
+    clock.set(deadline + Duration::from_millis(1));
+    let sink = Arc::new(RecordingSink::default());
+    assert_eq!(
+        budget.register_pending_sink(sink.clone()),
+        Some(ExecutionWinner::DeadlineExceeded)
+    );
+    assert!(sink.0.lock().unwrap().is_empty());
+    assert_eq!(
+        budget.settlement().unwrap().winner(),
+        ExecutionWinner::DeadlineExceeded
+    );
+}
+
+#[test]
+fn due_deadline_arbitrates_a_late_pending_completion_and_notifies_sinks_once() {
+    let start = Instant::now();
+    let deadline = start + Duration::from_millis(5);
+    let clock = Arc::new(FakeClock::new(start));
+    let budget = budget(10, 2, Some(deadline), clock.clone());
+    let sink = Arc::new(RecordingSink::default());
+    assert_eq!(budget.register_pending_sink(sink.clone()), None);
+
+    clock.set(deadline + Duration::from_millis(1));
+    assert_eq!(
+        budget.pending_terminal_winner(),
+        Some(ExecutionWinner::DeadlineExceeded)
+    );
+    assert_eq!(
+        budget.pending_terminal_winner(),
+        Some(ExecutionWinner::DeadlineExceeded)
+    );
+    assert_eq!(*sink.0.lock().unwrap(), [ExecutionWinner::DeadlineExceeded]);
+    assert_eq!(
+        budget.settlement().unwrap().winner(),
+        ExecutionWinner::DeadlineExceeded
+    );
 }
