@@ -7,6 +7,7 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
+    service_error::RequestException,
     vm_heap::VmHeapError,
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::ValueSlot,
@@ -491,7 +492,10 @@ pub enum ResumeOutcome {
     /// Explicit stream producer natural end. Natural end uses an independent
     /// end resume PC and zero-result resume path, not `EmitStream` backpressure.
     StreamEnd,
-    Throw(VmOwnedValues),
+    /// A child boundary delivered the exact opaque exception envelope. The
+    /// parent reuses this same envelope (`resume_throw`) without re-wrapping,
+    /// so the actual catch identity stays unchanged.
+    Throw(Arc<RequestException>),
     Failure(VmError),
     InternalTerminal(VmInternalTerminal),
 }
@@ -499,7 +503,13 @@ pub enum ResumeOutcome {
 impl VmRootSource for ResumeOutcome {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         match self {
-            Self::Values(values) | Self::Throw(values) => values.visit_roots(visitor),
+            Self::Values(values) => values.visit_roots(visitor),
+            Self::Throw(envelope) => {
+                if let Some(slot) = envelope.vm_local_slot() {
+                    visitor.visit_root(&slot)?;
+                }
+                Ok(())
+            }
             Self::Empty | Self::StreamEnd | Self::Failure(_) | Self::InternalTerminal(_) => Ok(()),
         }
     }
@@ -520,10 +530,11 @@ impl VmRootSource for VmControl {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         match self {
             Self::Complete(Ok(values)) => values.visit_roots(visitor),
+            Self::Complete(Err(error)) => visit_vm_error(error, visitor),
             Self::EnterChild(invocation) => invocation.visit_roots(visitor),
             Self::EnterAdapter(invocation) => invocation.visit_roots(visitor),
             Self::EmitStream(item) => item.visit_roots(visitor),
-            Self::Continue | Self::Complete(Err(_)) | Self::Park(_) => Ok(()),
+            Self::Continue | Self::Park(_) => Ok(()),
         }
     }
 }
@@ -541,7 +552,8 @@ impl VmRootSource for EffectStart {
         match self {
             Self::Ready(Ok(values)) => values.visit_roots(visitor),
             Self::EnterAdapter(invocation) => invocation.visit_roots(visitor),
-            Self::Ready(Err(_)) | Self::Pending(_) => Ok(()),
+            Self::Ready(Err(error)) => visit_vm_error(error, visitor),
+            Self::Pending(_) => Ok(()),
         }
     }
 }
@@ -561,7 +573,8 @@ impl VmRootSource for BoundaryStart {
             Self::Ready(Ok(values)) => values.visit_roots(visitor),
             Self::EnterChild(invocation) => invocation.visit_roots(visitor),
             Self::OpenStreamChild(invocation) => invocation.visit_roots(visitor),
-            Self::Ready(Err(_)) | Self::Pending(_) => Ok(()),
+            Self::Ready(Err(error)) => visit_vm_error(error, visitor),
+            Self::Pending(_) => Ok(()),
         }
     }
 }
@@ -580,9 +593,19 @@ impl VmRootSource for AdapterControl {
         match self {
             Self::EnterChild(invocation) => invocation.visit_roots(visitor),
             Self::Complete(Ok(values)) => values.visit_roots(visitor),
-            Self::Continue | Self::Complete(Err(_)) | Self::Park(_) => Ok(()),
+            Self::Complete(Err(error)) => visit_vm_error(error, visitor),
+            Self::Continue | Self::Park(_) => Ok(()),
         }
     }
+}
+
+fn visit_vm_error(error: &VmError, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+    if let VmError::Thrown(envelope) = error {
+        if let Some(slot) = envelope.vm_local_slot() {
+            visitor.visit_root(&slot)?;
+        }
+    }
+    Ok(())
 }
 
 fn visit_values(values: &[ValueSlot], visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {

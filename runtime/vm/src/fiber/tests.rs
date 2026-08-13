@@ -15,7 +15,8 @@ use skiff_artifact_model::{
     BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     ContractOperationId, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentOperationBinding, DeploymentRevision, Opcode, PackageArtifact, ServiceContract,
-    ServiceDeployment, SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    ServiceDeployment, TypeRefIr, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     compile_package, CompilerPlatformSources, ManifestOwner, ManifestProvenance,
@@ -37,12 +38,14 @@ use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionObservation, BytecodeExecutionObserver, VmFunctionFrameEntered,
     VmFunctionReturned, VmLocalCallDispatched, VmObservedFrameRole,
 };
+use skiff_runtime_model::service_error::{CatchIdentity, NominalTypeIdentity};
 use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError};
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
     catch_matches, comparable_equality, comparable_equality_with_string_resolver,
-    find_exception_region, nominal_tag_index, opcode_supported, DispatchOutcome, Vm, VmFiber,
+    find_exception_region, linked_type_catch_identity, nominal_tag_index, opcode_supported,
+    runtime_leaf_catch_identity, DispatchOutcome, Vm, VmFiber,
 };
 use crate::{VmError, VmLimits};
 
@@ -437,6 +440,7 @@ fn drive_to_completion(
             DispatchOutcome::Continue => {}
             DispatchOutcome::Complete(_) => return Ok(()),
             DispatchOutcome::Handoff(_) => panic!("observation fixture must not hand off"),
+            DispatchOutcome::Throw(_) => panic!("observation fixture must not throw"),
         }
     }
     panic!("observation fixture did not terminate within the step cap");
@@ -452,6 +456,7 @@ fn drive_until_error(fiber: &mut VmFiber) -> VmError {
             }
             Ok(DispatchOutcome::Continue) => {}
             Ok(DispatchOutcome::Handoff(_)) => panic!("observation fixture must not hand off"),
+            Ok(DispatchOutcome::Throw(_)) => panic!("observation fixture must not throw"),
         }
     }
     panic!("observation fixture never failed");
@@ -1222,6 +1227,7 @@ fn lifecycle_executor_keeps_scalar_dispatch_sidecar_free() {
             Ok(DispatchOutcome::Continue) => {}
             Ok(DispatchOutcome::Complete(_)) => break,
             Ok(DispatchOutcome::Handoff(_)) => panic!("lifecycle fixture must not hand off"),
+            Ok(DispatchOutcome::Throw(_)) => panic!("lifecycle fixture must not throw"),
             Err(error) => panic!("lifecycle fixture failed: {error}"),
         }
     }
@@ -1236,4 +1242,50 @@ fn lifecycle_executor_keeps_scalar_dispatch_sidecar_free() {
         "scalar frame exit must not release-snapshot"
     );
     assert_eq!(heap.resource_releases, 0, "no resource owners in a scalar fixture");
+}
+
+#[test]
+fn catch_matchers_compare_the_runtime_leaf_not_a_static_union_type() {
+    let leaf_a = TypeIndex::new(3);
+    let leaf_b = TypeIndex::new(4);
+    let union = TypeIndex::new(9);
+    let catch_a = LinkedCatchMatcher::Type(leaf_a);
+    assert!(catch_matches(&catch_a, Some(leaf_a)));
+    assert!(!catch_matches(&catch_a, Some(leaf_b)));
+    assert!(
+        !catch_matches(&catch_a, Some(union)),
+        "a union static tag must never satisfy a branch-level catch"
+    );
+    assert!(catch_matches(&LinkedCatchMatcher::CatchAll, None));
+    assert!(catch_matches(&LinkedCatchMatcher::CatchAll, Some(leaf_a)));
+}
+
+#[test]
+fn local_nominal_record_derives_a_stable_linked_execution_identity() {
+    const SOURCE: &str = "type Payload { value: number }\n\
+         function run(value: Payload) -> Payload { return value }\n";
+    let fixture = ObservationFixture::build("test.skiff/fiber-identity", SOURCE);
+    let record_index = fixture
+        .image
+        .types()
+        .iter()
+        .position(|entry| matches!(entry.type_ref(), TypeRefIr::PackageSymbol { .. }))
+        .expect("fixture interns the nominal record as a package symbol");
+    let leaf = TypeIndex::new(record_index as u32);
+    let identity = linked_type_catch_identity(&fixture.image, leaf)
+        .expect("a nominal record has a concrete leaf identity");
+    assert!(matches!(
+        identity,
+        CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(_))
+    ));
+}
+
+#[test]
+fn structural_scalar_leaves_have_no_runtime_catch_identity() {
+    let fixture = ObservationFixture::build(
+        "test.skiff/fiber-scalar-identity",
+        "function run(value: number) -> number { return value }\n",
+    );
+    assert!(runtime_leaf_catch_identity(&fixture.image, &ValueSlot::number(1.0)).is_none());
+    assert!(runtime_leaf_catch_identity(&fixture.image, &ValueSlot::null()).is_none());
 }
