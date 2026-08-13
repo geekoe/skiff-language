@@ -17,14 +17,8 @@ mod runner;
 pub mod vm_heap;
 
 pub use bytecode_ingress::{
-    execute_runtime_bytecode_request, execute_runtime_bytecode_request_with_ports,
-    start_runtime_bytecode_request, start_runtime_bytecode_request_with_ports,
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
-    BytecodeInvocationHandoff, BytecodeRequestExecution, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, BytecodeRequestExecutionPorts, BytecodeRequestPendingWake,
-    BytecodeRequestRunOutcome, BytecodeRequestSuspended, BytecodeRequestWakeQueue,
-    BytecodeSchedulerError, BytecodeSchedulerPorts, BytecodeStreamHandoff,
-    BytecodeStreamSupervisor, SuspendedTrampoline,
+    start_runtime_bytecode_request, BytecodeRequestExecution, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput,
 };
 pub use envelope::{
     BinaryHttpRequest, BinaryHttpRequestMetadata, GatewayAdapterArg, GatewayAdapterSource,
@@ -57,4 +51,7 @@ pub use response_event::{
 };
 pub use response_writer::ResponseEventSink;
 pub use runner::{execution_budget_trace_attrs, response_error_to_telemetry_map};
+pub use skiff_runtime_scheduler::{
+    RequestExecutionOwnerInventory, RequestExecutionOwnerInventorySnapshot,
+};
 pub use vm_heap::RequestVmHeap;

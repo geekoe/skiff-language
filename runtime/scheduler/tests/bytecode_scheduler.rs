@@ -12,7 +12,8 @@ use skiff_runtime_scheduler::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
     BytecodeHandoff, BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome,
     BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
-    RootDisposition, RootEscrow, RootEscrowBacking, SuspendedTrampoline,
+    ChildOwnerRegistration, RequestExecutionOwnerInventory, RootDisposition, RootEscrow,
+    RootEscrowBacking, SuspendedTrampoline,
 };
 use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmSemanticCharge};
 
@@ -41,6 +42,11 @@ impl VmHeap for NoopHeap {
 }
 
 struct NoopBudget;
+
+fn child_registration() -> ChildOwnerRegistration {
+    let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+    registrations.child()
+}
 
 impl VmBudget for NoopBudget {
     fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed> {
@@ -164,7 +170,7 @@ mod tests {
         };
         let root = ChainUnit::new(0, DEPTH, Arc::clone(&resumes));
 
-        let outcome = BytecodeScheduler::new(root, ports)
+        let outcome = BytecodeScheduler::new(root, ports, child_registration())
             .run(&mut NoopHeap, &mut NoopBudget)
             .unwrap();
 
@@ -177,18 +183,55 @@ mod tests {
     fn parent_resumes_exactly_once_for_a_synchronous_child() {
         let resumes = Arc::new(AtomicUsize::new(0));
         let executor = Arc::new(ChainExecutor::new(Arc::clone(&resumes)));
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
         let ports = BytecodeSchedulerPorts {
             child_executor: Some(Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ChainUnit>>),
             stream_supervisor: None,
         };
 
-        let outcome = BytecodeScheduler::new(ChainUnit::new(0, 1, resumes.clone()), ports)
-            .run(&mut NoopHeap, &mut NoopBudget)
-            .unwrap();
+        let outcome = BytecodeScheduler::new(
+            ChainUnit::new(0, 1, resumes.clone()),
+            ports,
+            registrations.child(),
+        )
+        .run(&mut NoopHeap, &mut NoopBudget)
+        .unwrap();
 
         assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(0)));
         assert_eq!(executor.starts.load(Ordering::SeqCst), 1);
         assert_eq!(resumes.load(Ordering::SeqCst), 1);
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.child().current(), 0);
+        assert!(snapshot.child().ever_created());
+    }
+
+    #[test]
+    fn frozen_inventory_rejects_a_started_child_without_installing_it() {
+        let resumes = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(ChainExecutor::new(Arc::clone(&resumes)));
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let snapshot = freeze.freeze();
+        let ports = BytecodeSchedulerPorts {
+            child_executor: Some(Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ChainUnit>>),
+            stream_supervisor: None,
+        };
+
+        let error =
+            BytecodeScheduler::new(ChainUnit::new(0, 1, resumes), ports, registrations.child())
+                .run(&mut NoopHeap, &mut NoopBudget)
+                .unwrap_err();
+
+        assert!(matches!(
+            error,
+            BytecodeSchedulerError::ChildOwnerCreation(
+                skiff_runtime_scheduler::OwnerCreationError::InventoryFrozen
+            )
+        ));
+        assert_eq!(executor.starts.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshot.child().current(), 0);
+        assert!(!snapshot.child().ever_created());
     }
 
     type StreamResult = Result<usize, &'static str>;
@@ -318,9 +361,13 @@ mod tests {
             stream_supervisor: Some(stream.clone() as Arc<dyn BytecodeStreamSupervisor<StreamUnit>>),
         };
 
-        let outcome = BytecodeScheduler::new(StreamUnit::new(StreamMode::Emit(7)), ports)
-            .run(&mut NoopHeap, &mut NoopBudget)
-            .unwrap();
+        let outcome = BytecodeScheduler::new(
+            StreamUnit::new(StreamMode::Emit(7)),
+            ports,
+            child_registration(),
+        )
+        .run(&mut NoopHeap, &mut NoopBudget)
+        .unwrap();
 
         assert!(matches!(
             outcome,
@@ -342,9 +389,13 @@ mod tests {
             stream_supervisor: Some(stream.clone() as Arc<dyn BytecodeStreamSupervisor<StreamUnit>>),
         };
 
-        let outcome = BytecodeScheduler::new(StreamUnit::new(StreamMode::Emit(9)), ports)
-            .run(&mut NoopHeap, &mut NoopBudget)
-            .unwrap();
+        let outcome = BytecodeScheduler::new(
+            StreamUnit::new(StreamMode::Emit(9)),
+            ports,
+            child_registration(),
+        )
+        .run(&mut NoopHeap, &mut NoopBudget)
+        .unwrap();
 
         assert!(matches!(
             outcome,
@@ -357,16 +408,23 @@ mod tests {
     #[test]
     fn absent_ports_fail_closed() {
         let ports = BytecodeSchedulerPorts::<ChainUnit>::default();
-        let child =
-            BytecodeScheduler::new(ChainUnit::new(0, 1, Arc::new(AtomicUsize::new(0))), ports)
-                .run(&mut NoopHeap, &mut NoopBudget)
-                .unwrap_err();
+        let child = BytecodeScheduler::new(
+            ChainUnit::new(0, 1, Arc::new(AtomicUsize::new(0))),
+            ports,
+            child_registration(),
+        )
+        .run(&mut NoopHeap, &mut NoopBudget)
+        .unwrap_err();
         assert!(matches!(child, BytecodeSchedulerError::UnsupportedChild));
 
         let ports = BytecodeSchedulerPorts::<StreamUnit>::default();
-        let stream = BytecodeScheduler::new(StreamUnit::new(StreamMode::Emit(1)), ports)
-            .run(&mut NoopHeap, &mut NoopBudget)
-            .unwrap_err();
+        let stream = BytecodeScheduler::new(
+            StreamUnit::new(StreamMode::Emit(1)),
+            ports,
+            child_registration(),
+        )
+        .run(&mut NoopHeap, &mut NoopBudget)
+        .unwrap_err();
         assert!(matches!(stream, BytecodeSchedulerError::UnsupportedStream));
     }
 
@@ -563,9 +621,13 @@ mod tests {
             pending: Mutex::new(None),
         });
 
-        let outcome = BytecodeScheduler::new(NextUnit::stream_next(), next_ports(executor))
-            .run(&mut NoopHeap, &mut NoopBudget)
-            .unwrap();
+        let outcome = BytecodeScheduler::new(
+            NextUnit::stream_next(),
+            next_ports(executor),
+            child_registration(),
+        )
+        .run(&mut NoopHeap, &mut NoopBudget)
+        .unwrap();
 
         assert!(matches!(
             outcome,
@@ -580,9 +642,13 @@ mod tests {
             pending: Mutex::new(None),
         });
 
-        let outcome = BytecodeScheduler::new(NextUnit::stream_next(), next_ports(executor))
-            .run(&mut NoopHeap, &mut NoopBudget)
-            .unwrap();
+        let outcome = BytecodeScheduler::new(
+            NextUnit::stream_next(),
+            next_ports(executor),
+            child_registration(),
+        )
+        .run(&mut NoopHeap, &mut NoopBudget)
+        .unwrap();
 
         assert!(matches!(
             outcome,
@@ -597,9 +663,13 @@ mod tests {
             pending: Mutex::new(None),
         });
 
-        let outcome = BytecodeScheduler::new(NextUnit::stream_next(), next_ports(executor))
-            .run(&mut NoopHeap, &mut NoopBudget)
-            .unwrap();
+        let outcome = BytecodeScheduler::new(
+            NextUnit::stream_next(),
+            next_ports(executor),
+            child_registration(),
+        )
+        .run(&mut NoopHeap, &mut NoopBudget)
+        .unwrap();
 
         assert!(matches!(
             outcome,
@@ -615,7 +685,7 @@ mod tests {
         });
         let ports = next_ports(Arc::clone(&executor));
 
-        let outcome = BytecodeScheduler::new(NextUnit::stream_next(), ports)
+        let outcome = BytecodeScheduler::new(NextUnit::stream_next(), ports, child_registration())
             .run(&mut NoopHeap, &mut NoopBudget)
             .unwrap();
         assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));

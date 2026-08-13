@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 
 mod bytecode;
+mod owner_inventory;
 mod pending;
 mod root_escrow;
 mod stream;
@@ -27,9 +28,17 @@ mod stream_driver;
 mod trampoline;
 
 pub use bytecode::{
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl, BytecodeHandoff, BytecodeScheduler,
-    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
-    BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
+    BytecodeHandoff, BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome,
+    BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
+    BytecodeUnitControl,
+};
+pub use owner_inventory::{
+    ChildOwnerCreationGuard, ChildOwnerLease, ChildOwnerRegistration, FrozenOwnerDomain,
+    OwnerCreationError, PendingOwnerCreationGuard, PendingOwnerLease, PendingOwnerRegistration,
+    RequestExecutionOwnerInventory, RequestExecutionOwnerInventoryFreezePermit,
+    RequestExecutionOwnerInventorySnapshot, RequestExecutionOwnerRegistrations,
+    ResourceOwnerCreationGuard, ResourceOwnerLease, ResourceOwnerRegistration,
 };
 pub use pending::{
     BeginPendingError, CompletionHandle, PendingCellState, PendingOwner, PendingOwnerDraft,
@@ -45,5 +54,6 @@ pub use stream::{
 };
 pub use stream_driver::{VmStreamConsumerExecutor, VmStreamSupervisor, VmStreamTerminal};
 pub use trampoline::{
-    BlockedUnit, FlatTrampoline, ParentResume, SuspendedTrampoline, TrampolineCompletion,
+    BlockedUnit, EnterChildError, FlatTrampoline, ParentResume, SuspendedTrampoline,
+    TrampolineCompletion,
 };

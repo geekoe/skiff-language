@@ -22,9 +22,10 @@ use skiff_runtime_model::{
     vm_value::{CompactTypeTag, ValueFlags, ValueSlot},
 };
 use skiff_runtime_scheduler::{
-    BytecodeScheduler, BytecodeSchedulerOutcome, RootDisposition, RootEscrow, RootEscrowBacking,
-    StreamConsumer, StreamEvent, StreamPoll, VmCompletionHandle, VmPendingRegistry,
-    VmStreamSupervisor, VmStreamTerminal, WakeSignal,
+    BytecodeScheduler, BytecodeSchedulerOutcome, PendingOwnerRegistration,
+    RequestExecutionOwnerInventory, RequestExecutionOwnerRegistrations, RootDisposition,
+    RootEscrow, RootEscrowBacking, StreamConsumer, StreamEvent, StreamPoll, VmCompletionHandle,
+    VmPendingRegistry, VmStreamSupervisor, VmStreamTerminal, WakeSignal,
 };
 use skiff_runtime_vm::{
     ResumeOutcome, Vm, VmBudget, VmBudgetClosed, VmBudgetTerminal, VmError, VmFiber,
@@ -79,6 +80,7 @@ impl RequestAdapterExecutor {
         self_ingress: Option<BytecodeSelfIngressContext>,
         resource_table: ResourceTable,
         queue: BytecodeRequestWakeQueue,
+        pending_owners: PendingOwnerRegistration,
         cancellation: CancellationToken,
         deadline: Option<Instant>,
     ) -> Self {
@@ -87,7 +89,7 @@ impl RequestAdapterExecutor {
             active_self_ingress: Mutex::new(false),
             http_executor,
             self_ingress,
-            pending: VmPendingRegistry::default(),
+            pending: VmPendingRegistry::new(pending_owners),
             queue,
             cancellation,
             deadline,
@@ -128,15 +130,9 @@ impl RequestAdapterExecutor {
             return;
         };
         let handle = skiff_runtime_model::vm_value::VmHandle::new(stream.handle);
-        let cancel = {
-            let mut table = self
-                .resource_table
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            table.remove_live(handle).map(|entry| entry.cancel)
-        };
-        if let Some(cancel) = cancel {
-            (cancel)();
+        let entry = self.resource_table.remove_live(handle);
+        if let Some(entry) = entry {
+            entry.cancel();
         }
         if stream.is_self_ingress {
             self.release_self_ingress();
@@ -381,19 +377,19 @@ impl RequestAdapterExecutor {
         let handle = self.next_stream_handle.fetch_add(1, Ordering::Relaxed);
         let vm_handle = skiff_runtime_model::vm_value::VmHandle::new(handle);
         let body = ValueSlot::resource_ref(vm_handle, CompactTypeTag::new(0), ValueFlags::new(0));
-        {
-            let mut table = self
-                .resource_table
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            table.register(
-                vm_handle,
-                crate::vm_heap::ResourceEntry {
-                    compact_type_tag: body.compact_type_tag(),
-                    flags: body.flags(),
-                    cancel: Arc::new(stream.cancel),
-                },
-            );
+        let resource_cancel: Arc<dyn Fn() + Send + Sync> = Arc::new(stream.cancel);
+        let installed = self.resource_table.register(
+            vm_handle,
+            body.compact_type_tag(),
+            body.flags(),
+            Arc::clone(&resource_cancel),
+        );
+        if let Err(error) = installed {
+            (resource_cancel)();
+            if is_self_ingress {
+                self.release_self_ingress();
+            }
+            return Err(BytecodeSchedulerError::Port(error.to_string()));
         }
         *self
             .stream
@@ -1008,8 +1004,6 @@ pub struct BytecodeRequestExecutionInput {
 
 pub struct BytecodeRequestExecutionHandles {
     pub request_heap_limits: RequestHeapLimits,
-    pub http_executor: Option<Arc<dyn BytecodeHttpExecutor>>,
-    pub self_ingress: Option<BytecodeSelfIngressContext>,
 }
 
 /// Execution ports supplied to the bytecode scheduler.
@@ -1024,69 +1018,31 @@ pub type BytecodeRequestPendingWake = VmPendingWake<BytecodeRequestSuspended>;
 pub type BytecodeRequestWakeQueue =
     Arc<dyn PendingWakeQueue<VmResumeToken, BytecodeRequestSuspended, ResumeOutcome>>;
 
-/// Result of driving a resumable bytecode request once.
-#[derive(Debug, PartialEq)]
-pub enum BytecodeRequestRunOutcome {
-    Complete(BoundaryResponse),
-    Parked,
-}
-
-/// Resumable bytecode request execution state.
+/// Canonical Phase 1 bytecode request execution state.
 ///
-/// The legacy scalar entry point remains synchronous. This state keeps the VM
-/// budget, request heap, response stream and pending-wake queue alive so a
-/// real park can be resumed without rerunning the whole request from scratch.
+/// This state has no pending wake queue, resource table, adapter executor or
+/// stream supervisor. The only scheduler ports are the physically absent
+/// `None` values constructed below; a parked outcome therefore fails closed.
 pub struct BytecodeRequestExecution {
-    driver: BytecodeRequestDriver<VmFiber>,
+    scheduler: Option<BytecodeScheduler<VmFiber>>,
+    heap: Box<dyn VmHeap + Send>,
+    budget: Box<dyn VmBudget + Send>,
     mode: String,
     raw_http_adapter: bool,
     execution_budget: Arc<ExecutionBudget>,
 }
 
 impl BytecodeRequestExecution {
-    /// Drives the initial request segment.
-    pub fn run(&mut self) -> RequestResult<BytecodeRequestRunOutcome> {
-        let outcome = self.driver.run()?;
-        self.map_outcome(outcome)
-    }
-
-    /// Consumes exactly one claimed pending wake and resumes the parked VM.
-    pub fn resume(
-        &mut self,
-        wake: BytecodeRequestPendingWake,
-    ) -> RequestResult<BytecodeRequestRunOutcome> {
-        let outcome = self.driver.resume(wake)?;
-        self.map_outcome(outcome)
-    }
-
-    /// Returns one claimed wake if the response bridge already published it.
-    pub fn take_pending_wake(&mut self) -> Option<BytecodeRequestPendingWake> {
-        self.driver.take_pending_wake()
-    }
-
-    /// Waits for the response bridge or a host adapter to publish a wake.
-    pub async fn wait_pending_wake(&mut self) -> RequestResult<BytecodeRequestPendingWake> {
-        self.driver.wait_pending_wake().await
-    }
-
-    pub fn is_parked(&self) -> bool {
-        self.driver.state == BytecodeRequestDriverState::Parked
-    }
-
-    fn map_outcome(
-        &mut self,
-        outcome: BytecodeRequestDriverOutcome<VmFiber>,
-    ) -> RequestResult<BytecodeRequestRunOutcome> {
+    /// Drives the exact unary Phase 1 request once.
+    pub fn run(&mut self) -> RequestResult<BoundaryResponse> {
+        let scheduler = self.scheduler.take().ok_or_else(|| {
+            RequestError::Decode("bytecode request has already been driven".to_string())
+        })?;
+        let outcome = scheduler
+            .run(&mut *self.heap, &mut *self.budget)
+            .map_err(|error| scheduler_error_to_request_error(&self.execution_budget, error))?;
         match outcome {
-            BytecodeRequestDriverOutcome::Complete {
-                result,
-                stream_sent,
-            } => {
-                if stream_sent {
-                    return Ok(BytecodeRequestRunOutcome::Complete(
-                        BoundaryResponse::StreamSent,
-                    ));
-                }
+            BytecodeSchedulerOutcome::Complete(result) => {
                 let values = result
                     .map_err(|error| vm_error_to_request_error(&self.execution_budget, error))?;
                 if self.mode == "serverStream" {
@@ -1095,42 +1051,29 @@ impl BytecodeRequestExecution {
                     ));
                 }
                 if self.raw_http_adapter {
-                    let response =
-                        http_response_from_vm_values(&mut *self.driver.heap, values.values())?;
-                    return Ok(BytecodeRequestRunOutcome::Complete(response));
+                    return http_response_from_vm_values(&mut *self.heap, values.values());
                 }
                 let payload = json_payload_from_value_slots(values.values())?;
-                Ok(BytecodeRequestRunOutcome::Complete(
-                    BoundaryResponse::payload(payload),
-                ))
+                Ok(BoundaryResponse::payload(payload))
             }
-            BytecodeRequestDriverOutcome::Parked => Ok(BytecodeRequestRunOutcome::Parked),
+            BytecodeSchedulerOutcome::Parked => Err(RequestError::Unsupported(
+                "bytecode VM parked on the synchronous Phase 1 request lane".to_string(),
+            )),
         }
     }
 }
 
-/// Starts a bytecode request with a response event sink and a resumable
-/// pending-wake queue.
+/// Starts the canonical synchronous Phase 1 bytecode request.
+///
+/// The admitted host driver owns the matching freeze permit and passes only
+/// registrations for that exact request. This constructor cannot populate a
+/// resource table, pending queue or scheduler execution port.
 pub fn start_runtime_bytecode_request(
     input: BytecodeRequestExecutionInput,
-    response_events: Arc<dyn ResponseEventSink>,
+    owner_registrations: RequestExecutionOwnerRegistrations,
 ) -> RequestResult<BytecodeRequestExecution> {
-    start_runtime_bytecode_request_with_ports(
-        input,
-        response_events,
-        BytecodeRequestExecutionPorts::default(),
-    )
-}
-
-/// Starts a bytecode request with optional child/adapter ports.
-pub fn start_runtime_bytecode_request_with_ports(
-    input: BytecodeRequestExecutionInput,
-    response_events: Arc<dyn ResponseEventSink>,
-    _ports: BytecodeRequestExecutionPorts,
-) -> RequestResult<BytecodeRequestExecution> {
-    let request_id = input.request.request_id.clone();
     let mode = input.request.mode.clone();
-    validate_runtime_bytecode_request(&input.request)?;
+    validate_bytecode_request(&input.request)?;
     let execution = ExecutionControl::new(input.cancellation.clone(), &input.execution_budget);
     execution.check_cancelled().map_err(RequestError::from)?;
 
@@ -1138,45 +1081,19 @@ pub fn start_runtime_bytecode_request_with_ports(
         target,
         request,
         observer,
-        cancellation,
+        cancellation: _,
         execution_budget,
         handles,
     } = input;
 
-    let owner_pin = Arc::clone(target.image());
-    let resource_table: ResourceTable = Default::default();
     let mut request_heap = RequestVmHeap::new(handles.request_heap_limits);
-    request_heap.set_resource_table(resource_table.clone());
     let arguments = gateway_entry_arguments(&request, &target, &mut request_heap)?;
     let fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
         .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-
-    let queue = Arc::new(InMemoryWakeQueue::new());
-    let (supervisor, consumer) = VmStreamSupervisor::open(owner_pin, queue.clone());
-    let writer = ResponseStreamWriter::new(request_id, response_events);
-    let drain = RequestResponseStream {
-        consumer,
-        writer,
-        mode: mode.clone(),
-        execution_budget: Arc::clone(&execution_budget),
-    };
-    let supervisor = Arc::new(supervisor);
-    let stream_supervisor: Arc<dyn BytecodeStreamSupervisor<VmFiber>> = supervisor.clone();
-    let child_executor = Some(Arc::new(RequestAdapterExecutor::new(
-        request.test_effects_enabled,
-        handles.http_executor.clone(),
-        handles.self_ingress.clone(),
-        resource_table,
-        queue.clone(),
-        cancellation.clone(),
-        execution_budget.deadline(),
-    )) as Arc<dyn BytecodeChildExecutor<VmFiber>>);
     let scheduler = BytecodeScheduler::new(
         fiber,
-        BytecodeSchedulerPorts {
-            child_executor: child_executor.clone(),
-            stream_supervisor: Some(stream_supervisor.clone()),
-        },
+        BytecodeSchedulerPorts::default(),
+        owner_registrations.child(),
     );
 
     let heap: Box<dyn VmHeap + Send> = Box::new(request_heap);
@@ -1184,19 +1101,10 @@ pub fn start_runtime_bytecode_request_with_ports(
         Box::new(execution_budget.attach_vm().map_err(|error| {
             RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
         })?);
-    let driver = BytecodeRequestDriver::new(
-        scheduler,
-        child_executor,
-        Some(stream_supervisor),
-        Some(Box::new(drain)),
-        queue,
+    Ok(BytecodeRequestExecution {
+        scheduler: Some(scheduler),
         heap,
         budget,
-        scheduler_error_map(execution_budget.clone()),
-    );
-
-    Ok(BytecodeRequestExecution {
-        driver,
         mode,
         raw_http_adapter: request
             .http_adapter
@@ -1527,71 +1435,6 @@ fn scheduler_error_map(
     execution_budget: Arc<ExecutionBudget>,
 ) -> Box<dyn Fn(BytecodeSchedulerError) -> RequestError + Send + Sync> {
     Box::new(move |error| scheduler_error_to_request_error(&execution_budget, error))
-}
-
-/// Executes one scalar bytecode request against a verified deployment image.
-pub fn execute_runtime_bytecode_request(
-    input: BytecodeRequestExecutionInput,
-) -> RequestResult<BoundaryResponse> {
-    execute_runtime_bytecode_request_with_ports(input, BytecodeRequestExecutionPorts::default())
-}
-
-/// Executes one bytecode request with optional child/adapter execution ports.
-pub fn execute_runtime_bytecode_request_with_ports(
-    input: BytecodeRequestExecutionInput,
-    ports: BytecodeRequestExecutionPorts,
-) -> RequestResult<BoundaryResponse> {
-    let BytecodeRequestExecutionInput {
-        target,
-        request,
-        observer,
-        cancellation,
-        execution_budget,
-        handles,
-    } = input;
-
-    validate_bytecode_request(&request)?;
-    let execution = ExecutionControl::new(cancellation.clone(), &execution_budget);
-    execution.check_cancelled().map_err(RequestError::from)?;
-
-    let resource_table: ResourceTable = Default::default();
-    let mut heap = RequestVmHeap::new(handles.request_heap_limits);
-    heap.set_resource_table(resource_table.clone());
-    let arguments = gateway_entry_arguments(&request, &target, &mut heap)?;
-    let fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
-        .map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-    let queue = Arc::new(InMemoryWakeQueue::new());
-    let child_cancellation = cancellation.clone();
-    let mut budget = execution_budget.attach_vm().map_err(|error| {
-        RequestError::Decode(format!("bytecode VM budget attachment failed: {error}"))
-    })?;
-
-    let child_executor = Some(Arc::new(RequestAdapterExecutor::new(
-        request.test_effects_enabled,
-        handles.http_executor.clone(),
-        handles.self_ingress.clone(),
-        resource_table,
-        queue.clone(),
-        child_cancellation,
-        execution_budget.deadline(),
-    )) as Arc<dyn BytecodeChildExecutor<VmFiber>>);
-    let outcome = BytecodeScheduler::new(
-        fiber,
-        BytecodeSchedulerPorts {
-            child_executor,
-            stream_supervisor: ports.stream_supervisor,
-        },
-    )
-    .run(&mut heap, &mut budget)
-    .map_err(|error| scheduler_error_to_request_error(&execution_budget, error))?;
-    let BytecodeSchedulerOutcome::Complete(result) = outcome else {
-        return Err(RequestError::Unsupported(
-            "bytecode VM parked; scalar ingress has no pending wake resume path".to_string(),
-        ));
-    };
-    let values = result.map_err(|error| vm_error_to_request_error(&execution_budget, error))?;
-    let payload = json_payload_from_value_slots(values.values())?;
-    Ok(BoundaryResponse::payload(payload))
 }
 
 fn example_test_http_response(url: &str) -> (u16, Vec<u8>) {
@@ -2041,6 +1884,12 @@ fn scheduler_error_to_request_error(
         BytecodeSchedulerError::UnsupportedPark => RequestError::Unsupported(
             "bytecode VM parking requires stream supervisor integration".to_string(),
         ),
+        BytecodeSchedulerError::ChildCapacityExceeded => RequestError::Decode(
+            "bytecode scheduler blocked child capacity is exhausted".to_string(),
+        ),
+        BytecodeSchedulerError::ChildOwnerCreation(error) => RequestError::Decode(format!(
+            "bytecode scheduler child owner creation failed: {error}"
+        )),
         BytecodeSchedulerError::Vm(error) => vm_error_to_request_error(execution_budget, error),
         BytecodeSchedulerError::Port(message) => {
             RequestError::Unsupported(format!("bytecode scheduler port failed: {message}"))
@@ -2052,16 +1901,6 @@ fn validate_bytecode_request(request: &RequestEnvelope) -> RequestResult<()> {
     if request.mode != "unary" {
         return Err(RequestError::Unsupported(format!(
             "bytecode scalar ingress only supports unary request.start, got {}",
-            request.mode
-        )));
-    }
-    validate_bytecode_request_metadata(request)
-}
-
-fn validate_runtime_bytecode_request(request: &RequestEnvelope) -> RequestResult<()> {
-    if !matches!(request.mode.as_str(), "unary" | "serverStream") {
-        return Err(RequestError::Unsupported(format!(
-            "bytecode request ingress only supports unary or serverStream request.start, got {}",
             request.mode
         )));
     }
@@ -2325,6 +2164,11 @@ mod tests {
     type TestSuspended = SuspendedTrampoline<TestUnit, usize>;
     const ERROR_OUTCOME: usize = usize::MAX;
 
+    fn test_child_registration() -> skiff_runtime_scheduler::ChildOwnerRegistration {
+        let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        registrations.child()
+    }
+
     #[derive(Debug)]
     struct TestUnit {
         control: Option<TestControl>,
@@ -2575,6 +2419,7 @@ mod tests {
                 child_executor: None,
                 stream_supervisor: Some(supervisor.clone()),
             },
+            test_child_registration(),
         );
         let heap: Box<dyn VmHeap + Send> = Box::new(NoopHeap);
         let budget: Box<dyn VmBudget + Send> = Box::new(NoopBudget);
@@ -2892,6 +2737,7 @@ mod tests {
                 child_executor: Some(executor_dyn.clone()),
                 stream_supervisor: None,
             },
+            test_child_registration(),
         );
         let heap: Box<dyn VmHeap + Send> = Box::new(NoopHeap);
         let budget: Box<dyn VmBudget + Send> = Box::new(NoopBudget);
@@ -3190,6 +3036,23 @@ mod tests {
         assert!(matches!(
             scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedPark),
             RequestError::Unsupported(message) if message.contains("stream supervisor")
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error(
+                &budget,
+                BytecodeSchedulerError::ChildCapacityExceeded
+            ),
+            RequestError::Decode(message) if message == "bytecode scheduler blocked child capacity is exhausted"
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error(
+                &budget,
+                BytecodeSchedulerError::ChildOwnerCreation(
+                    skiff_runtime_scheduler::OwnerCreationError::InventoryFrozen,
+                ),
+            ),
+            RequestError::Decode(message)
+                if message == "bytecode scheduler child owner creation failed: request owner inventory is frozen"
         ));
     }
 

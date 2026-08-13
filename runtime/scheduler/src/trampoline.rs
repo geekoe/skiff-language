@@ -1,11 +1,32 @@
 use skiff_runtime_model::vm_heap::VmHeapError;
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 
+use crate::{ChildOwnerLease, ChildOwnerRegistration, OwnerCreationError};
+
+/// Failure to install another actual blocked-child owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnterChildError {
+    CapacityExceeded,
+    OwnerCreation(OwnerCreationError),
+}
+
+impl std::fmt::Display for EnterChildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CapacityExceeded => formatter.write_str("blocked child capacity is exhausted"),
+            Self::OwnerCreation(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for EnterChildError {}
+
 /// One parent scheduler unit blocked on its active child.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct BlockedUnit<U, R> {
     parent: U,
     resume: R,
+    owner_lease: ChildOwnerLease,
 }
 
 impl<U, R> BlockedUnit<U, R> {
@@ -32,17 +53,19 @@ where
 /// Entering a child moves the current unit into `blocked` and installs the
 /// child as the next active unit. Completing a child restores exactly one
 /// parent. Neither operation invokes user code or recursively polls a unit.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct FlatTrampoline<U, R> {
     active: U,
     blocked: Vec<BlockedUnit<U, R>>,
+    child_owners: ChildOwnerRegistration,
 }
 
 impl<U, R> FlatTrampoline<U, R> {
-    pub fn new(root: U) -> Self {
+    pub fn new(root: U, child_owners: ChildOwnerRegistration) -> Self {
         Self {
             active: root,
             blocked: Vec::new(),
+            child_owners,
         }
     }
 
@@ -58,19 +81,41 @@ impl<U, R> FlatTrampoline<U, R> {
         self.blocked.len()
     }
 
-    pub fn enter_child(&mut self, child: U, resume: R) {
-        let parent = std::mem::replace(&mut self.active, child);
-        self.blocked.push(BlockedUnit { parent, resume });
+    pub fn enter_child(&mut self, child: U, resume: R) -> Result<(), EnterChildError> {
+        self.blocked
+            .try_reserve(1)
+            .map_err(|_| EnterChildError::CapacityExceeded)?;
+        let child_owners = self.child_owners.clone();
+        let owner = child_owners
+            .prepare()
+            .map_err(EnterChildError::OwnerCreation)?;
+        owner
+            .install(|owner_lease| {
+                let parent = std::mem::replace(&mut self.active, child);
+                self.blocked.push(BlockedUnit {
+                    parent,
+                    resume,
+                    owner_lease,
+                });
+            })
+            .map_err(EnterChildError::OwnerCreation)
     }
 
     pub fn complete_active<O>(mut self, outcome: O) -> TrampolineCompletion<U, R, O> {
-        if let Some(BlockedUnit { parent, resume }) = self.blocked.pop() {
+        if let Some(BlockedUnit {
+            parent,
+            resume,
+            owner_lease,
+        }) = self.blocked.pop()
+        {
             self.active = parent;
-            TrampolineCompletion::ResumeParent(ParentResume {
+            let completion = TrampolineCompletion::ResumeParent(ParentResume {
                 trampoline: self,
                 resume,
                 outcome,
-            })
+            });
+            drop(owner_lease);
+            completion
         } else {
             TrampolineCompletion::RootComplete(outcome)
         }
@@ -80,6 +125,7 @@ impl<U, R> FlatTrampoline<U, R> {
         SuspendedTrampoline {
             active: self.active,
             blocked: self.blocked,
+            child_owners: self.child_owners,
         }
     }
 }
@@ -98,14 +144,14 @@ where
 }
 
 /// Result of completing exactly one active scheduler unit.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum TrampolineCompletion<U, R, O> {
     ResumeParent(ParentResume<U, R, O>),
     RootComplete(O),
 }
 
 /// Typed continuation and outcome to inject into the restored parent unit.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ParentResume<U, R, O> {
     trampoline: FlatTrampoline<U, R>,
     resume: R,
@@ -131,10 +177,11 @@ impl<U, R, O> ParentResume<U, R, O> {
 /// This type is intentionally neither `Clone` nor `Copy`: there can be only
 /// one runnable owner for an invocation chain.
 #[must_use = "a suspended trampoline must be resumed or terminated"]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct SuspendedTrampoline<U, R> {
     active: U,
     blocked: Vec<BlockedUnit<U, R>>,
+    child_owners: ChildOwnerRegistration,
 }
 
 impl<U, R> SuspendedTrampoline<U, R> {
@@ -146,6 +193,7 @@ impl<U, R> SuspendedTrampoline<U, R> {
         FlatTrampoline {
             active: self.active,
             blocked: self.blocked,
+            child_owners: self.child_owners,
         }
     }
 }
@@ -165,15 +213,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{FlatTrampoline, TrampolineCompletion};
+    use super::{EnterChildError, FlatTrampoline, TrampolineCompletion};
+    use crate::{OwnerCreationError, RequestExecutionOwnerInventory};
 
     #[test]
     fn deep_child_chain_uses_a_flat_vector() {
         const DEPTH: usize = 100_000;
-        let mut trampoline = FlatTrampoline::new(0usize);
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let mut trampoline = FlatTrampoline::new(0usize, registrations.child());
 
         for child in 1..=DEPTH {
-            trampoline.enter_child(child, child);
+            trampoline.enter_child(child, child).unwrap();
         }
         assert_eq!(trampoline.blocked_depth(), DEPTH);
 
@@ -192,17 +243,44 @@ mod tests {
             trampoline.complete_active(()),
             TrampolineCompletion::RootComplete(())
         ));
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.child().current(), 0);
+        assert!(snapshot.child().ever_created());
     }
 
     #[test]
     fn suspension_moves_the_whole_chain_once() {
-        let mut trampoline = FlatTrampoline::new("root");
-        trampoline.enter_child("child", "resume-root");
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let mut trampoline = FlatTrampoline::new("root", registrations.child());
+        trampoline.enter_child("child", "resume-root").unwrap();
 
         let suspended = trampoline.suspend();
         assert_eq!(suspended.blocked_depth(), 1);
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.child().current(), 1);
+        assert!(snapshot.child().ever_created());
         let resumed = suspended.resume();
         assert_eq!(resumed.active(), &"child");
         assert_eq!(resumed.blocked_depth(), 1);
+    }
+
+    #[test]
+    fn frozen_inventory_rejects_child_without_installing_a_blocked_unit() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let mut trampoline = FlatTrampoline::new("root", registrations.child());
+        let snapshot = freeze.freeze();
+
+        assert!(matches!(
+            trampoline.enter_child("child", "resume-root"),
+            Err(EnterChildError::OwnerCreation(
+                OwnerCreationError::InventoryFrozen
+            ))
+        ));
+        assert_eq!(trampoline.active(), &"root");
+        assert_eq!(trampoline.blocked_depth(), 0);
+        assert_eq!(snapshot.child().current(), 0);
+        assert!(!snapshot.child().ever_created());
     }
 }

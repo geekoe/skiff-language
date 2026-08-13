@@ -17,7 +17,7 @@ use tracing::error;
 
 use super::{
     assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest,
-    resumable::{drive_bytecode_request, DrivenBytecodeRequest, RejectingResponseEventSink},
+    resumable::{drive_bytecode_request, DrivenBytecodeRequest},
 };
 use crate::{
     host::{
@@ -84,24 +84,22 @@ impl RuntimeHost {
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
-            http_executor: None,
-            self_ingress: None,
         };
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
-            let DrivenBytecodeRequest { result, execution } = drive_bytecode_request(
-                BytecodeRequestExecutionInput {
-                    target,
-                    request: request_envelope,
-                    observer: observer.clone(),
-                    cancellation,
-                    execution_budget: Arc::clone(&execution_budget),
-                    handles,
-                },
-                Arc::new(RejectingResponseEventSink),
-            )
-            .await;
+            let DrivenBytecodeRequest {
+                result,
+                execution,
+                owner_inventory: _owner_inventory,
+            } = drive_bytecode_request(BytecodeRequestExecutionInput {
+                target,
+                request: request_envelope,
+                observer: observer.clone(),
+                cancellation,
+                execution_budget: Arc::clone(&execution_budget),
+                handles,
+            });
             let terminal = match result {
                 Ok(BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload)))) => {
                     WebSocketJsonRpcTerminal::Response(WebSocketJsonRpcOutcome::Success { payload })
@@ -122,6 +120,7 @@ impl RuntimeHost {
                     &sender,
                 )
                 .await;
+            let _owner_inventory_snapshot = _owner_inventory.into_snapshot();
             drop(execution);
             drop(execution_budget);
             drop(supervised_request);
