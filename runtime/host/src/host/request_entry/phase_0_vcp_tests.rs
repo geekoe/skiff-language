@@ -7,7 +7,7 @@ use skiff_artifact_model::{IngressProtocol, Opcode};
 use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionCorrelation, BytecodeExecutionEvent, BytecodeExecutionEventSink,
     BytecodeExecutionObservation, BytecodeGatewayCallableRole, BytecodeRequestTerminal,
-    BytecodeRouteEntrySelector, RequestCleanupComplete,
+    BytecodeRouteEntrySelector, RequestCleanupComplete, VmObservedFrameRole,
 };
 use skiff_runtime_request::RouterWriterMessage;
 use skiff_runtime_transport::protocol::decode_binary_frame;
@@ -129,12 +129,62 @@ async fn phase_0_vcp_production_composition() {
     let observations = sink.snapshot();
     assert_eq!(
         observations.len(),
-        5,
-        "the VCP requires exactly five events"
+        11,
+        "the VCP requires exactly eleven events"
     );
     for (ordinal, observation) in observations.iter().enumerate() {
         assert_eq!(observation.correlation, expected_correlation);
         assert_eq!(observation.ordinal, ordinal as u64);
+    }
+
+    let positions = [
+        "DeploymentImageSelected",
+        "RouteEntryPinned",
+        "VmFunctionFrameEntered(Root)",
+        "VmFirstInstructionDispatched(LoadSlot)",
+        "VmLocalCallDispatched(root -> helper)",
+        "VmFunctionFrameEntered(FirstRootLocalCallee)",
+        "VmFunctionReturned(FirstRootLocalCallee)",
+        "VmFunctionReturned(Root)",
+        "VmBudgetAccounted",
+        "RequestTerminalClaimed(Succeeded)",
+        "RequestCleanupComplete",
+    ];
+    let mut slot_ordinals = [None; 11];
+    for (ordinal, observation) in observations.iter().enumerate() {
+        let slot = match &observation.event {
+            BytecodeExecutionEvent::DeploymentImageSelected(_) => 0,
+            BytecodeExecutionEvent::RouteEntryPinned(_) => 1,
+            BytecodeExecutionEvent::VmFunctionFrameEntered(entry) => match entry.role {
+                VmObservedFrameRole::Root => 2,
+                VmObservedFrameRole::FirstRootLocalCallee => 5,
+            },
+            BytecodeExecutionEvent::VmFirstInstructionDispatched(_) => 3,
+            BytecodeExecutionEvent::VmLocalCallDispatched(_) => 4,
+            BytecodeExecutionEvent::VmFunctionReturned(returned) => match returned.role {
+                VmObservedFrameRole::FirstRootLocalCallee => 6,
+                VmObservedFrameRole::Root => 7,
+            },
+            BytecodeExecutionEvent::VmBudgetAccounted(_) => 8,
+            BytecodeExecutionEvent::RequestTerminalClaimed(_) => 9,
+            BytecodeExecutionEvent::RequestCleanupComplete(_) => 10,
+        };
+        if let Some(existing) = slot_ordinals[slot] {
+            panic!(
+                "DEC1-O position {} ({}) emitted twice: ordinals {existing} and {ordinal}",
+                slot, positions[slot]
+            );
+        }
+        slot_ordinals[slot] = Some(ordinal);
+    }
+    for (slot, ordinal) in slot_ordinals.iter().enumerate() {
+        assert_eq!(
+            *ordinal,
+            Some(slot),
+            "DEC1-O position {} ({}) must sit at ordinal {slot}",
+            slot,
+            positions[slot]
+        );
     }
 
     let selected = match &observations[0].event {
@@ -167,9 +217,9 @@ async fn phase_0_vcp_production_composition() {
         Some(BytecodeGatewayCallableRole::Handler)
     );
 
-    let dispatched = match &observations[2].event {
+    let dispatched = match &observations[3].event {
         BytecodeExecutionEvent::VmFirstInstructionDispatched(dispatched) => dispatched,
-        other => panic!("ordinal 2 must be the first successful VM dispatch, got {other:?}"),
+        other => panic!("ordinal 3 must be the first successful VM dispatch, got {other:?}"),
     };
     assert_eq!(dispatched.image_owner, pinned.image_owner);
     assert_eq!(
@@ -183,16 +233,16 @@ async fn phase_0_vcp_production_composition() {
     assert_eq!(dispatched.instruction_index, 0);
     assert_eq!(dispatched.opcode, Opcode::LoadSlot);
 
-    let terminal = match &observations[3].event {
+    let terminal = match &observations[9].event {
         BytecodeExecutionEvent::RequestTerminalClaimed(terminal) => terminal,
-        other => panic!("ordinal 3 must claim the request terminal, got {other:?}"),
+        other => panic!("ordinal 9 must claim the request terminal, got {other:?}"),
     };
     assert_eq!(terminal.terminal, BytecodeRequestTerminal::Succeeded);
-    let cleanup = match &observations[4].event {
-        BytecodeExecutionEvent::RequestCleanupComplete(RequestCleanupComplete { owner_inventory }) => {
-            owner_inventory
-        }
-        other => panic!("ordinal 4 must report request cleanup completion, got {other:?}"),
+    let cleanup = match &observations[10].event {
+        BytecodeExecutionEvent::RequestCleanupComplete(RequestCleanupComplete {
+            owner_inventory,
+        }) => owner_inventory,
+        other => panic!("ordinal 10 must report request cleanup completion, got {other:?}"),
     };
     assert_eq!(cleanup.pending.current, 0, "pending domain must be empty");
     assert!(
