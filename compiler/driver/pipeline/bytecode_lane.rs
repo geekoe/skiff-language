@@ -12,10 +12,15 @@ use skiff_compiler_emission::bytecode::{
     admit_phase_1_bytecode_mir, derive_bytecode_value_transfer_plans, emit_bytecode_artifact,
 };
 use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
-use skiff_compiler_lowering::{Bounds, ConstEvaluator};
+use skiff_compiler_lowering::{mir::MirUnit, Bounds, ConstEvaluator};
 use skiff_compiler_projection::package_artifact::{
     attach_package_execution as attach_projected_package_execution, PackageExecutionAttachment,
     ProjectedPackageArtifact,
+};
+use skiff_compiler_source::{
+    source_value_transfer_plan, SourceValueTransferFacts, SourceValueTransferNominalFact,
+    SourceValueTransferNominalId, SourceValueTransferNominalSemantics,
+    SourceValueTransferPlanInput,
 };
 
 use crate::shared::package_compile_error::PackageCompileError;
@@ -156,7 +161,14 @@ fn emit_enabled_bytecode(
             })?;
         bundles.push(bundle);
     }
-    let plans = derive_bytecode_value_transfer_plans(&admitted)?;
+    let facts = source_value_transfer_facts_for_units(units);
+    let plans = derive_bytecode_value_transfer_plans(&admitted, |module_path, ty| {
+        source_value_transfer_plan(
+            &facts,
+            SourceValueTransferPlanInput::concrete(module_path, ty),
+        )
+        .map_err(|error| error.to_string())
+    })?;
     let artifact = emit_bytecode_artifact(&admitted, &bundles, &plans)?;
     let mut statement_manifest = artifact
         .image
@@ -184,6 +196,43 @@ fn emit_enabled_bytecode(
         artifact,
         reference,
     )?)
+}
+
+/// Builds the source-owned exact nominal facts from the lowered type tables.
+///
+/// This is the pipeline's single injection of source value-transfer facts into
+/// bytecode emission. Each module contributes both its `Local` and
+/// `Publication` nominal identities, so in-module and cross-module references
+/// resolve through the same exact declarations.
+fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransferFacts {
+    let mut facts = SourceValueTransferFacts::new();
+    for unit in units {
+        for (type_index, declaration) in unit.type_table.iter().enumerate() {
+            let fact = SourceValueTransferNominalFact {
+                declaration_module: unit.module_path.clone(),
+                type_parameters: declaration.type_params.clone(),
+                semantics: SourceValueTransferNominalSemantics::Ordinary(
+                    declaration.descriptor.clone(),
+                ),
+            };
+            let type_index = u32::try_from(type_index).expect("MIR type table index fits in u32");
+            facts.insert_nominal(
+                SourceValueTransferNominalId::Local {
+                    module_path: unit.module_path.clone(),
+                    type_index,
+                },
+                fact.clone(),
+            );
+            facts.insert_nominal(
+                SourceValueTransferNominalId::Publication {
+                    module_path: unit.module_path.clone(),
+                    type_index,
+                },
+                fact,
+            );
+        }
+    }
+    facts
 }
 
 /// Attaches one exact admitted execution handoff without mutating the source
