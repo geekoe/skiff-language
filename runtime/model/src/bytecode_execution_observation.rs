@@ -6,8 +6,8 @@ use std::{
 
 use serde::Serialize;
 use skiff_artifact_model::{
-    ContractOperationId, DeploymentArtifactIdentity, GatewayEntryIdentity, GatewayEntryKey, Opcode,
-    IngressSelector, ServiceDeploymentRef,
+    ContractOperationId, DeploymentArtifactIdentity, GatewayEntryIdentity, GatewayEntryKey,
+    IngressSelector, Opcode, ServiceDeploymentRef,
 };
 
 const OBSERVATION_QUEUE_CAPACITY: usize = 16;
@@ -189,16 +189,12 @@ impl BytecodeExecutionObserver {
 
     /// Claims the first root-local callee frame-entry marker at most once.
     pub fn claim_first_root_local_callee_frame_entry(&self) -> bool {
-        self.claim_selection_flag(|state| {
-            &mut state.first_root_local_callee_frame_entry_claimed
-        })
+        self.claim_selection_flag(|state| &mut state.first_root_local_callee_frame_entry_claimed)
     }
 
     /// Claims the first root-local callee normal-return marker at most once.
     pub fn claim_first_root_local_callee_return(&self) -> bool {
-        self.claim_selection_flag(|state| {
-            &mut state.first_root_local_callee_return_claimed
-        })
+        self.claim_selection_flag(|state| &mut state.first_root_local_callee_return_claimed)
     }
 
     /// Claims the observed root normal-return marker at most once.
@@ -735,10 +731,8 @@ mod tests {
 
     #[test]
     fn each_phase_1_selection_claim_succeeds_exactly_once_across_clones() {
-        let observer = BytecodeExecutionObserver::new(
-            Arc::new(RecordingSink::default()),
-            correlation(),
-        );
+        let observer =
+            BytecodeExecutionObserver::new(Arc::new(RecordingSink::default()), correlation());
         let clone = observer.clone();
 
         assert!(observer.claim_root_frame_entry());
