@@ -29,6 +29,10 @@ mod phase_2_vcp_tests;
 mod phase_3_proof_support;
 #[cfg(test)]
 mod phase_3_vcp_tests;
+#[cfg(test)]
+mod phase_4_proof_support;
+#[cfg(test)]
+mod phase_4_vcp_tests;
 mod websocket_jsonrpc;
 
 impl RuntimeHost {
