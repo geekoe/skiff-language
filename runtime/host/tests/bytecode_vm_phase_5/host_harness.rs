@@ -56,7 +56,7 @@ pub(super) struct HostResponse {
 }
 
 impl RuntimeHostHarness {
-    pub async fn start(prefix: &str) -> Self {
+    pub async fn start(prefix: &str, http_egress_proxy: String) -> Self {
         let fixture = published_positive(prefix);
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -71,7 +71,7 @@ impl RuntimeHostHarness {
             profile: "skiff-test".to_string(),
             bytecode_only: true,
             http_response_max_bytes: 64 * 1024,
-            http_egress_proxy: None,
+            http_egress_proxy: Some(http_egress_proxy),
         })
         .expect("construct production RuntimeHost");
         let host_task = AbortOnDrop(Some(tokio::spawn(async move {
@@ -235,12 +235,31 @@ impl RuntimeHostHarness {
         predicate: impl Fn(&RuntimeHealthCountersFrameHeader) -> bool,
     ) -> RuntimeHealthCountersFrameHeader {
         let deadline = Instant::now() + IO_TIMEOUT;
+        let mut observed_health = Vec::new();
         loop {
             let bytes = next_binary(&mut self.websocket, deadline, context).await;
             let (typed, _) = decode_typed_binary_frame::<TypedEnvelope>(&bytes)
                 .expect("decode RuntimeHost health envelope");
             if typed.envelope_type == "runtime.capabilities" {
                 continue;
+            }
+            if typed.envelope_type == "response.error" {
+                let (header, error) = decode_response_error_frame(&bytes)
+                    .expect("RuntimeHost emitted canonical response.error while awaiting health");
+                match error {
+                    ValidatedResponseErrorFrame::Control(error) => panic!(
+                        "RuntimeHost emitted response.error while waiting for {context}: requestId={} code={} message={} status={:?} details={:?} observedHealth={observed_health:?}",
+                        header.request_id(),
+                        error.code,
+                        error.message,
+                        error.status,
+                        error.details
+                    ),
+                    ValidatedResponseErrorFrame::FixedService(error) => panic!(
+                        "RuntimeHost emitted fixed-service response.error while waiting for {context}: requestId={} error={error:?} observedHealth={observed_health:?}",
+                        header.request_id()
+                    ),
+                }
             }
             assert_eq!(
                 typed.envelope_type, "runtime.health",
@@ -249,6 +268,9 @@ impl RuntimeHostHarness {
             let counters = decode_runtime_health_frame(&bytes)
                 .expect("RuntimeHost emitted canonical runtime.health")
                 .counters;
+            if !observed_health.contains(&counters) {
+                observed_health.push(counters.clone());
+            }
             if predicate(&counters) {
                 return counters;
             }
@@ -332,6 +354,16 @@ pub(super) fn health_counters_all_zero(counters: &RuntimeHealthCountersFrameHead
         && counters.stream_runtime_streams_active == 0
         && counters.flag_backed_cancel_waiters_active == 0
         && counters.task_requests_active == 0
+}
+
+pub(super) fn health_counters_one_active_bytecode_request(
+    counters: &RuntimeHealthCountersFrameHeader,
+) -> bool {
+    counters.outbound_requests_pending == 0
+        && counters.outbound_stream_leases_active == 0
+        && counters.stream_runtime_streams_active == 0
+        && counters.flag_backed_cancel_waiters_active == 0
+        && counters.task_requests_active == 1
 }
 
 async fn next_binary_of_type(

@@ -11,6 +11,8 @@ use std::{
 };
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_HEAD_READ_POLL: Duration = Duration::from_millis(10);
+const PHASE5_PUBLIC_ORIGIN: &str = "http://93.184.216.34";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RequestObservation {
@@ -72,8 +74,12 @@ impl Phase5TcpServer {
         }
     }
 
-    pub fn base_url(&self) -> String {
+    pub fn proxy_url(&self) -> String {
         format!("http://{}", self.address)
+    }
+
+    pub fn origin_url(&self) -> &'static str {
+        PHASE5_PUBLIC_ORIGIN
     }
 
     pub fn release(&self, path: &str) {
@@ -218,7 +224,9 @@ fn serve_connection(mut stream: TcpStream, shared: &Shared) {
     stream
         .set_write_timeout(Some(IO_TIMEOUT))
         .expect("set upstream write timeout");
-    let (method, path) = read_request(&mut stream);
+    let Some((method, path)) = read_request(&mut stream) else {
+        return;
+    };
     let ordinal = shared.next_ordinal.fetch_add(1, Ordering::Relaxed);
     record(
         shared,
@@ -279,12 +287,39 @@ fn serve_connection(mut stream: TcpStream, shared: &Shared) {
     stream.flush().expect("flush chunked end");
 }
 
-fn read_request(stream: &mut TcpStream) -> (String, String) {
+fn read_request(stream: &mut TcpStream) -> Option<(String, String)> {
+    stream
+        .set_read_timeout(Some(REQUEST_HEAD_READ_POLL))
+        .expect("set request-head observation timeout");
+    let deadline = Instant::now() + IO_TIMEOUT;
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 1024];
     while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-        let read = stream.read(&mut buffer).expect("read Phase 5 HTTP request");
-        assert!(read > 0, "Phase 5 upstream peer closed before request head");
+        let read = match stream.read(&mut buffer) {
+            Ok(0) => return None,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && Instant::now() < deadline =>
+            {
+                continue;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return None;
+            }
+            Err(error) => panic!("read Phase 5 HTTP request: {error}"),
+        };
         bytes.extend_from_slice(&buffer[..read]);
         assert!(
             bytes.len() <= 64 * 1024,
@@ -295,9 +330,26 @@ fn read_request(stream: &mut TcpStream) -> (String, String) {
     let line = head.lines().next().expect("Phase 5 HTTP request line");
     let mut fields = line.split_whitespace();
     let method = fields.next().expect("Phase 5 HTTP method").to_string();
-    let path = fields.next().expect("Phase 5 HTTP path").to_string();
+    let target = fields.next().expect("Phase 5 HTTP target");
     assert_eq!(fields.next(), Some("HTTP/1.1"));
-    (method, path)
+    let path = if target.starts_with('/') {
+        target.to_string()
+    } else {
+        let url = url::Url::parse(target).expect("Phase 5 proxy target is an absolute URL");
+        assert_eq!(url.scheme(), "http", "Phase 5 proxy origin uses HTTP");
+        assert_eq!(
+            url.host_str(),
+            Some("93.184.216.34"),
+            "Phase 5 proxy receives only the pinned safe public origin"
+        );
+        let mut path = url.path().to_string();
+        if let Some(query) = url.query() {
+            path.push('?');
+            path.push_str(query);
+        }
+        path
+    };
+    Some((method, path))
 }
 
 fn wait_for_release(shared: &Shared, path: &str) -> bool {

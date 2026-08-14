@@ -309,7 +309,31 @@ fn phase_5_stage_sentinel_atomic_link_to_image() {
             InstructionIndex::new(u32::try_from(ordinal).expect("instruction ordinal fits u32"))
         );
         assert_eq!(resume.kind(), &ExecutionResumeKind::HostEffect);
-        assert_eq!(resume.result_types(), target.signature().result_types());
+        assert_eq!(
+            resume.result_types().len(),
+            target.signature().result_types().len(),
+            "resume and typed target must retain the same result arity"
+        );
+        for (result_ordinal, (resume_type, target_type)) in resume
+            .result_types()
+            .iter()
+            .zip(target.signature().result_types())
+            .enumerate()
+        {
+            let resume_type =
+                exact_linked_type_ref(&image, *resume_type, "specialized host resume result");
+            let target_type =
+                exact_linked_type_ref(&image, *target_type, "typed host target result");
+            assert_eq!(
+                resume_type, target_type,
+                "host result {result_ordinal} may use distinct TypeIndex rows but must retain one exact TypeRef"
+            );
+            assert_eq!(
+                exact_package_abi(resume_type, "specialized host resume result"),
+                exact_package_abi(target_type, "typed host target result"),
+                "host result {result_ordinal} specialization must preserve the exact package ABI"
+            );
+        }
         assert_eq!(resume.result_plans(), target.signature().result_plans());
         host_identities.push(target.executor_identity());
     }

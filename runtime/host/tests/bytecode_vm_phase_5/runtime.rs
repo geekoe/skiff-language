@@ -11,7 +11,9 @@ use skiff_runtime_transport::protocol::BytecodeRequestDeadlineFrameHeader;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use super::{
-    host_harness::{health_counters_all_zero, RuntimeHostHarness},
+    host_harness::{
+        health_counters_all_zero, health_counters_one_active_bytecode_request, RuntimeHostHarness,
+    },
     tcp_server::{Phase5TcpServer, RequestObservation},
 };
 
@@ -39,9 +41,9 @@ pub async fn single_worker_canary() {
 
 async fn exercise_scheduler_path(prefix: &str, request_id: &str, observe_worker: bool) {
     let server = Phase5TcpServer::start();
-    let mut host = RuntimeHostHarness::start(prefix).await;
+    let mut host = RuntimeHostHarness::start(prefix, server.proxy_url()).await;
     let canary = observe_worker.then(WorkerCanary::start);
-    host.send_http_request(request_id, VCP_PATH, server.base_url().as_bytes(), None)
+    host.send_http_request(request_id, VCP_PATH, server.origin_url().as_bytes(), None)
         .await;
 
     assert!(
@@ -52,14 +54,12 @@ async fn exercise_scheduler_path(prefix: &str, request_id: &str, observe_worker:
         canary.assert_advances("unary response Pending").await;
     }
     let pending = host
-        .next_health_matching("one pending unary HTTP request", |counters| {
-            counters.outbound_requests_pending == 1
-                && counters.outbound_stream_leases_active == 0
-                && counters.stream_runtime_streams_active == 0
-                && counters.task_requests_active == 1
-        })
+        .next_health_matching(
+            "one active bytecode request with a socket-observed pending unary HTTP request",
+            health_counters_one_active_bytecode_request,
+        )
         .await;
-    assert_eq!(pending.outbound_requests_pending, 1);
+    assert!(health_counters_one_active_bytecode_request(&pending));
     server.release("/request");
 
     for path in ["/stream/left", "/stream/right"] {
@@ -74,13 +74,12 @@ async fn exercise_scheduler_path(prefix: &str, request_id: &str, observe_worker:
             .await;
     }
     let active = host
-        .next_health_matching("two coexisting table-backed stream handles", |counters| {
-            counters.outbound_stream_leases_active == 2
-                && counters.stream_runtime_streams_active == 0
-                && counters.task_requests_active == 1
-        })
+        .next_health_matching(
+            "one active bytecode request with two socket-observed response streams",
+            health_counters_one_active_bytecode_request,
+        )
         .await;
-    assert_eq!(active.outbound_stream_leases_active, 2);
+    assert!(health_counters_one_active_bytecode_request(&active));
     server.release("/stream/left");
     server.release("/stream/right");
 
@@ -108,17 +107,18 @@ async fn exercise_scheduler_path(prefix: &str, request_id: &str, observe_worker:
 async fn cancellation_while_http_pending() {
     let request_id = "phase-5-cancel";
     let server = Phase5TcpServer::start();
-    let mut host = RuntimeHostHarness::start("lifecycle-cancel").await;
-    host.send_http_request(request_id, VCP_PATH, server.base_url().as_bytes(), None)
+    let mut host = RuntimeHostHarness::start("lifecycle-cancel", server.proxy_url()).await;
+    host.send_http_request(request_id, VCP_PATH, server.origin_url().as_bytes(), None)
         .await;
     assert!(
         server.wait_for_path_async("/request", IO_TIMEOUT).await,
         "cancel scenario never reached actual HTTP Pending"
     );
     let pending = host
-        .next_health_matching("cancellable pending HTTP request", |counters| {
-            counters.outbound_requests_pending == 1 && counters.task_requests_active == 1
-        })
+        .next_health_matching(
+            "cancellable active bytecode request with socket-observed pending HTTP",
+            health_counters_one_active_bytecode_request,
+        )
         .await;
     assert_eq!(pending.stream_runtime_streams_active, 0);
 
@@ -135,7 +135,7 @@ async fn deadline_while_http_pending() {
     const TIMEOUT_MS: u64 = 2_000;
     let request_id = "phase-5-deadline";
     let server = Phase5TcpServer::start();
-    let mut host = RuntimeHostHarness::start("lifecycle-deadline").await;
+    let mut host = RuntimeHostHarness::start("lifecycle-deadline", server.proxy_url()).await;
     let expires_at = (OffsetDateTime::now_utc()
         + time::Duration::milliseconds(
             i64::try_from(TIMEOUT_MS).expect("Phase 5 deadline fits i64"),
@@ -145,7 +145,7 @@ async fn deadline_while_http_pending() {
     host.send_http_request(
         request_id,
         VCP_PATH,
-        server.base_url().as_bytes(),
+        server.origin_url().as_bytes(),
         Some(BytecodeRequestDeadlineFrameHeader {
             timeout_ms: TIMEOUT_MS,
             expires_at,
@@ -157,9 +157,10 @@ async fn deadline_while_http_pending() {
         "deadline scenario never reached actual HTTP Pending"
     );
     let pending = host
-        .next_health_matching("deadline-owned pending HTTP request", |counters| {
-            counters.outbound_requests_pending == 1 && counters.task_requests_active == 1
-        })
+        .next_health_matching(
+            "deadline-owned active bytecode request with socket-observed pending HTTP",
+            health_counters_one_active_bytecode_request,
+        )
         .await;
     assert_eq!(pending.stream_runtime_streams_active, 0);
 
@@ -185,8 +186,8 @@ async fn deadline_while_http_pending() {
 async fn early_break_releases_body_before_late_chunk() {
     let request_id = "phase-5-early-break";
     let server = Phase5TcpServer::start();
-    let mut host = RuntimeHostHarness::start("lifecycle-early-break").await;
-    host.send_http_request(request_id, DROP_PATH, server.base_url().as_bytes(), None)
+    let mut host = RuntimeHostHarness::start("lifecycle-early-break", server.proxy_url()).await;
+    host.send_http_request(request_id, DROP_PATH, server.origin_url().as_bytes(), None)
         .await;
     for path in ["/stream/drop-left", "/stream/drop-right"] {
         assert!(
@@ -195,13 +196,12 @@ async fn early_break_releases_body_before_late_chunk() {
         );
     }
     let active = host
-        .next_health_matching("two early-break stream handles", |counters| {
-            counters.outbound_stream_leases_active == 2
-                && counters.stream_runtime_streams_active == 0
-                && counters.task_requests_active == 1
-        })
+        .next_health_matching(
+            "one active bytecode request with two socket-observed early-break streams",
+            health_counters_one_active_bytecode_request,
+        )
         .await;
-    assert_eq!(active.outbound_stream_leases_active, 2);
+    assert!(health_counters_one_active_bytecode_request(&active));
 
     server.release("/stream/drop-left");
     assert!(

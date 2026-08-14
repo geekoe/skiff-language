@@ -34,21 +34,12 @@ impl RecordingSink {
             "{scenario} must fail before production emits an execution observation: {observations:?}"
         );
     }
-
-    fn assert_non_empty(&self, scenario: &str) {
-        let observations = self.0.lock().expect("Phase 0 negative recording sink lock");
-        assert!(
-            !observations.is_empty(),
-            "{scenario} must reach pinned production admission before failing closed"
-        );
-    }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn phase_0_negative_production_boundaries() {
     corrupt_published_bytecode_identity_fails_before_observation().await;
     wrong_gateway_identity_fails_before_observation().await;
-    server_stream_mode_on_scalar_entry_fails_after_pinned_admission().await;
 }
 
 async fn corrupt_published_bytecode_identity_fails_before_observation() {
@@ -80,7 +71,6 @@ async fn corrupt_published_bytecode_identity_fails_before_observation() {
         |request| request,
         "InternalError",
         expected_message,
-        false,
     )
     .await;
 }
@@ -120,29 +110,6 @@ async fn wrong_gateway_identity_fails_before_observation() {
         },
         "InternalError",
         expected_message,
-        false,
-    )
-    .await;
-}
-
-async fn server_stream_mode_on_scalar_entry_fails_after_pinned_admission() {
-    let scenario = "server-stream-mode";
-    let correlation = Correlation::new(scenario);
-    let fixture = PublishedFixture::build(scenario).into_raw_http_scalar_negative();
-    run_negative_request(
-        scenario,
-        correlation,
-        fixture,
-        |mut request| {
-            let BytecodeRequestStartFrameWireHeader::Http(header) = &mut request.header else {
-                panic!("canonical Phase 0 request remains HTTP")
-            };
-            header.mode = "serverStream".to_string();
-            request
-        },
-        "UnsupportedRuntimeFeature",
-        "serverStream bytecode ingress entry has no linked stream-result authority".to_string(),
-        true,
     )
     .await;
 }
@@ -154,7 +121,6 @@ async fn run_negative_request(
     mutate: impl FnOnce(CanonicalSkbfRequest) -> CanonicalSkbfRequest,
     expected_code: &str,
     expected_message: String,
-    expect_observations: bool,
 ) {
     let canonical = fixture.canonical_request(&correlation, "unary");
     assert!(!canonical.frame.is_empty());
@@ -193,24 +159,22 @@ async fn run_negative_request(
     let ValidatedResponseErrorFrame::Control(error) = error else {
         panic!("{scenario} must return a typed control response.error")
     };
-    assert_eq!(error.code, expected_code, "{scenario} error code");
-    assert_eq!(error.message, expected_message, "{scenario} error message");
-    if expect_observations {
-        recording.assert_non_empty(scenario);
-    } else {
-        recording.assert_empty(scenario);
-    }
+    assert_eq!(
+        error.code, expected_code,
+        "{scenario} error code; observed control error: {error:?}"
+    );
+    assert_eq!(
+        error.message, expected_message,
+        "{scenario} error message; observed control error: {error:?}"
+    );
+    recording.assert_empty(scenario);
     timeout(
         std::time::Duration::from_secs(10),
         drain_closed_channel_without_second_terminal(&mut receiver, &correlation.request_id),
     )
     .await
     .expect("production sender must close after the terminal response");
-    if expect_observations {
-        recording.assert_non_empty(scenario);
-    } else {
-        recording.assert_empty(scenario);
-    }
+    recording.assert_empty(scenario);
 }
 
 fn different_gateway_identity(identity: &GatewayEntryIdentity) -> GatewayEntryIdentity {

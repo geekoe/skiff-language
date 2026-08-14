@@ -3,7 +3,9 @@ use std::time::Duration;
 use skiff_runtime_transport::protocol::RuntimeHealthCountersFrameHeader;
 
 use super::{
-    host_harness::{health_counters_all_zero, RuntimeHostHarness},
+    host_harness::{
+        health_counters_all_zero, health_counters_one_active_bytecode_request, RuntimeHostHarness,
+    },
     tcp_server::{Phase5TcpServer, RequestObservation},
 };
 
@@ -55,16 +57,20 @@ pub async fn structural_no_bypass() {
         "no test executor may replace the exact production outbound routes"
     );
     assert_eq!(
-        evidence.pending_health.outbound_requests_pending, 1,
-        "the closed unary socket gate must park one table-backed HTTP request"
+        evidence.pending_health.outbound_requests_pending, 0,
+        "the bytecode HTTP request must not enter the legacy actor/control request registry"
     );
     assert_eq!(
-        evidence.active_health.outbound_stream_leases_active, 2,
-        "the one request table must own exactly the two coexisting stream handles"
+        evidence.active_health.outbound_stream_leases_active, 0,
+        "bytecode response streams must not enter the legacy actor/control lease registry"
     );
     assert_eq!(
         evidence.active_health.stream_runtime_streams_active, 0,
         "the legacy StreamRuntime registry must stay inactive on the bytecode path"
+    );
+    assert_eq!(
+        evidence.active_health.task_requests_active, 1,
+        "the socket-observed response streams must remain owned by one active bytecode request"
     );
     assert!(
         health_counters_all_zero(&evidence.terminal_health),
@@ -75,8 +81,8 @@ pub async fn structural_no_bypass() {
 
 async fn drive_top_level_vcp(prefix: &str, request_id: &str) -> TopLevelEvidence {
     let upstream = Phase5TcpServer::start();
-    let mut host = RuntimeHostHarness::start(prefix).await;
-    host.send_http_request(request_id, VCP_PATH, upstream.base_url().as_bytes(), None)
+    let mut host = RuntimeHostHarness::start(prefix, upstream.proxy_url()).await;
+    host.send_http_request(request_id, VCP_PATH, upstream.origin_url().as_bytes(), None)
         .await;
 
     tokio::select! {
@@ -88,12 +94,10 @@ async fn drive_top_level_vcp(prefix: &str, request_id: &str) -> TopLevelEvidence
         }
     }
     let pending_health = host
-        .next_health_matching("one pending unary HTTP request", |counters| {
-            counters.outbound_requests_pending == 1
-                && counters.outbound_stream_leases_active == 0
-                && counters.stream_runtime_streams_active == 0
-                && counters.task_requests_active == 1
-        })
+        .next_health_matching(
+            "one active bytecode request with a socket-observed pending unary HTTP request",
+            health_counters_one_active_bytecode_request,
+        )
         .await;
     upstream.release("/request");
 
@@ -106,11 +110,10 @@ async fn drive_top_level_vcp(prefix: &str, request_id: &str) -> TopLevelEvidence
         );
     }
     let active_health = host
-        .next_health_matching("two table-backed response stream handles", |counters| {
-            counters.outbound_stream_leases_active == 2
-                && counters.stream_runtime_streams_active == 0
-                && counters.task_requests_active == 1
-        })
+        .next_health_matching(
+            "one active bytecode request with two socket-observed response streams",
+            health_counters_one_active_bytecode_request,
+        )
         .await;
     upstream.release("/stream/left");
     upstream.release("/stream/right");

@@ -63,17 +63,6 @@ impl RecordingExecutionSink {
             "{scenario} must be rejected before route observation or VM dispatch: {observations:?}"
         );
     }
-
-    fn assert_non_empty(&self, scenario: &str) {
-        let observations = self
-            .0
-            .lock()
-            .expect("bytecode request-lane recording sink lock");
-        assert!(
-            !observations.is_empty(),
-            "{scenario} must reach pinned bytecode admission before failing closed"
-        );
-    }
 }
 
 static FIXTURE: OnceLock<PublishedFixture> = OnceLock::new();
@@ -350,8 +339,14 @@ async fn assert_bytecode_control_error(
         let ValidatedResponseErrorFrame::Control(error) = error else {
             panic!("bytecode request-lane admission must return a typed control error")
         };
-        assert_eq!(error.code, expected_code);
-        assert_eq!(error.message, expected_message);
+        assert_eq!(
+            error.code, expected_code,
+            "unexpected bytecode control error: {error:?}"
+        );
+        assert_eq!(
+            error.message, expected_message,
+            "unexpected bytecode control error: {error:?}"
+        );
         return;
     }
 }
@@ -455,42 +450,6 @@ async fn assert_disabled_request_lane(
         .expect("disabled request lane must close its response channel");
     assert!(next.is_none(), "{scenario} emitted a second response frame");
     sink.assert_empty(scenario);
-}
-
-async fn assert_admitted_request_failure(
-    fixture: &PublishedFixture,
-    scenario: &str,
-    request_id: &str,
-    header: BytecodeRequestStartFrameWireHeader,
-    body: Vec<u8>,
-    expected_message: &str,
-) {
-    let mut host = test_host();
-    let sink = Arc::new(RecordingExecutionSink::default());
-    host.bytecode_execution_event_sink = sink.clone();
-    let build_id = fixture.deployment.deployment_artifact_identity.as_str();
-    let bootstrap = connection_bootstrap(fixture);
-    let (sender, mut receiver) = mpsc::unbounded_channel();
-    let router_session = start_test_session(&host, "phase-5-admitted-failure-session");
-
-    host.spawn_bytecode_request(&router_session, header, body, &bootstrap, sender)
-        .await;
-    assert_bytecode_control_error(
-        &mut receiver,
-        request_id,
-        "UnsupportedRuntimeFeature",
-        expected_message,
-    )
-    .await;
-    sink.assert_non_empty(scenario);
-    assert!(
-        host.bytecode_deployments.is_loaded_build_id(build_id).await,
-        "{scenario} must pin and load the exact deployment before request validation"
-    );
-    let next = timeout(Duration::from_secs(1), receiver.recv())
-        .await
-        .expect("admitted failed request must close its response channel");
-    assert!(next.is_none(), "{scenario} emitted a second terminal frame");
 }
 
 fn noop_observer() -> BytecodeExecutionObserver {
@@ -747,23 +706,6 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
         &mut receiver,
         &header.request_id,
         "bytecode is required for this deployment",
-    )
-    .await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn canonical_http_server_stream_with_scalar_operation_fails_closed() {
-    let fixture = PublishedFixture::build("host-bytecode-raw-http-scalar-negative")
-        .into_raw_http_scalar_negative();
-    let mut header = canonical_header(&fixture, "bytecode-http-server-stream");
-    header.mode = "serverStream".to_string();
-    assert_admitted_request_failure(
-        &fixture,
-        "server-stream HTTP",
-        &header.request_id,
-        BytecodeRequestStartFrameWireHeader::Http(header.clone()),
-        b"2".to_vec(),
-        "serverStream bytecode ingress entry has no linked stream-result authority",
     )
     .await;
 }

@@ -149,14 +149,14 @@ fn phase_3_negative_host_pending_throw() {
         PHASE3_HOST_THROW_FIXTURE_RELATIVE,
         PHASE3_HOST_THROW_PACKAGE_ID,
         "/phase-3/host-throw",
-        Some("hostThrow"),
+        Some("main::run"),
     );
     assert_admission_rejected(
         "phase-3-pending-throw",
         PHASE3_PENDING_THROW_FIXTURE_RELATIVE,
         PHASE3_PENDING_THROW_PACKAGE_ID,
         "/phase-3/pending-throw",
-        None,
+        Some("main::run"),
     );
 }
 

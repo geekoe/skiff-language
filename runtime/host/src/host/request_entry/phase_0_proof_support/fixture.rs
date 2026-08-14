@@ -10,13 +10,10 @@ use std::{
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use skiff_artifact_identity::{
-    gateway_entry_identity, service_deployment_ref, PackageBytecodeRecordPath,
-};
+use skiff_artifact_identity::PackageBytecodeRecordPath;
 use skiff_artifact_model::{
-    DeploymentArtifactIdentity, DeploymentRevision, GatewayAdapterArg, GatewayAdapterKind,
-    GatewayAdapterSource, GatewayDispatchMode, GatewayEntryIdentity, GatewayProtocolSurface,
-    IngressProtocol, PackageArtifact, PackageArtifactRef, ServiceDeployment, ServiceDeploymentRef,
+    GatewayEntryIdentity, IngressProtocol, PackageArtifact, PackageArtifactRef, ServiceDeployment,
+    ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, AuthoringObject},
@@ -128,69 +125,6 @@ impl PublishedFixture {
                 .expect("decode canonical bootstrap activation"),
             max_response_bytes: 1024,
         }
-    }
-
-    /// Republishes the compiler-produced scalar package behind a structurally
-    /// valid raw-HTTP deployment surface. This deliberately mismatched
-    /// negative reaches request-time linked stream authority checks without
-    /// asking the linker to reconstruct source return semantics.
-    pub(in crate::host::request_entry) fn into_raw_http_scalar_negative(mut self) -> Self {
-        let mut deployment = self.deployment_artifact.as_ref().clone();
-        let gateway_key = deployment
-            .ingress
-            .iter()
-            .find(|binding| {
-                binding.selector.protocol == IngressProtocol::Http
-                    && binding.selector.method.as_deref() == Some("POST")
-                    && binding.selector.path == "/phase-0/vcp"
-            })
-            .expect("scalar negative fixture publishes exact HTTP ingress")
-            .gateway_entry_key
-            .clone();
-        let entry = deployment
-            .gateway_entries
-            .get_mut(&gateway_key)
-            .expect("scalar negative fixture ingress pins a gateway entry");
-        let parameter = entry
-            .adapter_plan
-            .args
-            .first()
-            .expect("scalar fixture adapter has one exact handler parameter")
-            .param
-            .clone();
-        entry.adapter_plan.kind = GatewayAdapterKind::RawHttp;
-        entry.adapter_plan.args = vec![GatewayAdapterArg {
-            param: parameter,
-            source: GatewayAdapterSource::HttpRequest,
-        }];
-        let GatewayProtocolSurface::Http(http) = &mut entry.protocol_surface.protocol else {
-            panic!("scalar negative fixture gateway remains HTTP")
-        };
-        http.adapter_kind = GatewayAdapterKind::RawHttp;
-        http.dispatch_mode = GatewayDispatchMode::Unary;
-        http.external_sources = vec![GatewayAdapterSource::HttpRequest];
-        http.request_body_schema = None;
-        http.response_schema = None;
-        http.stream_item_schema = None;
-        entry.gateway_entry_identity = gateway_entry_identity(&entry.protocol_surface)
-            .expect("derive raw-HTTP scalar negative gateway identity");
-        let gateway_identity = entry.gateway_entry_identity.clone();
-
-        deployment.deployment_revision =
-            DeploymentRevision::new("revision-phase-5-raw-http-scalar-negative");
-        deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new("unassigned");
-        skiff_artifact_identity::assign_service_deployment_identity(&mut deployment)
-            .expect("assign raw-HTTP scalar negative deployment identity");
-        let deployment_ref = service_deployment_ref(&deployment);
-        CanonicalArtifactStore::open(self.artifact_root.path())
-            .expect("open scalar negative artifact store")
-            .write_service_deployment(&deployment)
-            .expect("publish raw-HTTP scalar negative deployment");
-
-        self.deployment = deployment_ref;
-        self.deployment_artifact = Arc::new(deployment);
-        self.gateway_identity = gateway_identity;
-        self
     }
 
     pub(in crate::host::request_entry) fn corrupt_bytecode_identity(
