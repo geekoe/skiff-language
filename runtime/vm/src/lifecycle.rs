@@ -136,6 +136,40 @@ impl<'heap> LifecycleExecutor<'heap> {
         }
     }
 
+    /// Whether the synchronous core has a physical release primitive for the
+    /// complete linked plan. Callers that release a batch use this preflight
+    /// before the first mutation, so an unsupported later plan cannot leave a
+    /// partially consumed batch.
+    pub(crate) const fn supports_release(plan: &LinkedValueTransferPlan) -> bool {
+        match plan {
+            LinkedValueTransferPlan::SnapshotShare { drop }
+            | LinkedValueTransferPlan::MoveOnly { drop } => matches!(
+                drop,
+                LinkedValueDropPlan::Trivial
+                    | LinkedValueDropPlan::SnapshotRelease
+                    | LinkedValueDropPlan::RecursiveShape { .. }
+            ),
+            LinkedValueTransferPlan::AffineResource { drop }
+            | LinkedValueTransferPlan::ExplicitCloneLease { drop, .. } => {
+                matches!(drop, LinkedResourceDropPlan::ResourceTableRelease)
+            }
+        }
+    }
+
+    pub(crate) fn release_batch(
+        &mut self,
+        owners: &[ValueSlot],
+        plans: &[LinkedValueTransferPlan],
+    ) -> Result<(), LifecycleError> {
+        if owners.len() != plans.len() || !plans.iter().all(Self::supports_release) {
+            return Err(LifecycleError::PlanUnavailable);
+        }
+        for (owner, plan) in owners.iter().zip(plans) {
+            self.release(owner, plan)?;
+        }
+        Ok(())
+    }
+
     fn release_value(
         &mut self,
         owner: &ValueSlot,
@@ -384,5 +418,87 @@ mod tests {
         assert_eq!(heap.transfers, 0);
         assert_eq!(heap.snapshot_releases, 0);
         assert_eq!(heap.resource_releases, 0);
+    }
+
+    #[test]
+    fn phase_5_first_poll_http_arguments_preflight_all_plans_before_release() {
+        let mut heap = RecordingHeap::default();
+        let mut executor = LifecycleExecutor::new(&mut heap);
+        let owners = [ValueSlot::integer(1), ValueSlot::integer(2)];
+        let plans = [
+            LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::SnapshotRelease,
+            },
+            LinkedValueTransferPlan::AffineResource {
+                drop: LinkedResourceDropPlan::RecursiveShape {
+                    shape: skiff_runtime_linked_bytecode::ShapeIndex::new(1),
+                },
+            },
+        ];
+
+        assert!(matches!(
+            executor.release_batch(&owners, &plans),
+            Err(LifecycleError::PlanUnavailable)
+        ));
+        assert_eq!(heap.snapshot_releases, 0);
+        assert_eq!(heap.resource_releases, 0);
+    }
+
+    #[test]
+    fn phase_5_first_poll_http_arguments_middle_failure_is_not_retried() {
+        #[derive(Default)]
+        struct MiddleFailingHeap {
+            attempts: Vec<i64>,
+        }
+
+        impl VmHeap for MiddleFailingHeap {
+            fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+                Ok(())
+            }
+
+            fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+                Ok(*source)
+            }
+
+            fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+                Ok(*source)
+            }
+
+            fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+                let value = owner
+                    .as_integer()
+                    .ok_or(VmHeapError::InvalidValueMetadata)?;
+                self.attempts.push(value);
+                if value == 2 {
+                    return Err(VmHeapError::OperationKindMismatch {
+                        operation: VmHeapOperation::ReleaseSnapshot,
+                        kind: ValueKind::Integer,
+                    });
+                }
+                Ok(())
+            }
+
+            fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+                Ok(())
+            }
+        }
+
+        let mut heap = MiddleFailingHeap::default();
+        let mut executor = LifecycleExecutor::new(&mut heap);
+        let owners = [
+            ValueSlot::integer(1),
+            ValueSlot::integer(2),
+            ValueSlot::integer(3),
+        ];
+        let plan = LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        };
+        let plans = [plan.clone(), plan.clone(), plan];
+
+        assert!(matches!(
+            executor.release_batch(&owners, &plans),
+            Err(LifecycleError::Heap(_))
+        ));
+        assert_eq!(heap.attempts, [1, 2]);
     }
 }

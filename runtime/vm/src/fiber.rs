@@ -3294,10 +3294,59 @@ impl VmFiber {
                 opcode: Opcode::InvokeHost,
             });
         }
-        let arguments = self.pop_operands(arg_count, false)?;
+        let argument_plans = adapter
+            .signature()
+            .parameter_plans()
+            .to_vec()
+            .into_boxed_slice();
+        if argument_plans.len() != arg_count {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeHost,
+            });
+        }
+        let frame = self.current_frame()?.clone();
+        if frame.operand_height() < arg_count {
+            return Err(VmError::OperandStackUnderflow {
+                function,
+                needed: arg_count,
+                available: frame.operand_height(),
+            });
+        }
+        let stack_argument_plans = (0..arg_count)
+            .map(|ordinal| self.operand_plan(&frame, instruction, arg_count - 1 - ordinal))
+            .collect::<Result<Vec<_>, VmError>>()?;
+        if stack_argument_plans.as_slice() != argument_plans.as_ref() {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeHost,
+            });
+        }
+        let remaining_height = frame.operand_height() - arg_count;
+        let start = frame.operand_base().checked_add(remaining_height).ok_or(
+            VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            },
+        )?;
+        let end = start
+            .checked_add(arg_count)
+            .filter(|end| *end <= self.values.len() && *end <= self.live_values.len())
+            .ok_or(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            })?;
+        let mut arguments = Vec::with_capacity(arg_count);
+        for index in start..end {
+            if !self.live_values[index] {
+                return Err(VmError::DeadValueRead {
+                    location: VmValueLocation::Operand(index - frame.operand_base()),
+                });
+            }
+            arguments.push(self.values[index]);
+        }
         let expected_stack_height =
-            self.current_frame()?
-                .operand_height()
+            remaining_height
                 .try_into()
                 .map_err(|_| VmError::VerifiedEntryInvariant {
                     invariant: VmVerifiedInvariant::FrameLayoutOverflow,
@@ -3307,6 +3356,10 @@ impl VmFiber {
                 invariant: VmVerifiedInvariant::FrameLayoutOverflow,
             });
         }
+        let expected_result_count =
+            u32::try_from(result_count).map_err(|_| VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            })?;
         let token = self.mint_resume(
             function,
             instruction,
@@ -3315,14 +3368,29 @@ impl VmFiber {
             resume.resume(),
             None,
             expected_stack_height,
-            result_count as u32,
+            expected_result_count,
         )?;
         let invocation = AdapterInvocation::new(
             adapter_index,
-            VmOwnedValues::new(Arc::clone(self.entry.image()), arguments.into_boxed_slice()),
+            crate::VmHostEffectArguments::new(
+                VmOwnedValues::new(Arc::clone(self.entry.image()), arguments.into_boxed_slice()),
+                argument_plans,
+                function,
+                instruction,
+            ),
             token,
-        )
-        .map_err(|_| VmError::ResumeTokenMismatch)?;
+        );
+        // Every fallible validation and continuation mint completed before
+        // this physical ownership transfer. No `?`, callback or allocation is
+        // permitted between clearing the source slots and returning the
+        // sealed invocation owner.
+        for index in start..end {
+            self.clear_value(index);
+        }
+        self.frames
+            .last_mut()
+            .expect("validated runnable host call retains its current frame")
+            .set_operand_height(remaining_height);
         self.state = VmFiberState::WaitingHost;
         Ok(DispatchOutcome::Handoff(VmControl::EnterAdapter(
             invocation,

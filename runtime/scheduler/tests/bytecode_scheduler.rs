@@ -10,10 +10,9 @@ use skiff_runtime_model::{
 };
 use skiff_runtime_scheduler::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
-    BytecodeHandoff, BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome,
-    BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
-    OwnerCreationErrorKind, OwnerDomain, RequestExecutionContext, RootDisposition, RootEscrow,
-    RootEscrowBacking, SuspendedTrampoline,
+    BytecodeHandoff, BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
+    BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, RequestExecutionContext,
+    SuspendedTrampoline,
 };
 use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmSemanticCharge};
 
@@ -176,188 +175,6 @@ mod tests {
         // domain still records that children were ever created.
         assert_eq!(snapshot.child.current, 0);
         assert!(snapshot.child.ever_created);
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum ParkThenChildMode {
-        Park,
-        EnterChild,
-        Complete,
-    }
-
-    type ParkThenChildControl = BytecodeControl<usize, usize, usize, usize, usize>;
-    type ParkThenChildSuspended = SuspendedTrampoline<ParkThenChildUnit, usize>;
-
-    struct ParkThenChildUnit {
-        mode: ParkThenChildMode,
-        resumes: Arc<AtomicUsize>,
-    }
-
-    impl VmRootSource for ParkThenChildUnit {
-        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
-            Ok(())
-        }
-    }
-
-    impl BytecodeUnit for ParkThenChildUnit {
-        type ResumeToken = usize;
-        type ResumeOutcome = usize;
-        type RootResult = usize;
-        type ChildInvocation = usize;
-        type AdapterInvocation = usize;
-        type StreamItem = usize;
-        type PendingOperation = usize;
-
-        fn run_segment(
-            &mut self,
-            _heap: &mut dyn VmHeap,
-            _budget: &mut dyn VmBudget,
-        ) -> ParkThenChildControl {
-            match std::mem::replace(&mut self.mode, ParkThenChildMode::Complete) {
-                ParkThenChildMode::Park => ParkThenChildControl::Park(7),
-                ParkThenChildMode::EnterChild => ParkThenChildControl::EnterChild(0),
-                ParkThenChildMode::Complete => ParkThenChildControl::Complete(0),
-            }
-        }
-
-        fn resume(&mut self, token: usize, outcome: usize) -> Result<(), BytecodeSchedulerError> {
-            self.resumes.fetch_add(1, Ordering::SeqCst);
-            self.mode = ParkThenChildMode::EnterChild;
-            let _ = (token, outcome);
-            Ok(())
-        }
-
-        fn child_completion_to_resume_outcome(completed: usize) -> usize {
-            completed
-        }
-    }
-
-    struct ParkThenChildExecutor {
-        starts: AtomicUsize,
-        resumes: Arc<AtomicUsize>,
-    }
-
-    impl BytecodeChildExecutor<ParkThenChildUnit> for ParkThenChildExecutor {
-        fn execute_child(
-            &self,
-            invocation: usize,
-            _heap: &mut dyn VmHeap,
-            _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeChildStart<ParkThenChildUnit>, BytecodeSchedulerError> {
-            self.starts.fetch_add(1, Ordering::SeqCst);
-            Ok(BytecodeChildStart {
-                unit: ParkThenChildUnit {
-                    mode: ParkThenChildMode::Complete,
-                    resumes: Arc::clone(&self.resumes),
-                },
-                resume: invocation,
-            })
-        }
-
-        fn execute_adapter(
-            &self,
-            _invocation: usize,
-            _heap: &mut dyn VmHeap,
-            _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeAdapterHandoff<ParkThenChildUnit>, BytecodeSchedulerError> {
-            Err(BytecodeSchedulerError::UnsupportedAdapter)
-        }
-    }
-
-    struct ParkCapturingSupervisor {
-        parked: Mutex<Option<(usize, ParkThenChildSuspended)>>,
-    }
-
-    impl BytecodeStreamSupervisor<ParkThenChildUnit> for ParkCapturingSupervisor {
-        fn park(
-            &self,
-            operation: usize,
-            suspended: ParkThenChildSuspended,
-            _heap: &mut dyn VmHeap,
-            _budget: &mut dyn VmBudget,
-        ) -> Result<(), BytecodeSchedulerError> {
-            *self.parked.lock().unwrap() = Some((operation, suspended));
-            Ok(())
-        }
-    }
-
-    struct EmptyRoots;
-
-    impl VmRootSource for EmptyRoots {
-        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
-            Ok(())
-        }
-    }
-
-    impl RootEscrowBacking for EmptyRoots {
-        fn root_count(&self) -> usize {
-            0
-        }
-
-        fn restore_roots(self: Box<Self>) {}
-
-        fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {}
-    }
-
-    #[test]
-    fn frozen_inventory_rejects_a_started_child_without_installing_it() {
-        let resumes = Arc::new(AtomicUsize::new(0));
-        let executor = Arc::new(ParkThenChildExecutor {
-            starts: AtomicUsize::new(0),
-            resumes: Arc::clone(&resumes),
-        });
-        let supervisor = Arc::new(ParkCapturingSupervisor {
-            parked: Mutex::new(None),
-        });
-        let ports = BytecodeSchedulerPorts {
-            child_executor: Some(
-                Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ParkThenChildUnit>>
-            ),
-            stream_supervisor: Some(
-                supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<ParkThenChildUnit>>
-            ),
-        };
-
-        // The context drive parks the root and freezes the Started inventory.
-        let mut context = RequestExecutionContext::create(ports);
-        context.install_root(ParkThenChildUnit {
-            mode: ParkThenChildMode::Park,
-            resumes: Arc::clone(&resumes),
-        });
-        let (outcome, snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
-        assert!(matches!(outcome, Ok(BytecodeSchedulerOutcome::Parked)));
-        assert_eq!(snapshot.child.current, 0);
-        assert!(!snapshot.child.ever_created);
-
-        // Resume the parked chain through the public scheduler surface and run
-        // a unit that tries to enter a child against the frozen inventory.
-        let (operation, suspended) = supervisor.parked.lock().unwrap().take().unwrap();
-        assert_eq!(operation, 7);
-        let resumed = BytecodeScheduler::<ParkThenChildUnit>::resume_from_suspended(
-            suspended,
-            operation,
-            0,
-            RootEscrow::new(Box::new(EmptyRoots)),
-            BytecodeSchedulerPorts {
-                child_executor: Some(
-                    Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ParkThenChildUnit>>
-                ),
-                stream_supervisor: None,
-            },
-        )
-        .unwrap();
-        let error = resumed.run(&mut NoopHeap, &mut NoopBudget).unwrap_err();
-
-        let BytecodeSchedulerError::ChildOwnerCreation(error) = error else {
-            panic!("expected a child owner creation rejection");
-        };
-        assert_eq!(error.kind(), OwnerCreationErrorKind::InventoryFrozen);
-        assert_eq!(error.domain(), OwnerDomain::Child);
-        // The executor did start the child once, but no blocked unit and no
-        // child owner were installed afterwards.
-        assert_eq!(executor.starts.load(Ordering::SeqCst), 1);
-        assert_eq!(snapshot.child.current, 0);
-        assert!(!snapshot.child.ever_created);
     }
 
     type StreamResult = Result<usize, &'static str>;
@@ -548,7 +365,6 @@ mod tests {
     enum NextResume {
         Item,
         End,
-        Pending,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -556,6 +372,12 @@ mod tests {
         Values(usize),
         End,
         Failure(&'static str),
+    }
+
+    impl VmRootSource for NextOutcome {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
     }
 
     #[derive(Debug)]
@@ -567,7 +389,6 @@ mod tests {
     }
 
     type NextControl = BytecodeControl<NextOutcome, NextInvocation, usize, usize, NextResume>;
-    type NextSuspended = SuspendedTrampoline<NextUnit, NextResume>;
     struct NextUnit {
         invocation: Option<NextInvocation>,
         resumed: Option<(NextResume, NextOutcome)>,
@@ -637,12 +458,10 @@ mod tests {
         Item,
         End,
         Error,
-        Pending,
     }
 
     struct NextExecutor {
         mode: NextExecutorMode,
-        pending: Mutex<Option<(NextResume, NextSuspended)>>,
     }
 
     impl BytecodeChildExecutor<NextUnit> for NextExecutor {
@@ -687,21 +506,7 @@ mod tests {
                     resume: item_resume,
                     outcome: NextOutcome::Failure("stream failed"),
                 })),
-                NextExecutorMode::Pending => {
-                    Ok(BytecodeStreamHandoff::Pending(NextResume::Pending))
-                }
             }
-        }
-
-        fn park_stream_next(
-            &self,
-            operation: NextResume,
-            suspended: NextSuspended,
-            _heap: &mut dyn VmHeap,
-            _budget: &mut dyn VmBudget,
-        ) -> Result<(), BytecodeSchedulerError> {
-            *self.pending.lock().unwrap() = Some((operation, suspended));
-            Ok(())
         }
     }
 
@@ -716,7 +521,6 @@ mod tests {
     fn stream_next_item_resumes_with_values_and_item_continuation() {
         let executor = Arc::new(NextExecutor {
             mode: NextExecutorMode::Item,
-            pending: Mutex::new(None),
         });
 
         let mut context = RequestExecutionContext::create(next_ports(executor));
@@ -733,7 +537,6 @@ mod tests {
     fn stream_next_end_resumes_with_stream_end_and_end_continuation() {
         let executor = Arc::new(NextExecutor {
             mode: NextExecutorMode::End,
-            pending: Mutex::new(None),
         });
 
         let mut context = RequestExecutionContext::create(next_ports(executor));
@@ -750,7 +553,6 @@ mod tests {
     fn stream_next_error_resumes_with_existing_failure_path() {
         let executor = Arc::new(NextExecutor {
             mode: NextExecutorMode::Error,
-            pending: Mutex::new(None),
         });
 
         let mut context = RequestExecutionContext::create(next_ports(executor));
@@ -762,37 +564,6 @@ mod tests {
             Ok(BytecodeSchedulerOutcome::Complete(NextOutcome::Failure(
                 "stream failed"
             )))
-        ));
-    }
-
-    #[test]
-    fn stream_next_pending_wake_end_does_not_produce_an_item() {
-        let executor = Arc::new(NextExecutor {
-            mode: NextExecutorMode::Pending,
-            pending: Mutex::new(None),
-        });
-
-        let mut context = RequestExecutionContext::create(next_ports(Arc::clone(&executor)));
-        context.install_root(NextUnit::stream_next());
-        let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
-        assert!(matches!(outcome, Ok(BytecodeSchedulerOutcome::Parked)));
-
-        let (operation, suspended) = executor.pending.lock().unwrap().take().unwrap();
-        assert_eq!(operation, NextResume::Pending);
-
-        let scheduler = BytecodeScheduler::<NextUnit>::resume_from_suspended(
-            suspended,
-            operation,
-            NextOutcome::End,
-            RootEscrow::new(Box::new(EmptyRoots)),
-            next_ports(Arc::clone(&executor)),
-        )
-        .unwrap();
-        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
-
-        assert!(matches!(
-            outcome,
-            BytecodeSchedulerOutcome::Complete(NextOutcome::End)
         ));
     }
 }

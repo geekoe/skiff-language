@@ -16,6 +16,8 @@ use crate::{
     owner_inventory::{
         OwnerCreationError, PendingOwnerCreationGuard, PendingOwnerLease, PendingOwnerRegistration,
     },
+    resource::RequestResourceRootPin,
+    root_escrow::PendingRootSet,
     RootDisposition, RootEscrow,
 };
 
@@ -54,13 +56,13 @@ impl<R, S> PendingOwnerDraft<R, S> {
     fn attach(
         self,
         ticket: PendingTicket,
-        roots: RootEscrow,
+        roots: PendingRootSet,
         owner_lease: Option<PendingOwnerLease>,
     ) -> PendingOwner<R, S> {
         PendingOwner {
             ticket,
             roots,
-            resume: self.resume,
+            resume: Some(self.resume),
             suspended: self.suspended,
             owner_lease,
         }
@@ -74,8 +76,8 @@ pub struct PendingOwner<R, S> {
     ticket: PendingTicket,
     // Declared before the suspended chain so fail-closed Drop unregisters and
     // releases escrowed roots while their stable owner storage still exists.
-    roots: RootEscrow,
-    resume: R,
+    roots: PendingRootSet,
+    resume: Option<R>,
     suspended: S,
     owner_lease: Option<PendingOwnerLease>,
 }
@@ -85,12 +87,10 @@ impl<R, S> PendingOwner<R, S> {
         self.ticket
     }
 
-    pub fn roots(&self) -> &RootEscrow {
-        &self.roots
-    }
-
-    pub(crate) fn into_parts(self) -> (R, S, RootEscrow, Option<PendingOwnerLease>) {
-        (self.resume, self.suspended, self.roots, self.owner_lease)
+    pub(crate) const fn resume(&self) -> &R {
+        self.resume
+            .as_ref()
+            .expect("a pending owner retains its resume token until install")
     }
 }
 
@@ -122,8 +122,18 @@ impl<R, S, O> PendingWake<R, S, O> {
         &self.owner
     }
 
-    pub fn into_parts(self) -> (PendingOwner<R, S>, PendingSettlement<O>) {
+    #[cfg(test)]
+    fn into_parts(self) -> (PendingOwner<R, S>, PendingSettlement<O>) {
         (self.owner, self.settlement)
+    }
+
+    /// Claims a queue-owned wake into one non-cloneable, root-enumerable
+    /// synchronous handoff guard.
+    pub fn claim(self) -> ClaimedPendingWakeGuard<R, S, O> {
+        ClaimedPendingWakeGuard {
+            owner: self.owner,
+            settlement: Some(self.settlement),
+        }
     }
 }
 
@@ -135,6 +145,155 @@ where
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         self.owner.visit_roots(visitor)?;
         self.settlement.visit_roots(visitor)
+    }
+}
+
+/// Queue-claimed wake kept as one root source through synchronous outcome
+/// mapping. Phase 5 has no concurrent GC safepoint; Phase 6 must register this
+/// guard with its process-wide safepoint before permitting mapper callbacks or
+/// awaits in this handoff.
+#[must_use = "a claimed pending wake must be synchronously mapped and resumed"]
+pub struct ClaimedPendingWakeGuard<R, S, O> {
+    owner: PendingOwner<R, S>,
+    settlement: Option<PendingSettlement<O>>,
+}
+
+impl<R, S, O> ClaimedPendingWakeGuard<R, S, O> {
+    pub(crate) fn map<M>(
+        mut self,
+        map: impl FnOnce(&R, O, &dyn VmRootSource) -> M,
+    ) -> MappedPendingWakeGuard<R, S, M>
+    where
+        S: VmRootSource,
+        O: VmRootSource,
+        M: VmRootSource,
+    {
+        let settlement = self
+            .settlement
+            .take()
+            .expect("one claimed wake maps its settlement exactly once");
+        let source = settlement.source();
+        let outcome = map(self.owner.resume(), settlement.into_outcome(), &self.owner);
+        MappedPendingWakeGuard {
+            owner: self.owner,
+            source,
+            outcome: Some(outcome),
+        }
+    }
+}
+
+impl<R, S, O> VmRootSource for ClaimedPendingWakeGuard<R, S, O>
+where
+    S: VmRootSource,
+    O: VmRootSource,
+{
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.owner.visit_roots(visitor)?;
+        if let Some(settlement) = &self.settlement {
+            settlement.visit_roots(visitor)?;
+        }
+        Ok(())
+    }
+}
+
+pub(crate) struct MappedPendingWakeGuard<R, S, O> {
+    owner: PendingOwner<R, S>,
+    source: SettlementSource,
+    outcome: Option<O>,
+}
+
+impl<R, S, O> MappedPendingWakeGuard<R, S, O> {
+    /// Rehouses the suspended owner without exposing decomposed root-bearing
+    /// parts. The only production use converts a `SuspendedTrampoline` into a
+    /// `FlatTrampoline`; that conversion is infallible and has no callback,
+    /// allocation, heap access, await or safepoint.
+    pub(crate) fn map_suspended<T>(
+        self,
+        map: impl FnOnce(S) -> T,
+    ) -> MappedPendingWakeGuard<R, T, O>
+    where
+        S: VmRootSource,
+        T: VmRootSource,
+        O: VmRootSource,
+    {
+        let PendingOwner {
+            ticket,
+            roots,
+            resume,
+            suspended,
+            owner_lease,
+        } = self.owner;
+        MappedPendingWakeGuard {
+            owner: PendingOwner {
+                ticket,
+                roots,
+                resume,
+                suspended: map(suspended),
+                owner_lease,
+            },
+            source: self.source,
+            outcome: self.outcome,
+        }
+    }
+
+    /// Terminalizes transferred roots and performs the one synchronous resume
+    /// commit while this non-cloneable guard remains the composite root source.
+    ///
+    /// The `resume` callback must not allocate, touch the heap, await or enter
+    /// a safepoint. Phase 6 must register this guard with the process-wide
+    /// safepoint before relaxing that rule. On success only, `commit` moves the
+    /// resumed owner and retained resource pin into the runnable scheduler. On
+    /// error, dropping this guard releases the pending lease and retained pin;
+    /// transferred roots have already taken their exact settlement terminal.
+    pub(crate) fn resume_and_commit<T, E>(
+        mut self,
+        resume: impl FnOnce(&mut S, R, O) -> Result<(), E>,
+        commit: impl FnOnce(S, Option<RequestResourceRootPin>) -> T,
+    ) -> Result<T, E>
+    where
+        S: VmRootSource,
+        O: VmRootSource,
+        T: VmRootSource,
+    {
+        self.owner.roots.settle_transferred(self.source);
+        let resume_token = self
+            .owner
+            .resume
+            .take()
+            .expect("a mapped pending wake installs its resume token once");
+        let outcome = self
+            .outcome
+            .take()
+            .expect("a mapped pending wake installs its outcome once");
+        resume(&mut self.owner.suspended, resume_token, outcome)?;
+
+        let resource_roots = self.owner.roots.take_retained();
+        let PendingOwner {
+            ticket: _,
+            roots,
+            resume,
+            suspended,
+            owner_lease,
+        } = self.owner;
+        debug_assert!(resume.is_none());
+        drop(roots);
+        let runnable = commit(suspended, resource_roots);
+        drop(owner_lease);
+        Ok(runnable)
+    }
+}
+
+impl<R, S, O> VmRootSource for MappedPendingWakeGuard<R, S, O>
+where
+    S: VmRootSource,
+    O: VmRootSource,
+{
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.owner.visit_roots(visitor)?;
+        if let Some(outcome) = &self.outcome {
+            outcome.visit_roots(visitor)?;
+        }
+        Ok(())
     }
 }
 
@@ -261,6 +420,7 @@ pub enum BeginPendingError {
     TicketSpaceExhausted,
     TicketCollision,
     OwnerCreation(OwnerCreationError),
+    ResourceOwnerMismatch,
 }
 
 impl fmt::Display for BeginPendingError {
@@ -269,6 +429,9 @@ impl fmt::Display for BeginPendingError {
             Self::TicketSpaceExhausted => formatter.write_str("pending ticket space is exhausted"),
             Self::TicketCollision => formatter.write_str("pending ticket collided in the registry"),
             Self::OwnerCreation(error) => error.fmt(formatter),
+            Self::ResourceOwnerMismatch => formatter.write_str(
+                "pending registry and retained resource roots belong to different requests",
+            ),
         }
     }
 }
@@ -277,7 +440,7 @@ impl std::error::Error for BeginPendingError {}
 
 enum CellState<R, S, O> {
     Open {
-        roots: RootEscrow,
+        roots: PendingRootSet,
         owner_lease: Option<PendingOwnerLease>,
     },
     Waiting {
@@ -286,7 +449,7 @@ enum CellState<R, S, O> {
     },
     Settled {
         settlement: PendingSettlement<O>,
-        roots: RootEscrow,
+        roots: PendingRootSet,
         owner_lease: Option<PendingOwnerLease>,
     },
     Claimed,
@@ -304,7 +467,7 @@ impl<R, S, O> PendingCell<R, S, O> {
         match previous {
             CellState::Open { roots, owner_lease } => {
                 drop(state);
-                roots.discard(RootDisposition::PublicationFailed);
+                roots.discard_transferred(RootDisposition::PublicationFailed);
                 drop(owner_lease);
                 true
             }
@@ -314,7 +477,7 @@ impl<R, S, O> PendingCell<R, S, O> {
                 owner_lease,
             } => {
                 drop(state);
-                roots.discard(RootDisposition::PublicationFailed);
+                roots.discard_transferred(RootDisposition::PublicationFailed);
                 drop(settlement);
                 drop(owner_lease);
                 true
@@ -354,7 +517,7 @@ where
     S: Send + 'static,
     O: Send + 'static,
 {
-    fn new(ticket: PendingTicket, roots: RootEscrow) -> Self {
+    fn new(ticket: PendingTicket, roots: PendingRootSet) -> Self {
         Self {
             ticket,
             state: Mutex::new(CellState::Open {
@@ -599,6 +762,15 @@ where
     O: Send + 'static,
 {
     pub fn begin(&self, roots: RootEscrow) -> Result<CompletionHandle<R, S, O>, BeginPendingError> {
+        self.begin_with_roots(PendingRootSet::transferred_only(roots))
+    }
+
+    /// Begins one pending cell with transferred roots and an exact retained
+    /// request authority in the same Phase 4 root graph.
+    fn begin_with_roots(
+        &self,
+        roots: PendingRootSet,
+    ) -> Result<CompletionHandle<R, S, O>, BeginPendingError> {
         let raw = match NEXT_PENDING_TICKET.fetch_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
@@ -606,7 +778,7 @@ where
         ) {
             Ok(raw) => raw,
             Err(_) => {
-                roots.discard(RootDisposition::PublicationFailed);
+                roots.discard_transferred(RootDisposition::PublicationFailed);
                 return Err(BeginPendingError::TicketSpaceExhausted);
             }
         };
@@ -616,15 +788,36 @@ where
         self.begin_with_ticket(ticket, roots)
     }
 
+    /// Begins one pending cell with the exact scheduler-minted resource root
+    /// pin that must remain visible through Open, Settled, Waiting and the
+    /// claimed runnable wake.
+    pub fn begin_with_resource_roots(
+        &self,
+        transferred: RootEscrow,
+        resource_roots: RequestResourceRootPin,
+    ) -> Result<CompletionHandle<R, S, O>, BeginPendingError> {
+        if !self
+            .owner_registration
+            .matches_resource_root_pin(&resource_roots)
+        {
+            transferred.discard(RootDisposition::PublicationFailed);
+            return Err(BeginPendingError::ResourceOwnerMismatch);
+        }
+        self.begin_with_roots(PendingRootSet::retaining_resource(
+            transferred,
+            resource_roots,
+        ))
+    }
+
     fn begin_with_ticket(
         &self,
         ticket: PendingTicket,
-        roots: RootEscrow,
+        roots: PendingRootSet,
     ) -> Result<CompletionHandle<R, S, O>, BeginPendingError> {
         let owner = match self.owner_registration.prepare() {
             Ok(owner) => owner,
             Err(error) => {
-                roots.discard(RootDisposition::PublicationFailed);
+                roots.discard_transferred(RootDisposition::PublicationFailed);
                 return Err(BeginPendingError::OwnerCreation(error));
             }
         };
@@ -634,7 +827,7 @@ where
     fn install_with_guard(
         &self,
         ticket: PendingTicket,
-        roots: RootEscrow,
+        roots: PendingRootSet,
         owner: PendingOwnerCreationGuard<'_>,
     ) -> Result<CompletionHandle<R, S, O>, BeginPendingError> {
         // The non-cloneable guard already owns the inventory lock. Container
@@ -643,7 +836,7 @@ where
         if cells.contains_key(&ticket) {
             drop(cells);
             drop(owner);
-            roots.discard(RootDisposition::PublicationFailed);
+            roots.discard_transferred(RootDisposition::PublicationFailed);
             return Err(BeginPendingError::TicketCollision);
         }
         let cell = Arc::new(PendingCell::new(ticket, roots));
@@ -693,6 +886,18 @@ where
         }
         self.inner.remove_exact(ticket, &cell);
         true
+    }
+
+    fn abandon_publication_error(
+        &self,
+        ticket: PendingTicket,
+        error: PendingPublicationError<R, S>,
+    ) -> PendingPublicationError<R, S> {
+        // The error still owns the unpublished draft and its suspended stable
+        // storage. Terminalize roots in the completion cell before returning
+        // that draft to the caller for drop.
+        let _ = self.abandon(ticket);
+        error
     }
 
     pub fn unpublished_count(&self) -> usize {
@@ -757,6 +962,19 @@ where
         let (ticket, resume) = operation.into_parts();
         self.publish(ticket, PendingOwnerDraft::new(resume, suspended), queue)
     }
+
+    /// Publishes one sealed VM pending operation and, on failure, terminalizes
+    /// its completion cell before returning the still-owned suspended draft.
+    pub fn publish_operation_or_abandon(
+        &self,
+        operation: PendingOperation,
+        suspended: S,
+        queue: Arc<dyn PendingWakeQueue<VmResumeToken, S, O>>,
+    ) -> Result<PendingPublication, PendingPublicationError<VmResumeToken, S>> {
+        let ticket = operation.ticket();
+        self.publish_operation(operation, suspended, queue)
+            .map_err(|error| self.abandon_publication_error(ticket, error))
+    }
 }
 
 impl<R, S, O> VmRootSource for PendingRegistry<R, S, O>
@@ -781,7 +999,7 @@ mod tests {
     use std::{
         num::NonZeroU64,
         sync::{
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
             mpsc, Arc, Barrier, Mutex,
         },
         time::Duration,
@@ -796,12 +1014,14 @@ mod tests {
 
     use super::{
         lock_unpoisoned, BeginPendingError, PendingCellState, PendingOwnerDraft,
-        PendingPublication, PendingRegistry, PendingWake, PendingWakeQueue, SettleDisposition,
-        SettlementSource,
+        PendingPublication, PendingRegistry, PendingRootSet, PendingWake, PendingWakeQueue,
+        SettleDisposition, SettlementSource,
     };
     use crate::{
         owner_inventory::{PendingOwnerRegistration, RequestExecutionOwnerInventory},
-        RootDisposition, RootEscrow, RootEscrowBacking,
+        BytecodeSchedulerPorts, RequestByteStreamPullFuture, RequestByteStreamSource,
+        RequestExecutionContext, RequestResourceFinish, RequestResourceFinishReason,
+        RequestResourceRelease, RootDisposition, RootEscrow, RootEscrowBacking,
     };
 
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -831,6 +1051,74 @@ mod tests {
 
         fn drop_roots(self: Box<Self>, disposition: RootDisposition) {
             self.0.lock().unwrap().push(RootEvent::Dropped(disposition));
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum PublicationDropEvent {
+        Roots(RootDisposition),
+        Suspended,
+    }
+
+    struct PublicationOrderingRoots {
+        suspended_alive: Arc<AtomicBool>,
+        events: Arc<Mutex<Vec<PublicationDropEvent>>>,
+    }
+
+    impl VmRootSource for PublicationOrderingRoots {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl RootEscrowBacking for PublicationOrderingRoots {
+        fn root_count(&self) -> usize {
+            1
+        }
+
+        fn restore_roots(self: Box<Self>) {
+            panic!("failed publication must not restore transferred roots")
+        }
+
+        fn drop_roots(self: Box<Self>, disposition: RootDisposition) {
+            assert!(
+                self.suspended_alive.load(Ordering::SeqCst),
+                "transferred roots must terminate while suspended stable storage is alive"
+            );
+            self.events
+                .lock()
+                .unwrap()
+                .push(PublicationDropEvent::Roots(disposition));
+        }
+    }
+
+    #[derive(Debug)]
+    struct PublicationSuspended {
+        alive: Arc<AtomicBool>,
+        events: Arc<Mutex<Vec<PublicationDropEvent>>>,
+    }
+
+    impl VmRootSource for PublicationSuspended {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl Drop for PublicationSuspended {
+        fn drop(&mut self) {
+            assert!(self.alive.swap(false, Ordering::SeqCst));
+            self.events
+                .lock()
+                .unwrap()
+                .push(PublicationDropEvent::Suspended);
+        }
+    }
+
+    struct PublicationOrderingQueue;
+
+    impl PendingWakeQueue<u64, PublicationSuspended, NoRoots> for PublicationOrderingQueue {
+        fn enqueue(&self, _wake: PendingWake<u64, PublicationSuspended, NoRoots>) {
+            panic!("a failed publication cannot enqueue a wake")
         }
     }
 
@@ -865,12 +1153,36 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct NoRoots;
 
     impl VmRootSource for NoRoots {
         fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
             Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct TrackedPendingOutcome(Arc<AtomicUsize>);
+
+    impl VmRootSource for TrackedPendingOutcome {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl Drop for TrackedPendingOutcome {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Default)]
+    struct TrackedOutcomeQueue(Mutex<Vec<PendingWake<u64, NoRoots, TrackedPendingOutcome>>>);
+
+    impl PendingWakeQueue<u64, NoRoots, TrackedPendingOutcome> for TrackedOutcomeQueue {
+        fn enqueue(&self, wake: PendingWake<u64, NoRoots, TrackedPendingOutcome>) {
+            self.0.lock().unwrap().push(wake);
         }
     }
 
@@ -889,6 +1201,33 @@ mod tests {
     impl PendingWakeQueue<u64, NoRoots, NoRoots> for CountingQueue {
         fn enqueue(&self, _wake: PendingWake<u64, NoRoots, NoRoots>) {
             self.0.queue_enqueues.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct RetainedByteStreamRoot(ValueSlot);
+
+    impl VmRootSource for RetainedByteStreamRoot {
+        fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            visitor.visit_root(&self.0)
+        }
+    }
+
+    impl RequestByteStreamSource for RetainedByteStreamRoot {
+        fn start_pull(
+            &self,
+        ) -> Result<RequestByteStreamPullFuture, crate::RequestByteStreamPullStartError> {
+            Ok(Box::pin(std::future::pending()))
+        }
+
+        fn terminate(self: Box<Self>, _termination: crate::RequestResourceTermination) {}
+    }
+
+    #[derive(Default)]
+    struct NoRootWakeQueue(Mutex<Vec<PendingWake<u64, NoRoots, NoRoots>>>);
+
+    impl PendingWakeQueue<u64, NoRoots, NoRoots> for NoRootWakeQueue {
+        fn enqueue(&self, wake: PendingWake<u64, NoRoots, NoRoots>) {
+            self.0.lock().unwrap().push(wake);
         }
     }
 
@@ -915,8 +1254,8 @@ mod tests {
     type PendingFixture = (TestCompletion, RootEventLog);
 
     fn pending_registration() -> PendingOwnerRegistration {
-        let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
-        registrations.pending()
+        let (mut registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        registrations.take_pending().unwrap()
     }
 
     fn begin(registry: &Registry) -> PendingFixture {
@@ -932,8 +1271,8 @@ mod tests {
     #[test]
     fn cloned_completion_handles_do_not_keep_an_abandoned_owner_registered() {
         let inventory = RequestExecutionOwnerInventory::open();
-        let (registrations, freeze) = inventory.into_parts();
-        let registry = Registry::new(registrations.pending());
+        let (mut registrations, freeze) = inventory.into_parts();
+        let registry = Registry::new(registrations.take_pending().unwrap());
         let (completion, _roots) = begin(&registry);
         let completion_clone = completion.clone();
 
@@ -948,8 +1287,8 @@ mod tests {
     #[test]
     fn pending_owner_lease_moves_into_the_claimed_wake() {
         let inventory = RequestExecutionOwnerInventory::open();
-        let (registrations, freeze) = inventory.into_parts();
-        let registry = Registry::new(registrations.pending());
+        let (mut registrations, freeze) = inventory.into_parts();
+        let registry = Registry::new(registrations.take_pending().unwrap());
         let queue = Arc::new(RecordingQueue::default());
         let (completion, _roots) = begin(&registry);
 
@@ -975,21 +1314,25 @@ mod tests {
     #[test]
     fn occupied_pending_ticket_aborts_without_an_inventory_increment() {
         let inventory = RequestExecutionOwnerInventory::open();
-        let (registrations, freeze) = inventory.into_parts();
-        let registry = Registry::new(registrations.pending());
+        let (mut registrations, freeze) = inventory.into_parts();
+        let registry = Registry::new(registrations.take_pending().unwrap());
         let ticket = PendingTicket::new(NonZeroU64::new(41).unwrap());
         let first_roots = Arc::new(Mutex::new(Vec::new()));
         let rejected_roots = Arc::new(Mutex::new(Vec::new()));
         let completion = registry
             .begin_with_ticket(
                 ticket,
-                RootEscrow::new(Box::new(RecordingRoots(Arc::clone(&first_roots)))),
+                PendingRootSet::transferred_only(RootEscrow::new(Box::new(RecordingRoots(
+                    Arc::clone(&first_roots),
+                )))),
             )
             .unwrap();
 
         let collision = registry.begin_with_ticket(
             ticket,
-            RootEscrow::new(Box::new(RecordingRoots(Arc::clone(&rejected_roots)))),
+            PendingRootSet::transferred_only(RootEscrow::new(Box::new(RecordingRoots(
+                Arc::clone(&rejected_roots),
+            )))),
         );
 
         assert!(matches!(collision, Err(BeginPendingError::TicketCollision)));
@@ -1006,8 +1349,8 @@ mod tests {
     #[test]
     fn pending_creation_holds_inventory_before_locking_the_registry() {
         let inventory = RequestExecutionOwnerInventory::open();
-        let (registrations, freeze) = inventory.into_parts();
-        let registry = Arc::new(Registry::new(registrations.pending()));
+        let (mut registrations, freeze) = inventory.into_parts();
+        let registry = Arc::new(Registry::new(registrations.take_pending().unwrap()));
         let ticket = PendingTicket::new(NonZeroU64::new(42).unwrap());
         let roots = Arc::new(Mutex::new(Vec::new()));
         let registry_lock = lock_unpoisoned(&registry.inner.cells);
@@ -1021,7 +1364,9 @@ mod tests {
             continue_rx.recv().unwrap();
             creating_registry.install_with_guard(
                 ticket,
-                RootEscrow::new(Box::new(RecordingRoots(creating_roots))),
+                PendingRootSet::transferred_only(RootEscrow::new(Box::new(RecordingRoots(
+                    creating_roots,
+                )))),
                 owner,
             )
         });
@@ -1090,12 +1435,17 @@ mod tests {
 
     #[test]
     fn phase_5_first_poll_wake_before_publication_claims_and_enqueues_once() {
-        let registry = Registry::new(pending_registration());
-        let queue = Arc::new(RecordingQueue::default());
-        let (completion, roots) = begin(&registry);
+        let registry = PendingRegistry::<u64, NoRoots, NoRoots>::new(pending_registration());
+        let queue = Arc::new(NoRootWakeQueue::default());
+        let roots = Arc::new(Mutex::new(Vec::new()));
+        let completion = registry
+            .begin(RootEscrow::new(Box::new(RecordingRoots(Arc::clone(
+                &roots,
+            )))))
+            .unwrap();
 
         assert!(matches!(
-            completion.complete("ready"),
+            completion.complete(NoRoots),
             SettleDisposition::StoredBeforePublication
         ));
         assert_eq!(completion.state(), PendingCellState::Settled);
@@ -1103,7 +1453,7 @@ mod tests {
             registry
                 .publish(
                     completion.ticket(),
-                    PendingOwnerDraft::new(7, "fiber"),
+                    PendingOwnerDraft::new(7, NoRoots),
                     queue.clone()
                 )
                 .unwrap(),
@@ -1113,14 +1463,251 @@ mod tests {
         assert_eq!(registry.live_count(), 0);
 
         let wake = queue.0.lock().unwrap().pop().unwrap();
-        let (owner, settlement) = wake.into_parts();
-        assert_eq!(settlement.source(), SettlementSource::HostCompletion);
-        assert_eq!(settlement.into_outcome(), "ready");
-        let (resume, suspended, escrow, pending_owner) = owner.into_parts();
-        assert_eq!((resume, suspended), (7, "fiber"));
-        escrow.restore();
-        drop(pending_owner);
+        let suspended = wake
+            .claim()
+            .map(|_, outcome, _| outcome)
+            .resume_and_commit(
+                |suspended, resume, outcome| {
+                    assert_eq!(resume, 7);
+                    assert_eq!(*suspended, NoRoots);
+                    assert_eq!(outcome, NoRoots);
+                    Ok::<(), ()>(())
+                },
+                |suspended, resource_roots| {
+                    assert!(resource_roots.is_none());
+                    suspended
+                },
+            )
+            .unwrap();
+        assert_eq!(suspended, NoRoots);
         assert_eq!(*roots.lock().unwrap(), [RootEvent::Restored]);
+    }
+
+    #[test]
+    fn phase_5_first_poll_queued_host_payload_drops_once_when_terminal_mapper_wins() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (mut registrations, freeze) = inventory.into_parts();
+        let registry = PendingRegistry::<u64, NoRoots, TrackedPendingOutcome>::new(
+            registrations.take_pending().unwrap(),
+        );
+        let completion = registry.begin(RootEscrow::empty()).unwrap();
+        let queue = Arc::new(TrackedOutcomeQueue::default());
+        let wake_queue: Arc<dyn PendingWakeQueue<u64, NoRoots, TrackedPendingOutcome>> =
+            queue.clone();
+        assert_eq!(
+            registry
+                .publish(
+                    completion.ticket(),
+                    PendingOwnerDraft::new(17, NoRoots),
+                    wake_queue,
+                )
+                .unwrap(),
+            PendingPublication::Waiting
+        );
+        let drops = Arc::new(AtomicUsize::new(0));
+        assert!(matches!(
+            completion.complete(TrackedPendingOutcome(Arc::clone(&drops))),
+            SettleDisposition::Enqueued
+        ));
+
+        let materializations = AtomicUsize::new(0);
+        let resumes = AtomicUsize::new(0);
+        let terminal_winner = true;
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+        let resumed = wake
+            .claim()
+            .map(|_, late_payload, _| {
+                if terminal_winner {
+                    drop(late_payload);
+                } else {
+                    materializations.fetch_add(1, Ordering::SeqCst);
+                    drop(late_payload);
+                }
+                NoRoots
+            })
+            .resume_and_commit(
+                |suspended, resume, NoRoots| {
+                    resumes.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!((*suspended, resume), (NoRoots, 17));
+                    Ok::<(), ()>(())
+                },
+                |suspended, resource_roots| {
+                    assert!(resource_roots.is_none());
+                    suspended
+                },
+            )
+            .unwrap();
+
+        assert_eq!(resumed, NoRoots);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(materializations.load(Ordering::SeqCst), 0);
+        assert_eq!(resumes.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.live_count(), 0);
+        assert_eq!(freeze.freeze().pending.current, 0);
+    }
+
+    #[test]
+    fn phase_5_resource_pending_root_pin_covers_every_cell_state_and_hides_terminal_provider() {
+        let mut context = RequestExecutionContext::<skiff_runtime_vm::VmFiber>::create(
+            BytecodeSchedulerPorts::default(),
+        );
+        let table = context.resource_table();
+        let handle = table
+            .register_byte_stream(Box::new(RetainedByteStreamRoot(ValueSlot::integer(73))))
+            .unwrap();
+        let registry = PendingRegistry::<u64, NoRoots, NoRoots>::new(
+            context.take_pending_registration().unwrap(),
+        );
+        let queue = Arc::new(NoRootWakeQueue::default());
+
+        let precompleted = registry
+            .begin_with_resource_roots(RootEscrow::empty(), table.root_pin())
+            .unwrap();
+        let mut open = CountingVisitor::default();
+        registry.visit_roots(&mut open).unwrap();
+        assert_eq!(open.0, 1, "Open must enumerate the provider root");
+
+        assert!(matches!(
+            precompleted.complete(NoRoots),
+            SettleDisposition::StoredBeforePublication
+        ));
+        let mut settled = CountingVisitor::default();
+        registry.visit_roots(&mut settled).unwrap();
+        assert_eq!(settled.0, 1, "Settled must enumerate the provider root");
+        assert_eq!(
+            registry
+                .publish(
+                    precompleted.ticket(),
+                    PendingOwnerDraft::new(1, NoRoots),
+                    queue.clone(),
+                )
+                .unwrap(),
+            PendingPublication::PrecompletedEnqueued
+        );
+        let first_wake = queue.0.lock().unwrap().pop().unwrap();
+        let mut first_queued = CountingVisitor::default();
+        first_wake.visit_roots(&mut first_queued).unwrap();
+        assert_eq!(
+            first_queued.0, 1,
+            "queued wake must retain the provider root"
+        );
+        let claimed = first_wake.claim();
+        let mut claimed_roots = CountingVisitor::default();
+        claimed.visit_roots(&mut claimed_roots).unwrap();
+        assert_eq!(
+            claimed_roots.0, 1,
+            "claimed guard must retain provider roots"
+        );
+        let mapped = claimed.map(|_, outcome, roots| {
+            let mut during_mapper = CountingVisitor::default();
+            roots.visit_roots(&mut during_mapper).unwrap();
+            assert_eq!(
+                during_mapper.0, 1,
+                "mapper retains the pending owner root pin"
+            );
+            outcome
+        });
+        let mut mapped_roots = CountingVisitor::default();
+        mapped.visit_roots(&mut mapped_roots).unwrap();
+        assert_eq!(mapped_roots.0, 1, "mapped guard must retain provider roots");
+        let first_commit = mapped
+            .resume_and_commit(
+                |suspended, resume, NoRoots| {
+                    assert_eq!((*suspended, resume), (NoRoots, 1));
+                    Ok::<(), ()>(())
+                },
+                |_suspended, resource_roots| {
+                    drop(resource_roots);
+                    NoRoots
+                },
+            )
+            .unwrap();
+        assert_eq!(first_commit, NoRoots);
+
+        let waiting = registry
+            .begin_with_resource_roots(RootEscrow::empty(), table.root_pin())
+            .unwrap();
+        assert_eq!(
+            registry
+                .publish(
+                    waiting.ticket(),
+                    PendingOwnerDraft::new(2, NoRoots),
+                    queue.clone(),
+                )
+                .unwrap(),
+            PendingPublication::Waiting
+        );
+        let mut waiting_roots = CountingVisitor::default();
+        registry.visit_roots(&mut waiting_roots).unwrap();
+        assert_eq!(
+            waiting_roots.0, 1,
+            "Waiting must enumerate the provider root"
+        );
+        assert!(matches!(
+            waiting.complete(NoRoots),
+            SettleDisposition::Enqueued
+        ));
+        let second_wake = queue.0.lock().unwrap().pop().unwrap();
+        let mut second_queued = CountingVisitor::default();
+        second_wake.visit_roots(&mut second_queued).unwrap();
+        assert_eq!(second_queued.0, 1);
+
+        assert_eq!(
+            table.finish(&handle, RequestResourceFinishReason::Exhausted),
+            Ok(RequestResourceFinish::Finished)
+        );
+        let mut terminal = CountingVisitor::default();
+        second_wake.visit_roots(&mut terminal).unwrap();
+        assert_eq!(terminal.0, 0, "terminal provider roots must be hidden");
+        assert_eq!(table.release(&handle), Ok(RequestResourceRelease::Released));
+        let second_commit = second_wake
+            .claim()
+            .map(|_, outcome, _| outcome)
+            .resume_and_commit(
+                |suspended, resume, NoRoots| {
+                    assert_eq!((*suspended, resume), (NoRoots, 2));
+                    Ok::<(), ()>(())
+                },
+                |_suspended, resource_roots| {
+                    drop(resource_roots);
+                    NoRoots
+                },
+            )
+            .unwrap();
+        assert_eq!(second_commit, NoRoots);
+        drop(registry);
+
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.pending.current, 0);
+        assert_eq!(snapshot.resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_resource_pending_registry_rejects_foreign_inventory_root_pin() {
+        let mut left = RequestExecutionContext::<skiff_runtime_vm::VmFiber>::create(
+            BytecodeSchedulerPorts::default(),
+        );
+        let right = RequestExecutionContext::<skiff_runtime_vm::VmFiber>::create(
+            BytecodeSchedulerPorts::default(),
+        );
+        let registry = Registry::new(left.take_pending_registration().unwrap());
+        let events = Arc::new(Mutex::new(Vec::new()));
+
+        let error = registry
+            .begin_with_resource_roots(
+                RootEscrow::new(Box::new(RecordingRoots(Arc::clone(&events)))),
+                right.resource_table().root_pin(),
+            )
+            .unwrap_err();
+
+        assert_eq!(error, BeginPendingError::ResourceOwnerMismatch);
+        assert_eq!(
+            *events.lock().unwrap(),
+            [RootEvent::Dropped(RootDisposition::PublicationFailed)]
+        );
+        drop(registry);
+        assert_eq!(left.into_not_started().pending.current, 0);
+        assert_eq!(right.into_not_started().resource.current, 0);
     }
 
     #[test]
@@ -1295,6 +1882,65 @@ mod tests {
         );
         let duplicate = completion.complete("late");
         assert!(matches!(duplicate, SettleDisposition::Duplicate(_)));
+    }
+
+    #[test]
+    fn phase_5_resource_publication_failure_discards_roots_before_suspended_draft_drop() {
+        let target_inventory = RequestExecutionOwnerInventory::open();
+        let (mut target_registrations, target_freeze) = target_inventory.into_parts();
+        let target = PendingRegistry::<u64, PublicationSuspended, NoRoots>::new(
+            target_registrations.take_pending().unwrap(),
+        );
+        let source_inventory = RequestExecutionOwnerInventory::open();
+        let (mut source_registrations, source_freeze) = source_inventory.into_parts();
+        let source = PendingRegistry::<u64, PublicationSuspended, NoRoots>::new(
+            source_registrations.take_pending().unwrap(),
+        );
+        let suspended_alive = Arc::new(AtomicBool::new(true));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let completion = target
+            .begin(RootEscrow::new(Box::new(PublicationOrderingRoots {
+                suspended_alive: Arc::clone(&suspended_alive),
+                events: Arc::clone(&events),
+            })))
+            .unwrap();
+        let queue: Arc<dyn PendingWakeQueue<u64, PublicationSuspended, NoRoots>> =
+            Arc::new(PublicationOrderingQueue);
+        let error = source
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(
+                    9,
+                    PublicationSuspended {
+                        alive: Arc::clone(&suspended_alive),
+                        events: Arc::clone(&events),
+                    },
+                ),
+                queue,
+            )
+            .unwrap_err();
+
+        let error = target.abandon_publication_error(completion.ticket(), error);
+        assert_eq!(
+            *events.lock().unwrap(),
+            [PublicationDropEvent::Roots(
+                RootDisposition::PublicationFailed
+            )]
+        );
+        assert!(suspended_alive.load(Ordering::SeqCst));
+        drop(error);
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                PublicationDropEvent::Roots(RootDisposition::PublicationFailed),
+                PublicationDropEvent::Suspended,
+            ]
+        );
+        assert!(!suspended_alive.load(Ordering::SeqCst));
+        assert_eq!(target.live_count(), 0);
+        assert_eq!(source.live_count(), 0);
+        assert_eq!(target_freeze.freeze().pending.current, 0);
+        assert_eq!(source_freeze.freeze().pending.current, 0);
     }
 
     #[test]

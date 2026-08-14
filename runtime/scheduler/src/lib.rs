@@ -36,20 +36,20 @@ pub use bytecode::{
 };
 pub use owner_inventory::{
     OwnerCreationError, OwnerCreationErrorKind, OwnerDomain, PendingOwnerRegistration,
-    RequestExecutionContext,
+    PendingRegistrationTakeError, RequestExecutionContext,
 };
 pub use pending::{
-    BeginPendingError, CompletionHandle, PendingCellState, PendingOwner, PendingOwnerDraft,
-    PendingPublication, PendingPublicationError, PendingPublicationFailure, PendingRegistry,
-    PendingSettlement, PendingWake, PendingWakeQueue, SettleDisposition, SettlementSource,
-    VmCompletionHandle, VmPendingOwner, VmPendingRegistry, VmPendingWake,
+    BeginPendingError, ClaimedPendingWakeGuard, CompletionHandle, PendingCellState, PendingOwner,
+    PendingOwnerDraft, PendingPublication, PendingPublicationError, PendingPublicationFailure,
+    PendingRegistry, PendingSettlement, PendingWake, PendingWakeQueue, SettleDisposition,
+    SettlementSource, VmCompletionHandle, VmPendingOwner, VmPendingRegistry, VmPendingWake,
 };
 pub use resource::{
     RequestByteStreamFailure, RequestByteStreamPullFuture, RequestByteStreamPullStartError,
     RequestByteStreamSource, RequestResourceFinish, RequestResourceFinishReason,
     RequestResourceHandle, RequestResourceLookupError, RequestResourceRegistrationError,
-    RequestResourceRelease, RequestResourceTable, RequestResourceTableSnapshot,
-    RequestResourceTermination,
+    RequestResourceRelease, RequestResourceRootPin, RequestResourceTable,
+    RequestResourceTableSnapshot, RequestResourceTermination,
 };
 pub use root_escrow::{RootDisposition, RootEscrow, RootEscrowBacking};
 pub use skiff_runtime_model::bytecode_execution_observation::{

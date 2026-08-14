@@ -158,7 +158,7 @@ impl InventoryState {
     }
 }
 
-struct InventoryShared(Mutex<InventoryState>);
+pub(crate) struct InventoryShared(Mutex<InventoryState>);
 
 impl InventoryShared {
     fn lock(&self) -> MutexGuard<'_, InventoryState> {
@@ -240,14 +240,13 @@ impl Drop for OwnerLease {
     }
 }
 
-/// Cloneable authority to create pending owners inside one request's owner
-/// inventory.
+/// One-shot authority to create the sole pending registry inside one request's
+/// owner inventory.
 ///
 /// The handle only admits [`PendingRegistry`](crate::PendingRegistry)
 /// construction; it cannot mint leases, install owners or freeze the
-/// inventory. It stays bound to the inventory it was cloned from, so a
-/// registry built from it can never mix ownership with another request.
-#[derive(Clone)]
+/// inventory. It stays bound to the inventory that minted it, so a registry
+/// built from it can never mix ownership with another request.
 pub struct PendingOwnerRegistration(Arc<InventoryShared>);
 
 #[derive(Clone)]
@@ -307,6 +306,37 @@ impl fmt::Debug for PendingOwnerRegistration {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingRegistrationTakeError;
+
+impl fmt::Display for PendingRegistrationTakeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("request pending-registry authority was already taken")
+    }
+}
+
+impl std::error::Error for PendingRegistrationTakeError {}
+
+impl PendingOwnerRegistration {
+    pub(crate) fn matches_resource_root_pin(
+        &self,
+        resource_roots: &crate::resource::RequestResourceRootPin,
+    ) -> bool {
+        resource_roots.matches_inventory(&self.0)
+    }
+}
+
+impl ResourceOwnerRegistration {
+    pub(crate) fn root_inventory_identity(&self) -> Arc<InventoryShared> {
+        Arc::clone(&self.0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_for_test(&self) -> u64 {
+        self.0.lock().resource.current
+    }
+}
+
 impl fmt::Debug for ResourceOwnerRegistration {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -358,16 +388,24 @@ registration_guard!(
     Child
 );
 
-#[derive(Clone)]
 pub(crate) struct RequestExecutionOwnerRegistrations {
-    pending: PendingOwnerRegistration,
+    pending: Option<PendingOwnerRegistration>,
     resource: ResourceOwnerRegistration,
     child: ChildOwnerRegistration,
 }
 
 impl RequestExecutionOwnerRegistrations {
-    pub(crate) fn pending(&self) -> PendingOwnerRegistration {
-        self.pending.clone()
+    pub(crate) fn take_pending(
+        &mut self,
+    ) -> Result<PendingOwnerRegistration, PendingRegistrationTakeError> {
+        self.pending.take().ok_or(PendingRegistrationTakeError)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> &PendingOwnerRegistration {
+        self.pending
+            .as_ref()
+            .expect("test inventory still owns its pending registration")
     }
 
     pub(crate) fn resource(&self) -> ResourceOwnerRegistration {
@@ -395,7 +433,7 @@ impl RequestExecutionOwnerInventory {
         let shared = Arc::new(InventoryShared(Mutex::new(InventoryState::open())));
         Self {
             registrations: RequestExecutionOwnerRegistrations {
-                pending: PendingOwnerRegistration(Arc::clone(&shared)),
+                pending: Some(PendingOwnerRegistration(Arc::clone(&shared))),
                 resource: ResourceOwnerRegistration(Arc::clone(&shared)),
                 child: ChildOwnerRegistration(Arc::clone(&shared)),
             },
@@ -471,14 +509,16 @@ where
         }
     }
 
-    /// Clones the pending-owner registration bound to this context so the
-    /// caller can build a [`BytecodeSchedulerPorts`] that owns a real
-    /// [`PendingRegistry`](crate::PendingRegistry) before the first drive.
+    /// Takes the one pending-owner registration bound to this context so the
+    /// caller can build the request's sole [`PendingRegistry`](crate::PendingRegistry)
+    /// before the first drive. A second take fails closed.
     ///
     /// The registration cannot mint or release owners on its own, and it
     /// never outlives the context's inventory.
-    pub fn pending_registration(&self) -> PendingOwnerRegistration {
-        self.registrations.pending()
+    pub fn take_pending_registration(
+        &mut self,
+    ) -> Result<PendingOwnerRegistration, PendingRegistrationTakeError> {
+        self.registrations.take_pending()
     }
 
     /// Clones this request's single scheduler-owned resource table capability.
@@ -493,7 +533,7 @@ where
     /// Replaces the scheduler ports installed at [`Self::create`].
     ///
     /// The caller typically builds the real ports from
-    /// [`Self::pending_registration`] and installs them here before any
+    /// [`Self::take_pending_registration`] and installs them here before any
     /// drive; both ports and registration remain bound to this one context.
     pub fn with_ports(mut self, ports: BytecodeSchedulerPorts<U>) -> Self {
         self.ports = ports;
@@ -542,8 +582,12 @@ where
             .root
             .take()
             .expect("the request execution context must install its root unit before driving");
-        let scheduler =
-            BytecodeScheduler::new(root, self.ports.clone(), self.registrations.child());
+        let scheduler = BytecodeScheduler::new_with_resource_roots(
+            root,
+            self.ports.clone(),
+            self.registrations.child(),
+            self.resources.root_pin(),
+        );
         let result = scheduler.run(heap, budget);
         let termination = match &result {
             Ok(BytecodeSchedulerOutcome::Complete(_)) => {
@@ -578,8 +622,12 @@ where
             .root
             .take()
             .expect("the request execution context must install its root unit before driving");
-        let scheduler =
-            BytecodeScheduler::new(root, self.ports.clone(), self.registrations.child());
+        let scheduler = BytecodeScheduler::new_with_resource_roots(
+            root,
+            self.ports.clone(),
+            self.registrations.child(),
+            self.resources.root_pin(),
+        );
         scheduler.run(heap, budget)
     }
 
@@ -595,7 +643,9 @@ where
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
     ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerError> {
-        scheduler.run(heap, budget)
+        scheduler
+            .bind_request_resource_roots(self.resources.root_pin())?
+            .run(heap, budget)
     }
 
     /// Consumes the context and freezes the actual `Started` owner inventory
@@ -701,6 +751,20 @@ mod tests {
         let snapshot = freeze.freeze();
         assert_eq!(snapshot.resource.current, 0);
         assert!(!snapshot.resource.ever_created);
+    }
+
+    #[test]
+    fn phase_5_resource_context_exposes_one_pending_registry_authority() {
+        let mut context =
+            RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+
+        let registration = context.take_pending_registration().unwrap();
+        assert!(matches!(
+            context.take_pending_registration(),
+            Err(PendingRegistrationTakeError)
+        ));
+        drop(registration);
+        assert_eq!(context.into_not_started().pending.current, 0);
     }
 
     #[test]

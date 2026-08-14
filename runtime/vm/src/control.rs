@@ -1,19 +1,20 @@
 use std::{num::NonZeroU64, sync::Arc};
 
+use skiff_artifact_model::Opcode;
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex, InterfaceTableIndex,
-    ResumeSiteIndex, ServiceOperationIndex, SyntheticCallbackIndex,
+    LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex, SyntheticCallbackIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
     service_error::RequestException,
-    vm_heap::VmHeapError,
+    vm_heap::{VmHeap, VmHeapError},
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{ValueSlot, VmHandle},
 };
 
-use crate::{VmBudgetClosed, VmError};
+use crate::{lifecycle::LifecycleExecutor, VmBudgetClosed, VmError};
 
 pub type VmResult = Result<VmOwnedValues, VmError>;
 
@@ -78,6 +79,66 @@ impl VmOwnedValues {
 impl VmRootSource for VmOwnedValues {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         visit_values(&self.values, visitor)
+    }
+}
+
+/// Arguments transferred out of the operand stack for one verified host
+/// effect, paired with their exact linked lifecycle plans.
+///
+/// Construction is sealed inside the VM. The request executor may inspect the
+/// values while producing a heap-free host DTO, then must consume this owner
+/// through [`Self::release`] on the request heap thread before returning
+/// `Ready` or publishing a pending cell.
+#[must_use = "host-effect arguments must be released on the request heap thread"]
+pub struct VmHostEffectArguments {
+    values: VmOwnedValues,
+    plans: Box<[LinkedValueTransferPlan]>,
+    function: FunctionIndex,
+    instruction: InstructionIndex,
+}
+
+impl VmHostEffectArguments {
+    pub(crate) fn new(
+        values: VmOwnedValues,
+        plans: Box<[LinkedValueTransferPlan]>,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> Self {
+        debug_assert_eq!(values.len(), plans.len());
+        Self {
+            values,
+            plans,
+            function,
+            instruction,
+        }
+    }
+
+    pub fn values(&self) -> &[ValueSlot] {
+        self.values.values()
+    }
+
+    pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
+        self.values.image()
+    }
+
+    /// Releases every transferred owner through the VM's sole lifecycle
+    /// executor. Unsupported plans are rejected before the first heap
+    /// mutation. A heap failure terminates the request synchronously; the
+    /// failing and later owners remain in the unique boundary-owned heap for
+    /// terminal teardown and are never submitted a second time here.
+    pub fn release(self, heap: &mut dyn VmHeap) -> Result<(), VmError> {
+        let mut executor = LifecycleExecutor::new(heap);
+        executor
+            .release_batch(self.values.values(), &self.plans)
+            .map_err(|error| {
+                error.into_vm_error(self.function, self.instruction, Opcode::InvokeHost)
+            })
+    }
+}
+
+impl VmRootSource for VmHostEffectArguments {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.values.visit_roots(visitor)
     }
 }
 
@@ -334,7 +395,7 @@ impl VmRootSource for ChildInvocation {
 #[must_use = "an adapter invocation owns arguments and unique continuation authority"]
 pub struct AdapterInvocation {
     adapter: HostEffectAdapterIndex,
-    arguments: VmOwnedValues,
+    arguments: VmHostEffectArguments,
     resume: VmResumeToken,
 }
 
@@ -342,26 +403,23 @@ impl AdapterInvocation {
     #[allow(dead_code)]
     pub(crate) fn new(
         adapter: HostEffectAdapterIndex,
-        arguments: VmOwnedValues,
+        arguments: VmHostEffectArguments,
         resume: VmResumeToken,
-    ) -> Result<Self, VmError> {
-        if resume.authority != VmResumeAuthority::Adapter(adapter)
-            || !Arc::ptr_eq(arguments.image(), resume.image())
-        {
-            return Err(VmError::ResumeTokenMismatch);
-        }
-        Ok(Self {
+    ) -> Self {
+        debug_assert_eq!(resume.authority, VmResumeAuthority::Adapter(adapter));
+        debug_assert!(Arc::ptr_eq(arguments.image(), resume.image()));
+        Self {
             adapter,
             arguments,
             resume,
-        })
+        }
     }
 
     pub const fn adapter(&self) -> HostEffectAdapterIndex {
         self.adapter
     }
 
-    pub const fn arguments(&self) -> &VmOwnedValues {
+    pub const fn arguments(&self) -> &VmHostEffectArguments {
         &self.arguments
     }
 
@@ -371,7 +429,7 @@ impl AdapterInvocation {
 
     /// Scheduler-TCB seam: all three parts remain one logical handoff and must
     /// not be exchanged with parts from another invocation.
-    pub fn into_parts(self) -> (HostEffectAdapterIndex, VmOwnedValues, VmResumeToken) {
+    pub fn into_parts(self) -> (HostEffectAdapterIndex, VmHostEffectArguments, VmResumeToken) {
         (self.adapter, self.arguments, self.resume)
     }
 }

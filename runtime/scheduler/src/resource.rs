@@ -311,17 +311,43 @@ impl std::error::Error for RequestResourceRegistrationFailure {}
 
 struct RequestResourceEntry {
     state: Option<Box<dyn RequestResourceState>>,
-    owner_lease: Option<ResourceOwnerLease>,
+    termination_pin: Option<RequestResourceTerminationPin>,
     route_claimed: bool,
     vm_metadata: Option<(CompactTypeTag, ValueFlags)>,
     terminal: Option<RequestResourceTermination>,
+}
+
+/// A private shared pin for the entry's one counted inventory lease.
+///
+/// Cloning this pin does not mint another inventory owner. It only prevents a
+/// concurrent VM release or request-table close from dropping the entry's
+/// unique lease before an already-started provider terminator returns.
+#[derive(Clone)]
+struct RequestResourceTerminationPin {
+    _owner_lease: Arc<ResourceOwnerLease>,
+}
+
+struct TerminatingRequestResource {
+    state: Box<dyn RequestResourceState>,
+    _termination_pin: RequestResourceTerminationPin,
+}
+
+impl TerminatingRequestResource {
+    fn terminate(self, termination: RequestResourceTermination) {
+        let Self {
+            state,
+            _termination_pin,
+        } = self;
+        state.terminate(termination);
+        drop(_termination_pin);
+    }
 }
 
 impl RequestResourceEntry {
     fn unarmed(state: Box<dyn RequestResourceState>) -> Self {
         Self {
             state: Some(state),
-            owner_lease: None,
+            termination_pin: None,
             route_claimed: false,
             vm_metadata: None,
             terminal: None,
@@ -330,7 +356,11 @@ impl RequestResourceEntry {
 
     fn arm(&mut self, owner_lease: ResourceOwnerLease) {
         assert!(
-            self.owner_lease.replace(owner_lease).is_none(),
+            self.termination_pin
+                .replace(RequestResourceTerminationPin {
+                    _owner_lease: Arc::new(owner_lease),
+                })
+                .is_none(),
             "a request resource entry arms exactly once"
         );
     }
@@ -338,24 +368,39 @@ impl RequestResourceEntry {
     fn finish(
         &mut self,
         termination: RequestResourceTermination,
-    ) -> Option<Box<dyn RequestResourceState>> {
+    ) -> Option<TerminatingRequestResource> {
         let state = self.state.take()?;
+        let termination_pin = self
+            .termination_pin
+            .as_ref()
+            .expect("an installed request resource entry is armed")
+            .clone();
         self.terminal = Some(termination);
-        Some(state)
+        Some(TerminatingRequestResource {
+            state,
+            _termination_pin: termination_pin,
+        })
     }
 
     fn terminate_and_release(self, termination: RequestResourceTermination) {
         let Self {
             state,
-            owner_lease,
+            termination_pin,
             route_claimed: _,
             vm_metadata: _,
             terminal: _,
         } = self;
+        let termination_pin =
+            termination_pin.expect("an installed request resource entry is armed");
         if let Some(state) = state {
-            state.terminate(termination);
+            TerminatingRequestResource {
+                state,
+                _termination_pin: termination_pin,
+            }
+            .terminate(termination);
+        } else {
+            drop(termination_pin);
         }
-        drop(owner_lease);
     }
 
     fn start_byte_stream_pull(
@@ -540,6 +585,29 @@ impl Drop for RequestResourceTableShared {
 pub struct RequestResourceTable {
     shared: Arc<RequestResourceTableShared>,
     owner_registration: ResourceOwnerRegistration,
+}
+
+/// Opaque root-only pin to one request's exact resource table.
+///
+/// This capability exposes neither registration nor lifecycle transitions. It
+/// only lets runnable and pending scheduler owners enumerate the same table's
+/// retained provider roots during an ownership handoff.
+pub struct RequestResourceRootPin {
+    shared: Arc<RequestResourceTableShared>,
+    inventory: Arc<crate::owner_inventory::InventoryShared>,
+}
+
+impl RequestResourceRootPin {
+    pub(crate) fn is_same_table(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
+    pub(crate) fn matches_inventory(
+        &self,
+        inventory: &Arc<crate::owner_inventory::InventoryShared>,
+    ) -> bool {
+        Arc::ptr_eq(&self.inventory, inventory)
+    }
 }
 
 impl RequestResourceTable {
@@ -769,10 +837,10 @@ impl RequestResourceTable {
                 .expect("a validated resource entry remains installed");
             entry.finish(termination)
         };
-        let Some(state) = state else {
+        let Some(terminating) = state else {
             return Ok(RequestResourceFinish::AlreadyFinished);
         };
-        state.terminate(termination);
+        terminating.terminate(termination);
         Ok(RequestResourceFinish::Finished)
     }
 
@@ -886,6 +954,14 @@ impl RequestResourceTable {
         self.snapshot().live
     }
 
+    /// Mints a root-only pin bound to this exact table authority.
+    pub fn root_pin(&self) -> RequestResourceRootPin {
+        RequestResourceRootPin {
+            shared: Arc::clone(&self.shared),
+            inventory: self.owner_registration.root_inventory_identity(),
+        }
+    }
+
     pub fn snapshot(&self) -> RequestResourceTableSnapshot {
         let table = self.shared.lock();
         let live = table
@@ -906,6 +982,11 @@ impl RequestResourceTable {
     fn owner_weak_for_test(&self) -> Weak<RequestResourceTableShared> {
         Arc::downgrade(&self.shared)
     }
+
+    #[cfg(test)]
+    fn current_owner_count_for_test(&self) -> u64 {
+        self.owner_registration.current_for_test()
+    }
 }
 
 impl VmRootSource for RequestResourceTable {
@@ -917,6 +998,26 @@ impl VmRootSource for RequestResourceTable {
             }
         }
         Ok(())
+    }
+}
+
+impl VmRootSource for RequestResourceRootPin {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        let table = self.shared.lock();
+        for (_, entry) in table.entries.values() {
+            if let Some(state) = &entry.state {
+                state.visit_roots(visitor)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for RequestResourceRootPin {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequestResourceRootPin")
+            .finish_non_exhaustive()
     }
 }
 
@@ -932,8 +1033,12 @@ impl fmt::Debug for RequestResourceTable {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Mutex},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc, Mutex,
+        },
         task::{Context, Poll, Wake, Waker},
+        time::Duration,
     };
 
     use skiff_runtime_model::{
@@ -1024,6 +1129,47 @@ mod tests {
                 .unwrap()
                 .push(Event::Terminated(termination));
         }
+    }
+
+    struct BlockingTerminationResource {
+        entered: mpsc::Sender<RequestResourceTermination>,
+        unblock: mpsc::Receiver<()>,
+        termination_count: Arc<AtomicUsize>,
+    }
+
+    impl VmRootSource for BlockingTerminationResource {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl RequestResourceState for BlockingTerminationResource {
+        fn terminate(self: Box<Self>, termination: RequestResourceTermination) {
+            self.termination_count.fetch_add(1, Ordering::SeqCst);
+            self.entered.send(termination).unwrap();
+            self.unblock.recv().unwrap();
+        }
+    }
+
+    fn register_blocking_termination(
+        table: &RequestResourceTable,
+    ) -> (
+        RequestResourceHandle,
+        mpsc::Receiver<RequestResourceTermination>,
+        mpsc::Sender<()>,
+        Arc<AtomicUsize>,
+    ) {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (unblock_tx, unblock_rx) = mpsc::channel();
+        let termination_count = Arc::new(AtomicUsize::new(0));
+        let handle = table
+            .register(Box::new(BlockingTerminationResource {
+                entered: entered_tx,
+                unblock: unblock_rx,
+                termination_count: Arc::clone(&termination_count),
+            }))
+            .unwrap();
+        (handle, entered_rx, unblock_tx, termination_count)
     }
 
     struct NoopWake;
@@ -1229,6 +1375,77 @@ mod tests {
             [Event::Terminated(RequestResourceTermination::Exhausted)],
             "VM drop releases the retained lease without a second provider terminal"
         );
+        assert_eq!(freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_resource_concurrent_vm_release_cannot_outpace_provider_termination() {
+        let (table, freeze) = table();
+        let (handle, entered, unblock, termination_count) = register_blocking_termination(&table);
+        let finish_table = table.clone();
+        let finishing = std::thread::spawn(move || {
+            finish_table.finish(&handle, RequestResourceFinishReason::Exhausted)
+        });
+
+        assert_eq!(
+            entered.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RequestResourceTermination::Exhausted
+        );
+        assert_eq!(termination_count.load(Ordering::SeqCst), 1);
+        assert_eq!(table.current_owner_count_for_test(), 1);
+        assert_eq!(table.release(&handle), Ok(RequestResourceRelease::Released));
+        assert_eq!(
+            table.current_owner_count_for_test(),
+            1,
+            "the in-flight terminator pins the entry's one lease"
+        );
+
+        unblock.send(()).unwrap();
+        assert_eq!(
+            finishing.join().unwrap(),
+            Ok(RequestResourceFinish::Finished)
+        );
+        assert_eq!(termination_count.load(Ordering::SeqCst), 1);
+        assert_eq!(table.current_owner_count_for_test(), 0);
+        assert_eq!(freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_resource_concurrent_close_cannot_outpace_provider_termination() {
+        let (table, freeze) = table();
+        let (handle, entered, unblock, termination_count) = register_blocking_termination(&table);
+        let finish_table = table.clone();
+        let finishing = std::thread::spawn(move || {
+            finish_table.finish(&handle, RequestResourceFinishReason::HostError)
+        });
+
+        assert_eq!(
+            entered.recv_timeout(Duration::from_secs(1)).unwrap(),
+            RequestResourceTermination::HostError
+        );
+        assert_eq!(termination_count.load(Ordering::SeqCst), 1);
+        assert_eq!(table.current_owner_count_for_test(), 1);
+        assert_eq!(
+            table.close_all(RequestResourceTermination::RequestFailed),
+            1
+        );
+        assert_eq!(
+            table.release(&handle),
+            Ok(RequestResourceRelease::AlreadyReleased)
+        );
+        assert_eq!(
+            table.current_owner_count_for_test(),
+            1,
+            "request close cannot release the lease under a running terminator"
+        );
+
+        unblock.send(()).unwrap();
+        assert_eq!(
+            finishing.join().unwrap(),
+            Ok(RequestResourceFinish::Finished)
+        );
+        assert_eq!(termination_count.load(Ordering::SeqCst), 1);
+        assert_eq!(table.current_owner_count_for_test(), 0);
         assert_eq!(freeze.freeze().resource.current, 0);
     }
 

@@ -1,14 +1,14 @@
-// These integration tests keep the request boundary on the Phase 1 synchronous,
-// immediate-scalar surface. Disabled value shapes and pending effects are covered
-// as typed compiler-containment negatives below.
+// These integration tests keep the request boundary on verifier-backed typed
+// values and exercise both immediate completion and the production pending lane.
 
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
     },
+    time::{Duration, Instant},
 };
 
 use skiff_artifact_identity::{gateway_entry_identity, ValidatedBytecodeArtifact};
@@ -26,29 +26,35 @@ use skiff_artifact_model::{
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
+    authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
     compile_package, BytecodeEmissionError, CompilerPlatformSources, ManifestOwner,
     ManifestProvenance, PackageCompileError, PackageCompileInput, PackageCompileOutput,
     PackageSourceInput, Phase1UnsupportedCapability, PublicationManifest, PublicationSourceGraph,
     SourceTree, SourceTreeFile,
 };
+use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_bytecode_verifier::VerificationLimits;
-use skiff_runtime_capability_context::CancellationToken;
+use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
 use skiff_runtime_linker::{
     link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage,
     DeploymentExecutionLimits, LinkLimits,
 };
 use skiff_runtime_loader::{
-    DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
+    DeploymentBytecodeContentResolver, DeploymentBytecodeLoader,
+    FilesystemDeploymentBytecodeContentResolver, HydratedDeploymentBytecode,
 };
 use skiff_runtime_model::{
     bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
     request_heap::RequestHeapLimits,
 };
+use skiff_runtime_request::execution_budget::{
+    AdmittedRequestDeadline, ExecutionBudgetPolicy, TrustedMonotonicClock,
+};
 use skiff_runtime_request::{
-    drive_runtime_bytecode_request, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
-    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
-    DrivenBytecodeRequestOwnerInventory, ExecutionBudget,
-    GatewayAdapterArg as RequestGatewayAdapterArg,
+    drive_runtime_bytecode_request, drive_runtime_bytecode_request_controlled, BinaryHttpRequest,
+    BinaryHttpRequestMetadata, BoundaryResponse, BytecodeRequestExecutionHandles,
+    BytecodeRequestExecutionInput, ControlledBytecodeDrive, DrivenBytecodeRequestOwnerInventory,
+    ExecutionBudget, GatewayAdapterArg as RequestGatewayAdapterArg,
     GatewayAdapterSource as RequestGatewayAdapterSource, HttpAdapter, HttpAdapterCallable,
     HttpAdapterKind, RequestEnvelope, RequestError, RequestExecutionOwnerInventorySnapshot,
     ResponseEnd, ResponseEvent,
@@ -410,6 +416,164 @@ function nullBody(value: null) -> null {
 fn scalar_gateway_fixture() -> &'static ScalarGatewayFixture {
     static FIXTURE: OnceLock<ScalarGatewayFixture> = OnceLock::new();
     FIXTURE.get_or_init(ScalarGatewayFixture::build)
+}
+
+struct PendingSleepFixture {
+    image: Arc<DeploymentExecutionImage>,
+    selector: IngressSelector,
+    gateway_identity: GatewayEntryIdentity,
+}
+
+static NEXT_SLEEP_TEST_TEMP: AtomicU64 = AtomicU64::new(0);
+
+impl PendingSleepFixture {
+    fn build() -> Self {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("request crate has a repository root")
+            .to_path_buf();
+        let fixture_root = repository_root
+            .join("runtime/host/src/host/request_entry/phase_4_proof_support/fixtures/vcp4-sleep");
+        let artifact_root = std::env::temp_dir().join(format!(
+            "skiff-request-p5-sleep-{}-{}-{}",
+            std::process::id(),
+            NEXT_SLEEP_TEST_TEMP.fetch_add(1, Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&artifact_root).unwrap();
+        let platform_sources = CompilerPlatformSources::new(&repository_root)
+            .expect("open repository platform sources");
+        seed_official_std_package(&platform_sources, &artifact_root)
+            .expect("seed canonical std into the same fixture store");
+        let receipt = build_authoring_object(
+            &platform_sources,
+            AuthoringObject::Package,
+            &fixture_root,
+            &artifact_root,
+            "skiff-test",
+            true,
+        )
+        .unwrap_or_else(|error| panic!("production authoring accepts sleep fixture: {error}"));
+        let deployment_reference =
+            serde_json::from_value::<skiff_artifact_model::ServiceDeploymentRef>(
+                receipt
+                    .pointer("/serviceDeploymentReceipt/deployment")
+                    .cloned()
+                    .expect("authoring receipt carries deployment"),
+            )
+            .expect("authoring deployment receipt remains typed");
+        let store = CanonicalArtifactStore::open(&artifact_root).unwrap();
+        let deployment = store
+            .read_service_deployment(&deployment_reference)
+            .expect("read canonical sleep deployment");
+        let ingress = deployment
+            .ingress
+            .iter()
+            .find(|binding| {
+                binding.selector.protocol == IngressProtocol::Http
+                    && binding.selector.method.as_deref() == Some("POST")
+                    && binding.selector.path == "/phase-4/vcp"
+            })
+            .expect("sleep fixture publishes its exact HTTP ingress");
+        let selector = ingress.selector.clone();
+        let gateway_identity = deployment
+            .gateway_entries
+            .get(&ingress.gateway_entry_key)
+            .expect("sleep ingress pins a gateway entry")
+            .gateway_entry_identity
+            .clone();
+        let resolver = FilesystemDeploymentBytecodeContentResolver::open(&artifact_root)
+            .expect("open canonical sleep fixture resolver");
+        let hydrated = DeploymentBytecodeLoader::new(&resolver)
+            .load(&deployment_reference)
+            .expect("load canonical sleep fixture closure");
+        let image = execution_image(hydrated);
+        std::fs::remove_dir_all(&artifact_root).unwrap();
+        Self {
+            image,
+            selector,
+            gateway_identity,
+        }
+    }
+
+    fn target(&self) -> DeploymentExecutionEntry {
+        self.image
+            .http_gateway_entry(&self.selector, &self.gateway_identity)
+            .unwrap()
+    }
+}
+
+fn pending_sleep_fixture() -> &'static PendingSleepFixture {
+    static FIXTURE: OnceLock<PendingSleepFixture> = OnceLock::new();
+    FIXTURE.get_or_init(PendingSleepFixture::build)
+}
+
+struct TestMonotonicClock(Mutex<Instant>);
+
+impl TestMonotonicClock {
+    fn new(now: Instant) -> Self {
+        Self(Mutex::new(now))
+    }
+
+    fn set(&self, now: Instant) {
+        *self.0.lock().unwrap() = now;
+    }
+}
+
+impl TrustedMonotonicClock for TestMonotonicClock {
+    fn now(&self) -> Instant {
+        *self.0.lock().unwrap()
+    }
+}
+
+fn pending_sleep_input(
+    cancellation: CancellationToken,
+    execution_budget: Arc<ExecutionBudget>,
+) -> BytecodeRequestExecutionInput {
+    let fixture = pending_sleep_fixture();
+    let mut request = request_envelope();
+    request.request_id = "phase-5-pending-sleep-race".to_string();
+    request.service_id = Some("test.skiff/bytecode-vm-phase-4".to_string());
+    request.ingress_selector = Some(fixture.selector.clone());
+    request.binary_http = Some(BinaryHttpRequest {
+        metadata: BinaryHttpRequestMetadata {
+            method: "POST".to_string(),
+            url: "https://example.test/phase-4/vcp".to_string(),
+            path: "/phase-4/vcp".to_string(),
+            query: Vec::new(),
+            headers: Vec::new(),
+        },
+        body: b"1".to_vec(),
+    });
+    request.http_adapter = Some(HttpAdapter {
+        kind: HttpAdapterKind::TypedJson,
+        handler: HttpAdapterCallable::PackageFunction {
+            package_id: "test.skiff/bytecode-vm-phase-4".to_string(),
+            symbol_path: "main.run".to_string(),
+        },
+        guard: None,
+        pre: None,
+        adapter_args: vec![RequestGatewayAdapterArg {
+            param: "seed".to_string(),
+            source: RequestGatewayAdapterSource::HttpBody,
+        }],
+    });
+    BytecodeRequestExecutionInput {
+        target: fixture.target(),
+        request,
+        observer: noop_observer(),
+        cancellation,
+        execution_budget,
+        handles: BytecodeRequestExecutionHandles {
+            request_heap_limits: RequestHeapLimits::default(),
+        },
+        http_client: None,
+        heap: None,
+    }
 }
 
 struct TestResolver {
@@ -897,23 +1061,82 @@ mod tests {
         assert_eq!(serde_json::from_slice::<f64>(&payload).unwrap(), 2.0);
     }
 
-    #[test]
-    fn sleep_pending_effect_is_rejected_by_typed_compiler_containment() {
-        let error = compile_test_package_with_source(
-            "import std
-function run() -> number {
-  std.time.sleep(Duration.milliseconds(1))
-  return 1.0
-}
-",
-        )
-        .unwrap_err();
+    #[tokio::test(flavor = "current_thread")]
+    async fn phase_5_first_poll_queued_sleep_wake_loses_to_cancel_before_resume() {
+        let cancellation = CancellationToken::new();
+        let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(None));
+        let drive = drive_runtime_bytecode_request_controlled(pending_sleep_input(
+            cancellation.clone(),
+            execution_budget,
+        ));
+        let parked = match drive {
+            ControlledBytecodeDrive::Parked(parked) => parked,
+            ControlledBytecodeDrive::Complete(driven) => panic!(
+                "typed sleep must park after its real future first-polls Pending: {:?}",
+                driven.result
+            ),
+        };
 
-        assert_phase_1_compiler_rejection(
-            error,
-            Phase1UnsupportedCapability::PendingEffect,
-            "callable pending effects",
-        );
+        let completion = parked.pending_completion();
+        assert!(completion.complete());
+        assert!(!completion.complete(), "queued wake has one host winner");
+        cancellation.cancel();
+        let ControlledBytecodeDrive::Complete(driven) = parked.resume() else {
+            panic!("cancelled queued sleep wake must reach one terminal")
+        };
+
+        assert!(matches!(driven.result, Err(RequestError::Cancelled)));
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn phase_5_first_poll_queued_sleep_wake_loses_to_due_deadline_before_resume() {
+        let start = Instant::now();
+        let deadline_at = start.checked_add(Duration::from_secs(30)).unwrap();
+        let clock = Arc::new(TestMonotonicClock::new(start));
+        let execution_budget = Arc::new(ExecutionBudget::new(
+            ExecutionBudgetPolicy::runtime_default(),
+            Some(AdmittedRequestDeadline::new(deadline_at)),
+            clock.clone(),
+        ));
+        let drive = drive_runtime_bytecode_request_controlled(pending_sleep_input(
+            CancellationToken::new(),
+            execution_budget,
+        ));
+        let parked = match drive {
+            ControlledBytecodeDrive::Parked(parked) => parked,
+            ControlledBytecodeDrive::Complete(driven) => panic!(
+                "typed sleep must park after its real future first-polls Pending: {:?}",
+                driven.result
+            ),
+        };
+
+        let completion = parked.pending_completion();
+        assert!(completion.complete());
+        assert!(!completion.complete(), "queued wake has one host winner");
+        clock.set(deadline_at.checked_add(Duration::from_millis(1)).unwrap());
+        let ControlledBytecodeDrive::Complete(driven) = parked.resume() else {
+            panic!("due-deadline queued sleep wake must reach one terminal")
+        };
+
+        assert!(matches!(
+            driven.result,
+            Err(RequestError::ExecutionBudgetExceeded {
+                reason: ExecutionBudgetReason::DeadlineExceeded,
+                ..
+            })
+        ));
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
     }
 
     #[test]
