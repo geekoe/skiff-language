@@ -89,23 +89,118 @@ impl From<EnterChildError> for BytecodeSchedulerError {
     }
 }
 
+/// Exact terminal escrow held behind the scheduler's sealed handoff carrier.
+///
+/// The probe variant exists only in this module's unit-test build so the
+/// scheduler's retry and root-retention mechanics can be tested without
+/// exposing a second production mint for [`VmTerminalEscrow`].
+enum BytecodeTerminalEscrow {
+    Exact(VmTerminalEscrow),
+    #[cfg(test)]
+    Probe(BytecodeTerminalEscrowProbe),
+}
+
+impl BytecodeTerminalEscrow {
+    const fn exact(escrow: VmTerminalEscrow) -> Self {
+        Self::Exact(escrow)
+    }
+
+    const fn as_exact(&self) -> Option<&VmTerminalEscrow> {
+        match self {
+            Self::Exact(escrow) => Some(escrow),
+            #[cfg(test)]
+            Self::Probe(_) => None,
+        }
+    }
+
+    fn root_count(&self) -> usize {
+        match self {
+            Self::Exact(escrow) => escrow.root_count(),
+            #[cfg(test)]
+            Self::Probe(escrow) => escrow.root_count(),
+        }
+    }
+
+    fn release_all(&mut self, heap: &mut dyn VmHeap) -> Result<(), VmError> {
+        match self {
+            Self::Exact(escrow) => escrow.release_all(heap),
+            #[cfg(test)]
+            Self::Probe(escrow) => escrow.release_all(heap),
+        }
+    }
+}
+
+impl VmRootSource for BytecodeTerminalEscrow {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        match self {
+            Self::Exact(escrow) => escrow.visit_roots(visitor),
+            #[cfg(test)]
+            Self::Probe(escrow) => escrow.visit_roots(visitor),
+        }
+    }
+}
+
+#[cfg(test)]
+struct BytecodeTerminalEscrowProbe {
+    root: Option<skiff_runtime_model::vm_value::ValueSlot>,
+}
+
+#[cfg(test)]
+impl BytecodeTerminalEscrowProbe {
+    fn root_count(&self) -> usize {
+        usize::from(self.root.is_some())
+    }
+
+    fn release_all(&mut self, heap: &mut dyn VmHeap) -> Result<(), VmError> {
+        let Some(root) = self.root.as_ref() else {
+            return Ok(());
+        };
+        heap.release_snapshot(root)?;
+        self.root = None;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl VmRootSource for BytecodeTerminalEscrowProbe {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        if let Some(root) = &self.root {
+            visitor.visit_root(root)?;
+        }
+        Ok(())
+    }
+}
+
 /// Sealed exact owner for an unrecoverable terminal scheduler handoff.
 ///
-/// The only constructor consumes a VM-owned failure carrier and converts it
-/// into terminal escrow. Callers cannot manufacture an ownerless terminal
-/// port failure from an ordinary diagnostic.
+/// The only production constructor consumes a VM-owned stream-release failure
+/// and converts it into exact terminal escrow while retaining the original
+/// cleanup diagnostic. Callers cannot manufacture an ownerless terminal port
+/// failure from an ordinary diagnostic.
 pub struct BytecodeTerminalOwner {
-    escrow: VmTerminalEscrow,
+    escrow: BytecodeTerminalEscrow,
+    cleanup_error: VmError,
 }
 
 impl BytecodeTerminalOwner {
-    fn from_stream_item_release(failure: StreamItemReleaseError) -> (BytecodeSchedulerError, Self) {
-        let (escrow, error) = failure.into_terminal_escrow();
-        (BytecodeSchedulerError::Vm(error), Self { escrow })
+    fn from_stream_item_release(failure: StreamItemReleaseError) -> Self {
+        let (escrow, cleanup_error) = failure.into_terminal_escrow();
+        Self {
+            escrow: BytecodeTerminalEscrow::exact(escrow),
+            cleanup_error,
+        }
     }
 
-    fn into_escrow(self) -> VmTerminalEscrow {
-        self.escrow
+    fn cleanup_reason(&self) -> BytecodeSchedulerError {
+        // StreamItemReleaseError has private fields and is minted only by
+        // StreamItem::release from LifecycleError::{Heap, PlanUnavailable}.
+        // Those map exclusively to rootless VmError diagnostics, so cloning
+        // this secondary diagnostic cannot duplicate ownership authority.
+        BytecodeSchedulerError::Vm(self.cleanup_error.clone())
+    }
+
+    fn into_parts(self) -> (BytecodeTerminalEscrow, VmError) {
+        (self.escrow, self.cleanup_error)
     }
 }
 
@@ -114,12 +209,15 @@ impl fmt::Debug for BytecodeTerminalOwner {
         formatter
             .debug_struct("BytecodeTerminalOwner")
             .field("root_count", &self.escrow.root_count())
+            .field("cleanup_error", &self.cleanup_error)
             .finish_non_exhaustive()
     }
 }
 
 impl VmRootSource for BytecodeTerminalOwner {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        // The cleanup diagnostic comes only from a sealed stream-item release
+        // attempt and is therefore rootless; the escrow is the sole authority.
         self.escrow.visit_roots(visitor)
     }
 }
@@ -135,7 +233,8 @@ impl BytecodeTerminalFailure {
     /// Converts the still-unique failed stream item directly into exact
     /// terminal escrow; no raw item, tag or cleanup-kind projection escapes.
     pub fn stream_item_release(failure: StreamItemReleaseError) -> Self {
-        let (reason, owner) = BytecodeTerminalOwner::from_stream_item_release(failure);
+        let owner = BytecodeTerminalOwner::from_stream_item_release(failure);
+        let reason = owner.cleanup_reason();
         Self { reason, owner }
     }
 
@@ -203,9 +302,37 @@ impl<I, R> BytecodePortFailure<I, R> {
     /// Constructs the sole terminal port failure by consuming the sealed VM
     /// carrier that still owns the rejected item and continuation.
     pub fn terminal_stream_release(failure: StreamItemReleaseError) -> Self {
-        let (reason, owner) = BytecodeTerminalOwner::from_stream_item_release(failure);
+        let owner = BytecodeTerminalOwner::from_stream_item_release(failure);
+        Self::from_terminal_stream_release_owner(owner)
+    }
+
+    /// Preserves an already-selected primary failure while consuming the
+    /// sealed VM carrier for a secondary stream-item cleanup failure.
+    ///
+    /// The explicit reason cannot create a terminal handoff on its own: the
+    /// caller must still supply the unique [`StreamItemReleaseError`] owner.
+    pub fn terminal_stream_release_with_primary(
+        primary: BytecodeSchedulerError,
+        failure: StreamItemReleaseError,
+    ) -> Self {
+        let owner = BytecodeTerminalOwner::from_stream_item_release(failure);
+        Self::from_terminal_stream_release_owner_with_primary(primary, owner)
+    }
+
+    fn from_terminal_stream_release_owner(owner: BytecodeTerminalOwner) -> Self {
+        let reason = owner.cleanup_reason();
         Self {
             reason,
+            owner: BytecodePortFailureOwner::Terminal(owner),
+        }
+    }
+
+    fn from_terminal_stream_release_owner_with_primary(
+        primary: BytecodeSchedulerError,
+        owner: BytecodeTerminalOwner,
+    ) -> Self {
+        Self {
+            reason: primary,
             owner: BytecodePortFailureOwner::Terminal(owner),
         }
     }
@@ -649,13 +776,23 @@ enum BytecodeSchedulerFailureOwnerKind<U: BytecodeUnit> {
 pub struct BytecodeSchedulerFailureOwner<U: BytecodeUnit> {
     #[allow(dead_code)] // The carrier intentionally exposes no owner projection.
     kind: BytecodeSchedulerFailureOwnerKind<U>,
-    terminal_escrow: Option<VmTerminalEscrow>,
+    terminal_escrow: Option<BytecodeTerminalEscrow>,
+    terminal_cleanup_error: Option<VmError>,
 }
 
 impl<U: BytecodeUnit> BytecodeSchedulerFailureOwner<U> {
     /// Exact terminal owners captured while normalizing a VM handoff failure.
     pub const fn terminal_escrow(&self) -> Option<&VmTerminalEscrow> {
-        self.terminal_escrow.as_ref()
+        match self.terminal_escrow.as_ref() {
+            Some(escrow) => escrow.as_exact(),
+            None => None,
+        }
+    }
+
+    /// Original rootless diagnostic from the sealed stream-item cleanup
+    /// attempt. It remains stable even after the exact escrow releases.
+    pub const fn terminal_cleanup_error(&self) -> Option<&VmError> {
+        self.terminal_cleanup_error.as_ref()
     }
 
     /// Releases the exact terminal owner suffix monotonically.
@@ -667,7 +804,16 @@ impl<U: BytecodeUnit> BytecodeSchedulerFailureOwner<U> {
             return Ok(());
         };
         escrow.release_all(heap)?;
+        // Cleanup completed, but its secondary diagnostic remains available
+        // for deterministic reporting alongside the unchanged primary reason.
         self.terminal_escrow = None;
+        Ok(())
+    }
+
+    fn visit_terminal_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        if let Some(escrow) = &self.terminal_escrow {
+            escrow.visit_roots(visitor)?;
+        }
         Ok(())
     }
 }
@@ -681,8 +827,9 @@ impl<U: BytecodeUnit> fmt::Debug for BytecodeSchedulerFailureOwner<U> {
                 &self
                     .terminal_escrow
                     .as_ref()
-                    .map_or(0, VmTerminalEscrow::root_count),
+                    .map_or(0, BytecodeTerminalEscrow::root_count),
             )
+            .field("terminal_cleanup_error", &self.terminal_cleanup_error)
             .finish_non_exhaustive()
     }
 }
@@ -737,10 +884,9 @@ impl VmRootSource for BytecodeSchedulerFailureOwner<VmFiber> {
                 guard.visit_roots(visitor)?;
             }
         }
-        if let Some(escrow) = &self.terminal_escrow {
-            escrow.visit_roots(visitor)?;
-        }
-        Ok(())
+        // The cleanup diagnostic is rootless by construction: it can only be
+        // captured together with a sealed StreamItemReleaseError owner.
+        self.visit_terminal_roots(visitor)
     }
 }
 
@@ -758,6 +904,7 @@ impl<U: BytecodeUnit> BytecodeSchedulerFailure<U> {
             owner: BytecodeSchedulerFailureOwner {
                 kind,
                 terminal_escrow: None,
+                terminal_cleanup_error: None,
             },
             reason,
         }
@@ -768,10 +915,12 @@ impl<U: BytecodeUnit> BytecodeSchedulerFailure<U> {
         kind: BytecodeSchedulerFailureOwnerKind<U>,
         owner: BytecodeTerminalOwner,
     ) -> Self {
+        let (terminal_escrow, terminal_cleanup_error) = owner.into_parts();
         Self {
             owner: BytecodeSchedulerFailureOwner {
                 kind,
-                terminal_escrow: Some(owner.into_escrow()),
+                terminal_escrow: Some(terminal_escrow),
+                terminal_cleanup_error: Some(terminal_cleanup_error),
             },
             reason,
         }
@@ -1382,7 +1531,7 @@ mod tests {
     };
 
     use skiff_runtime_model::{
-        vm_heap::{VmHeap, VmHeapError},
+        vm_heap::{VmHeap, VmHeapError, VmHeapOperation},
         vm_root::{VmRootSource, VmRootVisitor},
         vm_value::ValueSlot,
     };
@@ -1431,6 +1580,86 @@ mod tests {
         fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
             Ok(())
         }
+    }
+
+    struct TerminalReleaseProbeHeap {
+        fail_next_release: bool,
+        release_attempts: usize,
+        release_successes: usize,
+        live_owners: usize,
+    }
+
+    impl TerminalReleaseProbeHeap {
+        fn fail_once() -> Self {
+            Self {
+                fail_next_release: true,
+                release_attempts: 0,
+                release_successes: 0,
+                live_owners: 1,
+            }
+        }
+    }
+
+    impl VmHeap for TerminalReleaseProbeHeap {
+        fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+
+        fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn release_snapshot(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            self.release_attempts += 1;
+            if std::mem::take(&mut self.fail_next_release) {
+                return Err(VmHeapError::HeapOperationFailed {
+                    operation: VmHeapOperation::ReleaseSnapshot,
+                    message: "injected retry release failure".to_string(),
+                });
+            }
+            assert_eq!(self.live_owners, 1, "the exact owner releases once");
+            self.live_owners = 0;
+            self.release_successes += 1;
+            Ok(())
+        }
+
+        fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            unreachable!("the terminal stream probe owns one snapshot")
+        }
+    }
+
+    #[derive(Default)]
+    struct TerminalRootCollector(Vec<ValueSlot>);
+
+    impl VmRootVisitor for TerminalRootCollector {
+        fn visit_root(&mut self, root: &ValueSlot) -> Result<(), VmHeapError> {
+            self.0.push(*root);
+            Ok(())
+        }
+    }
+
+    fn terminal_owner_probe(root: ValueSlot, cleanup_marker: &str) -> BytecodeTerminalOwner {
+        BytecodeTerminalOwner {
+            escrow: BytecodeTerminalEscrow::Probe(BytecodeTerminalEscrowProbe { root: Some(root) }),
+            cleanup_error: VmError::Heap(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseSnapshot,
+                message: cleanup_marker.to_string(),
+            }),
+        }
+    }
+
+    fn assert_cleanup_marker(error: Option<&VmError>, expected: &str) {
+        assert!(matches!(
+            error,
+            Some(VmError::Heap(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseSnapshot,
+                message,
+            })) if message == expected
+        ));
     }
 
     struct NoopBudget;
@@ -1665,6 +1894,122 @@ mod tests {
             self.resumed = Some((token, outcome));
             Ok(())
         }
+    }
+
+    #[test]
+    fn terminal_stream_release_preserves_primary_cleanup_and_exact_owner_through_retry() {
+        const PRIMARY: &str = "decode primary marker";
+        const CLEANUP: &str = "release cleanup marker";
+        let root = ValueSlot::integer(91);
+        let port_failure: BytecodePortFailure<usize, usize> =
+            BytecodePortFailure::from_terminal_stream_release_owner_with_primary(
+                BytecodeSchedulerError::Port(PRIMARY.to_string()),
+                terminal_owner_probe(root, CLEANUP),
+            );
+
+        assert!(matches!(
+            port_failure.reason(),
+            BytecodeSchedulerError::Port(message) if message == PRIMARY
+        ));
+        let mut roots = TerminalRootCollector::default();
+        port_failure.reason().visit_roots(&mut roots).unwrap();
+        let BytecodePortFailureOwner::Terminal(terminal_owner) = port_failure.owner() else {
+            panic!("dual stream failure must retain the sealed terminal owner")
+        };
+        terminal_owner.visit_roots(&mut roots).unwrap();
+        assert!(
+            roots.0 == [root],
+            "primary plus terminal owner enumerate the exact root once"
+        );
+
+        let scheduler = BytecodeScheduler::new(
+            TestUnit {
+                control: Some(TestControl::Complete(0)),
+                resumed: None,
+                finish_after_resume: None,
+            },
+            BytecodeSchedulerPorts::default(),
+            child_registration(),
+        );
+        let failure = scheduler.with_stream_port_failure(port_failure);
+        assert!(matches!(
+            failure.reason(),
+            BytecodeSchedulerError::Port(message) if message == PRIMARY
+        ));
+        let (reason, mut owner) = failure.into_parts();
+        assert!(matches!(
+            reason,
+            BytecodeSchedulerError::Port(message) if message == PRIMARY
+        ));
+        assert_cleanup_marker(owner.terminal_cleanup_error(), CLEANUP);
+
+        let mut retained_roots = TerminalRootCollector::default();
+        owner.visit_terminal_roots(&mut retained_roots).unwrap();
+        assert!(retained_roots.0 == [root]);
+
+        let mut heap = TerminalReleaseProbeHeap::fail_once();
+        assert!(matches!(
+            owner.release_terminal_escrow(&mut heap),
+            Err(VmError::Heap(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseSnapshot,
+                message,
+            })) if message == "injected retry release failure"
+        ));
+        assert_eq!(heap.release_attempts, 1);
+        assert_eq!(heap.release_successes, 0);
+        assert_eq!(heap.live_owners, 1);
+        assert_cleanup_marker(owner.terminal_cleanup_error(), CLEANUP);
+        let mut retry_roots = TerminalRootCollector::default();
+        owner.visit_terminal_roots(&mut retry_roots).unwrap();
+        assert!(retry_roots.0 == [root]);
+
+        owner.release_terminal_escrow(&mut heap).unwrap();
+        assert_eq!(heap.release_attempts, 2);
+        assert_eq!(heap.release_successes, 1);
+        assert_eq!(heap.live_owners, 0);
+        assert_cleanup_marker(owner.terminal_cleanup_error(), CLEANUP);
+        let mut released_roots = TerminalRootCollector::default();
+        owner.visit_terminal_roots(&mut released_roots).unwrap();
+        assert!(released_roots.0.is_empty());
+
+        owner.release_terminal_escrow(&mut heap).unwrap();
+        assert_eq!(
+            (
+                heap.release_attempts,
+                heap.release_successes,
+                heap.live_owners
+            ),
+            (2, 1, 0),
+            "a cleared terminal escrow never releases the owner twice"
+        );
+    }
+
+    #[test]
+    fn terminal_stream_release_without_primary_uses_rootless_cleanup_reason() {
+        const CLEANUP: &str = "prepared item release marker";
+        let failure: BytecodePortFailure<usize, usize> =
+            BytecodePortFailure::from_terminal_stream_release_owner(terminal_owner_probe(
+                ValueSlot::integer(92),
+                CLEANUP,
+            ));
+
+        assert!(matches!(
+            failure.reason(),
+            BytecodeSchedulerError::Vm(VmError::Heap(
+                VmHeapError::HeapOperationFailed {
+                    operation: VmHeapOperation::ReleaseSnapshot,
+                    message,
+                }
+            )) if message == CLEANUP
+        ));
+        let (_, owner) = failure.into_parts();
+        let BytecodePortFailureOwner::Terminal(owner) = owner else {
+            panic!("prepared release failure must retain its sealed terminal owner")
+        };
+        assert_cleanup_marker(Some(&owner.cleanup_error), CLEANUP);
+        let mut roots = TerminalRootCollector::default();
+        owner.visit_roots(&mut roots).unwrap();
+        assert!(roots.0 == [ValueSlot::integer(92)]);
     }
 
     struct TestStreamSupervisor {
