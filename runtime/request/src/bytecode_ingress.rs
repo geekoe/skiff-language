@@ -7,8 +7,8 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    http_boundary::{canonical_http_boundary_symbol, HTTP_REQUEST_TYPE},
-    HostEffectExecutorIdentity, Opcode, TypeRefIr,
+    http_boundary::{canonical_http_boundary_symbol, HTTP_BOUNDARY_PACKAGE_ID, HTTP_REQUEST_TYPE},
+    HostEffectExecutorIdentity, Opcode, PackageRefIr, PrivilegedAffineCompositeIdentity, TypeRefIr,
 };
 use skiff_runtime_boundary::http::HttpBoundaryNameValue;
 use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
@@ -24,10 +24,15 @@ use skiff_runtime_model::{
     error::RuntimeErrorPayload,
     request_heap::RequestHeapLimits,
     service_error::{ErrorCorrelation, RequestException},
-    vm_heap::{VmContainerShape, VmHeap, VmHeapError, VmRecordField},
+    vm_heap::{VmContainerShape, VmHeap, VmHeapError, VmHeapOperation, VmRecordField},
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
+
+const HTTP_HEADER_TYPE: &str = "std.http.HttpHeader";
+const HTTP_CLIENT_REQUEST_TYPE: &str = "std.http.HttpClientRequest";
+const HTTP_CLIENT_RESPONSE_TYPE: &str = "std.http.HttpClientResponse";
+const HTTP_CLIENT_STREAM_HANDLE_TYPE: &str = "std.http.HttpClientStreamHandle";
 use skiff_runtime_scheduler::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
     BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
@@ -378,10 +383,7 @@ pub fn drive_runtime_bytecode_request_controlled(
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HttpResultLayout {
     root: TypeIndex,
-    headers: TypeIndex,
     header: TypeIndex,
-    header_name: TypeIndex,
-    header_value: TypeIndex,
     body: TypeIndex,
 }
 
@@ -1117,6 +1119,147 @@ pub(super) fn require_exact_slot_type(
     Ok(())
 }
 
+fn linked_type_ref<'a>(
+    image: &'a DeploymentExecutionImage,
+    ty: TypeIndex,
+    label: &str,
+) -> Result<&'a TypeRefIr, BytecodeSchedulerError> {
+    image
+        .types()
+        .get(ty.get() as usize)
+        .filter(|entry| entry.index() == ty)
+        .map(|entry| entry.type_ref())
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "{label} references missing linked type {}",
+                ty.get()
+            ))
+        })
+}
+
+pub(super) fn require_exact_slot_type_ref(
+    image: &DeploymentExecutionImage,
+    slot: &ValueSlot,
+    expected: TypeIndex,
+    label: &str,
+) -> Result<TypeIndex, BytecodeSchedulerError> {
+    let raw_actual = slot.compact_type_tag().get();
+    if raw_actual == 0 {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "{label} has no linked concrete type/ABI tag"
+        )));
+    }
+    let actual = TypeIndex::new(raw_actual);
+    let expected_ref = linked_type_ref(image, expected, label)?;
+    let actual_ref = linked_type_ref(image, actual, label)?;
+    if actual_ref != expected_ref {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "{label} linked type/ABI differs from the exact compiler-owned carrier"
+        )));
+    }
+    Ok(actual)
+}
+
+pub(super) fn validate_record_carrier_fields(
+    heap: &dyn VmHeap,
+    record: &ValueSlot,
+    expected: &[&str],
+    label: &str,
+) -> Result<(), BytecodeSchedulerError> {
+    let container = heap
+        .container_elements(record)
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    if container.shape != VmContainerShape::Record
+        || container.elements.len() != expected.len()
+        || !container
+            .elements
+            .iter()
+            .zip(expected)
+            .all(|(element, expected)| element.field.as_deref() == Some(*expected))
+    {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "{label} does not carry its exact compiler-owned record fields"
+        )));
+    }
+    Ok(())
+}
+
+fn exact_std_http_symbol_abi<'a>(
+    ty: &'a TypeRefIr,
+    expected_path: &str,
+    label: &str,
+) -> Result<&'a str, BytecodeSchedulerError> {
+    let TypeRefIr::PackageSymbol { symbol } = ty else {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "{label} is not exact canonical {expected_path}"
+        )));
+    };
+    if !matches!(
+        &symbol.package,
+        PackageRefIr::PackageId { package_id } if package_id == HTTP_BOUNDARY_PACKAGE_ID
+    ) || symbol.symbol_path != expected_path
+    {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "{label} is not exact canonical {expected_path}"
+        )));
+    }
+    symbol
+        .abi_expectation
+        .as_deref()
+        .filter(|abi| !abi.is_empty())
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "{label} canonical {expected_path} type has no exact ABI"
+            ))
+        })
+}
+
+fn require_std_http_symbol_abi<'a>(
+    image: &'a DeploymentExecutionImage,
+    ty: TypeIndex,
+    expected_path: &str,
+    label: &str,
+) -> Result<&'a str, BytecodeSchedulerError> {
+    exact_std_http_symbol_abi(linked_type_ref(image, ty, label)?, expected_path, label)
+}
+
+fn require_same_http_abi(
+    actual: &str,
+    expected: &str,
+    label: &str,
+) -> Result<(), BytecodeSchedulerError> {
+    if actual != expected {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "{label} ABI differs from its canonical HTTP root ABI"
+        )));
+    }
+    Ok(())
+}
+
+fn exact_http_header_element_type(
+    image: &DeploymentExecutionImage,
+    array_type: TypeIndex,
+    expected_abi: &str,
+    label: &str,
+) -> Result<TypeIndex, BytecodeSchedulerError> {
+    let header_type = array_element_type(image, array_type)?;
+    let array_ref = linked_type_ref(image, array_type, label)?;
+    let header_ref = linked_type_ref(image, header_type, label)?;
+    if !matches!(
+        array_ref,
+        TypeRefIr::Builtin { name, args }
+            if name == "Array"
+                && matches!(args.as_slice(), [argument] if argument == header_ref)
+    ) {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "{label} is not an exact linked Array carrier"
+        )));
+    }
+    let header_abi = require_std_http_symbol_abi(image, header_type, HTTP_HEADER_TYPE, label)?;
+    require_same_http_abi(header_abi, expected_abi, label)?;
+    Ok(header_type)
+}
+
 pub(super) fn exact_shape(
     image: &DeploymentExecutionImage,
     ty: TypeIndex,
@@ -1302,16 +1445,32 @@ fn decode_http_request(
 ) -> Result<BytecodeHttpRequest, BytecodeSchedulerError> {
     validate_native_arity(signature, 1, 1)?;
     let request_type = signature.parameter_types()[0];
-    let shape = exact_shape(image, request_type)?;
-    validate_shape_fields(shape, &["body", "headers", "method", "timeoutMs", "url"])?;
+    let request_abi = require_std_http_symbol_abi(
+        image,
+        request_type,
+        HTTP_CLIENT_REQUEST_TYPE,
+        "typed HTTP request signature",
+    )?;
+    if !matches!(
+        signature.parameter_plans(),
+        [LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        }]
+    ) {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP request signature has no exact snapshot lifecycle plan".to_string(),
+        ));
+    }
     let request = arguments.first().ok_or_else(|| {
         BytecodeSchedulerError::Port("typed HTTP invocation is missing its request".to_string())
     })?;
-    if request.compact_type_tag().get() != request_type.get() {
-        return Err(BytecodeSchedulerError::Port(
-            "typed HTTP request does not carry its verified concrete type".to_string(),
-        ));
-    }
+    require_exact_slot_type_ref(image, request, request_type, "typed HTTP request")?;
+    validate_record_carrier_fields(
+        heap,
+        request,
+        &["body", "headers", "method", "timeoutMs", "url"],
+        "typed HTTP request",
+    )?;
     let method = heap
         .record_field(request, "method")
         .and_then(|value| heap.string_value(&value))
@@ -1323,10 +1482,16 @@ fn decode_http_request(
     let headers_value = heap
         .record_field(request, "headers")
         .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-    let headers_type = shape_field_type(shape, "headers")?;
-    let header_type = array_element_type(image, headers_type)?;
-    let header_shape = exact_shape(image, header_type)?;
-    validate_shape_fields(header_shape, &["name", "value"])?;
+    let raw_header_type = headers_value.compact_type_tag().get();
+    if raw_header_type == 0 {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP headers have no linked element type/ABI tag".to_string(),
+        ));
+    }
+    let header_type = TypeIndex::new(raw_header_type);
+    let header_abi =
+        require_std_http_symbol_abi(image, header_type, HTTP_HEADER_TYPE, "typed HTTP headers")?;
+    require_same_http_abi(header_abi, request_abi, "typed HTTP headers")?;
     let header_count = heap
         .array_len(&headers_value)
         .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
@@ -1335,11 +1500,8 @@ fn decode_http_request(
         let header = heap
             .array_get(&headers_value, index)
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-        if header.compact_type_tag().get() != header_type.get() {
-            return Err(BytecodeSchedulerError::Port(
-                "typed HTTP header does not carry its verified concrete type".to_string(),
-            ));
-        }
+        require_exact_slot_type_ref(image, &header, header_type, "typed HTTP header")?;
+        validate_record_carrier_fields(heap, &header, &["name", "value"], "typed HTTP header")?;
         let name = heap
             .record_field(&header, "name")
             .and_then(|value| heap.string_value(&value))
@@ -1364,6 +1526,15 @@ fn decode_http_request(
             timeout_value
                 .as_integer()
                 .and_then(|value| u64::try_from(value).ok())
+                .or_else(|| {
+                    timeout_value.as_number().and_then(|value| {
+                        const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+                        (value.is_finite()
+                            && value.fract() == 0.0
+                            && (0.0..=MAX_SAFE_INTEGER).contains(&value))
+                        .then_some(value as u64)
+                    })
+                })
                 .ok_or_else(|| {
                     BytecodeSchedulerError::Port(
                         "typed HTTP timeoutMs is not a non-negative integer".to_string(),
@@ -1380,40 +1551,126 @@ fn decode_http_request(
     })
 }
 
+fn exact_http_result_shape<'a>(
+    image: &'a DeploymentExecutionImage,
+    signature: &LinkedNativeCallableSignature,
+    stream: bool,
+) -> Result<&'a LinkedShapeEntry, BytecodeSchedulerError> {
+    let [root] = signature.result_types() else {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP result has no exact linked type".to_string(),
+        ));
+    };
+    let [plan] = signature.result_plans() else {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP result has no exact lifecycle plan".to_string(),
+        ));
+    };
+    if stream {
+        let LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape { shape },
+        } = plan
+        else {
+            return Err(BytecodeSchedulerError::Port(
+                "typed HTTP stream result has no exact recursive lifecycle shape".to_string(),
+            ));
+        };
+        let linked_shape = image
+            .shapes()
+            .get(shape.get() as usize)
+            .filter(|entry| entry.index() == *shape)
+            .ok_or_else(|| {
+                BytecodeSchedulerError::Port(
+                    "typed HTTP stream result references a missing lifecycle shape".to_string(),
+                )
+            })?;
+        if linked_shape.plan() != plan
+            || linked_shape.privileged_affine_composite()
+                != Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
+            || linked_type_ref(
+                image,
+                linked_shape.nominal_type(),
+                "typed HTTP stream result",
+            )? != linked_type_ref(image, *root, "typed HTTP stream result")?
+        {
+            return Err(BytecodeSchedulerError::Port(
+                "typed HTTP stream result lifecycle shape differs from its exact linked signature"
+                    .to_string(),
+            ));
+        }
+        return Ok(linked_shape);
+    }
+
+    if !matches!(
+        plan,
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        }
+    ) {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP response result has no exact snapshot lifecycle plan".to_string(),
+        ));
+    }
+    let root_ref = linked_type_ref(image, *root, "typed HTTP response result")?;
+    let mut matches = image.shapes().iter().filter(|shape| {
+        shape.privileged_affine_composite().is_none()
+            && shape.plan() == plan
+            && linked_type_ref(image, shape.nominal_type(), "typed HTTP response result")
+                .is_ok_and(|nominal| nominal == root_ref)
+    });
+    let shape = matches.next().ok_or_else(|| {
+        BytecodeSchedulerError::Port(
+            "typed HTTP response result has no exact compiler-emitted shape".to_string(),
+        )
+    })?;
+    if matches.next().is_some() {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP response result has duplicate exact compiler-emitted shapes".to_string(),
+        ));
+    }
+    Ok(shape)
+}
+
 fn http_result_layout(
     image: &DeploymentExecutionImage,
     signature: &LinkedNativeCallableSignature,
     stream: bool,
 ) -> Result<HttpResultLayout, BytecodeSchedulerError> {
     validate_native_arity(signature, 1, 1)?;
-    let root = signature.result_types()[0];
-    let shape = exact_shape(image, root)?;
+    let request_abi = require_std_http_symbol_abi(
+        image,
+        signature.parameter_types()[0],
+        HTTP_CLIENT_REQUEST_TYPE,
+        "typed HTTP request signature",
+    )?;
+    let result_type = signature.result_types()[0];
+    let result_abi = require_std_http_symbol_abi(
+        image,
+        result_type,
+        if stream {
+            HTTP_CLIENT_STREAM_HANDLE_TYPE
+        } else {
+            HTTP_CLIENT_RESPONSE_TYPE
+        },
+        "typed HTTP result signature",
+    )?;
+    require_same_http_abi(result_abi, request_abi, "typed HTTP request/result")?;
+    let shape = exact_http_result_shape(image, signature, stream)?;
     validate_shape_fields(shape, &["body", "headers", "status"])?;
     let headers = shape_field_type(shape, "headers")?;
-    let header = array_element_type(image, headers)?;
-    let header_shape = exact_shape(image, header)?;
-    validate_shape_fields(header_shape, &["name", "value"])?;
-    let header_name = shape_field_type(header_shape, "name")?;
-    let header_value = shape_field_type(header_shape, "value")?;
-    validate_builtin_type(image, header_name, "string")?;
-    validate_builtin_type(image, header_value, "string")?;
+    let header =
+        exact_http_header_element_type(image, headers, result_abi, "typed HTTP result headers")?;
+    let status = shape_field_type(shape, "status")?;
+    validate_builtin_type(image, status, "integer")?;
     let body = shape_field_type(shape, "body")?;
     if stream {
         validate_byte_stream_type(image, body)?;
     } else {
         validate_builtin_type(image, body, "bytes")?;
     }
-    if stream && signature.result_plans().len() != 1 {
-        return Err(BytecodeSchedulerError::Port(
-            "typed HTTP stream has no exact result lifecycle plan".to_string(),
-        ));
-    }
     Ok(HttpResultLayout {
-        root,
-        headers,
+        root: shape.nominal_type(),
         header,
-        header_name,
-        header_value,
         body,
     })
 }
@@ -1423,19 +1680,13 @@ fn allocate_http_headers(
     layout: HttpResultLayout,
     headers: Vec<HttpNameValue>,
 ) -> Result<ValueSlot, VmHeapError> {
-    let mut values = Vec::with_capacity(headers.len());
+    let mut owned = Vec::with_capacity(headers.len());
     for header in headers {
-        let name = heap.alloc_typed_string(
-            header.name,
-            CompactTypeTag::new(layout.header_name.get()),
-            ValueFlags::new(0),
-        )?;
-        let value = heap.alloc_typed_string(
-            header.value,
-            CompactTypeTag::new(layout.header_value.get()),
-            ValueFlags::new(0),
-        )?;
-        values.push(heap.allocate_record(
+        let checkpoint = owned.len();
+        let name = retain_http_materialized_root(heap.alloc_string(header.name), heap, &mut owned)?;
+        let value =
+            retain_http_materialized_root(heap.alloc_string(header.value), heap, &mut owned)?;
+        let record = heap.allocate_record(
             &[
                 VmRecordField {
                     name: "name".to_string(),
@@ -1448,13 +1699,170 @@ fn allocate_http_headers(
             ],
             CompactTypeTag::new(layout.header.get()),
             ValueFlags::new(0),
-        )?);
+        );
+        let record = match record {
+            Ok(record) => record,
+            Err(error) => return Err(cleanup_http_materialized_roots(heap, &mut owned, error)),
+        };
+        owned.truncate(checkpoint);
+        owned.push(record);
     }
-    heap.allocate_array(
-        &values,
-        CompactTypeTag::new(layout.headers.get()),
+    let array = heap.allocate_array(
+        &owned,
+        // VM array carriers store their compiler-emitted element TypeIndex,
+        // not the enclosing `Array<T>` row. This matches NewArrayBuilder and
+        // lets duplicate exact array rows remain non-authoritative at runtime.
+        CompactTypeTag::new(layout.header.get()),
         ValueFlags::new(0),
-    )
+    );
+    match array {
+        Ok(array) => {
+            owned.clear();
+            Ok(array)
+        }
+        Err(error) => Err(cleanup_http_materialized_roots(heap, &mut owned, error)),
+    }
+}
+
+fn materialize_http_response_value(
+    layout: HttpResultLayout,
+    result: BytecodeHttpResponse,
+    heap: &mut dyn VmHeap,
+) -> Result<ValueSlot, VmHeapError> {
+    let mut owned = Vec::with_capacity(2);
+    let headers = match allocate_http_headers(heap, layout, result.headers) {
+        Ok(headers) => {
+            owned.push(headers);
+            headers
+        }
+        Err(error) => return Err(error),
+    };
+    let body = retain_http_materialized_root(
+        heap.alloc_typed_bytes(
+            result.body,
+            CompactTypeTag::new(layout.body.get()),
+            ValueFlags::new(0),
+        ),
+        heap,
+        &mut owned,
+    )?;
+    let record = heap.allocate_record(
+        &[
+            VmRecordField {
+                name: "body".to_string(),
+                value: body,
+            },
+            VmRecordField {
+                name: "headers".to_string(),
+                value: headers,
+            },
+            VmRecordField {
+                name: "status".to_string(),
+                value: ValueSlot::integer(i64::from(result.status)),
+            },
+        ],
+        CompactTypeTag::new(layout.root.get()),
+        ValueFlags::new(0),
+    );
+    match record {
+        Ok(record) => {
+            owned.clear();
+            Ok(record)
+        }
+        Err(error) => Err(cleanup_http_materialized_roots(heap, &mut owned, error)),
+    }
+}
+
+fn materialize_http_stream_value(
+    layout: HttpResultLayout,
+    result: BytecodeHttpStreamResponse,
+    heap: &mut dyn VmHeap,
+) -> Result<ValueSlot, VmHeapError> {
+    let mut owned = Vec::with_capacity(2);
+    let headers = match allocate_http_headers(heap, layout, result.headers) {
+        Ok(headers) => {
+            owned.push(headers);
+            headers
+        }
+        Err(error) => return Err(error),
+    };
+    let body = retain_http_materialized_root(
+        heap.admit_resource_ref(
+            result.body.vm_handle(),
+            CompactTypeTag::new(layout.body.get()),
+            ValueFlags::new(0),
+        ),
+        heap,
+        &mut owned,
+    )?;
+    let record = heap.allocate_record(
+        &[
+            VmRecordField {
+                name: "body".to_string(),
+                value: body,
+            },
+            VmRecordField {
+                name: "headers".to_string(),
+                value: headers,
+            },
+            VmRecordField {
+                name: "status".to_string(),
+                value: ValueSlot::integer(i64::from(result.status)),
+            },
+        ],
+        CompactTypeTag::new(layout.root.get()),
+        ValueFlags::new(0),
+    );
+    match record {
+        Ok(record) => {
+            owned.clear();
+            Ok(record)
+        }
+        Err(error) => Err(cleanup_http_materialized_roots(heap, &mut owned, error)),
+    }
+}
+
+fn retain_http_materialized_root(
+    result: Result<ValueSlot, VmHeapError>,
+    heap: &mut dyn VmHeap,
+    owned: &mut Vec<ValueSlot>,
+) -> Result<ValueSlot, VmHeapError> {
+    match result {
+        Ok(value) => {
+            owned.push(value);
+            Ok(value)
+        }
+        Err(error) => Err(cleanup_http_materialized_roots(heap, owned, error)),
+    }
+}
+
+fn cleanup_http_materialized_roots(
+    heap: &mut dyn VmHeap,
+    owned: &mut Vec<ValueSlot>,
+    primary: VmHeapError,
+) -> VmHeapError {
+    let mut cleanup_errors = Vec::new();
+    while let Some(root) = owned.pop() {
+        let released = if root.kind() == Some(ValueKind::ResourceRef) {
+            heap.release_resource(&root)
+        } else {
+            heap.release_snapshot(&root)
+        };
+        if let Err(error) = released {
+            cleanup_errors.push(error.to_string());
+        }
+    }
+    if cleanup_errors.is_empty() {
+        primary
+    } else {
+        VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::ReleaseSnapshot,
+            message: format!(
+                "typed HTTP value materialization failed: {primary}; owner cleanup failed: {}",
+                cleanup_errors.join("; ")
+            ),
+        }
+    }
 }
 
 fn materialize_http_request_outcome(
@@ -1467,32 +1875,7 @@ fn materialize_http_request_outcome(
         Ok(result) => result,
         Err(error) => return http_failure_outcome(error),
     };
-    let materialized = (|| {
-        let headers = allocate_http_headers(heap, layout, result.headers)?;
-        let body = heap.alloc_typed_bytes(
-            result.body,
-            CompactTypeTag::new(layout.body.get()),
-            ValueFlags::new(0),
-        )?;
-        heap.allocate_record(
-            &[
-                VmRecordField {
-                    name: "body".to_string(),
-                    value: body,
-                },
-                VmRecordField {
-                    name: "headers".to_string(),
-                    value: headers,
-                },
-                VmRecordField {
-                    name: "status".to_string(),
-                    value: ValueSlot::integer(i64::from(result.status)),
-                },
-            ],
-            CompactTypeTag::new(layout.root.get()),
-            ValueFlags::new(0),
-        )
-    })();
+    let materialized = materialize_http_response_value(layout, result, heap);
     match materialized {
         Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
             Arc::clone(image),
@@ -1512,32 +1895,7 @@ fn materialize_http_stream_outcome(
         Ok(result) => result,
         Err(error) => return http_failure_outcome(error),
     };
-    let materialized = (|| {
-        let headers = allocate_http_headers(heap, layout, result.headers)?;
-        let body = heap.admit_resource_ref(
-            result.body.vm_handle(),
-            CompactTypeTag::new(layout.body.get()),
-            ValueFlags::new(0),
-        )?;
-        heap.allocate_record(
-            &[
-                VmRecordField {
-                    name: "body".to_string(),
-                    value: body,
-                },
-                VmRecordField {
-                    name: "headers".to_string(),
-                    value: headers,
-                },
-                VmRecordField {
-                    name: "status".to_string(),
-                    value: ValueSlot::integer(i64::from(result.status)),
-                },
-            ],
-            CompactTypeTag::new(layout.root.get()),
-            ValueFlags::new(0),
-        )
-    })();
+    let materialized = materialize_http_stream_value(layout, result, heap);
     match materialized {
         Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
             Arc::clone(image),
@@ -2939,6 +3297,149 @@ mod tests {
             0,
             "failed boundary materialization must release every partial owner"
         );
+    }
+
+    #[test]
+    fn phase_5_http_client_boundary_rejects_type_and_abi_mismatch() {
+        let std_symbol = |path: &str, abi: Option<&str>| TypeRefIr::PackageSymbol {
+            symbol: skiff_artifact_model::PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: HTTP_BOUNDARY_PACKAGE_ID.to_string(),
+                },
+                symbol_path: path.to_string(),
+                abi_expectation: abi.map(str::to_string),
+            },
+        };
+        let request = std_symbol(HTTP_CLIENT_REQUEST_TYPE, Some("abi-v1"));
+        assert_eq!(
+            exact_std_http_symbol_abi(&request, HTTP_CLIENT_REQUEST_TYPE, "test HTTP request")
+                .unwrap(),
+            "abi-v1"
+        );
+
+        let wrong_type = std_symbol(HTTP_CLIENT_RESPONSE_TYPE, Some("abi-v1"));
+        assert!(exact_std_http_symbol_abi(
+            &wrong_type,
+            HTTP_CLIENT_REQUEST_TYPE,
+            "test HTTP request"
+        )
+        .is_err());
+        let missing_abi = std_symbol(HTTP_CLIENT_REQUEST_TYPE, None);
+        assert!(exact_std_http_symbol_abi(
+            &missing_abi,
+            HTTP_CLIENT_REQUEST_TYPE,
+            "test HTTP request"
+        )
+        .is_err());
+        assert!(require_same_http_abi("abi-v2", "abi-v1", "test HTTP header").is_err());
+    }
+
+    fn test_http_result_layout() -> HttpResultLayout {
+        HttpResultLayout {
+            root: TypeIndex::new(1),
+            header: TypeIndex::new(2),
+            body: TypeIndex::new(3),
+        }
+    }
+
+    #[test]
+    fn phase_5_http_response_partial_materialization_releases_every_heap_owner() {
+        let mut heap = RequestVmHeap::new(RequestHeapLimits {
+            max_nodes: 2,
+            ..RequestHeapLimits::default()
+        });
+        let error = match materialize_http_response_value(
+            test_http_result_layout(),
+            BytecodeHttpResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: b"body".to_vec(),
+            },
+            &mut heap,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("the response root must exceed the two-node test heap"),
+        };
+
+        assert!(matches!(
+            error,
+            VmHeapError::ResourceLimitExceeded {
+                operation: VmHeapOperation::AllocateRecord,
+                ..
+            }
+        ));
+        assert_eq!(
+            heap.live_value_count(),
+            0,
+            "failed response root allocation releases its header array and body"
+        );
+    }
+
+    struct EndHttpBodySource;
+
+    impl skiff_runtime_capability_context::StreamPullSource for EndHttpBodySource {
+        fn next<'a>(
+            &'a mut self,
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = skiff_runtime_capability_context::StreamRuntimeResult<
+                            Option<serde_json::Value>,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[test]
+    fn phase_5_http_stream_partial_materialization_releases_resource_owner() {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let resources = context.resource_table();
+        let registrar = BytecodeHttpStreamRegistrar::new(resources.clone());
+        let source_cancellation = CancellationToken::new();
+        let token = registrar
+            .stream_runtime()
+            .pull_stream_with_cancellation(EndHttpBodySource, source_cancellation.clone());
+        let handle = registrar.take_exact_route(token).unwrap();
+        assert_eq!(resources.live_count(), 1);
+        let mut heap = RequestVmHeap::for_execution(
+            resources.clone(),
+            RequestHeapLimits {
+                max_nodes: 1,
+                ..RequestHeapLimits::default()
+            },
+        );
+
+        let error = match materialize_http_stream_value(
+            test_http_result_layout(),
+            BytecodeHttpStreamResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: handle,
+            },
+            &mut heap,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("the stream root must exceed the one-node test heap"),
+        };
+
+        assert!(matches!(
+            error,
+            VmHeapError::ResourceLimitExceeded {
+                operation: VmHeapOperation::AllocateRecord,
+                ..
+            }
+        ));
+        assert_eq!(heap.live_value_count(), 0);
+        assert_eq!(resources.live_count(), 0);
+        assert!(source_cancellation.is_cancelled());
+        drop(heap);
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
     }
 
     #[test]

@@ -21,9 +21,9 @@ use crate::{
         SharedBytecodeServerStreamWriterPort,
     },
     bytecode_ingress::{
-        array_element_type, exact_shape, poll_future_once, require_exact_slot_type,
-        shape_field_type, validate_builtin_type, validate_shape_fields, RequestPendingOutcome,
-        RequestPendingRuntime, VmSuspended,
+        array_element_type, poll_future_once, require_exact_slot_type, require_exact_slot_type_ref,
+        shape_field_type, validate_builtin_type, validate_record_carrier_fields,
+        RequestPendingOutcome, RequestPendingRuntime, VmSuspended,
     },
     HttpNameValue,
 };
@@ -88,24 +88,23 @@ fn decode_server_stream_headers(
     heap: &mut dyn VmHeap,
 ) -> Result<Vec<HttpNameValue>, BytecodeSchedulerError> {
     let header_type = array_element_type(image, headers_type)?;
+    // NewArrayBuilder stores the exact element TypeIndex in the array slot.
+    // Equal ABI rows may have different image-local indices, so compare their
+    // complete linked TypeRef rather than requiring index identity.
+    require_exact_slot_type_ref(image, headers, header_type, "server-stream headers")?;
     let count = heap
         .array_len(headers)
         .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
     if count == 0 {
         return Ok(Vec::new());
     }
-    let header_shape = exact_shape(image, header_type)?;
-    validate_shape_fields(header_shape, &["name", "value"])?;
-    let name_type = shape_field_type(header_shape, "name")?;
-    let value_type = shape_field_type(header_shape, "value")?;
-    validate_builtin_type(image, name_type, "string")?;
-    validate_builtin_type(image, value_type, "string")?;
     let mut decoded = Vec::with_capacity(count);
     for index in 0..count {
         let header = heap
             .array_get(headers, index)
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-        require_exact_slot_type(&header, header_type, "server-stream header")?;
+        require_exact_slot_type_ref(image, &header, header_type, "server-stream header")?;
+        validate_record_carrier_fields(heap, &header, &["name", "value"], "server-stream header")?;
         let name = heap
             .record_field(&header, "name")
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
