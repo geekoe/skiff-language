@@ -127,13 +127,19 @@ fn atomic_image_slot_transfer_fixture_executes_copy_and_move_without_heap_sideca
         "MoveSlot leaves only the entry parameter and destination live"
     );
 
-    let VmControl::Complete(Ok(values)) = host.run_segment(&mut fiber, &mut heap, &mut budget)
+    let VmControl::Complete(completion) = host.run_segment(&mut fiber, &mut heap, &mut budget)
     else {
         panic!("slot transfer fixture must complete in its second segment")
     };
     assert_eq!(host.call_count, 2);
+    let values = completion
+        .returned_values()
+        .expect("slot transfer fixture must return values");
     assert_eq!(values.len(), 1);
     assert!(values.values()[0] == ValueSlot::number(13.0));
+    let (cause, escrow) = completion.into_terminal();
+    assert!(cause.is_none());
+    assert!(escrow.is_empty());
     assert_eq!(heap, SpyHeap::default());
 }
 
@@ -160,11 +166,12 @@ fn source_deep_local_call_stays_in_dispatch_loop_and_hits_frame_and_value_bounds
         SpyHeap::default(),
     );
     assert_eq!(
-        failure.error,
-        skiff_runtime_vm::VmError::FrameLimitExceeded { limit: 4096 }
+        failure.error.diagnostic(),
+        Some(&skiff_runtime_vm::VmError::FrameLimitExceeded { limit: 4096 })
     );
     assert_eq!(failure.host_call_count, 1);
-    assert_eq!(failure.max_frames, 4096);
+    assert_eq!(failure.remaining_frames, 0);
+    assert_eq!(failure.remaining_value_slots, 0);
     assert_eq!(failure.heap, SpyHeap::default());
 
     let value_limit = root_segment + child_segment;
@@ -175,15 +182,15 @@ fn source_deep_local_call_stays_in_dispatch_loop_and_hits_frame_and_value_bounds
         SpyHeap::default(),
     );
     assert!(matches!(
-        value_failure.error,
-        skiff_runtime_vm::VmError::ValueStackLimitExceeded {
+        value_failure.error.diagnostic(),
+        Some(&skiff_runtime_vm::VmError::ValueStackLimitExceeded {
             limit,
             requested: actual,
-        } if limit == value_limit && actual == requested
+        }) if limit == value_limit && actual == requested
     ));
     assert_eq!(value_failure.host_call_count, 1);
-    assert_eq!(value_failure.max_frames, 2);
-    assert_eq!(value_failure.max_value_slots, value_limit);
+    assert_eq!(value_failure.remaining_frames, 0);
+    assert_eq!(value_failure.remaining_value_slots, 0);
     assert_eq!(value_failure.heap, SpyHeap::default());
 }
 
@@ -406,16 +413,31 @@ impl ExecutionFixture {
             max_value_slots = max_value_slots.max(fiber.allocated_value_slot_count());
             match fiber.run_segment(&mut heap, &mut budget) {
                 VmControl::Continue => {}
-                VmControl::Complete(Ok(values)) => {
+                VmControl::Complete(completion) => {
+                    let Some(values) = completion.returned_values() else {
+                        let diagnostic = completion
+                            .failure()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "uncaught VM exception".to_owned());
+                        let (mut cause, mut escrow) = completion.into_terminal();
+                        if let Some(cause) = cause.as_mut() {
+                            cause.release_all(&mut heap).unwrap();
+                        }
+                        escrow.release_all(&mut heap).unwrap();
+                        panic!("scalar execution failed: {diagnostic}");
+                    };
+                    let scalar_result = values.values().first().and_then(ValueSlot::as_number);
+                    let (cause, escrow) = completion.into_terminal();
+                    assert!(cause.is_none());
+                    assert!(escrow.is_empty());
                     return ExecutionOutcome {
-                        scalar_result: values.values().first().and_then(ValueSlot::as_number),
+                        scalar_result,
                         root_value_slots,
                         max_frames,
                         max_value_slots,
                         heap,
                     };
                 }
-                VmControl::Complete(Err(error)) => panic!("scalar execution failed: {error}"),
                 _ => panic!("accepted scalar path left the synchronous VM dispatch loop"),
             }
         }
@@ -431,14 +453,21 @@ impl ExecutionFixture {
         let mut budget = TestBudget::new();
         let mut host = SegmentHost::default();
         let control = host.run_segment(&mut fiber, &mut heap, &mut budget);
-        let VmControl::Complete(Err(error)) = control else {
+        let VmControl::Complete(completion) = control else {
             panic!("deep recursive fixture must fail inside one VM segment")
         };
+        assert!(completion.failure().is_some());
+        let (cause, mut escrow) = completion.into_terminal();
+        let mut error = cause.expect("deep recursive failure must retain its diagnostic cause");
+        error.release_all(&mut heap).unwrap();
+        escrow.release_all(&mut heap).unwrap();
+        assert_eq!(error.root_count(), 0);
+        assert!(escrow.is_empty());
         ExecutionFailure {
             error,
             host_call_count: host.call_count,
-            max_frames: fiber.active_frame_count(),
-            max_value_slots: fiber.allocated_value_slot_count(),
+            remaining_frames: fiber.active_frame_count(),
+            remaining_value_slots: fiber.allocated_value_slot_count(),
             heap,
         }
     }
@@ -453,10 +482,10 @@ struct ExecutionOutcome {
 }
 
 struct ExecutionFailure {
-    error: skiff_runtime_vm::VmError,
+    error: skiff_runtime_vm::VmTerminalCause,
     host_call_count: usize,
-    max_frames: usize,
-    max_value_slots: usize,
+    remaining_frames: usize,
+    remaining_value_slots: usize,
     heap: SpyHeap,
 }
 

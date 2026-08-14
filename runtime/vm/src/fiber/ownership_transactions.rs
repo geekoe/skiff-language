@@ -100,7 +100,236 @@ pub(super) struct IntrinsicResultReservation {
     next_instruction: InstructionIndex,
 }
 
+/// One fully checked top-of-stack consumption transaction.
+///
+/// Source owners remain in their original operand cells throughout every
+/// fallible read, share, transfer, allocation, or heap adoption. Exact source
+/// and result plans, the result window, and the next instruction are all
+/// resolved before the first heap call. Commits below are therefore heap-free
+/// and infallible.
+#[derive(Clone)]
+pub(super) struct OperandConsumeReservation {
+    frame_ordinal: usize,
+    source_start: usize,
+    source_count: usize,
+    remaining_height: usize,
+    result_height: usize,
+    next_instruction: InstructionIndex,
+    source_plans: Box<[LinkedValueTransferPlan]>,
+    result_plans: Box<[LinkedValueTransferPlan]>,
+    function: FunctionIndex,
+    instruction: InstructionIndex,
+    opcode: Opcode,
+}
+
 impl VmFiber {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn reserve_operand_consume(
+        &self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        opcode: Opcode,
+        source_count: usize,
+        result_count: usize,
+    ) -> Result<(OperandConsumeReservation, Vec<ValueSlot>), VmError> {
+        let (frame, source_start, values) = self.borrow_operands(source_count)?;
+        if frame.function() != function || frame.instruction() != instruction {
+            return Err(VmError::FiberNotRunnable { state: self.state });
+        }
+        let remaining_height = frame.operand_height().checked_sub(source_count).ok_or(
+            VmError::OperandStackUnderflow {
+                function,
+                needed: source_count,
+                available: frame.operand_height(),
+            },
+        )?;
+        let result_height =
+            remaining_height
+                .checked_add(result_count)
+                .ok_or(VmError::OperandStackOverflow {
+                    function,
+                    capacity: frame.operand_capacity(),
+                })?;
+        if result_height > frame.operand_capacity() {
+            return Err(VmError::OperandStackOverflow {
+                function,
+                capacity: frame.operand_capacity(),
+            });
+        }
+        let source_end = source_start
+            .checked_add(source_count)
+            .filter(|end| *end <= self.values.len() && *end <= self.live_values.len());
+        let result_end = source_start
+            .checked_add(result_count)
+            .filter(|end| *end <= self.values.len() && *end <= self.live_values.len());
+        if source_end.is_none() || result_end.is_none() {
+            return Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            });
+        }
+        for ordinal in source_count..result_count {
+            let index = source_start + ordinal;
+            if self.live_values[index] {
+                return Err(VmError::LiveDestination {
+                    function,
+                    instruction,
+                    location: VmValueLocation::Operand(remaining_height + ordinal),
+                });
+            }
+        }
+        let advance = self.reserve_instruction_advance(&frame, function, instruction)?;
+        let source_plans = (0..source_count)
+            .map(|ordinal| {
+                self.stack_map_operand_plan(function, instruction, remaining_height + ordinal)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let result_plans = (0..result_count)
+            .map(|ordinal| {
+                self.stack_map_operand_plan(
+                    function,
+                    advance.next_instruction,
+                    remaining_height + ordinal,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !source_plans
+            .iter()
+            .chain(&result_plans)
+            .all(LifecycleExecutor::supports_release)
+        {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode,
+            });
+        }
+        Ok((
+            OperandConsumeReservation {
+                frame_ordinal: advance.frame_ordinal,
+                source_start,
+                source_count,
+                remaining_height,
+                result_height,
+                next_instruction: advance.next_instruction,
+                source_plans: source_plans.into_boxed_slice(),
+                result_plans: result_plans.into_boxed_slice(),
+                function,
+                instruction,
+                opcode,
+            },
+            values,
+        ))
+    }
+
+    pub(super) fn reserved_source_plan<'reservation>(
+        &self,
+        reservation: &'reservation OperandConsumeReservation,
+        ordinal: usize,
+    ) -> &'reservation LinkedValueTransferPlan {
+        &reservation.source_plans[ordinal]
+    }
+
+    pub(super) fn reserved_result_plan<'reservation>(
+        &self,
+        reservation: &'reservation OperandConsumeReservation,
+        ordinal: usize,
+    ) -> &'reservation LinkedValueTransferPlan {
+        &reservation.result_plans[ordinal]
+    }
+
+    pub(super) fn reanchor_reserved_source(
+        &mut self,
+        reservation: &OperandConsumeReservation,
+        ordinal: usize,
+        value: ValueSlot,
+    ) {
+        let index = reservation.source_start + ordinal;
+        debug_assert!(self.live_values[index]);
+        self.values[index] = value;
+    }
+
+    /// Marks a reserved source as adopted by an aggregate heap operation.
+    ///
+    /// The adopting heap call must have completed successfully before this
+    /// helper is used. Until then the source cell remains the unique VM root,
+    /// including any flags returned by a preceding owner transfer.
+    pub(super) fn adopt_reserved_source(
+        &mut self,
+        reservation: &OperandConsumeReservation,
+        ordinal: usize,
+    ) {
+        let index = reservation.source_start + ordinal;
+        debug_assert!(ordinal < reservation.source_count);
+        debug_assert!(self.live_values[index]);
+        self.clear_value(index);
+    }
+
+    pub(super) fn release_reserved_sources_reverse(
+        &mut self,
+        executor: &mut LifecycleExecutor<'_>,
+        reservation: &OperandConsumeReservation,
+        start: usize,
+        end: usize,
+    ) -> Result<(), VmError> {
+        if start > end || end > reservation.source_count {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function: reservation.function,
+                instruction: reservation.instruction,
+                opcode: reservation.opcode,
+            });
+        }
+        for ordinal in (start..end).rev() {
+            let index = reservation.source_start + ordinal;
+            if !self.live_values.get(index).copied().unwrap_or(false) {
+                self.state = VmFiberState::Terminal;
+                return Err(VmError::DeadValueRead {
+                    location: VmValueLocation::Operand(reservation.remaining_height + ordinal),
+                });
+            }
+            let value = self.values[index];
+            if !is_discardable_root(&value) {
+                if let Err(error) = executor.release(&value, &reservation.source_plans[ordinal]) {
+                    self.state = VmFiberState::Terminal;
+                    return Err(error.into_vm_error(
+                        reservation.function,
+                        reservation.instruction,
+                        reservation.opcode,
+                    ));
+                }
+            }
+            self.clear_value(index);
+        }
+        Ok(())
+    }
+
+    pub(super) fn commit_consumed_operands(&mut self, reservation: OperandConsumeReservation) {
+        debug_assert!(reservation.result_plans.is_empty());
+        for index in reservation.source_start..reservation.source_start + reservation.source_count {
+            debug_assert!(!self.live_values[index]);
+            self.values[index] = ValueSlot::null();
+        }
+        let frame = &mut self.frames[reservation.frame_ordinal];
+        frame.set_operand_height(reservation.remaining_height);
+        frame.resume_to(reservation.next_instruction);
+    }
+
+    pub(super) fn commit_operand_result(
+        &mut self,
+        reservation: OperandConsumeReservation,
+        result: ValueSlot,
+    ) {
+        debug_assert_eq!(reservation.result_plans.len(), 1);
+        for index in reservation.source_start..reservation.source_start + reservation.source_count {
+            self.values[index] = ValueSlot::null();
+            self.live_values[index] = false;
+        }
+        self.values[reservation.source_start] = result;
+        self.live_values[reservation.source_start] = true;
+        let frame = &mut self.frames[reservation.frame_ordinal];
+        frame.set_operand_height(reservation.result_height);
+        frame.resume_to(reservation.next_instruction);
+    }
+
     pub(super) fn reserve_instruction_advance(
         &self,
         frame: &VmFrame,

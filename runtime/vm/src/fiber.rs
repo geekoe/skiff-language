@@ -44,9 +44,9 @@ use skiff_runtime_model::{
 use crate::{
     admission::{is_discardable_root, validate_entry_arguments},
     control::{
-        AdapterInvocation, ChildInvocation, ChildTarget, StreamItem, VmLifecycleSite,
-        VmOwnedException, VmOwnedValues, VmResumeAuthority, VmTerminalCause, VmTerminalEscrow,
-        VmTerminalOwner,
+        AdapterInvocation, ChildInvocation, ChildTarget, StreamItem, VmCompletion, VmLifecycleSite,
+        VmOwnedException, VmOwnedValues, VmResumeAuthority, VmResumeBinding, VmTerminalCause,
+        VmTerminalEscrow, VmTerminalOwner,
     },
     fiber::entry_admission::validate_entry_contract,
     frame::VmFrame,
@@ -114,7 +114,6 @@ pub struct VmFiber {
     observer: BytecodeExecutionObserver,
 }
 
-#[derive(Clone)]
 struct UnwindState {
     envelope: Arc<RequestException>,
     /// Exact plan for a VM-local payload whose ownership originated in this
@@ -154,16 +153,7 @@ struct CaughtException {
 
 #[derive(Debug, Clone)]
 struct PendingResume {
-    image: Arc<DeploymentExecutionImage>,
-    sequence: u64,
-    function: FunctionIndex,
-    instruction: InstructionIndex,
-    resume_instruction: InstructionIndex,
-    end_resume_pc: Option<InstructionIndex>,
-    resume_site: ResumeSiteIndex,
-    expected_stack_height: u32,
-    expected_result_count: u32,
-    authority: VmResumeAuthority,
+    binding: Arc<VmResumeBinding>,
 }
 
 /// A push destination whose frame, bounds, liveness, and next height have all
@@ -440,19 +430,28 @@ impl VmFiber {
 
     pub fn run_segment(&mut self, heap: &mut dyn VmHeap, budget: &mut dyn VmBudget) -> VmControl {
         if !matches!(self.state, VmFiberState::Runnable | VmFiberState::Unwinding) {
-            return VmControl::Complete(Err(VmError::FiberNotRunnable { state: self.state }));
+            let error = VmError::FiberNotRunnable { state: self.state };
+            let image = Arc::clone(self.entry.image());
+            let residual = self.take_completion_residual();
+            return VmControl::Complete(VmCompletion::failed(image, error, residual));
         }
 
         match self.run_segment_inner(heap, budget) {
             Ok(SegmentResult::Continue) => VmControl::Continue,
-            Ok(SegmentResult::Complete(values)) => VmControl::Complete(Ok(values)),
+            Ok(SegmentResult::Complete(values)) => {
+                let residual = self.take_completion_residual();
+                VmControl::Complete(VmCompletion::returned(values, residual))
+            }
             Ok(SegmentResult::Throw(envelope)) => {
-                VmControl::Complete(Err(VmError::Thrown(envelope)))
+                let residual = self.take_completion_residual();
+                VmControl::Complete(VmCompletion::thrown(envelope, residual))
             }
             Ok(SegmentResult::Handoff(control)) => control,
             Err(error) => {
                 self.state = VmFiberState::Terminal;
-                VmControl::Complete(Err(error))
+                let image = Arc::clone(self.entry.image());
+                let residual = self.take_completion_residual();
+                VmControl::Complete(VmCompletion::failed(image, error, residual))
             }
         }
     }
@@ -491,72 +490,6 @@ impl VmFiber {
             .expect("terminal handoff is installed before transfer")
     }
 
-    /// Consumes a completion result abandoned by a scheduler port failure
-    /// while this fiber still supplies the exact deployment image pin.
-    pub fn escrow_abandoned_completion(
-        &mut self,
-        result: crate::VmResult,
-    ) -> (Option<VmTerminalCause>, VmTerminalEscrow) {
-        match result {
-            Err(VmError::Thrown(exception)) => {
-                if let Some(owned) = self.take_completed_exception(&exception) {
-                    (
-                        Some(VmTerminalCause::from_owned_exception(owned)),
-                        VmTerminalEscrow::empty(Arc::clone(self.entry.image())),
-                    )
-                } else {
-                    VmTerminalEscrow::from_abandoned_result(
-                        Arc::clone(self.entry.image()),
-                        Err(VmError::Thrown(exception)),
-                    )
-                }
-            }
-            result => {
-                VmTerminalEscrow::from_abandoned_result(Arc::clone(self.entry.image()), result)
-            }
-        }
-    }
-
-    /// Converts a completion produced by this exact fiber into a scheduler
-    /// resume outcome. An uncaught exception is sealed together with this
-    /// fiber's origin image and exact payload authority before it can cross a
-    /// continuation boundary.
-    pub fn completion_to_resume_outcome(&mut self, completed: crate::VmResult) -> ResumeOutcome {
-        match completed {
-            Ok(values) => ResumeOutcome::Values(values),
-            Err(VmError::Thrown(exception)) => match self.take_completed_exception(&exception) {
-                Some(owned) => ResumeOutcome::Throw(owned),
-                None => ResumeOutcome::Failure(VmError::Thrown(exception)),
-            },
-            Err(error) => ResumeOutcome::Failure(error),
-        }
-    }
-
-    fn take_completed_exception(
-        &mut self,
-        expected: &Arc<RequestException>,
-    ) -> Option<VmOwnedException> {
-        if self.state != VmFiberState::Terminal || !self.frames.is_empty() {
-            return None;
-        }
-        let unwind = self.unwind.take()?;
-        if !Arc::ptr_eq(&unwind.envelope, expected) {
-            self.unwind = Some(unwind);
-            return None;
-        }
-        let site = VmLifecycleSite {
-            function: unwind.cursor.function,
-            instruction: unwind.cursor.instruction,
-            opcode: Opcode::Throw,
-        };
-        Some(VmOwnedException::from_origin_authority(
-            Arc::clone(self.entry.image()),
-            unwind.envelope,
-            unwind.payload_plan,
-            site,
-        ))
-    }
-
     /// Consumes a rejected resume input while this fiber supplies the exact
     /// receiving image pin. The rejection remains the primary error and the
     /// outcome becomes a non-cloneable terminal owner carrier.
@@ -573,6 +506,16 @@ impl VmFiber {
         }
         self.state = VmFiberState::Terminal;
         self.terminal_handoff = Some(self.collect_terminal_escrow());
+    }
+
+    fn take_completion_residual(&mut self) -> VmTerminalEscrow {
+        self.state = VmFiberState::Terminal;
+        let mut residual = self
+            .terminal_handoff
+            .take()
+            .unwrap_or_else(|| VmTerminalEscrow::empty(Arc::clone(self.entry.image())));
+        residual.merge(self.collect_terminal_escrow());
+        residual
     }
 
     fn collect_terminal_escrow(&mut self) -> VmTerminalEscrow {
@@ -759,12 +702,12 @@ impl VmFiber {
 
         match outcome {
             ResumeOutcome::Values(values) => self
-                .resume_values(&pending, &values)
+                .resume_values(&pending, &values, true)
                 .map_err(|error| self.reject_resume(error, token, ResumeOutcome::Values(values))),
             ResumeOutcome::Empty => {
-                let image = Arc::clone(&pending.image);
+                let image = Arc::clone(pending.binding.image());
                 let values = VmOwnedValues::empty(image);
-                self.resume_values(&pending, &values)
+                self.resume_values(&pending, &values, false)
                     .map_err(|error| self.reject_resume(error, token, ResumeOutcome::Empty))
             }
             ResumeOutcome::StreamEnd => self
@@ -809,12 +752,15 @@ impl VmFiber {
         &mut self,
         pending: &PendingResume,
         values: &VmOwnedValues,
+        binding_required: bool,
     ) -> Result<(), VmError> {
-        if !Arc::ptr_eq(values.image(), &pending.image) {
+        if !Arc::ptr_eq(values.image(), pending.binding.image())
+            || (binding_required && !values.is_bound_to(&pending.binding))
+        {
             self.state = VmFiberState::Terminal;
             return Err(VmError::ResumeTokenMismatch);
         }
-        let expected = usize::try_from(pending.expected_result_count).map_err(|_| {
+        let expected = usize::try_from(pending.binding.expected_result_count()).map_err(|_| {
             VmError::ResumeShapeMismatch {
                 expected: usize::MAX,
                 actual: values.len(),
@@ -828,10 +774,10 @@ impl VmFiber {
             });
         }
         let frame = self.current_frame()?.clone();
-        if frame.function() != pending.function
-            || frame.instruction() != pending.instruction
+        if frame.function() != pending.binding.function()
+            || frame.instruction() != pending.binding.instruction()
             || frame.operand_height()
-                != usize::try_from(pending.expected_stack_height)
+                != usize::try_from(pending.binding.expected_stack_height())
                     .map_err(|_| VmError::ResumeTokenMismatch)?
         {
             self.state = VmFiberState::Terminal;
@@ -844,21 +790,21 @@ impl VmFiber {
             .ok_or(VmError::FiberNotRunnable { state: self.state })?;
         let reservation = self.reserve_operand_push_window(frame_ordinal, expected)?;
         self.commit_operand_push_window(reservation, values.values());
-        self.frames[frame_ordinal].resume_to(pending.resume_instruction);
+        self.frames[frame_ordinal].resume_to(pending.binding.resume_instruction());
         self.state = VmFiberState::Runnable;
         Ok(())
     }
 
     fn resume_stream_end(&mut self, pending: &PendingResume) -> Result<(), VmError> {
-        let end_resume_pc = pending.end_resume_pc.ok_or_else(|| {
+        let end_resume_pc = pending.binding.end_resume_pc().ok_or_else(|| {
             self.state = VmFiberState::Terminal;
             VmError::StreamEndResumeUnavailable
         })?;
         let frame = self.current_frame()?.clone();
-        if frame.function() != pending.function
-            || frame.instruction() != pending.instruction
+        if frame.function() != pending.binding.function()
+            || frame.instruction() != pending.binding.instruction()
             || frame.operand_height()
-                != usize::try_from(pending.expected_stack_height)
+                != usize::try_from(pending.binding.expected_stack_height())
                     .map_err(|_| VmError::ResumeTokenMismatch)?
         {
             self.state = VmFiberState::Terminal;
@@ -874,7 +820,7 @@ impl VmFiber {
         pending: &PendingResume,
         exception: VmOwnedException,
     ) -> Result<(), (VmError, VmOwnedException)> {
-        if !Arc::ptr_eq(exception.origin_image(), &pending.image) {
+        if !Arc::ptr_eq(exception.origin_image(), pending.binding.image()) {
             self.state = VmFiberState::Terminal;
             return Err((VmError::ResumeTokenMismatch, exception));
         }
@@ -882,8 +828,8 @@ impl VmFiber {
             self.state = VmFiberState::Terminal;
             return Err((
                 VmError::ResumeThrowEnvelopeUnavailable {
-                    function: pending.function,
-                    instruction: pending.instruction,
+                    function: pending.binding.function(),
+                    instruction: pending.binding.instruction(),
                 },
                 exception,
             ));
@@ -892,8 +838,8 @@ impl VmFiber {
             self.state = VmFiberState::Terminal;
             return Err((
                 VmError::ResumeThrowEnvelopeUnavailable {
-                    function: pending.function,
-                    instruction: pending.instruction,
+                    function: pending.binding.function(),
+                    instruction: pending.binding.instruction(),
                 },
                 exception,
             ));
@@ -902,8 +848,8 @@ impl VmFiber {
             self.state = VmFiberState::Terminal;
             return Err((
                 VmError::ResumeThrowEnvelopeUnavailable {
-                    function: pending.function,
-                    instruction: pending.instruction,
+                    function: pending.binding.function(),
+                    instruction: pending.binding.instruction(),
                 },
                 exception,
             ));
@@ -912,12 +858,14 @@ impl VmFiber {
         // reachability. The origin Arc check above is the provenance guard;
         // this identity check additionally rejects a forged envelope whose
         // payload metadata disagrees with that exact image.
-        if runtime_leaf_catch_identity(&pending.image, &payload).as_ref() != Some(actual_identity) {
+        if runtime_leaf_catch_identity(pending.binding.image(), &payload).as_ref()
+            != Some(actual_identity)
+        {
             self.state = VmFiberState::Terminal;
             return Err((
                 VmError::ResumeThrowEnvelopeUnavailable {
-                    function: pending.function,
-                    instruction: pending.instruction,
+                    function: pending.binding.function(),
+                    instruction: pending.binding.instruction(),
                 },
                 exception,
             ));
@@ -926,12 +874,12 @@ impl VmFiber {
             Ok(frame) => frame.clone(),
             Err(error) => return Err((error, exception)),
         };
-        let expected_height = match usize::try_from(pending.expected_stack_height) {
+        let expected_height = match usize::try_from(pending.binding.expected_stack_height()) {
             Ok(height) => height,
             Err(_) => return Err((VmError::ResumeTokenMismatch, exception)),
         };
-        if frame.function() != pending.function
-            || frame.instruction() != pending.instruction
+        if frame.function() != pending.binding.function()
+            || frame.instruction() != pending.binding.instruction()
             || frame.operand_height() != expected_height
         {
             self.state = VmFiberState::Terminal;
@@ -944,8 +892,8 @@ impl VmFiber {
             envelope,
             payload_plan,
             cursor: UnwindCursor {
-                function: pending.function,
-                instruction: pending.instruction,
+                function: pending.binding.function(),
+                instruction: pending.binding.instruction(),
             },
             phase: UnwindPhase::Pending,
         });
@@ -1263,7 +1211,7 @@ impl VmFiber {
                 instruction.opcode(),
             ),
             Opcode::Equal | Opcode::NotEqual => self.execute_equality(
-                lifecycle.heap(),
+                &mut lifecycle,
                 function_index,
                 instruction_index,
                 instruction.opcode(),
@@ -1892,7 +1840,14 @@ impl VmFiber {
             },
         )?;
         let source_index = Self::slot_index(&frame, slot_count, slot, frame.function())?;
-        if source_index != absolute_index {
+        if caught.payload_handle != payload_handle
+            || caught
+                .envelope
+                .vm_local_slot()
+                .and_then(|value| value.as_handle())
+                .map(|handle| handle.get())
+                != Some(payload_handle)
+        {
             return Err(VmError::RethrowEnvelopeUnavailable {
                 function,
                 instruction,
@@ -2002,19 +1957,22 @@ impl VmFiber {
         &mut self,
         executor: &mut LifecycleExecutor<'_>,
     ) -> Result<DispatchOutcome, VmError> {
-        let mut unwind = self
+        let pending_cursor = self
             .unwind
-            .clone()
-            .ok_or(VmError::FiberNotRunnable { state: self.state })?;
-        if let UnwindPhase::Pending = unwind.phase {
+            .as_ref()
+            .filter(|unwind| unwind.phase == UnwindPhase::Pending)
+            .map(|unwind| unwind.cursor);
+        if let Some(cursor) = pending_cursor {
             let frame = self.current_frame()?;
-            if frame.function() != unwind.cursor.function
-                || frame.instruction() != unwind.cursor.instruction
-            {
+            if frame.function() != cursor.function || frame.instruction() != cursor.instruction {
                 return Err(VmError::FiberNotRunnable { state: self.state });
             }
-            unwind.phase = UnwindPhase::Searching;
-            self.unwind = Some(unwind);
+            self.unwind
+                .as_mut()
+                .expect("pending cursor came from the installed unwind")
+                .phase = UnwindPhase::Searching;
+        } else if self.unwind.is_none() {
+            return Err(VmError::FiberNotRunnable { state: self.state });
         }
         loop {
             let frame = self.current_frame()?.clone();
@@ -2034,6 +1992,21 @@ impl VmFiber {
             }
             if self.frames.len() == 1 {
                 self.release_frame_exit(executor, &frame, Opcode::Throw)?;
+                let unwind = self
+                    .unwind
+                    .take()
+                    .ok_or(VmError::FiberNotRunnable { state: self.state })?;
+                let site = VmLifecycleSite {
+                    function: unwind.cursor.function,
+                    instruction: unwind.cursor.instruction,
+                    opcode: Opcode::Throw,
+                };
+                let exception = VmOwnedException::from_origin_authority(
+                    Arc::clone(self.entry.image()),
+                    unwind.envelope,
+                    unwind.payload_plan,
+                    site,
+                );
                 self.frames.clear();
                 self.values.clear();
                 self.live_values.clear();
@@ -2041,13 +2014,8 @@ impl VmFiber {
                 self.region_depths.clear();
                 self.caught_exceptions.clear();
                 self.caught_by_payload.clear();
-                // The exact payload plan and envelope remain in `unwind`
-                // until the scheduler consumes this completion through
-                // `completion_to_resume_outcome` or
-                // `escrow_abandoned_completion`. The outward VmError is a
-                // non-owning diagnostic alias during that handoff.
                 self.state = VmFiberState::Terminal;
-                return Ok(DispatchOutcome::Throw(envelope));
+                return Ok(DispatchOutcome::Throw(exception));
             }
             self.release_frame_exit(executor, &frame, Opcode::Throw)?;
             self.frames.pop();
@@ -2823,32 +2791,31 @@ impl VmFiber {
                 opcode: Opcode::GetDenseField,
             });
         }
-        let frame = self.current_frame()?.clone();
-        let record_plan = self.operand_plan(&frame, instruction, 0)?;
-        let record = self.pop_operands(1, false)?.remove(0);
+        let (reservation, operands) =
+            self.reserve_operand_consume(function, instruction, Opcode::GetDenseField, 1, 1)?;
+        let record = operands[0];
+        let field_plan = self.reserved_result_plan(&reservation, 0).clone();
         let value = executor
             .heap()
             .get_dense_field(&record, field_ordinal)
             .map_err(VmError::Heap)?;
-        let next = InstructionIndex::new(instruction.get().checked_add(1).ok_or(
-            VmError::InstructionPointerOutOfBounds {
-                function,
-                instruction,
-            },
-        )?);
-        let field_plan = self.stack_map_operand_plan(
-            frame.function(),
-            next,
-            frame.operand_height().saturating_sub(1),
-        )?;
         let shared = executor
             .share(&value, &field_plan)
             .map_err(|error| error.into_vm_error(function, instruction, Opcode::GetDenseField))?;
-        executor
-            .release(&record, &record_plan)
-            .map_err(|error| error.into_vm_error(function, instruction, Opcode::GetDenseField))?;
-        self.push_operand(shared)?;
-        self.advance_current_instruction()?;
+        self.terminal_escrow.push(EscrowedOwner::new(
+            shared,
+            field_plan,
+            function,
+            instruction,
+            Opcode::GetDenseField,
+        ));
+        self.release_reserved_sources_reverse(executor, &reservation, 0, 1)?;
+        let shared = self
+            .terminal_escrow
+            .pop()
+            .expect("dense field result was escrowed before source release")
+            .value;
+        self.commit_operand_result(reservation, shared);
         Ok(DispatchOutcome::Continue)
     }
 
@@ -3033,9 +3000,15 @@ impl VmFiber {
                 location: VmValueLocation::FrameSlot(root_slot),
             });
         }
-        let rhs_plan = self.operand_plan(&frame, instruction, 0)?;
-        let value = self.pop_operands(1, false)?.remove(0);
-        let selectors = self.pop_operands(selector_count, false)?;
+        let root_index = Self::slot_index(&frame, slot_count, root_slot, frame.function())?;
+        let root_plan = self.slot_plan(frame.function(), root_slot)?;
+        if !LifecycleExecutor::supports_release(&root_plan) {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::SetWritablePath,
+            });
+        }
         let mut segments = Vec::with_capacity(path.segments().len());
         for segment in path.segments() {
             segments.push(match segment {
@@ -3067,40 +3040,71 @@ impl VmFiber {
                 LinkedWritablePathSegment::MapKey { .. } => VmHeapPathSegment::MapKey,
             });
         }
-        let prepared = match executor
+        let source_count = selector_count
+            .checked_add(1)
+            .ok_or(VmError::OperandStackOverflow {
+                function,
+                capacity: frame.operand_capacity(),
+            })?;
+        let (reservation, operands) = self.reserve_operand_consume(
+            function,
+            instruction,
+            Opcode::SetWritablePath,
+            source_count,
+            0,
+        )?;
+        let rhs_ordinal = selector_count;
+        let rhs_plan = self.reserved_source_plan(&reservation, rhs_ordinal).clone();
+        if !LifecycleExecutor::supports_transfer(&rhs_plan) {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::SetWritablePath,
+            });
+        }
+        let prepared = executor
             .heap()
-            .prepare_writable_path(&root, &segments, &selectors)
-        {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                let _ = executor.release(&value, &rhs_plan);
-                return Err(VmError::Heap(error));
-            }
-        };
-        let value = match executor.transfer(&value, &rhs_plan) {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = executor.release(&value, &rhs_plan);
+            .prepare_writable_path(&root, &segments, &operands[..selector_count])
+            .map_err(VmError::Heap)?;
+        let value = executor
+            .transfer(&operands[rhs_ordinal], &rhs_plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::SetWritablePath))?;
+        self.reanchor_reserved_source(&reservation, rhs_ordinal, value);
+        let replacement = executor
+            .heap()
+            .commit_writable_path(prepared, value)
+            .map_err(VmError::Heap)?;
+        self.adopt_reserved_source(&reservation, rhs_ordinal);
+
+        let replaced_root = replacement != root;
+        if replaced_root {
+            // A copy-on-write root becomes a VM owner at the successful heap
+            // commit. Root it before any selector or old-root release can
+            // fail; terminal collection then retains both sides exactly once.
+            self.terminal_escrow.push(EscrowedOwner::new(
+                replacement,
+                root_plan.clone(),
+                function,
+                instruction,
+                Opcode::SetWritablePath,
+            ));
+        }
+        self.release_reserved_sources_reverse(executor, &reservation, 0, selector_count)?;
+        if replaced_root {
+            if let Err(error) = executor.release(&root, &root_plan) {
+                self.state = VmFiberState::Terminal;
                 return Err(error.into_vm_error(function, instruction, Opcode::SetWritablePath));
             }
-        };
-        let replacement = match executor.heap().commit_writable_path(prepared, value) {
-            Ok(root) => root,
-            Err(error) => {
-                let _ = executor.release(&value, &rhs_plan);
-                return Err(VmError::Heap(error));
-            }
-        };
-        if replacement == root {
-            // Exclusive in-place commit: the slot keeps its bits and owner.
-        } else {
-            let root_plan = self.slot_plan(frame.function(), root_slot)?;
-            executor.release(&root, &root_plan).map_err(|error| {
-                error.into_vm_error(function, instruction, Opcode::SetWritablePath)
-            })?;
-            self.install_slot_value(&frame, slot_count, root_slot, replacement)?;
+            self.clear_value(root_index);
+            let replacement = self
+                .terminal_escrow
+                .pop()
+                .expect("writable-path replacement was escrowed before root release")
+                .value;
+            self.values[root_index] = replacement;
+            self.live_values[root_index] = true;
         }
-        self.advance_current_instruction()?;
+        self.commit_consumed_operands(reservation);
         Ok(DispatchOutcome::Continue)
     }
 
@@ -3169,40 +3173,59 @@ impl VmFiber {
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let frame = self.current_frame()?.clone();
-        let value_plan = self.operand_plan(&frame, instruction, 0)?;
-        let values = self.pop_operands(2, false)?;
+        let (reservation, values) =
+            self.reserve_operand_consume(function, instruction, Opcode::ArrayBuilderPush, 2, 1)?;
         let builder = values[0];
-        let value = values[1];
-        let value = match executor.transfer(&value, &value_plan) {
-            Ok(value) => value,
-            Err(error) => {
-                let _ = executor.release(&value, &value_plan);
-                return Err(error.into_vm_error(function, instruction, Opcode::ArrayBuilderPush));
-            }
-        };
-        match executor.heap().array_push_owned(&builder, value) {
-            Ok(()) => {}
-            Err(error) => {
-                let _ = executor.release(&value, &value_plan);
-                return Err(VmError::Heap(error));
-            }
+        if self.reserved_source_plan(&reservation, 0) != self.reserved_result_plan(&reservation, 0)
+        {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::ArrayBuilderPush,
+            });
         }
-        self.push_operand(builder)?;
-        self.advance_current_instruction()?;
+        let value_plan = self.reserved_source_plan(&reservation, 1).clone();
+        if !LifecycleExecutor::supports_transfer(&value_plan) {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::ArrayBuilderPush,
+            });
+        }
+        let value = executor
+            .transfer(&values[1], &value_plan)
+            .map_err(|error| {
+                error.into_vm_error(function, instruction, Opcode::ArrayBuilderPush)
+            })?;
+        self.reanchor_reserved_source(&reservation, 1, value);
+        executor
+            .heap()
+            .array_push_owned(&builder, value)
+            .map_err(VmError::Heap)?;
+        self.adopt_reserved_source(&reservation, 1);
+        self.commit_operand_result(reservation, builder);
         Ok(DispatchOutcome::Continue)
     }
 
     fn execute_freeze_array(
         &mut self,
         heap: &mut dyn VmHeap,
-        _function: FunctionIndex,
-        _instruction: InstructionIndex,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let value = self.pop_operands(1, false)?.remove(0);
+        let (reservation, operands) =
+            self.reserve_operand_consume(function, instruction, Opcode::FreezeArray, 1, 1)?;
+        let value = operands[0];
+        if self.reserved_source_plan(&reservation, 0) != self.reserved_result_plan(&reservation, 0)
+        {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::FreezeArray,
+            });
+        }
         heap.validate_live(&value).map_err(VmError::Heap)?;
-        self.push_operand(value)?;
-        self.advance_current_instruction()?;
+        self.commit_operand_result(reservation, value);
         Ok(DispatchOutcome::Continue)
     }
 
@@ -3212,9 +3235,8 @@ impl VmFiber {
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<DispatchOutcome, VmError> {
-        let frame = self.current_frame()?.clone();
-        let array_plan = self.operand_plan(&frame, instruction, 1)?;
-        let values = self.pop_operands(2, false)?;
+        let (reservation, values) =
+            self.reserve_operand_consume(function, instruction, Opcode::ArrayGet, 2, 1)?;
         let array = values[0];
         let index = skiff_runtime_model::vm_heap::collection_index(&values[1]).ok_or(
             VmError::ExpectedNumber {
@@ -3227,25 +3249,24 @@ impl VmFiber {
             .heap()
             .array_get(&array, index)
             .map_err(VmError::Heap)?;
-        let next = InstructionIndex::new(instruction.get().checked_add(1).ok_or(
-            VmError::InstructionPointerOutOfBounds {
-                function,
-                instruction,
-            },
-        )?);
-        let element_plan = self.stack_map_operand_plan(
-            frame.function(),
-            next,
-            frame.operand_height().saturating_sub(2),
-        )?;
+        let element_plan = self.reserved_result_plan(&reservation, 0).clone();
         let shared = executor
             .share(&value, &element_plan)
             .map_err(|error| error.into_vm_error(function, instruction, Opcode::ArrayGet))?;
-        executor
-            .release(&array, &array_plan)
-            .map_err(|error| error.into_vm_error(function, instruction, Opcode::ArrayGet))?;
-        self.push_operand(shared)?;
-        self.advance_current_instruction()?;
+        self.terminal_escrow.push(EscrowedOwner::new(
+            shared,
+            element_plan,
+            function,
+            instruction,
+            Opcode::ArrayGet,
+        ));
+        self.release_reserved_sources_reverse(executor, &reservation, 0, 2)?;
+        let shared = self
+            .terminal_escrow
+            .pop()
+            .expect("array element result was escrowed before source release")
+            .value;
+        self.commit_operand_result(reservation, shared);
         Ok(DispatchOutcome::Continue)
     }
 
@@ -4548,14 +4569,15 @@ impl VmFiber {
 
     fn execute_equality(
         &mut self,
-        heap: &mut dyn VmHeap,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         opcode: Opcode,
     ) -> Result<DispatchOutcome, VmError> {
-        let operands = self.pop_operands(2, false)?;
+        let (reservation, operands) =
+            self.reserve_operand_consume(function, instruction, opcode, 2, 1)?;
         let equal = self
-            .comparable_equality(heap, &operands[0], &operands[1])
+            .comparable_equality(executor.heap(), &operands[0], &operands[1])
             .ok_or(VmError::ExpectedComparablePair {
                 function,
                 instruction,
@@ -4567,8 +4589,8 @@ impl VmFiber {
         } else {
             !equal
         };
-        self.push_operand(ValueSlot::bool(result))?;
-        self.advance_current_instruction()?;
+        self.release_reserved_sources_reverse(executor, &reservation, 0, 2)?;
+        self.commit_operand_result(reservation, ValueSlot::bool(result));
         Ok(DispatchOutcome::Continue)
     }
 
@@ -4654,16 +4676,7 @@ impl VmFiber {
             authority,
         );
         self.pending_resume = Some(PendingResume {
-            image,
-            sequence,
-            function,
-            instruction,
-            resume_instruction,
-            end_resume_pc,
-            resume_site,
-            expected_stack_height,
-            expected_result_count,
-            authority,
+            binding: Arc::clone(token.binding()),
         });
         Ok(token)
     }
@@ -4927,19 +4940,6 @@ impl VmFiber {
                 .map_err(|error| error.into_vm_error(function, instruction, opcode))?;
             self.clear_value(index);
         }
-        self.values[index] = value;
-        self.live_values[index] = true;
-        Ok(())
-    }
-
-    fn install_slot_value(
-        &mut self,
-        frame: &VmFrame,
-        slot_count: usize,
-        slot: FrameSlotIndex,
-        value: ValueSlot,
-    ) -> Result<(), VmError> {
-        let index = Self::slot_index(frame, slot_count, slot, frame.function())?;
         self.values[index] = value;
         self.live_values[index] = true;
         Ok(())
@@ -5374,28 +5374,19 @@ impl VmRootSource for VmFiber {
 enum SegmentResult {
     Continue,
     Complete(VmOwnedValues),
-    Throw(Arc<RequestException>),
+    Throw(VmOwnedException),
     Handoff(VmControl),
 }
 
 enum DispatchOutcome {
     Continue,
     Complete(VmOwnedValues),
-    Throw(Arc<RequestException>),
+    Throw(VmOwnedException),
     Handoff(VmControl),
 }
 
 fn pending_matches(pending: &PendingResume, token: &VmResumeToken) -> bool {
-    Arc::ptr_eq(&pending.image, token.image())
-        && pending.sequence == token.sequence()
-        && pending.function == token.function()
-        && pending.instruction == token.instruction()
-        && pending.resume_instruction == token.resume_instruction()
-        && pending.end_resume_pc == token.end_resume_pc()
-        && pending.resume_site == token.resume_site()
-        && pending.expected_stack_height == token.expected_stack_height()
-        && pending.expected_result_count == token.expected_result_count()
-        && pending.authority == token.authority()
+    Arc::ptr_eq(&pending.binding, token.binding())
 }
 
 fn compact_type_tag(

@@ -17,11 +17,11 @@ use crate::{lifecycle::LifecycleExecutor, VmBudgetClosed, VmError};
 
 pub type VmResult = Result<VmOwnedValues, VmError>;
 
-pub(crate) use crate::terminal_ownership::{VmLifecycleSite, VmTerminalOwner};
 pub use crate::terminal_ownership::{
-    VmOwnedException, VmOwnedValues, VmOwnedValuesRejected, VmResumeFailure, VmTerminalCause,
-    VmTerminalEscrow,
+    VmCompletion, VmOwnedException, VmOwnedValues, VmOwnedValuesRejected, VmResumeFailure,
+    VmTerminalCause, VmTerminalEscrow, VmThrownDiagnostic,
 };
+pub(crate) use crate::terminal_ownership::{VmLifecycleSite, VmTerminalOwner};
 
 /// Arguments transferred out of the operand stack for one verified host
 /// effect, paired with their exact linked lifecycle plans.
@@ -91,6 +91,17 @@ impl VmRootSource for VmHostEffectArguments {
 #[derive(Debug)]
 #[must_use = "a resume token is unique continuation authority"]
 pub struct VmResumeToken {
+    binding: Arc<VmResumeBinding>,
+}
+
+/// Per-mint continuation identity and its complete linked resume descriptor.
+///
+/// The descriptor lives behind one private `Arc` so the token, the blocked
+/// fiber, and any value carrier derived from that exact token can prove they
+/// refer to the same continuation by pointer identity. Equal numeric fields
+/// from another fiber are deliberately insufficient.
+#[derive(Debug)]
+pub(crate) struct VmResumeBinding {
     image: Arc<DeploymentExecutionImage>,
     sequence: u64,
     function: FunctionIndex,
@@ -121,57 +132,59 @@ impl VmResumeToken {
         authority: VmResumeAuthority,
     ) -> Self {
         Self {
-            image,
-            sequence,
-            function,
-            instruction,
-            resume_instruction,
-            end_resume_pc,
-            resume_site,
-            expected_stack_height,
-            expected_result_count,
-            authority,
+            binding: Arc::new(VmResumeBinding {
+                image,
+                sequence,
+                function,
+                instruction,
+                resume_instruction,
+                end_resume_pc,
+                resume_site,
+                expected_stack_height,
+                expected_result_count,
+                authority,
+            }),
         }
     }
 
-    pub const fn sequence(&self) -> u64 {
-        self.sequence
+    pub fn sequence(&self) -> u64 {
+        self.binding.sequence
     }
 
-    pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
-        &self.image
+    pub fn image(&self) -> &Arc<DeploymentExecutionImage> {
+        &self.binding.image
     }
 
-    pub const fn function(&self) -> FunctionIndex {
-        self.function
+    pub fn function(&self) -> FunctionIndex {
+        self.binding.function
     }
 
-    pub const fn instruction(&self) -> InstructionIndex {
-        self.instruction
+    pub fn instruction(&self) -> InstructionIndex {
+        self.binding.instruction
     }
 
-    pub const fn resume_instruction(&self) -> InstructionIndex {
-        self.resume_instruction
+    pub fn resume_instruction(&self) -> InstructionIndex {
+        self.binding.resume_instruction
     }
 
-    pub const fn end_resume_pc(&self) -> Option<InstructionIndex> {
-        self.end_resume_pc
+    pub fn end_resume_pc(&self) -> Option<InstructionIndex> {
+        self.binding.end_resume_pc
     }
 
-    pub const fn resume_site(&self) -> ResumeSiteIndex {
-        self.resume_site
+    pub fn resume_site(&self) -> ResumeSiteIndex {
+        self.binding.resume_site
     }
 
-    pub const fn expected_stack_height(&self) -> u32 {
-        self.expected_stack_height
+    pub fn expected_stack_height(&self) -> u32 {
+        self.binding.expected_stack_height
     }
 
-    pub const fn expected_result_count(&self) -> u32 {
-        self.expected_result_count
+    pub fn expected_result_count(&self) -> u32 {
+        self.binding.expected_result_count
     }
 
-    pub const fn kind(&self) -> VmResumeKind {
-        match self.authority {
+    pub fn kind(&self) -> VmResumeKind {
+        match self.binding.authority {
             VmResumeAuthority::Child(_) => VmResumeKind::Child,
             VmResumeAuthority::Adapter(_) => VmResumeKind::Adapter,
             VmResumeAuthority::StreamChild(_) => VmResumeKind::StreamChild,
@@ -179,8 +192,12 @@ impl VmResumeToken {
         }
     }
 
-    pub(crate) const fn authority(&self) -> VmResumeAuthority {
-        self.authority
+    pub(crate) fn authority(&self) -> VmResumeAuthority {
+        self.binding.authority
+    }
+
+    pub(crate) const fn binding(&self) -> &Arc<VmResumeBinding> {
+        &self.binding
     }
 
     /// Consumes this unforgeable continuation capability after the scheduler
@@ -191,6 +208,36 @@ impl VmResumeToken {
             ticket,
             resume: self,
         }
+    }
+}
+
+impl VmResumeBinding {
+    pub(crate) const fn image(&self) -> &Arc<DeploymentExecutionImage> {
+        &self.image
+    }
+
+    pub(crate) const fn function(&self) -> FunctionIndex {
+        self.function
+    }
+
+    pub(crate) const fn instruction(&self) -> InstructionIndex {
+        self.instruction
+    }
+
+    pub(crate) const fn resume_instruction(&self) -> InstructionIndex {
+        self.resume_instruction
+    }
+
+    pub(crate) const fn end_resume_pc(&self) -> Option<InstructionIndex> {
+        self.end_resume_pc
+    }
+
+    pub(crate) const fn expected_stack_height(&self) -> u32 {
+        self.expected_stack_height
+    }
+
+    pub(crate) const fn expected_result_count(&self) -> u32 {
+        self.expected_result_count
     }
 }
 
@@ -259,7 +306,7 @@ impl ChildInvocation {
         resume: VmResumeToken,
     ) -> Result<Self, VmError> {
         if target == ChildTarget::StreamNext
-            || resume.authority != VmResumeAuthority::Child(target)
+            || resume.authority() != VmResumeAuthority::Child(target)
             || !Arc::ptr_eq(arguments.image(), resume.image())
         {
             return Err(VmError::ResumeTokenMismatch);
@@ -278,7 +325,7 @@ impl ChildInvocation {
         resume: VmResumeToken,
     ) -> Result<Self, VmError> {
         if !arguments.is_empty()
-            || resume.authority != VmResumeAuthority::Child(ChildTarget::StreamNext)
+            || resume.authority() != VmResumeAuthority::Child(ChildTarget::StreamNext)
             || !Arc::ptr_eq(arguments.image(), resume.image())
         {
             return Err(VmError::ResumeTokenMismatch);
@@ -347,7 +394,7 @@ impl AdapterInvocation {
         arguments: VmHostEffectArguments,
         resume: VmResumeToken,
     ) -> Self {
-        debug_assert_eq!(resume.authority, VmResumeAuthority::Adapter(adapter));
+        debug_assert_eq!(resume.authority(), VmResumeAuthority::Adapter(adapter));
         debug_assert!(Arc::ptr_eq(arguments.image(), resume.image()));
         Self {
             adapter,
@@ -396,7 +443,7 @@ impl StreamInvocation {
         arguments: VmOwnedValues,
         resume: VmResumeToken,
     ) -> Result<Self, VmError> {
-        if resume.authority != VmResumeAuthority::StreamChild(target)
+        if resume.authority() != VmResumeAuthority::StreamChild(target)
             || !Arc::ptr_eq(arguments.image(), resume.image())
         {
             return Err(VmError::ResumeTokenMismatch);
@@ -524,7 +571,7 @@ impl StreamItem {
         instruction: InstructionIndex,
         resume: VmResumeToken,
     ) -> Self {
-        debug_assert_eq!(resume.authority, VmResumeAuthority::StreamItem);
+        debug_assert_eq!(resume.authority(), VmResumeAuthority::StreamItem);
         debug_assert!(Arc::ptr_eq(item.image(), resume.image()));
         debug_assert_eq!(item.len(), 1);
         Self {
@@ -669,7 +716,7 @@ impl VmRootSource for ResumeOutcome {
 #[must_use = "VM control must be handled by the scheduler"]
 pub enum VmControl {
     Continue,
-    Complete(VmResult),
+    Complete(VmCompletion),
     EnterChild(ChildInvocation),
     EnterAdapter(AdapterInvocation),
     EmitStream(StreamItem),
@@ -679,13 +726,7 @@ pub enum VmControl {
 impl VmRootSource for VmControl {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         match self {
-            Self::Complete(Ok(values)) => values.visit_roots(visitor),
-            // Root uncaught throws remain owned by the originating fiber's
-            // exact UnwindState until the scheduler consumes the completion
-            // into VmOwnedException/VmTerminalCause. Visiting the diagnostic
-            // alias here would enumerate a second root authority.
-            Self::Complete(Err(VmError::Thrown(_))) => Ok(()),
-            Self::Complete(Err(error)) => visit_vm_error(error, visitor),
+            Self::Complete(completion) => completion.visit_roots(visitor),
             Self::EnterChild(invocation) => invocation.visit_roots(visitor),
             Self::EnterAdapter(invocation) => invocation.visit_roots(visitor),
             Self::EmitStream(item) => item.visit_roots(visitor),
@@ -755,14 +796,11 @@ impl VmRootSource for AdapterControl {
 }
 
 pub(crate) fn visit_vm_error(
-    error: &VmError,
-    visitor: &mut dyn VmRootVisitor,
+    _error: &VmError,
+    _visitor: &mut dyn VmRootVisitor,
 ) -> Result<(), VmHeapError> {
-    if let VmError::Thrown(envelope) = error {
-        if let Some(slot) = envelope.vm_local_slot() {
-            visitor.visit_root(&slot)?;
-        }
-    }
+    // `VmError` is diagnostic-only. Exact thrown payload authority can only
+    // live in VmOwnedException/VmCompletion/VmTerminalCause.
     Ok(())
 }
 

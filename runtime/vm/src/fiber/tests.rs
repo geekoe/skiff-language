@@ -14,13 +14,13 @@ use std::{
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     builtin_receiver_op, BoundaryCallbackContract, BoundaryEffectGuarantee,
-    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, BuiltinReceiverMethod, BuiltinReceiverRoot, CallableMayEffects,
-    ContractOperationId, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity, IngressProtocol,
-    IngressSelector, InstructionSourceSite, Opcode, PackageArtifact, ParamModeIr, ServiceContract,
-    ServiceDeployment, TypeRefIr, SERVICE_CONTRACT_SCHEMA_VERSION,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
+    BoundaryStreamContract, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, BuiltinReceiverMethod, BuiltinReceiverRoot,
+    CallableMayEffects, ContractOperationId, ContractTypeRef, DeploymentArtifactIdentity,
+    DeploymentDiagnosticText, DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity,
+    IngressProtocol, IngressSelector, InstructionSourceSite, Opcode, PackageArtifact, ParamModeIr,
+    ServiceContract, ServiceDeployment, TypeRefIr, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
@@ -50,7 +50,10 @@ use skiff_runtime_model::bytecode_execution_observation::{
 use skiff_runtime_model::service_error::{
     CatchIdentity, ErrorCorrelation, NominalTypeIdentity, RequestException,
 };
-use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmHeapOperation, VmRecordField};
+use skiff_runtime_model::vm_heap::{
+    PinnedWritablePathSegment, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment,
+    VmRecordField, WritablePathPreparation,
+};
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
@@ -862,8 +865,28 @@ struct ObservationFixture {
 
 impl ObservationFixture {
     fn build(package_id: &str, source: &str) -> Self {
+        Self::build_with_parameters(package_id, source, Vec::new())
+    }
+
+    fn build_number_parameter(package_id: &str, source: &str) -> Self {
+        Self::build_with_parameters(
+            package_id,
+            source,
+            vec![BoundaryParameter {
+                name: "seed".to_string(),
+                ty: ContractTypeRef::builtin("number"),
+                value_plan: boundary_value_plan(BoundaryValueOwner::Caller),
+            }],
+        )
+    }
+
+    fn build_with_parameters(
+        package_id: &str,
+        source: &str,
+        parameters: Vec<BoundaryParameter>,
+    ) -> Self {
         let (package, bytecode) = compile_fixture_package(package_id, source);
-        let (contract, operation) = service_contract(package_id);
+        let (contract, operation) = service_contract_with_parameters(package_id, parameters);
         let (deployment, deployment_reference) =
             service_deployment(&package, &contract, operation.clone());
         let resolver = TestResolver {
@@ -1521,7 +1544,19 @@ fn compile_fixture_package(
     (package, bytecode)
 }
 
-fn service_contract(package_id: &str) -> (Arc<ServiceContract>, ContractOperationId) {
+fn boundary_value_plan(owner: BoundaryValueOwner) -> BoundaryValuePlan {
+    BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::DetachedValueGraph,
+        encoding: BoundaryValueEncoding::CanonicalValue,
+        owner,
+        lifetime: BoundaryValueLifetime::Call,
+    }
+}
+
+fn service_contract_with_parameters(
+    package_id: &str,
+    parameters: Vec<BoundaryParameter>,
+) -> (Arc<ServiceContract>, ContractOperationId) {
     let operation =
         skiff_artifact_identity::contract_operation_id(package_id, "1.0.0", "run").unwrap();
     let mut contract = ServiceContract {
@@ -1535,15 +1570,10 @@ fn service_contract(package_id: &str) -> (Arc<ServiceContract>, ContractOperatio
                 operation_id: operation.clone(),
                 stable_key: "run".to_string(),
                 contract: BoundaryOperationContract {
-                    parameters: Vec::new(),
+                    parameters,
                     return_value: BoundaryReturn {
                         ty: ContractTypeRef::builtin("number"),
-                        value_plan: BoundaryValuePlan::Linkable {
-                            carrier: BoundaryValueCarrier::DetachedValueGraph,
-                            encoding: BoundaryValueEncoding::CanonicalValue,
-                            owner: BoundaryValueOwner::Provider,
-                            lifetime: BoundaryValueLifetime::Call,
-                        },
+                        value_plan: boundary_value_plan(BoundaryValueOwner::Provider),
                     },
                     stream: BoundaryStreamContract::Unary,
                     callbacks: BoundaryCallbackContract::None,
@@ -1907,7 +1937,7 @@ impl VmRootVisitor for ResumeRootCollector {
 fn origin_throw_completion(
     fixture: &ObservationFixture,
     heap: &mut dyn VmHeap,
-) -> (VmFiber, crate::VmResult, *const RequestException) {
+) -> (VmFiber, crate::VmCompletion) {
     let observer = BytecodeExecutionObserver::new(
         Arc::new(RecordingSink::default()),
         observation_correlation(),
@@ -1921,40 +1951,37 @@ fn origin_throw_completion(
     let control = loop {
         match origin.run_segment(heap, &mut budget) {
             VmControl::Continue => {}
-            control @ VmControl::Complete(Err(VmError::Thrown(_))) => break control,
+            control @ VmControl::Complete(_) => break control,
             _ => panic!("origin fiber must complete with its uncaught local exception"),
         }
     };
     let mut control_roots = ResumeRootCollector::default();
     control.visit_roots(&mut control_roots).unwrap();
-    assert!(
-        control_roots.0.is_empty(),
-        "the outward thrown diagnostic is not a second root authority"
-    );
+    assert_eq!(control_roots.0.len(), 1);
     let mut fiber_roots = ResumeRootCollector::default();
     origin.visit_roots(&mut fiber_roots).unwrap();
-    assert_eq!(fiber_roots.0.len(), 1);
+    assert!(fiber_roots.0.is_empty());
 
     let VmControl::Complete(completed) = control else {
         unreachable!()
     };
-    let Err(VmError::Thrown(exception)) = &completed else {
-        unreachable!()
-    };
-    let exception_pointer = exception.as_ref() as *const RequestException;
-    (origin, completed, exception_pointer)
+    assert!(completed.thrown_diagnostic().is_some());
+    (origin, completed)
 }
 
 fn origin_owned_throw(
     fixture: &ObservationFixture,
     heap: &mut dyn VmHeap,
 ) -> (ResumeOutcome, *const RequestException) {
-    let (mut origin, completed, exception_pointer) = origin_throw_completion(fixture, heap);
-    let outcome = origin.completion_to_resume_outcome(completed);
+    let (origin, completed) = origin_throw_completion(fixture, heap);
+    let Ok((outcome, residual)) = completed.into_resume() else {
+        panic!("exact origin throw is resumable")
+    };
+    assert!(residual.is_empty());
     let ResumeOutcome::Throw(exception) = &outcome else {
         panic!("the origin fiber seals its exact unwind state into Throw")
     };
-    assert_eq!(exception.exception() as *const _, exception_pointer);
+    let exception_pointer = exception.exception() as *const _;
     let mut remaining_fiber_roots = ResumeRootCollector::default();
     origin.visit_roots(&mut remaining_fiber_roots).unwrap();
     assert!(remaining_fiber_roots.0.is_empty());
@@ -2146,7 +2173,8 @@ fn controlled_resume_throw_preserves_the_exact_envelope_into_the_catch_handler()
     loop {
         match fiber.run_segment(&mut heap, &mut budget) {
             VmControl::Continue => {}
-            VmControl::Complete(Ok(values)) => {
+            VmControl::Complete(completion) if completion.returned_values().is_some() => {
+                let values = completion.returned_values().unwrap();
                 assert_eq!(
                     values.values()[0].as_number(),
                     Some(1.0),

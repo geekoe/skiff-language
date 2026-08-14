@@ -253,11 +253,52 @@ pub(super) fn host_result_resume_token() -> crate::VmResumeToken {
     )
 }
 
+pub(super) fn host_resume_fiber_and_token(
+    heap: &mut IntrinsicDispatchHeap,
+) -> (VmFiber, crate::VmResumeToken) {
+    let fixture = host_resume_fixture();
+    let entry = fixture.target();
+    let [parameter_type] = entry.signature().parameter_types() else {
+        panic!("host resume fixture has one exact gateway request parameter")
+    };
+    let request = heap.allocate(
+        IntrinsicDispatchValue::Opaque,
+        compact_tag(parameter_type.get()),
+        ValueFlags::new(0),
+    );
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = Vm::start(entry, Box::new([request]), vm_limits(), observer)
+        .expect("host resume fixture accepts its exact request carrier");
+    loop {
+        match fiber
+            .dispatch_one(heap)
+            .expect("host fixture reaches its exact adapter handoff")
+        {
+            DispatchOutcome::Continue => {}
+            DispatchOutcome::Handoff(VmControl::EnterAdapter(invocation)) => {
+                let (_, arguments, resume) = invocation.into_parts();
+                arguments
+                    .release(heap)
+                    .expect("adapter arguments release through their exact plans");
+                return (fiber, resume);
+            }
+            DispatchOutcome::Handoff(_) => panic!("host fixture exposes one adapter handoff"),
+            DispatchOutcome::Complete(_) | DispatchOutcome::Throw(_) => {
+                panic!("host fixture must suspend before completion")
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) enum IntrinsicDispatchValue {
     Opaque,
     String(String),
     Bytes(Vec<u8>),
+    Array(Vec<ValueSlot>),
     Record(Vec<VmRecordField>),
 }
 
@@ -271,9 +312,12 @@ pub(super) struct IntrinsicDispatchHeap {
     next_handle: u64,
     pub(super) entries: BTreeMap<u64, IntrinsicDispatchEntry>,
     pub(super) transfer_attempts: usize,
-    fail_transfer_at: Option<usize>,
+    pub(super) fail_transfer_at: Option<usize>,
     pub(super) change_transfer_at: Option<usize>,
+    pub(super) share_attempts: usize,
+    pub(super) fail_share_at: Option<usize>,
     pub(super) release_attempts: usize,
+    pub(super) release_history: Vec<u64>,
     pub(super) fail_release_at: Option<usize>,
     typed_string_allocations: usize,
     fail_typed_string_at: Option<usize>,
@@ -282,7 +326,13 @@ pub(super) struct IntrinsicDispatchHeap {
     record_allocations: usize,
     fail_record_allocation: bool,
     pub(super) fail_bytes_read: bool,
-    array_push_attempts: usize,
+    pub(super) array_push_attempts: usize,
+    pub(super) fail_array_push_at: Option<usize>,
+    pub(super) fail_validate_handle: Option<u64>,
+    pub(super) writable_prepare_attempts: usize,
+    pub(super) fail_writable_prepare_at: Option<usize>,
+    pub(super) writable_commit_attempts: usize,
+    pub(super) fail_writable_commit_at: Option<usize>,
 }
 
 impl IntrinsicDispatchHeap {
@@ -312,6 +362,22 @@ impl IntrinsicDispatchHeap {
         self.entries.get(&handle).map_or(0, |entry| entry.owners)
     }
 
+    pub(super) fn debug_inventory(&self) -> Vec<(u64, usize, &'static str)> {
+        self.entries
+            .iter()
+            .map(|(handle, entry)| {
+                let kind = match &entry.value {
+                    IntrinsicDispatchValue::Opaque => "opaque",
+                    IntrinsicDispatchValue::String(_) => "string",
+                    IntrinsicDispatchValue::Bytes(_) => "bytes",
+                    IntrinsicDispatchValue::Array(_) => "array",
+                    IntrinsicDispatchValue::Record(_) => "record",
+                };
+                (*handle, entry.owners, kind)
+            })
+            .collect()
+    }
+
     fn release_handle(&mut self, handle: u64) -> Result<(), VmHeapError> {
         let children = {
             let entry = self
@@ -326,6 +392,7 @@ impl IntrinsicDispatchHeap {
                 return Ok(());
             }
             match &entry.value {
+                IntrinsicDispatchValue::Array(elements) => elements.clone(),
                 IntrinsicDispatchValue::Record(fields) => {
                     fields.iter().map(|field| field.value).collect::<Vec<_>>()
                 }
@@ -342,10 +409,134 @@ impl IntrinsicDispatchHeap {
         }
         Ok(())
     }
+
+    fn child_at(
+        &self,
+        container: &ValueSlot,
+        segment: &PinnedWritablePathSegment,
+    ) -> Result<ValueSlot, VmHeapError> {
+        let handle = Self::handle(container)?;
+        let entry = self
+            .entries
+            .get(&handle)
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        match (segment, &entry.value) {
+            (
+                PinnedWritablePathSegment::DenseField { field },
+                IntrinsicDispatchValue::Record(fields),
+            ) => fields
+                .iter()
+                .find(|candidate| candidate.name == *field)
+                .map(|candidate| candidate.value)
+                .ok_or(VmHeapError::InvalidValueMetadata),
+            (
+                PinnedWritablePathSegment::ArrayIndex { index },
+                IntrinsicDispatchValue::Array(items),
+            ) => items
+                .get(*index)
+                .copied()
+                .ok_or(VmHeapError::InvalidValueMetadata),
+            (PinnedWritablePathSegment::MapKey { .. }, _)
+            | (_, IntrinsicDispatchValue::Opaque)
+            | (_, IntrinsicDispatchValue::String(_))
+            | (_, IntrinsicDispatchValue::Bytes(_))
+            | (PinnedWritablePathSegment::DenseField { .. }, IntrinsicDispatchValue::Array(_))
+            | (PinnedWritablePathSegment::ArrayIndex { .. }, IntrinsicDispatchValue::Record(_)) => {
+                Err(VmHeapError::InvalidValueMetadata)
+            }
+        }
+    }
+
+    fn replace_child(
+        &mut self,
+        container: &ValueSlot,
+        segment: &PinnedWritablePathSegment,
+        value: ValueSlot,
+    ) -> Result<(), VmHeapError> {
+        self.validate_live(&value)?;
+        let handle = Self::handle(container)?;
+        let old = {
+            let entry = self
+                .entries
+                .get_mut(&handle)
+                .ok_or(VmHeapError::InvalidValueMetadata)?;
+            match (segment, &mut entry.value) {
+                (
+                    PinnedWritablePathSegment::DenseField { field },
+                    IntrinsicDispatchValue::Record(fields),
+                ) => {
+                    let destination = fields
+                        .iter_mut()
+                        .find(|candidate| candidate.name == *field)
+                        .ok_or(VmHeapError::InvalidValueMetadata)?;
+                    std::mem::replace(&mut destination.value, value)
+                }
+                (
+                    PinnedWritablePathSegment::ArrayIndex { index },
+                    IntrinsicDispatchValue::Array(items),
+                ) => {
+                    let destination = items
+                        .get_mut(*index)
+                        .ok_or(VmHeapError::InvalidValueMetadata)?;
+                    std::mem::replace(destination, value)
+                }
+                _ => return Err(VmHeapError::InvalidValueMetadata),
+            }
+        };
+        if let Some(old) = old.as_request_heap_ref() {
+            self.release_handle(old.get())?;
+        }
+        Ok(())
+    }
+
+    fn clone_container(&mut self, container: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.validate_live(container)?;
+        let handle = Self::handle(container)?;
+        let value = self
+            .entries
+            .get(&handle)
+            .ok_or(VmHeapError::InvalidValueMetadata)?
+            .value
+            .clone();
+        let value = match value {
+            IntrinsicDispatchValue::Array(mut items) => {
+                for item in &mut items {
+                    if item.as_request_heap_ref().is_some() {
+                        *item = self.snapshot_share(item)?;
+                    }
+                }
+                IntrinsicDispatchValue::Array(items)
+            }
+            IntrinsicDispatchValue::Record(mut fields) => {
+                for field in &mut fields {
+                    if field.value.as_request_heap_ref().is_some() {
+                        field.value = self.snapshot_share(&field.value)?;
+                    }
+                }
+                IntrinsicDispatchValue::Record(fields)
+            }
+            IntrinsicDispatchValue::Opaque
+            | IntrinsicDispatchValue::String(_)
+            | IntrinsicDispatchValue::Bytes(_) => return Err(VmHeapError::InvalidValueMetadata),
+        };
+        let tag = container
+            .compact_type_tag()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        Ok(self.allocate(value, tag, container.flags()))
+    }
 }
 
 impl VmHeap for IntrinsicDispatchHeap {
     fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
+        if value
+            .as_handle()
+            .is_some_and(|handle| self.fail_validate_handle == Some(handle.get()))
+        {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ValidateLive,
+                message: "injected live validation failure".to_string(),
+            });
+        }
         match value.kind() {
             Some(
                 skiff_runtime_model::vm_value::ValueKind::Null
@@ -374,6 +565,13 @@ impl VmHeap for IntrinsicDispatchHeap {
 
     fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
         self.validate_live(source)?;
+        self.share_attempts += 1;
+        if self.fail_share_at == Some(self.share_attempts) {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::SnapshotShare,
+                message: "injected snapshot share failure".to_string(),
+            });
+        }
         let handle = Self::handle(source)?;
         self.entries
             .get_mut(&handle)
@@ -421,6 +619,7 @@ impl VmHeap for IntrinsicDispatchHeap {
             });
         }
         let handle = Self::handle(owner)?;
+        self.release_history.push(handle);
         self.release_handle(handle)
     }
 
@@ -432,7 +631,9 @@ impl VmHeap for IntrinsicDispatchHeap {
                 message: "injected resource release failure".to_string(),
             });
         }
-        self.release_handle(Self::handle(owner)?)
+        let handle = Self::handle(owner)?;
+        self.release_history.push(handle);
+        self.release_handle(handle)
     }
 
     fn alloc_typed_string(
@@ -486,6 +687,18 @@ impl VmHeap for IntrinsicDispatchHeap {
         Ok(self.allocate(IntrinsicDispatchValue::Record(fields.to_vec()), tag, flags))
     }
 
+    fn allocate_array(
+        &mut self,
+        elements: &[ValueSlot],
+        tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        for element in elements {
+            self.validate_live(element)?;
+        }
+        Ok(self.allocate(IntrinsicDispatchValue::Array(elements.to_vec()), tag, flags))
+    }
+
     fn string_value(&self, value: &ValueSlot) -> Result<String, VmHeapError> {
         let handle = Self::handle(value)?;
         match &self
@@ -497,6 +710,7 @@ impl VmHeap for IntrinsicDispatchHeap {
             IntrinsicDispatchValue::String(value) => Ok(value.clone()),
             IntrinsicDispatchValue::Opaque
             | IntrinsicDispatchValue::Bytes(_)
+            | IntrinsicDispatchValue::Array(_)
             | IntrinsicDispatchValue::Record(_) => Err(VmHeapError::InvalidValueMetadata),
         }
     }
@@ -518,6 +732,7 @@ impl VmHeap for IntrinsicDispatchHeap {
             IntrinsicDispatchValue::Bytes(value) => Ok(value.clone()),
             IntrinsicDispatchValue::Opaque
             | IntrinsicDispatchValue::String(_)
+            | IntrinsicDispatchValue::Array(_)
             | IntrinsicDispatchValue::Record(_) => Err(VmHeapError::InvalidValueMetadata),
         }
     }
@@ -559,16 +774,153 @@ impl VmHeap for IntrinsicDispatchHeap {
             .ok_or(VmHeapError::InvalidValueMetadata)
     }
 
-    fn array_push_owned(
-        &mut self,
-        _array: &ValueSlot,
-        _item: ValueSlot,
-    ) -> Result<(), VmHeapError> {
+    fn array_push_owned(&mut self, array: &ValueSlot, item: ValueSlot) -> Result<(), VmHeapError> {
         self.array_push_attempts += 1;
-        Err(VmHeapError::HeapOperationFailed {
-            operation: VmHeapOperation::ArrayPushOwned,
-            message: "legacy intrinsic must never reach heap mutation".to_string(),
-        })
+        self.validate_live(array)?;
+        self.validate_live(&item)?;
+        if self.fail_array_push_at == Some(self.array_push_attempts) {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ArrayPushOwned,
+                message: "injected owned array push failure".to_string(),
+            });
+        }
+        let handle = Self::handle(array)?;
+        let IntrinsicDispatchValue::Array(items) = &mut self
+            .entries
+            .get_mut(&handle)
+            .ok_or(VmHeapError::InvalidValueMetadata)?
+            .value
+        else {
+            return Err(VmHeapError::InvalidValueMetadata);
+        };
+        items.push(item);
+        Ok(())
+    }
+
+    fn array_get(&self, array: &ValueSlot, index: usize) -> Result<ValueSlot, VmHeapError> {
+        self.validate_live(array)?;
+        let handle = Self::handle(array)?;
+        let IntrinsicDispatchValue::Array(items) = &self
+            .entries
+            .get(&handle)
+            .ok_or(VmHeapError::InvalidValueMetadata)?
+            .value
+        else {
+            return Err(VmHeapError::InvalidValueMetadata);
+        };
+        items
+            .get(index)
+            .copied()
+            .ok_or(VmHeapError::InvalidValueMetadata)
+    }
+
+    fn array_len(&self, array: &ValueSlot) -> Result<usize, VmHeapError> {
+        self.validate_live(array)?;
+        let handle = Self::handle(array)?;
+        let IntrinsicDispatchValue::Array(items) = &self
+            .entries
+            .get(&handle)
+            .ok_or(VmHeapError::InvalidValueMetadata)?
+            .value
+        else {
+            return Err(VmHeapError::InvalidValueMetadata);
+        };
+        Ok(items.len())
+    }
+
+    fn prepare_writable_path(
+        &mut self,
+        root: &ValueSlot,
+        segments: &[VmHeapPathSegment],
+        selectors: &[ValueSlot],
+    ) -> Result<WritablePathPreparation, VmHeapError> {
+        self.writable_prepare_attempts += 1;
+        if self.fail_writable_prepare_at == Some(self.writable_prepare_attempts) {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::PrepareWritablePath,
+                message: "injected writable path preparation failure".to_string(),
+            });
+        }
+        self.validate_live(root)?;
+        let mut selector = 0usize;
+        let mut current = *root;
+        let mut pinned = Vec::with_capacity(segments.len());
+        let mut containers = Vec::with_capacity(segments.len());
+        for segment in segments {
+            containers.push(current);
+            let resolved = match segment {
+                VmHeapPathSegment::DenseField { field } => PinnedWritablePathSegment::DenseField {
+                    field: field.clone(),
+                },
+                VmHeapPathSegment::ArrayIndex => {
+                    let value = selectors
+                        .get(selector)
+                        .ok_or(VmHeapError::InvalidValueMetadata)?;
+                    selector += 1;
+                    PinnedWritablePathSegment::ArrayIndex {
+                        index: skiff_runtime_model::vm_heap::collection_index(value)
+                            .ok_or(VmHeapError::InvalidValueMetadata)?,
+                    }
+                }
+                VmHeapPathSegment::MapKey => return Err(VmHeapError::InvalidValueMetadata),
+            };
+            current = self.child_at(&current, &resolved)?;
+            pinned.push(resolved);
+        }
+        if selector != selectors.len() {
+            return Err(VmHeapError::InvalidValueMetadata);
+        }
+        WritablePathPreparation::new(
+            *root,
+            pinned.into_boxed_slice(),
+            containers.into_boxed_slice(),
+            Some(current),
+        )
+    }
+
+    fn commit_writable_path(
+        &mut self,
+        prepared: WritablePathPreparation,
+        value: ValueSlot,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.writable_commit_attempts += 1;
+        if self.fail_writable_commit_at == Some(self.writable_commit_attempts) {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::CommitWritablePath,
+                message: "injected writable path commit failure".to_string(),
+            });
+        }
+        self.validate_live(&prepared.root())?;
+        self.validate_live(&value)?;
+        let exclusive = prepared.containers().iter().all(|container| {
+            Self::handle(container)
+                .ok()
+                .and_then(|handle| self.entries.get(&handle))
+                .is_some_and(|entry| entry.owners == 1)
+        });
+        if exclusive {
+            let container = prepared
+                .containers()
+                .last()
+                .copied()
+                .ok_or(VmHeapError::InvalidValueMetadata)?;
+            let segment = prepared
+                .segments()
+                .last()
+                .ok_or(VmHeapError::InvalidValueMetadata)?;
+            self.replace_child(&container, segment, value)?;
+            return Ok(prepared.root());
+        }
+
+        // The admitted Phase 1-5 mutation fixtures exercise a one-segment
+        // copy-on-write path. Keep the fake heap deliberately narrow so a
+        // test cannot accidentally claim broader VM heap semantics.
+        if prepared.segments().len() != 1 {
+            return Err(VmHeapError::InvalidValueMetadata);
+        }
+        let replacement = self.clone_container(&prepared.root())?;
+        self.replace_child(&replacement, &prepared.segments()[0], value)?;
+        Ok(replacement)
     }
 }
 

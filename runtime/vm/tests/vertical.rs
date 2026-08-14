@@ -405,10 +405,15 @@ mod tests {
         loop {
             match fiber.run_segment(&mut heap, &mut budget) {
                 VmControl::Continue => continue,
-                VmControl::Complete(result) => {
-                    let values = result.unwrap();
+                VmControl::Complete(completion) => {
+                    let values = completion
+                        .returned_values()
+                        .expect("scalar VM fixture must return values");
                     assert_eq!(values.len(), 1);
                     assert_eq!(values.values()[0].as_number(), Some(42.0));
+                    let (cause, escrow) = completion.into_terminal();
+                    assert!(cause.is_none());
+                    assert!(escrow.is_empty());
                     break;
                 }
                 _ => panic!("scalar VM test produced an unsupported control handoff"),

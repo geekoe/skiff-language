@@ -1,13 +1,13 @@
 use std::{fmt, sync::Arc};
 
-use skiff_artifact_model::{Opcode, TypeRefIr};
+use skiff_artifact_model::{InstructionSourceSite, Opcode, TypeRefIr};
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
     FunctionIndex, InstructionIndex, LinkedValueTransferPlan, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
-    service_error::RequestException,
+    service_error::{CatchIdentity, ErrorCorrelation, ExceptionStackFrame, RequestException},
     vm_heap::{VmHeap, VmHeapError},
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{ValueKind, ValueSlot},
@@ -15,7 +15,7 @@ use skiff_runtime_model::{
 
 use crate::{
     admission::is_discardable_root,
-    control::{visit_values, visit_vm_error, ResumeOutcome, VmResumeToken},
+    control::{visit_values, visit_vm_error, ResumeOutcome, VmResumeBinding, VmResumeToken},
     lifecycle::LifecycleExecutor,
     VmError,
 };
@@ -33,6 +33,10 @@ pub struct VmOwnedValues {
     /// internally detected damaged invariant and can only become retained
     /// terminal ownership; it is never inferred again from a runtime tag.
     release_plans: Box<[Option<LinkedValueTransferPlan>]>,
+    /// Present only for values materialized against one exact live resume
+    /// token. Pointer identity is the unforgeable continuation binding; all
+    /// descriptor fields and plans were validated before this Arc was stored.
+    resume_binding: Option<Arc<VmResumeBinding>>,
 }
 
 impl VmOwnedValues {
@@ -52,6 +56,7 @@ impl VmOwnedValues {
             image,
             values,
             release_plans,
+            resume_binding: None,
         }
     }
 
@@ -65,6 +70,7 @@ impl VmOwnedValues {
             image,
             values: Box::new([]),
             release_plans: Box::new([]),
+            resume_binding: None,
         }
     }
 
@@ -80,9 +86,12 @@ impl VmOwnedValues {
             .resume_sites()
             .get(resume.resume_site())
             .filter(|site| {
-                site.function() == resume.function()
+                site.index() == resume.resume_site()
+                    && site.function() == resume.function()
                     && site.site() == resume.instruction()
                     && site.resume() == resume.resume_instruction()
+                    && site.end_resume() == resume.end_resume_pc()
+                    && site.expected_stack_height_before_result() == resume.expected_stack_height()
             })
         else {
             return Err(VmOwnedValuesRejected::new(
@@ -118,7 +127,9 @@ impl VmOwnedValues {
             ));
         }
         let plans = site.result_plans().to_vec().into_boxed_slice();
-        Ok(Self::new_exact(image, values, plans))
+        let mut owned = Self::new_exact(image, values, plans);
+        owned.resume_binding = Some(Arc::clone(resume.binding()));
+        Ok(owned)
     }
 
     pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
@@ -139,6 +150,12 @@ impl VmOwnedValues {
 
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
+    }
+
+    pub(crate) fn is_bound_to(&self, binding: &Arc<VmResumeBinding>) -> bool {
+        self.resume_binding
+            .as_ref()
+            .is_some_and(|owned| Arc::ptr_eq(owned, binding))
     }
 
     /// Consumes values that can no longer be delivered to their verified
@@ -341,7 +358,48 @@ pub(crate) struct VmLifecycleSite {
 pub struct VmOwnedException {
     image: Arc<DeploymentExecutionImage>,
     exception: Arc<RequestException>,
+    diagnostic: VmThrownDiagnostic,
     owner: Option<VmTerminalOwner>,
+}
+
+/// Rootless metadata for one VM-local exception.
+///
+/// This snapshot deliberately contains neither `RequestException` nor
+/// `ValueSlot`. It may be cloned or retained after the exact payload owner is
+/// transferred or released without exposing a stale heap handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VmThrownDiagnostic {
+    identity: Option<CatchIdentity>,
+    source: InstructionSourceSite,
+    stack: Box<[ExceptionStackFrame]>,
+    correlation: ErrorCorrelation,
+}
+
+impl VmThrownDiagnostic {
+    fn from_exception(exception: &RequestException) -> Self {
+        Self {
+            identity: exception.actual_catch_identity().cloned(),
+            source: exception.source().clone(),
+            stack: exception.stack().to_vec().into_boxed_slice(),
+            correlation: exception.correlation().clone(),
+        }
+    }
+
+    pub const fn identity(&self) -> Option<&CatchIdentity> {
+        self.identity.as_ref()
+    }
+
+    pub const fn source(&self) -> &InstructionSourceSite {
+        &self.source
+    }
+
+    pub const fn stack(&self) -> &[ExceptionStackFrame] {
+        &self.stack
+    }
+
+    pub const fn correlation(&self) -> &ErrorCorrelation {
+        &self.correlation
+    }
 }
 
 impl VmOwnedException {
@@ -351,6 +409,7 @@ impl VmOwnedException {
         plan: Option<LinkedValueTransferPlan>,
         site: VmLifecycleSite,
     ) -> Self {
+        let diagnostic = VmThrownDiagnostic::from_exception(&exception);
         let owner = exception.vm_local_slot().and_then(|value| {
             if is_discardable_root(&value) {
                 return None;
@@ -363,6 +422,7 @@ impl VmOwnedException {
         Self {
             image,
             exception,
+            diagnostic,
             owner,
         }
     }
@@ -375,7 +435,11 @@ impl VmOwnedException {
         &self.image
     }
 
-    pub fn exception(&self) -> &RequestException {
+    pub const fn diagnostic(&self) -> &VmThrownDiagnostic {
+        &self.diagnostic
+    }
+
+    pub(crate) fn exception(&self) -> &RequestException {
         &self.exception
     }
 
@@ -423,6 +487,7 @@ impl VmOwnedException {
         let Self {
             image,
             exception: _,
+            diagnostic: _,
             owner,
         } = self;
         VmTerminalEscrow::new(image, owner.into_iter().collect())
@@ -459,6 +524,193 @@ impl VmRootSource for VmOwnedException {
     }
 }
 
+/// Linear completion of one VM fiber.
+///
+/// Construction is sealed in the VM. The primary result and every residual
+/// terminal owner are moved into this value in the same heap-free commit, so
+/// the producing fiber is rootless before control returns to the scheduler.
+#[must_use = "a VM completion must be resumed or converted into terminal retention"]
+pub struct VmCompletion {
+    kind: Box<VmCompletionKind>,
+    residual: VmTerminalEscrow,
+}
+
+enum VmCompletionKind {
+    Returned(VmOwnedValues),
+    Thrown(VmOwnedException),
+    Failed {
+        image: Arc<DeploymentExecutionImage>,
+        diagnostic: VmFailureDiagnostic,
+    },
+}
+
+enum VmFailureDiagnostic {
+    Error(VmError),
+    Thrown(VmThrownDiagnostic),
+}
+
+impl VmCompletion {
+    pub(crate) fn returned(values: VmOwnedValues, residual: VmTerminalEscrow) -> Self {
+        Self {
+            kind: Box::new(VmCompletionKind::Returned(values)),
+            residual,
+        }
+    }
+
+    pub(crate) fn thrown(exception: VmOwnedException, residual: VmTerminalEscrow) -> Self {
+        Self {
+            kind: Box::new(VmCompletionKind::Thrown(exception)),
+            residual,
+        }
+    }
+
+    pub(crate) fn failed(
+        image: Arc<DeploymentExecutionImage>,
+        error: VmError,
+        residual: VmTerminalEscrow,
+    ) -> Self {
+        let diagnostic = match error {
+            VmError::Thrown(exception) => {
+                VmFailureDiagnostic::Thrown(VmThrownDiagnostic::from_exception(&exception))
+            }
+            error => VmFailureDiagnostic::Error(error),
+        };
+        Self {
+            kind: Box::new(VmCompletionKind::Failed { image, diagnostic }),
+            residual,
+        }
+    }
+
+    pub fn returned_values(&self) -> Option<&VmOwnedValues> {
+        match self.kind.as_ref() {
+            VmCompletionKind::Returned(values) => Some(values),
+            VmCompletionKind::Thrown(_) | VmCompletionKind::Failed { .. } => None,
+        }
+    }
+
+    pub fn thrown_diagnostic(&self) -> Option<&VmThrownDiagnostic> {
+        match self.kind.as_ref() {
+            VmCompletionKind::Thrown(exception) => Some(exception.diagnostic()),
+            VmCompletionKind::Failed {
+                diagnostic: VmFailureDiagnostic::Thrown(diagnostic),
+                ..
+            } => Some(diagnostic),
+            VmCompletionKind::Returned(_)
+            | VmCompletionKind::Failed {
+                diagnostic: VmFailureDiagnostic::Error(_),
+                ..
+            } => None,
+        }
+    }
+
+    pub fn failure(&self) -> Option<&VmError> {
+        match self.kind.as_ref() {
+            VmCompletionKind::Failed {
+                diagnostic: VmFailureDiagnostic::Error(error),
+                ..
+            } => Some(error),
+            VmCompletionKind::Failed {
+                diagnostic: VmFailureDiagnostic::Thrown(_),
+                ..
+            } => None,
+            VmCompletionKind::Returned(_) | VmCompletionKind::Thrown(_) => None,
+        }
+    }
+
+    pub const fn residual(&self) -> &VmTerminalEscrow {
+        &self.residual
+    }
+
+    /// Converts a child completion into the only owner-bearing resume
+    /// variants. A failed rootless diagnostic remains a rootless Failure.
+    pub fn into_resume(
+        self,
+    ) -> Result<(ResumeOutcome, VmTerminalEscrow), (VmTerminalCause, VmTerminalEscrow)> {
+        let outcome = match *self.kind {
+            VmCompletionKind::Returned(values) => ResumeOutcome::Values(values),
+            VmCompletionKind::Thrown(exception) => ResumeOutcome::Throw(exception),
+            VmCompletionKind::Failed {
+                diagnostic: VmFailureDiagnostic::Error(error),
+                ..
+            } => ResumeOutcome::Failure(error),
+            VmCompletionKind::Failed {
+                image,
+                diagnostic: VmFailureDiagnostic::Thrown(diagnostic),
+            } => {
+                let cause = VmTerminalCause {
+                    kind: VmTerminalCauseKind::ThrownDiagnostic { image, diagnostic },
+                };
+                return Err((cause, self.residual));
+            }
+        };
+        Ok((outcome, self.residual))
+    }
+
+    /// Moves a completion that will not be delivered into terminal cause and
+    /// cleanup carriers. No owner is inferred from a diagnostic error.
+    pub fn into_terminal(mut self) -> (Option<VmTerminalCause>, VmTerminalEscrow) {
+        match *self.kind {
+            VmCompletionKind::Returned(values) => {
+                self.residual.merge(values.into_terminal_escrow());
+                (None, self.residual)
+            }
+            VmCompletionKind::Thrown(exception) => (
+                Some(VmTerminalCause::from_owned_exception(exception)),
+                self.residual,
+            ),
+            VmCompletionKind::Failed { image, diagnostic } => {
+                let cause = match diagnostic {
+                    VmFailureDiagnostic::Error(error) => VmTerminalCause::from_error(image, error),
+                    VmFailureDiagnostic::Thrown(diagnostic) => VmTerminalCause {
+                        kind: VmTerminalCauseKind::ThrownDiagnostic { image, diagnostic },
+                    },
+                };
+                (Some(cause), self.residual)
+            }
+        }
+    }
+}
+
+impl fmt::Debug for VmCompletion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("VmCompletion");
+        match self.kind.as_ref() {
+            VmCompletionKind::Returned(values) => {
+                debug.field("returned_values", &values.len());
+            }
+            VmCompletionKind::Thrown(exception) => {
+                debug.field("thrown", exception.diagnostic());
+            }
+            VmCompletionKind::Failed {
+                diagnostic: VmFailureDiagnostic::Error(error),
+                ..
+            } => {
+                debug.field("failed", error);
+            }
+            VmCompletionKind::Failed {
+                diagnostic: VmFailureDiagnostic::Thrown(diagnostic),
+                ..
+            } => {
+                debug.field("failed_throw", diagnostic);
+            }
+        }
+        debug
+            .field("residual_roots", &self.residual.root_count())
+            .finish()
+    }
+}
+
+impl VmRootSource for VmCompletion {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        match self.kind.as_ref() {
+            VmCompletionKind::Returned(values) => values.visit_roots(visitor)?,
+            VmCompletionKind::Thrown(exception) => exception.visit_roots(visitor)?,
+            VmCompletionKind::Failed { .. } => {}
+        }
+        self.residual.visit_roots(visitor)
+    }
+}
+
 /// Non-cloneable terminal primary cause. An uncaught VM exception keeps its
 /// diagnostic envelope and exact release authority in this same carrier, so
 /// request projection may borrow the live exception before monotonically
@@ -475,13 +727,11 @@ enum VmTerminalCauseKind {
         error: VmError,
     },
     Thrown(VmOwnedException),
-    /// A naked `VmError::Thrown` has lost the producer's exact payload plan.
-    /// Keep the diagnostic envelope and its raw owner together, but never
-    /// mislabel the caller-supplied retention image as exception provenance.
-    DamagedThrown {
-        retention_image: Arc<DeploymentExecutionImage>,
-        exception: Arc<RequestException>,
-        owner: Option<VmTerminalOwner>,
+    /// A legacy/naked thrown error is only a cloneable diagnostic alias. It
+    /// can never mint or retain physical payload authority.
+    ThrownDiagnostic {
+        image: Arc<DeploymentExecutionImage>,
+        diagnostic: VmThrownDiagnostic,
     },
 }
 
@@ -491,22 +741,9 @@ impl VmTerminalCause {
             // A naked thrown error no longer carries its origin plan. It must
             // never mint the origin-bound `VmOwnedException`; only the
             // producing fiber's completion seam has that authority.
-            VmError::Thrown(exception) => VmTerminalCauseKind::DamagedThrown {
-                retention_image: image,
-                owner: exception.vm_local_slot().and_then(|value| {
-                    (!is_discardable_root(&value)).then(|| {
-                        VmTerminalOwner::damaged_retained(
-                            value,
-                            VmLifecycleSite {
-                                function: FunctionIndex::new(0),
-                                instruction: InstructionIndex::new(0),
-                                opcode: Opcode::Throw,
-                            },
-                            0,
-                        )
-                    })
-                }),
-                exception,
+            VmError::Thrown(exception) => VmTerminalCauseKind::ThrownDiagnostic {
+                image,
+                diagnostic: VmThrownDiagnostic::from_exception(&exception),
             },
             error => VmTerminalCauseKind::Diagnostic { image, error },
         };
@@ -523,25 +760,23 @@ impl VmTerminalCause {
         match &self.kind {
             VmTerminalCauseKind::Diagnostic { image, .. } => image.owner(),
             VmTerminalCauseKind::Thrown(exception) => exception.origin_owner(),
-            VmTerminalCauseKind::DamagedThrown {
-                retention_image, ..
-            } => retention_image.owner(),
+            VmTerminalCauseKind::ThrownDiagnostic { image, .. } => image.owner(),
         }
     }
 
     pub fn diagnostic(&self) -> Option<&VmError> {
         match &self.kind {
             VmTerminalCauseKind::Diagnostic { error, .. } => Some(error),
-            VmTerminalCauseKind::Thrown(_) | VmTerminalCauseKind::DamagedThrown { .. } => None,
+            VmTerminalCauseKind::Thrown(_) | VmTerminalCauseKind::ThrownDiagnostic { .. } => None,
         }
     }
 
     /// Borrows the live uncaught exception for request error projection. The
     /// caller must complete any heap-backed projection before `release_all`.
-    pub fn thrown(&self) -> Option<&RequestException> {
+    pub fn thrown(&self) -> Option<&VmThrownDiagnostic> {
         match &self.kind {
-            VmTerminalCauseKind::Thrown(exception) => Some(exception.exception()),
-            VmTerminalCauseKind::DamagedThrown { exception, .. } => Some(exception),
+            VmTerminalCauseKind::Thrown(exception) => Some(exception.diagnostic()),
+            VmTerminalCauseKind::ThrownDiagnostic { diagnostic, .. } => Some(diagnostic),
             VmTerminalCauseKind::Diagnostic { .. } => None,
         }
     }
@@ -550,7 +785,7 @@ impl VmTerminalCause {
         match &self.kind {
             VmTerminalCauseKind::Diagnostic { .. } => 0,
             VmTerminalCauseKind::Thrown(exception) => exception.root_count(),
-            VmTerminalCauseKind::DamagedThrown { owner, .. } => usize::from(owner.is_some()),
+            VmTerminalCauseKind::ThrownDiagnostic { .. } => 0,
         }
     }
 
@@ -558,7 +793,7 @@ impl VmTerminalCause {
         match &self.kind {
             VmTerminalCauseKind::Diagnostic { .. } => 0,
             VmTerminalCauseKind::Thrown(exception) => exception.unresolved_count(),
-            VmTerminalCauseKind::DamagedThrown { owner, .. } => usize::from(owner.is_some()),
+            VmTerminalCauseKind::ThrownDiagnostic { .. } => 0,
         }
     }
 
@@ -566,13 +801,7 @@ impl VmTerminalCause {
         match &mut self.kind {
             VmTerminalCauseKind::Diagnostic { .. } => Ok(()),
             VmTerminalCauseKind::Thrown(exception) => exception.release_all(heap),
-            VmTerminalCauseKind::DamagedThrown { owner: None, .. } => Ok(()),
-            VmTerminalCauseKind::DamagedThrown {
-                owner: Some(owner), ..
-            } => Err(VmError::TerminalRootLifecycleUnavailable {
-                index: owner.diagnostic_index,
-                kind: owner.value.kind(),
-            }),
+            VmTerminalCauseKind::ThrownDiagnostic { .. } => Ok(()),
         }
     }
 }
@@ -585,9 +814,9 @@ impl fmt::Debug for VmTerminalCause {
                 .field(error)
                 .finish(),
             VmTerminalCauseKind::Thrown(exception) => exception.fmt(formatter),
-            VmTerminalCauseKind::DamagedThrown { owner, .. } => formatter
-                .debug_struct("VmTerminalCause::DamagedThrown")
-                .field("root_count", &usize::from(owner.is_some()))
+            VmTerminalCauseKind::ThrownDiagnostic { diagnostic, .. } => formatter
+                .debug_tuple("VmTerminalCause::ThrownDiagnostic")
+                .field(diagnostic)
                 .finish(),
         }
     }
@@ -597,7 +826,7 @@ impl fmt::Display for VmTerminalCause {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.kind {
             VmTerminalCauseKind::Diagnostic { error, .. } => fmt::Display::fmt(error, formatter),
-            VmTerminalCauseKind::Thrown(_) | VmTerminalCauseKind::DamagedThrown { .. } => {
+            VmTerminalCauseKind::Thrown(_) | VmTerminalCauseKind::ThrownDiagnostic { .. } => {
                 formatter.write_str("VM threw an uncaught request-local exception")
             }
         }
@@ -608,11 +837,8 @@ impl VmRootSource for VmTerminalCause {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         match &self.kind {
             VmTerminalCauseKind::Thrown(exception) => exception.visit_roots(visitor)?,
-            VmTerminalCauseKind::DamagedThrown {
-                owner: Some(owner), ..
-            } => visitor.visit_root(&owner.value)?,
             VmTerminalCauseKind::Diagnostic { .. }
-            | VmTerminalCauseKind::DamagedThrown { owner: None, .. } => {}
+            | VmTerminalCauseKind::ThrownDiagnostic { .. } => {}
         }
         Ok(())
     }
@@ -714,41 +940,11 @@ impl VmTerminalEscrow {
         match outcome {
             ResumeOutcome::Values(values) => values.into_terminal_escrow(),
             ResumeOutcome::Throw(exception) => exception.into_terminal_escrow(),
-            // A raw thrown error has no origin image authority. It is a
-            // malformed resume outcome and must be retained as damaged rather
-            // than interpreting its image-local TypeIndex in the receiver.
-            ResumeOutcome::Failure(VmError::Thrown(envelope)) => {
-                Self::from_unbound_exception(image, envelope)
-            }
             ResumeOutcome::Empty
             | ResumeOutcome::StreamEnd
             | ResumeOutcome::Failure(_)
             | ResumeOutcome::InternalTerminal(_) => Self::empty(image),
         }
-    }
-
-    /// Consumes an exception envelope that can no longer be projected or
-    /// resumed. The opaque payload remains the sole logical owner represented
-    /// by the resulting carrier.
-    fn from_unbound_exception(
-        image: Arc<DeploymentExecutionImage>,
-        envelope: Arc<RequestException>,
-    ) -> Self {
-        let site = VmLifecycleSite {
-            function: FunctionIndex::new(0),
-            instruction: InstructionIndex::new(0),
-            opcode: Opcode::Throw,
-        };
-        let owners = envelope
-            .vm_local_slot()
-            .into_iter()
-            .filter(|value| !is_discardable_root(value))
-            .enumerate()
-            .map(|(diagnostic_index, value)| {
-                VmTerminalOwner::damaged_retained(value, site, diagnostic_index)
-            })
-            .collect();
-        Self::new(image, owners)
     }
 
     pub(crate) fn from_slots(
