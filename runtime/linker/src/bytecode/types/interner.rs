@@ -92,10 +92,6 @@ impl<'a> TypeLinker<'a> {
         }
     }
 
-    pub(in crate::bytecode) fn deployment(&self) -> &HydratedDeploymentBytecode {
-        &self.deployment
-    }
-
     pub(in crate::bytecode) fn set_function_indices(
         &mut self,
         function_indices: &'a BTreeMap<SpecializationKey, FunctionIndex>,

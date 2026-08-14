@@ -378,10 +378,13 @@ fn validate_resume_site(
                     detail: "shape nominal TypeRef/ABI differs from the site stack-top item",
                 });
             }
-            if stack_item.plan() != shape.plan() {
+            if stack_item.plan() != stack_type.plan()
+                || shape.plan() != nominal_type.plan()
+                || stack_item.plan() != shape.plan()
+            {
                 return Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
                     resume_site: resume.index().get(),
-                    detail: "shape plan differs from the site stack-top item plan",
+                    detail: "stack item and shape plans differ from their exact TypeRef row plans",
                 });
             }
         }
@@ -410,21 +413,26 @@ fn validate_resume_site(
             parts.shapes.len(),
         )?;
         let shape = &parts.shapes[shape.get() as usize];
-        if resume.result_types()[result_index] != shape.nominal_type() {
+        let result_type = &parts.types[resume.result_types()[result_index].get() as usize];
+        let nominal_type = &parts.types[shape.nominal_type().get() as usize];
+        if result_type.type_ref() != nominal_type.type_ref() {
             return Err(
                 LinkedBytecodeCandidateError::ResumeResultMaterializationMismatch {
                     resume_site: resume.index().get(),
                     result_index,
-                    detail: "shape nominal type differs from the exact resume result type",
+                    detail: "shape nominal TypeRef/ABI differs from the exact resume result",
                 },
             );
         }
-        if &resume.result_plans()[result_index] != shape.plan() {
+        if &resume.result_plans()[result_index] != result_type.plan()
+            || shape.plan() != nominal_type.plan()
+            || &resume.result_plans()[result_index] != shape.plan()
+        {
             return Err(
                 LinkedBytecodeCandidateError::ResumeResultMaterializationMismatch {
                     resume_site: resume.index().get(),
                     result_index,
-                    detail: "shape plan differs from the exact resume result plan",
+                    detail: "result and shape plans differ from their exact TypeRef row plans",
                 },
             );
         }

@@ -73,7 +73,7 @@ fn type_linker_interns_only_the_owner_complete_type() {
 }
 
 #[test]
-fn dense_result_and_parameter_materialization_reject_wrong_nominal_abi_plan_and_fields() {
+fn dense_result_and_parameter_materialization_require_exact_type_and_plan_facts() {
     let hydrated = Fixture::record_shape().hydrate();
     let package = implementation_package(&hydrated);
     let specialization = SpecializationKey::new(
@@ -96,13 +96,10 @@ fn dense_result_and_parameter_materialization_reject_wrong_nominal_abi_plan_and_
         )
         .unwrap();
     let emitted_shape = linker.shape(shape_index).unwrap().clone();
-    let field_type = linker
-        .linked_type_ref(emitted_shape.fields()[0].ty())
-        .unwrap()
-        .clone();
     let exact_field_plan = linker
-        .plan_for_concrete_type(&field_type, location.clone())
-        .unwrap();
+        .linked_type_plan(emitted_shape.fields()[0].ty())
+        .expect("shape field retains its compiler-owned TypeRef plan")
+        .clone();
     let shape = LinkedShapeEntry::new(
         emitted_shape.index(),
         emitted_shape.origin().clone(),
@@ -115,9 +112,7 @@ fn dense_result_and_parameter_materialization_reject_wrong_nominal_abi_plan_and_
         ]),
     )
     .unwrap();
-    let snapshot_plan = LinkedValueTransferPlan::SnapshotShare {
-        drop: LinkedValueDropPlan::SnapshotRelease,
-    };
+    let snapshot_plan = shape.plan().clone();
     linker
         .validate_dense_result_materialization(
             shape.nominal_type(),
@@ -177,9 +172,11 @@ fn dense_result_and_parameter_materialization_reject_wrong_nominal_abi_plan_and_
         shape.plan().clone(),
         None,
         Box::new([LinkedShapeField::new(
-            "wrong",
+            "name-is-not-reconstructed-by-linker",
             shape.fields()[0].ty(),
-            shape.fields()[0].plan().clone(),
+            LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            },
         )
         .unwrap()]),
     )
@@ -191,7 +188,7 @@ fn dense_result_and_parameter_materialization_reject_wrong_nominal_abi_plan_and_
             &wrong_fields,
             location.clone(),
         )
-        .expect_err("artifact field drift cannot replace the exact record descriptor");
+        .expect_err("a shape field cannot replace its compiler-owned TypeRef plan");
     assert!(matches!(
         wrong_fields,
         BytecodeLinkError::UnsatisfiedObligation {
@@ -210,14 +207,14 @@ fn dense_result_and_parameter_materialization_reject_wrong_nominal_abi_plan_and_
         shape.fields().into(),
     )
     .unwrap();
-    assert!(linker
+    linker
         .validate_dense_parameter_materialization(
             shape.nominal_type(),
             &snapshot_plan,
             &privileged,
             location.clone(),
         )
-        .is_err());
+        .expect("linker does not invent a privileged-shape materialization prohibition");
 
     assert!(matches!(
         normalize_type(

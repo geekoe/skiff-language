@@ -17,17 +17,17 @@ use crate::{
     LinkedCallLoanBinding, LinkedCallLoanLayout, LinkedCallLoanLayoutError,
     LinkedCallableSignature, LinkedCallableSignatureError, LinkedCallbackCapture,
     LinkedCallbackCaptureLayout, LinkedCatchMatcher, LinkedConstantEntry, LinkedConstantReference,
-    LinkedConstantRoot, LinkedConstantSymbolPath, LinkedContainerLayout, LinkedContainerLayoutKind,
-    LinkedContainerPosition, LinkedContainerPositionKind, LinkedExceptionRegion, LinkedFrameLayout,
-    LinkedFrameLayoutError, LinkedFrozenConstantNode, LinkedFrozenConstantValue,
-    LinkedFunctionTables, LinkedInstruction, LinkedInstructionError, LinkedInstructionTarget,
-    LinkedOperationEntry, LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError,
-    LinkedParameterSlot, LinkedProgramPointState, LinkedResolvedOperand, LinkedResumeSite,
-    LinkedShapeEntry, LinkedShapeField, LinkedSlotState, LinkedSourceMapEntry,
-    LinkedStackMapCandidate, LinkedStackValue, LinkedStatementEntry, LinkedSwitchCase,
-    LinkedSwitchTable, LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan,
-    LinkedWritablePathEntry, LinkedWritablePathSegment, ResumeSiteIndex, ServiceOperationIndex,
-    ShapeIndex, SwitchTableIndex, SyntheticCallbackIndex, TypeIndex, WritablePathIndex,
+    LinkedConstantRoot, LinkedConstantSymbolPath, LinkedContainerLayout, LinkedContainerPosition,
+    LinkedContainerPositionKind, LinkedExceptionRegion, LinkedFrameLayout, LinkedFrameLayoutError,
+    LinkedFrozenConstantNode, LinkedFrozenConstantValue, LinkedFunctionTables, LinkedInstruction,
+    LinkedInstructionError, LinkedInstructionTarget, LinkedOperationEntry,
+    LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError, LinkedParameterSlot,
+    LinkedProgramPointState, LinkedResolvedOperand, LinkedResumeSite, LinkedShapeEntry,
+    LinkedShapeField, LinkedSlotState, LinkedSourceMapEntry, LinkedStackMapCandidate,
+    LinkedStackValue, LinkedStatementEntry, LinkedSwitchCase, LinkedSwitchTable, LinkedTypeEntry,
+    LinkedValueDropPlan, LinkedValueTransferPlan, LinkedWritablePathEntry,
+    LinkedWritablePathSegment, ResumeSiteIndex, ServiceOperationIndex, ShapeIndex,
+    SwitchTableIndex, SyntheticCallbackIndex, TypeIndex, WritablePathIndex,
 };
 
 use super::fixtures::{
@@ -483,7 +483,7 @@ fn candidate_retains_exact_container_position_layouts() {
             snapshot_plan(),
             Some(LinkedContainerLayout::array(LinkedContainerPosition::new(
                 TypeIndex::new(0),
-                snapshot_release_plan(),
+                snapshot_plan(),
             ))),
         ),
         LinkedTypeEntry::new(
@@ -493,7 +493,7 @@ fn candidate_retains_exact_container_position_layouts() {
             snapshot_plan(),
             Some(LinkedContainerLayout::json(LinkedContainerPosition::new(
                 TypeIndex::new(2),
-                snapshot_release_plan(),
+                snapshot_plan(),
             ))),
         ),
         LinkedTypeEntry::new(
@@ -502,8 +502,8 @@ fn candidate_retains_exact_container_position_layouts() {
             TypeRefIr::builtin("JsonObject"),
             snapshot_plan(),
             Some(LinkedContainerLayout::json_object(
-                LinkedContainerPosition::new(TypeIndex::new(0), snapshot_release_plan()),
-                LinkedContainerPosition::new(TypeIndex::new(2), snapshot_release_plan()),
+                LinkedContainerPosition::new(TypeIndex::new(0), snapshot_plan()),
+                LinkedContainerPosition::new(TypeIndex::new(2), snapshot_plan()),
             )),
         ),
         LinkedTypeEntry::new(
@@ -515,8 +515,8 @@ fn candidate_retains_exact_container_position_layouts() {
             },
             snapshot_plan(),
             Some(LinkedContainerLayout::map(
-                LinkedContainerPosition::new(TypeIndex::new(0), snapshot_release_plan()),
-                LinkedContainerPosition::new(TypeIndex::new(2), snapshot_release_plan()),
+                LinkedContainerPosition::new(TypeIndex::new(0), snapshot_plan()),
+                LinkedContainerPosition::new(TypeIndex::new(2), snapshot_plan()),
             )),
         ),
     ]);
@@ -539,12 +539,12 @@ fn candidate_retains_exact_container_position_layouts() {
             .value()
             .expect("JsonObject has a value position")
             .plan(),
-        &snapshot_release_plan()
+        &snapshot_plan()
     );
 }
 
 #[test]
-fn candidate_rejects_missing_or_wrong_container_layout_kind() {
+fn candidate_does_not_reconstruct_container_layout_from_builtin_name() {
     let array_type = TypeRefIr::Builtin {
         name: "Array".to_string(),
         args: vec![TypeRefIr::builtin("string")],
@@ -557,13 +557,8 @@ fn candidate_rejects_missing_or_wrong_container_layout_kind() {
         snapshot_plan(),
         None,
     ));
-    assert!(matches!(
-        LinkedBytecodeCandidate::try_from_parts(missing),
-        Err(LinkedBytecodeCandidateError::MissingContainerLayout {
-            expected: LinkedContainerLayoutKind::Array,
-            ..
-        })
-    ));
+    LinkedBytecodeCandidate::try_from_parts(missing)
+        .expect("a type name does not manufacture a linked container layout");
 
     let mut wrong = minimal_parts(Vec::new());
     wrong.types.push(LinkedTypeEntry::new(
@@ -572,18 +567,12 @@ fn candidate_rejects_missing_or_wrong_container_layout_kind() {
         array_type,
         snapshot_plan(),
         Some(LinkedContainerLayout::map(
-            LinkedContainerPosition::new(TypeIndex::new(0), snapshot_release_plan()),
-            LinkedContainerPosition::new(TypeIndex::new(0), snapshot_release_plan()),
+            LinkedContainerPosition::new(TypeIndex::new(0), snapshot_plan()),
+            LinkedContainerPosition::new(TypeIndex::new(0), snapshot_plan()),
         )),
     ));
-    assert!(matches!(
-        LinkedBytecodeCandidate::try_from_parts(wrong),
-        Err(LinkedBytecodeCandidateError::ContainerLayoutKindMismatch {
-            expected: LinkedContainerLayoutKind::Array,
-            actual: LinkedContainerLayoutKind::Map,
-            ..
-        })
-    ));
+    LinkedBytecodeCandidate::try_from_parts(wrong)
+        .expect("candidate validation checks carried rows without re-deriving a layout kind");
 }
 
 #[test]
@@ -596,7 +585,7 @@ fn candidate_rejects_invalid_json_recursive_position() {
         snapshot_plan(),
         Some(LinkedContainerLayout::json(LinkedContainerPosition::new(
             TypeIndex::new(0),
-            snapshot_release_plan(),
+            snapshot_plan(),
         ))),
     ));
     assert!(matches!(
@@ -617,7 +606,7 @@ fn candidate_rejects_invalid_json_recursive_position() {
         snapshot_plan(),
         Some(LinkedContainerLayout::json(LinkedContainerPosition::new(
             TypeIndex::new(1),
-            snapshot_plan(),
+            snapshot_release_plan(),
         ))),
     ));
     assert!(matches!(

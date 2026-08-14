@@ -900,7 +900,7 @@ fn container_builder(
 }
 
 fn container_from_builder(
-    context: &mut StackMapContext<'_, '_>,
+    _context: &mut StackMapContext<'_, '_>,
     inputs: &[Vec<LinkedStackValue>],
     builder_input: u8,
     _name: &str,
