@@ -10,7 +10,10 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    descriptor_for_opcode, LiteralIr, Opcode, PackageRefIr, ParamModeIr, TypeRefIr,
+    descriptor_for_opcode, LiteralIr, NativeResourceDropPlan, NativeValueDropPlan,
+    NativeValueEmbedding, NativeValueLifecycleConcrete, Opcode, PackageRefIr, ParamModeIr,
+    PrivilegedAffineCompositeIdentity, PrivilegedAffineFieldAccess, TypeRefIr,
+    NATIVE_VALUE_LIFECYCLE_REGISTRY,
 };
 use skiff_runtime_bytecode_verifier::VerifiedResumeSite;
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
@@ -19,7 +22,8 @@ use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedCallableSignature, LinkedCatchMatcher, LinkedExceptionRegion,
     LinkedFrozenConstantValue, LinkedFunction, LinkedInstruction, LinkedInstructionTarget,
     LinkedInterfaceTableKind, LinkedIntrinsicKind, LinkedNativeCallableSignature,
-    LinkedValueTransferPlan, LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
+    LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
+    LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
@@ -790,6 +794,12 @@ impl VmFiber {
             ),
             Opcode::GetDenseField => self.execute_get_dense_field(
                 &mut lifecycle,
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
+            Opcode::TakeDenseField => self.execute_take_dense_field(
+                lifecycle.heap(),
                 function_index,
                 instruction_index,
                 &instruction,
@@ -2144,6 +2154,136 @@ impl VmFiber {
             .release(&record, &record_plan)
             .map_err(|error| error.into_vm_error(function, instruction, Opcode::GetDenseField))?;
         self.push_operand(shared)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
+    }
+
+    fn execute_take_dense_field(
+        &mut self,
+        heap: &mut dyn VmHeap,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        decoded: &LinkedInstruction,
+    ) -> Result<DispatchOutcome, VmError> {
+        let LinkedInstructionTarget::Shape(shape_index) =
+            self.resolved_target(function, instruction, decoded, 0)?
+        else {
+            return Err(self.malformed_instruction(function, instruction, decoded));
+        };
+        let field_ordinal = self.operand_usize(decoded, 1, function, instruction)?;
+        let shape = self
+            .execution_image()
+            .shapes()
+            .get(shape_index.get() as usize)
+            .filter(|row| row.index() == shape_index)
+            .ok_or(VmError::LinkedTableRowMissing {
+                table: CandidateTable::Shapes,
+                row: shape_index.get(),
+            })?;
+        let Some(field) = shape.fields().get(field_ordinal) else {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::TakeDenseField,
+            });
+        };
+        let nominal_type = self
+            .execution_image()
+            .types()
+            .get(shape.nominal_type().get() as usize)
+            .filter(|row| row.index() == shape.nominal_type())
+            .ok_or(VmError::LinkedTableRowMissing {
+                table: CandidateTable::Types,
+                row: shape.nominal_type().get(),
+            })?;
+        let privileged_schema = match nominal_type.type_ref() {
+            TypeRefIr::PackageSymbol { symbol } => NATIVE_VALUE_LIFECYCLE_REGISTRY
+                .privileged_affine_composite_for_symbol(symbol)
+                .filter(|schema| {
+                    schema.identity == PrivilegedAffineCompositeIdentity::HttpClientStreamHandle
+                }),
+            _ => None,
+        };
+        let exact_affine_field = privileged_schema
+            .filter(|schema| {
+                schema.embedding == NativeValueEmbedding::Privileged
+                    && matches!(
+                        &schema.lifecycle,
+                        NativeValueLifecycleConcrete::MoveOnly {
+                            drop: NativeValueDropPlan::PrivilegedRecursiveShape
+                        }
+                    )
+                    && schema.fields.len() == shape.fields().len()
+                    && schema.fields.iter().zip(shape.fields()).all(
+                        |(schema_field, linked_field)| {
+                            schema_field.name == linked_field.name()
+                                && linked_plan_matches_native(
+                                    linked_field.plan(),
+                                    &schema_field.lifecycle,
+                                )
+                        },
+                    )
+            })
+            .and_then(|schema| schema.fields.get(field_ordinal))
+            .is_some_and(|schema_field| {
+                schema_field.name == field.name()
+                    && schema_field.access == PrivilegedAffineFieldAccess::AffineTake
+                    && matches!(
+                        &schema_field.lifecycle,
+                        NativeValueLifecycleConcrete::AffineResource {
+                            drop: NativeResourceDropPlan::ResourceTableRelease
+                        }
+                    )
+            });
+        let frame = self.current_frame()?.clone();
+        let record_plan = self.operand_plan(&frame, instruction, 0)?;
+        let exact_record_plan = matches!(
+            record_plan,
+            LinkedValueTransferPlan::MoveOnly {
+                drop: LinkedValueDropPlan::RecursiveShape { shape }
+            } if shape == shape_index
+        );
+        let exact_field_plan = matches!(
+            field.plan(),
+            LinkedValueTransferPlan::AffineResource {
+                drop: LinkedResourceDropPlan::ResourceTableRelease
+            }
+        );
+        if !exact_affine_field || !exact_record_plan || !exact_field_plan {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::TakeDenseField,
+            });
+        }
+
+        // This opcode is 1 -> 1. Keep the aggregate rooted in its operand
+        // cell until the physical take succeeds, then replace that same cell
+        // with the returned affine owner. No error path can lose either owner.
+        let operand_position =
+            frame
+                .operand_height()
+                .checked_sub(1)
+                .ok_or(VmError::OperandStackUnderflow {
+                    function,
+                    needed: 1,
+                    available: frame.operand_height(),
+                })?;
+        let value_index = frame.operand_base().checked_add(operand_position).ok_or(
+            VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            },
+        )?;
+        if !self.live_values.get(value_index).copied().unwrap_or(false) {
+            return Err(VmError::DeadValueRead {
+                location: VmValueLocation::Operand(operand_position),
+            });
+        }
+        let record = self.values[value_index];
+        let taken = heap
+            .take_dense_field(&record, field_ordinal)
+            .map_err(VmError::Heap)?;
+        self.values[value_index] = taken;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
@@ -4352,6 +4492,68 @@ fn verified_function(
     (function.index() == index).then_some(function)
 }
 
+fn linked_plan_matches_native(
+    linked: &LinkedValueTransferPlan,
+    native: &NativeValueLifecycleConcrete,
+) -> bool {
+    match (linked, native) {
+        (
+            LinkedValueTransferPlan::SnapshotShare { drop: linked },
+            NativeValueLifecycleConcrete::SnapshotShare { drop: native },
+        )
+        | (
+            LinkedValueTransferPlan::MoveOnly { drop: linked },
+            NativeValueLifecycleConcrete::MoveOnly { drop: native },
+        ) => match (linked, native) {
+            (LinkedValueDropPlan::Trivial, NativeValueDropPlan::Trivial)
+            | (LinkedValueDropPlan::SnapshotRelease, NativeValueDropPlan::SnapshotRelease) => true,
+            (
+                LinkedValueDropPlan::NativeAdapter { adapter: linked },
+                NativeValueDropPlan::NativeAdapter { adapter: native },
+            ) => linked == native,
+            _ => false,
+        },
+        (
+            LinkedValueTransferPlan::AffineResource { drop: linked },
+            NativeValueLifecycleConcrete::AffineResource { drop: native },
+        ) => match (linked, native) {
+            (
+                LinkedResourceDropPlan::ResourceTableRelease,
+                NativeResourceDropPlan::ResourceTableRelease,
+            ) => true,
+            (
+                LinkedResourceDropPlan::NativeAdapter { adapter: linked },
+                NativeResourceDropPlan::NativeAdapter { adapter: native },
+            ) => linked == native,
+            _ => false,
+        },
+        (
+            LinkedValueTransferPlan::ExplicitCloneLease {
+                clone_adapter: linked_clone,
+                drop: linked_drop,
+            },
+            NativeValueLifecycleConcrete::ExplicitCloneLease {
+                clone_adapter: native_clone,
+                drop: native_drop,
+            },
+        ) => {
+            linked_clone == native_clone
+                && match (linked_drop, native_drop) {
+                    (
+                        LinkedResourceDropPlan::ResourceTableRelease,
+                        NativeResourceDropPlan::ResourceTableRelease,
+                    ) => true,
+                    (
+                        LinkedResourceDropPlan::NativeAdapter { adapter: linked },
+                        NativeResourceDropPlan::NativeAdapter { adapter: native },
+                    ) => linked == native,
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 fn opcode_supported(opcode: Opcode) -> bool {
     matches!(
@@ -4381,6 +4583,7 @@ fn opcode_supported(opcode: Opcode) -> bool {
             | Opcode::InvokeCallback
             | Opcode::NewRecord
             | Opcode::GetDenseField
+            | Opcode::TakeDenseField
             | Opcode::SetWritablePath
             | Opcode::RepresentationWrap
             | Opcode::NewArrayBuilder

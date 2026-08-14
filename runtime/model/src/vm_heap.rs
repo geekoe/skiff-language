@@ -228,6 +228,7 @@ pub enum VmHeapOperation {
     MapLen,
     MapEntryAt,
     RecordField,
+    TakeDenseField,
     RepresentationPayload,
     ContainerElements,
     ArrayPushOwned,
@@ -545,6 +546,24 @@ pub trait VmHeap {
     ) -> Result<ValueSlot, VmHeapError> {
         Err(VmHeapError::OperationKindMismatch {
             operation: VmHeapOperation::RecordField,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Physically removes one dense field and consumes the whole record owner.
+    ///
+    /// This is the narrow primitive used by the verified privileged-affine
+    /// projection opcode. On success the selected field becomes the caller's
+    /// sole returned owner, the record handle is stale, and every remaining
+    /// field has been dropped with the record. On error the record and all of
+    /// its fields remain unchanged.
+    fn take_dense_field(
+        &mut self,
+        _record: &ValueSlot,
+        _field_ordinal: usize,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::TakeDenseField,
             kind: ValueKind::RequestHeapRef,
         })
     }

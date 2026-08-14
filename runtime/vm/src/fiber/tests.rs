@@ -142,6 +142,7 @@ fn production_opcode_families_are_dispatched() {
         Opcode::InvokeCallback,
         Opcode::NewRecord,
         Opcode::GetDenseField,
+        Opcode::TakeDenseField,
         Opcode::SetWritablePath,
         Opcode::RepresentationWrap,
         Opcode::NewArrayBuilder,

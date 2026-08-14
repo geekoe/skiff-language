@@ -28,6 +28,177 @@ fn resource_ref(handle: u64) -> ValueSlot {
     )
 }
 
+#[test]
+fn take_dense_field_physically_detaches_field_and_consumes_record_remainder() {
+    let mut heap = heap();
+    let taken_child = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "value".to_string(),
+                value: ValueSlot::integer(7),
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("taken child");
+    let remainder = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "value".to_string(),
+                value: ValueSlot::integer(8),
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("remainder child");
+    let record = heap
+        .allocate_record(
+            &[
+                VmRecordField {
+                    name: "body".to_string(),
+                    value: taken_child,
+                },
+                VmRecordField {
+                    name: "headers".to_string(),
+                    value: remainder,
+                },
+                VmRecordField {
+                    name: "status".to_string(),
+                    value: ValueSlot::integer(200),
+                },
+            ],
+            TAG,
+            FLAGS,
+        )
+        .expect("stream-handle-shaped record");
+    let physical = heap.live_entry(&record).expect("live record").heap_handle;
+
+    assert_eq!(heap.take_dense_field(&record, 0), Ok(taken_child));
+    assert_eq!(heap.validate_live(&taken_child), Ok(()));
+    assert!(matches!(
+        heap.validate_live(&record),
+        Err(VmHeapError::InvalidHandle {
+            reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+            ..
+        })
+    ));
+    assert!(matches!(
+        heap.validate_live(&remainder),
+        Err(VmHeapError::InvalidHandle {
+            reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+            ..
+        })
+    ));
+    assert_eq!(
+        heap.request_heap()
+            .object_field_carrier(physical, "body")
+            .expect("physical record remains inspectable"),
+        None,
+        "the selected field must be absent from the physical object"
+    );
+    assert!(matches!(
+        heap.take_dense_field(&record, 0),
+        Err(VmHeapError::InvalidHandle {
+            reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+            ..
+        })
+    ));
+
+    heap.release_snapshot(&taken_child)
+        .expect("returned field remains the caller-owned value");
+}
+
+#[test]
+fn take_dense_field_rejects_alias_and_bad_ordinal_without_mutation() {
+    let mut heap = heap();
+    let record = heap
+        .allocate_record(
+            &[
+                VmRecordField {
+                    name: "body".to_string(),
+                    value: ValueSlot::integer(1),
+                },
+                VmRecordField {
+                    name: "status".to_string(),
+                    value: ValueSlot::integer(200),
+                },
+            ],
+            TAG,
+            FLAGS,
+        )
+        .expect("record");
+    let alias = heap.snapshot_share(&record).expect("shared alias");
+
+    assert!(matches!(
+        heap.take_dense_field(&record, 0),
+        Err(VmHeapError::OwnershipViolation { .. })
+    ));
+    assert_eq!(heap.get_dense_field(&record, 0), Ok(ValueSlot::integer(1)));
+    heap.release_snapshot(&alias).expect("release alias");
+
+    assert!(matches!(
+        heap.take_dense_field(&record, 7),
+        Err(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::TakeDenseField,
+            ..
+        })
+    ));
+    assert_eq!(heap.get_dense_field(&record, 0), Ok(ValueSlot::integer(1)));
+    assert_eq!(heap.take_dense_field(&record, 0), Ok(ValueSlot::integer(1)));
+}
+
+#[test]
+fn take_dense_field_rejects_invalid_remainder_before_physical_detach() {
+    let mut heap = heap();
+    let child = heap
+        .allocate_record(
+            &[VmRecordField {
+                name: "value".to_string(),
+                value: ValueSlot::integer(7),
+            }],
+            TAG,
+            FLAGS,
+        )
+        .expect("child");
+    // A verified VM cannot construct two owning edges from one unshared
+    // owner. The heap port still rejects such a forged graph atomically.
+    let record = heap
+        .allocate_record(
+            &[
+                VmRecordField {
+                    name: "body".to_string(),
+                    value: ValueSlot::integer(1),
+                },
+                VmRecordField {
+                    name: "left".to_string(),
+                    value: child,
+                },
+                VmRecordField {
+                    name: "right".to_string(),
+                    value: child,
+                },
+            ],
+            TAG,
+            FLAGS,
+        )
+        .expect("forged duplicate-owner record");
+    let physical = heap.live_entry(&record).expect("live record").heap_handle;
+
+    assert!(matches!(
+        heap.take_dense_field(&record, 0),
+        Err(VmHeapError::OwnershipViolation { .. })
+    ));
+    assert_eq!(heap.validate_live(&record), Ok(()));
+    assert_eq!(heap.get_dense_field(&record, 0), Ok(ValueSlot::integer(1)));
+    assert!(
+        heap.request_heap()
+            .object_field_carrier(physical, "body")
+            .expect("physical record")
+            .is_some(),
+        "preflight rejection must leave the physical field attached"
+    );
+}
+
 fn local_identity(type_index: usize) -> CatchIdentity {
     CatchIdentity::Nominal(NominalTypeIdentity::LocalExecution(
         LocalExecutionTypeIdentity {

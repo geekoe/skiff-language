@@ -45,6 +45,11 @@ struct LiveEntry {
     owner_transfers: usize,
 }
 
+struct PreparedOwnerConsume {
+    remaining_owners: HashMap<VmHandle, usize>,
+    removals: Vec<(VmHandle, HeapHandle)>,
+}
+
 pub struct RequestVmHeap {
     heap: RequestHeap,
     domain: u8,
@@ -504,6 +509,116 @@ impl RequestVmHeap {
             children.push(payload);
         }
         children
+    }
+
+    fn container_children_except(
+        &self,
+        heap_handle: HeapHandle,
+        excluded_object_field: Option<&str>,
+    ) -> Vec<ValueSlot> {
+        let mut children = Vec::new();
+        if let Some(slots) = self.array_slots.get(&heap_handle) {
+            children.extend(slots.iter().copied());
+        }
+        if let Some(slots) = self.object_slots.get(&heap_handle) {
+            children.extend(
+                slots
+                    .iter()
+                    .filter(|(field, _)| excluded_object_field != Some(field.as_str()))
+                    .map(|(_, value)| *value),
+            );
+        }
+        if let Some(slots) = self.map_slots.get(&heap_handle) {
+            for (key, value) in slots.values() {
+                children.push(*key);
+                children.push(*value);
+            }
+        }
+        if let Some(payload) = self.representation_slots.get(&heap_handle) {
+            children.push(*payload);
+        }
+        children
+    }
+
+    /// Validates the entire recursive remainder drop before the selected
+    /// field is physically detached. Owner counts are simulated per handle,
+    /// so malformed duplicate edges, cycles, stale children, and resources
+    /// that this heap cannot terminate all fail without changing state.
+    fn prepare_owner_consume(
+        &self,
+        root: ValueSlot,
+        root_heap_handle: HeapHandle,
+        excluded_root_field: &str,
+    ) -> Result<PreparedOwnerConsume, VmHeapError> {
+        let operation = VmHeapOperation::TakeDenseField;
+        let mut remaining_owners = HashMap::new();
+        let mut removals = Vec::new();
+        let mut pending = vec![root];
+        while let Some(owner) = pending.pop() {
+            let Some(kind) = owner.kind() else {
+                return Err(VmHeapError::InvalidValueMetadata);
+            };
+            match kind {
+                ValueKind::Null
+                | ValueKind::Bool
+                | ValueKind::Number
+                | ValueKind::Integer
+                | ValueKind::Date => self.validate_live(&owner)?,
+                ValueKind::RequestHeapRef => {
+                    let handle = owner
+                        .as_request_heap_ref()
+                        .ok_or(VmHeapError::InvalidValueMetadata)?;
+                    let entry = self.live_entry(&owner)?;
+                    let heap_handle = entry.heap_handle;
+                    let actual_owners = entry.snapshot_owners;
+                    let remaining = remaining_owners.entry(handle).or_insert(actual_owners);
+                    *remaining =
+                        remaining
+                            .checked_sub(1)
+                            .ok_or(VmHeapError::OwnershipViolation {
+                                kind: ValueKind::RequestHeapRef,
+                                handle,
+                            })?;
+                    if *remaining == 0 {
+                        removals.push((handle, heap_handle));
+                        let excluded =
+                            (heap_handle == root_heap_handle).then_some(excluded_root_field);
+                        pending.extend(self.container_children_except(heap_handle, excluded));
+                    }
+                }
+                kind => {
+                    return Err(VmHeapError::OperationKindMismatch { operation, kind });
+                }
+            }
+        }
+        Ok(PreparedOwnerConsume {
+            remaining_owners,
+            removals,
+        })
+    }
+
+    /// Applies only facts frozen by `prepare_owner_consume`. The caller holds
+    /// `&mut self`, so no live entry can change between prepare and commit.
+    fn commit_owner_consume(&mut self, prepared: PreparedOwnerConsume) {
+        for (handle, remaining) in &prepared.remaining_owners {
+            if *remaining == 0 {
+                continue;
+            }
+            self.live
+                .get_mut(handle)
+                .expect("prepared live owner remains installed")
+                .snapshot_owners = *remaining;
+        }
+        for (handle, heap_handle) in prepared.removals {
+            let entry = self
+                .live
+                .remove(&handle)
+                .expect("prepared live removal remains installed");
+            debug_assert_eq!(entry.heap_handle, heap_handle);
+            drop(self.take_container_children(heap_handle));
+            self.handles_by_heap.remove(&heap_handle);
+            self.released_heap_handles.insert(heap_handle, handle);
+        }
     }
 
     fn release_replaced_slot(&mut self, slot: &ValueSlot) -> Result<(), VmHeapError> {
@@ -1267,6 +1382,100 @@ impl VmHeap for RequestVmHeap {
                 kind: ValueKind::RequestHeapRef,
             }),
         }
+    }
+
+    fn take_dense_field(
+        &mut self,
+        record: &ValueSlot,
+        field_ordinal: usize,
+    ) -> Result<ValueSlot, VmHeapError> {
+        let operation = VmHeapOperation::TakeDenseField;
+        let heap_handle = self.request_handle(record, operation)?;
+        self.ensure_exclusive_owner(record, operation)?;
+        self.ensure_node_kind(heap_handle, operation, |node| {
+            matches!(node, HeapNode::Object(_))
+        })?;
+
+        let (field, value) = self
+            .object_slots
+            .get(&heap_handle)
+            .and_then(|slots| slots.iter().nth(field_ordinal))
+            .map(|(field, value)| (field.clone(), *value))
+            .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                operation,
+                message: format!("record ordinal {field_ordinal} is out of bounds"),
+            })?;
+        if self
+            .heap
+            .object_field_carrier(heap_handle, &field)
+            .map_err(|error| self.map_error(error, operation))?
+            .is_none()
+        {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation,
+                message: format!("record field {field:?} is absent from the physical object"),
+            });
+        }
+        match value.kind() {
+            Some(ValueKind::RequestHeapRef) => {
+                self.live_entry(&value)?;
+            }
+            Some(
+                ValueKind::Null
+                | ValueKind::Bool
+                | ValueKind::Number
+                | ValueKind::Integer
+                | ValueKind::Date,
+            ) => self.validate_live(&value)?,
+            Some(ValueKind::ResourceRef) => {}
+            Some(kind) => {
+                return Err(VmHeapError::OperationKindMismatch { operation, kind });
+            }
+            None => return Err(VmHeapError::InvalidValueMetadata),
+        }
+        let prepared = self.prepare_owner_consume(*record, heap_handle, &field)?;
+
+        // Detach the authoritative VM slot first. RequestHeap deletion has a
+        // prepare-before-mutate contract; if it rejects the target, restoring
+        // this sidecar is infallible and the logical record is unchanged.
+        let detached = self
+            .object_slots
+            .get_mut(&heap_handle)
+            .and_then(|slots| slots.remove(&field))
+            .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                operation,
+                message: format!("record field {field:?} sidecar disappeared"),
+            })?;
+        debug_assert_eq!(detached, value);
+        let deleted = self
+            .heap
+            .delete_object_field(heap_handle, &field)
+            .map_err(|error| self.map_error(error, operation));
+        match deleted {
+            Ok(true) => {}
+            Ok(false) => {
+                self.object_slots
+                    .get_mut(&heap_handle)
+                    .expect("validated object sidecar remains installed")
+                    .insert(field.clone(), detached);
+                return Err(VmHeapError::HeapOperationFailed {
+                    operation,
+                    message: format!("record field {field:?} was not physically present"),
+                });
+            }
+            Err(error) => {
+                self.object_slots
+                    .get_mut(&heap_handle)
+                    .expect("validated object sidecar remains installed")
+                    .insert(field, detached);
+                return Err(error);
+            }
+        }
+
+        // No fallible work is allowed beyond the physical detach. The exact
+        // recursive owner transition was frozen before any mutation.
+        self.commit_owner_consume(prepared);
+        Ok(detached)
     }
 
     fn container_elements(
