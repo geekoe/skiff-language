@@ -116,6 +116,8 @@ export function phase5ScenarioSpecs(root) {
       'phase_5_stream', ['G5', 'G6', 'G8', 'K5']),
     rustSuite(root, 'h5-production-bytecode-http-composition', 'skiff-runtime-host',
       'phase_5_bytecode_http', ['G5', 'G6', 'G8', 'G9', 'H5']),
+    rustSuite(root, 'h5-server-stream-flush-ack', 'skiff-runtime-host',
+      'stream_flush_ack', ['G6', 'G7', 'G8', 'H5']),
     spec(root, 'phase-5-fmt-check', 'cargo', [
       'fmt', '--all', '--', '--check',
     ], null, ['G10', 'P5G']),

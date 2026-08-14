@@ -66,7 +66,7 @@ test('runner rejects each missing caller input before capturing any command', as
   }
 });
 
-test('runner receipts all ninety-seven commands and freezes the actual environment', async () => {
+test('runner receipts all ninety-eight commands and freezes the actual environment', async () => {
   const created = await mkdtemp(join(tmpdir(), 'skiff-phase5-runner-'));
   const temp = await realpath(created);
   const repoRoot = join(temp, 'repo');
@@ -93,13 +93,13 @@ test('runner receipts all ninety-seven commands and freezes the actual environme
     });
     assert.equal(result.manifest.verdict, 'PASS');
     assert.equal(result.checkerError, null);
-    assert.deepEqual(result.manifest.counts.commands, { total: 97, passed: 97, failed: 0 });
+    assert.deepEqual(result.manifest.counts.commands, { total: 98, passed: 98, failed: 0 });
     const regression = result.manifest.commands.filter(({ id }) => id.startsWith('phase-4-regression-'));
     const phase5 = result.manifest.commands.filter(({ id }) => !id.startsWith('phase-4-regression-'));
     assert.equal(regression.length, 55);
-    assert.equal(phase5.length, 42);
+    assert.equal(phase5.length, 43);
     assert.equal(regression.every(({ status }) => status === 'PASS'), true);
-    assert.equal(observed.length, 97);
+    assert.equal(observed.length, 98);
     assert.equal(observed.every((value) => value === 'before'), true);
     const receipt = JSON.parse(await readFile(
       join(outputDir, 'commands', 'phase-5-gate-self-tests.receipt.json'),
@@ -147,8 +147,8 @@ test('runner records every later receipt after one executable expected-red workl
     });
     assert.equal(result.manifest.verdict, 'FAIL');
     assert.equal(result.checkerError, null);
-    assert.deepEqual(result.manifest.counts.commands, { total: 97, passed: 96, failed: 1 });
-    assert.equal(observed.length, 97, 'one red workload must not truncate the Gate matrix');
+    assert.deepEqual(result.manifest.counts.commands, { total: 98, passed: 97, failed: 1 });
+    assert.equal(observed.length, 98, 'one red workload must not truncate the Gate matrix');
     assert.equal(
       result.manifest.commands.find(({ id }) => id === 'phase-5-s1-source-to-admission')?.status,
       'FAIL',
