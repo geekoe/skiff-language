@@ -47,11 +47,62 @@ impl<'a> Analyzer<'a> {
             shapes: Vec::new(),
             equalities: Vec::new(),
             shape_equalities: BTreeSet::new(),
+            array_equalities: BTreeSet::new(),
+            field_projections: BTreeSet::new(),
             derived: Vec::new(),
         };
         analyzer.allocate_functions()?;
+        analyzer.assign_root_parameter_boundaries()?;
         analyzer.collect_constraints()?;
         Ok(analyzer)
+    }
+
+    fn assign_root_parameter_boundaries(&mut self) -> Result<(), BytecodeEmissionError> {
+        let mut locally_called = BTreeSet::new();
+        for unit in self.units {
+            for function in &unit.functions {
+                for expression in &function.expressions {
+                    let ExprIr::Call { call } = &expression.expression else {
+                        continue;
+                    };
+                    let coordinate = match &call.target {
+                        CallTargetIr::LocalExecutable { executable_index } => {
+                            Some((unit.module_path.clone(), *executable_index))
+                        }
+                        CallTargetIr::PublicationExecutable {
+                            module_path,
+                            executable_index,
+                        } => Some((module_path.clone(), *executable_index)),
+                        _ => None,
+                    };
+                    if let Some(coordinate) = coordinate {
+                        if let Some(target) = self.function_by_coordinate.get(&coordinate) {
+                            locally_called.insert(*target);
+                        }
+                    }
+                }
+            }
+        }
+        for function_index in 0..self.functions.len() {
+            if locally_called.contains(&function_index) {
+                continue;
+            }
+            let (unit_index, mir_index) = (
+                self.functions[function_index].unit,
+                self.functions[function_index].function,
+            );
+            let parameters = self.units[unit_index].functions[mir_index]
+                .params
+                .iter()
+                .map(|parameter| (parameter.slot, parameter.ty.clone()))
+                .collect::<Vec<_>>();
+            for (slot, ty) in parameters {
+                let node = self.slot_node(function_index, slot)?;
+                self.assign(node, ty.clone(), "root callable parameter boundary")?;
+                self.assign_boundary_shape(function_index, node, &ty)?;
+            }
+        }
+        Ok(())
     }
 
     fn allocate_functions(&mut self) -> Result<(), BytecodeEmissionError> {
@@ -146,7 +197,6 @@ impl<'a> Analyzer<'a> {
                     result,
                     stream_result,
                     stream_next_items: BTreeMap::new(),
-                    shape_indices: Vec::new(),
                     construct_shape_indices: BTreeMap::new(),
                     writable_paths: BTreeMap::new(),
                     catch_defaults: BTreeMap::new(),
@@ -170,6 +220,7 @@ impl<'a> Analyzer<'a> {
             function,
             value: None,
             shape: None,
+            array_element: None,
             semantic,
             role,
             function_key: function_key.to_string(),
@@ -196,27 +247,6 @@ impl<'a> Analyzer<'a> {
         };
         let unit = &self.units[unit_index];
         let function = &unit.functions[mir_index];
-
-        for expression in &function.expressions {
-            if declared_record_fields(self.units, unit_index, &expression.ty).is_some() {
-                let node = self.expression_node(function_index, expression.index)?;
-                self.ensure_node_shape(function_index, node, &expression.ty)?;
-            }
-        }
-        for slot in &function.slots {
-            let Some(ty) = slot.ty.as_ref() else {
-                continue;
-            };
-            if declared_record_fields(self.units, unit_index, ty).is_some() {
-                let node = self.slot_node(function_index, slot.slot)?;
-                self.ensure_node_shape(function_index, node, ty)?;
-            }
-        }
-        if let Some(result) = self.functions[function_index].result {
-            if declared_record_fields(self.units, unit_index, &function.return_type).is_some() {
-                self.ensure_node_shape(function_index, result, &function.return_type)?;
-            }
-        }
 
         for expression in &function.expressions {
             let output = self.expression_node(function_index, expression.index)?;
@@ -314,36 +344,44 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 ExprIr::Field { object, field } => {
-                    let object_expression = function.expression(*object)?;
                     let object_node = self.expression_node(function_index, object.expression)?;
-                    let object_owner = self.nodes[object_node]
-                        .shape
-                        .map(|shape| self.shapes[shape].owner.clone())
-                        .unwrap_or_else(|| object_expression.ty.clone());
-                    let shape =
-                        self.ensure_node_shape(function_index, object_node, &object_owner)?;
-                    let field_node =
-                        self.shapes[shape]
-                            .fields
-                            .get(field)
-                            .copied()
-                            .ok_or_else(|| {
-                                carrier_error(
-                                    &key,
-                                    format!("field `{field}` is absent from exact shape"),
-                                )
-                            })?;
-                    self.equal(output, field_node, "record field read");
+                    self.derived.push(DerivedConstraint::Field {
+                        object: object_node,
+                        result: output,
+                        field: field.clone(),
+                        location: format!("{key} expression {} field `{field}`", expression.index),
+                    });
                 }
                 ExprIr::ArrayLiteral { items } => {
                     let items = items
                         .iter()
                         .map(|item| self.expression_node(function_index, item.expression))
                         .collect::<Result<Vec<_>, _>>()?;
+                    let element_semantic = items
+                        .first()
+                        .map(|item| self.nodes[*item].semantic.clone())
+                        .or_else(|| exact_array_element(&expression.ty).cloned())
+                        .ok_or_else(|| {
+                            carrier_error(
+                                &key,
+                                format!(
+                                    "expression {} empty Array has no exact element boundary",
+                                    expression.index
+                                ),
+                            )
+                        })?;
+                    let element = self.ensure_array_element(
+                        function_index,
+                        output,
+                        &element_semantic,
+                        &format!("expression {} Array element", expression.index),
+                    )?;
+                    for item in items {
+                        self.equal(element, item, "Array literal element producer");
+                    }
                     self.derived.push(DerivedConstraint::Array {
                         output,
-                        items,
-                        empty_type: expression.ty.clone(),
+                        element,
                         location: format!("{key} expression {} array literal", expression.index),
                     });
                 }
@@ -360,10 +398,34 @@ impl<'a> Analyzer<'a> {
                     });
                 }
                 ExprIr::Index { object, index } => {
+                    let object_node = self.expression_node(function_index, object.expression)?;
+                    let result_node = output;
+                    let access = function
+                        .index_accesses
+                        .get(&index.expression)
+                        .cloned()
+                        .ok_or_else(|| {
+                            carrier_error(
+                                &key,
+                                format!(
+                                    "index selector expression {} has no exact source fact",
+                                    index.expression
+                                ),
+                            )
+                        })?;
+                    if access.receiver_kind == MirIndexReceiverKind::Array {
+                        let element = self.ensure_array_element(
+                            function_index,
+                            object_node,
+                            &access.result_type,
+                            &format!("expression {} Array index element", expression.index),
+                        )?;
+                        self.equal(result_node, element, "Array index result producer");
+                    }
                     self.derived.push(DerivedConstraint::Index {
-                        object: self.expression_node(function_index, object.expression)?,
+                        object: object_node,
                         selector: self.expression_node(function_index, index.expression)?,
-                        result: output,
+                        result: result_node,
                         location: format!("{key} expression {} index", expression.index),
                     });
                 }
@@ -386,7 +448,12 @@ impl<'a> Analyzer<'a> {
                     catch_type,
                     body,
                 } => {
-                    self.assign(output, expression.ty.clone(), "catch boundary")?;
+                    let try_ty = function.expression(*try_expression)?.ty.clone();
+                    let result_owner = TypeRefIr::Builtin {
+                        name: "CatchResult".to_string(),
+                        args: vec![try_ty, catch_type.clone()],
+                    };
+                    self.assign(output, result_owner.clone(), "catch result producer")?;
                     self.collect_catch_constraints(
                         function_index,
                         expression.index,
@@ -395,6 +462,7 @@ impl<'a> Analyzer<'a> {
                         *catch_slot,
                         catch_type,
                         *body,
+                        &result_owner,
                     )?;
                 }
                 ExprIr::ValueBlock { result, .. } => {
@@ -457,6 +525,19 @@ impl<'a> Analyzer<'a> {
                                 MirForInItemKind::MapKey,
                             ),
                         };
+                        if kind == MirForInItemKind::ArrayItem {
+                            let semantic = self.nodes[item].semantic.clone();
+                            let element = self.ensure_array_element(
+                                function_index,
+                                iterable,
+                                &semantic,
+                                &format!(
+                                    "statement {} Array for-in element",
+                                    statement.statement_index
+                                ),
+                            )?;
+                            self.equal(item, element, "Array for-in item producer");
+                        }
                         self.derived.push(DerivedConstraint::ForIn {
                             iterable,
                             item,
@@ -638,6 +719,17 @@ impl<'a> Analyzer<'a> {
                         &key,
                         format!("statement {statement_index} writable segment {ordinal} result"),
                     );
+                    if access.receiver_kind == MirIndexReceiverKind::Array {
+                        let element = self.ensure_array_element(
+                            function_index,
+                            current,
+                            &access.result_type,
+                            &format!(
+                                "statement {statement_index} writable segment {ordinal} Array element"
+                            ),
+                        )?;
+                        self.equal(result, element, "writable Array index result producer");
+                    }
                     self.derived.push(DerivedConstraint::Index {
                         object: current,
                         selector,
@@ -668,7 +760,12 @@ impl<'a> Analyzer<'a> {
                 }
             }
         }
-        self.equal(current, leaf, "writable path leaf writer");
+        if !matches!(
+            &self.nodes[leaf].semantic,
+            TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty()
+        ) {
+            self.equal(current, leaf, "writable path leaf writer");
+        }
         let prior = self.functions[function_index]
             .writable_paths
             .insert(statement_index, WritablePathNodes { root, leaf, steps });
@@ -690,6 +787,7 @@ impl<'a> Analyzer<'a> {
         catch_slot: u32,
         catch_type: &TypeRefIr,
         body: ExprRefIr,
+        result_owner: &TypeRefIr,
     ) -> Result<(), BytecodeEmissionError> {
         let key = self.functions[function_index].key.clone();
         self.expression_node(function_index, try_expression.expression)?;
@@ -703,8 +801,7 @@ impl<'a> Analyzer<'a> {
         )?;
         self.equal(default.value, slot, "catch default and frame slot");
 
-        let result_owner = self.nodes[output].semantic.clone();
-        let result_shape = self.ensure_node_shape(function_index, output, &result_owner)?;
+        let result_shape = self.ensure_node_shape(function_index, output, result_owner)?;
         let exception = self.shapes[result_shape]
             .fields
             .get("exception")
@@ -850,6 +947,28 @@ impl<'a> Analyzer<'a> {
         })
     }
 
+    fn ensure_array_element(
+        &mut self,
+        function_index: usize,
+        node: usize,
+        semantic: &TypeRefIr,
+        location: &str,
+    ) -> Result<usize, BytecodeEmissionError> {
+        if let Some(element) = self.nodes[node].array_element {
+            return Ok(element);
+        }
+        let key = self.functions[function_index].key.clone();
+        let element = self.add_node(
+            function_index,
+            semantic.clone(),
+            SemanticRole::Position,
+            &key,
+            location.to_string(),
+        );
+        self.nodes[node].array_element = Some(element);
+        Ok(element)
+    }
+
     fn ensure_node_shape(
         &mut self,
         function_index: usize,
@@ -904,7 +1023,6 @@ impl<'a> Analyzer<'a> {
             }
             return Ok(shape);
         }
-        let unit_index = self.functions[function_index].unit;
         let key = self.functions[function_index].key.clone();
         let mut fields = BTreeMap::new();
         for (name, ty) in declared {
@@ -919,13 +1037,10 @@ impl<'a> Analyzer<'a> {
         }
         let shape = self.shapes.len();
         self.shapes.push(ShapeNodes {
-            function: function_index,
-            unit: unit_index,
             owner: owner.clone(),
             fields,
         });
         self.nodes[node].shape = Some(shape);
-        self.functions[function_index].shape_indices.push(shape);
         Ok(shape)
     }
 
@@ -1016,5 +1131,12 @@ impl<'a> Analyzer<'a> {
                     format!("slot {slot} has no carrier node"),
                 )
             })
+    }
+}
+
+fn exact_array_element(ty: &TypeRefIr) -> Option<&TypeRefIr> {
+    match ty {
+        TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => args.first(),
+        _ => None,
     }
 }

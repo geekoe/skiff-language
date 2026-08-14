@@ -49,6 +49,41 @@ fn emit_unchecked_source(source: &str) -> skiff_artifact_model::BytecodeArtifact
         .expect("crate-owned emission accepts structurally valid MIR")
 }
 
+fn phase_5_test_plan(ty: &skiff_artifact_model::TypeRefIr) -> Result<ValueTransferPlan, String> {
+    let trivial = matches!(
+        ty,
+        skiff_artifact_model::TypeRefIr::Builtin { name, args }
+            if args.is_empty()
+                && matches!(name.as_str(), "bool" | "integer" | "null" | "number")
+    ) || matches!(
+        ty,
+        skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
+            if symbol.symbol_path == "std.time.Duration"
+    );
+    if matches!(
+        ty,
+        skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
+            if symbol.symbol_path == "std.http.HttpClientStreamHandle"
+    ) {
+        return Ok(ValueTransferPlan::FromType { ty: ty.clone() });
+    }
+    if matches!(
+        ty,
+        skiff_artifact_model::TypeRefIr::Builtin { name, .. } if name == "Stream"
+    ) {
+        return Ok(ValueTransferPlan::AffineResource {
+            drop: ResourceDropPlan::ResourceTableRelease,
+        });
+    }
+    Ok(ValueTransferPlan::SnapshotShare {
+        drop: if trivial {
+            ValueDropPlan::Trivial
+        } else {
+            ValueDropPlan::SnapshotRelease
+        },
+    })
+}
+
 #[test]
 fn stream_for_in_backedges_drop_only_live_iteration_items() {
     const SOURCE: &str = r#"
@@ -205,41 +240,9 @@ function stream(input: std.http.HttpClientRequest) -> void {
     );
     let admitted = admit_phase_1_bytecode_mir(lowered.mir_units())
         .expect("the three registry-owned executor identities are admitted");
-    let plans = derive_bytecode_value_transfer_plans(&admitted, |_module_path, ty| {
-        let trivial = matches!(
-            ty,
-            skiff_artifact_model::TypeRefIr::Builtin { name, args }
-                if args.is_empty()
-                    && matches!(name.as_str(), "bool" | "integer" | "null" | "number")
-        ) || matches!(
-            ty,
-            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
-                if symbol.symbol_path == "std.time.Duration"
-        );
-        if matches!(
-            ty,
-            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
-                if symbol.symbol_path == "std.http.HttpClientStreamHandle"
-        ) {
-            return Ok(ValueTransferPlan::FromType { ty: ty.clone() });
-        }
-        if matches!(
-            ty,
-            skiff_artifact_model::TypeRefIr::Builtin { name, .. } if name == "Stream"
-        ) {
-            return Ok(ValueTransferPlan::AffineResource {
-                drop: ResourceDropPlan::ResourceTableRelease,
-            });
-        }
-        Ok(ValueTransferPlan::SnapshotShare {
-            drop: if trivial {
-                ValueDropPlan::Trivial
-            } else {
-                ValueDropPlan::SnapshotRelease
-            },
-        })
-    })
-    .expect("the injected source authority covers every materialized HTTP result field");
+    let plans =
+        derive_bytecode_value_transfer_plans(&admitted, |_module_path, ty| phase_5_test_plan(ty))
+            .expect("the injected source authority covers every materialized HTTP result field");
     let bundles = lowered
         .file_ir_units()
         .iter()

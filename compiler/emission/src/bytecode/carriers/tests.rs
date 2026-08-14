@@ -2,7 +2,7 @@ use skiff_artifact_model::{LiteralIr, TypeRefIr};
 
 use super::{
     model::SemanticRole,
-    policy::{literal_carrier_type, semantic_accepts_carrier},
+    policy::{catch_default_literal, literal_carrier_type, semantic_accepts_carrier},
 };
 
 #[test]
@@ -25,6 +25,39 @@ fn literal_carriers_are_physical_vm_kinds() {
     ];
     for (literal, expected) in cases {
         assert_eq!(literal_carrier_type(&literal), TypeRefIr::builtin(expected));
+    }
+}
+
+#[test]
+fn catch_defaults_publish_their_actual_scalar_producers() {
+    let cases = [
+        (
+            TypeRefIr::builtin("integer"),
+            LiteralIr::Number {
+                value: serde_json::Number::from(0_u64),
+            },
+            TypeRefIr::builtin("number"),
+        ),
+        (
+            TypeRefIr::Nullable {
+                inner: Box::new(TypeRefIr::builtin("integer")),
+            },
+            LiteralIr::Null,
+            TypeRefIr::builtin("null"),
+        ),
+        (
+            TypeRefIr::builtin("string"),
+            LiteralIr::String {
+                value: String::new(),
+            },
+            TypeRefIr::builtin("string"),
+        ),
+    ];
+    for (semantic, expected_value, expected_carrier) in cases {
+        let (value, carrier) = catch_default_literal(&semantic)
+            .unwrap_or_else(|| panic!("{semantic:?} has an exact default producer"));
+        assert_eq!(value, expected_value);
+        assert_eq!(carrier, expected_carrier);
     }
 }
 

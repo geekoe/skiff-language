@@ -14,13 +14,13 @@ mod tests {
         ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssignTargetIr,
         BoxSourceIr, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodeRelocation, CallIr,
         CallTargetIr, CallableEffectSummary, ContractOperationId, DbBodyIr, DbOpKindIr,
-        DbOperandRole, DbOperationIr, DbOperationKind, DbTargetIr, ExprIr, ExprRefIr,
-        ExternalRefTable, FileIrUnit, FunctionTypeParamIr, InstructionSourceSite,
-        InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, NativeTarget,
-        PackageCallableId, PatternIr, RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr,
-        ResourceDropPlan, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
-        SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
-        TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+        DbOperationIr, DbTargetIr, ExprIr, ExprRefIr, ExternalRefTable, FileIrUnit,
+        FunctionTypeParamIr, InstructionSourceSite, InterfaceInstantiationRef,
+        InterfaceMethodSlotSignatureIr, LiteralIr, NativeTarget, PackageCallableId, PatternIr,
+        RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ResourceDropPlan, ServiceCallRef,
+        ServiceProtocolIdentity, ServiceSymbolRef, SourcePosition, SourceSpanRef,
+        SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr, ValueDropPlan,
+        ValueTransferPlan,
     };
     use skiff_compiler_lowering::{
         mir::{
@@ -1960,7 +1960,7 @@ mod tests {
     }
 
     #[test]
-    fn db_operation_emits_one_structured_host_insert() {
+    fn db_operation_without_an_admitted_machine_boundary_fails_closed() {
         let record_ty = TypeRefIr::Record {
             fields: BTreeMap::from([("value".to_string(), TypeRefIr::builtin("number"))]),
         };
@@ -2025,41 +2025,17 @@ mod tests {
         let (unit, bundle) =
             mir_and_bundle("db", Vec::new(), ExternalRefTable::default(), function);
         let plans = plans(&unit);
-        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
-            .expect("single insert DbOperation emits");
-        let relocation = artifact.image.functions["db::insertItem"]
-            .relocations
-            .iter()
-            .find_map(|relocation| match relocation {
-                BytecodeRelocation::HostEffectRef(effect) => Some(effect),
-                _ => None,
-            })
-            .expect("DbOperation emits one HostEffectRef");
-        assert_eq!(
-            relocation.target.binding_key.as_deref(),
-            Some("std.db.operation")
-        );
-        let db = relocation
-            .db_operation
-            .as_deref()
-            .expect("std.db.operation carries structured facts");
-        assert_eq!(db.op, DbOperationKind::Insert);
-        assert_eq!(db.operand_roles, vec![DbOperandRole::ObjectFields]);
-        assert_eq!(db.target.type_name, "Item");
-        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
-            .expect("DbOperation artifact validates");
-        let function = view
-            .functions()
-            .iter()
-            .find(|function| function.function_key == "db::insertItem")
-            .expect("insertItem function")
-            .instructions
-            .iter()
-            .filter(|instruction| {
-                instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::InvokeHost
-            })
-            .count();
-        assert_eq!(function, 1);
+        let error = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect_err("DB execution must not mint a semantic owner shape or host boundary");
+        assert!(matches!(
+            error,
+            crate::BytecodeEmissionError::UnsupportedConstruct {
+                function_key,
+                construct: "DbOperation",
+                location,
+            } if function_key == "db::insertItem"
+                && location == " DB execution has no admitted Phase 5 machine-carrier boundary"
+        ));
     }
 
     #[test]

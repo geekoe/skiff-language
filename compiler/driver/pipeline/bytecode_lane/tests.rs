@@ -14,8 +14,8 @@ use skiff_artifact_model::{
     PackageBuildId, PackageCallableId, PackageExecutableCoordinate, PackageImplementationLinks,
     PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
     PackageSchemaIndexRef, PlatformErrorProjectionRegistryRef, RelocatableBytecodeFunction,
-    SourcePosition, SourceSpanRef, StatementAttributionId, StatementEntry, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    SourcePosition, SourceSpanRef, StatementAttributionId, StatementEntry, WritablePathSegment,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_emission::package_artifact::publish_projected_package_artifact;
 
@@ -86,6 +86,17 @@ function rethrowing(seed: number) -> number {
     }
   }
   return 12
+}
+"#;
+
+const PRODUCTION_NESTED_WRITABLE_SOURCE: &str = r#"
+type Cell { count: integer }
+type State { rows: Array<Cell> }
+
+function rewrite() -> number {
+  var state = State { rows: [Cell { count: 0 }] }
+  state.rows[0].count = 7
+  return state.rows[0].count
 }
 "#;
 
@@ -509,8 +520,332 @@ fn production_authoring_publishes_direct_throw_and_rethrow_catch_discriminators(
             } if name == "unknown" && args.is_empty()
         )
     }));
-
     std::fs::remove_dir_all(temp).expect("remove diverging catch fixture tree");
+}
+
+#[test]
+fn production_local_integer_catch_default_publishes_its_number_producer() {
+    let package_id = "test.skiff/local-integer-catch-default";
+    let (platform, package_root, artifact_root, temp) = production_fixture(package_id, None);
+    let source = PRODUCTION_DIVERGING_CATCH_SOURCE.replacen(
+        "type LeafB {\n  marker: number,",
+        "type LeafB {\n  marker: integer,",
+        1,
+    );
+    assert_ne!(source, PRODUCTION_DIVERGING_CATCH_SOURCE);
+    std::fs::write(package_root.join("main.skiff"), source)
+        .expect("write local integer catch-default source");
+
+    let receipt = crate::authoring::build_authoring_object(
+        &platform,
+        crate::authoring::AuthoringObject::Package,
+        &package_root,
+        &artifact_root,
+        "skiff-test",
+        true,
+    )
+    .expect("local integer catch default must publish from the actual zero producer");
+    let package_ref: skiff_artifact_model::PackageArtifactRef =
+        serde_json::from_value(receipt["packageArtifactReceipt"]["artifact"].clone())
+            .expect("authoring receipt carries package ref");
+    let store = skiff_deployment::storage::CanonicalArtifactStore::open(&artifact_root)
+        .expect("open production artifact store");
+    let package = store
+        .read_package_artifact(&package_ref)
+        .expect("read published package artifact");
+    let bytecode = store
+        .read_package_bytecode(
+            &package_ref,
+            package
+                .bytecode
+                .as_ref()
+                .expect("publication attaches admitted bytecode"),
+        )
+        .expect("read published bytecode");
+
+    let mut leaf_b_default_shapes = 0usize;
+    for entry in &bytecode.artifact().image.pools.shapes {
+        let BytecodePoolEntry::ShapeRef { shape } = entry else {
+            continue;
+        };
+        let BytecodePoolEntry::TypeRef { ty: owner, .. } =
+            &bytecode.artifact().image.pools.types[shape.type_ref as usize]
+        else {
+            continue;
+        };
+        if owner
+            != &(skiff_artifact_model::TypeRefIr::PublicationType {
+                module_path: "main".to_string(),
+                type_index: 1,
+            })
+        {
+            continue;
+        }
+        leaf_b_default_shapes += 1;
+        let marker = shape
+            .fields
+            .iter()
+            .find(|field| field.name == "marker")
+            .expect("LeafB default shape retains marker");
+        let BytecodePoolEntry::TypeRef { ty, .. } =
+            &bytecode.artifact().image.pools.types[marker.type_ref as usize]
+        else {
+            panic!("LeafB marker selects one exact TypeRef row")
+        };
+        assert_eq!(
+            ty,
+            &skiff_artifact_model::TypeRefIr::builtin("number"),
+            "the compiler-owned zero default is a Number producer even though LeafB.marker is semantically integer"
+        );
+    }
+    assert!(
+        leaf_b_default_shapes > 0,
+        "the mismatch catch publishes its local LeafB default shape"
+    );
+
+    std::fs::remove_dir_all(temp).expect("remove local integer catch-default fixture tree");
+}
+
+#[test]
+fn production_nested_record_array_writable_path_uses_exact_carrier_edges() {
+    let package_id = "test.skiff/nested-writable-carriers";
+    let (platform, package_root, artifact_root, temp) = production_fixture(package_id, None);
+    std::fs::write(
+        package_root.join("main.skiff"),
+        PRODUCTION_NESTED_WRITABLE_SOURCE,
+    )
+    .expect("write nested writable source");
+
+    let receipt = crate::authoring::build_authoring_object(
+        &platform,
+        crate::authoring::AuthoringObject::Package,
+        &package_root,
+        &artifact_root,
+        "skiff-test",
+        true,
+    )
+    .expect("nested record/array writable path must publish exact carrier edges");
+    let package_ref: skiff_artifact_model::PackageArtifactRef =
+        serde_json::from_value(receipt["packageArtifactReceipt"]["artifact"].clone())
+            .expect("authoring receipt carries package ref");
+    let store = skiff_deployment::storage::CanonicalArtifactStore::open(&artifact_root)
+        .expect("open production artifact store");
+    let package = store
+        .read_package_artifact(&package_ref)
+        .expect("read published package artifact");
+    let bytecode = store
+        .read_package_bytecode(
+            &package_ref,
+            package
+                .bytecode
+                .as_ref()
+                .expect("publication attaches admitted bytecode"),
+        )
+        .expect("read published bytecode");
+    let artifact = bytecode.artifact();
+    let function = artifact
+        .image
+        .functions
+        .get("main::rewrite")
+        .expect("published bytecode carries rewrite");
+    let decoded = skiff_artifact_model::bytecode::BoundedDecoder::new()
+        .decode_function(&function.words)
+        .expect("nested writable wordcode decodes");
+    let (write_ordinal, instruction) = decoded
+        .instructions
+        .iter()
+        .enumerate()
+        .find(|(_, instruction)| instruction.descriptor.kind == Opcode::SetWritablePath)
+        .expect("nested assignment emits SetWritablePath");
+    let path_ref = instruction
+        .descriptor
+        .operand_word(OperandRole::WritablePathRef, &instruction.operand_words)
+        .expect("SetWritablePath carries its exact path ref");
+    let BytecodePoolEntry::WritablePath(path) =
+        &artifact.image.pools.writable_paths[path_ref as usize]
+    else {
+        panic!("writable operand selects a path declaration")
+    };
+    let (
+        WritablePathSegment::DenseField { .. },
+        WritablePathSegment::ArrayIndex {
+            selector_ordinal: 0,
+            element_type_ref,
+        },
+        WritablePathSegment::DenseField {
+            shape_ref: cell_shape_ref,
+            field_ordinal: count_ordinal,
+        },
+    ) = (&path.segments[0], &path.segments[1], &path.segments[2])
+    else {
+        panic!("nested write retains DenseField -> ArrayIndex -> DenseField facts")
+    };
+    assert_eq!(path.selector_count(), 1);
+    let BytecodePoolEntry::TypeRef {
+        ty: array_element, ..
+    } = &artifact.image.pools.types[*element_type_ref as usize]
+    else {
+        panic!("Array path element selects one exact TypeRef row")
+    };
+    let BytecodePoolEntry::ShapeRef { shape: cell_shape } =
+        &artifact.image.pools.shapes[*cell_shape_ref as usize]
+    else {
+        panic!("terminal Cell path selects one exact shape")
+    };
+    let BytecodePoolEntry::TypeRef { ty: cell_owner, .. } =
+        &artifact.image.pools.types[cell_shape.type_ref as usize]
+    else {
+        panic!("Cell shape owner selects one exact TypeRef row")
+    };
+    assert_eq!(array_element, cell_owner);
+    let count_field = &cell_shape.fields[*count_ordinal as usize];
+    assert_eq!(count_field.name, "count");
+    let BytecodePoolEntry::TypeRef {
+        ty: writable_count, ..
+    } = &artifact.image.pools.types[count_field.type_ref as usize]
+    else {
+        panic!("writable count field selects one exact TypeRef row")
+    };
+    assert_eq!(
+        writable_count,
+        &skiff_artifact_model::TypeRefIr::builtin("number")
+    );
+    let BytecodePoolEntry::TypeRef { ty: leaf, .. } =
+        &artifact.image.pools.types[path.leaf_type_ref as usize]
+    else {
+        panic!("writable leaf selects one exact TypeRef row")
+    };
+    assert_eq!(leaf, &skiff_artifact_model::TypeRefIr::builtin("number"));
+
+    let mut reachable_cell_shapes = 0usize;
+    for entry in &artifact.image.pools.shapes {
+        let BytecodePoolEntry::ShapeRef { shape } = entry else {
+            continue;
+        };
+        let Some(count) = shape.fields.iter().find(|field| field.name == "count") else {
+            continue;
+        };
+        reachable_cell_shapes += 1;
+        let BytecodePoolEntry::TypeRef { ty, .. } =
+            &artifact.image.pools.types[count.type_ref as usize]
+        else {
+            panic!("reachable Cell count field selects one exact TypeRef row")
+        };
+        assert_eq!(
+            ty,
+            &skiff_artifact_model::TypeRefIr::builtin("number"),
+            "every value-local Cell shape must retain the source Number producer"
+        );
+    }
+    assert!(reachable_cell_shapes > 0);
+
+    let mut read_back_count = 0usize;
+    for instruction in decoded.instructions.iter().skip(write_ordinal + 1) {
+        if instruction.descriptor.kind != Opcode::GetDenseField {
+            continue;
+        }
+        let shape_ref = instruction
+            .descriptor
+            .operand_word(OperandRole::ShapeRef, &instruction.operand_words)
+            .expect("GetDenseField carries one exact shape");
+        let field_ordinal = instruction
+            .descriptor
+            .operand_word(OperandRole::FieldOrdinal, &instruction.operand_words)
+            .expect("GetDenseField carries one exact field ordinal");
+        let BytecodePoolEntry::ShapeRef { shape } =
+            &artifact.image.pools.shapes[shape_ref as usize]
+        else {
+            panic!("GetDenseField selects one exact shape")
+        };
+        let field = &shape.fields[field_ordinal as usize];
+        if field.name != "count" {
+            continue;
+        }
+        read_back_count += 1;
+        let BytecodePoolEntry::TypeRef { ty, .. } =
+            &artifact.image.pools.types[field.type_ref as usize]
+        else {
+            panic!("read-back count field selects one exact TypeRef row")
+        };
+        assert_eq!(
+            ty,
+            &skiff_artifact_model::TypeRefIr::builtin("number"),
+            "post-write GetDenseField must reuse the Array element producer shape"
+        );
+    }
+    assert!(
+        read_back_count > 0,
+        "fixture reads count after the nested write"
+    );
+
+    std::fs::remove_dir_all(temp).expect("remove nested writable fixture tree");
+}
+
+#[test]
+fn production_nested_writable_rejects_host_integer_source_number_conflict() {
+    let package_id = "test.skiff/nested-writable-carrier-conflict";
+    let http = "consume:\n  method: POST\n  path: /phase-5/nested-conflict\n  kind: rawHttp\n  handler: main.consume\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n";
+    let (platform, package_root, artifact_root, temp) = production_fixture(package_id, Some(http));
+    std::fs::write(
+        package_root.join("main.skiff"),
+        r#"import std
+
+type Cell { count: integer }
+type State { rows: Array<Cell> }
+
+function consume(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final outbound = std.http.HttpClientRequest {
+    method: request.method,
+    url: request.body.toUtf8String(),
+    headers: request.headers,
+    body: null,
+    timeoutMs: null,
+  }
+  final unary = std.http.request(outbound)
+  var state = State { rows: [Cell { count: 0 }] }
+  state.rows[0].count = unary.status
+  emit({ tag: "start", status: 207, headers: unary.headers })
+  emit({ tag: "chunk", value: unary.body })
+  emit({ tag: "end" })
+  return null
+}
+"#,
+    )
+    .expect("write conflicting writable source");
+
+    let error = crate::authoring::build_authoring_object(
+        &platform,
+        crate::authoring::AuthoringObject::Package,
+        &package_root,
+        &artifact_root,
+        "skiff-test",
+        true,
+    )
+    .expect_err("Integer and Number producers cannot share one exact writable leaf");
+    let service_typed = error.downcast_ref::<crate::ServicePackageCompileError>();
+    let package_typed = error.downcast_ref::<PackageCompileError>();
+    assert!(
+        service_typed.is_some_and(|typed| matches!(
+            typed,
+            crate::ServicePackageCompileError::Package(PackageCompileError::BytecodeEmission {
+                source: skiff_compiler_emission::BytecodeEmissionError::UnsupportedConstruct {
+                    construct: "exact machine carrier facts",
+                    ..
+                }
+            })
+        )) || package_typed.is_some_and(|typed| matches!(
+            typed,
+            PackageCompileError::BytecodeEmission {
+                source: skiff_compiler_emission::BytecodeEmissionError::UnsupportedConstruct {
+                    construct: "exact machine carrier facts",
+                    ..
+                }
+            }
+        )),
+        "expected exact host-Integer/source-Number carrier rejection, got: {error:?}"
+    );
+    assert_no_publication_pointers(&artifact_root, package_id);
+    std::fs::remove_dir_all(temp).expect("remove conflicting writable fixture tree");
 }
 
 #[test]

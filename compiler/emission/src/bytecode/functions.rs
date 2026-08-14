@@ -3,8 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
-    BytecodeSpecialization, CallLoanBinding, CallLoanLayout, CallTargetIr, CatchMatcher,
-    DbOperandRole, DbOperationKind, DbOperationReference, DbTargetIr, ExceptionRegion, ExprIr,
+    BytecodeSpecialization, CallLoanLayout, CallTargetIr, CatchMatcher, ExceptionRegion, ExprIr,
     ExprRefIr, FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
     IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
     ParamModeIr, ParameterSlotDecl, PatternIr, PrivilegedAffineFieldAccess,
@@ -15,14 +14,19 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
-    MirFunction, MirInOutPathSegment, MirIndexReceiverKind, MirParamMode, MirSlot, MirSlotKind,
-    MirSourceEvent, MirStatementPlacement, MirStmtKind, MirUnit, MirWritablePathSegment,
-    MirWritablePlace, MirWritableRoot,
+    MirFunction, MirIndexReceiverKind, MirParamMode, MirSlot, MirSlotKind, MirSourceEvent,
+    MirStatementPlacement, MirStmtKind, MirUnit, MirWritablePathSegment, MirWritablePlace,
+    MirWritableRoot,
 };
 
 use super::{
-    carriers::FunctionMachineCarrierFacts, constants::ConstantImage,
-    inputs::ValidatedEmissionInputs, BytecodeEmissionError, FunctionValueTransferPlans,
+    carriers::{
+        FunctionMachineCarrierFacts, MachineDefaultValueFact, MachineDefaultValueKind,
+        MachineShapeCarrierFact, MachineWritableStepFact,
+    },
+    constants::ConstantImage,
+    inputs::ValidatedEmissionInputs,
+    BytecodeEmissionError, FunctionValueTransferPlans,
 };
 use super::{inputs::is_void, intrinsics::static_intrinsic_canonical_key};
 
@@ -118,6 +122,7 @@ struct PendingResume {
     operand: usize,
     expected_stack_height_before_result: u32,
     result_ty: Option<TypeRefIr>,
+    result_expression: Option<u32>,
     result_materialization: Option<ResumeResultMaterialization>,
     emit_stream_item_shape_ref: Option<u32>,
     end_block: Option<u32>,
@@ -262,25 +267,42 @@ impl<'a> FunctionEmitter<'a> {
             })
     }
 
-    fn machine_shape_fields(
+    fn machine_expression_shape_fields(
         &self,
+        expression: u32,
         owner: &TypeRefIr,
         context: &'static str,
     ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
         self.machine_carriers
-            .shape(owner)
-            .map(|shape| {
-                shape
-                    .fields()
-                    .iter()
-                    .map(|(name, carrier)| (name.clone(), carrier.ty().clone()))
-                    .collect()
-            })
+            .expression_shape(expression)
+            .filter(|shape| shape.owner() == owner)
+            .map(machine_shape_fields)
             .ok_or_else(|| {
                 unsupported(
                     &self.key,
-                    "exact machine carrier shape",
-                    &format!("{context} owner {owner:?} has no analyzed field layout"),
+                    "exact expression producer shape",
+                    &format!(
+                        "{context} expression {expression} owner {owner:?} has no analyzed field layout"
+                    ),
+                )
+            })
+    }
+
+    fn machine_slot_shape_fields(
+        &self,
+        slot: u32,
+        owner: &TypeRefIr,
+        context: &'static str,
+    ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
+        self.machine_carriers
+            .slot_shape(slot)
+            .filter(|shape| shape.owner() == owner)
+            .map(machine_shape_fields)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact slot producer shape",
+                    &format!("{context} slot {slot} owner {owner:?} has no analyzed field layout"),
                 )
             })
     }
@@ -294,13 +316,7 @@ impl<'a> FunctionEmitter<'a> {
         self.machine_carriers
             .construct_shape(expression)
             .filter(|shape| shape.owner() == owner)
-            .map(|shape| {
-                shape
-                    .fields()
-                    .iter()
-                    .map(|(name, carrier)| (name.clone(), carrier.ty().clone()))
-                    .collect()
-            })
+            .map(machine_shape_fields)
             .ok_or_else(|| {
                 unsupported(
                     &self.key,
@@ -491,156 +507,14 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_db_operation(
         &mut self,
-        expression: &MirExpression,
-        operation: &skiff_artifact_model::DbOperationIr,
+        _expression: &MirExpression,
+        _operation: &skiff_artifact_model::DbOperationIr,
     ) -> Result<(), BytecodeEmissionError> {
-        if operation.op != skiff_artifact_model::DbOpKindIr::Insert || operation.many {
-            return Err(unsupported(
-                &self.key,
-                "DbOperation",
-                "only single insert is supported in this contract generation",
-            ));
-        }
-        if operation.selector.is_some()
-            || operation.query.is_some()
-            || operation.projection.is_some()
-            || operation.insert_body.is_some()
-            || operation.change.is_some()
-        {
-            return Err(unsupported(
-                &self.key,
-                "DbOperation",
-                "single insert must carry only ObjectFields",
-            ));
-        }
-        let skiff_artifact_model::DbBodyIr::ObjectFields { fields } =
-            operation.body.as_ref().ok_or_else(|| {
-                unsupported(
-                    &self.key,
-                    "DbOperation",
-                    "single insert requires an ObjectFields body",
-                )
-            })?
-        else {
-            return Err(unsupported(
-                &self.key,
-                "DbOperation",
-                "single insert requires an ObjectFields body",
-            ));
-        };
-        let declared = self.machine_shape_fields(
-            &operation.target.type_ref,
-            "DbOperation single insert object",
-        )?;
-        if declared.len() != fields.len() || declared.keys().any(|name| !fields.contains_key(name))
-        {
-            return Err(unsupported(
-                &self.key,
-                "DbOperation",
-                "insert field set does not exactly match the declared target shape",
-            ));
-        }
-        let shape = self.image.intern_shape(
-            self.unit.module_path.as_str(),
-            &operation.target.type_ref,
-            &declared,
-            &format!("DbOperation single insert in `{}`", self.key),
-        )?;
-        for name in declared.keys() {
-            self.emit_expression(*fields.get(name).expect("field set was checked"))?;
-        }
-        let field_count = u32::try_from(declared.len())
-            .map_err(|_| arithmetic(&self.key, "DbOperation field count conversion"))?;
-        self.emit_op(Opcode::NewRecord, vec![shape, field_count])?;
-
-        let qualified_target = super::constants::qualify_local_types(
-            self.unit.module_path.as_str(),
-            &operation.target.type_ref,
-        );
-        let qualified_result = super::constants::qualify_local_types(
-            self.unit.module_path.as_str(),
-            &operation.result_type,
-        );
-        let effects = skiff_artifact_model::host_effect_registry()
-            .entries()
-            .iter()
-            .find(|entry| entry.binding_key == "std.db.operation")
-            .map(|entry| entry.signature.effects.clone())
-            .ok_or_else(|| {
-                unsupported(
-                    &self.key,
-                    "DbOperation",
-                    "std.db.operation is absent from the host effect registry",
-                )
-            })?;
-        let signature = HostEffectSignature {
-            parameter_types: vec![qualified_target.clone()],
-            parameter_modes: vec![ParamModeIr::Value],
-            parameter_plans: vec![self.image.exact_type_plan(
-                self.unit.module_path.as_str(),
-                &operation.target.type_ref,
-                &format!("DbOperation parameter plan in `{}`", self.key),
-            )?],
-            result_types: vec![qualified_result.clone()],
-            result_plans: vec![self.image.exact_type_plan(
-                self.unit.module_path.as_str(),
-                &operation.result_type,
-                &format!("DbOperation result plan in `{}`", self.key),
-            )?],
-            effects,
-        };
-        let reference = HostEffectReference {
-            target: NativeTarget {
-                namespace: "std".to_string(),
-                symbol: "db.operation".to_string(),
-                binding_key: Some("std.db.operation".to_string()),
-                metadata: BTreeMap::new(),
-            },
-            signature,
-            db_operation: Some(Box::new(DbOperationReference {
-                op: DbOperationKind::Insert,
-                target: DbTargetIr {
-                    type_ref: qualified_target,
-                    type_name: operation.target.type_name.clone(),
-                },
-                operand_roles: vec![DbOperandRole::ObjectFields],
-                result_type: qualified_result.clone(),
-                result_plans: vec![self.image.exact_type_plan(
-                    self.unit.module_path.as_str(),
-                    &operation.result_type,
-                    &format!("DbOperation reference result plan in `{}`", self.key),
-                )?],
-            })),
-        };
-        let relocation_index = u32::try_from(self.relocations.len()).map_err(|_| {
-            arithmetic(self.key.as_str(), "DbOperation relocation index conversion")
-        })?;
-        self.relocations
-            .push(BytecodeRelocation::HostEffectRef(reference));
-        let result_count = u32::from(!is_void(&expression.ty));
-        let expected_stack_height_before_result =
-            self.operand_depth.checked_sub(1).ok_or_else(|| {
-                unsupported(
-                    &self.key,
-                    "DbOperation",
-                    "insert object operand is absent from the emitted stack",
-                )
-            })?;
-        let instruction = self.emit_op(
-            Opcode::InvokeHost,
-            vec![relocation_index, 1, result_count, 0],
-        )?;
-        self.pending_resumes.push(PendingResume {
-            instruction,
-            operand: 3,
-            expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
-                .map_err(|_| arithmetic(&self.key, "DbOperation resume stack height conversion"))?,
-            result_ty: Some(self.expression_carrier(expression.index)?.clone()),
-            result_materialization: None,
-            emit_stream_item_shape_ref: None,
-            end_block: None,
-        });
-        Ok(())
+        Err(unsupported(
+            &self.key,
+            "DbOperation",
+            "DB execution has no admitted Phase 5 machine-carrier boundary",
+        ))
     }
 
     fn emit_value_block_block(
@@ -812,7 +686,7 @@ impl<'a> FunctionEmitter<'a> {
                     }
                     AssignTargetIr::Slot { .. } | AssignTargetIr::ActorSelfField { .. } => None,
                 };
-                self.emit_writable_assign(place, *value, target_object)?;
+                self.emit_writable_assign(statement.statement_index, place, *value, target_object)?;
             }
             MirStmtKind::Assert { condition, .. } => {
                 self.emit_expression(*condition)?;
@@ -1479,6 +1353,7 @@ impl<'a> FunctionEmitter<'a> {
                 } else {
                     Some(self.expression_carrier(expression.index)?.clone())
                 },
+                result_expression: (result_count != 0).then_some(expression.index),
                 result_materialization,
                 emit_stream_item_shape_ref: None,
                 end_block: None,
@@ -1507,8 +1382,11 @@ impl<'a> FunctionEmitter<'a> {
             ));
         }
         let result_carrier = self.expression_carrier(expression.index)?.clone();
-        let fields =
-            self.machine_shape_fields(&result_carrier, "std.http.request result materialization")?;
+        let fields = self.machine_expression_shape_fields(
+            expression.index,
+            &result_carrier,
+            "std.http.request result materialization",
+        )?;
         let shape_ref = self.image.intern_shape(
             self.unit.module_path.as_str(),
             &result_carrier,
@@ -1719,9 +1597,6 @@ impl<'a> FunctionEmitter<'a> {
 
     fn normalize_host_signature_type(&self, ty: &TypeRefIr) -> TypeRefIr {
         let symbol_path = match ty {
-            TypeRefIr::Literal {
-                value: LiteralIr::String { .. },
-            } => return TypeRefIr::builtin("string"),
             TypeRefIr::PublicationType {
                 module_path,
                 type_index,
@@ -1794,12 +1669,16 @@ impl<'a> FunctionEmitter<'a> {
         let mut parameter_plans = Vec::with_capacity(call.args.len());
         for argument in &call.args {
             let ty = self.expression_carrier(argument.expression)?.clone();
+            let shape = self
+                .machine_carriers
+                .expression_shape(argument.expression)
+                .cloned();
             let source_plan = self.image.exact_type_plan(
                 self.unit.module_path.as_str(),
                 &ty,
                 &format!("host call parameter plan in `{}`", self.key),
             )?;
-            parameter_plans.push(self.bind_privileged_plan(&ty, &source_plan)?);
+            parameter_plans.push(self.bind_privileged_plan(&ty, &source_plan, shape.as_ref())?);
         }
         let result_types = if is_void(&expression.ty) {
             Vec::new()
@@ -1814,12 +1693,16 @@ impl<'a> FunctionEmitter<'a> {
             Vec::new()
         } else {
             let carrier = self.expression_carrier(expression.index)?.clone();
+            let shape = self
+                .machine_carriers
+                .expression_shape(expression.index)
+                .cloned();
             let source_plan = self.image.exact_type_plan(
                 self.unit.module_path.as_str(),
                 &carrier,
                 &format!("host call result plan in `{}`", self.key),
             )?;
-            vec![self.bind_privileged_plan(&carrier, &source_plan)?]
+            vec![self.bind_privileged_plan(&carrier, &source_plan, shape.as_ref())?]
         };
         let parameter_count = parameter_types.len();
         Ok(HostEffectSignature {
@@ -1921,6 +1804,7 @@ impl<'a> FunctionEmitter<'a> {
             expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
                 .map_err(|_| arithmetic(&self.key, "EmitStream stack height conversion"))?,
             result_ty: None,
+            result_expression: None,
             result_materialization: None,
             emit_stream_item_shape_ref: Some(emit_stream_item_shape_ref),
             end_block: None,
@@ -2004,6 +1888,7 @@ impl<'a> FunctionEmitter<'a> {
             expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
                 .map_err(|_| arithmetic(&self.key, "StreamNext stack height conversion"))?,
             result_ty: Some(item_type),
+            result_expression: None,
             result_materialization: None,
             emit_stream_item_shape_ref: None,
             end_block,
@@ -2201,109 +2086,14 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_inout_loan_layout(
         &mut self,
-        loans: &[skiff_compiler_lowering::mir::MirInOutLoan],
-        selectors: &mut Vec<ExprRefIr>,
+        _loans: &[skiff_compiler_lowering::mir::MirInOutLoan],
+        _selectors: &mut Vec<ExprRefIr>,
     ) -> Result<u32, BytecodeEmissionError> {
-        let layout_index = u32::try_from(self.call_loan_layouts.len())
-            .map_err(|_| arithmetic(&self.key, "inout loan layout index conversion"))?;
-        let mut bindings = Vec::with_capacity(loans.len());
-        for loan in loans {
-            let mut current_ty = loan.root_type.clone();
-            let mut segments = Vec::new();
-            let mut next_selector_ordinal = 0_u32;
-            for segment in &loan.path {
-                match segment {
-                    MirInOutPathSegment::Field { name } => {
-                        let fields = self.machine_shape_fields(&current_ty, "inout field path")?;
-                        let field_ordinal = fields
-                            .keys()
-                            .position(|candidate| candidate == name)
-                            .ok_or_else(|| {
-                            unsupported(
-                                &self.key,
-                                "inout field path",
-                                &format!("field `{name}` is absent from the record shape"),
-                            )
-                        })?;
-                        let shape_ref = self.image.intern_shape(
-                            self.unit.module_path.as_str(),
-                            &current_ty,
-                            &fields,
-                            &format!("inout field path in `{}`", self.key),
-                        )?;
-                        segments.push(WritablePathSegment::DenseField {
-                            shape_ref,
-                            field_ordinal: field_ordinal as u32,
-                        });
-                        current_ty = fields.get(name).expect("ordinal was found").clone();
-                    }
-                    MirInOutPathSegment::Index {
-                        selector, access, ..
-                    } => {
-                        let selector_ordinal = next_selector_ordinal;
-                        next_selector_ordinal = next_selector_ordinal.saturating_add(1);
-                        selectors.push(*selector);
-                        match access.receiver_kind {
-                            MirIndexReceiverKind::Array => {
-                                let element_ty = access.result_type.clone();
-                                let element_type_ref = self.image.type_index(
-                                    self.unit.module_path.as_str(),
-                                    &element_ty,
-                                    &format!("inout array path in `{}`", self.key),
-                                )?;
-                                segments.push(WritablePathSegment::ArrayIndex {
-                                    selector_ordinal,
-                                    element_type_ref,
-                                });
-                                current_ty = element_ty;
-                            }
-                            MirIndexReceiverKind::Map => {
-                                let (key_ty, value_ty) =
-                                    self.map_key_value_types(&current_ty, "inout map path")?;
-                                let key_type_ref = self.image.type_index(
-                                    self.unit.module_path.as_str(),
-                                    &key_ty,
-                                    &format!("inout map key path in `{}`", self.key),
-                                )?;
-                                let value_type_ref = self.image.type_index(
-                                    self.unit.module_path.as_str(),
-                                    &value_ty,
-                                    &format!("inout map value path in `{}`", self.key),
-                                )?;
-                                segments.push(WritablePathSegment::MapKey {
-                                    selector_ordinal,
-                                    key_type_ref,
-                                    value_type_ref,
-                                });
-                                current_ty = value_ty;
-                            }
-                            MirIndexReceiverKind::JsonObject => {
-                                return Err(unsupported(
-                                    &self.key,
-                                    "inout call",
-                                    "JsonObject inout paths are outside the emitted core",
-                                ))
-                            }
-                        }
-                    }
-                }
-            }
-            let path_ref = self.image.intern_writable_path(
-                self.unit.module_path.as_str(),
-                &loan.root_type,
-                &current_ty,
-                segments,
-                &format!("inout call in `{}`", self.key),
-            )?;
-            bindings.push(CallLoanBinding {
-                parameter_ordinal: loan.parameter_ordinal,
-                root_slot: loan.root_slot,
-                writable_path_ref: path_ref,
-            });
-        }
-        self.call_loan_layouts
-            .push(CallLoanLayout { loans: bindings });
-        Ok(layout_index)
+        Err(unsupported(
+            &self.key,
+            "inout call",
+            "inout loans have no admitted Phase 5 machine-carrier boundary",
+        ))
     }
 
     fn direct_relocation(
@@ -2378,6 +2168,7 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_writable_assign(
         &mut self,
+        statement_index: u32,
         place: &MirWritablePlace,
         value: ExprRefIr,
         target_object: Option<ExprRefIr>,
@@ -2400,17 +2191,65 @@ impl<'a> FunctionEmitter<'a> {
                 "root slot is not a source-confirmed writable local",
             ));
         }
-        let root_ty = root.ty.clone().ok_or_else(|| {
-            unsupported(&self.key, "writable assignment", "root has no exact type")
-        })?;
+        let fact = self
+            .machine_carriers
+            .writable_path(statement_index)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact writable carrier facts",
+                    &format!("statement {statement_index} has no analyzed path"),
+                )
+            })?
+            .clone();
+        let root_ty = self.emitted_slot_carrier(slot)?;
+        if fact.root().ty() != &root_ty {
+            return Err(unsupported(
+                &self.key,
+                "exact writable carrier facts",
+                &format!(
+                    "statement {statement_index} root {:?} differs from slot {slot} carrier {root_ty:?}",
+                    fact.root().ty()
+                ),
+            ));
+        }
+        let leaf_ty = self.expression_carrier(value.expression)?.clone();
+        if fact.leaf().ty() != &leaf_ty {
+            return Err(unsupported(
+                &self.key,
+                "exact writable carrier facts",
+                &format!(
+                    "statement {statement_index} leaf {:?} differs from expression {} carrier {leaf_ty:?}",
+                    fact.leaf().ty(),
+                    value.expression
+                ),
+            ));
+        }
+        if fact.steps().len() != place.path.len() {
+            return Err(unsupported(
+                &self.key,
+                "exact writable carrier facts",
+                &format!(
+                    "statement {statement_index} analyzed path length {} differs from MIR length {}",
+                    fact.steps().len(),
+                    place.path.len()
+                ),
+            ));
+        }
         let mut current_ty = root_ty.clone();
         let mut selector_expressions = Vec::new();
         let mut segments = Vec::new();
         let mut next_selector_ordinal = 0u32;
-        for segment in &place.path {
-            match segment {
-                MirWritablePathSegment::Field { name } => {
-                    let fields = self.machine_shape_fields(&current_ty, "writable field path")?;
+        for (ordinal, (segment, step)) in place.path.iter().zip(fact.steps()).enumerate() {
+            match (segment, step) {
+                (
+                    MirWritablePathSegment::Field { name },
+                    MachineWritableStepFact::DenseField {
+                        name: exact_name,
+                        shape,
+                    },
+                ) if name == exact_name && shape.owner() == &current_ty => {
+                    let fields = machine_shape_fields(shape);
                     let field_ordinal = fields
                         .keys()
                         .position(|candidate| candidate == name)
@@ -2433,69 +2272,148 @@ impl<'a> FunctionEmitter<'a> {
                     });
                     current_ty = fields.get(name).expect("ordinal was found").clone();
                 }
-                MirWritablePathSegment::Index { index, access, .. } => {
+                (
+                    MirWritablePathSegment::Index { index, access, .. },
+                    MachineWritableStepFact::ArrayIndex {
+                        selector_expression,
+                        selector,
+                        element,
+                    },
+                ) if access.receiver_kind == MirIndexReceiverKind::Array
+                    && *selector_expression == index.expression =>
+                {
                     let selector_ordinal = next_selector_ordinal;
                     next_selector_ordinal = next_selector_ordinal.saturating_add(1);
                     selector_expressions.push(*index);
-                    match access.receiver_kind {
-                        MirIndexReceiverKind::Array => {
-                            let element_ty = access.result_type.clone();
-                            let element_type_ref = self.image.type_index(
-                                self.unit.module_path.as_str(),
-                                &element_ty,
-                                &format!("writable array path in `{}`", self.key),
-                            )?;
-                            segments.push(WritablePathSegment::ArrayIndex {
-                                selector_ordinal,
-                                element_type_ref,
-                            });
-                            current_ty = element_ty;
-                        }
-                        MirIndexReceiverKind::Map => {
-                            let (key_ty, value_ty) =
-                                self.map_key_value_types(&current_ty, "writable map path")?;
-                            let key_type_ref = self.image.type_index(
-                                self.unit.module_path.as_str(),
-                                &key_ty,
-                                &format!("writable map key path in `{}`", self.key),
-                            )?;
-                            let value_type_ref = self.image.type_index(
-                                self.unit.module_path.as_str(),
-                                &value_ty,
-                                &format!("writable map value path in `{}`", self.key),
-                            )?;
-                            segments.push(WritablePathSegment::MapKey {
-                                selector_ordinal,
-                                key_type_ref,
-                                value_type_ref,
-                            });
-                            current_ty = value_ty;
-                        }
-                        MirIndexReceiverKind::JsonObject => {
-                            return Err(unsupported(
-                                &self.key,
-                                "writable assignment",
-                                "JsonObject writable paths are outside the emitted core",
-                            ))
-                        }
+                    let selector_ty = self.expression_carrier(index.expression)?;
+                    if selector.ty() != selector_ty
+                        || selector.ty() != &TypeRefIr::builtin("number")
+                    {
+                        return Err(unsupported(
+                            &self.key,
+                            "exact writable carrier facts",
+                            &format!(
+                                "statement {statement_index} Array selector {ordinal} has drifted carrier"
+                            ),
+                        ));
                     }
+                    let TypeRefIr::Builtin { name, args } = &current_ty else {
+                        return Err(unsupported(
+                            &self.key,
+                            "exact writable carrier facts",
+                            &format!(
+                                "statement {statement_index} Array segment {ordinal} root is not an exact Array carrier"
+                            ),
+                        ));
+                    };
+                    if name != "Array" || args.len() != 1 || &args[0] != element.ty() {
+                        return Err(unsupported(
+                            &self.key,
+                            "exact writable carrier facts",
+                            &format!(
+                                "statement {statement_index} Array segment {ordinal} element carrier differs from its container"
+                            ),
+                        ));
+                    }
+                    let element_type_ref = self.image.type_index(
+                        self.unit.module_path.as_str(),
+                        element.ty(),
+                        &format!("writable array path in `{}`", self.key),
+                    )?;
+                    segments.push(WritablePathSegment::ArrayIndex {
+                        selector_ordinal,
+                        element_type_ref,
+                    });
+                    current_ty = element.ty().clone();
+                }
+                (
+                    MirWritablePathSegment::Index { index, access, .. },
+                    MachineWritableStepFact::MapKey {
+                        selector_expression,
+                        selector,
+                        key,
+                        value,
+                    },
+                ) if access.receiver_kind == MirIndexReceiverKind::Map
+                    && *selector_expression == index.expression =>
+                {
+                    let selector_ordinal = next_selector_ordinal;
+                    next_selector_ordinal = next_selector_ordinal.saturating_add(1);
+                    selector_expressions.push(*index);
+                    if selector.ty() != self.expression_carrier(index.expression)?
+                        || selector.ty() != key.ty()
+                    {
+                        return Err(unsupported(
+                            &self.key,
+                            "exact writable carrier facts",
+                            &format!(
+                                "statement {statement_index} Map selector {ordinal} has drifted carrier"
+                            ),
+                        ));
+                    }
+                    let TypeRefIr::Builtin { name, args } = &current_ty else {
+                        return Err(unsupported(
+                            &self.key,
+                            "exact writable carrier facts",
+                            &format!(
+                                "statement {statement_index} Map segment {ordinal} root is not an exact Map carrier"
+                            ),
+                        ));
+                    };
+                    if name != "Map"
+                        || args.len() != 2
+                        || &args[0] != key.ty()
+                        || &args[1] != value.ty()
+                    {
+                        return Err(unsupported(
+                            &self.key,
+                            "exact writable carrier facts",
+                            &format!(
+                                "statement {statement_index} Map segment {ordinal} key/value carriers differ from its container"
+                            ),
+                        ));
+                    }
+                    let key_type_ref = self.image.type_index(
+                        self.unit.module_path.as_str(),
+                        key.ty(),
+                        &format!("writable map key path in `{}`", self.key),
+                    )?;
+                    let value_type_ref = self.image.type_index(
+                        self.unit.module_path.as_str(),
+                        value.ty(),
+                        &format!("writable map value path in `{}`", self.key),
+                    )?;
+                    segments.push(WritablePathSegment::MapKey {
+                        selector_ordinal,
+                        key_type_ref,
+                        value_type_ref,
+                    });
+                    current_ty = value.ty().clone();
+                }
+                _ => {
+                    return Err(unsupported(
+                        &self.key,
+                        "exact writable carrier facts",
+                        &format!(
+                            "statement {statement_index} path segment {ordinal} differs from analyzed producer facts"
+                        ),
+                    ));
                 }
             }
         }
-        let leaf_ty = &self.function.expression(value)?.ty;
-        if is_never_type(leaf_ty) {
+        if is_never_type(&self.function.expression(value)?.ty) {
             for selector in &selector_expressions {
                 self.emit_expression(*selector)?;
             }
             self.emit_expression(value)?;
             return Ok(());
         }
-        if !writable_value_type_matches(leaf_ty, &current_ty) {
+        if leaf_ty != current_ty {
             return Err(unsupported(
                 &self.key,
-                "writable assignment",
+                "exact writable carrier facts",
                 &format!(
-                    "assigned value type `{leaf_ty:?}` does not match writable path leaf type `{current_ty:?}`"
+                    "statement {statement_index} leaf carrier {leaf_ty:?} differs from analyzed path carrier {current_ty:?}"
                 ),
             ));
         }
@@ -2637,7 +2555,11 @@ impl<'a> FunctionEmitter<'a> {
             ExprIr::LoadSlot { slot } => Some(*slot),
             _ => None,
         };
-        let fields = self.machine_shape_fields(&object_ty, "field read")?;
+        let fields = self.machine_expression_shape_fields(
+            object_expression.index,
+            &object_ty,
+            "field read",
+        )?;
         let ordinal = fields
             .keys()
             .position(|name| name == field)
@@ -2719,84 +2641,62 @@ impl<'a> FunctionEmitter<'a> {
         Ok(())
     }
 
-    fn emit_default_value(
+    fn emit_default_fact(
         &mut self,
-        ty: &TypeRefIr,
+        fact: &MachineDefaultValueFact,
         context: &'static str,
     ) -> Result<(), BytecodeEmissionError> {
-        match ty {
-            TypeRefIr::Builtin { name, args } if name == "string" && args.is_empty() => {
+        match fact.kind() {
+            MachineDefaultValueKind::Literal { value } => {
                 let pool = self.image.add_literal_constant(
                     self.unit.module_path.as_str(),
-                    &skiff_artifact_model::LiteralIr::String {
-                        value: String::new(),
-                    },
-                    &TypeRefIr::builtin("string"),
+                    value,
+                    fact.carrier().ty(),
                     context,
                 )?;
                 self.emit_op(Opcode::Const, vec![pool])?;
                 Ok(())
             }
-            TypeRefIr::Builtin { name, args } if name == "null" && args.is_empty() => {
-                let pool = self.image.add_literal_constant(
-                    self.unit.module_path.as_str(),
-                    &skiff_artifact_model::LiteralIr::Null,
-                    &TypeRefIr::builtin("null"),
-                    context,
-                )?;
-                self.emit_op(Opcode::Const, vec![pool])?;
-                Ok(())
-            }
-            TypeRefIr::Nullable { .. } => {
-                let pool = self.image.add_literal_constant(
-                    self.unit.module_path.as_str(),
-                    &skiff_artifact_model::LiteralIr::Null,
-                    &TypeRefIr::builtin("null"),
-                    context,
-                )?;
-                self.emit_op(Opcode::Const, vec![pool])?;
-                Ok(())
-            }
-            TypeRefIr::Builtin { name, args } if name == "integer" && args.is_empty() => {
-                self.emit_number_constant(0)?;
-                Ok(())
-            }
-            TypeRefIr::Builtin { name, args } if name == "number" && args.is_empty() => {
-                self.emit_number_constant(0)?;
-                Ok(())
-            }
-            TypeRefIr::Builtin { name, args } if name == "bool" && args.is_empty() => {
-                let pool = self.image.add_literal_constant(
-                    self.unit.module_path.as_str(),
-                    &skiff_artifact_model::LiteralIr::Bool { value: false },
-                    &TypeRefIr::builtin("bool"),
-                    context,
-                )?;
-                self.emit_op(Opcode::Const, vec![pool])?;
-                Ok(())
-            }
-            TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
+            MachineDefaultValueKind::EmptyArray { element } => {
                 let element_ref =
                     self.image
-                        .type_index(self.unit.module_path.as_str(), &args[0], context)?;
+                        .type_index(self.unit.module_path.as_str(), element.ty(), context)?;
                 self.emit_op(Opcode::NewArrayBuilder, vec![element_ref])?;
                 self.emit_op(Opcode::FreezeArray, Vec::new())?;
                 Ok(())
             }
-            _ => {
-                let fields = self.machine_shape_fields(ty, context)?;
-                let shape = self.image.intern_shape(
+            MachineDefaultValueKind::Record { shape, fields } => {
+                if shape.owner() != fact.carrier().ty() || shape.fields().keys().ne(fields.keys()) {
+                    return Err(unsupported(
+                        &self.key,
+                        "exact catch default facts",
+                        "record default shape differs from its exact producer",
+                    ));
+                }
+                let shape_fields = machine_shape_fields(shape);
+                for (name, field) in fields {
+                    if shape
+                        .fields()
+                        .get(name)
+                        .is_none_or(|carrier| carrier.ty() != field.carrier().ty())
+                    {
+                        return Err(unsupported(
+                            &self.key,
+                            "exact catch default facts",
+                            &format!("record default field `{name}` has drifted carrier"),
+                        ));
+                    }
+                    self.emit_default_fact(field, context)?;
+                }
+                let shape_ref = self.image.intern_shape(
                     self.unit.module_path.as_str(),
-                    ty,
-                    &fields,
+                    fact.carrier().ty(),
+                    &shape_fields,
                     context,
                 )?;
-                for field_ty in fields.values() {
-                    self.emit_default_value(field_ty, context)?;
-                }
                 let field_count = u32::try_from(fields.len())
                     .map_err(|_| arithmetic(&self.key, "default record field count conversion"))?;
-                self.emit_op(Opcode::NewRecord, vec![shape, field_count])?;
+                self.emit_op(Opcode::NewRecord, vec![shape_ref, field_count])?;
                 Ok(())
             }
         }
@@ -3613,7 +3513,31 @@ impl<'a> FunctionEmitter<'a> {
                     "MIR exception region is absent",
                 )
             })?;
-        self.emit_default_value(catch_type, "catch slot default")?;
+        let default = self
+            .machine_carriers
+            .catch_default(catch_expression_index)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact catch default facts",
+                    &format!(
+                        "catch expression {catch_expression_index} has no analyzed default producer"
+                    ),
+                )
+            })?
+            .clone();
+        let slot_carrier = self.emitted_slot_carrier(catch_slot)?;
+        if default.carrier().ty() != &slot_carrier {
+            return Err(unsupported(
+                &self.key,
+                "exact catch default facts",
+                &format!(
+                    "catch expression {catch_expression_index} default carrier {:?} differs from slot {catch_slot} carrier {slot_carrier:?}",
+                    default.carrier().ty()
+                ),
+            ));
+        }
+        self.emit_default_fact(&default, "catch slot default")?;
         self.emit_op(Opcode::StoreSlot, vec![catch_slot])?;
         let try_ty = self.function.expression(try_expression)?.ty.clone();
         let start_instruction = self.instructions.len();
@@ -3637,8 +3561,31 @@ impl<'a> FunctionEmitter<'a> {
             name: "Exception".to_string(),
             args: vec![catch_type.clone()],
         };
-        let exception_fields =
-            std::collections::BTreeMap::from([("error".to_string(), catch_type.clone())]);
+        let exception_fact = self
+            .machine_carriers
+            .catch_exception_shape(catch_expression_index)
+            .filter(|shape| shape.owner() == &exception_ty)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact catch exception facts",
+                    &format!(
+                        "catch expression {catch_expression_index} has no analyzed exception producer"
+                    ),
+                )
+            })?
+            .clone();
+        let exception_fields = machine_shape_fields(&exception_fact);
+        let body_carrier = self.expression_carrier(body.expression)?;
+        if exception_fields.get("error") != Some(body_carrier) {
+            return Err(unsupported(
+                &self.key,
+                "exact catch exception facts",
+                &format!(
+                    "catch expression {catch_expression_index} body carrier differs from exception payload"
+                ),
+            ));
+        }
         let exception_shape = self.image.intern_shape(
             self.unit.module_path.as_str(),
             &exception_ty,
@@ -3646,6 +3593,33 @@ impl<'a> FunctionEmitter<'a> {
             &format!("Exception construction in `{}`", self.key),
         )?;
         self.emit_op(Opcode::NewRecord, vec![exception_shape, 1])?;
+        let result_ty = self.expression_carrier(catch_expression_index)?.clone();
+        let result_fact = self
+            .machine_carriers
+            .expression_shape(catch_expression_index)
+            .filter(|shape| shape.owner() == &result_ty)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact catch result facts",
+                    &format!(
+                        "catch expression {catch_expression_index} has no analyzed result producer"
+                    ),
+                )
+            })?
+            .clone();
+        let fields = machine_shape_fields(&result_fact);
+        if fields.get("exception") != Some(&exception_ty)
+            || fields.get("tag") != Some(&TypeRefIr::builtin("string"))
+        {
+            return Err(unsupported(
+                &self.key,
+                "exact catch result facts",
+                &format!(
+                    "catch expression {catch_expression_index} result fields differ from exact generated producers"
+                ),
+            ));
+        }
         let tag_pool = self.image.add_literal_constant(
             self.unit.module_path.as_str(),
             &skiff_artifact_model::LiteralIr::String {
@@ -3655,14 +3629,19 @@ impl<'a> FunctionEmitter<'a> {
             &format!("CatchResult tag in `{}`", self.key),
         )?;
         self.emit_op(Opcode::Const, vec![tag_pool])?;
-        let result_ty = TypeRefIr::Builtin {
+        let expected_result_ty = TypeRefIr::Builtin {
             name: "CatchResult".to_string(),
             args: vec![try_ty, catch_type.clone()],
         };
-        let fields = std::collections::BTreeMap::from([
-            ("exception".to_string(), exception_ty),
-            ("tag".to_string(), TypeRefIr::builtin("string")),
-        ]);
+        if result_ty != expected_result_ty {
+            return Err(unsupported(
+                &self.key,
+                "exact catch result facts",
+                &format!(
+                    "catch expression {catch_expression_index} carrier {result_ty:?} differs from generated owner {expected_result_ty:?}"
+                ),
+            ));
+        }
         let shape = self.image.intern_shape(
             self.unit.module_path.as_str(),
             &result_ty,
@@ -4027,12 +4006,16 @@ impl<'a> FunctionEmitter<'a> {
                 .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
             let mut result_plans = Vec::with_capacity(usize::from(pending.result_ty.is_some()));
             if let Some(ty) = &pending.result_ty {
+                let shape = pending
+                    .result_expression
+                    .and_then(|expression| self.machine_carriers.expression_shape(expression))
+                    .cloned();
                 let source_plan = self.image.exact_type_plan(
                     self.unit.module_path.as_str(),
                     ty,
                     &format!("resume result plan in `{}`", self.key),
                 )?;
-                result_plans.push(self.bind_privileged_plan(ty, &source_plan)?);
+                result_plans.push(self.bind_privileged_plan(ty, &source_plan, shape.as_ref())?);
             }
             let result_materializations = match &pending.result_ty {
                 Some(_) => vec![pending.result_materialization],
@@ -4376,11 +4359,17 @@ impl<'a> FunctionEmitter<'a> {
             .slots
             .iter()
             .zip(&self.plans.slot_plans)
-            .map(|(slot, plan)| Ok((self.slot_carrier(slot.slot)?.clone(), plan.clone())))
+            .map(|(slot, plan)| {
+                Ok((
+                    self.slot_carrier(slot.slot)?.clone(),
+                    plan.clone(),
+                    self.machine_carriers.slot_shape(slot.slot).cloned(),
+                ))
+            })
             .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
         let mut slot_plans = Vec::with_capacity(slot_count);
-        for (ty, plan) in source_slot_plans {
-            slot_plans.push(self.bind_privileged_plan(&ty, &plan)?);
+        for (ty, plan, shape) in source_slot_plans {
+            slot_plans.push(self.bind_privileged_plan(&ty, &plan, shape.as_ref())?);
         }
         let generated = self
             .generated_slots
@@ -4408,7 +4397,7 @@ impl<'a> FunctionEmitter<'a> {
                 ),
             )?);
             let plan = self.generated_slot_plan(&ty)?;
-            slot_plans.push(self.bind_privileged_plan(&ty, &plan)?);
+            slot_plans.push(self.bind_privileged_plan(&ty, &plan, None)?);
         }
         let mut parameter_slots = Vec::new();
         for parameter in &self.function.params {
@@ -4447,16 +4436,17 @@ impl<'a> FunctionEmitter<'a> {
                             ),
                         ));
                     }
-                    let fields = self.machine_shape_fields(
+                    let fields = self.machine_slot_shape_fields(
+                        parameter.slot,
                         &carrier,
                         "dense parameter materialization",
                     )?;
-                    if fields.keys().ne(fact.fields.keys()) {
+                    if fields != fact.fields {
                         return Err(unsupported(
                             &self.key,
                             "dense parameter materialization",
                             &format!(
-                                "parameter `{}` machine field set differs from admitted gateway fact",
+                                "parameter `{}` machine field layout differs from admitted gateway fact",
                                 parameter.name
                             ),
                         ));
@@ -4548,9 +4538,14 @@ impl<'a> FunctionEmitter<'a> {
             } else {
                 self.result_carrier()?.clone()
             };
+            let result_shape = self.machine_carriers.result_shape().cloned();
             let mut result_plans = Vec::with_capacity(source_plans.len());
             for plan in source_plans {
-                result_plans.push(self.bind_privileged_plan(&return_type, &plan)?);
+                result_plans.push(self.bind_privileged_plan(
+                    &return_type,
+                    &plan,
+                    result_shape.as_ref(),
+                )?);
             }
             result_plans
         };
@@ -4580,6 +4575,7 @@ impl<'a> FunctionEmitter<'a> {
         &mut self,
         ty: &TypeRefIr,
         source_plan: &ValueTransferPlan,
+        shape: Option<&MachineShapeCarrierFact>,
     ) -> Result<ValueTransferPlan, BytecodeEmissionError> {
         let Some(identity) = super::constants::privileged_affine_identity(ty) else {
             return Ok(source_plan.clone());
@@ -4600,7 +4596,14 @@ impl<'a> FunctionEmitter<'a> {
                 "FromType authority differs from the exact privileged slot type",
             ));
         }
-        let fields = self.machine_shape_fields(ty, "privileged affine slot plan")?;
+        let shape = shape.filter(|shape| shape.owner() == ty).ok_or_else(|| {
+            unsupported(
+                &self.key,
+                "privileged affine occurrence plan",
+                "the exact value occurrence has no compiler-owned shape fact",
+            )
+        })?;
+        let fields = machine_shape_fields(shape);
         let shape_ref = self.image.intern_shape(
             self.unit.module_path.as_str(),
             ty,
@@ -4834,28 +4837,12 @@ fn binary_opcode(op: skiff_artifact_model::BinaryOpIr) -> Result<Opcode, Bytecod
     })
 }
 
-fn writable_value_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
-    actual == expected
-        || package_symbol_type_matches(actual, expected)
-        || matches!(
-            (actual, expected),
-            (
-                TypeRefIr::Literal {
-                    value: skiff_artifact_model::LiteralIr::String { .. },
-                },
-                TypeRefIr::Builtin { name, args },
-            ) if name == "string" && args.is_empty()
-        )
-        || matches!(
-            (actual, expected),
-            (
-                TypeRefIr::Builtin { name: actual_name, args: actual_args },
-                TypeRefIr::Builtin { name: expected_name, args: expected_args },
-            ) if actual_name == "integer"
-                && expected_name == "number"
-                && actual_args.is_empty()
-                && expected_args.is_empty()
-        )
+fn machine_shape_fields(shape: &MachineShapeCarrierFact) -> BTreeMap<String, TypeRefIr> {
+    shape
+        .fields()
+        .iter()
+        .map(|(name, carrier)| (name.clone(), carrier.ty().clone()))
+        .collect()
 }
 
 fn stream_item_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {
@@ -5253,11 +5240,11 @@ mod tests {
         );
     }
 
-    /// `.tag == "ok"` reuses the canonical constant-pool string constant and
-    /// the existing dense-field/Equal paths; it never invents a second
-    /// discriminator opcode.
+    /// A raw `CatchResult` slot is not a producer. Without the exact Catch
+    /// expression shape, a field read must fail instead of synthesizing a
+    /// semantic owner layout for `.tag`.
     #[test]
-    fn tag_discriminator_equality_emits_a_constant_comparison() {
+    fn bare_tag_discriminator_read_without_a_producer_shape_fails_closed() {
         let catch_result = TypeRefIr::Builtin {
             name: "CatchResult".to_string(),
             args: vec![TypeRefIr::builtin("void"), TypeRefIr::builtin("number")],
@@ -5400,38 +5387,19 @@ mod tests {
         };
         let plans = derive_test_bytecode_value_transfer_plans(std::slice::from_ref(&unit))
             .expect("the source classifier covers the test MIR");
-        let artifact =
+        let error =
             crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
-                .expect("tag discriminator emission succeeds");
-        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
-            .expect("tag discriminator bytecode validates");
-        let function = view
-            .functions()
-            .iter()
-            .find(|function| function.function_key == "main::run")
-            .expect("run function validates");
-        let opcodes = function
-            .instructions
-            .iter()
-            .map(|instruction| instruction.descriptor.kind)
-            .collect::<Vec<_>>();
-        assert!(opcodes.contains(&Opcode::GetDenseField));
-        assert!(opcodes.contains(&Opcode::Const));
-        assert!(opcodes.contains(&Opcode::Equal));
-        assert!(
-            artifact
-                .image
-                .frozen_constant_graph
-                .nodes
-                .iter()
-                .any(|node| matches!(
-                    node,
-                    skiff_artifact_model::FrozenConstantNode::Literal {
-                        literal: LiteralIr::String { value }
-                    } if value == "ok"
-                )),
-            "the discriminator constant reuses the constant pool"
-        );
+                .expect_err("a raw CatchResult slot cannot mint a semantic shape");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedConstruct {
+                function_key,
+                construct: "exact expression producer shape",
+                location,
+            } if function_key == "main::run"
+                && location.contains("field read expression 0")
+                && location.contains("has no analyzed field layout")
+        ));
     }
 
     /// A union-typed record constructor still tags the runtime value with the

@@ -122,11 +122,11 @@ pub(crate) struct FunctionMachineCarrierFacts {
     pub(super) expression_carriers: Vec<MachineCarrier>,
     pub(super) slot_carriers: Vec<MachineCarrier>,
     pub(super) result_carrier: Option<MachineCarrier>,
+    pub(super) result_shape: Option<MachineShapeCarrierFact>,
     pub(super) stream_result_carrier: Option<MachineCarrier>,
     pub(super) stream_next_items: BTreeMap<u32, MachineCarrier>,
     pub(super) expression_shapes: Vec<Option<MachineShapeCarrierFact>>,
     pub(super) slot_shapes: Vec<Option<MachineShapeCarrierFact>>,
-    pub(super) shapes: Vec<MachineShapeCarrierFact>,
     pub(super) construct_shapes: BTreeMap<u32, MachineShapeCarrierFact>,
     pub(super) writable_paths: BTreeMap<u32, MachineWritablePathFact>,
     pub(super) catch_defaults: BTreeMap<u32, MachineDefaultValueFact>,
@@ -147,6 +147,10 @@ impl FunctionMachineCarrierFacts {
         self.result_carrier.as_ref()
     }
 
+    pub(crate) fn result_shape(&self) -> Option<&MachineShapeCarrierFact> {
+        self.result_shape.as_ref()
+    }
+
     pub(crate) fn stream_result(&self) -> Option<&MachineCarrier> {
         self.stream_result_carrier.as_ref()
     }
@@ -163,12 +167,6 @@ impl FunctionMachineCarrierFacts {
 
     pub(crate) fn slot_shape(&self, slot: u32) -> Option<&MachineShapeCarrierFact> {
         self.slot_shapes.get(slot as usize).and_then(Option::as_ref)
-    }
-
-    pub(crate) fn shape(&self, owner: &TypeRefIr) -> Option<&MachineShapeCarrierFact> {
-        let mut matches = self.shapes.iter().filter(|shape| shape.owner == *owner);
-        let first = matches.next()?;
-        matches.all(|shape| shape == first).then_some(first)
     }
 
     pub(crate) fn construct_shape(&self, expression: u32) -> Option<&MachineShapeCarrierFact> {
@@ -221,6 +219,11 @@ pub(super) struct Node {
     pub(super) function: usize,
     pub(super) value: Option<TypeRefIr>,
     pub(super) shape: Option<usize>,
+    /// Value-local Array element flow. This is deliberately attached to one
+    /// producer node rather than indexed globally by `Array<T>` or `T`: two
+    /// exact Array producers may carry distinct record shapes for the same
+    /// nominal element type until their values actually meet.
+    pub(super) array_element: Option<usize>,
     pub(super) semantic: TypeRefIr,
     pub(super) role: SemanticRole,
     pub(super) function_key: String,
@@ -237,7 +240,6 @@ pub(super) struct FunctionNodes {
     pub(super) result: Option<usize>,
     pub(super) stream_result: Option<usize>,
     pub(super) stream_next_items: BTreeMap<u32, usize>,
-    pub(super) shape_indices: Vec<usize>,
     pub(super) construct_shape_indices: BTreeMap<u32, usize>,
     pub(super) writable_paths: BTreeMap<u32, WritablePathNodes>,
     pub(super) catch_defaults: BTreeMap<u32, DefaultValueNodes>,
@@ -246,8 +248,6 @@ pub(super) struct FunctionNodes {
 
 #[derive(Debug)]
 pub(super) struct ShapeNodes {
-    pub(super) function: usize,
-    pub(super) unit: usize,
     pub(super) owner: TypeRefIr,
     pub(super) fields: BTreeMap<String, usize>,
 }
@@ -302,8 +302,7 @@ pub(super) enum WritableStepNodes {
 pub(super) enum DerivedConstraint {
     Array {
         output: usize,
-        items: Vec<usize>,
-        empty_type: TypeRefIr,
+        element: usize,
         location: String,
     },
     Map {
@@ -316,6 +315,12 @@ pub(super) enum DerivedConstraint {
         object: usize,
         selector: usize,
         result: usize,
+        location: String,
+    },
+    Field {
+        object: usize,
+        result: usize,
+        field: String,
         location: String,
     },
     ForIn {
@@ -340,5 +345,7 @@ pub(super) struct Analyzer<'a> {
     pub(super) shapes: Vec<ShapeNodes>,
     pub(super) equalities: Vec<(usize, usize, String)>,
     pub(super) shape_equalities: BTreeSet<(usize, usize)>,
+    pub(super) array_equalities: BTreeSet<(usize, usize)>,
+    pub(super) field_projections: BTreeSet<(usize, usize)>,
     pub(super) derived: Vec<DerivedConstraint>,
 }

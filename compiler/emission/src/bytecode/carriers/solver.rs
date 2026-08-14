@@ -77,6 +77,7 @@ impl Analyzer<'_> {
             for index in 0..self.equalities.len() {
                 let (left, right, cause) = self.equalities[index].clone();
                 changed |= self.close_equal_shapes(left, right, &cause)?;
+                changed |= self.close_equal_array_elements(left, right, &cause)?;
                 match (
                     self.nodes[left].value.clone(),
                     self.nodes[right].value.clone(),
@@ -174,26 +175,60 @@ impl Analyzer<'_> {
         }
     }
 
+    fn close_equal_array_elements(
+        &mut self,
+        left: usize,
+        right: usize,
+        cause: &str,
+    ) -> Result<bool, BytecodeEmissionError> {
+        match (
+            self.nodes[left].array_element,
+            self.nodes[right].array_element,
+        ) {
+            (Some(element), None) => {
+                self.nodes[right].array_element = Some(element);
+                Ok(true)
+            }
+            (None, Some(element)) => {
+                self.nodes[left].array_element = Some(element);
+                Ok(true)
+            }
+            (Some(left_element), Some(right_element)) if left_element != right_element => {
+                let pair = if left_element < right_element {
+                    (left_element, right_element)
+                } else {
+                    (right_element, left_element)
+                };
+                if !self.array_equalities.insert(pair) {
+                    return Ok(false);
+                }
+                self.equal(
+                    left_element,
+                    right_element,
+                    format!("{cause} Array element"),
+                );
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     fn apply_derived(&mut self, index: usize) -> Result<bool, BytecodeEmissionError> {
         match &self.derived[index] {
             DerivedConstraint::Array {
                 output,
-                items,
-                empty_type,
+                element,
                 location,
             } => {
                 let output = *output;
-                let items = items.clone();
-                let empty_type = empty_type.clone();
+                let element = *element;
                 let location = location.clone();
-                let element = common_value(&self.nodes, &items, &location)?;
-                let ty = match element {
-                    Some(element) => TypeRefIr::Builtin {
-                        name: "Array".to_string(),
-                        args: vec![element],
-                    },
-                    None if items.is_empty() => empty_type,
-                    None => return Ok(false),
+                let Some(element) = self.nodes[element].value.clone() else {
+                    return Ok(false);
+                };
+                let ty = TypeRefIr::Builtin {
+                    name: "Array".to_string(),
+                    args: vec![element],
                 };
                 self.assign(output, ty, &location)
             }
@@ -251,6 +286,36 @@ impl Analyzer<'_> {
                         format!("{location} has no exact Array/Map machine layout"),
                     )),
                 }
+            }
+            DerivedConstraint::Field {
+                object,
+                result,
+                field,
+                location,
+            } => {
+                let object = *object;
+                let result = *result;
+                let field = field.clone();
+                let location = location.clone();
+                let Some(shape) = self.nodes[object].shape else {
+                    return Ok(false);
+                };
+                let field_node =
+                    self.shapes[shape]
+                        .fields
+                        .get(&field)
+                        .copied()
+                        .ok_or_else(|| {
+                            carrier_error(
+                                &self.nodes[result].function_key,
+                                format!("{location} is absent from the exact producer shape"),
+                            )
+                        })?;
+                if !self.field_projections.insert((result, field_node)) {
+                    return Ok(false);
+                }
+                self.equal(result, field_node, format!("{location} producer"));
+                Ok(true)
             }
             DerivedConstraint::ForIn {
                 iterable,
@@ -336,6 +401,11 @@ impl Analyzer<'_> {
             let result_carrier = function
                 .result
                 .map(|node| MachineCarrier::type_only(resolved(&self.nodes, node)));
+            let result_shape = function.result.and_then(|node| {
+                self.nodes[node]
+                    .shape
+                    .map(|shape| shape_fact(&self.nodes, &self.shapes, shape))
+            });
             let stream_result_carrier = function
                 .stream_result
                 .map(|node| MachineCarrier::type_only(resolved(&self.nodes, node)));
@@ -366,11 +436,6 @@ impl Analyzer<'_> {
                         .shape
                         .map(|shape| shape_fact(&self.nodes, &self.shapes, shape))
                 })
-                .collect();
-            let shapes = function
-                .shape_indices
-                .iter()
-                .map(|shape| shape_fact(&self.nodes, &self.shapes, *shape))
                 .collect();
             let construct_shapes = function
                 .construct_shape_indices
@@ -421,11 +486,11 @@ impl Analyzer<'_> {
                     expression_carriers,
                     slot_carriers,
                     result_carrier,
+                    result_shape,
                     stream_result_carrier,
                     stream_next_items,
                     expression_shapes,
                     slot_shapes,
-                    shapes,
                     construct_shapes,
                     writable_paths,
                     catch_defaults,
