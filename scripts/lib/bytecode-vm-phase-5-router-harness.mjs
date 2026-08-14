@@ -145,21 +145,17 @@ async function main() {
     try {
       await upstream.waitForTwoOpenStreams();
     } catch (error) {
-      const early = await responseOutcome;
-      const external = early.error === undefined
-        ? {
-          status: early.value.status,
-          aborted: early.value.aborted,
-          body: early.value.body.toString('utf8'),
-        }
-        : { error: early.error?.message ?? String(early.error) };
+      const early = await Promise.race([
+        responseOutcome,
+        delay(100).then(() => ({ pending: true })),
+      ]);
       const frames = relay.records.slice(fromIndex).map((record) => ({
         direction: record.direction,
         type: record.type,
         requestId: record.header?.requestId,
       }));
       throw new Error(
-        `${error.message}; external=${JSON.stringify(external)}; relay=${JSON.stringify(frames)}`,
+        `${error.message}; external=${JSON.stringify(summarizeOutcome(early))}; relay=${JSON.stringify(frames)}`,
       );
     }
     const nonzeroHealth = await waitForHealth(relay, fromIndex, (counters) => (
@@ -167,7 +163,11 @@ async function main() {
       && counters?.streamRuntimeStreamsActive === 0
     ), 'two coexisting production stream authorities');
     upstream.releaseBodies();
-    const outcome = await responseOutcome;
+    const outcome = await boundedOutcome(
+      responseOutcome,
+      7_000,
+      'successful external response terminal',
+    );
     if (outcome.error !== undefined) throw outcome.error;
     const response = outcome.value;
 
@@ -276,7 +276,7 @@ async function exerciseRequestTimeout({ relay, httpPort, upstream }) {
   assert.equal(starts.length, 1, 'timeout case must dispatch exactly one production request');
   const requestId = assertExactRequestStart(starts[0]);
 
-  const outcome = await external;
+  const outcome = await boundedOutcome(external, 7_000, 'Router timeout external terminal');
   if (outcome.error !== undefined) throw outcome.error;
   const response = outcome.value;
   assert.equal(response.aborted, false, 'Router timeout must have one clean external terminal');
@@ -419,6 +419,13 @@ function summarizeOutcome(outcome) {
     aborted: outcome.value.aborted,
     body: outcome.value.body.toString('utf8'),
   };
+}
+
+async function boundedOutcome(outcome, timeoutMs, label) {
+  const watchdog = Symbol(label);
+  const observed = await Promise.race([outcome, delay(timeoutMs, watchdog)]);
+  if (observed === watchdog) throw new Error(`timed out waiting for ${label}`);
+  return observed;
 }
 
 function observeRawRequest({ port, method, path, headers, body }) {
