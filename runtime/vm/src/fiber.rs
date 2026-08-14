@@ -757,7 +757,7 @@ impl VmFiber {
                 self.execute_invoke_host(function_index, instruction_index, &instruction)
             }
             Opcode::InvokeIntrinsic => self.execute_invoke_intrinsic(
-                lifecycle.heap(),
+                &mut lifecycle,
                 function_index,
                 instruction_index,
                 &instruction,
@@ -2888,7 +2888,7 @@ impl VmFiber {
 
     fn execute_invoke_intrinsic(
         &mut self,
-        heap: &mut dyn VmHeap,
+        executor: &mut LifecycleExecutor<'_>,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -2918,60 +2918,123 @@ impl VmFiber {
             instruction,
             Opcode::InvokeIntrinsic,
         )?;
+        if !intrinsic
+            .signature()
+            .parameter_plans()
+            .iter()
+            .chain(intrinsic.signature().result_plans())
+            .all(LifecycleExecutor::supports_release)
+        {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeIntrinsic,
+            });
+        }
+        self.ensure_operand_push(result_count.saturating_sub(arg_count))?;
         let values = self.pop_operands(arg_count, false)?;
         if let LinkedIntrinsicKind::Receiver(op) = intrinsic.kind() {
             if op.canonical_key == "receiver:Array.push@1" {
-                if values.len() != 2 {
-                    return Err(VmError::FullValueLifecyclePlanUnavailable {
+                let mutation = if values.len() == 2 {
+                    executor
+                        .heap()
+                        .array_push_owned(&values[0], values[1])
+                        .map_err(VmError::Heap)
+                } else {
+                    Err(VmError::FullValueLifecyclePlanUnavailable {
                         function,
                         instruction,
                         opcode: Opcode::InvokeIntrinsic,
-                    });
+                    })
+                };
+                // On success the array adopts the item owner, while the
+                // receiver remains a borrowed snapshot that must be released.
+                // On failure neither argument was adopted, so both are still
+                // caller-owned and are released here.
+                let release_count = if mutation.is_ok() { 1 } else { values.len() };
+                let cleanup = release_intrinsic_arguments(
+                    executor,
+                    &values[..release_count],
+                    &intrinsic.signature().parameter_plans()[..release_count],
+                    function,
+                    instruction,
+                );
+                match (mutation, cleanup) {
+                    (Ok(()), Ok(())) => {}
+                    (_, Err(error)) => return Err(error),
+                    (Err(error), Ok(())) => return Err(error),
                 }
-                heap.array_push_owned(&values[0], values[1])
-                    .map_err(VmError::Heap)?;
                 self.advance_current_instruction()?;
                 return Ok(DispatchOutcome::Continue);
             }
         }
-        let result = match intrinsic.kind() {
+        let result_type = intrinsic.signature().result_types().first().copied();
+        let result_plan = intrinsic.signature().result_plans().first();
+        let computed = if let (Some(result_type), Some(_)) = (result_type, result_plan) {
+            self.compute_borrowing_intrinsic(
+                executor.heap(),
+                intrinsic.kind(),
+                &values,
+                result_type,
+                function,
+                instruction,
+            )
+        } else {
+            Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeIntrinsic,
+            })
+        };
+        let result = finish_borrowing_intrinsic_result(
+            executor,
+            &values,
+            intrinsic.signature().parameter_plans(),
+            computed,
+            result_plan,
+            function,
+            instruction,
+        )?;
+        if let Err(primary) = self.push_operand(result) {
+            if let Some(plan) = result_plan {
+                return match executor.release(&result, plan) {
+                    Ok(()) => Err(primary),
+                    Err(cleanup) => {
+                        Err(cleanup.into_vm_error(function, instruction, Opcode::InvokeIntrinsic))
+                    }
+                };
+            }
+            return Err(primary);
+        }
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
+    }
+
+    fn compute_borrowing_intrinsic(
+        &self,
+        heap: &mut dyn VmHeap,
+        kind: &LinkedIntrinsicKind,
+        values: &[ValueSlot],
+        result_type: TypeIndex,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> Result<ValueSlot, VmError> {
+        match kind {
             LinkedIntrinsicKind::Static(target) => match target.canonical_key().as_str() {
-                "core.array.empty" => {
-                    let result_type = intrinsic
-                        .signature()
-                        .result_types()
-                        .first()
-                        .copied()
-                        .ok_or(VmError::FullValueLifecyclePlanUnavailable {
-                            function,
-                            instruction,
-                            opcode: Opcode::InvokeIntrinsic,
-                        })?;
-                    heap.allocate_array(
+                "core.array.empty" => heap
+                    .allocate_array(
                         &[],
                         CompactTypeTag::new(result_type.get()),
                         ValueFlags::new(0),
                     )
-                    .map_err(VmError::Heap)?
-                }
-                "core.map.empty" => {
-                    let result_type = intrinsic
-                        .signature()
-                        .result_types()
-                        .first()
-                        .copied()
-                        .ok_or(VmError::FullValueLifecyclePlanUnavailable {
-                            function,
-                            instruction,
-                            opcode: Opcode::InvokeIntrinsic,
-                        })?;
-                    heap.allocate_map(
+                    .map_err(VmError::Heap),
+                "core.map.empty" => heap
+                    .allocate_map(
                         &[],
                         CompactTypeTag::new(result_type.get()),
                         ValueFlags::new(0),
                     )
-                    .map_err(VmError::Heap)?
-                }
+                    .map_err(VmError::Heap),
                 "core.bytes.fromUtf8" => {
                     if values.len() != 1 {
                         return Err(VmError::FullValueLifecyclePlanUnavailable {
@@ -2981,8 +3044,7 @@ impl VmFiber {
                         });
                     }
                     let value = self.string_slot_value(heap, &values[0])?;
-                    heap.alloc_bytes(value.into_bytes())
-                        .map_err(VmError::Heap)?
+                    allocate_intrinsic_bytes_result(heap, value.into_bytes(), result_type)
                 }
                 _ => {
                     return Err(VmError::FullValueLifecyclePlanUnavailable {
@@ -3003,8 +3065,7 @@ impl VmFiber {
                     }
                     let left = self.string_slot_value(heap, &values[0])?;
                     let right = self.string_slot_value(heap, &values[1])?;
-                    heap.alloc_string(format!("{left}{right}"))
-                        .map_err(VmError::Heap)?
+                    allocate_intrinsic_string_result(heap, format!("{left}{right}"), result_type)
                 }
                 "receiver:bytes.toUtf8String@1" => {
                     if values.len() != 1 {
@@ -3015,8 +3076,11 @@ impl VmFiber {
                         });
                     }
                     let bytes = heap.bytes_value(&values[0]).map_err(VmError::Heap)?;
-                    heap.alloc_string(String::from_utf8_lossy(&bytes).into_owned())
-                        .map_err(VmError::Heap)?
+                    allocate_intrinsic_string_result(
+                        heap,
+                        String::from_utf8_lossy(&bytes).into_owned(),
+                        result_type,
+                    )
                 }
                 _ => {
                     return Err(VmError::FullValueLifecyclePlanUnavailable {
@@ -3026,10 +3090,7 @@ impl VmFiber {
                     });
                 }
             },
-        };
-        self.push_operand(result)?;
-        self.advance_current_instruction()?;
-        Ok(DispatchOutcome::Continue)
+        }
     }
 
     fn execute_interface_box_local(
@@ -4605,6 +4666,91 @@ fn transfer_materialized_store_owner(
                 Err(cleanup) => {
                     Err(cleanup.into_vm_error(function, instruction, Opcode::StoreSlot))
                 }
+            }
+        }
+    }
+}
+
+fn allocate_intrinsic_string_result(
+    heap: &mut dyn VmHeap,
+    value: String,
+    result_type: TypeIndex,
+) -> Result<ValueSlot, VmError> {
+    heap.alloc_typed_string(
+        value,
+        CompactTypeTag::new(result_type.get()),
+        ValueFlags::new(0),
+    )
+    .map_err(VmError::Heap)
+}
+
+fn allocate_intrinsic_bytes_result(
+    heap: &mut dyn VmHeap,
+    value: Vec<u8>,
+    result_type: TypeIndex,
+) -> Result<ValueSlot, VmError> {
+    heap.alloc_typed_bytes(
+        value,
+        CompactTypeTag::new(result_type.get()),
+        ValueFlags::new(0),
+    )
+    .map_err(VmError::Heap)
+}
+
+fn release_intrinsic_arguments(
+    executor: &mut LifecycleExecutor<'_>,
+    values: &[ValueSlot],
+    plans: &[LinkedValueTransferPlan],
+    function: FunctionIndex,
+    instruction: InstructionIndex,
+) -> Result<(), VmError> {
+    if values.len() != plans.len() {
+        return Err(VmError::FullValueLifecyclePlanUnavailable {
+            function,
+            instruction,
+            opcode: Opcode::InvokeIntrinsic,
+        });
+    }
+    for (value, plan) in values.iter().zip(plans) {
+        // Frozen constants remain immutable image borrows. They were never
+        // admitted into the request heap and therefore must never be sent to
+        // a request-heap release primitive.
+        if matches!(value.kind(), Some(ValueKind::ConstRef)) {
+            continue;
+        }
+        executor
+            .release(value, plan)
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::InvokeIntrinsic))?;
+    }
+    Ok(())
+}
+
+fn finish_borrowing_intrinsic_result(
+    executor: &mut LifecycleExecutor<'_>,
+    arguments: &[ValueSlot],
+    argument_plans: &[LinkedValueTransferPlan],
+    computed: Result<ValueSlot, VmError>,
+    result_plan: Option<&LinkedValueTransferPlan>,
+    function: FunctionIndex,
+    instruction: InstructionIndex,
+) -> Result<ValueSlot, VmError> {
+    let cleanup =
+        release_intrinsic_arguments(executor, arguments, argument_plans, function, instruction);
+    match (computed, cleanup) {
+        (Ok(result), Ok(())) => Ok(result),
+        (Err(primary), Ok(())) => Err(primary),
+        (Err(_), Err(cleanup)) => Err(cleanup),
+        (Ok(result), Err(cleanup)) => {
+            let Some(plan) = result_plan else {
+                return Err(cleanup);
+            };
+            match executor.release(&result, plan) {
+                Ok(()) => Err(cleanup),
+                Err(result_cleanup) => Err(result_cleanup.into_vm_error(
+                    function,
+                    instruction,
+                    Opcode::InvokeIntrinsic,
+                )),
             }
         }
     }

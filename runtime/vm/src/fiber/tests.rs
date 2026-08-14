@@ -44,11 +44,12 @@ use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmHeapOperation, VmRecor
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
+    allocate_intrinsic_bytes_result, allocate_intrinsic_string_result,
     allocate_store_string_constant, catch_matches, comparable_equality,
-    comparable_equality_with_string_resolver, find_exception_region, linked_type_catch_identity,
-    nominal_tag_index, opcode_supported, runtime_leaf_catch_identity,
-    store_slot_string_constant_authorized, transfer_materialized_store_owner, DispatchOutcome, Vm,
-    VmFiber,
+    comparable_equality_with_string_resolver, find_exception_region,
+    finish_borrowing_intrinsic_result, linked_type_catch_identity, nominal_tag_index,
+    opcode_supported, runtime_leaf_catch_identity, store_slot_string_constant_authorized,
+    transfer_materialized_store_owner, DispatchOutcome, Vm, VmFiber,
 };
 use crate::control::VmResumeAuthority;
 use crate::lifecycle::LifecycleExecutor;
@@ -469,6 +470,15 @@ impl VmHeap for StoreStringRecordingHeap {
             flags,
         ))
     }
+
+    fn alloc_typed_bytes(
+        &mut self,
+        _value: Vec<u8>,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.alloc_typed_string(String::new(), compact_type_tag, flags)
+    }
 }
 
 fn store_string_types_and_plan() -> (TypeRefIr, TypeRefIr, LinkedValueTransferPlan) {
@@ -568,6 +578,107 @@ fn store_slot_string_constant_cleans_the_new_owner_when_transfer_fails() {
     assert_eq!(heap.allocations, 1);
     assert_eq!(heap.transfer_attempts, 1);
     assert_eq!(heap.snapshot_releases, 1);
+    assert!(heap.live.is_empty());
+}
+
+#[test]
+fn intrinsic_cleanup_releases_heap_arguments_but_never_image_constant_borrows() {
+    let plan = LinkedValueTransferPlan::SnapshotShare {
+        drop: LinkedValueDropPlan::SnapshotRelease,
+    };
+    let mut heap = StoreStringRecordingHeap {
+        next_handle: 10,
+        ..StoreStringRecordingHeap::default()
+    };
+    heap.live.insert(10, CompactTypeTag::new(7));
+    let heap_argument = ValueSlot::request_heap_ref(
+        VmHandle::new(10),
+        CompactTypeTag::new(7),
+        ValueFlags::new(0),
+    );
+    let constant_argument =
+        ValueSlot::const_ref(VmHandle::new(1), CompactTypeTag::new(8), ValueFlags::new(0));
+    let result =
+        allocate_intrinsic_string_result(&mut heap, "joined".to_string(), TypeIndex::new(9))
+            .expect("typed intrinsic result allocation");
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let result = finish_borrowing_intrinsic_result(
+        &mut executor,
+        &[constant_argument, heap_argument],
+        &[plan.clone(), plan.clone()],
+        Ok(result),
+        Some(&plan),
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
+    )
+    .expect("borrowed intrinsic arguments clean up before returning the result");
+    drop(executor);
+
+    assert_eq!(heap.snapshot_releases, 1);
+    assert_eq!(heap.live.len(), 1, "only the result owner remains live");
+    assert_eq!(result.compact_type_tag(), CompactTypeTag::new(9));
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    assert!(executor.release(&result, &plan).is_ok());
+    drop(executor);
+    assert_eq!(heap.snapshot_releases, 2);
+    assert!(heap.live.is_empty());
+}
+
+#[test]
+fn intrinsic_cleanup_releases_arguments_when_result_materialization_fails() {
+    let plan = LinkedValueTransferPlan::SnapshotShare {
+        drop: LinkedValueDropPlan::SnapshotRelease,
+    };
+    let mut heap = StoreStringRecordingHeap {
+        next_handle: 4,
+        ..StoreStringRecordingHeap::default()
+    };
+    heap.live.insert(4, CompactTypeTag::new(7));
+    let argument =
+        ValueSlot::request_heap_ref(VmHandle::new(4), CompactTypeTag::new(7), ValueFlags::new(0));
+    let primary = VmError::Heap(VmHeapError::HeapOperationFailed {
+        operation: VmHeapOperation::AllocateRepresentation,
+        message: "injected intrinsic allocation failure".to_string(),
+    });
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let error = match finish_borrowing_intrinsic_result(
+        &mut executor,
+        &[argument],
+        std::slice::from_ref(&plan),
+        Err(primary),
+        Some(&plan),
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("failed intrinsic result must not produce a value"),
+    };
+    drop(executor);
+
+    assert!(matches!(
+        error,
+        VmError::Heap(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::AllocateRepresentation,
+            ..
+        })
+    ));
+    assert_eq!(heap.snapshot_releases, 1);
+    assert!(heap.live.is_empty());
+}
+
+#[test]
+fn intrinsic_string_and_bytes_results_keep_the_exact_signature_type() {
+    let mut heap = StoreStringRecordingHeap::default();
+    let string =
+        allocate_intrinsic_string_result(&mut heap, "value".to_string(), TypeIndex::new(12))
+            .expect("typed string result");
+    let bytes = allocate_intrinsic_bytes_result(&mut heap, b"value".to_vec(), TypeIndex::new(13))
+        .expect("typed bytes result");
+
+    assert_eq!(string.compact_type_tag(), CompactTypeTag::new(12));
+    assert_eq!(bytes.compact_type_tag(), CompactTypeTag::new(13));
+    heap.release_snapshot(&string).unwrap();
+    heap.release_snapshot(&bytes).unwrap();
     assert!(heap.live.is_empty());
 }
 
