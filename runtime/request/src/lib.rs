@@ -1,5 +1,6 @@
 #![allow(clippy::large_enum_variant)]
 
+mod bytecode_host_effects;
 mod bytecode_ingress;
 pub mod cancellation;
 mod envelope;
@@ -12,6 +13,10 @@ mod response_event;
 mod runner;
 pub mod vm_heap;
 
+pub use bytecode_host_effects::{
+    BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,
+    BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,
+};
 pub use bytecode_ingress::{
     drive_runtime_bytecode_request, drive_runtime_bytecode_request_async,
     drive_runtime_bytecode_request_controlled, BytecodeRequestExecutionHandles,

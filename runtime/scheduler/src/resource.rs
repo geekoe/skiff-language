@@ -1,12 +1,19 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt,
-    sync::{Arc, Mutex, MutexGuard, Weak},
+    future::Future,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex, MutexGuard, Weak,
+    },
 };
 
 use skiff_runtime_model::{
+    error::WirePayload,
     vm_heap::VmHeapError,
     vm_root::{VmRootSource, VmRootVisitor},
+    vm_value::VmHandle,
 };
 
 use crate::owner_inventory::{OwnerCreationError, ResourceOwnerLease, ResourceOwnerRegistration};
@@ -14,9 +21,16 @@ use crate::owner_inventory::{OwnerCreationError, ResourceOwnerLease, ResourceOwn
 /// Why a request resource left its table-owned live state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestResourceTermination {
-    ExplicitRelease,
+    VmDrop,
+    Exhausted,
+    HostError,
+    Cancelled,
+    Deadline,
+    RouterDisconnected,
+    WriterFailed,
     RequestNotStarted,
-    RequestScopeClosed,
+    RequestCompleted,
+    RequestFailed,
     OwnerAbandoned,
 }
 
@@ -28,20 +42,108 @@ pub enum RequestResourceTermination {
 /// `terminate` runs after the entry was removed and tombstoned and after the
 /// table lock was released. Consuming `self` makes the provider terminal
 /// transition unique.
-pub trait RequestResourceState: VmRootSource + Send + 'static {
+pub type RequestByteStreamPullFuture = Pin<
+    Box<dyn Future<Output = Result<Option<Vec<u8>>, RequestByteStreamFailure>> + Send + 'static>,
+>;
+
+#[derive(Debug)]
+pub enum RequestByteStreamFailure {
+    Cancelled,
+    Ordinary(Box<dyn WirePayload>),
+    InvalidProviderContract(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestByteStreamPullStartError {
+    PullInProgress,
+    Terminated,
+    WrongResourceKind,
+    Lookup(RequestResourceLookupError),
+}
+
+impl fmt::Display for RequestByteStreamPullStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::PullInProgress => "request byte stream already has a pull in progress",
+            Self::Terminated => "request byte stream is terminated",
+            Self::WrongResourceKind => "request resource is not a byte stream",
+            Self::Lookup(error) => return error.fmt(formatter),
+        })
+    }
+}
+
+impl std::error::Error for RequestByteStreamPullStartError {}
+
+/// Dependency-neutral, heap-free source owned by one resource-table entry.
+///
+/// `start_pull` only prepares an owned future and must return without polling
+/// or waiting. The future may retain provider operation state but never a VM
+/// heap or resource-table lock.
+pub trait RequestByteStreamSource: VmRootSource + Send + 'static {
+    fn start_pull(&self) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError>;
+
     fn terminate(self: Box<Self>, termination: RequestResourceTermination);
 }
 
-struct RequestResourceOwnerIdentity;
+pub(crate) trait RequestResourceState: VmRootSource + Send + 'static {
+    fn start_byte_stream_pull(
+        &self,
+    ) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError> {
+        Err(RequestByteStreamPullStartError::WrongResourceKind)
+    }
 
-#[derive(Clone)]
-struct RequestResourceOwner(Weak<RequestResourceOwnerIdentity>);
+    fn terminate(self: Box<Self>, termination: RequestResourceTermination);
+}
+
+struct RequestByteStreamResource {
+    source: Box<dyn RequestByteStreamSource>,
+}
+
+impl VmRootSource for RequestByteStreamResource {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.source.visit_roots(visitor)
+    }
+}
+
+impl RequestResourceState for RequestByteStreamResource {
+    fn start_byte_stream_pull(
+        &self,
+    ) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError> {
+        self.source.start_pull()
+    }
+
+    fn terminate(self: Box<Self>, termination: RequestResourceTermination) {
+        self.source.terminate(termination);
+    }
+}
+
+const RESOURCE_OWNER_SHIFT: u32 = 32;
+const RESOURCE_SLOT_SHIFT: u32 = 16;
+const RESOURCE_COMPONENT_MASK: u64 = u16::MAX as u64;
+const MAX_RESOURCE_SLOT: u32 = u16::MAX as u32;
+
+static NEXT_RESOURCE_OWNER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct RequestResourceSlot(u64);
+struct RequestResourceOwner(u32);
+
+impl RequestResourceOwner {
+    fn mint() -> Option<Self> {
+        NEXT_RESOURCE_OWNER
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                (current <= u64::from(u32::MAX)).then_some(current + 1)
+            })
+            .ok()
+            .and_then(|owner| u32::try_from(owner).ok())
+            .map(Self)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct RequestResourceGeneration(u64);
+struct RequestResourceSlot(u16);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct RequestResourceGeneration(u16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct RequestResourceKey {
@@ -53,19 +155,48 @@ struct RequestResourceKey {
 ///
 /// Its owner, slot and generation are intentionally opaque. Cloning a route
 /// never clones the resource state, inventory lease or table authority.
-#[derive(Clone)]
-pub struct RequestResourceHandle {
-    owner: RequestResourceOwner,
-    key: RequestResourceKey,
-}
+#[repr(transparent)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RequestResourceHandle(u64);
 
-impl PartialEq for RequestResourceHandle {
-    fn eq(&self, other: &Self) -> bool {
-        Weak::ptr_eq(&self.owner.0, &other.owner.0) && self.key == other.key
+impl RequestResourceHandle {
+    fn pack(owner: RequestResourceOwner, key: RequestResourceKey) -> Self {
+        let bits = (u64::from(owner.0) << RESOURCE_OWNER_SHIFT)
+            | (u64::from(key.slot.0) << RESOURCE_SLOT_SHIFT)
+            | u64::from(key.generation.0);
+        debug_assert_ne!(bits, 0);
+        Self(bits)
+    }
+
+    fn unpack(self) -> Option<(RequestResourceOwner, RequestResourceKey)> {
+        let owner = u32::try_from(self.0 >> RESOURCE_OWNER_SHIFT).ok()?;
+        let slot = u16::try_from((self.0 >> RESOURCE_SLOT_SHIFT) & RESOURCE_COMPONENT_MASK).ok()?;
+        let generation = u16::try_from(self.0 & RESOURCE_COMPONENT_MASK).ok()?;
+        if owner == 0 || slot == 0 || generation == 0 {
+            return None;
+        }
+        Some((
+            RequestResourceOwner(owner),
+            RequestResourceKey {
+                slot: RequestResourceSlot(slot),
+                generation: RequestResourceGeneration(generation),
+            },
+        ))
+    }
+
+    /// Returns the opaque fixed-width route embedded in a VM `ResourceRef`.
+    ///
+    /// The numeric value is not authority: the exact request table still
+    /// validates its packed owner, slot and generation on every operation.
+    pub const fn vm_handle(self) -> VmHandle {
+        VmHandle::new(self.0)
+    }
+
+    fn from_vm_handle(route: VmHandle) -> Option<Self> {
+        let handle = Self(route.get());
+        handle.unpack().map(|_| handle)
     }
 }
-
-impl Eq for RequestResourceHandle {}
 
 impl fmt::Debug for RequestResourceHandle {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -88,6 +219,7 @@ pub enum RequestResourceLookupError {
     WrongOwner,
     UnknownSlot,
     StaleGeneration,
+    RouteAlreadyClaimed,
 }
 
 impl fmt::Display for RequestResourceLookupError {
@@ -96,6 +228,7 @@ impl fmt::Display for RequestResourceLookupError {
             Self::WrongOwner => "request resource belongs to a different owner",
             Self::UnknownSlot => "request resource slot is unknown",
             Self::StaleGeneration => "request resource generation is stale",
+            Self::RouteAlreadyClaimed => "request resource route was already claimed",
         })
     }
 }
@@ -105,6 +238,7 @@ impl std::error::Error for RequestResourceLookupError {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestResourceRegistrationError {
     OwnerCreation(OwnerCreationError),
+    OwnerSpaceExhausted,
     TableClosed,
     SlotSpaceExhausted,
 }
@@ -113,6 +247,9 @@ impl fmt::Display for RequestResourceRegistrationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OwnerCreation(error) => error.fmt(formatter),
+            Self::OwnerSpaceExhausted => {
+                formatter.write_str("request resource owner space is exhausted")
+            }
             Self::TableClosed => formatter.write_str("request resource table is closed"),
             Self::SlotSpaceExhausted => {
                 formatter.write_str("request resource slot space is exhausted")
@@ -125,23 +262,23 @@ impl std::error::Error for RequestResourceRegistrationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::OwnerCreation(error) => Some(error),
-            Self::TableClosed | Self::SlotSpaceExhausted => None,
+            Self::OwnerSpaceExhausted | Self::TableClosed | Self::SlotSpaceExhausted => None,
         }
     }
 }
 
 /// A failed admission returns the still-owned provider state to its caller.
-pub struct RequestResourceRegistrationFailure {
+pub(crate) struct RequestResourceRegistrationFailure {
     reason: RequestResourceRegistrationError,
     state: Box<dyn RequestResourceState>,
 }
 
 impl RequestResourceRegistrationFailure {
-    pub const fn reason(&self) -> RequestResourceRegistrationError {
+    pub(crate) const fn reason(&self) -> RequestResourceRegistrationError {
         self.reason
     }
 
-    pub fn into_state(self) -> Box<dyn RequestResourceState> {
+    pub(crate) fn into_state(self) -> Box<dyn RequestResourceState> {
         self.state
     }
 }
@@ -164,15 +301,19 @@ impl fmt::Display for RequestResourceRegistrationFailure {
 impl std::error::Error for RequestResourceRegistrationFailure {}
 
 struct RequestResourceEntry {
-    state: Box<dyn RequestResourceState>,
+    state: Option<Box<dyn RequestResourceState>>,
     owner_lease: Option<ResourceOwnerLease>,
+    route_claimed: bool,
+    terminal: Option<RequestResourceTermination>,
 }
 
 impl RequestResourceEntry {
     fn unarmed(state: Box<dyn RequestResourceState>) -> Self {
         Self {
-            state,
+            state: Some(state),
             owner_lease: None,
+            route_claimed: false,
+            terminal: None,
         }
     }
 
@@ -183,10 +324,68 @@ impl RequestResourceEntry {
         );
     }
 
-    fn terminate(self, termination: RequestResourceTermination) {
-        let Self { state, owner_lease } = self;
-        state.terminate(termination);
+    fn finish(
+        &mut self,
+        termination: RequestResourceTermination,
+    ) -> Option<Box<dyn RequestResourceState>> {
+        let state = self.state.take()?;
+        self.terminal = Some(termination);
+        Some(state)
+    }
+
+    fn terminate_and_release(self, termination: RequestResourceTermination) {
+        let Self {
+            state,
+            owner_lease,
+            route_claimed: _,
+            terminal: _,
+        } = self;
+        if let Some(state) = state {
+            state.terminate(termination);
+        }
         drop(owner_lease);
+    }
+
+    fn start_byte_stream_pull(
+        &self,
+    ) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError> {
+        self.state
+            .as_ref()
+            .ok_or(RequestByteStreamPullStartError::Terminated)?
+            .start_byte_stream_pull()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestResourceFinish {
+    Finished,
+    AlreadyFinished,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestResourceFinishReason {
+    Exhausted,
+    HostError,
+}
+
+impl RequestResourceFinishReason {
+    const fn termination(self) -> RequestResourceTermination {
+        match self {
+            Self::Exhausted => RequestResourceTermination::Exhausted,
+            Self::HostError => RequestResourceTermination::HostError,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestResourceTableSnapshot {
+    pub live: usize,
+    pub terminal: usize,
+}
+
+impl RequestResourceTableSnapshot {
+    pub const fn total(self) -> usize {
+        self.live + self.terminal
     }
 }
 
@@ -198,7 +397,7 @@ enum RequestResourceTablePhase {
 
 struct RequestResourceTableState {
     phase: RequestResourceTablePhase,
-    next_slot: u64,
+    next_slot: u32,
     free_slots: Vec<RequestResourceSlot>,
     generations: HashMap<RequestResourceSlot, RequestResourceGeneration>,
     closed: HashSet<RequestResourceKey>,
@@ -231,10 +430,12 @@ impl RequestResourceTableState {
             }
         }
 
-        if self.next_slot == 0 {
+        if self.next_slot == 0 || self.next_slot > MAX_RESOURCE_SLOT {
             return Err(RequestResourceRegistrationError::SlotSpaceExhausted);
         }
-        let slot = RequestResourceSlot(self.next_slot);
+        let slot = RequestResourceSlot(
+            u16::try_from(self.next_slot).expect("bounded resource slot fits in packed handle"),
+        );
         self.next_slot = self.next_slot.checked_add(1).unwrap_or(0);
         let generation = RequestResourceGeneration(1);
         self.generations.insert(slot, generation);
@@ -254,7 +455,7 @@ impl RequestResourceTableState {
 }
 
 struct RequestResourceTableShared {
-    owner: Arc<RequestResourceOwnerIdentity>,
+    owner: Option<RequestResourceOwner>,
     state: Mutex<RequestResourceTableState>,
 }
 
@@ -265,8 +466,17 @@ impl RequestResourceTableShared {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn owns(&self, handle: &RequestResourceHandle) -> bool {
-        Weak::ptr_eq(&handle.owner.0, &Arc::downgrade(&self.owner))
+    fn key_for(
+        &self,
+        handle: RequestResourceHandle,
+    ) -> Result<RequestResourceKey, RequestResourceLookupError> {
+        let (owner, key) = handle
+            .unpack()
+            .ok_or(RequestResourceLookupError::UnknownSlot)?;
+        if self.owner != Some(owner) {
+            return Err(RequestResourceLookupError::WrongOwner);
+        }
+        Ok(key)
     }
 
     fn drain(
@@ -281,7 +491,9 @@ impl RequestResourceTableShared {
                 slot: *slot,
                 generation: *generation,
             });
-            state.free_slots.push(*slot);
+            if generation.0 < u16::MAX {
+                state.free_slots.push(*slot);
+            }
         }
         removed
             .into_iter()
@@ -298,7 +510,7 @@ impl Drop for RequestResourceTableShared {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entries: Vec<_> = state.entries.drain().map(|(_, (_, entry))| entry).collect();
         for entry in entries {
-            entry.terminate(RequestResourceTermination::OwnerAbandoned);
+            entry.terminate_and_release(RequestResourceTermination::OwnerAbandoned);
         }
     }
 }
@@ -307,8 +519,8 @@ impl Drop for RequestResourceTableShared {
 ///
 /// Construction is scheduler-private and requires the resource registration
 /// from the same [`RequestExecutionContext`](crate::RequestExecutionContext)
-/// owner inventory. Clones share one table capability; handles hold only a
-/// weak owner identity and cannot keep this table or a provider alive.
+/// owner inventory. Clones share one table capability; packed handles are
+/// non-owning values and cannot keep this table or a provider alive.
 #[derive(Clone)]
 pub struct RequestResourceTable {
     shared: Arc<RequestResourceTableShared>,
@@ -319,7 +531,7 @@ impl RequestResourceTable {
     pub(crate) fn new(owner_registration: ResourceOwnerRegistration) -> Self {
         Self {
             shared: Arc::new(RequestResourceTableShared {
-                owner: Arc::new(RequestResourceOwnerIdentity),
+                owner: RequestResourceOwner::mint(),
                 state: Mutex::new(RequestResourceTableState::open()),
             }),
             owner_registration,
@@ -331,10 +543,16 @@ impl RequestResourceTable {
     /// The inventory guard is acquired before the table lock. The entry is
     /// inserted unarmed, the infallible inventory commit mints its private
     /// lease, and the entry is armed before the table lock is released.
-    pub fn register(
+    pub(crate) fn register(
         &self,
         state: Box<dyn RequestResourceState>,
     ) -> Result<RequestResourceHandle, RequestResourceRegistrationFailure> {
+        let Some(table_owner) = self.shared.owner else {
+            return Err(RequestResourceRegistrationFailure {
+                reason: RequestResourceRegistrationError::OwnerSpaceExhausted,
+                state,
+            });
+        };
         let owner = match self.owner_registration.prepare() {
             Ok(owner) => owner,
             Err(reason) => {
@@ -374,10 +592,26 @@ impl RequestResourceTable {
             .1
             .arm(lease);
         drop(table);
-        Ok(RequestResourceHandle {
-            owner: RequestResourceOwner(Arc::downgrade(&self.shared.owner)),
-            key,
-        })
+        Ok(RequestResourceHandle::pack(table_owner, key))
+    }
+
+    /// Registers one typed byte-stream source as the table's sole strong
+    /// provider owner. Admission failure terminates the uninstalled source
+    /// exactly once and returns the closed registration reason.
+    pub fn register_byte_stream(
+        &self,
+        source: Box<dyn RequestByteStreamSource>,
+    ) -> Result<RequestResourceHandle, RequestResourceRegistrationError> {
+        match self.register(Box::new(RequestByteStreamResource { source })) {
+            Ok(handle) => Ok(handle),
+            Err(failure) => {
+                let reason = failure.reason();
+                failure
+                    .into_state()
+                    .terminate(RequestResourceTermination::HostError);
+                Err(reason)
+            }
+        }
     }
 
     /// Validates that the route denotes this table's currently live exact
@@ -386,10 +620,94 @@ impl RequestResourceTable {
         &self,
         handle: &RequestResourceHandle,
     ) -> Result<(), RequestResourceLookupError> {
-        if !self.shared.owns(handle) {
-            return Err(RequestResourceLookupError::WrongOwner);
+        let key = self.shared.key_for(*handle)?;
+        self.shared.lock().validate_key(key)
+    }
+
+    /// Validates one opaque VM route against this table and returns the exact
+    /// packed handle without consulting any side registry.
+    pub fn validate_vm_route(
+        &self,
+        route: VmHandle,
+    ) -> Result<RequestResourceHandle, RequestResourceLookupError> {
+        let handle = RequestResourceHandle::from_vm_handle(route)
+            .ok_or(RequestResourceLookupError::UnknownSlot)?;
+        self.validate(&handle)?;
+        Ok(handle)
+    }
+
+    /// Claims the capability-context carrier for one newly registered route.
+    ///
+    /// This is a one-shot admission bit stored on the same table entry, not a
+    /// numeric side map. Normal VM `StreamNext` routing remains repeatable
+    /// after the carrier has been claimed.
+    pub fn claim_vm_route(
+        &self,
+        route: VmHandle,
+    ) -> Result<RequestResourceHandle, RequestResourceLookupError> {
+        let handle = RequestResourceHandle::from_vm_handle(route)
+            .ok_or(RequestResourceLookupError::UnknownSlot)?;
+        let key = self.shared.key_for(handle)?;
+        let mut table = self.shared.lock();
+        table.validate_key(key)?;
+        let (_, entry) = table
+            .entries
+            .get_mut(&key.slot)
+            .expect("a validated resource entry remains live");
+        if entry.route_claimed {
+            return Err(RequestResourceLookupError::RouteAlreadyClaimed);
         }
-        self.shared.lock().validate_key(handle.key)
+        entry.route_claimed = true;
+        Ok(handle)
+    }
+
+    /// Starts one typed pull from the exact live stream entry.
+    ///
+    /// The table lock is held only while selecting the entry and preparing the
+    /// owned future; it is released before the caller performs the first poll.
+    pub fn start_byte_stream_pull(
+        &self,
+        handle: &RequestResourceHandle,
+    ) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError> {
+        let key = self
+            .shared
+            .key_for(*handle)
+            .map_err(RequestByteStreamPullStartError::Lookup)?;
+        let table = self.shared.lock();
+        table
+            .validate_key(key)
+            .map_err(RequestByteStreamPullStartError::Lookup)?;
+        table
+            .entries
+            .get(&key.slot)
+            .expect("a validated resource entry remains live")
+            .1
+            .start_byte_stream_pull()
+    }
+
+    /// Consumes provider state exactly once while retaining the affine owner
+    /// lease and exact terminal entry until the VM later drops its handle.
+    pub fn finish(
+        &self,
+        handle: &RequestResourceHandle,
+        reason: RequestResourceFinishReason,
+    ) -> Result<RequestResourceFinish, RequestResourceLookupError> {
+        let termination = reason.termination();
+        let key = self.shared.key_for(*handle)?;
+        let state = {
+            let mut table = self.shared.lock();
+            table.validate_key(key)?;
+            let (_, entry) = table
+                .entries
+                .get_mut(&key.slot)
+                .expect("a validated resource entry remains installed");
+            entry.finish(termination)
+        };
+        let Some(state) = state else {
+            return Ok(RequestResourceFinish::AlreadyFinished);
+        };
+        state.terminate(termination);
+        Ok(RequestResourceFinish::Finished)
     }
 
     /// Removes and tombstones an exact live entry under the table lock, then
@@ -398,26 +716,46 @@ impl RequestResourceTable {
         &self,
         handle: &RequestResourceHandle,
     ) -> Result<RequestResourceRelease, RequestResourceLookupError> {
-        if !self.shared.owns(handle) {
-            return Err(RequestResourceLookupError::WrongOwner);
-        }
+        self.terminate(handle, RequestResourceTermination::VmDrop)
+    }
+
+    /// Runs the one table-owned terminator for an exact live entry.
+    pub fn terminate(
+        &self,
+        handle: &RequestResourceHandle,
+        termination: RequestResourceTermination,
+    ) -> Result<RequestResourceRelease, RequestResourceLookupError> {
+        let key = self.shared.key_for(*handle)?;
         let entry = {
             let mut table = self.shared.lock();
-            if table.closed.contains(&handle.key) {
+            if table.closed.contains(&key) {
                 return Ok(RequestResourceRelease::AlreadyReleased);
             }
-            table.validate_key(handle.key)?;
+            table.validate_key(key)?;
             let (generation, entry) = table
                 .entries
-                .remove(&handle.key.slot)
+                .remove(&key.slot)
                 .expect("a validated resource entry remains live");
-            assert_eq!(generation, handle.key.generation);
-            table.closed.insert(handle.key);
-            table.free_slots.push(handle.key.slot);
+            assert_eq!(generation, key.generation);
+            table.closed.insert(key);
+            if key.generation.0 < u16::MAX {
+                table.free_slots.push(key.slot);
+            }
             entry
         };
-        entry.terminate(RequestResourceTermination::ExplicitRelease);
+        entry.terminate_and_release(termination);
         Ok(RequestResourceRelease::Released)
+    }
+
+    /// Releases an exact VM `ResourceRef` route without minting or looking up
+    /// a second handle authority.
+    pub fn release_vm_route(
+        &self,
+        route: VmHandle,
+    ) -> Result<RequestResourceRelease, RequestResourceLookupError> {
+        let handle = RequestResourceHandle::from_vm_handle(route)
+            .ok_or(RequestResourceLookupError::UnknownSlot)?;
+        self.release(&handle)
     }
 
     /// Closes the table permanently and terminates every live resource once.
@@ -429,13 +767,29 @@ impl RequestResourceTable {
         let entries = self.shared.drain(termination);
         let count = entries.len();
         for (entry, termination) in entries {
-            entry.terminate(termination);
+            entry.terminate_and_release(termination);
         }
         count
     }
 
     pub fn live_count(&self) -> usize {
-        self.shared.lock().entries.len()
+        self.snapshot().live
+    }
+
+    pub fn snapshot(&self) -> RequestResourceTableSnapshot {
+        let table = self.shared.lock();
+        let live = table
+            .entries
+            .values()
+            .filter(|(_, entry)| entry.state.is_some())
+            .count();
+        let terminal = table
+            .entries
+            .values()
+            .filter(|(_, entry)| entry.terminal.is_some())
+            .count();
+        debug_assert_eq!(table.entries.len(), live + terminal);
+        RequestResourceTableSnapshot { live, terminal }
     }
 
     #[cfg(test)]
@@ -448,7 +802,9 @@ impl VmRootSource for RequestResourceTable {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         let table = self.shared.lock();
         for (_, entry) in table.entries.values() {
-            entry.state.visit_roots(visitor)?;
+            if let Some(state) = &entry.state {
+                state.visit_roots(visitor)?;
+            }
         }
         Ok(())
     }
@@ -465,7 +821,10 @@ impl fmt::Debug for RequestResourceTable {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        sync::{Arc, Mutex},
+        task::{Context, Poll, Wake, Waker},
+    };
 
     use skiff_runtime_model::{
         vm_heap::VmHeapError,
@@ -530,6 +889,37 @@ mod tests {
         })
     }
 
+    struct RecordingByteStream {
+        events: Arc<Mutex<Vec<Event>>>,
+    }
+
+    impl VmRootSource for RecordingByteStream {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl RequestByteStreamSource for RecordingByteStream {
+        fn start_pull(
+            &self,
+        ) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError> {
+            Ok(Box::pin(async { Ok(Some(vec![1, 2, 3])) }))
+        }
+
+        fn terminate(self: Box<Self>, termination: RequestResourceTermination) {
+            self.events
+                .lock()
+                .unwrap()
+                .push(Event::Terminated(termination));
+        }
+    }
+
+    struct NoopWake;
+
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
     #[test]
     fn exact_handle_rejects_wrong_owner() {
         let (left, left_freeze) = table();
@@ -545,11 +935,52 @@ mod tests {
             left.release(&handle),
             Err(RequestResourceLookupError::WrongOwner)
         );
+        assert_eq!(
+            left.validate_vm_route(handle.vm_handle()),
+            Err(RequestResourceLookupError::WrongOwner)
+        );
 
-        left.close_all(RequestResourceTermination::RequestScopeClosed);
-        right.close_all(RequestResourceTermination::RequestScopeClosed);
+        left.close_all(RequestResourceTermination::RequestCompleted);
+        right.close_all(RequestResourceTermination::RequestCompleted);
         assert_eq!(left_freeze.freeze().resource.current, 0);
         assert_eq!(right_freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn packed_handle_is_copy_embeds_directly_and_claims_once() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<RequestResourceHandle>();
+
+        let (table, freeze) = table();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let handle = table.register(resource(&events)).unwrap();
+        let copied = handle;
+        let slot = ValueSlot::resource_ref(
+            copied.vm_handle(),
+            skiff_runtime_model::vm_value::CompactTypeTag::new(0),
+            skiff_runtime_model::vm_value::ValueFlags::new(0),
+        );
+
+        assert_eq!(
+            table.validate_vm_route(slot.as_resource_ref().unwrap()),
+            Ok(handle)
+        );
+        assert_eq!(table.claim_vm_route(handle.vm_handle()), Ok(handle));
+        assert_eq!(
+            table.claim_vm_route(handle.vm_handle()),
+            Err(RequestResourceLookupError::RouteAlreadyClaimed)
+        );
+        assert_eq!(
+            table.release_vm_route(handle.vm_handle()),
+            Ok(RequestResourceRelease::Released)
+        );
+        assert_eq!(
+            table.release_vm_route(handle.vm_handle()),
+            Ok(RequestResourceRelease::AlreadyReleased)
+        );
+
+        table.close_all(RequestResourceTermination::RequestCompleted);
+        assert_eq!(freeze.freeze().resource.current, 0);
     }
 
     #[test]
@@ -570,7 +1001,7 @@ mod tests {
         );
         assert!(table.validate(&current).is_ok());
 
-        table.close_all(RequestResourceTermination::RequestScopeClosed);
+        table.close_all(RequestResourceTermination::RequestCompleted);
         assert_eq!(freeze.freeze().resource.current, 0);
     }
 
@@ -590,15 +1021,95 @@ mod tests {
         );
         assert_eq!(
             *events.lock().unwrap(),
-            [Event::Terminated(
-                RequestResourceTermination::ExplicitRelease
-            )]
+            [Event::Terminated(RequestResourceTermination::VmDrop)]
         );
 
-        table.close_all(RequestResourceTermination::RequestScopeClosed);
+        table.close_all(RequestResourceTermination::RequestCompleted);
         let snapshot = freeze.freeze();
         assert_eq!(snapshot.resource.current, 0);
         assert!(snapshot.resource.ever_created);
+    }
+
+    #[test]
+    fn natural_end_terminates_once_and_retains_lease_until_vm_drop() {
+        let (table, freeze) = table();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let handle = table.register(resource(&events)).unwrap();
+
+        assert_eq!(
+            table
+                .finish(&handle, RequestResourceFinishReason::Exhausted)
+                .unwrap(),
+            RequestResourceFinish::Finished
+        );
+        assert_eq!(
+            table
+                .finish(&handle, RequestResourceFinishReason::Exhausted)
+                .unwrap(),
+            RequestResourceFinish::AlreadyFinished
+        );
+        assert_eq!(
+            table.snapshot(),
+            RequestResourceTableSnapshot {
+                live: 0,
+                terminal: 1,
+            }
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            [Event::Terminated(RequestResourceTermination::Exhausted)]
+        );
+
+        assert_eq!(
+            table.release(&handle).unwrap(),
+            RequestResourceRelease::Released
+        );
+        assert_eq!(table.snapshot().total(), 0);
+        assert_eq!(
+            *events.lock().unwrap(),
+            [Event::Terminated(RequestResourceTermination::Exhausted)],
+            "VM drop releases the retained lease without a second provider terminal"
+        );
+        assert_eq!(freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn typed_byte_stream_pull_is_heap_free_and_uses_two_stage_terminal() {
+        let (table, freeze) = table();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let handle = table
+            .register_byte_stream(Box::new(RecordingByteStream {
+                events: Arc::clone(&events),
+            }))
+            .unwrap();
+        let mut pull = table.start_byte_stream_pull(&handle).unwrap();
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+
+        match pull.as_mut().poll(&mut context) {
+            Poll::Ready(Ok(Some(bytes))) => assert_eq!(bytes, [1, 2, 3]),
+            other => panic!("typed byte-stream pull was not ready: {other:?}"),
+        }
+        assert_eq!(
+            table
+                .finish(&handle, RequestResourceFinishReason::Exhausted)
+                .unwrap(),
+            RequestResourceFinish::Finished
+        );
+        assert!(matches!(
+            table.start_byte_stream_pull(&handle),
+            Err(RequestByteStreamPullStartError::Terminated)
+        ));
+        assert_eq!(table.snapshot().terminal, 1);
+        assert_eq!(
+            table.release(&handle).unwrap(),
+            RequestResourceRelease::Released
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            [Event::Terminated(RequestResourceTermination::Exhausted)]
+        );
+        assert_eq!(freeze.freeze().resource.current, 0);
     }
 
     #[test]
@@ -622,11 +1133,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            table.close_all(RequestResourceTermination::RequestScopeClosed),
+            table.close_all(RequestResourceTermination::RequestCompleted),
             2
         );
         assert_eq!(
-            table.close_all(RequestResourceTermination::RequestScopeClosed),
+            table.close_all(RequestResourceTermination::RequestCompleted),
             0
         );
         assert_eq!(
@@ -640,14 +1151,14 @@ mod tests {
         assert_eq!(
             *first_events.lock().unwrap(),
             [
-                Event::Terminated(RequestResourceTermination::RequestScopeClosed),
+                Event::Terminated(RequestResourceTermination::RequestCompleted),
                 Event::TableUnlocked,
             ]
         );
         assert_eq!(
             *second_events.lock().unwrap(),
             [
-                Event::Terminated(RequestResourceTermination::RequestScopeClosed),
+                Event::Terminated(RequestResourceTermination::RequestCompleted),
                 Event::TableUnlocked,
             ]
         );
@@ -660,7 +1171,7 @@ mod tests {
     fn closed_table_returns_unadmitted_state_and_never_mints_another_lease() {
         let (table, freeze) = table();
         let events = Arc::new(Mutex::new(Vec::new()));
-        table.close_all(RequestResourceTermination::RequestScopeClosed);
+        table.close_all(RequestResourceTermination::RequestCompleted);
 
         let failure = table.register(resource(&events)).unwrap_err();
         assert_eq!(
@@ -708,7 +1219,7 @@ mod tests {
         assert_eq!(visitor.0.len(), 1);
         assert!(visitor.0[0] == ValueSlot::integer(2));
 
-        table.close_all(RequestResourceTermination::RequestScopeClosed);
+        table.close_all(RequestResourceTermination::RequestCompleted);
         assert_eq!(freeze.freeze().resource.current, 0);
     }
 }

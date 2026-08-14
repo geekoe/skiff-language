@@ -634,6 +634,7 @@ fn execute_scalar_gateway(
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
         },
+        http_client: None,
         heap: None,
     })
 }
@@ -689,6 +690,7 @@ mod tests {
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
             },
+            http_client: None,
             heap: None,
         });
 
@@ -724,6 +726,7 @@ mod tests {
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
             },
+            http_client: None,
             heap: None,
         });
 
@@ -882,6 +885,7 @@ mod tests {
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
             },
+            http_client: None,
             heap: None,
         })
         .unwrap();

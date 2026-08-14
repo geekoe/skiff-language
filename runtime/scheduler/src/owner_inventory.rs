@@ -545,7 +545,15 @@ where
         let scheduler =
             BytecodeScheduler::new(root, self.ports.clone(), self.registrations.child());
         let result = scheduler.run(heap, budget);
-        let snapshot = self.close_and_freeze(RequestResourceTermination::RequestScopeClosed);
+        let termination = match &result {
+            Ok(BytecodeSchedulerOutcome::Complete(_)) => {
+                RequestResourceTermination::RequestCompleted
+            }
+            Ok(BytecodeSchedulerOutcome::Parked) | Err(_) => {
+                RequestResourceTermination::RequestFailed
+            }
+        };
+        let snapshot = self.close_and_freeze(termination);
         (result, snapshot)
     }
 
@@ -598,7 +606,16 @@ where
     /// Panics when the context was already frozen by
     /// [`Self::into_not_started`] or an earlier freeze.
     pub fn freeze(mut self) -> RequestExecutionOwnerInventorySnapshot {
-        self.close_and_freeze(RequestResourceTermination::RequestScopeClosed)
+        self.close_and_freeze(RequestResourceTermination::RequestCompleted)
+    }
+
+    /// Closes every live resource with the request driver's exact terminal
+    /// cause before freezing the shared Phase 4 owner inventory.
+    pub fn freeze_with_termination(
+        mut self,
+        termination: RequestResourceTermination,
+    ) -> RequestExecutionOwnerInventorySnapshot {
+        self.close_and_freeze(termination)
     }
 
     fn close_and_freeze(

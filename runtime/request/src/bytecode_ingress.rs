@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use skiff_artifact_model::TypeRefIr;
+use skiff_artifact_model::{HostEffectExecutorIdentity, TypeRefIr};
 use skiff_runtime_boundary::http::HttpBoundaryNameValue;
 use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
 use skiff_runtime_linked_bytecode::{LinkedValueDropPlan, LinkedValueTransferPlan};
@@ -22,8 +22,8 @@ use skiff_runtime_model::{
 use skiff_runtime_scheduler::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeScheduler,
     BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts, PendingWakeQueue,
-    RequestExecutionContext, RootDisposition, RootEscrow, RootEscrowBacking, SuspendedTrampoline,
-    VmCompletionHandle, VmPendingRegistry, VmPendingWake,
+    RequestExecutionContext, RequestResourceTermination, RootDisposition, RootEscrow,
+    RootEscrowBacking, SuspendedTrampoline, VmCompletionHandle, VmPendingRegistry, VmPendingWake,
 };
 use skiff_runtime_vm::{
     AdapterInvocation, PendingOperation, ResumeOutcome, Vm, VmBudget, VmBudgetClosed,
@@ -31,6 +31,7 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
+    bytecode_host_effects::{BytecodeHttpStreamRegistrar, SharedBytecodeHttpClientPort},
     execution_budget::{ExecutionWinner, RequestPendingSink},
     vm_heap::RequestVmHeap,
     BinaryHttpRequest, BoundaryResponse, ExecutionBudget, ExecutionControl, GatewayAdapterSource,
@@ -45,6 +46,11 @@ pub struct BytecodeRequestExecutionInput {
     pub cancellation: CancellationToken,
     pub execution_budget: Arc<ExecutionBudget>,
     pub handles: BytecodeRequestExecutionHandles,
+    /// Exact typed HTTP provider for this request. The two admitted HTTP
+    /// executor identities fail closed when it is absent; sleep does not
+    /// require this port, and no legacy context or binding-string fallback is
+    /// consulted.
+    pub http_client: Option<Arc<dyn crate::BytecodeHttpClientPort>>,
     /// Optional injected VM heap (production composition or a recording heap
     /// spy). When `None`, the driver constructs the production
     /// [`RequestVmHeap`] from `handles.request_heap_limits`. The injected heap
@@ -97,9 +103,6 @@ impl DrivenBytecodeRequestOwnerInventory {
 /// Suspended invocation chain of one parked bytecode request.
 type VmSuspended = SuspendedTrampoline<VmFiber, VmResumeToken>;
 
-/// The sole pinned host effect admitted into the Phase 4 actual-Pending lane.
-const SLEEP_BINDING_KEY: &str = "std.time.sleep";
-
 /// Everything needed to project and retain one started request across any
 /// number of park/resume cycles.
 struct BytecodeStart {
@@ -109,6 +112,8 @@ struct BytecodeStart {
     execution_budget: Arc<ExecutionBudget>,
     mode: String,
     raw_http_adapter: bool,
+    http_client: Option<SharedBytecodeHttpClientPort>,
+    execution_control: crate::OwnedExecutionControl,
 }
 
 fn start_bytecode_request(input: BytecodeRequestExecutionInput) -> RequestResult<BytecodeStart> {
@@ -119,6 +124,7 @@ fn start_bytecode_request(input: BytecodeRequestExecutionInput) -> RequestResult
         cancellation,
         execution_budget,
         handles,
+        http_client,
         heap: injected_heap,
     } = input;
 
@@ -128,9 +134,11 @@ fn start_bytecode_request(input: BytecodeRequestExecutionInput) -> RequestResult
         .as_ref()
         .is_some_and(|adapter| adapter.kind == HttpAdapterKind::RawHttp);
     validate_bytecode_request(&request)?;
-    ExecutionControl::new(cancellation.clone(), &execution_budget)
+    let execution_control = ExecutionControl::new(cancellation, &execution_budget);
+    execution_control
         .check_cancelled()
         .map_err(RequestError::from)?;
+    let execution_control = execution_control.owned();
     let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
         Some(heap) => heap,
         None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
@@ -149,6 +157,8 @@ fn start_bytecode_request(input: BytecodeRequestExecutionInput) -> RequestResult
         execution_budget,
         mode,
         raw_http_adapter,
+        http_client,
+        execution_control,
     })
 }
 
@@ -264,15 +274,19 @@ pub fn drive_runtime_bytecode_request_controlled(
     };
 
     let (wake_queue, wake_receiver) = RequestPendingWakeQueue::new();
+    let stream_registrar = BytecodeHttpStreamRegistrar::new(context.resource_table());
     let runtime = Arc::new(RequestPendingRuntime {
         registry: Arc::new(VmPendingRegistry::new(context.pending_registration())),
         wake_queue,
         budget: Arc::clone(&start.execution_budget),
+        http_client: start.http_client.clone(),
+        execution_control: start.execution_control.clone(),
+        stream_registrar,
         completion: Mutex::new(None),
         sleep_millis: Mutex::new(None),
     });
     let mut context = context.with_ports(BytecodeSchedulerPorts {
-        child_executor: Some(Arc::new(SleepHostExecutor {
+        child_executor: Some(Arc::new(BytecodeHostExecutor {
             runtime: Arc::clone(&runtime),
         })),
         stream_supervisor: None,
@@ -285,6 +299,8 @@ pub fn drive_runtime_bytecode_request_controlled(
         execution_budget,
         mode,
         raw_http_adapter,
+        http_client: _,
+        execution_control: _,
     } = start;
     context.install_root(fiber);
     let outcome = context.start_drive(&mut *heap, &mut *budget);
@@ -388,6 +404,11 @@ struct RequestPendingRuntime {
     registry: Arc<VmPendingRegistry<VmSuspended>>,
     wake_queue: Arc<RequestPendingWakeQueue>,
     budget: Arc<ExecutionBudget>,
+    http_client: Option<SharedBytecodeHttpClientPort>,
+    #[allow(dead_code)]
+    execution_control: crate::OwnedExecutionControl,
+    #[allow(dead_code)]
+    stream_registrar: BytecodeHttpStreamRegistrar,
     completion: Mutex<Option<VmCompletionHandle<VmSuspended>>>,
     sleep_millis: Mutex<Option<u64>>,
 }
@@ -437,15 +458,15 @@ impl RequestPendingSink for PendingCellSink {
     }
 }
 
-/// Typed executor slot for the sole pinned pending host effect.
+/// Exhaustive executor over the closed linked host-effect identity set.
 ///
-/// Every other host effect fails closed with `UnsupportedAdapter`, exactly as
-/// it did before Phase 4; only `std.time.sleep` enters the pending registry.
-struct SleepHostExecutor {
+/// The typed HTTP branches stay fail-closed until the following first-poll
+/// slice wires their owned futures into the shared pending registry.
+struct BytecodeHostExecutor {
     runtime: Arc<RequestPendingRuntime>,
 }
 
-impl BytecodeChildExecutor<VmFiber> for SleepHostExecutor {
+impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
     fn execute_child(
         &self,
         _invocation: skiff_runtime_vm::ChildInvocation,
@@ -463,17 +484,25 @@ impl BytecodeChildExecutor<VmFiber> for SleepHostExecutor {
     ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
         let adapter_index = invocation.adapter();
         let image = invocation.resume().image();
-        let adapter = image
-            .host_effect_adapters()
-            .get(adapter_index.get() as usize)
-            .filter(|row| row.index() == adapter_index)
+        let identity = image
+            .host_effect_target(adapter_index)
             .ok_or_else(|| {
                 BytecodeSchedulerError::Port(
                     "pending host effect adapter row is absent from the pinned image".to_string(),
                 )
-            })?;
-        if adapter.binding_key().as_str() != SLEEP_BINDING_KEY {
-            return Err(BytecodeSchedulerError::UnsupportedAdapter);
+            })?
+            .executor_identity();
+        match identity {
+            HostEffectExecutorIdentity::Sleep => {}
+            HostEffectExecutorIdentity::HttpClientRequest
+            | HostEffectExecutorIdentity::HttpClientStream => {
+                if self.runtime.http_client.is_none() {
+                    return Err(BytecodeSchedulerError::Port(
+                        "typed bytecode HTTP provider is unavailable".to_string(),
+                    ));
+                }
+                return Err(BytecodeSchedulerError::UnsupportedAdapter);
+            }
         }
         let (_adapter, arguments, resume) = invocation.into_parts();
         let sleep_millis = arguments
@@ -678,7 +707,6 @@ impl ParkedBytecodeRequest {
             raw_http_adapter,
             ..
         } = self;
-        let snapshot = context.freeze();
         let result = project_completed_request(
             &mut *heap,
             &execution_budget,
@@ -686,6 +714,7 @@ impl ParkedBytecodeRequest {
             &mode,
             raw_http_adapter,
         );
+        let snapshot = context.freeze_with_termination(resource_termination_for_result(&result));
         ControlledBytecodeDrive::Complete(DrivenBytecodeRequest {
             result,
             retention: BytecodeRequestRetention {
@@ -704,15 +733,31 @@ impl ParkedBytecodeRequest {
             execution_budget,
             ..
         } = self;
-        let snapshot = context.freeze();
+        let result: RequestResult<BoundaryResponse> =
+            Err(scheduler_error_to_request_error(&execution_budget, error));
+        let snapshot = context.freeze_with_termination(resource_termination_for_result(&result));
         ControlledBytecodeDrive::Complete(DrivenBytecodeRequest {
-            result: Err(scheduler_error_to_request_error(&execution_budget, error)),
+            result,
             retention: BytecodeRequestRetention {
                 heap: Some(heap),
                 budget: Some(budget),
             },
             owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(snapshot),
         })
+    }
+}
+
+fn resource_termination_for_result(
+    result: &RequestResult<BoundaryResponse>,
+) -> RequestResourceTermination {
+    match result {
+        Ok(_) => RequestResourceTermination::RequestCompleted,
+        Err(RequestError::Cancelled) => RequestResourceTermination::Cancelled,
+        Err(RequestError::ExecutionBudgetExceeded {
+            reason: ExecutionBudgetReason::DeadlineExceeded,
+            ..
+        }) => RequestResourceTermination::Deadline,
+        Err(_) => RequestResourceTermination::RequestFailed,
     }
 }
 

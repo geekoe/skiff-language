@@ -45,9 +45,11 @@ pub use pending::{
     VmCompletionHandle, VmPendingOwner, VmPendingRegistry, VmPendingWake,
 };
 pub use resource::{
+    RequestByteStreamFailure, RequestByteStreamPullFuture, RequestByteStreamPullStartError,
+    RequestByteStreamSource, RequestResourceFinish, RequestResourceFinishReason,
     RequestResourceHandle, RequestResourceLookupError, RequestResourceRegistrationError,
-    RequestResourceRegistrationFailure, RequestResourceRelease, RequestResourceState,
-    RequestResourceTable, RequestResourceTermination,
+    RequestResourceRelease, RequestResourceTable, RequestResourceTableSnapshot,
+    RequestResourceTermination,
 };
 pub use root_escrow::{RootDisposition, RootEscrow, RootEscrowBacking};
 pub use skiff_runtime_model::bytecode_execution_observation::{
