@@ -72,11 +72,7 @@ function broken(input: Stream<bytes>) -> void {
     let artifact = emit_unchecked_source(SOURCE);
     let lowered = lower(SOURCE);
 
-    for (symbol, expects_drop) in [
-        ("main.normal", true),
-        ("main.continued", true),
-        ("main.broken", false),
-    ] {
+    for symbol in ["main.normal", "main.continued", "main.broken"] {
         let mir = lowered.mir_units()[0]
             .functions
             .iter()
@@ -97,14 +93,36 @@ function broken(input: Stream<bytes>) -> void {
         let decoded = BoundedDecoder::new()
             .decode_function(&function.words)
             .expect("emitted loop decodes");
-        let drops_before_jump = decoded.instructions.windows(2).any(|pair| {
-            pair[0].descriptor.kind == Opcode::Drop
-                && pair[0].operand(0) == item_slot
-                && pair[1].descriptor.kind == Opcode::Jump
-        });
+        let item_drops_before_jump = decoded
+            .instructions
+            .windows(2)
+            .filter(|pair| {
+                pair[0].descriptor.kind == Opcode::Drop
+                    && pair[0].operand(0) == item_slot
+                    && pair[1].descriptor.kind == Opcode::Jump
+            })
+            .count();
         assert_eq!(
-            drops_before_jump, expects_drop,
-            "{symbol} must emit exactly the lifecycle action required by its backedge"
+            item_drops_before_jump, 1,
+            "{symbol} must drop its live item exactly once before leaving the iteration"
+        );
+        let endpoint_slot = decoded
+            .instructions
+            .iter()
+            .find(|instruction| instruction.descriptor.kind == Opcode::StreamNext)
+            .expect("stream loop emits StreamNext")
+            .operand(0);
+        assert_eq!(
+            decoded
+                .instructions
+                .iter()
+                .filter(|instruction| {
+                    instruction.descriptor.kind == Opcode::Drop
+                        && instruction.operand(0) == endpoint_slot
+                })
+                .count(),
+            1,
+            "{symbol} must release the stream endpoint exactly once at loop continuation"
         );
     }
 }

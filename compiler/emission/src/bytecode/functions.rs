@@ -526,6 +526,7 @@ impl<'a> FunctionEmitter<'a> {
         &mut self,
         block: &skiff_compiler_lowering::mir::MirBlock,
     ) -> Result<(), BytecodeEmissionError> {
+        self.emit_stream_continuation_cleanup(block.id)?;
         let instruction_start = self.instructions.len();
         for statement in &block.statements {
             self.map_statement_events(statement.statement_index);
@@ -634,7 +635,10 @@ impl<'a> FunctionEmitter<'a> {
         {
             match block.successors.as_slice() {
                 [] => {}
-                [successor] => self.emit_jump_to_block(*successor)?,
+                [successor] => {
+                    self.emit_stream_exit_item_cleanup(*successor, &mut stream_item_states)?;
+                    self.emit_jump_to_block(*successor)?;
+                }
                 _ => {}
             }
         }
@@ -3180,6 +3184,50 @@ impl<'a> FunctionEmitter<'a> {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn emit_stream_exit_item_cleanup(
+        &mut self,
+        successor: u32,
+        states: &mut [(u32, u32, EmittedSlotState)],
+    ) -> Result<(), BytecodeEmissionError> {
+        for (header, item_slot, state) in states {
+            let Some(backedge) = self
+                .loop_backedges
+                .values()
+                .find(|backedge| backedge.header_block == *header && backedge.stream)
+            else {
+                return Err(unsupported(
+                    &self.key,
+                    "stream loop item lifecycle",
+                    &format!("stream header {header} lost its exact loop facts"),
+                ));
+            };
+            if backedge.continuation_block != successor {
+                continue;
+            }
+            if *state == EmittedSlotState::Live {
+                self.emit_op(Opcode::Drop, vec![*item_slot])?;
+            }
+            *state = EmittedSlotState::Empty;
+        }
+        Ok(())
+    }
+
+    fn emit_stream_continuation_cleanup(
+        &mut self,
+        block: u32,
+    ) -> Result<(), BytecodeEmissionError> {
+        let endpoints = self
+            .loop_backedges
+            .values()
+            .filter(|backedge| backedge.stream && backedge.continuation_block == block)
+            .map(|backedge| backedge.iterable_slot)
+            .collect::<BTreeSet<_>>();
+        for endpoint in endpoints {
+            self.emit_op(Opcode::Drop, vec![endpoint])?;
         }
         Ok(())
     }
