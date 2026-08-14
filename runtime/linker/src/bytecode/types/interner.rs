@@ -848,6 +848,7 @@ impl<'a> TypeLinker<'a> {
             result_type_refs: descriptor.result_type_refs.clone(),
             result_plans: descriptor.result_plans.clone(),
             result_materializations: descriptor.result_materializations.clone(),
+            emit_stream_item_shape_ref: descriptor.emit_stream_item_shape_ref,
             error_mode: descriptor.error_mode,
         };
         self.link_resume_site(package, &descriptor, specialization, function, location)
@@ -954,6 +955,18 @@ impl<'a> TypeLinker<'a> {
             };
             result_materializations.push(linked);
         }
+        let emit_stream_item_shape = descriptor
+            .emit_stream_item_shape_ref
+            .map(|shape_ref| {
+                self.intern_pool_shape(
+                    package,
+                    specialization,
+                    shape_ref,
+                    &BTreeMap::new(),
+                    location.clone(),
+                )
+            })
+            .transpose()?;
         let origin_key = (
             package.reference().package_build_id.clone(),
             descriptor_index(package, descriptor, location.clone())?,
@@ -976,6 +989,7 @@ impl<'a> TypeLinker<'a> {
                 result_types.into_boxed_slice(),
                 result_plans.into_boxed_slice(),
                 result_materializations.into_boxed_slice(),
+                emit_stream_item_shape,
                 descriptor.error_mode,
             )
             .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
@@ -1348,6 +1362,7 @@ fn descriptor_index(
                 && site.result_type_refs == descriptor.result_type_refs
                 && site.result_plans == descriptor.result_plans
                 && site.result_materializations == descriptor.result_materializations
+                && site.emit_stream_item_shape_ref == descriptor.emit_stream_item_shape_ref
                 && site.error_mode == descriptor.error_mode
         })
         .and_then(|index| u32::try_from(index).ok())

@@ -62,7 +62,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v10";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v11";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v5";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -887,7 +887,7 @@ pub struct ResumeDescriptor {
     /// Operand stack height immediately before resumed results are pushed.
     pub expected_stack_height_before_result: u32,
     /// Type refs and plans in result order; both lengths equal site result
-    /// arity and v4 permits only zero or one. For `StreamNext`, these describe
+    /// arity and ISA v5 permits only zero or one. For `StreamNext`, these describe
     /// the one-item resume path; the natural-end path uses `endResumePc` with
     /// zero results.
     pub result_type_refs: Vec<u32>,
@@ -897,6 +897,11 @@ pub struct ResumeDescriptor {
     /// row names one exact shape pool entry; consumers must never recover it by
     /// scanning nominal types or assuming the result TypeRef row is a shape.
     pub result_materializations: Vec<Option<ResumeResultMaterialization>>,
+    /// Exact dense variant shape consumed by this `EmitStream` site. Required
+    /// on the wire: `EmitStream` carries one shape ref and every other pending
+    /// opcode carries `null`.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub emit_stream_item_shape_ref: Option<u32>,
     pub error_mode: ResumeErrorMode,
 }
 

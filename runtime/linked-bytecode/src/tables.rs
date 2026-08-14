@@ -176,6 +176,7 @@ pub struct LinkedResumeSite {
     result_types: Box<[TypeIndex]>,
     result_plans: Box<[LinkedValueTransferPlan]>,
     result_materializations: Box<[Option<LinkedResumeResultMaterialization>]>,
+    emit_stream_item_shape: Option<ShapeIndex>,
     error_mode: ResumeErrorMode,
 }
 
@@ -199,6 +200,7 @@ impl LinkedResumeSite {
         result_types: Box<[TypeIndex]>,
         result_plans: Box<[LinkedValueTransferPlan]>,
         result_materializations: Box<[Option<LinkedResumeResultMaterialization>]>,
+        emit_stream_item_shape: Option<ShapeIndex>,
         error_mode: ResumeErrorMode,
     ) -> Result<Self, LinkedResumeSiteError> {
         if result_types.len() != result_plans.len() {
@@ -223,6 +225,7 @@ impl LinkedResumeSite {
             result_types,
             result_plans,
             result_materializations,
+            emit_stream_item_shape,
             error_mode,
         })
     }
@@ -261,6 +264,10 @@ impl LinkedResumeSite {
 
     pub fn result_materializations(&self) -> &[Option<LinkedResumeResultMaterialization>] {
         &self.result_materializations
+    }
+
+    pub const fn emit_stream_item_shape(&self) -> Option<ShapeIndex> {
+        self.emit_stream_item_shape
     }
 
     pub const fn error_mode(&self) -> ResumeErrorMode {

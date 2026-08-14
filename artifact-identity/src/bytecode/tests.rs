@@ -10,8 +10,9 @@ use skiff_artifact_model::{
     BytecodeSpecialization, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
     FrozenConstantNode, HostEffectSignature, IntrinsicReference, LiteralIr, PackageCallableId,
     PackageExecutableCoordinate, RelocatableBytecodeFunction, ResumeDescriptor, ResumeErrorMode,
-    SourceMapEntry, StatementAttributionId, StatementEntry, TypeRefIr, ValueDropPlan,
-    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    ResumeResultMaterialization, ShapeDeclaration, SourceMapEntry, StatementAttributionId,
+    StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -132,7 +133,18 @@ fn fixture() -> BytecodeArtifact {
                         ty: TypeRefIr::builtin("number"),
                     },
                 ],
-                shapes: Vec::new(),
+                shapes: (0..2)
+                    .map(|_| BytecodePoolEntry::ShapeRef {
+                        shape: ShapeDeclaration {
+                            type_ref: 0,
+                            plan: ValueTransferPlan::SnapshotShare {
+                                drop: ValueDropPlan::SnapshotRelease,
+                            },
+                            privileged_affine_composite: None,
+                            fields: Vec::new(),
+                        },
+                    })
+                    .collect(),
                 effects: Vec::new(),
                 resume: Vec::new(),
                 callback_capture: Vec::new(),
@@ -549,7 +561,7 @@ fn authority_fixture() -> BytecodeArtifact {
     artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
         ty: TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![TypeRefIr::builtin("number")],
+            args: vec![TypeRefIr::builtin("string")],
         },
     });
     artifact
@@ -565,6 +577,7 @@ fn authority_fixture() -> BytecodeArtifact {
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
             result_materializations: Vec::new(),
+            emit_stream_item_shape_ref: Some(0),
             error_mode: ResumeErrorMode::RaiseAtSite,
         }));
     let producer = RelocatableBytecodeFunction {
@@ -635,6 +648,7 @@ fn stream_consumer_fixture() -> BytecodeArtifact {
             result_type_refs: vec![0],
             result_plans: vec![snapshot_share()],
             result_materializations: vec![None],
+            emit_stream_item_shape_ref: None,
             error_mode: ResumeErrorMode::RaiseAtSite,
         }));
     artifact.image.functions.insert(
@@ -708,11 +722,11 @@ fn derived_execution_authorities_participate_in_the_preimage() {
     );
 
     let mut mutated = artifact;
-    let string_stream_index = mutated.image.pools.types.len() as u32;
+    let number_stream_index = mutated.image.pools.types.len() as u32;
     mutated.image.pools.types.push(BytecodePoolEntry::TypeRef {
         ty: TypeRefIr::Builtin {
             name: "Stream".to_string(),
-            args: vec![TypeRefIr::builtin("string")],
+            args: vec![TypeRefIr::builtin("number")],
         },
     });
     mutated
@@ -721,11 +735,48 @@ fn derived_execution_authorities_participate_in_the_preimage() {
         .get_mut("module::producer")
         .unwrap()
         .frame_layout
-        .stream_result_type_ref = Some(string_stream_index);
+        .stream_result_type_ref = Some(number_stream_index);
     assert_ne!(
         bytecode_identity(&mutated).unwrap(),
         with_contracts,
         "stream producer item type must participate in bytecode identity"
+    );
+}
+
+#[test]
+fn resume_materialization_and_emit_shape_refs_participate_in_the_preimage() {
+    let ordinary = stream_consumer_fixture();
+    let ordinary_identity = bytecode_identity(&ordinary).unwrap();
+    let mut materialized = ordinary;
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut materialized.image.pools.resume[0]
+    else {
+        unreachable!("stream consumer resume descriptor")
+    };
+    descriptor.result_materializations = vec![Some(ResumeResultMaterialization::DenseRecord {
+        shape_ref: 0,
+    })];
+    skiff_artifact_model::structurally_validate(&materialized)
+        .expect("Some(DenseRecord) fixture remains structurally valid");
+    assert_ne!(
+        bytecode_identity(&materialized).unwrap(),
+        ordinary_identity,
+        "resultMaterializations None-to-Some must change bytecode identity"
+    );
+
+    let emitted = authority_fixture();
+    let emitted_identity = bytecode_identity(&emitted).unwrap();
+    let mut retargeted = emitted;
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut retargeted.image.pools.resume[0]
+    else {
+        unreachable!("EmitStream resume descriptor")
+    };
+    descriptor.emit_stream_item_shape_ref = Some(1);
+    skiff_artifact_model::structurally_validate(&retargeted)
+        .expect("alternate bounded EmitStream shape fixture remains structurally valid");
+    assert_ne!(
+        bytecode_identity(&retargeted).unwrap(),
+        emitted_identity,
+        "emitStreamItemShapeRef drift must change bytecode identity"
     );
 }
 

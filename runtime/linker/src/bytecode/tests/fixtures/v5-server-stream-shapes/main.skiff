@@ -1,0 +1,8 @@
+import std
+
+function stream(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit({ tag: "start", status: 207, headers: [] })
+  emit({ tag: "chunk", value: bytes.fromUtf8(request.body.toUtf8String()) })
+  emit({ tag: "end" })
+  return null
+}

@@ -188,6 +188,7 @@ pub struct ValidatedResumeSite {
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<crate::bytecode::dto::ValueTransferPlan>,
     pub result_materializations: Vec<Option<crate::bytecode::dto::ResumeResultMaterialization>>,
+    pub emit_stream_item_shape_ref: Option<u32>,
     pub error_mode: crate::bytecode::dto::ResumeErrorMode,
     pub stream_item: Option<FunctionStreamItemAuthority>,
 }
@@ -202,6 +203,7 @@ impl ValidatedResumeSite {
             result_type_refs: self.result_type_refs.clone(),
             result_plans: self.result_plans.clone(),
             result_materializations: self.result_materializations.clone(),
+            emit_stream_item_shape_ref: self.emit_stream_item_shape_ref,
             error_mode: self.error_mode,
             stream_item: self.stream_item.clone(),
         }
@@ -684,6 +686,16 @@ fn validate_pool_entry_references(
                     ));
                 };
             }
+        }
+        if let Some(shape_ref) = descriptor.emit_stream_item_shape_ref {
+            let Some(BytecodePoolEntry::ShapeRef { .. }) = pools.shapes.get(shape_ref as usize)
+            else {
+                return Err(index_out_of_bounds(
+                    "shapes pool",
+                    shape_ref,
+                    &format!("image.pools.resume[{index}].emitStreamItemShapeRef"),
+                ));
+            };
         }
     }
 

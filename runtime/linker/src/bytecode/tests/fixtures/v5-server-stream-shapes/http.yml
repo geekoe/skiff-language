@@ -1,0 +1,8 @@
+stream:
+  method: POST
+  path: /phase-5/server-stream-shapes
+  kind: rawHttp
+  handler: main.stream
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

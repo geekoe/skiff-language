@@ -1409,19 +1409,20 @@ mod tests {
 
     #[test]
     fn stream_return_without_source_attribution_fails_closed_after_plan_derivation() {
-        let item_type = TypeRefIr::builtin("number");
+        let item_type = TypeRefIr::Record {
+            fields: BTreeMap::new(),
+        };
         let stream_type = TypeRefIr::Builtin {
             name: "Stream".to_string(),
             args: vec![item_type.clone()],
         };
         let expressions = vec![MirExpression {
             index: 0,
-            expression: ExprIr::Literal {
-                value: LiteralIr::Number {
-                    value: serde_json::Number::from(7),
-                },
+            expression: ExprIr::Construct {
+                type_ref: item_type.clone(),
+                fields: BTreeMap::new(),
             },
-            ty: TypeRefIr::builtin("integer"),
+            ty: item_type.clone(),
             writable: None,
             direct_call: None,
             stream_result: None,
@@ -1484,7 +1485,17 @@ mod tests {
         let (unit, bundle) =
             mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
         let plans = derive_bytecode_value_transfer_plans(&[unit.clone()], |_module_path, ty| {
-            stream_plan(ty)
+            if ty == &stream_type {
+                Ok(ValueTransferPlan::AffineResource {
+                    drop: ResourceDropPlan::ResourceTableRelease,
+                })
+            } else if ty == &item_type {
+                Ok(ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::SnapshotRelease,
+                })
+            } else {
+                stream_plan(ty)
+            }
         })
         .expect("stream producer plan derives");
         assert!(

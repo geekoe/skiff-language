@@ -100,6 +100,7 @@ pub struct ValidatedResumeResultAuthority {
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<ValueTransferPlan>,
     pub result_materializations: Vec<Option<ResumeResultMaterialization>>,
+    pub emit_stream_item_shape_ref: Option<u32>,
     pub error_mode: ResumeErrorMode,
     pub stream_item: Option<FunctionStreamItemAuthority>,
 }

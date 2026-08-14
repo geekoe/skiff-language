@@ -24,9 +24,10 @@ use skiff_compiler::{
 };
 use skiff_runtime_linked_bytecode::{
     HostEffectAdapterIndex, InstructionIndex, LinkedBytecodeCandidate,
-    LinkedBytecodeCandidateParts, LinkedContainerLayoutKind, LinkedFunction, LinkedFunctionTables,
-    LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedResumeResultMaterialization,
-    LinkedResumeSite, LinkedSlotState, LinkedValueDropPlan, LinkedValueTransferPlan,
+    LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedContainerLayoutKind,
+    LinkedFunction, LinkedFunctionTables, LinkedInstructionTarget, LinkedPackageBytecodeProvenance,
+    LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry, LinkedSlotState,
+    LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeLoader, FilesystemDeploymentBytecodeContentResolver, HydratedBytecodePackage,
@@ -160,6 +161,7 @@ fn atomic_image_resume_view_rejects_swapped_descriptor_with_typed_construction_e
         original.result_types().into(),
         original.result_plans().into(),
         original.result_materializations().into(),
+        original.emit_stream_item_shape(),
         original.error_mode(),
     )
     .unwrap();
@@ -506,6 +508,68 @@ fn ignored_unary_http_result_links_one_exact_dense_materialization_shape() {
 }
 
 #[test]
+fn server_stream_start_chunk_and_end_link_exact_site_shapes() {
+    let image = production_execution_image(
+        "runtime/linker/src/bytecode/tests/fixtures/v5-server-stream-shapes",
+        "server-stream-item-shapes",
+    );
+    let mut layouts = Vec::new();
+    for function in image.functions() {
+        for (ordinal, instruction) in function.instructions().iter().enumerate() {
+            if instruction.opcode() != Opcode::EmitStream {
+                continue;
+            }
+            let resume_index = instruction
+                .resolved_operands()
+                .iter()
+                .find_map(|operand| match operand.target() {
+                    LinkedInstructionTarget::ResumeSite(index) => Some(index),
+                    _ => None,
+                })
+                .expect("EmitStream carries one linked resume site");
+            let resume = image
+                .resume_sites()
+                .get(resume_index)
+                .expect("execution image retains the EmitStream site");
+            assert_eq!(resume.kind(), &ExecutionResumeKind::StreamBackpressure);
+            let shape_index = resume
+                .emit_stream_item_shape()
+                .expect("EmitStream exposes one bounded resolved item shape");
+            let shape = &image.shapes()[shape_index.get() as usize];
+            let stack_item = function.stack_map().entries()[ordinal]
+                .stack_before()
+                .last()
+                .expect("EmitStream consumes one stack-top item");
+            assert_eq!(
+                image.types()[stack_item.ty().get() as usize].type_ref(),
+                image.types()[shape.nominal_type().get() as usize].type_ref(),
+                "site shape closes over the actual stack-top TypeRef/ABI"
+            );
+            assert_eq!(
+                stack_item.plan(),
+                shape.plan(),
+                "site shape plan closes over the actual stack-top plan"
+            );
+            layouts.push(
+                shape
+                    .fields()
+                    .iter()
+                    .map(|field| field.name())
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
+    assert_eq!(
+        layouts,
+        [
+            vec!["headers", "status", "tag"],
+            vec!["tag", "value"],
+            vec!["tag"],
+        ]
+    );
+}
+
+#[test]
 fn production_entry_links_exact_ordinary_root_local_call_and_return() {
     let fixture = Fixture::exact_local();
     let hydrated = fixture.hydrate();
@@ -526,7 +590,7 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         .packages()
         .get(&fixture.package_reference.package_build_id)
         .unwrap();
-    assert_exact_v10_provenance(provenance, hydrated_package);
+    assert_exact_v11_provenance(provenance, hydrated_package);
     // The loader is the only safe hydrated-deployment constructor, so its
     // mixed-registry negative tests own impossible receipt construction. The
     // linker tests prove that the opaque joined receipt survives unchanged.
@@ -866,6 +930,9 @@ fn production_entry_links_stream_producer_with_zero_ordinary_results() {
     assert_eq!(resume.end_resume(), None);
     assert!(resume.result_types().is_empty());
     assert!(resume.result_plans().is_empty());
+    let item_shape = resume
+        .emit_stream_item_shape()
+        .expect("linked EmitStream carries one exact item shape");
 
     let root = function(&candidate, ROOT_FUNCTION);
     assert_eq!(root.frame().parameters().len(), 1);
@@ -882,7 +949,83 @@ fn production_entry_links_stream_producer_with_zero_ordinary_results() {
     ));
     assert_eq!(root.stack_map().entries()[0].stack_before().len(), 0);
     assert_eq!(root.stack_map().entries()[1].stack_before().len(), 1);
+    let stack_item = root.stack_map().entries()[1].stack_before().last().unwrap();
+    let shape = &candidate.shapes()[item_shape.get() as usize];
+    assert_eq!(
+        candidate.types()[stack_item.ty().get() as usize].type_ref(),
+        candidate.types()[shape.nominal_type().get() as usize].type_ref()
+    );
+    assert_eq!(stack_item.plan(), shape.plan());
     assert_eq!(root.stack_map().entries()[2].stack_before().len(), 0);
+}
+
+#[test]
+fn linked_emit_stream_shape_rejects_missing_out_of_range_nominal_and_plan_drift() {
+    let fixture = Fixture::stream_producer();
+    let candidate = link_deployment(&fixture.hydrate(), &generous_limits()).unwrap();
+
+    let mut missing = clone_candidate_parts(&candidate);
+    replace_first_resume_item_shape(&mut missing, None);
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(missing),
+        Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+            resume_site: 0,
+            detail: "EmitStream site lacks its exact item shape",
+        })
+    ));
+
+    let mut out_of_range = clone_candidate_parts(&candidate);
+    replace_first_resume_item_shape(&mut out_of_range, Some(ShapeIndex::new(u32::MAX)));
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(out_of_range),
+        Err(LinkedBytecodeCandidateError::ReferenceOutOfBounds {
+            reference: skiff_runtime_linked_bytecode::CandidateReferenceKind::Shape,
+            index: u32::MAX,
+            ..
+        })
+    ));
+
+    let mut wrong_nominal = clone_candidate_parts(&candidate);
+    let original = wrong_nominal.shapes[0].clone();
+    wrong_nominal.shapes[0] = LinkedShapeEntry::new(
+        original.index(),
+        original.origin().clone(),
+        wrong_nominal.functions[0]
+            .stream_result_type_ref()
+            .expect("stream producer has its function-wide Stream<T> row"),
+        original.plan().clone(),
+        original.privileged_affine_composite(),
+        original.fields().into(),
+    )
+    .unwrap();
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(wrong_nominal),
+        Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+            resume_site: 0,
+            detail: "shape nominal TypeRef/ABI differs from the site stack-top item",
+        })
+    ));
+
+    let mut wrong_plan = clone_candidate_parts(&candidate);
+    let original = wrong_plan.shapes[0].clone();
+    wrong_plan.shapes[0] = LinkedShapeEntry::new(
+        original.index(),
+        original.origin().clone(),
+        original.nominal_type(),
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        },
+        original.privileged_affine_composite(),
+        original.fields().into(),
+    )
+    .unwrap();
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(wrong_plan),
+        Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+            resume_site: 0,
+            detail: "shape plan differs from the site stack-top item plan",
+        })
+    ));
 }
 
 #[test]
@@ -1001,7 +1144,7 @@ fn source_site(source_id: u64) -> InstructionSourceSite {
     }
 }
 
-fn assert_exact_v10_provenance(
+fn assert_exact_v11_provenance(
     provenance: &LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
 ) {
@@ -1009,7 +1152,7 @@ fn assert_exact_v10_provenance(
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");
-    assert_eq!(provenance.schema_version(), "skiff-bytecode-v10");
+    assert_eq!(provenance.schema_version(), "skiff-bytecode-v11");
     assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v5");
     assert_eq!(provenance.schema_version(), view.schema_version());
     assert_eq!(provenance.isa_version(), view.isa_version());
@@ -1064,6 +1207,27 @@ fn clone_candidate_parts(candidate: &LinkedBytecodeCandidate) -> LinkedBytecodeC
         resume_sites: candidate.resume_sites().to_vec(),
         writable_paths: candidate.writable_paths().to_vec(),
     }
+}
+
+fn replace_first_resume_item_shape(
+    parts: &mut LinkedBytecodeCandidateParts,
+    shape: Option<ShapeIndex>,
+) {
+    let original = parts.resume_sites[0].clone();
+    parts.resume_sites[0] = LinkedResumeSite::new(
+        original.index(),
+        original.function(),
+        original.site(),
+        original.resume(),
+        original.end_resume(),
+        original.expected_stack_height_before_result(),
+        original.result_types().into(),
+        original.result_plans().into(),
+        original.result_materializations().into(),
+        shape,
+        original.error_mode(),
+    )
+    .unwrap();
 }
 
 #[test]

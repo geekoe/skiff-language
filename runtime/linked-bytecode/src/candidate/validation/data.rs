@@ -342,6 +342,63 @@ fn validate_resume_site(
     for plan in resume.result_plans() {
         validate_plan(plan, location, parts)?;
     }
+    match (site_instruction.opcode(), resume.emit_stream_item_shape()) {
+        (Opcode::EmitStream, Some(shape_index)) => {
+            check_index(
+                location,
+                CandidateReferenceKind::Shape,
+                shape_index.get(),
+                parts.shapes.len(),
+            )?;
+            let shape = &parts.shapes[shape_index.get() as usize];
+            let stack_item = function
+                .stack_map()
+                .entries()
+                .get(resume.site().get() as usize)
+                .and_then(|state| state.stack_before().last())
+                .ok_or(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+                    resume_site: resume.index().get(),
+                    detail: "EmitStream site has no stack-top item",
+                })?;
+            let stack_type = parts.types.get(stack_item.ty().get() as usize).ok_or(
+                LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+                    resume_site: resume.index().get(),
+                    detail: "EmitStream stack-top type is absent",
+                },
+            )?;
+            let nominal_type = parts.types.get(shape.nominal_type().get() as usize).ok_or(
+                LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+                    resume_site: resume.index().get(),
+                    detail: "EmitStream shape nominal type is absent",
+                },
+            )?;
+            if stack_type.type_ref() != nominal_type.type_ref() {
+                return Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+                    resume_site: resume.index().get(),
+                    detail: "shape nominal TypeRef/ABI differs from the site stack-top item",
+                });
+            }
+            if stack_item.plan() != shape.plan() {
+                return Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+                    resume_site: resume.index().get(),
+                    detail: "shape plan differs from the site stack-top item plan",
+                });
+            }
+        }
+        (Opcode::EmitStream, None) => {
+            return Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+                resume_site: resume.index().get(),
+                detail: "EmitStream site lacks its exact item shape",
+            });
+        }
+        (_, Some(_)) => {
+            return Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
+                resume_site: resume.index().get(),
+                detail: "non-EmitStream site carries an item shape",
+            });
+        }
+        (_, None) => {}
+    }
     for (result_index, materialization) in resume.result_materializations().iter().enumerate() {
         let Some(LinkedResumeResultMaterialization::DenseRecord { shape }) = materialization else {
             continue;

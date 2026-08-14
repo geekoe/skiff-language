@@ -148,6 +148,28 @@ pub(super) fn validate_resume_sites(
             } else {
                 None
             };
+            match (descriptor.kind, resume.emit_stream_item_shape_ref) {
+                (Opcode::EmitStream, Some(_)) => {}
+                (Opcode::EmitStream, None) => {
+                    return Err(StructuralValidationError::Target {
+                        function_key: function.function_key.clone(),
+                        pc: instruction.pc,
+                        message: format!(
+                            "EmitStream resume[{descriptor_index}] requires emitStreamItemShapeRef"
+                        ),
+                    });
+                }
+                (_, Some(_)) => {
+                    return Err(StructuralValidationError::Target {
+                        function_key: function.function_key.clone(),
+                        pc: instruction.pc,
+                        message: format!(
+                            "resume[{descriptor_index}] emitStreamItemShapeRef is only valid for EmitStream"
+                        ),
+                    });
+                }
+                (_, None) => {}
+            }
             validated.push(ValidatedResumeSite {
                 function_key: function.function_key.clone(),
                 descriptor_index,
@@ -158,6 +180,7 @@ pub(super) fn validate_resume_sites(
                 result_type_refs: resume.result_type_refs.clone(),
                 result_plans: resume.result_plans.clone(),
                 result_materializations: resume.result_materializations.clone(),
+                emit_stream_item_shape_ref: resume.emit_stream_item_shape_ref,
                 error_mode: resume.error_mode,
                 stream_item,
             });

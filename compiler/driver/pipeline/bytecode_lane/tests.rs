@@ -9,13 +9,13 @@ use skiff_artifact_model::{
     current_platform_error_projection_registry_ref, descriptor_for_opcode,
     validate_current_platform_error_projection_registry_ref,
     validate_platform_error_projection_registry_ref_shape, BytecodeArtifact, BytecodeArtifactRef,
-    BytecodeFunctionOrigin, BytecodeFunctionStatementManifest, BytecodeImage, BytecodePools,
-    FrameLayout, FrozenConstantGraph, InstructionSourceSite, Opcode, PackageBuildId,
-    PackageCallableId, PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
-    PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef,
-    PlatformErrorProjectionRegistryRef, RelocatableBytecodeFunction, SourcePosition, SourceSpanRef,
-    StatementAttributionId, StatementEntry, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    BytecodeFunctionOrigin, BytecodeFunctionStatementManifest, BytecodeImage, BytecodePoolEntry,
+    BytecodePools, FrameLayout, FrozenConstantGraph, InstructionSourceSite, Opcode, OperandRole,
+    PackageBuildId, PackageCallableId, PackageExecutableCoordinate, PackageImplementationLinks,
+    PackageLocalAbi, PackageLocalAbiIdentity, PackageRuntimeRequirements, PackageSchemaIndex,
+    PackageSchemaIndexRef, PlatformErrorProjectionRegistryRef, RelocatableBytecodeFunction,
+    SourcePosition, SourceSpanRef, StatementAttributionId, StatementEntry, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler_emission::package_artifact::publish_projected_package_artifact;
 
@@ -132,7 +132,7 @@ fn enabled_lane_attaches_exact_handoff_ref_and_manifest_to_a_new_projection() {
         .reference()
         .bytecode_identity
         .starts_with("skiff-bytecode-image-v5:sha256:"));
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v10");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v11");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
         "skiff-bytecode-artifact-v5"
@@ -225,6 +225,58 @@ fn production_authoring_publishes_exact_affine_http_stream_bytecode() {
     let decoded = skiff_artifact_model::bytecode::BoundedDecoder::new()
         .decode_function(&function.words)
         .expect("published wordcode decodes");
+    let mut emit_shapes = decoded
+        .instructions
+        .iter()
+        .enumerate()
+        .filter(|(_, instruction)| instruction.descriptor.kind == Opcode::EmitStream)
+        .map(|(ordinal, instruction)| {
+            let resume_ref = instruction
+                .descriptor
+                .operand_word(OperandRole::ResumeRef, &instruction.operand_words)
+                .expect("EmitStream carries a resume descriptor");
+            let BytecodePoolEntry::ResumeDescriptor(resume) =
+                &bytecode.artifact().image.pools.resume[resume_ref as usize]
+            else {
+                panic!("EmitStream resume operand selects a descriptor")
+            };
+            let shape_ref = resume
+                .emit_stream_item_shape_ref
+                .expect("each EmitStream carries its exact dense variant shape");
+            let construct = decoded
+                .instructions
+                .get(ordinal.saturating_sub(1))
+                .expect("EmitStream follows its exact construction");
+            assert_eq!(construct.descriptor.kind, Opcode::NewRecord);
+            assert_eq!(
+                construct
+                    .descriptor
+                    .operand_word(OperandRole::ShapeRef, &construct.operand_words),
+                Some(shape_ref),
+                "resume fact must reuse the exact construction shape"
+            );
+            let BytecodePoolEntry::ShapeRef { shape } =
+                &bytecode.artifact().image.pools.shapes[shape_ref as usize]
+            else {
+                panic!("EmitStream item shape ref selects a dense shape")
+            };
+            shape
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    emit_shapes.sort_unstable();
+    assert_eq!(
+        emit_shapes,
+        [
+            vec!["headers", "status", "tag"],
+            vec!["tag"],
+            vec!["tag", "value"],
+        ],
+        "start/chunk/end sites retain all distinct exact dense variant layouts"
+    );
     assert!(decoded.instructions.windows(2).any(|pair| {
         pair[0].descriptor.kind == Opcode::TakeSlot
             && pair[1].descriptor.kind == Opcode::TakeDenseField

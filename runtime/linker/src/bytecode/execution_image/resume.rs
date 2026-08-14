@@ -2,7 +2,7 @@ use skiff_artifact_model::{contract_for_opcode, PendingContract, PendingMode, Re
 use skiff_runtime_linked_bytecode::{
     FrameSlotIndex, FunctionIndex, InstructionIndex, LinkedBytecodeCandidate,
     LinkedInstructionTarget, LinkedResumeResultMaterialization, LinkedValueTransferPlan,
-    ResumeSiteIndex, TypeIndex,
+    ResumeSiteIndex, ShapeIndex, TypeIndex,
 };
 
 use super::ExecutionImageConstructionError;
@@ -36,6 +36,7 @@ pub struct ExecutionResumeSite {
     result_types: Box<[TypeIndex]>,
     result_plans: Box<[LinkedValueTransferPlan]>,
     result_materializations: Box<[Option<LinkedResumeResultMaterialization>]>,
+    emit_stream_item_shape: Option<ShapeIndex>,
     error_mode: ResumeErrorMode,
     kind: ExecutionResumeKind,
 }
@@ -75,6 +76,10 @@ impl ExecutionResumeSite {
 
     pub fn result_materializations(&self) -> &[Option<LinkedResumeResultMaterialization>] {
         &self.result_materializations
+    }
+
+    pub const fn emit_stream_item_shape(&self) -> Option<ShapeIndex> {
+        self.emit_stream_item_shape
     }
 
     pub const fn error_mode(&self) -> ResumeErrorMode {
@@ -162,6 +167,7 @@ pub(in crate::bytecode) fn build_resume_sites(
             result_types: row.result_types().into(),
             result_plans: row.result_plans().into(),
             result_materializations: row.result_materializations().into(),
+            emit_stream_item_shape: row.emit_stream_item_shape(),
             error_mode: row.error_mode(),
             kind,
         });

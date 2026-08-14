@@ -568,6 +568,14 @@ fn pools(program: RootProgram) -> BytecodePools {
                     }],
                 },
             }],
+            RootProgram::StreamProducer => vec![BytecodePoolEntry::ShapeRef {
+                shape: skiff_artifact_model::ShapeDeclaration {
+                    type_ref: 1,
+                    plan: stream_item_plan(),
+                    privileged_affine_composite: None,
+                    fields: Vec::new(),
+                },
+            }],
             _ => Vec::new(),
         },
         effects: Vec::new(),
@@ -660,6 +668,7 @@ fn interface_resume_descriptor(function_key: &str) -> ResumeDescriptor {
         result_type_refs: vec![0],
         result_plans: vec![snapshot_plan()],
         result_materializations: vec![None],
+        emit_stream_item_shape_ref: None,
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }
@@ -674,6 +683,7 @@ fn host_resume_descriptor() -> ResumeDescriptor {
         result_type_refs: vec![0],
         result_plans: vec![snapshot_plan()],
         result_materializations: vec![None],
+        emit_stream_item_shape_ref: None,
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }
@@ -688,6 +698,7 @@ fn stream_next_resume_descriptor() -> ResumeDescriptor {
         result_type_refs: vec![1],
         result_plans: vec![stream_item_plan()],
         result_materializations: vec![None],
+        emit_stream_item_shape_ref: None,
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }
@@ -702,6 +713,7 @@ fn stream_next_loop_resume_descriptor() -> ResumeDescriptor {
         result_type_refs: vec![1],
         result_plans: vec![snapshot_plan()],
         result_materializations: vec![None],
+        emit_stream_item_shape_ref: None,
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }
@@ -716,6 +728,7 @@ fn stream_producer_resume_descriptor() -> ResumeDescriptor {
         result_type_refs: Vec::new(),
         result_plans: Vec::new(),
         result_materializations: Vec::new(),
+        emit_stream_item_shape_ref: Some(0),
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }

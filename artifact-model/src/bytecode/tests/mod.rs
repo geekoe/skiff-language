@@ -461,6 +461,7 @@ pub(crate) fn canonical_pools() -> BytecodePools {
             result_type_refs: vec![1],
             result_plans: vec![snapshot_share()],
             result_materializations: vec![None],
+            emit_stream_item_shape_ref: None,
             error_mode: ResumeErrorMode::RaiseAtSite,
         })],
         callback_capture: vec![BytecodePoolEntry::CallbackCaptureLayout(

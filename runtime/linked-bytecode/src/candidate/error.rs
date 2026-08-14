@@ -356,6 +356,10 @@ pub enum LinkedBytecodeCandidateError {
         result_index: usize,
         detail: &'static str,
     },
+    EmitStreamItemShapeMismatch {
+        resume_site: u32,
+        detail: &'static str,
+    },
     EmptyLifecycleAdapterBindingKey {
         location: CandidateLocation,
     },

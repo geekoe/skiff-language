@@ -117,6 +117,7 @@ struct PendingResume {
     expected_stack_height_before_result: u32,
     result_ty: Option<TypeRefIr>,
     result_materialization: Option<ResumeResultMaterialization>,
+    emit_stream_item_shape_ref: Option<u32>,
     end_block: Option<u32>,
 }
 
@@ -519,6 +520,7 @@ impl<'a> FunctionEmitter<'a> {
                 .map_err(|_| arithmetic(&self.key, "DbOperation resume stack height conversion"))?,
             result_ty: Some(expression.ty.clone()),
             result_materialization: None,
+            emit_stream_item_shape_ref: None,
             end_block: None,
         });
         Ok(())
@@ -1354,6 +1356,7 @@ impl<'a> FunctionEmitter<'a> {
                     Some(expression.ty.clone())
                 },
                 result_materialization,
+                emit_stream_item_shape_ref: None,
                 end_block: None,
             });
         }
@@ -1728,33 +1731,58 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn emit_stream(&mut self, value: ExprRefIr) -> Result<usize, BytecodeEmissionError> {
-        let stream = self.function.stream_result.as_ref().ok_or_else(|| {
-            unsupported(
-                &self.key,
-                "EmitStream",
-                "function has no exact Stream<T> result facts",
-            )
-        })?;
+        let stream_item_type = self
+            .function
+            .stream_result
+            .as_ref()
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "EmitStream",
+                    "function has no exact Stream<T> result facts",
+                )
+            })?
+            .item_type
+            .clone();
         let value_expression = self.function.expression(value)?;
+        let (construct_type, construct_fields) = match &value_expression.expression {
+            ExprIr::Construct { type_ref, fields } => (type_ref.clone(), fields.clone()),
+            _ => {
+                return Err(unsupported(
+                    &self.key,
+                    "EmitStream item shape",
+                    "stream item is not an exact record construction",
+                ));
+            }
+        };
         let admitted_nominal_branch = matches!(
             self.source_attribution,
             SourceAttributionMode::AdmittedPhase1
-        ) && matches!(
-            &value_expression.expression,
-            ExprIr::Construct { type_ref, .. } if type_ref == &stream.item_type
-        );
-        if !stream_item_type_matches(&value_expression.ty, &stream.item_type)
-            && !admitted_nominal_branch
+        ) && construct_type == stream_item_type;
+        if construct_type != stream_item_type
+            || (!stream_item_type_matches(&value_expression.ty, &stream_item_type)
+                && !admitted_nominal_branch)
         {
             return Err(unsupported(
                 &self.key,
                 "EmitStream",
                 &format!(
                     "emitted value type `{:?}` does not match stream item type `{:?}`",
-                    value_expression.ty, stream.item_type
+                    value_expression.ty, stream_item_type
                 ),
             ));
         }
+        let declared = self.record_construct_fields(
+            &construct_type,
+            &construct_fields,
+            "EmitStream item shape",
+        )?;
+        let emit_stream_item_shape_ref = self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            &construct_type,
+            &declared,
+            &format!("EmitStream item shape in `{}`", self.key),
+        )?;
         self.emit_expression(value)?;
         let expected_stack_height_before_result = self
             .operand_depth
@@ -1768,6 +1796,7 @@ impl<'a> FunctionEmitter<'a> {
                 .map_err(|_| arithmetic(&self.key, "EmitStream stack height conversion"))?,
             result_ty: None,
             result_materialization: None,
+            emit_stream_item_shape_ref: Some(emit_stream_item_shape_ref),
             end_block: None,
         });
         Ok(instruction)
@@ -1834,6 +1863,7 @@ impl<'a> FunctionEmitter<'a> {
                 .map_err(|_| arithmetic(&self.key, "StreamNext stack height conversion"))?,
             result_ty: Some(item_type.clone()),
             result_materialization: None,
+            emit_stream_item_shape_ref: None,
             end_block,
         });
         Ok(())
@@ -2636,24 +2666,7 @@ impl<'a> FunctionEmitter<'a> {
         type_ref: &TypeRefIr,
         fields: &BTreeMap<String, ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
-        let declared = match self.record_shape_fields(type_ref, "record construct") {
-            Ok(declared) => declared,
-            Err(_) if is_package_symbol_type(type_ref) => fields
-                .iter()
-                .map(|(name, value)| {
-                    Ok((name.clone(), self.function.expression(*value)?.ty.clone()))
-                })
-                .collect::<Result<BTreeMap<_, _>, BytecodeEmissionError>>()?,
-            Err(error) => return Err(error),
-        };
-        if declared.len() != fields.len() || declared.keys().any(|name| !fields.contains_key(name))
-        {
-            return Err(unsupported(
-                &self.key,
-                "record construct",
-                "construct field set does not exactly match the declared shape",
-            ));
-        }
+        let declared = self.record_construct_fields(type_ref, fields, "record construct")?;
         // The runtime tag comes from the constructed nominal leaf, not the
         // surrounding static context: a union-typed constructor must still
         // carry its concrete leaf identity so throw/catch match the actual
@@ -2671,6 +2684,33 @@ impl<'a> FunctionEmitter<'a> {
             .map_err(|_| arithmetic(&self.key, "record field count conversion"))?;
         self.emit_op(Opcode::NewRecord, vec![shape, field_count])?;
         Ok(())
+    }
+
+    fn record_construct_fields(
+        &self,
+        type_ref: &TypeRefIr,
+        fields: &BTreeMap<String, ExprRefIr>,
+        context: &'static str,
+    ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
+        let declared = match self.record_shape_fields(type_ref, context) {
+            Ok(declared) => declared,
+            Err(_) if is_package_symbol_type(type_ref) => fields
+                .iter()
+                .map(|(name, value)| {
+                    Ok((name.clone(), self.function.expression(*value)?.ty.clone()))
+                })
+                .collect::<Result<BTreeMap<_, _>, BytecodeEmissionError>>()?,
+            Err(error) => return Err(error),
+        };
+        if declared.len() != fields.len() || declared.keys().any(|name| !fields.contains_key(name))
+        {
+            return Err(unsupported(
+                &self.key,
+                context,
+                "construct field set does not exactly match the declared shape",
+            ));
+        }
+        Ok(declared)
     }
 
     fn emit_array_literal(
@@ -3833,6 +3873,25 @@ impl<'a> FunctionEmitter<'a> {
                     Vec::new()
                 }
             };
+            let emit_stream_item_shape_ref =
+                match (descriptor.kind, pending.emit_stream_item_shape_ref) {
+                    (Opcode::EmitStream, Some(shape_ref)) => Some(shape_ref),
+                    (Opcode::EmitStream, None) => {
+                        return Err(unsupported(
+                            &self.key,
+                            "EmitStream item shape",
+                            "EmitStream lacks its exact constructed item shape",
+                        ));
+                    }
+                    (_, None) => None,
+                    (_, Some(_)) => {
+                        return Err(unsupported(
+                            &self.key,
+                            "EmitStream item shape",
+                            "a non-EmitStream resume carries an item shape",
+                        ));
+                    }
+                };
             let end_resume_pc = if let Some(end_block) = pending.end_block {
                 let ordinal = usize::try_from(end_block)
                     .map_err(|_| arithmetic(&self.key, "resume end block ordinal"))?;
@@ -3864,6 +3923,7 @@ impl<'a> FunctionEmitter<'a> {
                 result_type_refs,
                 result_plans,
                 result_materializations,
+                emit_stream_item_shape_ref,
                 error_mode: ResumeErrorMode::RaiseAtSite,
             })?;
             self.instructions[pending.instruction].operands[pending.operand] = pool_index;

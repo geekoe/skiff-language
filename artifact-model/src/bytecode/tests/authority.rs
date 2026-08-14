@@ -32,6 +32,7 @@ fn stream_producer_artifact() -> BytecodeArtifact {
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
             result_materializations: Vec::new(),
+            emit_stream_item_shape_ref: Some(0),
             error_mode: ResumeErrorMode::RaiseAtSite,
         }));
 
@@ -87,6 +88,7 @@ fn stream_consumer_artifact() -> BytecodeArtifact {
             result_type_refs: vec![0],
             result_plans: vec![snapshot_share()],
             result_materializations: vec![None],
+            emit_stream_item_shape_ref: None,
             error_mode: ResumeErrorMode::RaiseAtSite,
         }));
 
@@ -196,8 +198,10 @@ fn validated_view_derives_exact_function_stream_item_authority() {
         .as_ref()
         .expect("emit_stream item authority");
     assert_eq!(item.item_type, string_type());
+    assert_eq!(emit.emit_stream_item_shape_ref, Some(0));
 
     let resume_authority = emit.result_authority();
+    assert_eq!(resume_authority.emit_stream_item_shape_ref, Some(0));
     assert_eq!(
         resume_authority
             .stream_item
@@ -206,6 +210,38 @@ fn validated_view_derives_exact_function_stream_item_authority() {
             .item_type,
         string_type()
     );
+}
+
+#[test]
+fn emit_stream_item_shape_is_required_bounded_and_opcode_scoped() {
+    let mut missing = stream_producer_artifact();
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut missing.image.pools.resume[1] else {
+        unreachable!();
+    };
+    descriptor.emit_stream_item_shape_ref = None;
+    assert!(assert_rejected(&missing)
+        .to_string()
+        .contains("requires emitStreamItemShapeRef"));
+
+    let mut out_of_range = stream_producer_artifact();
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut out_of_range.image.pools.resume[1]
+    else {
+        unreachable!();
+    };
+    descriptor.emit_stream_item_shape_ref = Some(u32::MAX);
+    assert!(assert_rejected(&out_of_range)
+        .to_string()
+        .contains("emitStreamItemShapeRef"));
+
+    let mut wrong_opcode = canonical_artifact();
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) = &mut wrong_opcode.image.pools.resume[0]
+    else {
+        unreachable!();
+    };
+    descriptor.emit_stream_item_shape_ref = Some(0);
+    assert!(assert_rejected(&wrong_opcode)
+        .to_string()
+        .contains("only valid for EmitStream"));
 }
 
 #[test]
