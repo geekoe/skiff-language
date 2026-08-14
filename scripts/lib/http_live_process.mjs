@@ -8,6 +8,7 @@
 // frames and cancel frames without production seams.
 
 import { spawn } from 'node:child_process';
+import http from 'node:http';
 import {
   access,
   copyFile,
@@ -31,6 +32,9 @@ import { renderRouterConfig, renderRuntimeConfig } from './runtime-stack-config.
 const LISTENER_TIMEOUT_MS = 45_000;
 const HANDSHAKE_TIMEOUT_MS = 90_000;
 const STOP_TIMEOUT_MS = 20_000;
+export const HTTP_ADMIN_UNSAFE_ENV = 'SKIFF_HTTP_ADMIN_ALLOW_UNSAFE';
+
+const UNSAFE_HTTP_ENVIRONMENT_TOKEN = /(?:^|_)(?:UNSAFE|BYPASS|SSRF|PRIVATE|LOOPBACK|LOCALHOST|LOCAL|LINK_LOCAL|METADATA)(?:_|$)/;
 
 const HANDSHAKE_SEQUENCE = [
   'router.bootstrap',
@@ -101,13 +105,18 @@ export async function installHttpLiveRustBinary({
   return installed;
 }
 
-export async function writeHttpLiveRuntimeConfig(runtimeConfigPath, { relayPort, runtimeHome }) {
+export async function writeHttpLiveRuntimeConfig(runtimeConfigPath, {
+  relayPort,
+  runtimeHome,
+  httpEgressProxy,
+}) {
   const handle = await open(runtimeConfigPath, 'wx');
   try {
     await handle.writeFile(
       renderRuntimeConfig({
         routerUrl: `ws://127.0.0.1:${relayPort}/runtime`,
         runtimeHome,
+        httpEgressProxy,
       }),
       'utf8',
     );
@@ -121,6 +130,7 @@ export async function spawnLoggedProcess(command, args, {
   cwd,
   stdoutPath,
   stderrPath,
+  environment = process.env,
 }) {
   const stdoutLog = await open(stdoutPath, 'w');
   let stderrLog;
@@ -135,12 +145,126 @@ export async function spawnLoggedProcess(command, args, {
     const child = spawn(command, args, {
       cwd,
       stdio: ['ignore', stdoutLog.fd, stderrLog.fd],
-      env: process.env,
+      env: withoutUnsafeHttpBypassEnvironment(environment),
     });
     return { child, stdoutLog, stderrLog, command, args };
   } catch (error) {
     await closeLogs({ stdoutLog, stderrLog }).catch(() => {});
     throw error;
+  }
+}
+
+export function unsafeHttpBypassEnvironmentNames(environment) {
+  return Object.keys(environment)
+    .filter((name) => name === HTTP_ADMIN_UNSAFE_ENV || (
+      name.startsWith('SKIFF_HTTP_') && UNSAFE_HTTP_ENVIRONMENT_TOKEN.test(name)
+    ))
+    .sort();
+}
+
+export function assertNoUnsafeHttpBypassEnvironment(environment) {
+  const rejected = unsafeHttpBypassEnvironmentNames(environment);
+  if (rejected.length > 0) {
+    throw new Error(
+      `Phase 5 Gate refuses unsafe HTTP target bypass environment variable(s): ${rejected.join(', ')}; unset them before invocation`,
+    );
+  }
+  return environment;
+}
+
+export function withoutUnsafeHttpBypassEnvironment(environment) {
+  const clean = { ...environment };
+  for (const name of unsafeHttpBypassEnvironmentNames(clean)) delete clean[name];
+  return clean;
+}
+
+export async function createHermeticEgressProxy(upstreams) {
+  const routes = new Map(upstreams.map(({ publicOrigin, localPort }) => [
+    new URL(publicOrigin).origin,
+    localPort,
+  ]));
+  const targets = [];
+  const errors = [];
+  const server = http.createServer((request, response) => {
+    const target = parseProxyTarget(request.url, routes, errors);
+    if (target === null) {
+      response.writeHead(502, { 'content-type': 'text/plain' });
+      response.end('Phase 5 proxy rejected target');
+      return;
+    }
+    targets.push(target.href);
+    const headers = { ...request.headers, host: target.host };
+    delete headers['proxy-connection'];
+    const forwarded = http.request({
+      host: '127.0.0.1',
+      port: routes.get(target.origin),
+      method: request.method,
+      path: `${target.pathname}${target.search}`,
+      headers,
+    }, (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+      response.flushHeaders();
+      upstreamResponse.pipe(response);
+      response.once('close', () => {
+        if (!response.writableEnded) upstreamResponse.destroy();
+      });
+    });
+    forwarded.once('error', (error) => {
+      errors.push(error.message);
+      if (!response.headersSent) response.writeHead(502, { 'content-type': 'text/plain' });
+      if (!response.writableEnded && !response.destroyed) response.end('Phase 5 proxy failure');
+    });
+    request.once('aborted', () => forwarded.destroy());
+    response.once('close', () => {
+      if (!response.writableEnded) forwarded.destroy();
+    });
+    request.pipe(forwarded);
+  });
+  await new Promise((resolvePromise, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolvePromise);
+  });
+  const address = server.address();
+  if (address === null || typeof address !== 'object') {
+    throw new Error('hermetic HTTP proxy did not acquire a TCP port');
+  }
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    targets,
+    assertExactTargets(expected) {
+      assertProxyTargets({ errors, expected, routes, targets });
+    },
+    close() {
+      return new Promise((resolvePromise, reject) => {
+        server.close((error) => error === undefined ? resolvePromise() : reject(error));
+        server.closeAllConnections?.();
+      });
+    },
+  };
+}
+
+function assertProxyTargets({ errors, expected, routes, targets }) {
+  if (errors.length > 0) {
+    throw new Error(`hermetic HTTP proxy forwarding error(s): ${errors.join('; ')}`);
+  }
+  if (targets.length !== expected) {
+    throw new Error(`explicit HTTP proxy expected ${expected} target(s), got ${targets.length}`);
+  }
+  if (!targets.every((target) => routes.has(new URL(target).origin))) {
+    throw new Error('HTTP proxy observed a target outside its pinned safe public origins');
+  }
+}
+
+function parseProxyTarget(rawTarget, routes, errors) {
+  try {
+    const target = new URL(rawTarget);
+    if (target.protocol !== 'http:' || !routes.has(target.origin)) {
+      throw new Error(`unexpected proxy target ${rawTarget}`);
+    }
+    return target;
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+    return null;
   }
 }
 

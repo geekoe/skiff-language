@@ -22,6 +22,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 import {
   closeLogs,
+  createHermeticEgressProxy,
   renderHttpLiveRouterConfig,
   spawnLoggedProcess,
   stopProcess,
@@ -42,6 +43,18 @@ const PROFILE = 'skiff-test';
 const SERVICE_ID = 'test.skiff/bytecode-vm-phase-5';
 const VERSION = '1.0.0';
 const RUNTIME_ID = 'phase-5-router-runtime';
+const PUBLIC_ORIGINS = Object.freeze({
+  success: 'http://93.184.216.34',
+  timeout: 'http://93.184.216.34:8080',
+  disconnect: 'http://93.184.216.34:8081',
+});
+const PENDING_COUNTERS = Object.freeze({
+  outboundRequestsPending: 0,
+  outboundStreamLeasesActive: 0,
+  streamRuntimeStreamsActive: 0,
+  flagBackedCancelWaitersActive: 0,
+  taskRequestsActive: 1,
+});
 const ZERO_COUNTERS = Object.freeze({
   outboundRequestsPending: 0,
   outboundStreamLeasesActive: 0,
@@ -65,6 +78,7 @@ async function main() {
   let upstream;
   let disconnectUpstream;
   let timeoutUpstream;
+  let egressProxy;
   let mongo;
   let router;
   let runtime;
@@ -77,9 +91,14 @@ async function main() {
       count: 3,
     });
     const [httpPort, runtimePort, relayPort] = lease.ports;
-    upstream = await createGatedUpstream();
-    disconnectUpstream = await createGatedUpstream();
-    timeoutUpstream = await createGatedUpstream();
+    upstream = await createGatedUpstream(PUBLIC_ORIGINS.success);
+    disconnectUpstream = await createGatedUpstream(PUBLIC_ORIGINS.disconnect);
+    timeoutUpstream = await createGatedUpstream(PUBLIC_ORIGINS.timeout);
+    egressProxy = await createHermeticEgressProxy([
+      upstream,
+      disconnectUpstream,
+      timeoutUpstream,
+    ]);
     mongo = await MongodLiveHarness.create({ repoRoot: repository });
     await mongo.start();
     const runtimeHome = join(tempRoot, 'runtime-home');
@@ -99,7 +118,11 @@ async function main() {
       runtimeMaxConcurrency: 1,
     }));
     const runtimeConfig = join(tempRoot, 'runtime.yml');
-    await writeHttpLiveRuntimeConfig(runtimeConfig, { relayPort, runtimeHome });
+    await writeHttpLiveRuntimeConfig(runtimeConfig, {
+      relayPort,
+      runtimeHome,
+      httpEgressProxy: egressProxy.url,
+    });
 
     router = await spawnLoggedProcess(routerBin, [routerConfig], {
       cwd: repository,
@@ -140,7 +163,7 @@ async function main() {
       method: 'POST',
       path: '/phase-5/vcp',
       headers: selectorHeaders({ service: SERVICE_ID, version: VERSION }),
-      body: Buffer.from(upstream.baseUrl, 'utf8'),
+      body: Buffer.from(upstream.publicOrigin, 'utf8'),
       timeoutMs: 15_000,
     }).then(
       (value) => ({ value }),
@@ -163,10 +186,12 @@ async function main() {
         `${error.message}; external=${JSON.stringify(summarizeOutcome(early))}; relay=${JSON.stringify(frames)}`,
       );
     }
-    const nonzeroHealth = await waitForHealth(relay, fromIndex, (counters) => (
-      counters?.outboundStreamLeasesActive === 2
-      && counters?.streamRuntimeStreamsActive === 0
-    ), 'two coexisting production stream authorities');
+    const nonzeroHealth = await waitForHealth(
+      relay,
+      fromIndex,
+      (counters) => exactObject(counters, PENDING_COUNTERS),
+      'one task-scoped request authority with legacy/global counters at zero',
+    );
     upstream.releaseBodies();
     const outcome = await boundedOutcome(
       responseOutcome,
@@ -189,6 +214,7 @@ async function main() {
       { method: 'GET', path: '/stream/right' },
     ], 'the pinned service executes exactly three distinguishable outbound routes');
     assert.equal(upstream.twoStreamsOpenBeforeRelease, true);
+    egressProxy.assertExactTargets(9);
 
     const requestEvidence = assertRuntimeFrames(relay.records.slice(fromIndex));
     const zeroHealth = await waitForHealth(
@@ -213,6 +239,8 @@ async function main() {
       upstream: {
         routes: upstream.routes,
         twoStreamsOpenBeforeRelease: upstream.twoStreamsOpenBeforeRelease,
+        publicOrigins: Object.values(PUBLIC_ORIGINS),
+        proxyAbsoluteTargetCount: egressProxy.targets.length,
       },
       runtimeHealth: {
         pending: nonzeroHealth.counters,
@@ -232,6 +260,9 @@ async function main() {
     await cleanupProcess(router, 'Phase 5 Router', 'SIGTERM', cleanupErrors);
     await cleanupProcess(runtime, 'Phase 5 Runtime', 'SIGINT', cleanupErrors);
     if (relay !== undefined) await relay.close().catch((error) => cleanupErrors.push(error));
+    if (egressProxy !== undefined) {
+      await egressProxy.close().catch((error) => cleanupErrors.push(error));
+    }
     if (upstream !== undefined) {
       await upstream.close().catch((error) => cleanupErrors.push(error));
     }
@@ -260,7 +291,7 @@ async function exerciseRequestTimeout({ relay, httpPort, upstream }) {
     method: 'POST',
     path: '/phase-5/vcp',
     headers: selectorHeaders({ service: SERVICE_ID, version: VERSION }),
-    body: Buffer.from(upstream.baseUrl, 'utf8'),
+    body: Buffer.from(upstream.publicOrigin, 'utf8'),
     timeoutMs: 10_000,
   }).then(
     (value) => ({ value }),
@@ -282,10 +313,12 @@ async function exerciseRequestTimeout({ relay, httpPort, upstream }) {
       `${error.message}; external=${JSON.stringify(summarizeOutcome(early))}; relay=${JSON.stringify(frames)}`,
     );
   }
-  const activeHealth = await waitForHealth(relay, fromIndex, (counters) => (
-    counters?.outboundStreamLeasesActive === 2
-    && counters?.streamRuntimeStreamsActive === 0
-  ), 'two table-backed streams before the Router request timeout');
+  const activeHealth = await waitForHealth(
+    relay,
+    fromIndex,
+    (counters) => exactObject(counters, PENDING_COUNTERS),
+    'one task-scoped request authority before the Router request timeout',
+  );
   const starts = relay.records.slice(fromIndex).filter(({ type }) => type === 'request.start');
   assert.equal(starts.length, 1, 'timeout case must dispatch exactly one production request');
   const requestId = assertExactRequestStart(starts[0]);
@@ -304,7 +337,7 @@ async function exerciseRequestTimeout({ relay, httpPort, upstream }) {
   ), 'Router timeout request.cancel');
   assert.equal(cancel.record.direction, 'ToRuntime');
   const evidence = { requestId, cancelReason: 'timeout' };
-  assertCancelledRequestStayedTerminal(relay.records, evidence);
+  const frameRace = assertCancelledRequestStayedTerminal(relay.records, evidence);
   await upstream.waitForTwoClosedStreams('Router timeout');
   const terminalHealth = await waitForHealth(
     relay,
@@ -323,6 +356,8 @@ async function exerciseRequestTimeout({ relay, httpPort, upstream }) {
     status: response.status,
     errorCode: body.error.code,
     providerStreamsClosed: true,
+    ...frameRace,
+    pendingHealth: activeHealth.counters,
     terminalHealth: terminalHealth.counters,
   };
 }
@@ -334,7 +369,7 @@ async function exerciseClientDisconnect({ relay, httpPort, upstream }) {
     method: 'POST',
     path: '/phase-5/vcp',
     headers: selectorHeaders({ service: SERVICE_ID, version: VERSION }),
-    body: Buffer.from(upstream.baseUrl, 'utf8'),
+    body: Buffer.from(upstream.publicOrigin, 'utf8'),
   });
   try {
     await upstream.waitForTwoOpenStreams();
@@ -352,10 +387,12 @@ async function exerciseClientDisconnect({ relay, httpPort, upstream }) {
       `${error.message}; external=${JSON.stringify(early)}; relay=${JSON.stringify(frames)}`,
     );
   }
-  const activeHealth = await waitForHealth(relay, fromIndex, (counters) => (
-    counters?.outboundStreamLeasesActive === 2
-    && counters?.streamRuntimeStreamsActive === 0
-  ), 'two table-backed streams before external client disconnect');
+  const activeHealth = await waitForHealth(
+    relay,
+    fromIndex,
+    (counters) => exactObject(counters, PENDING_COUNTERS),
+    'one task-scoped request authority before external client disconnect',
+  );
   const starts = relay.records.slice(fromIndex).filter(({ type }) => type === 'request.start');
   assert.equal(starts.length, 1, 'disconnect case must dispatch exactly one production request');
   const requestId = assertExactRequestStart(starts[0]);
@@ -387,10 +424,16 @@ async function exerciseClientDisconnect({ relay, httpPort, upstream }) {
     { method: 'GET', path: '/stream/right' },
   ]);
   upstream.releaseBodies();
+  const frameRace = assertCancelledRequestStayedTerminal(relay.records, {
+    requestId,
+    cancelReason: cancels[0].header.reason,
+  });
   return {
     requestId,
     cancelReason: cancels[0].header.reason,
     providerStreamsClosed: true,
+    ...frameRace,
+    pendingHealth: activeHealth.counters,
     terminalHealth: terminalHealth.counters,
   };
 }
@@ -407,22 +450,56 @@ function assertExactRequestStart(start) {
 }
 
 function assertCancelledRequestStayedTerminal(records, { requestId, cancelReason }) {
-  const cancels = records.filter((record) => (
-    record.type === 'request.cancel' && record.header?.requestId === requestId
-  ));
+  const indexed = records
+    .map((record, index) => ({ record, index }))
+    .filter(({ record }) => record.header?.requestId === requestId);
+  const cancels = indexed.filter(({ record }) => record.type === 'request.cancel');
   assert.deepEqual(
-    cancels.map(({ direction, header }) => ({ direction, reason: header?.reason })),
+    cancels.map(({ record }) => ({
+      direction: record.direction,
+      reason: record.header?.reason,
+    })),
     [{ direction: 'ToRuntime', reason: cancelReason }],
     `cancelled request ${requestId} must retain exactly one ${cancelReason} winner`,
   );
+  const cancelIndex = cancels[0].index;
+  const successfulResponses = indexed.filter(({ record }) => (
+    ['response.start', 'response.chunk', 'response.end'].includes(record.type)
+  ));
   assert.deepEqual(
-    records.filter((record) => (
-      record.header?.requestId === requestId
-      && ['response.start', 'response.chunk', 'response.end', 'response.error'].includes(record.type)
-    )),
+    successfulResponses,
     [],
-    `late completion must not revive cancelled request ${requestId}`,
+    `successful response frames must not revive cancelled request ${requestId}`,
   );
+  const responseErrors = indexed.filter(({ record }) => record.type === 'response.error');
+  const postCancelResponses = indexed.filter(({ record, index }) => (
+    index > cancelIndex
+    && ['response.start', 'response.chunk', 'response.end', 'response.error'].includes(record.type)
+  ));
+  assert.deepEqual(
+    postCancelResponses,
+    [],
+    `Runtime must not emit a second terminal after request.cancel for ${requestId}`,
+  );
+  if (cancelReason === 'timeout') {
+    assert.equal(responseErrors.length <= 1, true, 'timeout race has at most one Runtime error');
+    for (const { record } of responseErrors) {
+      assert.equal(record.direction, 'ToRouter');
+      assert.equal(record.header?.errorKind, 'control');
+      assert.equal(record.header?.error?.code, 'TimeoutError');
+      assert.equal(record.header?.error?.details?.reason, 'deadlineExceeded');
+    }
+  } else {
+    assert.deepEqual(
+      responseErrors,
+      [],
+      `non-timeout cancellation must not race a Runtime error for ${requestId}`,
+    );
+  }
+  return {
+    preCancelResponseErrors: responseErrors.filter(({ index }) => index < cancelIndex).length,
+    postCancelResponseFrames: postCancelResponses.length,
+  };
 }
 
 function summarizeOutcome(outcome) {
@@ -568,7 +645,7 @@ function assertRuntimeFrames(records) {
   return { requestId, responseFrameTypes: responseFrames.map(({ type }) => type) };
 }
 
-async function createGatedUpstream() {
+async function createGatedUpstream(publicOrigin) {
   const routes = [];
   const streams = new Map();
   const closedStreams = new Set();
@@ -610,7 +687,8 @@ async function createGatedUpstream() {
   const address = server.address();
   assert(address !== null && typeof address === 'object');
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    publicOrigin,
+    localPort: address.port,
     routes,
     get twoStreamsOpenBeforeRelease() { return twoStreamsOpenBeforeRelease; },
     async waitForTwoOpenStreams() {

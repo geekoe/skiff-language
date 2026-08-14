@@ -125,12 +125,21 @@ export function renderRouterConfig({
 export function renderRuntimeConfig({
   routerUrl,
   runtimeHome,
+  httpEgressProxy,
   serviceDbEncryptionKeyringFile,
 }) {
   const lines = [
     `router: ${quoteYamlString(routerUrl)}`,
     `runtime-home: ${quoteYamlString(runtimeHome)}`,
   ];
+  if (httpEgressProxy !== undefined) {
+    validateRuntimeHttpEgressProxy(httpEgressProxy);
+    lines.push(
+      'http:',
+      '  egress:',
+      `    proxy: ${quoteYamlString(httpEgressProxy)}`,
+    );
+  }
   if (serviceDbEncryptionKeyringFile !== undefined) {
     lines.push(
       'serviceDb:',
@@ -140,6 +149,21 @@ export function renderRuntimeConfig({
   }
   lines.push('');
   return lines.join('\n');
+}
+
+function validateRuntimeHttpEgressProxy(value) {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error('runtime http.egress.proxy must be a non-empty string');
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('runtime http.egress.proxy must be an absolute HTTP URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.hostname.length === 0) {
+    throw new Error('runtime http.egress.proxy must be an absolute HTTP URL');
+  }
 }
 
 function requirePositiveSafeInteger(value, label) {

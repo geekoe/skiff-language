@@ -38,6 +38,27 @@ test('runner accepts the independent Phase 5 caller inputs', () => {
   });
 });
 
+test('runner refuses unsafe HTTP target bypass environment before any command', async () => {
+  for (const name of [
+    'SKIFF_HTTP_ADMIN_ALLOW_UNSAFE',
+    'SKIFF_HTTP_ADMIN_BYPASS_SSRF',
+    'SKIFF_HTTP_ALLOW_PRIVATE_TARGETS',
+    'SKIFF_HTTP_ALLOW_LOCAL_TARGETS',
+  ]) {
+    let calls = 0;
+    await assert.rejects(
+      runPhase5Gate({}, {
+        repoRoot: '/candidate',
+        env: { PATH: '/usr/bin:/bin', [name]: '1' },
+        capture: async () => { calls += 1; },
+        acquireCargoLease: fakeCargoLease,
+      }),
+      new RegExp(`unsafe HTTP target bypass.*${name}`),
+    );
+    assert.equal(calls, 0);
+  }
+});
+
 test('runner rejects each missing caller input before capturing any command', async () => {
   const created = await mkdtemp(join(tmpdir(), 'skiff-phase5-required-inputs-'));
   const temp = await realpath(created);

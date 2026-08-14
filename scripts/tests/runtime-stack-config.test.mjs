@@ -249,6 +249,21 @@ test('runtime config renders local facts without any activation identifier', () 
   assert.doesNotMatch(rendered, /maxConcurrency|idleTimeoutMs/);
 });
 
+test('runtime config renders and validates an explicit operator-owned HTTP egress proxy', () => {
+  const rendered = renderRuntimeConfig({
+    ...runtimeConfig,
+    httpEgressProxy: 'http://127.0.0.1:4321',
+  });
+
+  assert.match(rendered, /^http:\n  egress:\n    proxy: "http:\/\/127\.0\.0\.1:4321"$/m);
+  for (const httpEgressProxy of ['', '   ', '127.0.0.1:4321', 'socks5://127.0.0.1:4321', 4321]) {
+    assert.throws(
+      () => renderRuntimeConfig({ ...runtimeConfig, httpEgressProxy }),
+      /runtime http\.egress\.proxy must be/,
+    );
+  }
+});
+
 test('local dev config writes bootstrap ownership only to router', async () => {
   const devHome = await mkdtemp(join(tmpdir(), 'skiff-f10-dev-config-'));
   try {

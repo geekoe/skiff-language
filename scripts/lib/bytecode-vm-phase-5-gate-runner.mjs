@@ -11,6 +11,7 @@ import {
   snapshotCommandEnvironment,
 } from './bytecode-vm-phase-5-contract.mjs';
 import { createPhase5EvidenceRoot } from './bytecode-vm-phase-5-evidence-root.mjs';
+import { assertNoUnsafeHttpBypassEnvironment } from './http_live_process.mjs';
 import {
   checkPhase5Evidence,
   finalizePhase5Evidence,
@@ -64,6 +65,7 @@ export async function runPhase5Gate(options, {
   env = process.env,
   acquireCargoLease = acquirePhase5CargoLease,
 } = {}) {
+  assertNoUnsafeHttpBypassEnvironment(env);
   assertBytecodeVmGateEnvironment(env);
   const input = await validateInput(options, repoRoot);
   const evidenceRoot = await createPhase5EvidenceRoot(input.outputDir);

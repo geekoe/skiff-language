@@ -39,6 +39,8 @@ struct RequestEvidence {
 struct UpstreamEvidence {
     routes: Vec<RouteEvidence>,
     two_streams_open_before_release: bool,
+    public_origins: Vec<String>,
+    proxy_absolute_target_count: usize,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -63,6 +65,9 @@ struct CancellationEvidence {
     status: Option<u16>,
     error_code: Option<String>,
     provider_streams_closed: bool,
+    pre_cancel_response_errors: usize,
+    post_cancel_response_frames: usize,
+    pending_health: HealthCounters,
     terminal_health: HealthCounters,
 }
 
@@ -110,6 +115,7 @@ fn phase_5_router_full_chain_vcp() {
         serde_json::from_str::<RouterProofEvidence>(evidence_lines[0]).unwrap_or_else(|error| {
             panic!("Phase 5 Router evidence is not the exact typed DTO: {error}")
         });
+    println!("phase-5-router-evidence={}", evidence_lines[0]);
     assert_exact_evidence(&evidence);
 }
 
@@ -155,29 +161,31 @@ fn assert_exact_evidence(evidence: &RouterProofEvidence) {
     );
     assert!(evidence.upstream.two_streams_open_before_release);
     assert_eq!(
-        evidence
-            .runtime_health
-            .pending
-            .outbound_stream_leases_active,
-        2
+        evidence.upstream.public_origins,
+        [
+            "http://93.184.216.34",
+            "http://93.184.216.34:8080",
+            "http://93.184.216.34:8081",
+        ]
     );
-    assert_eq!(
-        evidence
-            .runtime_health
-            .pending
-            .stream_runtime_streams_active,
-        0
-    );
+    assert_eq!(evidence.upstream.proxy_absolute_target_count, 9);
+    assert_eq!(evidence.runtime_health.pending, pending_health());
     assert_eq!(evidence.runtime_health.terminal, HealthCounters::default());
     assert_eq!(evidence.timeout.cancel_reason, "timeout");
     assert_eq!(evidence.timeout.status, Some(504));
     assert_eq!(evidence.timeout.error_code.as_deref(), Some("TimeoutError"));
     assert!(evidence.timeout.provider_streams_closed);
+    assert!(evidence.timeout.pre_cancel_response_errors <= 1);
+    assert_eq!(evidence.timeout.post_cancel_response_frames, 0);
+    assert_eq!(evidence.timeout.pending_health, pending_health());
     assert_eq!(evidence.timeout.terminal_health, HealthCounters::default());
     assert_eq!(evidence.disconnect.cancel_reason, "client_disconnect");
     assert_eq!(evidence.disconnect.status, None);
     assert_eq!(evidence.disconnect.error_code, None);
     assert!(evidence.disconnect.provider_streams_closed);
+    assert_eq!(evidence.disconnect.pre_cancel_response_errors, 0);
+    assert_eq!(evidence.disconnect.post_cancel_response_frames, 0);
+    assert_eq!(evidence.disconnect.pending_health, pending_health());
     assert_eq!(
         evidence.disconnect.terminal_health,
         HealthCounters::default()
@@ -185,4 +193,11 @@ fn assert_exact_evidence(evidence: &RouterProofEvidence) {
     assert_ne!(evidence.request.request_id, evidence.timeout.request_id);
     assert_ne!(evidence.request.request_id, evidence.disconnect.request_id);
     assert_ne!(evidence.timeout.request_id, evidence.disconnect.request_id);
+}
+
+fn pending_health() -> HealthCounters {
+    HealthCounters {
+        task_requests_active: 1,
+        ..HealthCounters::default()
+    }
 }
