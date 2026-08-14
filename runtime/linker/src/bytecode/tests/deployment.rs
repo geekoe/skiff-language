@@ -1,4 +1,11 @@
-use std::sync::Arc;
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use skiff_artifact_identity::{
     contract_operation_id, ArtifactIdentityError, ValidatedBytecodeArtifact,
@@ -6,15 +13,21 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
-    InstructionSourceSite, Opcode, SourcePosition, SourceSpanRef, StatementAttributionId,
-    StructuralValidationError, SyntheticInstructionSiteReason, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    HostEffectExecutorIdentity, InstructionSourceSite, Opcode, ServiceDeploymentRef,
+    SourcePosition, SourceSpanRef, StatementAttributionId, StructuralValidationError,
+    SyntheticInstructionSiteReason, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+};
+use skiff_compiler::{
+    authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
+    CompilerPlatformSources,
 };
 use skiff_runtime_linked_bytecode::{
-    InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind, LinkedFunction,
-    LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedSlotState,
+    HostEffectAdapterIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind,
+    LinkedFunction, LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedSlotState,
 };
-use skiff_runtime_loader::HydratedBytecodePackage;
+use skiff_runtime_loader::{
+    DeploymentBytecodeLoader, FilesystemDeploymentBytecodeContentResolver, HydratedBytecodePackage,
+};
 
 use crate::bytecode::{
     link_deployment, link_deployment_backend_for_test, link_deployment_execution_image,
@@ -66,6 +79,86 @@ fn production_execution_image_links_distinct_operation_entries_to_shared_image()
             contract_operation_id
         }) if contract_operation_id == unknown
     ));
+}
+
+#[test]
+fn production_sleep_image_exposes_only_the_indexed_typed_executor_target() {
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+    struct TempArtifactRoot(PathBuf);
+    impl Drop for TempArtifactRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("linker crate has a repository root")
+        .to_path_buf();
+    let fixture_root = repository_root
+        .join("runtime/host/src/host/request_entry/phase_4_proof_support/fixtures/vcp4-sleep");
+    let artifact_root = TempArtifactRoot(std::env::temp_dir().join(format!(
+        "skiff-v5-linker-sleep-{}-{}-{}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    std::fs::create_dir_all(&artifact_root.0).unwrap();
+    let platform =
+        CompilerPlatformSources::new(&repository_root).expect("open repository platform sources");
+    seed_official_std_package(&platform, &artifact_root.0)
+        .expect("seed the exact compiler-owned std package");
+    let receipt = build_authoring_object(
+        &platform,
+        AuthoringObject::Package,
+        &fixture_root,
+        &artifact_root.0,
+        "skiff-test",
+        true,
+    )
+    .expect("production authoring accepts the canonical sleep fixture");
+    let deployment = serde_json::from_value::<ServiceDeploymentRef>(
+        receipt
+            .pointer("/serviceDeploymentReceipt/deployment")
+            .cloned()
+            .expect("authoring receipt carries the exact deployment"),
+    )
+    .expect("authoring deployment receipt remains typed");
+    let resolver = FilesystemDeploymentBytecodeContentResolver::open(&artifact_root.0)
+        .expect("open production artifact resolver");
+    let hydrated = DeploymentBytecodeLoader::new(&resolver)
+        .load(&deployment)
+        .expect("load exact production deployment");
+    let image = link_deployment_execution_image(hydrated, &super::generous_execution_limits())
+        .expect("production link and independent verification accept canonical sleep");
+    let index = image
+        .functions()
+        .iter()
+        .flat_map(|function| function.instructions())
+        .flat_map(|instruction| instruction.resolved_operands())
+        .find_map(|operand| match operand.target() {
+            LinkedInstructionTarget::HostEffectAdapter(index) => Some(index),
+            _ => None,
+        })
+        .expect("production image retains one exact typed host call target");
+    let target = image
+        .host_effect_target(index)
+        .expect("typed target lookup is aligned to HostEffectAdapterIndex");
+    assert_eq!(
+        target.executor_identity(),
+        HostEffectExecutorIdentity::Sleep
+    );
+    assert!(
+        image
+            .host_effect_target(HostEffectAdapterIndex::new(u32::MAX))
+            .is_none(),
+        "opaque target lookup must fail closed for an unknown index"
+    );
 }
 
 #[test]
@@ -339,15 +432,18 @@ fn production_entry_rejects_interface_requirement_target_at_exact_pc() {
 }
 
 #[test]
-fn production_entry_rejects_registered_host_effect_target_at_exact_pc() {
+fn production_entry_rejects_date_row_without_executor_identity() {
     let fixture = Fixture::host();
     let hydrated = fixture.hydrate();
+    let error = link_deployment(&hydrated, &generous_limits())
+        .expect_err("core.date.now has no bytecode executor identity");
     assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::UnsupportedPhase1Capability {
-            capability: Phase1LinkedCapability::HostTarget,
-            location: BytecodeLinkLocation::Instruction { artifact_pc: 0, .. },
-        })
+        error,
+        BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::ConcreteTargetTables,
+            location: BytecodeLinkLocation::Function { .. },
+            ref detail,
+        } if detail.contains("core.date.now") && detail.contains("no bytecode executor identity")
     ));
 }
 

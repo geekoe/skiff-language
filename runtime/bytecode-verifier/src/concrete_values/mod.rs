@@ -1,7 +1,7 @@
 mod classes;
 mod normalization;
 mod plans;
-mod resolver;
+pub(crate) mod resolver;
 mod streams;
 mod types;
 

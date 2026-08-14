@@ -269,12 +269,15 @@ fn host_target(
         .filter(|row| row.index().get() == index)
         .ok_or_else(|| violation(location, "host effect adapter target is out of bounds"))?;
     let signature = native_signature(row.signature(), location)?;
-    let canonical = PackageCallableId::new(format!(
-        "host:{}:{}:{}",
-        row.namespace(),
-        row.symbol(),
-        row.binding_key().as_str()
-    ));
+    let canonical = PackageCallableId::new(match row.executor_identity() {
+        skiff_artifact_model::HostEffectExecutorIdentity::Sleep => "host-executor:sleep",
+        skiff_artifact_model::HostEffectExecutorIdentity::HttpClientRequest => {
+            "host-executor:http-client-request"
+        }
+        skiff_artifact_model::HostEffectExecutorIdentity::HttpClientStream => {
+            "host-executor:http-client-stream"
+        }
+    });
     // InvokeHost's canonical contract is fixed to
     // `ActualWithResume{HostEffect}`. The linked entry must declare a
     // compatible pending effect; its own pending category is the pinned
@@ -494,8 +497,9 @@ mod tests {
     use skiff_artifact_model::InterfaceInstantiationRef;
     use skiff_artifact_model::{
         ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, CallableMayEffects,
-        ContractOperationId, PackageBuildId, PackageCallableId, PendingEffectCategory, PendingMode,
-        ResumeErrorMode, ServiceProtocolIdentity, ServiceRequirementKey, ServiceSymbolRef,
+        ContractOperationId, HostEffectExecutorIdentity, PackageBuildId, PackageCallableId,
+        PendingEffectCategory, PendingMode, ResumeErrorMode, ServiceProtocolIdentity,
+        ServiceRequirementKey, ServiceSymbolRef,
     };
     use skiff_runtime_linked_bytecode::{
         ActorMethodIndex, ArtifactFunctionKey, FunctionIndex, HostEffectAdapterIndex,
@@ -735,6 +739,7 @@ mod tests {
             .clone();
         let host = LinkedHostEffectAdapterTarget::new(
             HostEffectAdapterIndex::new(0),
+            HostEffectExecutorIdentity::Sleep,
             "std",
             "time.sleep",
             LinkedHostBindingKey::parse("std.time.sleep").unwrap(),

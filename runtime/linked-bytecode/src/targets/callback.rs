@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use skiff_artifact_model::MetadataValue;
+use skiff_artifact_model::{HostEffectExecutorIdentity, MetadataValue};
 
 use crate::{
     ArtifactCallbackCaptureIndex, ArtifactFunctionKey, CallbackCaptureLayoutIndex, FrameSlotIndex,
@@ -230,6 +230,7 @@ impl LinkedHostBindingKey {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkedHostEffectAdapterTarget {
     index: HostEffectAdapterIndex,
+    executor_identity: HostEffectExecutorIdentity,
     namespace: Box<str>,
     symbol: Box<str>,
     binding_key: LinkedHostBindingKey,
@@ -240,6 +241,7 @@ pub struct LinkedHostEffectAdapterTarget {
 impl LinkedHostEffectAdapterTarget {
     pub fn new(
         index: HostEffectAdapterIndex,
+        executor_identity: HostEffectExecutorIdentity,
         namespace: impl Into<String>,
         symbol: impl Into<String>,
         binding_key: LinkedHostBindingKey,
@@ -256,6 +258,7 @@ impl LinkedHostEffectAdapterTarget {
         }
         Ok(Self {
             index,
+            executor_identity,
             namespace: namespace.into_boxed_str(),
             symbol: symbol.into_boxed_str(),
             binding_key,
@@ -266,6 +269,11 @@ impl LinkedHostEffectAdapterTarget {
 
     pub const fn index(&self) -> HostEffectAdapterIndex {
         self.index
+    }
+
+    /// Closed execution authority minted from the exact pinned registry row.
+    pub const fn executor_identity(&self) -> HostEffectExecutorIdentity {
+        self.executor_identity
     }
 
     pub fn namespace(&self) -> &str {

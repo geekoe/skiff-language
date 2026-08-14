@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, ContractOperationId,
-    GatewayAdapterKind, GatewayAdapterPlan, InterfaceInstantiationRef, NativeValueAdapterRole,
-    NativeValueLifecycleAdapter, PackageBuildId, PackageCallableId, ReceiverCallAbi,
-    ServiceProtocolIdentity, ServiceRequirementKey, ServiceSymbolRef, TypeRefIr,
+    GatewayAdapterKind, GatewayAdapterPlan, HostEffectExecutorIdentity, InterfaceInstantiationRef,
+    NativeValueAdapterRole, NativeValueLifecycleAdapter, PackageBuildId, PackageCallableId,
+    ReceiverCallAbi, ServiceProtocolIdentity, ServiceRequirementKey, ServiceSymbolRef, TypeRefIr,
 };
 
 use crate::{
@@ -317,6 +317,7 @@ fn remote_interface_table_remains_symbolic_and_protocol_pinned() {
 fn host_and_intrinsic_targets_retain_exact_native_facts() {
     let host = LinkedHostEffectAdapterTarget::new(
         HostEffectAdapterIndex::new(0),
+        HostEffectExecutorIdentity::Sleep,
         "host",
         "clock",
         LinkedHostBindingKey::parse("host.clock").expect("fixture host binding key is canonical"),

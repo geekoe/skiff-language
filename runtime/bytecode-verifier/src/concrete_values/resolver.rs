@@ -28,7 +28,7 @@ const CONTRACT_INTERFACE_AUTHORITY: &str = "hydratedValueLifecycle.contractInter
 /// Every linked type row must establish its exact package-build scope before
 /// asking for source rows or package-owned lifecycle facts. Scope is owned by
 /// the resolver rather than inferred from a package id or ABI string.
-pub(super) struct HydratedValueLifecycleResolver<'a> {
+pub(crate) struct HydratedValueLifecycleResolver<'a> {
     hydrated: &'a HydratedDeploymentBytecode,
     candidate: &'a LinkedBytecodeCandidate,
     scope_package_build_id: Option<PackageBuildId>,
@@ -36,7 +36,7 @@ pub(super) struct HydratedValueLifecycleResolver<'a> {
 }
 
 impl<'a> HydratedValueLifecycleResolver<'a> {
-    pub(super) fn new(
+    pub(crate) fn new(
         hydrated: &'a HydratedDeploymentBytecode,
         candidate: &'a LinkedBytecodeCandidate,
     ) -> Self {
@@ -50,7 +50,7 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
 
     /// Starts one linked-type row at its exact artifact origin. A failed call
     /// leaves the resolver unscoped so facts can never leak from the prior row.
-    pub(super) fn begin_row(
+    pub(crate) fn begin_row(
         &mut self,
         origin: &PackageBuildId,
     ) -> Result<(), ValueLifecycleResolverError> {

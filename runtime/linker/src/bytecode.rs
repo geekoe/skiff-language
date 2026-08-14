@@ -29,6 +29,7 @@ pub use error::{
 pub use execution_image::{
     link_deployment_execution_image, CodeEntryLookupError, DeploymentExecutionEntry,
     DeploymentExecutionImage, DeploymentExecutionImageError, DeploymentExecutionLimits,
+    DeploymentHostEffectTarget,
 };
 pub use limits::LinkLimits;
 

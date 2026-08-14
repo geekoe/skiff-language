@@ -2,7 +2,8 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use skiff_artifact_model::{
     ContractOperationId, DeploymentIngressBinding, GatewayAdapterPlan, GatewayEntryIdentity,
-    GatewayEntryKey, IngressSelector, ServiceProtocolIdentity, ServiceRequirementKey,
+    GatewayEntryKey, HostEffectExecutorIdentity, IngressSelector, ServiceProtocolIdentity,
+    ServiceRequirementKey,
 };
 use skiff_runtime_bytecode_verifier::{
     verify_executable_facts, ExecutableFacts, VerificationError, VerificationLimits,
@@ -14,11 +15,11 @@ use skiff_runtime_deployment_image::{
     ServiceDependencySlotError,
 };
 use skiff_runtime_linked_bytecode::{
-    FunctionIndex, LinkedActorMethodTarget, LinkedBytecodeCandidate, LinkedCallableSignature,
-    LinkedCallbackCaptureLayout, LinkedConstantEntry, LinkedConstantRoot, LinkedExactLocalTarget,
-    LinkedFrozenConstantNode, LinkedHostEffectAdapterTarget, LinkedInterfaceTable,
-    LinkedIntrinsicTarget, LinkedPackageBytecodeProvenance, LinkedServiceOperationTarget,
-    LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry,
+    FunctionIndex, HostEffectAdapterIndex, LinkedActorMethodTarget, LinkedBytecodeCandidate,
+    LinkedCallableSignature, LinkedCallbackCaptureLayout, LinkedConstantEntry, LinkedConstantRoot,
+    LinkedExactLocalTarget, LinkedFrozenConstantNode, LinkedInterfaceTable, LinkedIntrinsicTarget,
+    LinkedPackageBytecodeProvenance, LinkedServiceOperationTarget, LinkedShapeEntry,
+    LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
@@ -72,6 +73,26 @@ struct HttpGatewayEntryFacts {
     function: FunctionIndex,
     signature: LinkedCallableSignature,
     adapter_plan: GatewayAdapterPlan,
+}
+
+/// Opaque, verifier-backed execution authority for one indexed host target.
+///
+/// Target text, binding strings and required context deliberately do not cross
+/// the execution-image boundary: runtime consumers dispatch exhaustively on
+/// the registry-owned identity.
+#[derive(Clone, Copy)]
+pub struct DeploymentHostEffectTarget<'image> {
+    target: &'image skiff_runtime_linked_bytecode::LinkedHostEffectAdapterTarget,
+}
+
+impl DeploymentHostEffectTarget<'_> {
+    pub const fn executor_identity(&self) -> HostEffectExecutorIdentity {
+        self.target.executor_identity()
+    }
+
+    pub const fn signature(&self) -> &skiff_runtime_linked_bytecode::LinkedNativeCallableSignature {
+        self.target.signature()
+    }
 }
 
 impl DeploymentExecutionImage {
@@ -165,8 +186,15 @@ impl DeploymentExecutionImage {
         self.linked.actor_methods()
     }
 
-    pub fn host_effect_adapters(&self) -> &[LinkedHostEffectAdapterTarget] {
-        self.linked.host_effect_adapters()
+    pub fn host_effect_target(
+        &self,
+        index: HostEffectAdapterIndex,
+    ) -> Option<DeploymentHostEffectTarget<'_>> {
+        self.linked
+            .host_effect_adapters()
+            .get(index.get() as usize)
+            .filter(|target| target.index() == index)
+            .map(|target| DeploymentHostEffectTarget { target })
     }
 
     pub fn frozen_constant_nodes(&self) -> &[LinkedFrozenConstantNode] {

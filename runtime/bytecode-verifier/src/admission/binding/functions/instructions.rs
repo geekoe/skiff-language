@@ -1,10 +1,11 @@
 use skiff_artifact_model::{
     contract_for_opcode, decode_branch_target, BytecodeIntrinsicRef, BytecodeRelocation,
-    BytecodeSpecialization, OperandKind, PackageRefIr, ValidatedFunction,
+    BytecodeSpecialization, HostEffectReference, OperandKind, PackageRefIr, ValidatedFunction,
+    ValueLifecyclePolicyBudget,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedBytecodeCandidate, LinkedFunction, LinkedInstructionTarget, LinkedInterfaceTableKind,
-    LinkedIntrinsicKind,
+    LinkedBytecodeCandidate, LinkedFunction, LinkedHostEffectAdapterTarget,
+    LinkedInstructionTarget, LinkedInterfaceTableKind, LinkedIntrinsicKind,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -428,12 +429,13 @@ fn prove_relocation_target(
             LinkedInstructionTarget::SyntheticCallback(index),
         ) => prove_callback_target(package, candidate, index.get(), function_key, location),
         _ => prove_value_relocation_target(
-            package, function, candidate, relocation, target, location,
+            hydrated, package, function, candidate, relocation, target, location,
         ),
     }
 }
 
 fn prove_value_relocation_target(
+    hydrated: &HydratedDeploymentBytecode,
     package: &HydratedBytecodePackage,
     function: &LinkedFunction,
     candidate: &LinkedBytecodeCandidate,
@@ -450,17 +452,9 @@ fn prove_value_relocation_target(
                 .host_effect_adapters()
                 .get(index.get() as usize)
                 .ok_or_else(|| semantic_violation(location, "host target is out of bounds"))?;
-            // Proves the exact linked typed ID: the canonical namespace,
-            // symbol, binding ID and metadata must match the artifact's
-            // relocation facts. Binding semantics (arity, types, plans,
-            // required context) are never re-derived here; the pinned linked
-            // entry is their only authority.
-            let exact = linked.namespace() == effect.target.namespace
-                && linked.symbol() == effect.target.symbol
-                && effect.target.binding_key.as_deref() == Some(linked.binding_key().as_str())
-                && linked.metadata() == &effect.target.metadata;
-            exact_or_error(exact, location, "host-effect relocation target")?;
-            Ok(())
+            prove_host_effect_target(
+                hydrated, package, function, candidate, effect, linked, index, location,
+            )
         }
         (
             BytecodeRelocation::IntrinsicRef { intrinsic },
@@ -501,6 +495,225 @@ fn prove_value_relocation_target(
             location,
             "typed relocation target variant differs from the exact artifact relocation",
         )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prove_host_effect_target(
+    hydrated: &HydratedDeploymentBytecode,
+    package: &HydratedBytecodePackage,
+    function: &LinkedFunction,
+    candidate: &LinkedBytecodeCandidate,
+    effect: &HostEffectReference,
+    linked: &LinkedHostEffectAdapterTarget,
+    index: skiff_runtime_linked_bytecode::HostEffectAdapterIndex,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    let mut resolver =
+        crate::concrete_values::resolver::HydratedValueLifecycleResolver::new(hydrated, candidate);
+    resolver
+        .begin_row(&package.reference().package_build_id)
+        .map_err(|error| {
+            semantic_violation(
+                location,
+                format!(
+                    "host registry lifecycle scope failed at authority {}: {}",
+                    error.authority, error.message
+                ),
+            )
+        })?;
+    let mut budget = ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64).map_err(|error| {
+        semantic_violation(
+            location,
+            format!("host registry proof budget is invalid: {error}"),
+        )
+    })?;
+    let matched = skiff_artifact_model::host_effect_registry()
+        .match_reference(
+            &effect.target,
+            &effect.signature,
+            &mut resolver,
+            &mut budget,
+        )
+        .map_err(|error| {
+            semantic_violation(
+                location,
+                format!("artifact host relocation does not match the pinned registry: {error:?}"),
+            )
+        })?;
+    let artifact_target = if effect.target.namespace.is_empty() {
+        effect.target.symbol.clone()
+    } else {
+        format!("{}.{}", effect.target.namespace, effect.target.symbol)
+    };
+    let row = matched.entry;
+    let exact = exact_linked_executor_row(effect, linked)
+        .is_some_and(|exact_row| std::ptr::eq(exact_row, row) && artifact_target == row.target)
+        && linked.index() == index
+        && linked.signature().parameter_modes() == row.signature.parameter_modes
+        && linked.signature().effects() == &row.signature.effects
+        && linked.signature().parameter_types().len() == row.signature.parameter_types.len()
+        && linked.signature().result_types().len() == row.signature.result_types.len();
+    exact_or_error(
+        exact,
+        location,
+        "host-effect registry/linked executor identity",
+    )?;
+
+    for (linked_type, artifact_type) in linked
+        .signature()
+        .parameter_types()
+        .iter()
+        .zip(&effect.signature.parameter_types)
+        .chain(
+            linked
+                .signature()
+                .result_types()
+                .iter()
+                .zip(&effect.signature.result_types),
+        )
+    {
+        let linked_type = candidate
+            .types()
+            .get(linked_type.get() as usize)
+            .ok_or_else(|| semantic_violation(location, "host signature type is out of bounds"))?;
+        prove_inline_type_relocation(package, function, linked_type, artifact_type, location)?;
+    }
+    Ok(())
+}
+
+fn exact_linked_executor_row(
+    effect: &HostEffectReference,
+    linked: &LinkedHostEffectAdapterTarget,
+) -> Option<&'static skiff_artifact_model::HostEffectRegistryEntry> {
+    let binding_key = effect.target.binding_key.as_deref()?;
+    let row = skiff_artifact_model::host_effect_registry()
+        .entries()
+        .iter()
+        .find(|row| row.binding_key == binding_key)?;
+    let artifact_target = if effect.target.namespace.is_empty() {
+        effect.target.symbol.clone()
+    } else {
+        format!("{}.{}", effect.target.namespace, effect.target.symbol)
+    };
+    (artifact_target == row.target
+        && linked.namespace() == effect.target.namespace
+        && linked.symbol() == effect.target.symbol
+        && linked.binding_key().as_str() == row.binding_key
+        && linked.metadata() == &effect.target.metadata
+        && row.metadata.matches(&effect.target.metadata)
+        && row.executor_identity == Some(linked.executor_identity()))
+    .then_some(row)
+}
+
+#[cfg(test)]
+mod host_executor_identity_tests {
+    use std::collections::BTreeMap;
+
+    use skiff_artifact_model::{
+        CallableMayEffects, HostEffectExecutorIdentity, HostEffectReference, HostEffectSignature,
+        NativeTarget,
+    };
+    use skiff_runtime_linked_bytecode::{
+        HostEffectAdapterIndex, LinkedHostBindingKey, LinkedHostEffectAdapterTarget,
+        LinkedNativeCallableSignature,
+    };
+
+    use super::exact_linked_executor_row;
+
+    fn bottom() -> CallableMayEffects {
+        CallableMayEffects {
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+        }
+    }
+
+    fn linked_target(
+        binding_key: &str,
+        identity: HostEffectExecutorIdentity,
+    ) -> LinkedHostEffectAdapterTarget {
+        let row = skiff_artifact_model::host_effect_registry()
+            .entries()
+            .iter()
+            .find(|row| row.binding_key == binding_key)
+            .unwrap();
+        let (namespace, symbol) = row.target.split_once('.').unwrap();
+        LinkedHostEffectAdapterTarget::new(
+            HostEffectAdapterIndex::new(0),
+            identity,
+            namespace,
+            symbol,
+            LinkedHostBindingKey::parse(binding_key).unwrap(),
+            BTreeMap::new(),
+            LinkedNativeCallableSignature::new(
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                Box::new([]),
+                bottom(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn reference(binding_key: &str) -> HostEffectReference {
+        let row = skiff_artifact_model::host_effect_registry()
+            .entries()
+            .iter()
+            .find(|row| row.binding_key == binding_key)
+            .unwrap();
+        let (namespace, symbol) = row.target.split_once('.').unwrap();
+        HostEffectReference {
+            target: NativeTarget {
+                namespace: namespace.to_string(),
+                symbol: symbol.to_string(),
+                binding_key: Some(binding_key.to_string()),
+                metadata: BTreeMap::new(),
+            },
+            signature: HostEffectSignature {
+                parameter_types: Vec::new(),
+                parameter_modes: Vec::new(),
+                parameter_plans: Vec::new(),
+                result_types: Vec::new(),
+                result_plans: Vec::new(),
+                effects: bottom(),
+            },
+            db_operation: None,
+        }
+    }
+
+    #[test]
+    fn swapped_executor_identity_is_not_coherent_with_the_exact_registry_row() {
+        let effect = reference("std.time.sleep");
+        let linked = linked_target(
+            "std.time.sleep",
+            HostEffectExecutorIdentity::HttpClientRequest,
+        );
+        assert!(exact_linked_executor_row(&effect, &linked).is_none());
+    }
+
+    #[test]
+    fn forged_sse_and_date_executor_identities_are_rejected() {
+        for (binding_key, forged) in [
+            (
+                "std.http.client.sse",
+                HostEffectExecutorIdentity::HttpClientStream,
+            ),
+            ("core.date.now", HostEffectExecutorIdentity::Sleep),
+        ] {
+            let effect = reference(binding_key);
+            let linked = linked_target(binding_key, forged);
+            assert!(
+                exact_linked_executor_row(&effect, &linked).is_none(),
+                "{binding_key} must not acquire forged execution authority"
+            );
+        }
     }
 }
 

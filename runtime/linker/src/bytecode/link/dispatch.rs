@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     self, BoundaryOperationContract, BytecodeIntrinsicRef, BytecodeRelocation,
     CallableEffectSummary, CallableMayEffects, CallableRegistryTypeExpression, ContractOperationId,
-    ContractTypeRef, HostEffectRegistryEntry, InterfaceInstantiationRef,
-    InterfaceMethodSlotSignatureIr, LiteralIr, PackageBuildId, PackageLocalAbiSymbol, PackageRefIr,
-    PackageSchemaTypeId, PackageSymbolRef, ParamModeIr, PendingEffectCategory,
-    ResolvedPackageValueType, ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver,
-    ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
+    ContractTypeRef, HostEffectExecutorIdentity, HostEffectRegistryEntry,
+    InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, PackageBuildId,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId, PackageSymbolRef, ParamModeIr,
+    PendingEffectCategory, ResolvedPackageValueType, ServiceRequirementKey, TypeRefIr,
+    ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
 };
 use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, FunctionIndex, LinkedActorCreateTarget, LinkedActorImplementationRef,
@@ -678,7 +678,10 @@ mod tests {
         ValueTransferPlan,
     };
 
-    use super::{registry_entry_for, registry_type_expression, validate_host_effect_authority};
+    use super::{
+        executable_identity_for, registry_entry_for, registry_type_expression,
+        validate_host_effect_authority,
+    };
     use crate::bytecode::BytecodeLinkLocation;
 
     fn location() -> BytecodeLinkLocation {
@@ -841,6 +844,76 @@ mod tests {
         assert_eq!(entry.signature.parameter_types.len(), 1);
         assert_eq!(entry.signature.result_types.len(), 0);
         assert!(entry.signature.effects.may_pending());
+        assert_eq!(
+            executable_identity_for(entry, &location()).unwrap(),
+            skiff_artifact_model::HostEffectExecutorIdentity::Sleep
+        );
+    }
+
+    #[test]
+    fn only_the_three_exact_registry_rows_mint_executor_identity() {
+        use skiff_artifact_model::HostEffectExecutorIdentity::{
+            HttpClientRequest, HttpClientStream, Sleep,
+        };
+
+        for (binding_key, expected) in [
+            ("std.time.sleep", Sleep),
+            ("std.http.client.request", HttpClientRequest),
+            ("std.http.client.stream", HttpClientStream),
+        ] {
+            let entry = skiff_artifact_model::host_effect_registry()
+                .entries()
+                .iter()
+                .find(|entry| entry.binding_key == binding_key)
+                .unwrap();
+            assert_eq!(
+                executable_identity_for(entry, &location()).unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn sse_and_date_registry_rows_fail_closed_without_executor_identity() {
+        for binding_key in ["std.http.client.sse", "core.date.now"] {
+            let entry = skiff_artifact_model::host_effect_registry()
+                .entries()
+                .iter()
+                .find(|entry| entry.binding_key == binding_key)
+                .unwrap();
+            assert!(
+                executable_identity_for(entry, &location()).is_err(),
+                "{binding_key} must not mint bytecode execution authority"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_alias_is_not_an_executable_target_identity() {
+        let entry = skiff_artifact_model::host_effect_registry()
+            .entries()
+            .iter()
+            .find(|entry| !entry.aliases.is_empty())
+            .expect("pinned registry retains a descriptive alias negative");
+        let mut effect = reference_for(entry);
+        let (namespace, symbol) = entry.aliases[0]
+            .split_once('.')
+            .expect("test alias is namespace-qualified");
+        effect.target.namespace = namespace.to_string();
+        effect.target.symbol = symbol.to_string();
+        let mut resolver = StubResolver;
+        let mut budget = budget();
+        assert!(
+            validate_host_effect_authority(
+                &effect,
+                &effect.signature,
+                &mut resolver,
+                &mut budget,
+                &location(),
+            )
+            .is_err(),
+            "registry aliases are descriptive lookup facts, not exact executable target identity"
+        );
     }
 
     #[test]
@@ -1813,6 +1886,7 @@ impl DeploymentLinker<'_> {
                                 &mut budget,
                                 &location,
                             )?;
+                            let executor_identity = executable_identity_for(entry, &location)?;
                             let signature = self.registry_native_signature(
                                 entry,
                                 package,
@@ -1829,6 +1903,7 @@ impl DeploymentLinker<'_> {
                                     skiff_runtime_linked_bytecode::HostEffectAdapterIndex::new(
                                         host.len() as u32,
                                     ),
+                                    executor_identity,
                                     effect.target.namespace.clone(),
                                     effect.target.symbol.clone(),
                                     skiff_runtime_linked_bytecode::LinkedHostBindingKey::parse(
@@ -2369,6 +2444,25 @@ fn registry_entry_for(
         })
 }
 
+/// Extracts the closed execution authority from the exact pinned row. Rows
+/// without bytecode execution authority are descriptive native bindings only
+/// and must fail before a linked executable target can be minted.
+fn executable_identity_for(
+    entry: &HostEffectRegistryEntry,
+    location: &BytecodeLinkLocation,
+) -> Result<HostEffectExecutorIdentity, BytecodeLinkError> {
+    entry.executor_identity.ok_or_else(|| {
+        unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            format!(
+                "host effect registry row `{}` has no bytecode executor identity",
+                entry.binding_key
+            ),
+        )
+    })
+}
+
 /// Proves the artifact's canonical facts (exact target, metadata, binding ID
 /// and self-reported signature) against the frozen registry. Any mismatch is
 /// fatal: there is no std-binding bypass.
@@ -2379,16 +2473,31 @@ fn validate_host_effect_authority<R: ValueLifecycleFactResolver>(
     budget: &mut ValueLifecyclePolicyBudget,
     location: &BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
-    skiff_artifact_model::host_effect_registry()
+    let matched = skiff_artifact_model::host_effect_registry()
         .match_reference(&effect.target, self_reported, resolver, budget)
-        .map(|_| ())
         .map_err(|error| {
             unsatisfied(
                 BytecodeLinkObligation::ConcreteTargetTables,
                 location.clone(),
                 format!("host effect registry rejected the artifact's canonical facts: {error:?}"),
             )
-        })
+        })?;
+    let artifact_target = if effect.target.namespace.is_empty() {
+        effect.target.symbol.clone()
+    } else {
+        format!("{}.{}", effect.target.namespace, effect.target.symbol)
+    };
+    if matched.entry.target != artifact_target {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            format!(
+                "host effect target `{artifact_target}` is an alias; exact canonical target `{}` is required",
+                matched.entry.target
+            ),
+        ));
+    }
+    Ok(())
 }
 
 impl DeploymentLinker<'_> {
