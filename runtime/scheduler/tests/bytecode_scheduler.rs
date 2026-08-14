@@ -10,9 +10,10 @@ use skiff_runtime_model::{
 };
 use skiff_runtime_scheduler::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
-    BytecodeHandoff, BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
-    BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit, RequestExecutionContext,
-    SuspendedTrampoline,
+    BytecodeHandoff, BytecodeParkFailure, BytecodeParkRequest, BytecodePortFailure,
+    BytecodeResumeFailure, BytecodeSchedulerError, BytecodeSchedulerOutcome,
+    BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
+    BytecodeUnitControl, PendingOwnerDraft, RequestExecutionContext,
 };
 use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmSemanticCharge};
 
@@ -100,7 +101,11 @@ impl BytecodeUnit for ChainUnit {
         }
     }
 
-    fn resume(&mut self, _token: usize, _outcome: usize) -> Result<(), BytecodeSchedulerError> {
+    fn resume(
+        &mut self,
+        _token: usize,
+        _outcome: usize,
+    ) -> Result<(), BytecodeResumeFailure<usize, usize>> {
         self.resumes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -140,11 +145,14 @@ impl BytecodeChildExecutor<ChainUnit> for ChainExecutor {
 
     fn execute_adapter(
         &self,
-        _invocation: usize,
+        invocation: usize,
         _heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeAdapterHandoff<ChainUnit>, BytecodeSchedulerError> {
-        Err(BytecodeSchedulerError::UnsupportedAdapter)
+    ) -> Result<BytecodeAdapterHandoff<ChainUnit>, BytecodePortFailure<usize, usize>> {
+        Err(BytecodePortFailure::input(
+            BytecodeSchedulerError::UnsupportedAdapter,
+            invocation,
+        ))
     }
 }
 
@@ -153,7 +161,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deep_child_chain_stays_flat_and_each_parent_resumes_exactly_once() {
+    fn non_stream_next_child_fails_closed_without_calling_phase_6_executor() {
         const DEPTH: usize = 20_000;
 
         let resumes = Arc::new(AtomicUsize::new(0));
@@ -168,13 +176,15 @@ mod tests {
         context.install_root(root);
         let (outcome, snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
 
-        assert!(matches!(outcome, Ok(BytecodeSchedulerOutcome::Complete(0))));
-        assert_eq!(executor.starts.load(Ordering::SeqCst), DEPTH);
-        assert_eq!(resumes.load(Ordering::SeqCst), DEPTH);
-        // Every blocked child owner was released before completion, and the
-        // domain still records that children were ever created.
+        let failure = outcome.unwrap_err();
+        assert!(matches!(
+            failure.reason(),
+            BytecodeSchedulerError::UnsupportedChild
+        ));
+        assert_eq!(executor.starts.load(Ordering::SeqCst), 0);
+        assert_eq!(resumes.load(Ordering::SeqCst), 0);
         assert_eq!(snapshot.child.current, 0);
-        assert!(snapshot.child.ever_created);
+        assert!(!snapshot.child.ever_created);
     }
 
     type StreamResult = Result<usize, &'static str>;
@@ -229,7 +239,7 @@ mod tests {
             &mut self,
             token: usize,
             outcome: StreamResult,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeResumeFailure<usize, StreamResult>> {
             self.resumes.fetch_add(1, Ordering::SeqCst);
             self.mode = StreamMode::Complete(outcome);
             let _ = token;
@@ -253,23 +263,24 @@ mod tests {
     }
 
     impl BytecodeStreamSupervisor<StreamUnit> for RecordingStream {
-        fn emit_stream(
+        fn emit_stream_handoff(
             &self,
             item: usize,
+            _depth: usize,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeHandoff<StreamUnit>, BytecodeSchedulerError> {
+        ) -> Result<BytecodeStreamHandoff<StreamUnit>, BytecodePortFailure<usize, usize>> {
             self.emitted.lock().unwrap().push(item);
-            match self.mode {
-                StreamPortMode::Ready => Ok(BytecodeHandoff {
+            Ok(BytecodeStreamHandoff::Ready(match self.mode {
+                StreamPortMode::Ready => BytecodeHandoff {
                     resume: item,
                     outcome: Ok(99),
-                }),
-                StreamPortMode::Error => Ok(BytecodeHandoff {
+                },
+                StreamPortMode::Error => BytecodeHandoff {
                     resume: item,
                     outcome: Err("stream failed"),
-                }),
-            }
+                },
+            }))
         }
 
         fn finish_stream(
@@ -283,12 +294,14 @@ mod tests {
 
         fn park(
             &self,
-            _operation: usize,
-            _suspended: SuspendedTrampoline<StreamUnit, usize>,
+            request: BytecodeParkRequest<StreamUnit>,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<(), BytecodeSchedulerError> {
-            Err(BytecodeSchedulerError::UnsupportedPark)
+        ) -> Result<(), BytecodeParkFailure<StreamUnit>> {
+            Err(BytecodeParkFailure::unaccepted(
+                BytecodeSchedulerError::UnsupportedPark,
+                request,
+            ))
         }
     }
 
@@ -346,19 +359,369 @@ mod tests {
             RequestExecutionContext::create(BytecodeSchedulerPorts::<ChainUnit>::default());
         context.install_root(ChainUnit::new(0, 1, Arc::new(AtomicUsize::new(0))));
         let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        let failure = outcome.unwrap_err();
         assert!(matches!(
-            outcome,
-            Err(BytecodeSchedulerError::UnsupportedChild)
+            failure.reason(),
+            BytecodeSchedulerError::UnsupportedChild
         ));
 
         let mut context =
             RequestExecutionContext::create(BytecodeSchedulerPorts::<StreamUnit>::default());
         context.install_root(StreamUnit::new(StreamMode::Emit(1)));
         let (outcome, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        let failure = outcome.unwrap_err();
         assert!(matches!(
-            outcome,
-            Err(BytecodeSchedulerError::UnsupportedStream)
+            failure.reason(),
+            BytecodeSchedulerError::UnsupportedStream
         ));
+    }
+
+    struct DropProbe {
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl DropProbe {
+        fn new(drops: &Arc<AtomicUsize>) -> Self {
+            Self {
+                drops: Arc::clone(drops),
+            }
+        }
+
+        fn sibling(&self) -> Self {
+            Self {
+                drops: Arc::clone(&self.drops),
+            }
+        }
+    }
+
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum ProbeAction {
+        Adapter,
+        StreamNext,
+        Emit,
+        Park,
+        Complete,
+    }
+
+    struct OwnerProbeUnit {
+        action: ProbeAction,
+        probe: Option<DropProbe>,
+        reject_resume: bool,
+    }
+
+    impl OwnerProbeUnit {
+        fn new(action: ProbeAction, drops: &Arc<AtomicUsize>) -> Self {
+            Self {
+                action,
+                probe: Some(DropProbe::new(drops)),
+                reject_resume: false,
+            }
+        }
+    }
+
+    impl VmRootSource for OwnerProbeUnit {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl BytecodeUnit for OwnerProbeUnit {
+        type ResumeToken = DropProbe;
+        type ResumeOutcome = DropProbe;
+        type RootResult = DropProbe;
+        type ChildInvocation = DropProbe;
+        type AdapterInvocation = DropProbe;
+        type StreamItem = DropProbe;
+        type PendingOperation = DropProbe;
+
+        fn run_segment(
+            &mut self,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> BytecodeUnitControl<Self> {
+            let probe = self
+                .probe
+                .take()
+                .expect("the owner probe emits exactly one control");
+            match self.action {
+                ProbeAction::Adapter => BytecodeControl::EnterAdapter(probe),
+                ProbeAction::StreamNext => BytecodeControl::EnterChild(probe),
+                ProbeAction::Emit => BytecodeControl::EmitStream(probe),
+                ProbeAction::Park => BytecodeControl::Park(probe),
+                ProbeAction::Complete => BytecodeControl::Complete(probe),
+            }
+        }
+
+        fn resume(
+            &mut self,
+            resume: DropProbe,
+            outcome: DropProbe,
+        ) -> Result<(), BytecodeResumeFailure<DropProbe, DropProbe>> {
+            if self.reject_resume {
+                return Err(BytecodeResumeFailure::Rejected {
+                    reason: BytecodeSchedulerError::Port(
+                        "owner probe rejected its ready resume".to_string(),
+                    ),
+                    resume,
+                    outcome,
+                });
+            }
+            drop((resume, outcome));
+            Ok(())
+        }
+
+        fn child_completion_to_resume_outcome(completed: DropProbe) -> DropProbe {
+            completed
+        }
+
+        fn is_stream_next_child(_invocation: &DropProbe) -> bool {
+            true
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum ProbePortDisposition {
+        Input,
+        Continuation,
+        Ready,
+    }
+
+    struct ProbeExecutor(ProbePortDisposition);
+
+    impl BytecodeChildExecutor<OwnerProbeUnit> for ProbeExecutor {
+        fn execute_child(
+            &self,
+            _invocation: DropProbe,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeChildStart<OwnerProbeUnit>, BytecodeSchedulerError> {
+            panic!("a Phase 5 scheduler must not call the non-StreamNext child port")
+        }
+
+        fn execute_adapter(
+            &self,
+            invocation: DropProbe,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeAdapterHandoff<OwnerProbeUnit>, BytecodePortFailure<DropProbe, DropProbe>>
+        {
+            match self.0 {
+                ProbePortDisposition::Input => Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port("adapter rejected input".to_string()),
+                    invocation,
+                )),
+                ProbePortDisposition::Continuation => Err(BytecodePortFailure::continuation(
+                    BytecodeSchedulerError::Port("adapter rejected continuation".to_string()),
+                    invocation,
+                )),
+                ProbePortDisposition::Ready => {
+                    let outcome = invocation.sibling();
+                    Ok(BytecodeAdapterHandoff::Ready(BytecodeHandoff {
+                        resume: invocation,
+                        outcome,
+                    }))
+                }
+            }
+        }
+
+        fn execute_stream_next(
+            &self,
+            invocation: DropProbe,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeStreamHandoff<OwnerProbeUnit>, BytecodePortFailure<DropProbe, DropProbe>>
+        {
+            match self.0 {
+                ProbePortDisposition::Input => Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port("stream next rejected input".to_string()),
+                    invocation,
+                )),
+                ProbePortDisposition::Continuation => Err(BytecodePortFailure::continuation(
+                    BytecodeSchedulerError::Port("stream next rejected continuation".to_string()),
+                    invocation,
+                )),
+                ProbePortDisposition::Ready => unreachable!(),
+            }
+        }
+    }
+
+    struct ProbeSupervisor {
+        disposition: ProbePortDisposition,
+        fail_finish: bool,
+        return_pending_draft: bool,
+    }
+
+    impl BytecodeStreamSupervisor<OwnerProbeUnit> for ProbeSupervisor {
+        fn emit_stream_handoff(
+            &self,
+            item: DropProbe,
+            _depth: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeStreamHandoff<OwnerProbeUnit>, BytecodePortFailure<DropProbe, DropProbe>>
+        {
+            match self.disposition {
+                ProbePortDisposition::Input => Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port("stream emit rejected input".to_string()),
+                    item,
+                )),
+                ProbePortDisposition::Continuation => Err(BytecodePortFailure::continuation(
+                    BytecodeSchedulerError::Port("stream emit rejected continuation".to_string()),
+                    item,
+                )),
+                ProbePortDisposition::Ready => unreachable!(),
+            }
+        }
+
+        fn park(
+            &self,
+            request: BytecodeParkRequest<OwnerProbeUnit>,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<(), BytecodeParkFailure<OwnerProbeUnit>> {
+            if self.return_pending_draft {
+                let (operation, suspended) = request.into_parts();
+                return Err(BytecodeParkFailure::pending_draft(
+                    BytecodeSchedulerError::Port("pending registry rejected draft".to_string()),
+                    PendingOwnerDraft::new(operation, suspended),
+                ));
+            }
+            Err(BytecodeParkFailure::unaccepted(
+                BytecodeSchedulerError::UnsupportedPark,
+                request,
+            ))
+        }
+
+        fn finish_stream(
+            &self,
+            _depth: usize,
+            _result: &DropProbe,
+        ) -> Result<(), BytecodeSchedulerError> {
+            if self.fail_finish {
+                Err(BytecodeSchedulerError::Port(
+                    "finish stream rejected result".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn probe_ports(
+        action: ProbeAction,
+        disposition: ProbePortDisposition,
+    ) -> BytecodeSchedulerPorts<OwnerProbeUnit> {
+        match action {
+            ProbeAction::Adapter | ProbeAction::StreamNext => BytecodeSchedulerPorts {
+                child_executor: Some(Arc::new(ProbeExecutor(disposition))),
+                stream_supervisor: None,
+            },
+            ProbeAction::Emit => BytecodeSchedulerPorts {
+                child_executor: None,
+                stream_supervisor: Some(Arc::new(ProbeSupervisor {
+                    disposition,
+                    fail_finish: false,
+                    return_pending_draft: false,
+                })),
+            },
+            ProbeAction::Park | ProbeAction::Complete => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn every_port_failure_retains_input_and_continuation_owners() {
+        for action in [
+            ProbeAction::Adapter,
+            ProbeAction::StreamNext,
+            ProbeAction::Emit,
+        ] {
+            for disposition in [
+                ProbePortDisposition::Input,
+                ProbePortDisposition::Continuation,
+            ] {
+                let drops = Arc::new(AtomicUsize::new(0));
+                let mut context = RequestExecutionContext::create(probe_ports(action, disposition));
+                context.install_root(OwnerProbeUnit::new(action, &drops));
+                let (result, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+                let failure = result.unwrap_err();
+                assert_eq!(drops.load(Ordering::SeqCst), 0);
+                let (_reason, owner) = failure.into_parts();
+                assert_eq!(drops.load(Ordering::SeqCst), 0);
+                drop(owner);
+                assert_eq!(drops.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn ready_resume_rejection_retains_resume_and_outcome() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut unit = OwnerProbeUnit::new(ProbeAction::Adapter, &drops);
+        unit.reject_resume = true;
+        let mut context = RequestExecutionContext::create(probe_ports(
+            ProbeAction::Adapter,
+            ProbePortDisposition::Ready,
+        ));
+        context.install_root(unit);
+        let (result, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        let failure = result.unwrap_err();
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            failure.reason(),
+            BytecodeSchedulerError::Port(message)
+                if message == "owner probe rejected its ready resume"
+        ));
+        let (_reason, owner) = failure.into_parts();
+        drop(owner);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn finish_stream_failure_retains_complete_result() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let ports = BytecodeSchedulerPorts {
+            child_executor: None,
+            stream_supervisor: Some(Arc::new(ProbeSupervisor {
+                disposition: ProbePortDisposition::Input,
+                fail_finish: true,
+                return_pending_draft: false,
+            })),
+        };
+        let mut context = RequestExecutionContext::create(ports);
+        context.install_root(OwnerProbeUnit::new(ProbeAction::Complete, &drops));
+        let (result, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        let failure = result.unwrap_err();
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        let (_reason, owner) = failure.into_parts();
+        drop(owner);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn park_failure_retains_registry_transformed_pending_draft() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let ports = BytecodeSchedulerPorts {
+            child_executor: None,
+            stream_supervisor: Some(Arc::new(ProbeSupervisor {
+                disposition: ProbePortDisposition::Input,
+                fail_finish: false,
+                return_pending_draft: true,
+            })),
+        };
+        let mut context = RequestExecutionContext::create(ports);
+        context.install_root(OwnerProbeUnit::new(ProbeAction::Park, &drops));
+        let (result, _snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        let failure = result.unwrap_err();
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        let (_reason, owner) = failure.into_parts();
+        drop(owner);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -439,7 +802,7 @@ mod tests {
             &mut self,
             token: NextResume,
             outcome: NextOutcome,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeResumeFailure<NextResume, NextOutcome>> {
             self.resumed = Some((token, outcome));
             Ok(())
         }
@@ -476,11 +839,15 @@ mod tests {
 
         fn execute_adapter(
             &self,
-            _invocation: usize,
+            invocation: usize,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeAdapterHandoff<NextUnit>, BytecodeSchedulerError> {
-            Err(BytecodeSchedulerError::UnsupportedAdapter)
+        ) -> Result<BytecodeAdapterHandoff<NextUnit>, BytecodePortFailure<usize, NextResume>>
+        {
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedAdapter,
+                invocation,
+            ))
         }
 
         fn execute_stream_next(
@@ -488,7 +855,8 @@ mod tests {
             invocation: NextInvocation,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeStreamHandoff<NextUnit>, BytecodeSchedulerError> {
+        ) -> Result<BytecodeStreamHandoff<NextUnit>, BytecodePortFailure<NextInvocation, NextResume>>
+        {
             let NextInvocation::StreamNext {
                 item_resume,
                 end_resume,

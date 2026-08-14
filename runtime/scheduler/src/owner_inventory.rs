@@ -11,7 +11,7 @@ use skiff_runtime_model::{
 use skiff_runtime_vm::VmBudget;
 
 use crate::{
-    BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
+    BytecodeScheduler, BytecodeSchedulerFailure, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
     BytecodeUnit, RequestResourceTable, RequestResourceTermination,
 };
 
@@ -575,7 +575,7 @@ where
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
     ) -> (
-        Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerError>,
+        Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerFailure<U>>,
         RequestExecutionOwnerInventorySnapshot,
     ) {
         let root = self
@@ -606,9 +606,9 @@ where
     ///
     /// A `Parked` outcome consumes the scheduler: the suspended invocation
     /// chain moves into the pending registry and can only return through a
-    /// completed [`PendingWake`](crate::PendingWake). A `Complete` or error
-    /// outcome also consumes the scheduler and leaves the context ready for
-    /// [`Self::freeze`].
+    /// completed [`PendingWake`](crate::PendingWake). A `Complete` outcome
+    /// consumes the scheduler; a failure returns every still-live owner in its
+    /// opaque carrier so request retention can keep it ahead of heap teardown.
     ///
     /// # Panics
     ///
@@ -617,7 +617,7 @@ where
         &mut self,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerError> {
+    ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerFailure<U>> {
         let root = self
             .root
             .take()
@@ -639,13 +639,14 @@ where
     /// second `Parked` outcome is legal and suspends the chain again.
     pub fn resume_drive(
         &mut self,
-        scheduler: BytecodeScheduler<U>,
+        mut scheduler: BytecodeScheduler<U>,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerError> {
-        scheduler
-            .bind_request_resource_roots(self.resources.root_pin())?
-            .run(heap, budget)
+    ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerFailure<U>> {
+        if let Err(reason) = scheduler.bind_request_resource_roots(self.resources.root_pin()) {
+            return Err(BytecodeSchedulerFailure::scheduler(reason, scheduler));
+        }
+        scheduler.run(heap, budget)
     }
 
     /// Consumes the context and freezes the actual `Started` owner inventory

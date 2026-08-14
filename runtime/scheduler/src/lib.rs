@@ -29,9 +29,11 @@ mod trampoline;
 
 pub use bytecode::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
-    BytecodeHandoff, BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome,
-    BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
-    BytecodeUnitControl,
+    BytecodeHandoff, BytecodeParkFailure, BytecodeParkFailureOwner, BytecodeParkRequest,
+    BytecodePortFailure, BytecodePortFailureOwner, BytecodeResumeFailure, BytecodeScheduler,
+    BytecodeSchedulerError, BytecodeSchedulerFailure, BytecodeSchedulerFailureOwner,
+    BytecodeSchedulerOutcome, BytecodeSchedulerPorts, BytecodeStreamHandoff,
+    BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
 };
 pub use owner_inventory::{
     OwnerCreationError, OwnerCreationErrorKind, OwnerDomain, PendingOwnerRegistration,

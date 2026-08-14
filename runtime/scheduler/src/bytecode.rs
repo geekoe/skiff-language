@@ -6,14 +6,15 @@ use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError};
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 use skiff_runtime_vm::{
     AdapterInvocation as VmAdapterInvocation, ChildInvocation as VmChildInvocation, ChildTarget,
-    PendingOperation as VmPendingOperation, ResumeOutcome, StreamItem as VmStreamItem,
-    StreamItemReleaseError, VmBudget, VmControl, VmError, VmFiber, VmResult, VmResumeToken,
+    PendingOperation as VmPendingOperation, ResumeOutcome, StreamItem as VmStreamItem, VmBudget,
+    VmCompletion, VmControl, VmError, VmFiber, VmResumeFailure, VmResumeToken,
 };
 
 use crate::{
     owner_inventory::{ChildOwnerRegistration, OwnerCreationError},
-    ClaimedPendingWakeGuard, EnterChildError, FlatTrampoline, PendingWake, RequestResourceRootPin,
-    SuspendedTrampoline, TrampolineCompletion,
+    pending::{MappedPendingWakeGuard, PendingResumeFailure},
+    ClaimedPendingWakeGuard, EnterChildError, FlatTrampoline, PendingOwnerDraft, PendingWake,
+    RequestResourceRootPin, SuspendedTrampoline, TrampolineCompletion,
 };
 
 /// Failure modes owned by the bytecode scheduler.
@@ -98,6 +99,90 @@ impl From<EnterChildError> for BytecodeSchedulerError {
     }
 }
 
+/// Owner returned when a scheduler port rejects a handoff.
+///
+/// A port either did not accept its original input or consumed that input and
+/// reached the unique continuation. It must return whichever affine owner is
+/// still live; neither variant may be silently discarded in order to report
+/// the accompanying reason.
+pub enum BytecodePortFailureOwner<I, R> {
+    Input(I),
+    Continuation(R),
+}
+
+/// Owner-returning failure from an adapter, stream-consumer or stream-emitter
+/// port.
+#[must_use = "a port failure must be routed with its affine owner"]
+pub struct BytecodePortFailure<I, R> {
+    reason: BytecodeSchedulerError,
+    owner: BytecodePortFailureOwner<I, R>,
+}
+
+impl<I, R> BytecodePortFailure<I, R> {
+    pub fn input(reason: BytecodeSchedulerError, input: I) -> Self {
+        Self {
+            reason,
+            owner: BytecodePortFailureOwner::Input(input),
+        }
+    }
+
+    pub fn continuation(reason: BytecodeSchedulerError, continuation: R) -> Self {
+        Self {
+            reason,
+            owner: BytecodePortFailureOwner::Continuation(continuation),
+        }
+    }
+
+    pub const fn reason(&self) -> &BytecodeSchedulerError {
+        &self.reason
+    }
+
+    pub const fn owner(&self) -> &BytecodePortFailureOwner<I, R> {
+        &self.owner
+    }
+
+    pub fn into_parts(self) -> (BytecodeSchedulerError, BytecodePortFailureOwner<I, R>) {
+        (self.reason, self.owner)
+    }
+}
+
+impl<I, R> fmt::Debug for BytecodePortFailure<I, R> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BytecodePortFailure")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Failure to restore a unit at one exact continuation.
+#[must_use = "a rejected resume must return its continuation and outcome"]
+pub enum BytecodeResumeFailure<R, O> {
+    Terminal(BytecodeSchedulerError),
+    Rejected {
+        reason: BytecodeSchedulerError,
+        resume: R,
+        outcome: O,
+    },
+}
+
+impl<R, O> BytecodeResumeFailure<R, O> {
+    pub const fn reason(&self) -> &BytecodeSchedulerError {
+        match self {
+            Self::Terminal(reason) | Self::Rejected { reason, .. } => reason,
+        }
+    }
+}
+
+impl<R, O> fmt::Debug for BytecodeResumeFailure<R, O> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BytecodeResumeFailure")
+            .field("reason", self.reason())
+            .finish_non_exhaustive()
+    }
+}
+
 /// One control result returned by a bytecode execution unit.
 #[derive(Debug, PartialEq, Eq)]
 pub enum BytecodeControl<R, C, A, S, P> {
@@ -131,32 +216,9 @@ pub trait BytecodeUnit: VmRootSource {
         &mut self,
         token: Self::ResumeToken,
         outcome: Self::ResumeOutcome,
-    ) -> Result<(), BytecodeSchedulerError>;
+    ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>>;
 
     fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome;
-
-    /// Releases arguments from an adapter invocation rejected before any
-    /// executor can consume it. Rootless scheduler fixtures use the default;
-    /// the VM implementation routes exact linked plans through its lifecycle
-    /// executor on the current heap thread.
-    fn release_rejected_adapter_arguments(
-        invocation: Self::AdapterInvocation,
-        _heap: &mut dyn VmHeap,
-    ) -> Result<(), BytecodeSchedulerError> {
-        drop(invocation);
-        Ok(())
-    }
-
-    /// Releases an emitted item rejected because no stream supervisor owns
-    /// the request. VM units use the exact linked item plan on the current
-    /// heap thread before the scheduler reports the missing port.
-    fn release_rejected_stream_item(
-        item: Self::StreamItem,
-        _heap: &mut dyn VmHeap,
-    ) -> Result<(), BytecodeSchedulerError> {
-        drop(item);
-        Ok(())
-    }
 
     /// Reports whether a child invocation is a `StreamNext` consumer poll.
     ///
@@ -211,6 +273,97 @@ pub enum BytecodeStreamHandoff<U: BytecodeUnit> {
     Pending(U::PendingOperation),
 }
 
+/// One complete request to publish an actual-pending operation.
+///
+/// The operation and suspended invocation chain remain sealed together until
+/// a park port either accepts both or returns both in a
+/// [`BytecodeParkFailure`].
+#[must_use = "a park request must be accepted or returned in a failure"]
+pub struct BytecodeParkRequest<U: BytecodeUnit> {
+    operation: U::PendingOperation,
+    suspended: SuspendedTrampoline<U, U::ResumeToken>,
+}
+
+impl<U: BytecodeUnit> BytecodeParkRequest<U> {
+    pub fn new(
+        operation: U::PendingOperation,
+        suspended: SuspendedTrampoline<U, U::ResumeToken>,
+    ) -> Self {
+        Self {
+            operation,
+            suspended,
+        }
+    }
+
+    pub const fn operation(&self) -> &U::PendingOperation {
+        &self.operation
+    }
+
+    pub const fn suspended(&self) -> &SuspendedTrampoline<U, U::ResumeToken> {
+        &self.suspended
+    }
+
+    pub fn into_parts(self) -> (U::PendingOperation, SuspendedTrampoline<U, U::ResumeToken>) {
+        (self.operation, self.suspended)
+    }
+}
+
+/// Affine owner returned by a failed park publication.
+pub enum BytecodeParkFailureOwner<U: BytecodeUnit> {
+    /// The port rejected the original sealed request without transforming it.
+    Unaccepted(BytecodeParkRequest<U>),
+    /// The registry consumed the operation envelope and returned its still
+    /// unpublished resume/suspension draft.
+    PendingDraft(PendingOwnerDraft<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>>),
+}
+
+/// Owner-returning failure from an actual-pending park port.
+#[must_use = "a park failure must be routed with its suspended owner"]
+pub struct BytecodeParkFailure<U: BytecodeUnit> {
+    reason: BytecodeSchedulerError,
+    owner: BytecodeParkFailureOwner<U>,
+}
+
+impl<U: BytecodeUnit> BytecodeParkFailure<U> {
+    pub fn unaccepted(reason: BytecodeSchedulerError, request: BytecodeParkRequest<U>) -> Self {
+        Self {
+            reason,
+            owner: BytecodeParkFailureOwner::Unaccepted(request),
+        }
+    }
+
+    pub fn pending_draft(
+        reason: BytecodeSchedulerError,
+        draft: PendingOwnerDraft<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>>,
+    ) -> Self {
+        Self {
+            reason,
+            owner: BytecodeParkFailureOwner::PendingDraft(draft),
+        }
+    }
+
+    pub const fn reason(&self) -> &BytecodeSchedulerError {
+        &self.reason
+    }
+
+    pub const fn owner(&self) -> &BytecodeParkFailureOwner<U> {
+        &self.owner
+    }
+
+    pub fn into_parts(self) -> (BytecodeSchedulerError, BytecodeParkFailureOwner<U>) {
+        (self.reason, self.owner)
+    }
+}
+
+impl<U: BytecodeUnit> fmt::Debug for BytecodeParkFailure<U> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BytecodeParkFailure")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Port used to start child fibers and run host adapters once.
 pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
     fn execute_child(
@@ -225,7 +378,7 @@ pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
         invocation: U::AdapterInvocation,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeAdapterHandoff<U>, BytecodeSchedulerError>;
+    ) -> Result<BytecodeAdapterHandoff<U>, BytecodePortFailure<U::AdapterInvocation, U::ResumeToken>>;
 
     /// Publishes an adapter-owned actual-`Pending` operation.
     ///
@@ -233,13 +386,15 @@ pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
     /// may leave this default in place.
     fn park_adapter(
         &self,
-        operation: U::PendingOperation,
-        suspended: SuspendedTrampoline<U, U::ResumeToken>,
+        request: BytecodeParkRequest<U>,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<(), BytecodeSchedulerError> {
-        let _ = (operation, suspended, heap, budget);
-        Err(BytecodeSchedulerError::UnsupportedPark)
+    ) -> Result<(), BytecodeParkFailure<U>> {
+        let _ = (heap, budget);
+        Err(BytecodeParkFailure::unaccepted(
+            BytecodeSchedulerError::UnsupportedPark,
+            request,
+        ))
     }
 
     /// Polls one `StreamNext` consumer child.
@@ -254,39 +409,33 @@ pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
         invocation: U::ChildInvocation,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeStreamHandoff<U>, BytecodeSchedulerError> {
-        let _ = (invocation, heap, budget);
-        Err(BytecodeSchedulerError::UnsupportedChild)
+    ) -> Result<BytecodeStreamHandoff<U>, BytecodePortFailure<U::ChildInvocation, U::ResumeToken>>
+    {
+        let _ = (heap, budget);
+        Err(BytecodePortFailure::input(
+            BytecodeSchedulerError::UnsupportedChild,
+            invocation,
+        ))
     }
 
     /// Publishes the stream-consumer pending owner produced by
     /// [`Self::execute_stream_next`].
     fn park_stream_next(
         &self,
-        operation: U::PendingOperation,
-        suspended: SuspendedTrampoline<U, U::ResumeToken>,
+        request: BytecodeParkRequest<U>,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<(), BytecodeSchedulerError> {
-        let _ = (operation, suspended, heap, budget);
-        Err(BytecodeSchedulerError::UnsupportedPark)
+    ) -> Result<(), BytecodeParkFailure<U>> {
+        let _ = (heap, budget);
+        Err(BytecodeParkFailure::unaccepted(
+            BytecodeSchedulerError::UnsupportedPark,
+            request,
+        ))
     }
 }
 
 /// Port used for stream emission and actual-Pending parking.
 pub trait BytecodeStreamSupervisor<U: BytecodeUnit>: Send + Sync + 'static {
-    /// Synchronous handoff retained for supervisors that do not yet model
-    /// backpressure. The scheduler uses [`Self::emit_stream_handoff`].
-    fn emit_stream(
-        &self,
-        item: U::StreamItem,
-        heap: &mut dyn VmHeap,
-        budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeHandoff<U>, BytecodeSchedulerError> {
-        let _ = (item, heap, budget);
-        Err(BytecodeSchedulerError::UnsupportedStream)
-    }
-
     /// Emits one item and reports whether the producer can continue immediately
     /// or must park with a real backpressure operation.
     fn emit_stream_handoff(
@@ -295,18 +444,20 @@ pub trait BytecodeStreamSupervisor<U: BytecodeUnit>: Send + Sync + 'static {
         _depth: usize,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeStreamHandoff<U>, BytecodeSchedulerError> {
-        self.emit_stream(item, heap, budget)
-            .map(BytecodeStreamHandoff::Ready)
+    ) -> Result<BytecodeStreamHandoff<U>, BytecodePortFailure<U::StreamItem, U::ResumeToken>> {
+        let _ = (heap, budget);
+        Err(BytecodePortFailure::input(
+            BytecodeSchedulerError::UnsupportedStream,
+            item,
+        ))
     }
 
     fn park(
         &self,
-        operation: U::PendingOperation,
-        suspended: SuspendedTrampoline<U, U::ResumeToken>,
+        request: BytecodeParkRequest<U>,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<(), BytecodeSchedulerError>;
+    ) -> Result<(), BytecodeParkFailure<U>>;
 
     /// Notifies the supervisor that the unit at `depth` completed.
     ///
@@ -365,6 +516,161 @@ impl<U: BytecodeUnit> fmt::Debug for BytecodeSchedulerOutcome<U> {
     }
 }
 
+#[allow(dead_code)] // Every field is intentionally held only for its Drop lifetime.
+enum BytecodeSchedulerRetainedOwner<U: BytecodeUnit> {
+    None,
+    Complete(U::RootResult),
+    ChildInput(U::ChildInvocation),
+    AdapterInput(U::AdapterInvocation),
+    StreamInput(U::StreamItem),
+    PortContinuation(U::ResumeToken),
+    ResumeRejected {
+        resume: U::ResumeToken,
+        outcome: U::ResumeOutcome,
+    },
+}
+
+#[allow(dead_code)] // The public carrier is opaque; request retention only moves and drops it.
+enum BytecodeSchedulerFailureOwnerKind<U: BytecodeUnit> {
+    Scheduler {
+        scheduler: BytecodeScheduler<U>,
+        retained: BytecodeSchedulerRetainedOwner<U>,
+    },
+    Park {
+        owner: BytecodeParkFailureOwner<U>,
+        ports: BytecodeSchedulerPorts<U>,
+        resource_roots: Option<RequestResourceRootPin>,
+    },
+    MappedWake {
+        guard: MappedPendingWakeGuard<
+            U::ResumeToken,
+            FlatTrampoline<U, U::ResumeToken>,
+            U::ResumeOutcome,
+        >,
+        ports: BytecodeSchedulerPorts<U>,
+    },
+}
+
+/// Opaque affine owners retained by a [`BytecodeSchedulerFailure`].
+///
+/// Request drivers may move this carrier into their retention object so it is
+/// dropped before the request heap. Its contents deliberately have no public
+/// projection: only the scheduler can interpret and safely resume these
+/// owners.
+#[must_use = "a scheduler failure owner must be retained until request heap teardown"]
+pub struct BytecodeSchedulerFailureOwner<U: BytecodeUnit> {
+    #[allow(dead_code)] // The carrier intentionally exposes no owner projection.
+    kind: BytecodeSchedulerFailureOwnerKind<U>,
+}
+
+impl<U: BytecodeUnit> fmt::Debug for BytecodeSchedulerFailureOwner<U> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BytecodeSchedulerFailureOwner")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Terminal scheduler failure plus every affine owner that was live when the
+/// reason arose.
+#[must_use = "a scheduler failure must be decomposed without discarding its owner"]
+pub struct BytecodeSchedulerFailure<U: BytecodeUnit> {
+    owner: BytecodeSchedulerFailureOwner<U>,
+    reason: BytecodeSchedulerError,
+}
+
+impl<U: BytecodeUnit> BytecodeSchedulerFailure<U> {
+    fn new(reason: BytecodeSchedulerError, kind: BytecodeSchedulerFailureOwnerKind<U>) -> Self {
+        Self {
+            owner: BytecodeSchedulerFailureOwner { kind },
+            reason,
+        }
+    }
+
+    pub(crate) fn scheduler(
+        reason: BytecodeSchedulerError,
+        scheduler: BytecodeScheduler<U>,
+    ) -> Self {
+        Self::new(
+            reason,
+            BytecodeSchedulerFailureOwnerKind::Scheduler {
+                scheduler,
+                retained: BytecodeSchedulerRetainedOwner::None,
+            },
+        )
+    }
+
+    fn scheduler_with(
+        reason: BytecodeSchedulerError,
+        scheduler: BytecodeScheduler<U>,
+        retained: BytecodeSchedulerRetainedOwner<U>,
+    ) -> Self {
+        Self::new(
+            reason,
+            BytecodeSchedulerFailureOwnerKind::Scheduler {
+                scheduler,
+                retained,
+            },
+        )
+    }
+
+    fn park(
+        reason: BytecodeSchedulerError,
+        owner: BytecodeParkFailureOwner<U>,
+        ports: BytecodeSchedulerPorts<U>,
+        resource_roots: Option<RequestResourceRootPin>,
+    ) -> Self {
+        Self::new(
+            reason,
+            BytecodeSchedulerFailureOwnerKind::Park {
+                owner,
+                ports,
+                resource_roots,
+            },
+        )
+    }
+
+    fn mapped_wake(
+        reason: BytecodeSchedulerError,
+        guard: MappedPendingWakeGuard<
+            U::ResumeToken,
+            FlatTrampoline<U, U::ResumeToken>,
+            U::ResumeOutcome,
+        >,
+        ports: BytecodeSchedulerPorts<U>,
+    ) -> Self {
+        Self::new(
+            reason,
+            BytecodeSchedulerFailureOwnerKind::MappedWake { guard, ports },
+        )
+    }
+
+    pub const fn reason(&self) -> &BytecodeSchedulerError {
+        &self.reason
+    }
+
+    pub fn into_parts(self) -> (BytecodeSchedulerError, BytecodeSchedulerFailureOwner<U>) {
+        (self.reason, self.owner)
+    }
+}
+
+impl<U: BytecodeUnit> fmt::Debug for BytecodeSchedulerFailure<U> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BytecodeSchedulerFailure")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<U: BytecodeUnit> fmt::Display for BytecodeSchedulerFailure<U> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.reason.fmt(formatter)
+    }
+}
+
+impl<U: BytecodeUnit> std::error::Error for BytecodeSchedulerFailure<U> {}
+
 /// Flat bytecode scheduler over a `FlatTrampoline` of execution units.
 pub struct BytecodeScheduler<U: BytecodeUnit> {
     trampoline: FlatTrampoline<U, U::ResumeToken>,
@@ -414,9 +720,9 @@ where
     }
 
     pub(crate) fn bind_request_resource_roots(
-        mut self,
+        &mut self,
         resource_roots: RequestResourceRootPin,
-    ) -> Result<Self, BytecodeSchedulerError> {
+    ) -> Result<(), BytecodeSchedulerError> {
         if self
             .resource_roots
             .as_ref()
@@ -426,8 +732,114 @@ where
                 "pending scheduler belongs to a different request resource table".to_string(),
             ));
         }
-        self.resource_roots = Some(resource_roots);
-        Ok(self)
+        if self.resource_roots.is_none() {
+            self.resource_roots = Some(resource_roots);
+        }
+        Ok(())
+    }
+
+    fn with_retained_failure(
+        self,
+        reason: BytecodeSchedulerError,
+        retained: BytecodeSchedulerRetainedOwner<U>,
+    ) -> BytecodeSchedulerFailure<U> {
+        BytecodeSchedulerFailure::scheduler_with(reason, self, retained)
+    }
+
+    fn with_resume_failure(
+        self,
+        failure: BytecodeResumeFailure<U::ResumeToken, U::ResumeOutcome>,
+    ) -> BytecodeSchedulerFailure<U> {
+        match failure {
+            BytecodeResumeFailure::Terminal(reason) => {
+                BytecodeSchedulerFailure::scheduler(reason, self)
+            }
+            BytecodeResumeFailure::Rejected {
+                reason,
+                resume,
+                outcome,
+            } => self.with_retained_failure(
+                reason,
+                BytecodeSchedulerRetainedOwner::ResumeRejected { resume, outcome },
+            ),
+        }
+    }
+
+    fn with_child_port_failure(
+        self,
+        failure: BytecodePortFailure<U::ChildInvocation, U::ResumeToken>,
+    ) -> BytecodeSchedulerFailure<U> {
+        let (reason, owner) = failure.into_parts();
+        let retained = match owner {
+            BytecodePortFailureOwner::Input(input) => {
+                BytecodeSchedulerRetainedOwner::ChildInput(input)
+            }
+            BytecodePortFailureOwner::Continuation(resume) => {
+                BytecodeSchedulerRetainedOwner::PortContinuation(resume)
+            }
+        };
+        self.with_retained_failure(reason, retained)
+    }
+
+    fn with_adapter_port_failure(
+        self,
+        failure: BytecodePortFailure<U::AdapterInvocation, U::ResumeToken>,
+    ) -> BytecodeSchedulerFailure<U> {
+        let (reason, owner) = failure.into_parts();
+        let retained = match owner {
+            BytecodePortFailureOwner::Input(input) => {
+                BytecodeSchedulerRetainedOwner::AdapterInput(input)
+            }
+            BytecodePortFailureOwner::Continuation(resume) => {
+                BytecodeSchedulerRetainedOwner::PortContinuation(resume)
+            }
+        };
+        self.with_retained_failure(reason, retained)
+    }
+
+    fn with_stream_port_failure(
+        self,
+        failure: BytecodePortFailure<U::StreamItem, U::ResumeToken>,
+    ) -> BytecodeSchedulerFailure<U> {
+        let (reason, owner) = failure.into_parts();
+        let retained = match owner {
+            BytecodePortFailureOwner::Input(input) => {
+                BytecodeSchedulerRetainedOwner::StreamInput(input)
+            }
+            BytecodePortFailureOwner::Continuation(resume) => {
+                BytecodeSchedulerRetainedOwner::PortContinuation(resume)
+            }
+        };
+        self.with_retained_failure(reason, retained)
+    }
+
+    fn into_park_parts(
+        self,
+        operation: U::PendingOperation,
+    ) -> (
+        BytecodeParkRequest<U>,
+        BytecodeSchedulerPorts<U>,
+        Option<RequestResourceRootPin>,
+    ) {
+        let Self {
+            trampoline,
+            ports,
+            resource_roots,
+        } = self;
+        (
+            BytecodeParkRequest::new(operation, trampoline.suspend()),
+            ports,
+            resource_roots,
+        )
+    }
+
+    fn failed_park(
+        failure: BytecodeParkFailure<U>,
+        ports: BytecodeSchedulerPorts<U>,
+        resource_roots: Option<RequestResourceRootPin>,
+    ) -> BytecodeSchedulerFailure<U> {
+        let (reason, owner) = failure.into_parts();
+        BytecodeSchedulerFailure::park(reason, owner, ports, resource_roots)
     }
 
     /// Drives the active unit until a root completion or a real park.
@@ -438,15 +850,20 @@ where
         mut self,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerError> {
+    ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerFailure<U>> {
         loop {
             let control = self.trampoline.active_mut().run_segment(heap, budget);
             match control {
                 BytecodeControl::Continue => {}
                 BytecodeControl::Complete(result) => {
                     let depth = self.trampoline.blocked_depth();
-                    if let Some(supervisor) = self.ports.stream_supervisor.as_ref() {
-                        supervisor.finish_stream(depth, &result)?;
+                    if let Some(supervisor) = self.ports.stream_supervisor.clone() {
+                        if let Err(reason) = supervisor.finish_stream(depth, &result) {
+                            return Err(self.with_retained_failure(
+                                reason,
+                                BytecodeSchedulerRetainedOwner::Complete(result),
+                            ));
+                        }
                     }
                     if self.trampoline.blocked_depth() == 0 {
                         return Ok(BytecodeSchedulerOutcome::Complete(result));
@@ -456,79 +873,123 @@ where
                     let TrampolineCompletion::ResumeParent(parent) = completion else {
                         unreachable!("depth check guarantees a parent unit exists");
                     };
-                    let (mut trampoline, resume, outcome) = parent.into_parts();
-                    trampoline.active_mut().resume(resume, outcome)?;
+                    let (trampoline, resume, outcome) = parent.into_parts();
                     self.trampoline = trampoline;
+                    if let Err(failure) = self.trampoline.active_mut().resume(resume, outcome) {
+                        return Err(self.with_resume_failure(failure));
+                    }
                 }
                 BytecodeControl::EnterChild(invocation) => {
-                    let executor = self
-                        .ports
-                        .child_executor
-                        .as_ref()
-                        .ok_or(BytecodeSchedulerError::UnsupportedChild)?;
-                    if U::is_stream_next_child(&invocation) {
-                        match executor.execute_stream_next(invocation, heap, budget)? {
-                            BytecodeStreamHandoff::Ready(handoff) => {
-                                self.trampoline
-                                    .active_mut()
-                                    .resume(handoff.resume, handoff.outcome)?;
-                            }
-                            BytecodeStreamHandoff::Pending(operation) => {
-                                let suspended = self.trampoline.suspend();
-                                executor.park_stream_next(operation, suspended, heap, budget)?;
-                                return Ok(BytecodeSchedulerOutcome::Parked);
+                    if !U::is_stream_next_child(&invocation) {
+                        return Err(self.with_retained_failure(
+                            BytecodeSchedulerError::UnsupportedChild,
+                            BytecodeSchedulerRetainedOwner::ChildInput(invocation),
+                        ));
+                    }
+                    let Some(executor) = self.ports.child_executor.clone() else {
+                        return Err(self.with_retained_failure(
+                            BytecodeSchedulerError::UnsupportedChild,
+                            BytecodeSchedulerRetainedOwner::ChildInput(invocation),
+                        ));
+                    };
+                    let handoff = match executor.execute_stream_next(invocation, heap, budget) {
+                        Ok(handoff) => handoff,
+                        Err(failure) => return Err(self.with_child_port_failure(failure)),
+                    };
+                    match handoff {
+                        BytecodeStreamHandoff::Ready(handoff) => {
+                            if let Err(failure) = self
+                                .trampoline
+                                .active_mut()
+                                .resume(handoff.resume, handoff.outcome)
+                            {
+                                return Err(self.with_resume_failure(failure));
                             }
                         }
-                        continue;
+                        BytecodeStreamHandoff::Pending(operation) => {
+                            let (request, ports, resource_roots) = self.into_park_parts(operation);
+                            if let Err(failure) = executor.park_stream_next(request, heap, budget) {
+                                return Err(Self::failed_park(failure, ports, resource_roots));
+                            }
+                            return Ok(BytecodeSchedulerOutcome::Parked);
+                        }
                     }
-                    let start = executor.execute_child(invocation, heap, budget)?;
-                    self.trampoline.enter_child(start.unit, start.resume)?;
                 }
                 BytecodeControl::EnterAdapter(invocation) => {
-                    let Some(executor) = self.ports.child_executor.as_ref() else {
-                        U::release_rejected_adapter_arguments(invocation, heap)?;
-                        return Err(BytecodeSchedulerError::UnsupportedAdapter);
+                    let Some(executor) = self.ports.child_executor.clone() else {
+                        return Err(self.with_retained_failure(
+                            BytecodeSchedulerError::UnsupportedAdapter,
+                            BytecodeSchedulerRetainedOwner::AdapterInput(invocation),
+                        ));
                     };
-                    match executor.execute_adapter(invocation, heap, budget)? {
+                    let handoff = match executor.execute_adapter(invocation, heap, budget) {
+                        Ok(handoff) => handoff,
+                        Err(failure) => return Err(self.with_adapter_port_failure(failure)),
+                    };
+                    match handoff {
                         BytecodeAdapterHandoff::Ready(handoff) => {
-                            self.trampoline
+                            if let Err(failure) = self
+                                .trampoline
                                 .active_mut()
-                                .resume(handoff.resume, handoff.outcome)?;
+                                .resume(handoff.resume, handoff.outcome)
+                            {
+                                return Err(self.with_resume_failure(failure));
+                            }
                         }
                         BytecodeAdapterHandoff::Pending(operation) => {
-                            let suspended = self.trampoline.suspend();
-                            executor.park_adapter(operation, suspended, heap, budget)?;
+                            let (request, ports, resource_roots) = self.into_park_parts(operation);
+                            if let Err(failure) = executor.park_adapter(request, heap, budget) {
+                                return Err(Self::failed_park(failure, ports, resource_roots));
+                            }
                             return Ok(BytecodeSchedulerOutcome::Parked);
                         }
                     }
                 }
                 BytecodeControl::EmitStream(item) => {
-                    let Some(supervisor) = self.ports.stream_supervisor.as_ref() else {
-                        U::release_rejected_stream_item(item, heap)?;
-                        return Err(BytecodeSchedulerError::UnsupportedStream);
+                    let Some(supervisor) = self.ports.stream_supervisor.clone() else {
+                        return Err(self.with_retained_failure(
+                            BytecodeSchedulerError::UnsupportedStream,
+                            BytecodeSchedulerRetainedOwner::StreamInput(item),
+                        ));
                     };
                     let depth = self.trampoline.blocked_depth();
-                    match supervisor.emit_stream_handoff(item, depth, heap, budget)? {
+                    let handoff = match supervisor.emit_stream_handoff(item, depth, heap, budget) {
+                        Ok(handoff) => handoff,
+                        Err(failure) => return Err(self.with_stream_port_failure(failure)),
+                    };
+                    match handoff {
                         BytecodeStreamHandoff::Ready(handoff) => {
-                            self.trampoline
+                            if let Err(failure) = self
+                                .trampoline
                                 .active_mut()
-                                .resume(handoff.resume, handoff.outcome)?;
+                                .resume(handoff.resume, handoff.outcome)
+                            {
+                                return Err(self.with_resume_failure(failure));
+                            }
                         }
                         BytecodeStreamHandoff::Pending(operation) => {
-                            let suspended = self.trampoline.suspend();
-                            supervisor.park(operation, suspended, heap, budget)?;
+                            let (request, ports, resource_roots) = self.into_park_parts(operation);
+                            if let Err(failure) = supervisor.park(request, heap, budget) {
+                                return Err(Self::failed_park(failure, ports, resource_roots));
+                            }
                             return Ok(BytecodeSchedulerOutcome::Parked);
                         }
                     }
                 }
                 BytecodeControl::Park(operation) => {
-                    let supervisor = self
-                        .ports
-                        .stream_supervisor
-                        .as_ref()
-                        .ok_or(BytecodeSchedulerError::UnsupportedPark)?;
-                    let suspended = self.trampoline.suspend();
-                    supervisor.park(operation, suspended, heap, budget)?;
+                    let supervisor = self.ports.stream_supervisor.clone();
+                    let (request, ports, resource_roots) = self.into_park_parts(operation);
+                    let Some(supervisor) = supervisor else {
+                        return Err(BytecodeSchedulerFailure::park(
+                            BytecodeSchedulerError::UnsupportedPark,
+                            BytecodeParkFailureOwner::Unaccepted(request),
+                            ports,
+                            resource_roots,
+                        ));
+                    };
+                    if let Err(failure) = supervisor.park(request, heap, budget) {
+                        return Err(Self::failed_park(failure, ports, resource_roots));
+                    }
                     return Ok(BytecodeSchedulerOutcome::Parked);
                 }
             }
@@ -542,7 +1003,7 @@ where
     pub fn resume_from_pending_wake(
         wake: PendingWake<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>, U::ResumeOutcome>,
         ports: BytecodeSchedulerPorts<U>,
-    ) -> Result<Self, BytecodeSchedulerError>
+    ) -> Result<Self, BytecodeSchedulerFailure<U>>
     where
         U::ResumeOutcome: VmRootSource,
     {
@@ -560,7 +1021,7 @@ where
         wake: PendingWake<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>, O>,
         ports: BytecodeSchedulerPorts<U>,
         map: impl FnOnce(&U::ResumeToken, O) -> U::ResumeOutcome,
-    ) -> Result<Self, BytecodeSchedulerError>
+    ) -> Result<Self, BytecodeSchedulerFailure<U>>
     where
         O: VmRootSource,
         U::ResumeOutcome: VmRootSource,
@@ -574,7 +1035,7 @@ where
         wake: ClaimedPendingWakeGuard<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>, O>,
         ports: BytecodeSchedulerPorts<U>,
         map: impl FnOnce(&U::ResumeToken, O) -> U::ResumeOutcome,
-    ) -> Result<Self, BytecodeSchedulerError>
+    ) -> Result<Self, BytecodeSchedulerFailure<U>>
     where
         O: VmRootSource,
         U::ResumeOutcome: VmRootSource,
@@ -582,14 +1043,44 @@ where
         let mapped = wake
             .map(|resume, outcome, _roots| map(resume, outcome))
             .map_suspended(SuspendedTrampoline::resume);
-        mapped.resume_and_commit(
-            |trampoline, resume, outcome| trampoline.active_mut().resume(resume, outcome),
-            |trampoline, resource_roots| Self {
+        let failure_ports = ports.clone();
+        let resumed = mapped.resume_and_commit(
+            |trampoline, resume, outcome| {
+                trampoline
+                    .active_mut()
+                    .resume(resume, outcome)
+                    .map_err(|failure| match failure {
+                        BytecodeResumeFailure::Terminal(error) => {
+                            PendingResumeFailure::Terminal(error)
+                        }
+                        BytecodeResumeFailure::Rejected {
+                            reason,
+                            resume,
+                            outcome,
+                        } => PendingResumeFailure::Rejected {
+                            error: reason,
+                            resume,
+                            outcome,
+                        },
+                    })
+            },
+            move |trampoline, resource_roots| Self {
                 trampoline,
                 ports,
                 resource_roots,
             },
-        )
+        );
+        match resumed {
+            Ok(scheduler) => Ok(scheduler),
+            Err(failure) => {
+                let (reason, guard) = failure.into_parts();
+                Err(BytecodeSchedulerFailure::mapped_wake(
+                    reason,
+                    guard,
+                    failure_ports,
+                ))
+            }
+        }
     }
 }
 
@@ -634,8 +1125,21 @@ impl BytecodeUnit for VmFiber {
         &mut self,
         token: VmResumeToken,
         outcome: ResumeOutcome,
-    ) -> Result<(), BytecodeSchedulerError> {
-        VmFiber::resume(self, token, outcome).map_err(BytecodeSchedulerError::from)
+    ) -> Result<(), BytecodeResumeFailure<VmResumeToken, ResumeOutcome>> {
+        VmFiber::resume(self, token, outcome).map_err(|failure| match failure {
+            VmResumeFailure::Terminal(error) => {
+                BytecodeResumeFailure::Terminal(BytecodeSchedulerError::Vm(error))
+            }
+            VmResumeFailure::Rejected {
+                error,
+                resume,
+                outcome,
+            } => BytecodeResumeFailure::Rejected {
+                reason: BytecodeSchedulerError::Vm(error),
+                resume,
+                outcome,
+            },
+        })
     }
 
     fn child_completion_to_resume_outcome(completed: VmResult) -> ResumeOutcome {
@@ -647,25 +1151,6 @@ impl BytecodeUnit for VmFiber {
             Err(VmError::Thrown(envelope)) => ResumeOutcome::Throw(envelope),
             Err(error) => ResumeOutcome::Failure(error),
         }
-    }
-
-    fn release_rejected_adapter_arguments(
-        invocation: VmAdapterInvocation,
-        heap: &mut dyn VmHeap,
-    ) -> Result<(), BytecodeSchedulerError> {
-        let (_, arguments, _) = invocation.into_parts();
-        arguments
-            .release(heap)
-            .map_err(BytecodeSchedulerError::from)
-    }
-
-    fn release_rejected_stream_item(
-        item: VmStreamItem,
-        heap: &mut dyn VmHeap,
-    ) -> Result<(), BytecodeSchedulerError> {
-        item.release(heap)
-            .map(|_resume| ())
-            .map_err(BytecodeSchedulerError::StreamItemRelease)
     }
 
     fn is_stream_next_child(invocation: &VmChildInvocation) -> bool {
@@ -690,8 +1175,7 @@ mod tests {
     use super::*;
     use crate::{
         owner_inventory::{
-            ChildOwnerRegistration, OwnerCreationErrorKind, OwnerDomain, PendingOwnerRegistration,
-            RequestExecutionOwnerInventory,
+            ChildOwnerRegistration, PendingOwnerRegistration, RequestExecutionOwnerInventory,
         },
         PendingOwnerDraft, PendingPublication, PendingRegistry, PendingWake, PendingWakeQueue,
         RequestByteStreamPullFuture, RequestByteStreamPullStartError, RequestByteStreamSource,
@@ -799,20 +1283,12 @@ mod tests {
             &mut self,
             _token: Self::ResumeToken,
             _outcome: Self::ResumeOutcome,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>> {
             Ok(())
         }
 
         fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome {
             TestResumeOutcome(completed)
-        }
-
-        fn release_rejected_adapter_arguments(
-            invocation: Self::AdapterInvocation,
-            _heap: &mut dyn VmHeap,
-        ) -> Result<(), BytecodeSchedulerError> {
-            invocation.fetch_add(1, Ordering::SeqCst);
-            Ok(())
         }
     }
 
@@ -853,20 +1329,12 @@ mod tests {
             &mut self,
             _token: Self::ResumeToken,
             _outcome: Self::ResumeOutcome,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>> {
             Ok(())
         }
 
         fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome {
             TestResumeOutcome(completed)
-        }
-
-        fn release_rejected_stream_item(
-            item: Self::StreamItem,
-            _heap: &mut dyn VmHeap,
-        ) -> Result<(), BytecodeSchedulerError> {
-            item.fetch_add(1, Ordering::SeqCst);
-            Ok(())
         }
     }
 
@@ -928,7 +1396,7 @@ mod tests {
             &mut self,
             token: usize,
             outcome: TestResumeOutcome,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeResumeFailure<usize, TestResumeOutcome>> {
             self.resumed = Some((token, outcome));
             Ok(())
         }
@@ -950,18 +1418,18 @@ mod tests {
             _depth: usize,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeStreamHandoff<TestUnit>, BytecodeSchedulerError> {
+        ) -> Result<BytecodeStreamHandoff<TestUnit>, BytecodePortFailure<usize, usize>> {
             self.emitted.lock().unwrap().push(item);
             Ok(BytecodeStreamHandoff::Pending(item))
         }
 
         fn park(
             &self,
-            operation: usize,
-            suspended: TestSuspended,
+            request: BytecodeParkRequest<TestUnit>,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeParkFailure<TestUnit>> {
+            let (operation, suspended) = request.into_parts();
             *self.parked.lock().unwrap() = Some((operation, suspended));
             Ok(())
         }
@@ -1036,7 +1504,7 @@ mod tests {
             &mut self,
             _token: Self::ResumeToken,
             _outcome: Self::ResumeOutcome,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>> {
             self.state = ResumeThenChildState::EnterChild;
             Ok(())
         }
@@ -1054,11 +1522,11 @@ mod tests {
     impl BytecodeStreamSupervisor<ResumeThenChildUnit> for ResumeThenChildSupervisor {
         fn park(
             &self,
-            operation: usize,
-            suspended: ResumeThenChildSuspended,
+            request: BytecodeParkRequest<ResumeThenChildUnit>,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeParkFailure<ResumeThenChildUnit>> {
+            let (operation, suspended) = request.into_parts();
             *self.0.lock().unwrap() = Some((operation, suspended));
             Ok(())
         }
@@ -1092,11 +1560,15 @@ mod tests {
 
         fn execute_adapter(
             &self,
-            _invocation: usize,
+            invocation: usize,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeAdapterHandoff<ResumeThenChildUnit>, BytecodeSchedulerError> {
-            Err(BytecodeSchedulerError::UnsupportedAdapter)
+        ) -> Result<BytecodeAdapterHandoff<ResumeThenChildUnit>, BytecodePortFailure<usize, usize>>
+        {
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedAdapter,
+                invocation,
+            ))
         }
     }
 
@@ -1151,7 +1623,7 @@ mod tests {
             &mut self,
             _token: usize,
             outcome: PendingStreamOutcome,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeResumeFailure<usize, PendingStreamOutcome>> {
             self.resumed = Some(outcome);
             Ok(())
         }
@@ -1184,11 +1656,15 @@ mod tests {
 
         fn execute_adapter(
             &self,
-            _invocation: (),
+            invocation: (),
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeAdapterHandoff<PendingStreamNextUnit>, BytecodeSchedulerError> {
-            Err(BytecodeSchedulerError::UnsupportedAdapter)
+        ) -> Result<BytecodeAdapterHandoff<PendingStreamNextUnit>, BytecodePortFailure<(), usize>>
+        {
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedAdapter,
+                invocation,
+            ))
         }
 
         fn execute_stream_next(
@@ -1196,17 +1672,18 @@ mod tests {
             _invocation: (),
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeStreamHandoff<PendingStreamNextUnit>, BytecodeSchedulerError> {
+        ) -> Result<BytecodeStreamHandoff<PendingStreamNextUnit>, BytecodePortFailure<(), usize>>
+        {
             Ok(BytecodeStreamHandoff::Pending(13))
         }
 
         fn park_stream_next(
             &self,
-            operation: usize,
-            suspended: PendingStreamSuspended,
+            request: BytecodeParkRequest<PendingStreamNextUnit>,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<(), BytecodeSchedulerError> {
+        ) -> Result<(), BytecodeParkFailure<PendingStreamNextUnit>> {
+            let (operation, suspended) = request.into_parts();
             *self.0.lock().unwrap() = Some((operation, suspended));
             Ok(())
         }
@@ -1257,12 +1734,14 @@ mod tests {
 
         fn resume(
             &mut self,
-            _token: Self::ResumeToken,
-            _outcome: Self::ResumeOutcome,
-        ) -> Result<(), BytecodeSchedulerError> {
-            Err(BytecodeSchedulerError::Port(
-                "intentional resume rejection".to_string(),
-            ))
+            token: Self::ResumeToken,
+            outcome: Self::ResumeOutcome,
+        ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>> {
+            Err(BytecodeResumeFailure::Rejected {
+                reason: BytecodeSchedulerError::Port("intentional resume rejection".to_string()),
+                resume: token,
+                outcome,
+            })
         }
 
         fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome {
@@ -1455,7 +1934,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_5_first_poll_missing_adapter_executor_releases_arguments_once() {
+    fn phase_5_missing_adapter_executor_retains_input_until_failure_owner_drops() {
         let release_count = Arc::new(AtomicUsize::new(0));
         let scheduler = BytecodeScheduler::new(
             RejectedAdapterProbe {
@@ -1466,15 +1945,19 @@ mod tests {
             child_registration(),
         );
 
+        let failure = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap_err();
         assert!(matches!(
-            scheduler.run(&mut NoopHeap, &mut NoopBudget),
-            Err(BytecodeSchedulerError::UnsupportedAdapter)
+            failure.reason(),
+            BytecodeSchedulerError::UnsupportedAdapter
         ));
-        assert_eq!(release_count.load(Ordering::SeqCst), 1);
+        assert_eq!(Arc::strong_count(&release_count), 3);
+        let (_, owner) = failure.into_parts();
+        drop(owner);
+        assert_eq!(Arc::strong_count(&release_count), 1);
     }
 
     #[test]
-    fn phase_5_stream_missing_supervisor_releases_emitted_item_once() {
+    fn phase_5_missing_stream_supervisor_retains_input_until_failure_owner_drops() {
         let release_count = Arc::new(AtomicUsize::new(0));
         let scheduler = BytecodeScheduler::new(
             RejectedStreamProbe {
@@ -1485,11 +1968,52 @@ mod tests {
             child_registration(),
         );
 
+        let failure = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap_err();
         assert!(matches!(
-            scheduler.run(&mut NoopHeap, &mut NoopBudget),
-            Err(BytecodeSchedulerError::UnsupportedStream)
+            failure.reason(),
+            BytecodeSchedulerError::UnsupportedStream
         ));
-        assert_eq!(release_count.load(Ordering::SeqCst), 1);
+        assert_eq!(Arc::strong_count(&release_count), 3);
+        let (_, owner) = failure.into_parts();
+        drop(owner);
+        assert_eq!(Arc::strong_count(&release_count), 1);
+    }
+
+    #[test]
+    fn bind_mismatch_returns_the_unchanged_scheduler_owner() {
+        let first_context =
+            RequestExecutionContext::<TestUnit>::create(BytecodeSchedulerPorts::default());
+        let first_pin = first_context.resource_table().root_pin();
+        let scheduler = BytecodeScheduler::new_with_resource_roots(
+            TestUnit {
+                control: Some(TestControl::Complete(73)),
+                resumed: None,
+                finish_after_resume: None,
+            },
+            BytecodeSchedulerPorts::default(),
+            child_registration(),
+            first_pin,
+        );
+        let mut second_context =
+            RequestExecutionContext::<TestUnit>::create(BytecodeSchedulerPorts::default());
+
+        let failure = second_context
+            .resume_drive(scheduler, &mut NoopHeap, &mut NoopBudget)
+            .unwrap_err();
+        assert!(matches!(
+            failure.reason(),
+            BytecodeSchedulerError::Port(message)
+                if message == "pending scheduler belongs to a different request resource table"
+        ));
+        let (_, owner) = failure.into_parts();
+        let BytecodeSchedulerFailureOwnerKind::Scheduler { scheduler, .. } = owner.kind else {
+            panic!("bind mismatch must return the unchanged scheduler")
+        };
+        assert!(matches!(
+            scheduler.active().control.as_ref(),
+            Some(TestControl::Complete(73))
+        ));
+        drop(first_context);
     }
 
     #[test]
@@ -1547,7 +2071,7 @@ mod tests {
     }
 
     #[test]
-    fn frozen_inventory_rejects_a_started_child_without_installing_it() {
+    fn non_stream_next_child_fails_closed_and_returns_invocation() {
         let executor = Arc::new(ResumeThenChildExecutor(AtomicUsize::new(0)));
         let supervisor = Arc::new(ResumeThenChildSupervisor(Mutex::new(None)));
         let ports = BytecodeSchedulerPorts {
@@ -1598,13 +2122,21 @@ mod tests {
             },
         )
         .unwrap();
-        let error = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap_err();
-        let BytecodeSchedulerError::ChildOwnerCreation(error) = error else {
-            panic!("expected frozen child inventory rejection")
+        let failure = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap_err();
+        assert!(matches!(
+            failure.reason(),
+            BytecodeSchedulerError::UnsupportedChild
+        ));
+        let (_, owner) = failure.into_parts();
+        let BytecodeSchedulerFailureOwnerKind::Scheduler {
+            retained: BytecodeSchedulerRetainedOwner::ChildInput(invocation),
+            ..
+        } = owner.kind
+        else {
+            panic!("expected the rejected child invocation owner")
         };
-        assert_eq!(error.kind(), OwnerCreationErrorKind::InventoryFrozen);
-        assert_eq!(error.domain(), OwnerDomain::Child);
-        assert_eq!(executor.0.load(Ordering::SeqCst), 1);
+        assert_eq!(invocation, 0);
+        assert_eq!(executor.0.load(Ordering::SeqCst), 0);
         assert_eq!(snapshot.child.current, 0);
     }
 
@@ -1742,17 +2274,18 @@ mod tests {
                 _invocation: usize,
                 _heap: &mut dyn VmHeap,
                 _budget: &mut dyn VmBudget,
-            ) -> Result<BytecodeAdapterHandoff<TestUnit>, BytecodeSchedulerError> {
+            ) -> Result<BytecodeAdapterHandoff<TestUnit>, BytecodePortFailure<usize, usize>>
+            {
                 Ok(BytecodeAdapterHandoff::Pending(7))
             }
 
             fn park_adapter(
                 &self,
-                operation: usize,
-                suspended: TestSuspended,
+                request: BytecodeParkRequest<TestUnit>,
                 _heap: &mut dyn VmHeap,
                 _budget: &mut dyn VmBudget,
-            ) -> Result<(), BytecodeSchedulerError> {
+            ) -> Result<(), BytecodeParkFailure<TestUnit>> {
+                let (operation, suspended) = request.into_parts();
                 *self.parked.lock().unwrap() = Some((operation, suspended));
                 Ok(())
             }
