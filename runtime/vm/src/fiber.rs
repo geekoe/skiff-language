@@ -3131,9 +3131,7 @@ impl VmFiber {
         };
         let adapter = self
             .execution_image()
-            .host_effect_adapters()
-            .get(adapter_index.get() as usize)
-            .filter(|row| row.index() == adapter_index)
+            .host_effect_target(adapter_index)
             .ok_or(VmError::LinkedTableRowMissing {
                 table: CandidateTable::HostEffectAdapters,
                 row: adapter_index.get(),
