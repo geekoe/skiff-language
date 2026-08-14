@@ -67,7 +67,9 @@ pub(super) fn package(
     let mut public_symbols = BTreeMap::new();
     if matches!(
         program,
-        RootProgram::Interface | RootProgram::UnreachableInterface
+        RootProgram::Interface
+            | RootProgram::UnreachableInterface
+            | RootProgram::ReorderedInterfaceResumePool
     ) {
         implementation_symbols.insert(
             "fixture.Reader".to_string(),
@@ -195,7 +197,9 @@ pub(super) fn package(
                 };
                 if matches!(
                     program,
-                    RootProgram::Interface | RootProgram::UnreachableInterface
+                    RootProgram::Interface
+                        | RootProgram::UnreachableInterface
+                        | RootProgram::ReorderedInterfaceResumePool
                 ) {
                     types.insert(
                         "fixture.Reader".to_string(),

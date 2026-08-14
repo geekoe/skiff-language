@@ -91,7 +91,10 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
     };
     let slot_type_refs = match program {
         RootProgram::StreamNextLoop => vec![0, 1, 0],
-        RootProgram::Interface | RootProgram::StreamProducer => vec![1],
+        RootProgram::Interface
+        | RootProgram::ReorderedInterfaceResumePool
+        | RootProgram::StreamProducer
+        | RootProgram::ReorderedStreamResumePool => vec![1],
         _ if slot_count == 1 => vec![0],
         _ => Vec::new(),
     };
@@ -101,7 +104,10 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
         }
     } else if program == RootProgram::StreamNext || program == RootProgram::StreamNextLoop {
         stream_plan()
-    } else if program == RootProgram::StreamProducer {
+    } else if matches!(
+        program,
+        RootProgram::StreamProducer | RootProgram::ReorderedStreamResumePool
+    ) {
         stream_item_plan()
     } else {
         snapshot_plan()
@@ -117,7 +123,10 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
             | RootProgram::RecordShape
             | RootProgram::ArraysMaps
     );
-    let is_stream_producer = matches!(program, RootProgram::StreamProducer);
+    let is_stream_producer = matches!(
+        program,
+        RootProgram::StreamProducer | RootProgram::ReorderedStreamResumePool
+    );
     let result_type_refs = has_result.then_some(0).into_iter().collect::<Vec<_>>();
     let result_plans = has_result
         .then(|| result_plan(program))
@@ -142,7 +151,9 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
                     mode: skiff_artifact_model::ParamModeIr::Value,
                     plan: match program {
                         RootProgram::StreamNext | RootProgram::StreamNextLoop => stream_plan(),
-                        RootProgram::StreamProducer => stream_item_plan(),
+                        RootProgram::StreamProducer | RootProgram::ReorderedStreamResumePool => {
+                            stream_item_plan()
+                        }
                         _ => snapshot_plan(),
                     },
                 })
@@ -158,12 +169,14 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
         max_operand_depth: match program {
             RootProgram::RecordShape => 2,
             RootProgram::Interface
+            | RootProgram::ReorderedInterfaceResumePool
             | RootProgram::Host
             | RootProgram::Intrinsic
             | RootProgram::ArraysMaps
             | RootProgram::StreamNext
             | RootProgram::StreamNextLoop
             | RootProgram::StreamProducer
+            | RootProgram::ReorderedStreamResumePool
             | RootProgram::Constant(_) => 1,
             _ => 0,
         },
@@ -329,6 +342,22 @@ fn root_statement_entries(program: RootProgram) -> Vec<StatementEntry> {
             },
         }];
     }
+    if matches!(program, RootProgram::ReorderedStreamResumePool) {
+        return [2, 6]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, pc)| StatementEntry {
+                pc,
+                sequence_ordinal: 0,
+                attribution_id: StatementAttributionId::Generated {
+                    ordinal: u32::try_from(ordinal).unwrap(),
+                },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerGeneratedWrapper,
+                },
+            })
+            .collect();
+    }
     if !matches!(
         program,
         RootProgram::LocalCall | RootProgram::SyntheticTarget | RootProgram::ServiceDependency
@@ -428,6 +457,19 @@ fn root_body(
             Some(host_resume_descriptor()),
             vec![source_map(0, 5)],
         ),
+        RootProgram::ReorderedInterfaceResumePool => (
+            vec![
+                0x06, 0, 0x24, 0, 0, 0, 1, 1, 0x08, 0x06, 0, 0x24, 0, 0, 0, 1, 0, 0x08, 0x25,
+            ],
+            vec![BytecodeRelocation::InterfaceRequirementRef {
+                interface: skiff_artifact_model::InterfaceInstantiationRef {
+                    interface_abi_id: interface_identity(),
+                    canonical_type_args: Vec::new(),
+                },
+            }],
+            None,
+            vec![source_map(2, 8), source_map(11, 17)],
+        ),
         RootProgram::Intrinsic => (
             vec![0x81, 0, 0, 1, 0x25],
             vec![BytecodeRelocation::IntrinsicRef {
@@ -467,6 +509,12 @@ fn root_body(
             Some(stream_producer_resume_descriptor()),
             vec![source_map(2, 4)],
         ),
+        RootProgram::ReorderedStreamResumePool => (
+            vec![0x06, 0, 0x61, 1, 0x06, 0, 0x61, 0, 0x25],
+            Vec::new(),
+            None,
+            vec![source_map(2, 4), source_map(6, 8)],
+        ),
         RootProgram::Constant(_) => (vec![0x00, 0, 0x08, 0x25], Vec::new(), None, Vec::new()),
     }
 }
@@ -499,7 +547,9 @@ fn pools(program: RootProgram) -> BytecodePools {
                     ty: TypeRefIr::builtin("string"),
                 },
             ],
-            RootProgram::Interface | RootProgram::UnreachableInterface => vec![
+            RootProgram::Interface
+            | RootProgram::UnreachableInterface
+            | RootProgram::ReorderedInterfaceResumePool => vec![
                 BytecodePoolEntry::TypeRef {
                     ty: TypeRefIr::builtin("string"),
                 },
@@ -539,7 +589,9 @@ fn pools(program: RootProgram) -> BytecodePools {
                     ty: TypeRefIr::builtin("string"),
                 },
             ],
-            RootProgram::StreamNext | RootProgram::StreamProducer => vec![
+            RootProgram::StreamNext
+            | RootProgram::StreamProducer
+            | RootProgram::ReorderedStreamResumePool => vec![
                 BytecodePoolEntry::TypeRef { ty: stream_type() },
                 BytecodePoolEntry::TypeRef { ty: item_type() },
             ],
@@ -576,19 +628,21 @@ fn pools(program: RootProgram) -> BytecodePools {
                     fields: Vec::new(),
                 },
             }],
+            RootProgram::ReorderedStreamResumePool => reordered_stream_shapes(),
             _ => Vec::new(),
         },
         effects: Vec::new(),
-        resume: if program == RootProgram::UnreachableInterface {
-            vec![BytecodePoolEntry::ResumeDescriptor(
+        resume: match program {
+            RootProgram::UnreachableInterface => vec![BytecodePoolEntry::ResumeDescriptor(
                 interface_resume_descriptor(HELPER_FUNCTION),
-            )]
-        } else {
-            root_body(program)
+            )],
+            RootProgram::ReorderedInterfaceResumePool => reordered_interface_resume_descriptors(),
+            RootProgram::ReorderedStreamResumePool => reordered_stream_resume_descriptors(),
+            _ => root_body(program)
                 .2
                 .map(BytecodePoolEntry::ResumeDescriptor)
                 .into_iter()
-                .collect()
+                .collect(),
         },
         callback_capture: (program == RootProgram::UnreachableCallback)
             .then(|| {
@@ -659,10 +713,18 @@ fn valid_intrinsic() -> IntrinsicReference {
 }
 
 fn interface_resume_descriptor(function_key: &str) -> ResumeDescriptor {
+    interface_resume_descriptor_at(function_key, 2, 8)
+}
+
+fn interface_resume_descriptor_at(
+    function_key: &str,
+    site_pc: u32,
+    resume_pc: u32,
+) -> ResumeDescriptor {
     ResumeDescriptor {
         function_key: function_key.to_string(),
-        site_pc: 2,
-        resume_pc: 8,
+        site_pc,
+        resume_pc,
         end_resume_pc: None,
         expected_stack_height_before_result: 0,
         result_type_refs: vec![0],
@@ -673,11 +735,25 @@ fn interface_resume_descriptor(function_key: &str) -> ResumeDescriptor {
     }
 }
 
+fn reordered_interface_resume_descriptors() -> Vec<BytecodePoolEntry> {
+    [
+        interface_resume_descriptor_at(ROOT_FUNCTION, 11, 17),
+        interface_resume_descriptor_at(ROOT_FUNCTION, 2, 8),
+    ]
+    .into_iter()
+    .map(BytecodePoolEntry::ResumeDescriptor)
+    .collect()
+}
+
 fn host_resume_descriptor() -> ResumeDescriptor {
+    host_resume_descriptor_at(0, 5)
+}
+
+fn host_resume_descriptor_at(site_pc: u32, resume_pc: u32) -> ResumeDescriptor {
     ResumeDescriptor {
         function_key: ROOT_FUNCTION.to_string(),
-        site_pc: 0,
-        resume_pc: 5,
+        site_pc,
+        resume_pc,
         end_resume_pc: None,
         expected_stack_height_before_result: 0,
         result_type_refs: vec![0],
@@ -719,18 +795,57 @@ fn stream_next_loop_resume_descriptor() -> ResumeDescriptor {
 }
 
 fn stream_producer_resume_descriptor() -> ResumeDescriptor {
+    stream_producer_resume_descriptor_at(2, 4, 0)
+}
+
+fn stream_producer_resume_descriptor_at(
+    site_pc: u32,
+    resume_pc: u32,
+    shape_ref: u32,
+) -> ResumeDescriptor {
     ResumeDescriptor {
         function_key: ROOT_FUNCTION.to_string(),
-        site_pc: 2,
-        resume_pc: 4,
+        site_pc,
+        resume_pc,
         end_resume_pc: None,
         expected_stack_height_before_result: 0,
         result_type_refs: Vec::new(),
         result_plans: Vec::new(),
         result_materializations: Vec::new(),
-        emit_stream_item_shape_ref: Some(0),
+        emit_stream_item_shape_ref: Some(shape_ref),
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
+}
+
+fn reordered_stream_resume_descriptors() -> Vec<BytecodePoolEntry> {
+    [
+        stream_producer_resume_descriptor_at(6, 8, 1),
+        stream_producer_resume_descriptor_at(2, 4, 0),
+    ]
+    .into_iter()
+    .map(BytecodePoolEntry::ResumeDescriptor)
+    .collect()
+}
+
+fn reordered_stream_shapes() -> Vec<BytecodePoolEntry> {
+    [vec!["alpha"], vec!["beta", "gamma"]]
+        .into_iter()
+        .map(|fields| BytecodePoolEntry::ShapeRef {
+            shape: skiff_artifact_model::ShapeDeclaration {
+                type_ref: 1,
+                plan: stream_item_plan(),
+                privileged_affine_composite: None,
+                fields: fields
+                    .into_iter()
+                    .map(|name| skiff_artifact_model::ShapeFieldDeclaration {
+                        name: name.to_string(),
+                        type_ref: 1,
+                        plan: snapshot_plan(),
+                    })
+                    .collect(),
+            },
+        })
+        .collect()
 }
 
 fn stream_type() -> TypeRefIr {

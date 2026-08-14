@@ -570,6 +570,134 @@ fn server_stream_start_chunk_and_end_link_exact_site_shapes() {
 }
 
 #[test]
+fn reordered_emit_stream_resume_pool_preserves_exact_site_shape_facts() {
+    let fixture = Fixture::reordered_stream_resume_pool();
+    let hydrated = fixture.hydrate();
+    let validated = hydrated
+        .packages()
+        .get(&fixture.package_reference.package_build_id)
+        .and_then(HydratedBytecodePackage::bytecode)
+        .expect("fixture package has admitted bytecode")
+        .view()
+        .resume_sites();
+    assert_eq!(
+        validated
+            .iter()
+            .map(|site| (site.descriptor_index, site.emit_stream_item_shape_ref))
+            .collect::<Vec<_>>(),
+        [(1, Some(0)), (0, Some(1))],
+        "validated sites retain instruction traversal order and exact artifact pool indices"
+    );
+
+    let image = link_deployment_execution_image(hydrated, &super::generous_execution_limits())
+        .expect("reordered descriptor rows remain an atomic image");
+    let root = image
+        .functions()
+        .iter()
+        .find(|function| function.key().artifact_function_key().as_str() == ROOT_FUNCTION)
+        .expect("root function links");
+    let mut layouts = Vec::new();
+    let mut shared_shape_authority = None;
+    for (ordinal, instruction) in root.instructions().iter().enumerate() {
+        if instruction.opcode() != Opcode::EmitStream {
+            continue;
+        }
+        let resume_index = instruction
+            .resolved_operands()
+            .iter()
+            .find_map(|operand| match operand.target() {
+                LinkedInstructionTarget::ResumeSite(index) => Some(index),
+                _ => None,
+            })
+            .expect("EmitStream retains one exact resume target");
+        let resume = image
+            .resume_sites()
+            .get(resume_index)
+            .expect("EmitStream resume row is present");
+        assert_eq!(
+            resume.site(),
+            InstructionIndex::new(u32::try_from(ordinal).unwrap()),
+            "the pool index must not be treated as validated traversal position"
+        );
+        let shape = resume
+            .emit_stream_item_shape()
+            .and_then(|shape| image.shapes().get(shape.get() as usize))
+            .expect("EmitStream retains its exact bounded shape");
+        let authority = (shape.nominal_type(), shape.plan().clone());
+        if let Some(expected) = &shared_shape_authority {
+            assert_eq!(
+                &authority, expected,
+                "the regression isolates layout selection under one nominal type and plan"
+            );
+        } else {
+            shared_shape_authority = Some(authority);
+        }
+        layouts.push(
+            shape
+                .fields()
+                .iter()
+                .map(|field| field.name())
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(layouts, [vec!["alpha"], vec!["beta", "gamma"]]);
+}
+
+#[test]
+fn reordered_ordinary_result_resume_pool_preserves_exact_site_facts() {
+    let fixture = Fixture::reordered_interface_resume_pool();
+    let hydrated = fixture.hydrate();
+    let validated = hydrated
+        .packages()
+        .get(&fixture.package_reference.package_build_id)
+        .and_then(HydratedBytecodePackage::bytecode)
+        .expect("fixture package has admitted bytecode")
+        .view()
+        .resume_sites();
+    assert_eq!(
+        validated
+            .iter()
+            .map(|site| site.descriptor_index)
+            .collect::<Vec<_>>(),
+        [1, 0],
+        "ordinary result sites also retain traversal order independently of pool order"
+    );
+
+    let candidate = link_deployment(&hydrated, &generous_limits())
+        .expect("reordered ordinary result rows remain a linked candidate");
+    let root = function(&candidate, ROOT_FUNCTION);
+    let pending = root
+        .instructions()
+        .iter()
+        .enumerate()
+        .filter(|(_, instruction)| instruction.opcode() == Opcode::CallInterface)
+        .collect::<Vec<_>>();
+    assert_eq!(pending.len(), 2);
+    for (ordinal, instruction) in pending {
+        let resume_index = instruction
+            .resolved_operands()
+            .iter()
+            .find_map(|operand| match operand.target() {
+                LinkedInstructionTarget::ResumeSite(index) => Some(index),
+                _ => None,
+            })
+            .expect("CallInterface retains one exact resume target");
+        let resume = candidate
+            .resume_sites()
+            .get(resume_index.get() as usize)
+            .expect("ordinary resume row is present");
+        assert_eq!(
+            resume.site(),
+            InstructionIndex::new(u32::try_from(ordinal).unwrap()),
+            "ordinary result facts must remain attached to their artifact descriptor index"
+        );
+        assert_eq!(resume.result_types().len(), 1);
+        assert_eq!(resume.result_plans().len(), 1);
+        assert_eq!(resume.result_materializations(), &[None]);
+    }
+}
+
+#[test]
 fn production_entry_links_exact_ordinary_root_local_call_and_return() {
     let fixture = Fixture::exact_local();
     let hydrated = fixture.hydrate();

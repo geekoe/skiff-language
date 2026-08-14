@@ -817,28 +817,7 @@ impl<'a> TypeLinker<'a> {
         function: FunctionIndex,
         location: BytecodeLinkLocation,
     ) -> Result<ResumeSiteIndex, BytecodeLinkError> {
-        let descriptor = package
-            .bytecode()
-            .ok_or_else(|| {
-                obligation_error(
-                    location.clone(),
-                    "type-only package has no bytecode resume pool".to_string(),
-                )
-            })?
-            .view()
-            .resume_sites()
-            .get(usize::try_from(artifact_index).map_err(|_| {
-                obligation_error(
-                    location.clone(),
-                    format!("resume pool row {artifact_index} does not fit usize"),
-                )
-            })?)
-            .ok_or_else(|| {
-                obligation_error(
-                    location.clone(),
-                    format!("validated resume pool row {artifact_index} is absent"),
-                )
-            })?;
+        let descriptor = validated_resume_site(package, artifact_index, location.clone())?;
         let descriptor = skiff_artifact_model::ResumeDescriptor {
             function_key: descriptor.function_key.clone(),
             site_pc: descriptor.site_pc,
@@ -1343,33 +1322,67 @@ fn descriptor_index(
     descriptor: &skiff_artifact_model::ResumeDescriptor,
     location: BytecodeLinkLocation,
 ) -> Result<u32, BytecodeLinkError> {
-    package
-        .bytecode()
-        .ok_or_else(|| {
-            obligation_error(
-                location.clone(),
-                "type-only package has no bytecode resume pool".to_string(),
-            )
-        })?
+    let bytecode = package.bytecode().ok_or_else(|| {
+        obligation_error(
+            location.clone(),
+            "type-only package has no bytecode resume pool".to_string(),
+        )
+    })?;
+    let mut matching = bytecode.view().resume_sites().iter().filter(|site| {
+        site.function_key == descriptor.function_key
+            && site.site_pc == descriptor.site_pc
+            && site.resume_pc == descriptor.resume_pc
+            && site.end_resume_pc == descriptor.end_resume_pc
+            && site.expected_stack_height_before_result
+                == descriptor.expected_stack_height_before_result
+            && site.result_type_refs == descriptor.result_type_refs
+            && site.result_plans == descriptor.result_plans
+            && site.result_materializations == descriptor.result_materializations
+            && site.emit_stream_item_shape_ref == descriptor.emit_stream_item_shape_ref
+            && site.error_mode == descriptor.error_mode
+    });
+    let site = matching.next().ok_or_else(|| {
+        obligation_error(
+            location.clone(),
+            "resume descriptor is absent from the admitted resume pool".to_string(),
+        )
+    })?;
+    if matching.next().is_some() {
+        return Err(obligation_error(
+            location,
+            "resume descriptor matches multiple admitted resume pool rows".to_string(),
+        ));
+    }
+    Ok(site.descriptor_index)
+}
+
+fn validated_resume_site(
+    package: &HydratedBytecodePackage,
+    artifact_index: u32,
+    location: BytecodeLinkLocation,
+) -> Result<&skiff_artifact_model::ValidatedResumeSite, BytecodeLinkError> {
+    let bytecode = package.bytecode().ok_or_else(|| {
+        obligation_error(
+            location.clone(),
+            "type-only package has no bytecode resume pool".to_string(),
+        )
+    })?;
+    let mut matching = bytecode
         .view()
         .resume_sites()
         .iter()
-        .position(|site| {
-            site.function_key == descriptor.function_key
-                && site.site_pc == descriptor.site_pc
-                && site.resume_pc == descriptor.resume_pc
-                && site.end_resume_pc == descriptor.end_resume_pc
-                && site.result_type_refs == descriptor.result_type_refs
-                && site.result_plans == descriptor.result_plans
-                && site.result_materializations == descriptor.result_materializations
-                && site.emit_stream_item_shape_ref == descriptor.emit_stream_item_shape_ref
-                && site.error_mode == descriptor.error_mode
-        })
-        .and_then(|index| u32::try_from(index).ok())
-        .ok_or_else(|| {
-            obligation_error(
-                location,
-                "resume descriptor is absent from the admitted resume pool".to_string(),
-            )
-        })
+        .filter(|site| site.descriptor_index == artifact_index);
+    let site = matching.next().ok_or_else(|| {
+        obligation_error(
+            location.clone(),
+            format!("validated resume pool row {artifact_index} is absent"),
+        )
+    })?;
+    if matching.next().is_some() {
+        return Err(obligation_error(
+            location,
+            format!("validated resume pool row {artifact_index} is duplicated"),
+        ));
+    }
+    Ok(site)
 }

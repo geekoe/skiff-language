@@ -1520,6 +1520,86 @@ mod tests {
     }
 
     #[test]
+    fn stream_emit_rejects_non_construct_item_before_shape_emission() {
+        let item_type = TypeRefIr::builtin("number");
+        let stream_type = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![item_type.clone()],
+        };
+        let expressions = vec![MirExpression {
+            index: 0,
+            expression: ExprIr::Literal {
+                value: LiteralIr::Number {
+                    value: serde_json::Number::from(1_u64),
+                },
+            },
+            ty: item_type.clone(),
+            writable: None,
+            direct_call: None,
+            stream_result: None,
+            remote_interface: None,
+        }];
+        let mut function = function(
+            "streams",
+            "produceNonConstruct",
+            stream_type,
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![
+                    MirStmt {
+                        statement_index: 0,
+                        span: None,
+                        kind: MirStmtKind::Emit {
+                            operation: String::new(),
+                            value: expression(0),
+                        },
+                    },
+                    MirStmt {
+                        statement_index: 1,
+                        span: None,
+                        kind: MirStmtKind::Return { value: None },
+                    },
+                ],
+                successors: Vec::new(),
+            }],
+            vec![
+                MirStatementEntry {
+                    statement_index: 0,
+                    span: None,
+                },
+                MirStatementEntry {
+                    statement_index: 1,
+                    span: None,
+                },
+            ],
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        function.stream_result = Some(MirStreamResultFacts { item_type });
+        let (unit, bundle) =
+            mir_and_bundle("streams", Vec::new(), ExternalRefTable::default(), function);
+        let plans = derive_bytecode_value_transfer_plans(&[unit.clone()], |_module_path, ty| {
+            stream_plan(ty)
+        })
+        .expect("stream producer plans derive");
+
+        let error = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect_err("non-Construct Emit must not invent a dense layout fact");
+        assert!(matches!(
+            error,
+            crate::BytecodeEmissionError::UnsupportedConstruct {
+                function_key,
+                construct: "EmitStream item shape",
+                location,
+            } if function_key == "streams::produceNonConstruct"
+                && location.contains("not an exact record construction")
+        ));
+    }
+
+    #[test]
     fn remote_interface_box_emits_remote_ref_and_method_rows() {
         let interface = InterfaceInstantiationRef {
             interface_abi_id: "iface:reader".to_string(),
