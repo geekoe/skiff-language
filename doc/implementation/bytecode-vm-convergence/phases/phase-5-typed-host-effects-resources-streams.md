@@ -156,3 +156,59 @@ timeout/cancel winner、late completion cleanup，以及同一单线程 Tokio wo
 registry/root/pending/executor authority；需要 hand-built proof seam；需要 Router production 修改；shared typed
 identity或affine lifecycle 无法从真实 producer运输到 consumer；或任何 write-set extension。私有、可逆 Rust API
 命名留给各 lane，不构成 Contract Amendment。
+
+## 6. Amendment r2（2026-08-14）：独立 verifier hard cut
+
+本 Amendment 落实
+[`DEC1 Amendment r2`](../decisions/dec1-executable-image-authority.md#amendment-r2-2026-08-14-retire-the-independent-production-verifier)。
+它只替换上文关于独立 verifier、`ExecutableFacts`、`verify_executable_facts`、verifier-owned `Verified*` facts 和
+`link→verify→scheduler` production stage 的描述；r1 的 exact binding、affine lifecycle、ResourceTable、Pending、
+真实 HTTP、backpressure 与 Router full-chain义务保持不变。
+
+### 6.1 Compiler semantics 与 atomic image construction
+
+compiler 是 source semantics 的唯一 authority。host-effect admission、合法 Stream placement、privileged affine
+composite、field take/transfer/drop、callable role、effect、source/statement attribution等都必须由 compiler 产生 exact
+typed facts。pinned registry 是这些 fact 引用的 canonical data authority；它不授权 linker 按 binding/context/type
+shape 重新决定 source semantics。
+
+linker 的唯一 production 结果仍是原子 `DeploymentExecutionImage`。它只解析并消费 compiler/artifact facts，解析
+exact package/registry identity并闭合 image-local references；缺失、漂移、歧义或矛盾必须 fail closed。必要的
+decode/index、CFG、stack、slot、call、resume consistency与 statement schedule mapping 最多作为该 constructor 的
+private bounded steps存在，不形成另一个 stage、crate、public verifier API、seal或可独立配对 facts。statement
+schedule 只能映射 compiler-emitted source/statement facts及其 pinned charging facts，不得从 opcode/source text猜回。
+
+因此 r1 §5.1 的 lifecycle链改为
+`source fact → artifact plan → atomic linked-image structural closure → VM physical take/remainder drop`；§5.2 中的
+relocation/registry/typed identity一致性由同一 image constructor在消费 exact facts时闭合，不再由 verifier重证或
+重推。scheduler/request/VM 只消费 complete image 的 opaque indexed view。
+
+### 6.2 Hard-cut surface
+
+`runtime/bytecode-verifier` crate/workspace member、`ExecutableFacts`、`verify_executable_facts`、verifier-owned
+`VerificationLimits`/`Verified*` consumer imports、所有 production dependency与 Phase Gate selector必须在一个
+integration checkpoint 删除或迁移。需要保留的 structural cases移到 linker atomic-image tests；source-semantic
+case移到 compiler/artifact tests。不得留下 forwarding crate、type/function alias、deprecated shim、feature flag、
+test-only old path或一新一旧双跑。测试名字和 selector 直接迁移到新 owner，不用 compatibility selector伪装通过。
+
+损坏 artifact 可以在 image construction 返回 typed link/image error；若某项损坏按设计延迟到 runtime，所有 lookup/
+decode/materialization仍必须 checked，并得到 safe request failure与正常 pending/root/resource cleanup。任何输入都不得
+导致 UB、artifact-controlled process panic/abort、越界、partial image publication或资源泄漏。
+
+### 6.3 Phase 5 stage sentinels
+
+仍保留六个独立 sentinel，但 production 边界改为：
+
+| Sentinel | 必须断言的真实边界 |
+| --- | --- |
+| S1 source→admission | 与 r1 相同：exact request/stream positive 被接受；SSE/其它 context 负例无 artifact/release pointer |
+| S2 admission→emission | 与 r1 相同：同一 artifact 有 exact relocation、两次 affine take、StreamNext/resume与 recursive drop facts |
+| S3 emission→atomic-link input | production constructor消费同一 artifact与 pinned registry；missing/drift/alias/identity swap拒绝 |
+| S4 atomic-link→image | 同一 constructor闭合 bounded index/CFG/stack/slot/call/resume/schedule结构并只发布 complete image；不重建 source semantics |
+| S5 image→scheduler | 同一 opaque image route证明 deterministic Ready terminal、真实 HTTP Parked、共享 registry、两 handle、capacity=1 backpressure与 stale-ref rejection |
+| S6 scheduler→request→response | 与 r1 相同：顶层 `RuntimeHost` exact ordered response、exact-once terminal/cleanup及零 current leak |
+
+S3/S4 是同一原子 constructor 的输入与完成态哨兵，不是两个 production API或可观察中间 image。proof 禁止手造
+candidate/facts/image。G9 还必须反向证明 crate、symbols、dependencies、imports、old test selectors与 dual path
+全部为零。若删除 verifier 暴露 artifact 缺少 source-semantic fact，立即停止 V5R并回到 A5/C5 Amend schema/producer；
+不得在 linker补推导。

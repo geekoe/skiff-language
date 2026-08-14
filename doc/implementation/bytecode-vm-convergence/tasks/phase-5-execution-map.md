@@ -1,8 +1,8 @@
 # MAP5：Phase 5 rolling execution map
 
-> Status: active; revision 15; recovery epoch `r1`; no implementation/proof lane complete
+> Status: active; revision 16; recovery epoch `r1`; verifier hard cut requires V5R redispatch; no implementation/proof lane complete
 >
-> Phase Contract: [`phase-5-typed-host-effects-resources-streams.md`](../phases/phase-5-typed-host-effects-resources-streams.md), Amendment r1
+> Phase Contract: [`phase-5-typed-host-effects-resources-streams.md`](../phases/phase-5-typed-host-effects-resources-streams.md), Amendment r2
 >
 > Exact baseline commit/tree: `e643d11fe763200c40b49e24ca922321799278f0` / `c511de9675f6d1a70fd5c995119f44be311cbc4e`
 >
@@ -33,8 +33,8 @@ commit 都不得整笔 merge/cherry-pick；新 owner 只能在 r1 worktree 中�
    recursive affine composite/field take，不自报 execution authority。
 2. C5 source/admission/emission：只接受 sleep regression + exact HTTP request/stream及合法 placement；输出 exact
    callsite、take、resume、transfer/drop facts。
-3. V5 link/verify：linked target运输非字符串 identity；execution image opaque indexed lookup；verifier只证明
-   registry/link/call/resume/lifecycle一致性，不用 context/type/opcode重建。
+3. V5R atomic link/image：linked target运输非字符串 identity；同一 atomic constructor只消费 compiler/artifact
+   facts并闭合 bounded structural references；不存在独立 verifier stage，也不得用 context/type/opcode重建 semantics。
 4. K5 VM/scheduler/request：scheduler-private ResourceTable、Phase 4 shared pending/root/inventory、first-poll
    Ready/Pending、heap-free completion、affine take/drop、two-handle routing与capacity=1 backpressure。
 5. H5 host/session：复用 production HTTP lower和 capability API；每 request 注入 ResourceTable-backed
@@ -167,6 +167,33 @@ direct field、其它 union/branch/field或 non-serverStream producer。lowering
 fixture使用 direct `headers: []`，不再用 `Array.empty<std.http.HttpHeader>()` 伪造 intrinsic capability。不得向
 artifact registry、linked image或 VM 增加 static intrinsic authority。
 
+### 2.16 Independent verifier retirement hard cut
+
+[`DEC1 Amendment r2`](../decisions/dec1-executable-image-authority.md#amendment-r2-2026-08-14-retire-the-independent-production-verifier)
+与 Phase Contract Amendment r2 删除独立 production `runtime/bytecode-verifier` stage/crate。compiler是 source
+semantics 唯一 authority；linker atomic `DeploymentExecutionImage` constructor最多承担 private bounded
+decode/index/CFG/stack/slot/call/resume consistency和 statement schedule的 exact fact-to-index mapping。linker只解析/
+消费 compiler-emitted facts及其 pinned registry references；缺 fact就失败，不得从 opcode、name、context、registry
+membership或 type/shape重推 semantic admission、effect、placement、lifecycle或 source attribution。
+
+这是一个不可拆的 hard-cut checkpoint：删除 workspace member/crate、`ExecutableFacts`、
+`verify_executable_facts`、verifier-owned consumer types、所有 production dependency/import、旧 tests/Gate selector，
+并把 structural cases移到 linker image-construction tests、semantic cases留给 A5/C5已有 test owner。禁止 alias、shim、
+feature-gated legacy、forwarding crate、test-only old path或新旧双跑。`VerificationLimits`收敛为 image/linker-owned
+construction limits；schedule/resume/effect/constant views只能由 complete image窄暴露，不得形成第二 facts bundle。
+
+现 `codex/bcvm-p5-v5-r1` / `skiff-bcvm-p5-v5-r1` 停在 `cb6de45aed3d80a510f9dccbc6f051c6a0112be1`
+并含 verifier semantic reconstruction与 linker 混合 dirty work。该 worktree立即降为 audit-only：不提交、不整笔
+salvage；只能把 structural negative-test intent逐项重写到 V5R，source-semantic intent返回 A5/C5。V5R 从本 docs
+commit后的 clean integration HEAD 新建。r1 §2.1 的 PASS 只覆盖原 affine/resource lifecycle choice，不覆盖本次
+stage删除；V5R 开码前必须取得新的 independent Design PASS。
+
+V5R hard cut期间，下表中与 K5/H5 重叠的 manifest、VM/request test与 Phase 4 compatibility文件全部由 V5R
+临时独占，K5/H5 必须停止写入；atomic checkpoint join并 rebase后才恢复各自原 semantic owner。P5G只拥有 Phase
+4/5 selector与 Phase 5 stage-test companion，并与 V5R 同一 checkpoint join，不能先提交指向不存在 target 的
+中间 Gate。损坏 artifact可在 construction失败，或在明确延迟检查点产生 checked safe request failure；两条路径
+都必须证明无 UB/process crash/越界/partial image/pending-root-resource leak。
+
 ## 3. Lanes、唯一 write sets 与 rolling join
 
 表内 write set 是本 Phase 唯一文件清单权威；lane 内 focused unit test 可放在所列 module 的现有/新 test
@@ -176,14 +203,15 @@ artifact registry、linked image或 VM 增加 static intrinsic authority。
 | --- | --- | --- | --- |
 | A5 authority + affine schema / ready | `codex/bcvm-p5-authority-r1` / `skiff-bcvm-p5-authority-r1` | `artifact-model/src/host_effect_registry/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/native_value_lifecycle/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/value_lifecycle_policy/**`；`artifact-model/src/bytecode/{dto.rs,opcodes/**,validate/{instructions.rs,plans.rs},tests/**}`；`artifact-model/src/lib.rs`；`artifact-identity/src/tests/mod.rs`（mechanical schema identity pin）；`runtime/native-contract/src/http_targets.rs`（仅复用/集中 canonical constants，不得成为第二 bytecode authority） | docs; join 1，首个非文档 commit |
 | C5 compiler / ready after A5 API | `codex/bcvm-p5-compiler-r1` / `skiff-bcvm-p5-compiler-r1` | `compiler/source/src/{value_transfer/**,callable_effects/**}`；`compiler/source/src/expression_type_model.rs`；`compiler/source/src/expression_type_model/{assignability.rs,expression_assignability.rs,materialization.rs,object_materialization/tests.rs}`；`compiler/lowering/src/mir/**`；`compiler/lowering/src/function_lowering.rs`；`compiler/lowering/src/function_lowering/{object_literal.rs,object_literal/fact_validation.rs}`；`compiler/lowering/src/source_file_lowering/tests/object_materialization.rs`；`compiler/emission/src/bytecode/{admission.rs,admission/**,constants.rs,emitter.rs,functions.rs,plans.rs,mod.rs,tests/**}`；`compiler/compiled/src/bytecode_handoff/tests.rs`（schema pin/full publication regression only）；`compiler/driver/authoring.rs`；`compiler/driver/authoring/tests.rs`（only if canonical resolver focused regression is required）；`compiler/driver/pipeline/mod.rs`；`compiler/driver/pipeline/bytecode_lane.rs`；`compiler/driver/pipeline/bytecode_lane/tests.rs`（schema pin/full publication regression only） | A5; join 2a；Phase 5 admission放新子模块，避免继续膨胀单文件 |
-| V5 link + verify / ready after A5 API | `codex/bcvm-p5-verify-r1` / `skiff-bcvm-p5-verify-r1` | `runtime/linked-bytecode/src/{authority.rs,targets.rs,targets/**,plan.rs,candidate/**,tests/**,lib.rs}`（`authority.rs` 仅 mechanical schema-comment pin）；`runtime/linker/src/bytecode/{link/**,execution_image.rs,stack_map/values.rs,types/**,tests/**}`；`runtime/bytecode-verifier/src/**` | A5; join 2b；与 C5 可并行 |
-| K5 Resource/Pending/VM kernel / ready after V5 typed view | `codex/bcvm-p5-kernel-r1` / `skiff-bcvm-p5-kernel-r1` | `runtime/scheduler/src/{owner_inventory.rs,pending.rs,resource.rs,root_escrow.rs,stream.rs,stream_driver.rs,bytecode.rs,lib.rs}`；`runtime/scheduler/tests/bytecode_scheduler.rs`（legacy direct-resume migration only）；`runtime/model/src/{vm_heap.rs,vm_value.rs,lib.rs}`；`runtime/request/Cargo.toml`；`runtime/request/src/{bytecode_ingress.rs,bytecode_server_stream.rs,bytecode_host_effects.rs,vm_heap.rs,execution_budget.rs,response_event.rs,outbound.rs,lib.rs}`；`runtime/request/tests/bytecode_request.rs`；`runtime/vm/src/{control.rs,fiber.rs,lifecycle.rs,lib.rs,fiber/tests.rs}`；`runtime/vm/tests/vertical/**` | A5+V5 API; join 3；ResourceTable只在 scheduler，禁止写 `runtime/model/src/resource.rs` |
-| H5 production host/session composition / ready after K5 port | `codex/bcvm-p5-host-r1` / `skiff-bcvm-p5-host-r1` | `Cargo.lock`（仅 `skiff-runtime-host` dependency list机械加入 `skiff-runtime-linked-bytecode`）；`runtime/capability-context/src/{http.rs,lib.rs,outbound_control.rs}`；`runtime/transport/src/response_mapper.rs`；`runtime/transport/src/response_mapper/tests.rs`；`runtime/host/Cargo.toml`；`runtime/host/src/capability_context/http.rs`；`runtime/host/src/host/{mod.rs,runtime_host.rs,http_client_runtime.rs,http_runtime/**,http_response_ceiling.rs,request_supervisor.rs,router_session.rs,router_session/**,bytecode_capability_adapter.rs}`；`runtime/host/src/host/request_entry.rs`；`runtime/host/src/host/request_entry/{assembly.rs,assembly_wire.rs,websocket_jsonrpc.rs,bytecode_host_effects.rs,server_stream.rs}`；`runtime/host/src/host/request_entry/phase_{2,3,4}_proof_support/request_composition.rs`（仅 mechanical mandatory fields：`http_client: None` + fixed `max_response_bytes`）；`runtime/host/src/host/request_entry/phase_4_vcp_tests.rs`（仅 typed-view compatibility） | K5 public port; join 4；复用 existing lower，HTTP/SSE之外不恢复 tree evaluator adapter |
-| P5G proof + Router composition + Gate / active from docs | `codex/bcvm-p5-proof-gate-r1` / `skiff-bcvm-p5-proof-gate-r1` | `runtime/host/tests/bytecode_vm_phase_5.rs`；`runtime/host/tests/bytecode_vm_phase_5/**`；`runtime/host/tests/fixtures/bytecode-vm-phase-5/**`；`router/tests/bytecode_vm_phase_5.rs`；`router/tests/bytecode_vm_phase_5/**`；`scripts/lib/bytecode-vm-phase-5-*.mjs`；`scripts/run-bytecode-vm-phase-5-gate.mjs`；`scripts/tests/bytecode-vm-phase-5-*.mjs`；`scripts/lib/{verify-cli.mjs,verify-plan.mjs,verify-selector-graph.mjs}` | docs→expected-red commit before join 1；final proof join 5 after H5；不得写 production |
+| V5R atomic image + verifier retirement / redispatch after Design PASS | `codex/bcvm-p5-image-r1` / `skiff-bcvm-p5-image-r1`（从本 docs commit后的 clean integration HEAD新建） | typed transport：`runtime/linked-bytecode/src/{authority.rs,targets.rs,targets/**,plan.rs,candidate/**,tests/**,lib.rs}`（`authority.rs` 仍仅 mechanical schema-comment pin）；hard cut：`Cargo.toml`、`Cargo.lock`、`runtime/bytecode-verifier/**`（delete）、`runtime/linker/Cargo.toml`、`runtime/linker/src/{lib.rs,bytecode/**}`、`runtime/linker/tests/phase_1_contract/**`；consumer/dependency migration：`runtime/host/Cargo.toml`、`runtime/host/src/loader/bytecode_admission.rs`、`runtime/host/src/host/request_entry/phase_4_vcp_tests.rs`、`runtime/request/Cargo.toml`、`runtime/request/tests/bytecode_request.rs`、`runtime/vm/Cargo.toml`、`runtime/vm/src/{fiber.rs,statement.rs}`、`runtime/vm/src/fiber/{projection_tests.rs,tests.rs}`、`runtime/vm/tests/vertical.rs`、`runtime/package-test/{Cargo.toml,src/lib.rs}`、`test-runner/{Cargo.toml,src/runtime_execution.rs}`；structural registry：`scripts/check-runtime-crate-dag.mjs`、`scripts/lib/verify-rust-subjects.mjs` | A5+C5 facts + new independent Design PASS；atomic join 2b with P5G selector companion；old V5 dirty tree audit-only |
+| K5 Resource/Pending/VM kernel / paused for V5R hard cut | `codex/bcvm-p5-kernel-r1` / `skiff-bcvm-p5-kernel-r1` | `runtime/scheduler/src/{owner_inventory.rs,pending.rs,resource.rs,root_escrow.rs,stream.rs,stream_driver.rs,bytecode.rs,lib.rs}`；`runtime/scheduler/tests/bytecode_scheduler.rs`（legacy direct-resume migration only）；`runtime/model/src/{vm_heap.rs,vm_value.rs,lib.rs}`；`runtime/request/Cargo.toml`；`runtime/request/src/{bytecode_ingress.rs,bytecode_server_stream.rs,bytecode_host_effects.rs,vm_heap.rs,execution_budget.rs,response_event.rs,outbound.rs,lib.rs}`；`runtime/request/tests/bytecode_request.rs`；`runtime/vm/src/{control.rs,fiber.rs,lifecycle.rs,lib.rs,fiber/tests.rs}`；`runtime/vm/tests/vertical/**` | V5R image API; join 3；§2.16 overlap在 hard-cut期间归 V5R，rebase后恢复；ResourceTable只在 scheduler，禁止写 `runtime/model/src/resource.rs` |
+| H5 production host/session composition / paused for V5R hard cut | `codex/bcvm-p5-host-r1` / `skiff-bcvm-p5-host-r1` | `Cargo.lock`（通常只允许 `skiff-runtime-host` dependency list机械投影；§2.16 hard cut临时归 V5R）；`runtime/capability-context/src/{http.rs,lib.rs,outbound_control.rs}`；`runtime/transport/src/response_mapper.rs`；`runtime/transport/src/response_mapper/tests.rs`；`runtime/host/Cargo.toml`；`runtime/host/src/capability_context/http.rs`；`runtime/host/src/host/{mod.rs,runtime_host.rs,http_client_runtime.rs,http_runtime/**,http_response_ceiling.rs,request_supervisor.rs,router_session.rs,router_session/**,bytecode_capability_adapter.rs}`；`runtime/host/src/host/request_entry.rs`；`runtime/host/src/host/request_entry/{assembly.rs,assembly_wire.rs,websocket_jsonrpc.rs,bytecode_host_effects.rs,server_stream.rs}`；`runtime/host/src/host/request_entry/phase_{2,3,4}_proof_support/request_composition.rs`（仅 mechanical mandatory fields：`http_client: None` + fixed `max_response_bytes`）；`runtime/host/src/host/request_entry/phase_4_vcp_tests.rs`（通常仅 typed-view compatibility；§2.16 hard cut临时归 V5R） | K5 public port + V5R image API; join 4；§2.16 overlap在 hard-cut期间归 V5R，rebase后恢复；复用 existing lower |
+| P5G proof + Router composition + Gate / V5R selector companion active | `codex/bcvm-p5-proof-gate-r1` / `skiff-bcvm-p5-proof-gate-r1` | `runtime/host/tests/bytecode_vm_phase_5.rs`；`runtime/host/tests/bytecode_vm_phase_5/**`；`runtime/host/tests/fixtures/bytecode-vm-phase-5/**`；`router/tests/bytecode_vm_phase_5.rs`；`router/tests/bytecode_vm_phase_5/**`；`scripts/lib/bytecode-vm-phase-4-contract.mjs`（verifier selector hard-cut only）；`scripts/lib/bytecode-vm-phase-5-*.mjs`；`scripts/run-bytecode-vm-phase-5-gate.mjs`；`scripts/tests/bytecode-vm-phase-5-*.mjs`；`scripts/lib/{verify-cli.mjs,verify-plan.mjs,verify-selector-graph.mjs}` | V5R exact replacement test names；selector companion与 V5R atomic join 2b；final proof join 5 after H5；不得写 production |
 | R5-fix conditional / not dispatched | none | `∅` | 只有真实 P5G 证据定位 Router defect 后，先修 Contract/MAP并列 exact Router write set，再创建 owner |
 
 `runtime/scheduler/src/resource.rs` 内的 ResourceTable/entry/private lease 是中央资源状态机，唯一 write owner 为
-K5。A5/C5/V5 只生产/运输/证明 lifecycle facts；H5 只实现 provider/composition；P5G 只观察。
+K5。A5/C5生产 source semantics；V5R只运输 facts并构造 atomic image；H5只实现 provider/composition；P5G只观察。
+§2.16 的临时 overlap owner优先于 K5/H5 常规 write set，且只持续一个 atomic hard-cut checkpoint。
 
 ## 4. Proof/Gate matrix
 
@@ -195,19 +223,21 @@ Gate regression、workspace rustfmt、workspace clippy、Gate self-tests、candi
 | --- | --- | --- |
 | G1 / S1 source→admission | positive exact request+2 stream fixture；SSE/date.now/same-context/illegal placement无 artifact/release pointer | C5 |
 | G2 / S2 admission→emission | 真实 G1 artifact 的 exact callsite/typed relocation、2 affine body takes、StreamNext/resume与 recursive drop inventory | A5+C5 |
-| G3 / S3 emission→link | 同一 artifact经 production pinned registry/linker形成 exact typed targets；missing/drift/alias/swap拒绝 | V5 |
-| G4 / S4 link→verify | 同一 linked image的 HostEffect/Stream item+end certificate、legal placement、take/remainder-drop proof | V5 |
-| G5 / S5 verify→scheduler | 同一 verified route：production pre-I/O Ready terminal、real TCP Parked、shared pending、2 exact handles、capacity=1 backpressure、wrong/stale ref | K5+H5 |
+| G3 / S3 emission→atomic-link input | 同一 artifact与 pinned registry进入 production atomic constructor并形成 exact typed targets；missing/drift/alias/swap拒绝 | V5R |
+| G4 / S4 atomic-link→image | 同一 constructor闭合 bounded index/CFG/stack/slot/call/resume/schedule结构，只发布 complete image且不重建 source semantics | V5R |
+| G5 / S5 image→scheduler | 同一 opaque image route：production pre-I/O Ready terminal、real TCP Parked、shared pending、2 exact handles、capacity=1 backpressure、wrong/stale ref | K5+H5 |
 | G6 / S6 scheduler→request→response | 顶层 RuntimeHost exact response events；terminal/cleanup各1；pending/resource current=0、ever=true；legacy stream active=0 | H5 |
 | G7 full-chain Router VCP | actual HTTP socket + Router gateway/dispatcher + actual runtime WS + RuntimeHost + outbound TCP + ordered chunked response；无 fake dispatcher/manual frame | H5+P5G |
 | G8 lifecycle/race/no-blocking | A drop不影响B、duplicate drop no-op、timeout/cancel/disconnect single winner、late completion cleanup、full-buffer Pending、single-worker canary | K5+H5 |
-| G9 structural fail-closed | 无 string/context/type-shape dispatch、legacy registry、second pending/root/inventory、test-only executor、hand-built image或 proof bypass | all |
+| G9 structural fail-closed | 无 string/context/type-shape dispatch、legacy registry、second pending/root/inventory、test-only executor、hand-built image/proof bypass；无 verifier crate/API/dependency/import/selector/alias/dual path；损坏 artifact只 link error或 safe request failure且零 leak | all |
 | G10 regression/quality/evidence | Phase 1–4 Gate子集、focused crates、fmt/clippy、Gate runner/checker tamper/zero/skip/stale tests | all |
 
 ## 5. Integration、validation 与 evidence epoch
 
-- Rolling join：docs → A5 → C5/V5（无冲突即可各自 join）→ K5 → H5 → P5G final。每次 join 只机械合流 lane
-  commit，不在 integration 临时补语义；focused red 立即退回原 owner。
+- Rolling join：本 rev16 docs → independent Design PASS → V5R hard cut + P5G selector companion（同一 atomic
+  checkpoint）→ K5 rebase/resume → H5 rebase/resume → P5G final。A5/C5 已产生的 facts继续作为输入；若 V5R 发现
+  source-semantic fact缺口则退回对应 owner并先 Amend MAP，禁止在 linker补。每次 join只机械合流 lane commit，
+  不在 integration临时补语义；focused red立即退回原 owner。
 - P5G 可先 join executable expected-red scaffold；producer 尚未 join 时新 Phase 5 matrix 必须 nonzero red，旧
   Phase 1–4 regression必须 green。旧 `4c8dec19` 的 90-command PASS 不属于 r1 evidence。
 - 所有 Cargo 命令共享 `CARGO_TARGET_DIR=/Users/geek/workspace/.skiff-cargo-target` 且严格串行。原子租约目录为

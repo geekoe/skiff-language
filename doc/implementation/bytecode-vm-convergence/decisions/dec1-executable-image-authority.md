@@ -456,3 +456,81 @@ typed `ContractOperationId` fail closed; the accepted HTTP VCP remains a
 handler-only gateway. Enabling HTTP guard/pre, WebSocket close or another root
 class requires its later phase decision and does not alter deployment cache
 identity.
+
+## Amendment r2 (2026-08-14): retire the independent production verifier
+
+This amendment records the architecture ruling made during Phase 5. It
+supersedes every earlier DEC1 statement that retains an independent post-link
+verifier, the `skiff-runtime-bytecode-verifier` crate, `ExecutableFacts`,
+`verify_executable_facts`, verifier-owned `Verified*` execution tables, or a
+`link -> verify` production boundary. The preceding text remains as the
+historical decision record; none of those superseded names or boundaries is a
+compatibility commitment.
+
+### Authority split
+
+The compiler is the sole source-semantics authority. It decides and emits the
+typed facts for effects, placements, value lifecycle and transfer, callable
+roles, source/statement attribution, and every other language-semantic claim.
+Fingerprint-pinned registries remain canonical data inputs named by those
+facts; they do not authorize the linker to rediscover a missing compiler fact.
+
+The linker owns one atomic construction of `DeploymentExecutionImage`. It may
+parse compiler-emitted facts, resolve their exact indexes and identities
+against the linked package closure and pinned registry rows, and reject an
+absent, malformed, dangling, ambiguous, or contradictory reference. It must
+not infer or replace source semantics from opcode families, names, namespaces,
+contexts, type/shape resemblance, registry membership, or runtime behavior.
+In particular, a linker check that an emitted binding resolves to the exact
+pinned row is referential consistency, not a second host-effect admission
+policy.
+
+There is no separately callable production verification stage. Necessary
+bounded structural work may exist only as private construction-local steps of
+the atomic image constructor:
+
+- decode and table/index bounds;
+- instruction, branch and CFG consistency;
+- stack height, underflow, merge and maximum-depth consistency;
+- frame/slot bounds and move/liveness consistency;
+- call target/index/arity/signature joins;
+- suspend/resume site and target correspondence; and
+- statement-schedule assembly by mapping exact compiler-emitted statement and
+  source facts plus their pinned charging facts into image-local indexes.
+
+That list is a ceiling, not a mandate to recreate the deleted verifier inside
+the linker. Missing source-semantic evidence is a compiler/artifact error and
+must fail closed; it is never reconstructed by structural analysis. Private
+scratch structures cannot escape the constructor, be cached, be paired with
+an image, or become an alternate execution input. Only the complete immutable
+`DeploymentExecutionImage` may be published.
+
+### Hard cut and failure envelope
+
+The repository removes `runtime/bytecode-verifier` as a production crate and
+workspace member. `ExecutableFacts` and `verify_executable_facts` are deleted.
+Required limits and runtime-facing structural views move to linker/image-owned
+types; consumers use narrow `DeploymentExecutionImage` accessors. This is a
+hard cut: no deprecated alias, forwarding crate, feature-selected old path,
+test-only legacy constructor, dual dependency, or old Gate selector remains.
+Verifier tests are classified before deletion: structural corruption cases
+move to linker image-construction tests, while source-semantic test intent
+belongs to compiler/artifact tests and must not be transplanted as linker
+inference.
+
+A damaged artifact may be rejected while constructing the image. A corruption
+that is intentionally handled later must encounter checked image/runtime
+lookups and produce a bounded request failure with normal root/resource
+cleanup. Neither case may cause undefined behavior, an out-of-bounds access,
+a process crash or abort, a partially published image, or a pending/resource
+leak. Panics caught at an existing deployment-attempt boundary remain failed
+construction; panicking on artifact-controlled data is not an accepted
+runtime failure strategy.
+
+Historical receipts and tests that mention the removed stage remain historical
+evidence only. The active Phase 5 Contract and MAP own the exact cutover write
+set, stage-sentinel renaming, dependency removal, test migration, and Gate
+selector replacement. A new independent Design review must confirm that the
+implementation contains one compiler semantic authority, one atomic linker
+image mint, no verifier-shaped compatibility surface, and the complete safe
+failure envelope above before the hard-cut implementation is joined.
