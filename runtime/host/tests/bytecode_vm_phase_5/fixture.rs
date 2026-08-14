@@ -33,6 +33,7 @@ pub enum BuildOutcome {
     Published(PublishedFixture),
     Rejected {
         error_chain: String,
+        package_pointer_absent: bool,
         release_pointer_absent: bool,
         rejection: Option<TypedRejection>,
     },
@@ -132,12 +133,17 @@ impl FixtureSpec {
                 let rejection = typed_rejection(error.as_ref());
                 let store =
                     CanonicalArtifactStore::open(root.path()).expect("open rejected carrier store");
+                let package_pointer_absent = store
+                    .read_package_artifact_pointer(self.package_id, self.version)
+                    .expect("read rejected carrier package pointer")
+                    .is_none();
                 let release_pointer_absent = store
                     .read_release_pointer(PROFILE, self.package_id, self.version)
                     .expect("read rejected carrier release pointer")
                     .is_none();
                 return BuildOutcome::Rejected {
                     error_chain: error_chain(error.as_ref()),
+                    package_pointer_absent,
                     release_pointer_absent,
                     rejection,
                 };

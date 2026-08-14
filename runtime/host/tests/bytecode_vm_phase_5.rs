@@ -106,9 +106,15 @@ fn assert_phase1_rejection(
         )),
         BuildOutcome::Rejected {
             error_chain,
+            package_pointer_absent,
             release_pointer_absent,
             rejection,
         } => {
+            if !package_pointer_absent {
+                failures.push(format!(
+                    "rejected {label} published a PackageArtifact pointer"
+                ));
+            }
             if !release_pointer_absent {
                 failures.push(format!("rejected {label} published a release pointer"));
             }
@@ -141,9 +147,15 @@ fn assert_public_stream_rejection(
         )),
         BuildOutcome::Rejected {
             error_chain,
+            package_pointer_absent,
             release_pointer_absent,
             rejection,
         } => {
+            if !package_pointer_absent {
+                failures.push(format!(
+                    "rejected public Stream path {public_path} published a PackageArtifact pointer"
+                ));
+            }
             if !release_pointer_absent {
                 failures.push(format!(
                     "rejected public Stream path {public_path} published a release pointer"
