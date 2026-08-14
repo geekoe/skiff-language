@@ -15,9 +15,10 @@ function outbound(url: string) -> std.http.HttpClientRequest {
 }
 
 function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-  final unary = std.http.request(outbound("http://phase5.test/request"))
-  final left = std.http.stream(outbound("http://phase5.test/stream/left"))
-  final right = std.http.stream(outbound("http://phase5.test/stream/right"))
+  final base = request.body.toUtf8String()
+  final unary = std.http.request(outbound(base.concat("/request")))
+  final left = std.http.stream(outbound(base.concat("/stream/left")))
+  final right = std.http.stream(outbound(base.concat("/stream/right")))
 
   var leftBody = ""
   for chunk in left.body {
@@ -40,8 +41,9 @@ function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStrea
 }
 
 function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-  final left = std.http.stream(outbound("http://phase5.test/stream/drop-left"))
-  final right = std.http.stream(outbound("http://phase5.test/stream/drop-right"))
+  final base = request.body.toUtf8String()
+  final left = std.http.stream(outbound(base.concat("/stream/drop-left")))
+  final right = std.http.stream(outbound(base.concat("/stream/drop-right")))
   var firstLeft = ""
   for chunk in left.body {
     firstLeft = chunk.toUtf8String()

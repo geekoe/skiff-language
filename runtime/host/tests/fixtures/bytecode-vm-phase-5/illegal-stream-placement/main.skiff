@@ -1,0 +1,8 @@
+function leak() -> Stream<string> {
+  emit("must-not-cross-public-api")
+  return null
+}
+
+function run(seed: number) -> number {
+  return seed
+}

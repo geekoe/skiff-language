@@ -55,6 +55,22 @@ impl FixtureSpec {
         }
     }
 
+    pub const fn unsupported_date_now() -> Self {
+        Self {
+            relative: "runtime/host/tests/fixtures/bytecode-vm-phase-5/unsupported-date-now",
+            package_id: "test.skiff/bytecode-vm-phase-5-unsupported-date-now",
+            version: "1.0.0",
+        }
+    }
+
+    pub const fn illegal_stream_placement() -> Self {
+        Self {
+            relative: "runtime/host/tests/fixtures/bytecode-vm-phase-5/illegal-stream-placement",
+            package_id: "test.skiff/bytecode-vm-phase-5-illegal-stream-placement",
+            version: "1.0.0",
+        }
+    }
+
     pub fn build(self, prefix: &str) -> BuildOutcome {
         let repository = repository_root();
         let fixture = repository.join(self.relative);
@@ -73,8 +89,8 @@ impl FixtureSpec {
         ) {
             Ok(receipt) => receipt,
             Err(error) => {
-                let store = CanonicalArtifactStore::open(root.path())
-                    .expect("open rejected carrier store");
+                let store =
+                    CanonicalArtifactStore::open(root.path()).expect("open rejected carrier store");
                 let release_pointer_absent = store
                     .read_release_pointer(PROFILE, self.package_id, self.version)
                     .expect("read rejected carrier release pointer")
