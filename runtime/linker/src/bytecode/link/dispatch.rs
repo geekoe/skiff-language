@@ -1,23 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    self, BoundaryOperationContract, BytecodeIntrinsicRef, BytecodeRelocation,
-    CallableEffectSummary, CallableMayEffects, CallableRegistryTypeExpression, ContractOperationId,
-    ContractTypeRef, HostEffectExecutorIdentity, HostEffectRegistryEntry,
-    InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, PackageBuildId,
-    PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId, PackageSymbolRef, ParamModeIr,
-    PendingEffectCategory, ResolvedPackageValueType, ServiceRequirementKey, TypeRefIr,
-    ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
+    self, BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary,
+    CallableRegistryTypeExpression, ContractOperationId, HostEffectExecutorIdentity,
+    HostEffectRegistryEntry, InterfaceInstantiationRef, PackageBuildId, PackageLocalAbiSymbol,
+    PackageRefIr, PackageSchemaTypeId, PackageSymbolRef, ResolvedPackageValueType,
+    ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget,
+    ValueLifecycleResolverError,
 };
 use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, FunctionIndex, LinkedActorCreateTarget, LinkedActorImplementationRef,
     LinkedActorMethodTarget, LinkedCallableSignature, LinkedFrameLayout,
-    LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId,
-    LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable, LinkedInterfaceTable,
-    LinkedInterfaceTableKind, LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable,
-    LinkedNativeCallableSignature, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
-    LinkedRemoteInterfaceTable, LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget,
-    SpecializationKey, TypeIndex,
+    LinkedHostEffectAdapterTarget, LinkedInterfaceTable, LinkedInterfaceTableKind,
+    LinkedNativeCallableSignature, LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget,
+    SpecializationKey,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -100,80 +96,29 @@ impl DeploymentLinker<'_> {
     fn link_service_operations(
         &self,
         reachable: &[ReachableRelocation],
-        type_linker: &mut TypeLinker<'_>,
+        _type_linker: &mut TypeLinker<'_>,
     ) -> Result<Vec<LinkedServiceOperationTarget>, BytecodeLinkError> {
-        let mut rows = Vec::new();
-        for (key, dependency) in self.deployment.service_dependencies() {
-            let has_reachable_operation = dependency.used_operations().iter().any(|operation| {
-                reachable.iter().any(|reference| matches!(
-                    &reference.relocation,
-                    BytecodeRelocation::ServiceOperationRef { service_call }
-                        if reference.specialization.package_build_id() == &key.caller_package_build_id
-                            && service_call.service_requirement_slot == key.service_requirement_slot
-                            && &service_call.contract_operation_id == operation
-                ))
+        if let Some((reference, service_call)) = reachable.iter().find_map(|reference| {
+            let BytecodeRelocation::ServiceOperationRef { service_call } = &reference.relocation
+            else {
+                return None;
+            };
+            Some((reference, service_call))
+        }) {
+            return Err(BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::ConcreteTargetTables,
+                location: BytecodeLinkLocation::ServiceDependency {
+                    key: ServiceRequirementKey {
+                        caller_package_build_id: reference
+                            .specialization
+                            .package_build_id()
+                            .clone(),
+                        service_requirement_slot: service_call.service_requirement_slot,
+                    },
+                },
             });
-            if !has_reachable_operation {
-                continue;
-            }
-            let contract = self
-                .deployment
-                .contract_store()
-                .get(dependency.contract())
-                .ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        BytecodeLinkLocation::ServiceDependency { key: key.clone() },
-                        "service dependency contract is absent from hydration".to_string(),
-                    )
-                })?;
-            for operation in dependency.used_operations() {
-                let referenced = reachable.iter().any(|reference| matches!(
-                    &reference.relocation,
-                    BytecodeRelocation::ServiceOperationRef { service_call }
-                        if reference.specialization.package_build_id() == &key.caller_package_build_id
-                            && service_call.service_requirement_slot == key.service_requirement_slot
-                            && &service_call.contract_operation_id == operation
-                ));
-                if !referenced {
-                    continue;
-                }
-                let descriptor = contract.operations.get(operation).ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        BytecodeLinkLocation::ServiceDependency { key: key.clone() },
-                        format!(
-                            "service dependency operation {operation} is absent from its contract"
-                        ),
-                    )
-                })?;
-                let caller = self
-                    .deployment
-                    .packages()
-                    .get(&key.caller_package_build_id)
-                    .ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            BytecodeLinkLocation::ServiceDependency { key: key.clone() },
-                            "service dependency caller package is absent".to_string(),
-                        )
-                    })?;
-                let signature = boundary_signature(
-                    &descriptor.contract,
-                    caller,
-                    type_linker,
-                    BytecodeLinkLocation::ServiceDependency { key: key.clone() },
-                )?;
-                rows.push(LinkedServiceOperationTarget::new(
-                    skiff_runtime_linked_bytecode::ServiceOperationIndex::new(rows.len() as u32),
-                    key.clone(),
-                    operation.clone(),
-                    contract.service_protocol_identity.clone(),
-                    signature,
-                ));
-            }
         }
-        Ok(rows)
+        Ok(Vec::new())
     }
 
     fn link_actor_targets(
@@ -255,17 +200,21 @@ impl DeploymentLinker<'_> {
                             format!("actor method {method_identity:?} is absent from the closure"),
                         )
                     })?;
-                    let signature = frame_signature(
-                        frames.get(function.get() as usize).ok_or_else(|| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                self.package_location(package),
-                                "actor method frame is absent".to_string(),
-                            )
-                        })?,
-                        package,
-                        package.function_key_for_callable(callable),
+                    let location = BytecodeLinkLocation::Function {
+                        package: Box::new(package.reference().clone()),
+                        function_key: key.artifact_function_key().as_str().to_string(),
+                    };
+                    let frame = frames.get(function.get() as usize).ok_or_else(|| {
+                        BytecodeLinkError::ImplementationUnavailable {
+                            obligation: BytecodeLinkObligation::FrameAndValueTransferPlan,
+                            location: location.clone(),
+                        }
+                    })?;
+                    let effects = exact_actor_effects(
+                        package.artifact().callable_semantic_facts.get(callable),
+                        location.clone(),
                     )?;
+                    let signature = frame_signature(frame, effects, location)?;
                     methods.push(LinkedActorMethodTarget::new(
                         skiff_runtime_linked_bytecode::ActorMethodIndex::new(methods.len() as u32),
                         actor_ref.clone(),
@@ -288,277 +237,11 @@ pub(in crate::bytecode) enum InterfaceKind {
     Remote,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-enum InterfaceSource {
-    Requirement,
-    Local(skiff_artifact_model::LocalInterfaceRef),
-    Remote(skiff_artifact_model::RemoteInterfaceRef),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct InterfaceKey {
-    package_build_id: PackageBuildId,
-    specialization: SpecializationKey,
-    interface: InterfaceInstantiationRef,
-    kind: InterfaceKind,
-    concrete_type: Option<TypeIndex>,
-    service_requirement_key: Option<ServiceRequirementKey>,
-    public_instance_key: Option<String>,
-    source: InterfaceSource,
-}
-
-fn boundary_signature(
-    contract: &BoundaryOperationContract,
-    caller: &HydratedBytecodePackage,
-    type_linker: &mut TypeLinker<'_>,
-    location: BytecodeLinkLocation,
-) -> Result<LinkedCallableSignature, BytecodeLinkError> {
-    let specialization = first_specialization(caller, &location)?;
-    let parameter_types = contract
-        .parameters
-        .iter()
-        .map(|parameter| {
-            intern_contract_type(
-                caller,
-                &specialization,
-                &parameter.ty,
-                type_linker,
-                &location,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let result_types = contract_return_types(&contract.return_value.ty)
-        .into_iter()
-        .map(|ty| intern_contract_type(caller, &specialization, &ty, type_linker, &location))
-        .collect::<Result<Vec<_>, _>>()?;
-    let parameter_plans = parameter_types
-        .iter()
-        .copied()
-        .map(|ty| {
-            let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "service parameter type is absent".to_string(),
-                )
-            })?;
-            type_linker.plan_for_concrete_type(&concrete, location.clone())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let result_plans = result_types
-        .iter()
-        .copied()
-        .map(|ty| {
-            let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "service result type is absent".to_string(),
-                )
-            })?;
-            type_linker.plan_for_concrete_type(&concrete, location.clone())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let parameter_mode_count = parameter_types.len();
-    LinkedCallableSignature::new(
-        parameter_types.into_boxed_slice(),
-        vec![ParamModeIr::Value; parameter_mode_count].into_boxed_slice(),
-        parameter_plans.into_boxed_slice(),
-        result_types.into_boxed_slice(),
-        result_plans.into_boxed_slice(),
-        service_effect_summary(contract),
-    )
-    .map_err(|error| {
-        unsatisfied(
-            BytecodeLinkObligation::ConcreteTargetTables,
-            location,
-            error.to_string(),
-        )
-    })
-}
-
-fn contract_return_types(ty: &ContractTypeRef) -> Vec<ContractTypeRef> {
-    if matches!(ty, ContractTypeRef::Builtin { name, .. } if name == "void") {
-        Vec::new()
-    } else {
-        vec![ty.clone()]
-    }
-}
-
-fn service_effect_summary(contract: &BoundaryOperationContract) -> CallableEffectSummary {
-    let guarantee = &contract.effect_guarantee;
-    CallableEffectSummary::Analyzed {
-        effects: CallableMayEffects {
-            escapes_caller_value: !guarantee.detached_parameters
-                || !guarantee.detached_return
-                || !guarantee.detached_error,
-            requires_same_heap_identity: !guarantee.no_same_heap_identity,
-            invokes_unknown_target: false,
-            may_pending: true,
-            pending_effect_categories: vec![PendingEffectCategory::ServiceCall],
-            inout_path_effects: Vec::new(),
-        },
-    }
-}
-
-fn intern_contract_type(
-    caller: &HydratedBytecodePackage,
-    specialization: &SpecializationKey,
-    ty: &ContractTypeRef,
-    type_linker: &mut TypeLinker<'_>,
-    location: &BytecodeLinkLocation,
-) -> Result<TypeIndex, BytecodeLinkError> {
-    let ir = contract_type_to_type_ref(ty, location)?;
-    type_linker.intern_concrete_type(
-        caller,
-        specialization,
-        &ir,
-        &BTreeMap::new(),
-        location.clone(),
-    )
-}
-
-fn contract_type_to_type_ref(
-    ty: &ContractTypeRef,
-    location: &BytecodeLinkLocation,
-) -> Result<TypeRefIr, BytecodeLinkError> {
-    Ok(match ty {
-        ContractTypeRef::Builtin { name, arguments } => TypeRefIr::Builtin {
-            name: name.clone(),
-            args: arguments
-                .iter()
-                .map(|arg| contract_type_to_type_ref(arg, location))
-                .collect::<Result<_, _>>()?,
-        },
-        ContractTypeRef::PackageSchema {
-            package_id,
-            stable_schema_key,
-            package_schema_type_id,
-        } => TypeRefIr::PackageSchema {
-            package_id: package_id.clone(),
-            stable_schema_key: stable_schema_key.clone(),
-            package_schema_type_id: package_schema_type_id.clone(),
-        },
-        ContractTypeRef::AnyInterface {
-            interface,
-            arguments,
-        } => TypeRefIr::AnyInterface {
-            interface: InterfaceInstantiationRef {
-                interface_abi_id: String::from_utf8(
-                    skiff_canonical_json::canonical_json_bytes(&contract_type_to_type_ref(
-                        interface, location,
-                    )?)
-                    .map_err(|error| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            format!("contract interface identity cannot be canonicalized: {error}"),
-                        )
-                    })?,
-                )
-                .map_err(|_| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        location.clone(),
-                        "contract interface identity is not UTF-8".to_string(),
-                    )
-                })?,
-                canonical_type_args: arguments
-                    .iter()
-                    .map(|arg| contract_type_to_type_ref(arg, location))
-                    .collect::<Result<_, _>>()?,
-            },
-        },
-        ContractTypeRef::Record { fields } => TypeRefIr::Record {
-            fields: fields
-                .iter()
-                .map(|(name, field)| {
-                    Ok((name.clone(), contract_type_to_type_ref(field, location)?))
-                })
-                .collect::<Result<_, _>>()?,
-        },
-        ContractTypeRef::StructuralUnion { variants } => TypeRefIr::Union {
-            items: variants
-                .iter()
-                .map(|variant| contract_type_to_type_ref(variant, location))
-                .collect::<Result<_, _>>()?,
-        },
-        ContractTypeRef::Nullable { inner } => TypeRefIr::Nullable {
-            inner: Box::new(contract_type_to_type_ref(inner, location)?),
-        },
-        ContractTypeRef::Literal { value } => {
-            let value = match value {
-                skiff_artifact_model::ContractLiteral::String { value } => value,
-            };
-            TypeRefIr::Literal {
-                value: LiteralIr::String {
-                    value: value.clone(),
-                },
-            }
-        }
-        ContractTypeRef::TypeParam { name } => {
-            return Err(unsatisfied(
-                BytecodeLinkObligation::ConcreteTargetTables,
-                location.clone(),
-                format!("service contract retains unresolved type parameter {name:?}"),
-            ));
-        }
-    })
-}
-
-fn first_specialization(
-    package: &HydratedBytecodePackage,
-    location: &BytecodeLinkLocation,
-) -> Result<SpecializationKey, BytecodeLinkError> {
-    let bytecode = package.bytecode().ok_or_else(|| {
-        unsatisfied(
-            BytecodeLinkObligation::ConcreteTargetTables,
-            location.clone(),
-            "type-only package has no bytecode functions".to_string(),
-        )
-    })?;
-    let function = bytecode.view().functions().iter().next().ok_or_else(|| {
-        unsatisfied(
-            BytecodeLinkObligation::ConcreteTargetTables,
-            location.clone(),
-            "caller package has no linked specialization".to_string(),
-        )
-    })?;
-    let canonical = package
-        .canonical_implementation_callable_for_function_key(&function.function_key)
-        .ok_or_else(|| {
-            unsatisfied(
-                BytecodeLinkObligation::ConcreteTargetTables,
-                location.clone(),
-                format!(
-                    "function {} has no canonical callable",
-                    function.function_key
-                ),
-            )
-        })?;
-    super::relocations::specialization_key(
-        package,
-        &function.function_key,
-        canonical.clone(),
-        location.clone(),
-    )
-}
-
 fn frame_signature(
     frame: &LinkedFrameLayout,
-    _package: &HydratedBytecodePackage,
-    _effect_callable: Option<&str>,
+    effects: CallableEffectSummary,
+    location: BytecodeLinkLocation,
 ) -> Result<LinkedCallableSignature, BytecodeLinkError> {
-    let location = BytecodeLinkLocation::Deployment {
-        deployment: Box::new(skiff_artifact_model::ServiceDeploymentRef {
-            service_id: "service".to_string(),
-            contract_version: "1.0.0".to_string(),
-            deployment_revision: skiff_artifact_model::DeploymentRevision::new("revision:targets"),
-            deployment_artifact_identity: skiff_artifact_model::DeploymentArtifactIdentity::new(
-                "deployment:targets",
-            ),
-        }),
-    };
     LinkedCallableSignature::new(
         frame
             .parameters()
@@ -592,9 +275,7 @@ fn frame_signature(
             .into_boxed_slice(),
         frame.result_types().to_vec().into_boxed_slice(),
         frame.result_plans().to_vec().into_boxed_slice(),
-        CallableEffectSummary::Unknown {
-            reason: skiff_artifact_model::CallableEffectUnknownReason::AnalysisPending,
-        },
+        effects,
     )
     .map_err(|error| {
         unsatisfied(
@@ -603,6 +284,38 @@ fn frame_signature(
             error.to_string(),
         )
     })
+}
+
+fn exact_actor_effects(
+    facts: Option<&skiff_artifact_model::CallableSemanticFacts>,
+    location: BytecodeLinkLocation,
+) -> Result<CallableEffectSummary, BytecodeLinkError> {
+    let Some(facts) = facts else {
+        return Err(BytecodeLinkError::ImplementationUnavailable {
+            obligation: BytecodeLinkObligation::CallableEffectPlan,
+            location,
+        });
+    };
+    if matches!(&facts.effects, CallableEffectSummary::Unknown { .. })
+        || matches!(
+            &facts.effects,
+            CallableEffectSummary::Analyzed { effects } if effects.invokes_unknown_target
+        )
+        || matches!(
+            &facts.provenance,
+            skiff_artifact_model::CallableProvenanceSummary::Unknown { .. }
+        )
+        || facts
+            .resolved_call_targets
+            .values()
+            .any(|target| matches!(target, skiff_artifact_model::CallableTargetFact::Unknown))
+    {
+        return Err(BytecodeLinkError::ImplementationUnavailable {
+            obligation: BytecodeLinkObligation::CallableEffectPlan,
+            location,
+        });
+    }
+    Ok(facts.effects.clone())
 }
 
 impl LinkedDispatchTables {
@@ -671,18 +384,19 @@ mod tests {
     use std::collections::BTreeMap;
 
     use skiff_artifact_model::{
+        CallableEffectSummary, CallableMayEffects, CallableProvenanceSummary,
+        CallableRegistryTypeExpression, CallableSemanticFacts, CallableTargetFact,
         HostEffectReference, HostEffectRegistryEntry, HostEffectSignature, NativeTarget,
-        PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, ParamModeIr,
-        PendingEffectCategory, ResolvedPackageValueType, TypeDescriptorIr, TypeRefIr,
-        ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
+        PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity, PackageRefIr,
+        PackageSymbolRef, ParamModeIr, PendingEffectCategory, TypeRefIr, ValueDropPlan,
         ValueTransferPlan,
     };
 
     use super::{
-        executable_identity_for, registry_entry_for, registry_type_expression,
+        exact_actor_effects, executable_identity_for, registry_entry_for,
         validate_host_effect_authority,
     };
-    use crate::bytecode::BytecodeLinkLocation;
+    use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation};
 
     fn location() -> BytecodeLinkLocation {
         BytecodeLinkLocation::Package {
@@ -695,77 +409,25 @@ mod tests {
         }
     }
 
-    fn budget() -> ValueLifecyclePolicyBudget {
-        ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64).expect("test budget is valid")
-    }
-
-    struct StubResolver;
-
-    impl ValueLifecycleFactResolver for StubResolver {
-        fn resolve_package_symbol(
-            &mut self,
-            _symbol: &skiff_artifact_model::PackageSymbolRef,
-        ) -> Result<ResolvedPackageValueType, ValueLifecycleResolverError> {
-            Ok(ResolvedPackageValueType {
-                type_parameters: Vec::new(),
-                descriptor: TypeDescriptorIr::Alias {
-                    target: TypeRefIr::builtin("number"),
-                },
-            })
-        }
-
-        fn resolve_package_schema(
-            &mut self,
-            _package_id: &str,
-            _stable_schema_key: &str,
-            _package_schema_type_id: &skiff_artifact_model::PackageSchemaTypeId,
-        ) -> Result<skiff_artifact_model::PackageSchemaTypeRecord, ValueLifecycleResolverError>
-        {
-            Err(resolver_error(
-                "schema resolution is unavailable in this test",
-            ))
-        }
-
-        fn validate_interface(
-            &mut self,
-            _interface: &skiff_artifact_model::InterfaceInstantiationRef,
-        ) -> Result<(), ValueLifecycleResolverError> {
-            Err(resolver_error(
-                "interface validation is unavailable in this test",
-            ))
-        }
-
-        fn validate_contract_interface(
-            &mut self,
-            _interface: &skiff_artifact_model::ContractTypeRef,
-            _arguments: &[skiff_artifact_model::ContractTypeRef],
-        ) -> Result<(), ValueLifecycleResolverError> {
-            Err(resolver_error(
-                "contract interface validation is unavailable in this test",
-            ))
-        }
-    }
-
-    fn resolver_error(message: &str) -> ValueLifecycleResolverError {
-        ValueLifecycleResolverError {
-            authority: "bytecodeLinker.hostAuthorityTest".to_string(),
-            message: message.to_string(),
-        }
-    }
-
-    fn fill_abi(ty: &mut TypeRefIr) {
+    fn fixture_type(ty: &CallableRegistryTypeExpression) -> TypeRefIr {
         match ty {
-            TypeRefIr::PackageSymbol { symbol } => {
-                if symbol.abi_expectation.is_none() {
-                    symbol.abi_expectation = Some("test-abi".to_string());
-                }
-            }
-            TypeRefIr::Builtin { args, .. } => {
-                for argument in args {
-                    fill_abi(argument);
-                }
-            }
-            _ => {}
+            CallableRegistryTypeExpression::TypeParameter { .. } => TypeRefIr::builtin("number"),
+            CallableRegistryTypeExpression::Builtin { name, arguments } => TypeRefIr::Builtin {
+                name: name.clone(),
+                args: arguments.iter().map(fixture_type).collect(),
+            },
+            CallableRegistryTypeExpression::PackageSymbol {
+                package_id,
+                symbol_path,
+            } => TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: package_id.clone(),
+                    },
+                    symbol_path: symbol_path.clone(),
+                    abi_expectation: Some("test-abi".to_string()),
+                },
+            },
         }
     }
 
@@ -774,11 +436,7 @@ mod tests {
             .signature
             .parameter_types
             .iter()
-            .map(|ty| registry_type_expression(ty, &location()).expect("registry type converts"))
-            .map(|mut ty| {
-                fill_abi(&mut ty);
-                ty
-            })
+            .map(fixture_type)
             .collect::<Vec<_>>();
         let parameter_plans = parameter_types
             .iter()
@@ -789,11 +447,7 @@ mod tests {
             .signature
             .result_types
             .iter()
-            .map(|ty| registry_type_expression(ty, &location()).expect("registry type converts"))
-            .map(|mut ty| {
-                fill_abi(&mut ty);
-                ty
-            })
+            .map(fixture_type)
             .collect::<Vec<_>>();
         let result_plans = result_types
             .iter()
@@ -837,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn pinned_registry_owns_the_sleep_typed_entry() {
+    fn pinned_registry_owns_the_sleep_executable_identity() {
         let effect = sleep_reference();
         let entry = registry_entry_for(&effect, &location()).expect("pinned sleep resolves");
         assert_eq!(entry.binding_key, "std.time.sleep");
@@ -874,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn sse_and_date_registry_rows_fail_closed_without_executor_identity() {
+    fn descriptive_registry_rows_cannot_mint_executor_identity() {
         for binding_key in ["std.http.client.sse", "core.date.now"] {
             let entry = skiff_artifact_model::host_effect_registry()
                 .entries()
@@ -893,7 +547,7 @@ mod tests {
         let entry = skiff_artifact_model::host_effect_registry()
             .entries()
             .iter()
-            .find(|entry| !entry.aliases.is_empty())
+            .find(|entry| !entry.aliases.is_empty() && entry.metadata.fields.is_empty())
             .expect("pinned registry retains a descriptive alias negative");
         let mut effect = reference_for(entry);
         let (namespace, symbol) = entry.aliases[0]
@@ -901,38 +555,21 @@ mod tests {
             .expect("test alias is namespace-qualified");
         effect.target.namespace = namespace.to_string();
         effect.target.symbol = symbol.to_string();
-        let mut resolver = StubResolver;
-        let mut budget = budget();
         assert!(
-            validate_host_effect_authority(
-                &effect,
-                &effect.signature,
-                &mut resolver,
-                &mut budget,
-                &location(),
-            )
-            .is_err(),
+            validate_host_effect_authority(&effect, &location()).is_err(),
             "registry aliases are descriptive lookup facts, not exact executable target identity"
         );
     }
 
     #[test]
-    fn exact_sleep_arity_type_plan_and_effects_are_admitted() {
+    fn exact_host_target_and_signature_abi_are_admitted() {
         let effect = sleep_reference();
-        let mut resolver = StubResolver;
-        let mut budget = budget();
-        validate_host_effect_authority(
-            &effect,
-            &effect.signature,
-            &mut resolver,
-            &mut budget,
-            &location(),
-        )
-        .expect("exact canonical sleep facts validate against the frozen registry");
+        validate_host_effect_authority(&effect, &location())
+            .expect("exact canonical sleep ABI validates against the frozen registry");
     }
 
     #[test]
-    fn wrong_sleep_arity_is_rejected() {
+    fn wrong_host_arity_is_rejected() {
         let mut effect = sleep_reference();
         let duplicated = effect.signature.parameter_types[0].clone();
         effect.signature.parameter_types.push(duplicated.clone());
@@ -941,141 +578,123 @@ mod tests {
             .signature
             .parameter_plans
             .push(ValueTransferPlan::FromType { ty: duplicated });
-        let mut resolver = StubResolver;
-        let mut budget = budget();
-        assert!(
-            validate_host_effect_authority(
-                &effect,
-                &effect.signature,
-                &mut resolver,
-                &mut budget,
-                &location(),
-            )
-            .is_err(),
-            "wrong arity must not be admitted"
-        );
+        assert!(validate_host_effect_authority(&effect, &location()).is_err());
     }
 
     #[test]
-    fn wrong_sleep_parameter_type_is_rejected() {
+    fn wrong_host_parameter_type_is_rejected() {
         let mut effect = sleep_reference();
         effect.signature.parameter_types[0] = TypeRefIr::builtin("integer");
-        let mut resolver = StubResolver;
-        let mut budget = budget();
-        assert!(
-            validate_host_effect_authority(
-                &effect,
-                &effect.signature,
-                &mut resolver,
-                &mut budget,
-                &location(),
-            )
-            .is_err(),
-            "wrong parameter type must not be admitted"
-        );
+        assert!(validate_host_effect_authority(&effect, &location()).is_err());
     }
 
     #[test]
-    fn wrong_sleep_parameter_plan_is_rejected() {
+    fn compiler_owned_concrete_plan_is_not_reconstructed_from_registry() {
         let mut effect = sleep_reference();
-        effect.signature.parameter_plans[0] = ValueTransferPlan::FromType {
-            ty: TypeRefIr::builtin("integer"),
+        effect.signature.parameter_plans[0] = ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::Trivial,
         };
-        let mut resolver = StubResolver;
-        let mut budget = budget();
-        assert!(
-            validate_host_effect_authority(
-                &effect,
-                &effect.signature,
-                &mut resolver,
-                &mut budget,
-                &location(),
-            )
-            .is_err(),
-            "wrong parameter plan must not be admitted"
-        );
+        validate_host_effect_authority(&effect, &location())
+            .expect("registry ABI matching does not derive compiler-owned transfer plans");
     }
 
     #[test]
-    fn wrong_sleep_effects_are_rejected() {
+    fn wrong_host_effects_are_rejected() {
         let mut effect = sleep_reference();
         effect.signature.effects.pending_effect_categories =
             vec![PendingEffectCategory::HostEffect];
-        let mut resolver = StubResolver;
-        let mut budget = budget();
-        assert!(
-            validate_host_effect_authority(
-                &effect,
-                &effect.signature,
-                &mut resolver,
-                &mut budget,
-                &location(),
-            )
-            .is_err(),
-            "rewritten effects must not be admitted"
-        );
+        assert!(validate_host_effect_authority(&effect, &location()).is_err());
     }
 
     #[test]
-    fn std_binding_mismatch_is_no_longer_swallowed() {
-        let entry = skiff_artifact_model::host_effect_registry()
-            .entries()
-            .iter()
-            .find(|entry| entry.binding_key == "std.crypto.uuid")
-            .expect("pinned registry has std.crypto.uuid");
-        let mut effect = reference_for(entry);
-        effect.signature.effects.may_pending = true;
-        effect.signature.effects.pending_effect_categories =
-            vec![PendingEffectCategory::HostEffect];
-        let mut resolver = StubResolver;
-        let mut budget = budget();
-        assert!(
-            validate_host_effect_authority(
-                &effect,
-                &effect.signature,
-                &mut resolver,
-                &mut budget,
-                &location(),
-            )
-            .is_err(),
-            "a std.* binding mismatch must fail closed instead of being swallowed"
-        );
-    }
-
-    #[test]
-    fn unknown_binding_key_fails_closed() {
-        let effect = HostEffectReference {
-            target: NativeTarget {
-                namespace: "fixture".to_string(),
-                symbol: "drift".to_string(),
-                binding_key: Some("fixture.drift".to_string()),
-                metadata: BTreeMap::new(),
-            },
-            signature: HostEffectSignature {
-                parameter_types: Vec::new(),
-                parameter_modes: Vec::new(),
-                parameter_plans: Vec::new(),
-                result_types: Vec::new(),
-                result_plans: Vec::new(),
-                effects: skiff_artifact_model::CallableMayEffects {
-                    escapes_caller_value: false,
-                    requires_same_heap_identity: false,
-                    invokes_unknown_target: false,
-                    may_pending: false,
-                    pending_effect_categories: Vec::new(),
-                    inout_path_effects: Vec::new(),
-                },
-            },
-            db_operation: None,
-        };
+    fn unknown_and_missing_binding_keys_fail_closed() {
+        let mut effect = sleep_reference();
+        effect.target.binding_key = Some("fixture.drift".to_string());
         assert!(registry_entry_for(&effect, &location()).is_err());
-    }
-
-    #[test]
-    fn missing_binding_key_fails_closed() {
-        let mut effect = sleep_reference();
         effect.target.binding_key = None;
         assert!(registry_entry_for(&effect, &location()).is_err());
+    }
+
+    fn actor_facts(effects: CallableEffectSummary) -> CallableSemanticFacts {
+        CallableSemanticFacts {
+            effects,
+            provenance: CallableProvenanceSummary::Analyzed {
+                return_origins: Vec::new(),
+                direct_return_origins: Vec::new(),
+                throw_origins: Vec::new(),
+                escape_lanes: Vec::new(),
+            },
+            resolved_call_targets: BTreeMap::new(),
+        }
+    }
+
+    fn no_effects() -> CallableMayEffects {
+        CallableMayEffects {
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn actor_signature_consumes_exact_compiler_effect_facts() {
+        let facts = actor_facts(CallableEffectSummary::Analyzed {
+            effects: no_effects(),
+        });
+        assert_eq!(
+            exact_actor_effects(Some(&facts), location()).unwrap(),
+            facts.effects
+        );
+    }
+
+    #[test]
+    fn actor_signature_never_synthesizes_unknown_effect_facts() {
+        assert!(matches!(
+            exact_actor_effects(None, location()),
+            Err(BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::CallableEffectPlan,
+                ..
+            })
+        ));
+
+        let unknown = actor_facts(CallableEffectSummary::analysis_pending());
+        assert!(matches!(
+            exact_actor_effects(Some(&unknown), location()),
+            Err(BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::CallableEffectPlan,
+                ..
+            })
+        ));
+
+        let mut unknown_target = actor_facts(CallableEffectSummary::Analyzed {
+            effects: no_effects(),
+        });
+        unknown_target
+            .resolved_call_targets
+            .insert(0, CallableTargetFact::Unknown);
+        assert!(matches!(
+            exact_actor_effects(Some(&unknown_target), location()),
+            Err(BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::CallableEffectPlan,
+                ..
+            })
+        ));
+
+        let mut unknown_effect_target = no_effects();
+        unknown_effect_target.invokes_unknown_target = true;
+        let unknown_effect_target = actor_facts(CallableEffectSummary::Analyzed {
+            effects: unknown_effect_target,
+        });
+        assert!(matches!(
+            exact_actor_effects(Some(&unknown_effect_target), location()),
+            Err(BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::CallableEffectPlan,
+                ..
+            })
+        ));
     }
 }
 
@@ -1083,726 +702,66 @@ impl DeploymentLinker<'_> {
     fn link_interface_tables(
         &self,
         reachable: &[ReachableRelocation],
-        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
-        frames: &[LinkedFrameLayout],
-        type_linker: &mut TypeLinker<'_>,
+        _indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        _frames: &[LinkedFrameLayout],
+        _type_linker: &mut TypeLinker<'_>,
     ) -> Result<Vec<LinkedInterfaceTable>, BytecodeLinkError> {
-        let mut unique = Vec::<InterfaceKey>::new();
-        for package in self
-            .deployment
-            .packages()
-            .values()
-            .filter(|package| package.has_bytecode())
-        {
-            for function in package
-                .bytecode()
-                .ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        self.package_location(package),
-                        "type-only package has no functions".to_string(),
-                    )
-                })?
-                .view()
-                .functions()
-            {
-                let Some(source_specialization) = reachable.iter().find_map(|reference| {
-                    (reference.specialization.package_build_id()
-                        == &package.reference().package_build_id
-                        && reference.specialization.artifact_function_key().as_str()
-                            == function.function_key)
-                        .then_some(&reference.specialization)
-                }) else {
-                    continue;
-                };
-                for instruction in &function.instructions {
-                    let contract =
-                        skiff_artifact_model::contract_for_opcode(instruction.descriptor.kind);
-                    for (ordinal, operand) in contract.operands.iter().enumerate() {
-                        if operand.kind != skiff_artifact_model::OperandKind::Reloc {
-                            continue;
-                        }
-                        let relocation_index =
-                            *instruction.operand_words.get(ordinal).ok_or_else(|| {
-                                unsatisfied(
-                                    BytecodeLinkObligation::RelocationResolution,
-                                    self.instruction_location(package, function, instruction.pc),
-                                    "relocation operand is absent".to_string(),
-                                )
-                            })?;
-                        let relocation = function
-                            .relocations
-                            .get(relocation_index as usize)
-                            .ok_or_else(|| {
-                                unsatisfied(
-                                    BytecodeLinkObligation::RelocationResolution,
-                                    self.instruction_location(package, function, instruction.pc),
-                                    "relocation index is out of bounds".to_string(),
-                                )
-                            })?;
-                        let key = match relocation {
-                            BytecodeRelocation::InterfaceRequirementRef { interface } => {
-                                let kind = if instruction.descriptor.kind
-                                    == skiff_artifact_model::Opcode::InvokeCallback
-                                {
-                                    InterfaceKind::Callback
-                                } else {
-                                    InterfaceKind::Requirement
-                                };
-                                Some(InterfaceKey {
-                                    package_build_id: package.reference().package_build_id.clone(),
-                                    specialization: source_specialization.clone(),
-                                    interface: interface.clone(),
-                                    kind,
-                                    concrete_type: None,
-                                    service_requirement_key: None,
-                                    public_instance_key: None,
-                                    source: InterfaceSource::Requirement,
-                                })
-                            }
-                            BytecodeRelocation::LocalInterfaceRef { interface } => {
-                                let specialization = self.specialization_for_function_key(
-                                    package,
-                                    &function.function_key,
-                                    indices,
-                                )?;
-                                let concrete_type = type_linker.intern_concrete_type(
-                                    package,
-                                    specialization,
-                                    &interface.concrete_type,
-                                    &BTreeMap::new(),
-                                    self.instruction_location(package, function, instruction.pc),
-                                )?;
-                                Some(InterfaceKey {
-                                    package_build_id: package.reference().package_build_id.clone(),
-                                    specialization: source_specialization.clone(),
-                                    interface: interface.interface.clone(),
-                                    kind: InterfaceKind::Local,
-                                    concrete_type: Some(concrete_type),
-                                    service_requirement_key: None,
-                                    public_instance_key: None,
-                                    source: InterfaceSource::Local(interface.clone()),
-                                })
-                            }
-                            BytecodeRelocation::RemoteInterfaceRef { interface } => {
-                                Some(InterfaceKey {
-                                    package_build_id: package.reference().package_build_id.clone(),
-                                    specialization: source_specialization.clone(),
-                                    interface: interface.interface.clone(),
-                                    kind: InterfaceKind::Remote,
-                                    concrete_type: None,
-                                    service_requirement_key: Some(ServiceRequirementKey {
-                                        caller_package_build_id: package
-                                            .reference()
-                                            .package_build_id
-                                            .clone(),
-                                        service_requirement_slot: interface
-                                            .service_requirement_slot,
-                                    }),
-                                    public_instance_key: Some(
-                                        interface.public_instance_key.clone(),
-                                    ),
-                                    source: InterfaceSource::Remote(interface.clone()),
-                                })
-                            }
-                            _ => None,
-                        };
-                        if let Some(key) = key {
-                            if !unique.contains(&key) {
-                                unique.push(key);
-                            }
-                        }
-                    }
-                }
-            }
+        if let Some(reference) = reachable.iter().find(|reference| {
+            matches!(
+                &reference.relocation,
+                BytecodeRelocation::InterfaceRequirementRef { .. }
+                    | BytecodeRelocation::LocalInterfaceRef { .. }
+                    | BytecodeRelocation::RemoteInterfaceRef { .. }
+            )
+        }) {
+            return Err(BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::ConcreteTargetTables,
+                location: self.reachable_relocation_location(reference),
+            });
         }
-
-        let mut rows = Vec::new();
-        for key in unique {
-            let index = skiff_runtime_linked_bytecode::InterfaceTableIndex::new(rows.len() as u32);
-            let package = self
-                .deployment
-                .packages()
-                .get(&key.package_build_id)
-                .ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        self.deployment_location(),
-                        "no package is hydrated for interface target".to_string(),
-                    )
-                })?;
-            rows.push(self.link_one_interface_table(
-                package,
-                index,
-                &key,
-                indices,
-                frames,
-                type_linker,
-            )?);
-        }
-        Ok(rows)
-    }
-
-    fn link_one_interface_table(
-        &self,
-        package: &HydratedBytecodePackage,
-        index: skiff_runtime_linked_bytecode::InterfaceTableIndex,
-        key: &InterfaceKey,
-        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
-        frames: &[LinkedFrameLayout],
-        type_linker: &mut TypeLinker<'_>,
-    ) -> Result<LinkedInterfaceTable, BytecodeLinkError> {
-        let location = self.package_location(package);
-        let specialization = &key.specialization;
-        let instantiation = linked_instantiation(
-            &key.interface,
-            package,
-            specialization,
-            type_linker,
-            &location,
-        )?;
-        let kind = match &key.kind {
-            InterfaceKind::Requirement | InterfaceKind::Callback => {
-                let methods = self.interface_requirement_methods(
-                    package,
-                    &key.interface,
-                    specialization,
-                    type_linker,
-                    &location,
-                )?;
-                let table = LinkedInterfaceRequirementTable::new(methods.into_boxed_slice())
-                    .map_err(|error| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            error.to_string(),
-                        )
-                    })?;
-                if key.kind == InterfaceKind::Callback {
-                    LinkedInterfaceTableKind::Callback(table)
-                } else {
-                    LinkedInterfaceTableKind::Requirement(table)
-                }
-            }
-            InterfaceKind::Local => {
-                let source = match &key.source {
-                    InterfaceSource::Local(source) => source,
-                    _ => {
-                        return Err(unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            "local interface source is absent".to_string(),
-                        ))
-                    }
-                };
-                let concrete_type = key.concrete_type.ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        location.clone(),
-                        "local interface concrete type is absent".to_string(),
-                    )
-                })?;
-                let mut methods = Vec::new();
-                for method in &source.methods {
-                    let signature = interface_slot_signature(
-                        package,
-                        specialization,
-                        &method.signature,
-                        type_linker,
-                        &location,
-                    )?;
-                    let function_key = method.function_key.clone();
-                    let specialization =
-                        self.specialization_for_function_key(package, &function_key, indices)?;
-                    let function = indices.get(specialization).copied().ok_or_else(|| {
-                        unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), format!("local interface method {function_key:?} is absent from the closure"))
-                    })?;
-                    let abi_id = LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
-                        .map_err(|error| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?;
-                    methods.push(
-                        LinkedLocalInterfaceMethod::new(
-                            method.slot,
-                            method.method_name.clone(),
-                            abi_id,
-                            signature,
-                            function,
-                            method.receiver_call_abi,
-                        )
-                        .map_err(|error| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?,
-                    );
-                }
-                LinkedInterfaceTableKind::Local(
-                    LinkedLocalInterfaceTable::new(concrete_type, methods.into_boxed_slice())
-                        .map_err(|error| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?,
-                )
-            }
-            InterfaceKind::Remote => {
-                let source = match &key.source {
-                    InterfaceSource::Remote(source) => source,
-                    _ => {
-                        return Err(unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            "remote interface source is absent".to_string(),
-                        ))
-                    }
-                };
-                let mut methods = Vec::new();
-                for method in &source.methods {
-                    let signature = interface_slot_signature(
-                        package,
-                        specialization,
-                        &method.signature,
-                        type_linker,
-                        &location,
-                    )?;
-                    let abi_id = LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
-                        .map_err(|error| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?;
-                    methods.push(LinkedRemoteInterfaceMethod::new(
-                        method.slot,
-                        abi_id,
-                        signature,
-                        method.contract_operation_id.clone(),
-                    ));
-                }
-                let requirement_key = key.service_requirement_key.clone().ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        location.clone(),
-                        "remote interface requirement key is absent".to_string(),
-                    )
-                })?;
-                let public_instance_key = key.public_instance_key.clone().ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        location.clone(),
-                        "remote interface public instance is absent".to_string(),
-                    )
-                })?;
-                LinkedInterfaceTableKind::Remote(
-                    LinkedRemoteInterfaceTable::new(
-                        requirement_key,
-                        LinkedPublicInstanceKey::parse(public_instance_key).map_err(|error| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?,
-                        methods.into_boxed_slice(),
-                        source.callee_protocol_identity.clone(),
-                    )
-                    .map_err(|error| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            error.to_string(),
-                        )
-                    })?,
-                )
-            }
-        };
-        let _ = frames;
-        Ok(LinkedInterfaceTable::new(index, instantiation, kind))
-    }
-
-    fn interface_requirement_methods(
-        &self,
-        package: &HydratedBytecodePackage,
-        interface: &InterfaceInstantiationRef,
-        specialization: &SpecializationKey,
-        type_linker: &mut TypeLinker<'_>,
-        location: &BytecodeLinkLocation,
-    ) -> Result<Vec<LinkedInterfaceRequirementMethod>, BytecodeLinkError> {
-        let identity =
-            serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).map_err(|error| {
-                unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    format!("interface ABI is not TypeRefIr: {error}"),
-                )
-            })?;
-        let mut methods = Vec::new();
-        match identity {
-            TypeRefIr::PackageSymbol { symbol } => {
-                let owner = self.resolve_package_symbol_owner(package, &symbol, location)?;
-                let abi_symbol = owner
-                    .artifact()
-                    .package_local_abi
-                    .implementation_symbols
-                    .get(&symbol.symbol_path)
-                    .or_else(|| {
-                        owner
-                            .artifact()
-                            .package_local_abi
-                            .public_symbols
-                            .get(&symbol.symbol_path)
-                    })
-                    .ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            format!("interface symbol {} is absent", symbol.symbol_path),
-                        )
-                    })?;
-                let PackageLocalAbiSymbol::Type {
-                    interface_methods,
-                    type_params,
-                    ..
-                } = abi_symbol
-                else {
-                    return Err(unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        location.clone(),
-                        "interface identity is not a type symbol".to_string(),
-                    ));
-                };
-                if type_params.len() != interface.canonical_type_args.len() {
-                    return Err(unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        location.clone(),
-                        "interface type parameter arity mismatch".to_string(),
-                    ));
-                }
-                for (slot, method) in interface_methods.iter().enumerate() {
-                    let _ = specialization;
-                    let signature = interface_method_signature(
-                        package,
-                        specialization,
-                        method,
-                        type_linker,
-                        location,
-                    )?;
-                    let abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
-                        interface,
-                        &method.name,
-                    );
-                    methods.push(LinkedInterfaceRequirementMethod::new(
-                        slot as u32,
-                        LinkedInterfaceMethodAbiId::parse(abi_id).map_err(|error| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?,
-                        signature,
-                    ));
-                }
-            }
-            TypeRefIr::ServiceSymbol { symbol } => {
-                let export = package
-                    .artifact()
-                    .implementation_links
-                    .types
-                    .values()
-                    .find(|export| {
-                        export.file.module_path == symbol.module_path
-                            && export.symbol == symbol.symbol
-                    })
-                    .ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            format!(
-                                "interface service symbol {} is absent",
-                                symbol.symbol_path()
-                            ),
-                        )
-                    })?;
-                if export.type_params.len() != interface.canonical_type_args.len() {
-                    return Err(unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        location.clone(),
-                        "interface type parameter arity mismatch".to_string(),
-                    ));
-                }
-                for (slot, method) in export.interface_methods.iter().enumerate() {
-                    let _ = specialization;
-                    let signature = interface_method_signature(
-                        package,
-                        specialization,
-                        method,
-                        type_linker,
-                        location,
-                    )?;
-                    let abi_id = skiff_artifact_identity::canonical_interface_method_abi_id(
-                        interface,
-                        &method.name,
-                    );
-                    methods.push(LinkedInterfaceRequirementMethod::new(
-                        slot as u32,
-                        LinkedInterfaceMethodAbiId::parse(abi_id).map_err(|error| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?,
-                        signature,
-                    ));
-                }
-            }
-            TypeRefIr::PackageSchema {
-                package_id,
-                stable_schema_key,
-                package_schema_type_id,
-            } => {
-                let owner = self
-                    .deployment
-                    .packages()
-                    .values()
-                    .find(|candidate| candidate.reference().package_id == package_id)
-                    .ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            format!("interface schema owner {package_id} is absent"),
-                        )
-                    })?;
-                let record = owner
-                    .artifact()
-                    .bytecode_schema_records
-                    .get(&package_schema_type_id)
-                    .filter(|record| {
-                        record.package_id == package_id
-                            && record.stable_schema_key == stable_schema_key
-                    })
-                    .ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            "interface schema record is absent".to_string(),
-                        )
-                    })?;
-                let skiff_artifact_model::ContractTypeDescriptor::CallbackInterface { operations } =
-                    &record.canonical_descriptor.descriptor
-                else {
-                    return Err(unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        location.clone(),
-                        "interface schema is not a CallbackInterface".to_string(),
-                    ));
-                };
-                for (slot, (name, operation)) in operations.iter().enumerate() {
-                    let _ = specialization;
-                    let mut params = Vec::new();
-                    for (index, ty) in operation.parameters.iter().enumerate() {
-                        params.push(skiff_artifact_model::FunctionTypeParamIr {
-                            name: format!("arg{index}"),
-                            ty: contract_type_to_type_ref(ty, location)?,
-                        });
-                    }
-                    let return_type = contract_type_to_type_ref(&operation.return_type, location)?;
-                    let signature = interface_slot_signature_from_types(
-                        package,
-                        specialization,
-                        &params,
-                        &return_type,
-                        type_linker,
-                        location,
-                    )?;
-                    let abi_id =
-                        skiff_artifact_identity::canonical_interface_method_abi_id(interface, name);
-                    methods.push(LinkedInterfaceRequirementMethod::new(
-                        slot as u32,
-                        LinkedInterfaceMethodAbiId::parse(abi_id).map_err(|error| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                location.clone(),
-                                error.to_string(),
-                            )
-                        })?,
-                        signature,
-                    ));
-                }
-            }
-            _ => {
-                return Err(unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "interface ABI identity is not PackageSymbol or PackageSchema".to_string(),
-                ))
-            }
-        }
-        Ok(methods)
+        Ok(Vec::new())
     }
 
     fn link_synthetic_callbacks(
         &self,
         reachable: &[ReachableRelocation],
-        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
-        frames: &[LinkedFrameLayout],
-        type_linker: &mut TypeLinker<'_>,
+        _indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        _frames: &[LinkedFrameLayout],
+        _type_linker: &mut TypeLinker<'_>,
     ) -> Result<Vec<LinkedSyntheticCallbackTarget>, BytecodeLinkError> {
-        let mut seen = BTreeSet::new();
-        let mut rows = Vec::new();
-        for package in self
-            .deployment
-            .packages()
-            .values()
-            .filter(|package| package.has_bytecode())
-        {
-            for function in package
-                .bytecode()
-                .ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        self.package_location(package),
-                        "type-only package has no functions".to_string(),
-                    )
-                })?
-                .view()
-                .functions()
-            {
-                for relocation in &function.relocations {
-                    if !reachable.iter().any(|reference| {
-                        reference.specialization.package_build_id()
-                            == &package.reference().package_build_id
-                            && reference.specialization.artifact_function_key().as_str()
-                                == function.function_key
-                            && &reference.relocation == relocation
-                    }) {
-                        continue;
-                    }
-                    let BytecodeRelocation::SyntheticCallbackRef { function_key } = relocation
-                    else {
-                        continue;
-                    };
-                    if !seen.insert((
-                        package.reference().package_build_id.clone(),
-                        function_key.clone(),
-                    )) {
-                        continue;
-                    }
-                    let key = self.key_for_synthetic_callback(package, function_key)?;
-                    let function = indices.get(&key).copied().ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            self.package_location(package),
-                            format!("synthetic callback {function_key} is absent from the closure"),
-                        )
-                    })?;
-                    let signature = frame_signature(
-                        frames.get(function.get() as usize).ok_or_else(|| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                self.package_location(package),
-                                "synthetic callback frame is absent".to_string(),
-                            )
-                        })?,
-                        package,
-                        Some(function_key.as_str()),
-                    )?;
-                    let artifact_function_key = ArtifactFunctionKey::parse(function_key.clone())
-                        .map_err(|error| {
-                            unsatisfied(
-                                BytecodeLinkObligation::ConcreteTargetTables,
-                                self.package_location(package),
-                                error.to_string(),
-                            )
-                        })?;
-                    rows.push(LinkedSyntheticCallbackTarget::new(
-                        skiff_runtime_linked_bytecode::SyntheticCallbackIndex::new(
-                            rows.len() as u32
-                        ),
-                        artifact_function_key,
-                        function,
-                        None,
-                        signature,
-                    ));
-                }
-            }
+        if let Some(reference) = reachable.iter().find(|reference| {
+            matches!(
+                &reference.relocation,
+                BytecodeRelocation::SyntheticCallbackRef { .. }
+            )
+        }) {
+            return Err(BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::ConcreteTargetTables,
+                location: self.reachable_relocation_location(reference),
+            });
         }
-        let _ = type_linker;
-        Ok(rows)
+        Ok(Vec::new())
     }
 
-    fn host_signature_with_abi(
+    fn reachable_relocation_location(
         &self,
-        signature: &skiff_artifact_model::HostEffectSignature,
-    ) -> skiff_artifact_model::HostEffectSignature {
-        let mut signature = signature.clone();
-        for ty in signature
-            .parameter_types
-            .iter_mut()
-            .chain(signature.result_types.iter_mut())
-        {
-            self.fill_package_abi(ty);
-        }
-        for plan in signature
-            .parameter_plans
-            .iter_mut()
-            .chain(signature.result_plans.iter_mut())
-        {
-            if let skiff_artifact_model::ValueTransferPlan::FromType { ty } = plan {
-                self.fill_package_abi(ty);
-            }
-        }
-        signature
-    }
-
-    fn fill_package_abi(&self, ty: &mut TypeRefIr) {
-        match ty {
-            TypeRefIr::PackageSymbol { symbol } => {
-                if symbol.abi_expectation.is_none() {
-                    if let Some(std) = self
-                        .deployment
-                        .packages()
-                        .values()
-                        .find(|package| package.reference().package_id == "skiff.run/std")
-                    {
-                        symbol.abi_expectation = Some(
-                            std.reference()
-                                .package_local_abi_identity
-                                .as_str()
-                                .to_string(),
-                        );
-                    }
-                }
-            }
-            TypeRefIr::Builtin { args, .. } => {
-                for arg in args {
-                    self.fill_package_abi(arg);
-                }
-            }
-            TypeRefIr::Nullable { inner } => self.fill_package_abi(inner),
-            TypeRefIr::Union { items } => {
-                for item in items {
-                    self.fill_package_abi(item);
-                }
-            }
-            TypeRefIr::AppliedNominal { arguments, .. } => {
-                for argument in arguments {
-                    self.fill_package_abi(argument);
-                }
-            }
-            _ => {}
-        }
+        reference: &ReachableRelocation,
+    ) -> BytecodeLinkLocation {
+        self.deployment
+            .packages()
+            .get(reference.specialization.package_build_id())
+            .map_or_else(
+                || self.deployment_location(),
+                |package| BytecodeLinkLocation::Instruction {
+                    package: Box::new(package.reference().clone()),
+                    function_key: reference
+                        .specialization
+                        .artifact_function_key()
+                        .as_str()
+                        .to_string(),
+                    artifact_pc: reference.pc,
+                },
+            )
     }
 
     fn link_host_and_intrinsics(
@@ -1863,34 +822,14 @@ impl DeploymentLinker<'_> {
                                 &function.function_key,
                                 indices,
                             )?;
-                            // The pinned registry is the only typed signature
-                            // authority. The artifact's self-reported signature
-                            // is checked against that registry and never
-                            // copied into the linked entry.
-                            let entry = registry_entry_for(effect, &location)?;
-                            let mut resolver =
-                                DeploymentLifecycleResolver::new(self.deployment, package);
-                            let mut budget = ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64)
-                                .map_err(|error| {
-                                    unsatisfied(
-                                        BytecodeLinkObligation::ConcreteTargetTables,
-                                        location.clone(),
-                                        error.to_string(),
-                                    )
-                                })?;
-                            let self_reported = self.host_signature_with_abi(&effect.signature);
-                            validate_host_effect_authority(
-                                effect,
-                                &self_reported,
-                                &mut resolver,
-                                &mut budget,
-                                &location,
-                            )?;
+                            // The registry authenticates the exact executable ABI;
+                            // compiler-owned concrete plans remain in the artifact.
+                            let entry = validate_host_effect_authority(effect, &location)?;
                             let executor_identity = executable_identity_for(entry, &location)?;
-                            let signature = self.registry_native_signature(
-                                entry,
+                            let signature = native_signature(
                                 package,
                                 specialization,
+                                &effect.signature,
                                 type_linker,
                                 &location,
                             )?;
@@ -2156,196 +1095,6 @@ impl DeploymentLinker<'_> {
                 )
             })
     }
-
-    fn resolve_package_symbol_owner(
-        &self,
-        caller: &HydratedBytecodePackage,
-        symbol: &PackageSymbolRef,
-        location: &BytecodeLinkLocation,
-    ) -> Result<&HydratedBytecodePackage, BytecodeLinkError> {
-        match &symbol.package {
-            PackageRefIr::PackageId { package_id } => self
-                .deployment
-                .packages()
-                .values()
-                .find(|package| package.reference().package_id == *package_id)
-                .ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::ConcreteTargetTables,
-                        location.clone(),
-                        format!("package owner {package_id} is absent"),
-                    )
-                }),
-            PackageRefIr::Dependency { dependency_ref } => {
-                let key = skiff_artifact_model::PackageRequirementKey {
-                    caller_package_build_id: caller.reference().package_build_id.clone(),
-                    package_requirement_alias: dependency_ref.clone(),
-                };
-                let binding = self
-                    .deployment
-                    .deployment()
-                    .package_bindings
-                    .iter()
-                    .find(|binding| binding.key == key)
-                    .ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            format!("dependency alias {dependency_ref} is absent"),
-                        )
-                    })?;
-                self.deployment
-                    .packages()
-                    .get(&binding.package.package_build_id)
-                    .filter(|package| package.reference() == &binding.package)
-                    .ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            location.clone(),
-                            "dependency target is absent".to_string(),
-                        )
-                    })
-            }
-        }
-    }
-}
-
-fn linked_instantiation(
-    interface: &InterfaceInstantiationRef,
-    package: &HydratedBytecodePackage,
-    specialization: &SpecializationKey,
-    type_linker: &mut TypeLinker<'_>,
-    location: &BytecodeLinkLocation,
-) -> Result<LinkedInterfaceInstantiation, BytecodeLinkError> {
-    let concrete_type_arguments = interface
-        .canonical_type_args
-        .iter()
-        .map(|ty| {
-            type_linker.intern_concrete_type(
-                package,
-                specialization,
-                ty,
-                &BTreeMap::new(),
-                location.clone(),
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    LinkedInterfaceInstantiation::new(
-        interface.clone(),
-        concrete_type_arguments.into_boxed_slice(),
-    )
-    .map_err(|error| {
-        unsatisfied(
-            BytecodeLinkObligation::ConcreteTargetTables,
-            location.clone(),
-            error.to_string(),
-        )
-    })
-}
-
-fn interface_slot_signature(
-    package: &HydratedBytecodePackage,
-    specialization: &SpecializationKey,
-    signature: &InterfaceMethodSlotSignatureIr,
-    type_linker: &mut TypeLinker<'_>,
-    location: &BytecodeLinkLocation,
-) -> Result<LinkedCallableSignature, BytecodeLinkError> {
-    interface_slot_signature_from_types(
-        package,
-        specialization,
-        &signature.params,
-        &signature.return_type,
-        type_linker,
-        location,
-    )
-}
-
-fn interface_slot_signature_from_types(
-    package: &HydratedBytecodePackage,
-    specialization: &SpecializationKey,
-    params: &[skiff_artifact_model::FunctionTypeParamIr],
-    return_type: &TypeRefIr,
-    type_linker: &mut TypeLinker<'_>,
-    location: &BytecodeLinkLocation,
-) -> Result<LinkedCallableSignature, BytecodeLinkError> {
-    let mut parameter_types = Vec::new();
-    let mut parameter_plans = Vec::new();
-    for parameter in params {
-        let ty = type_linker.intern_concrete_type(
-            package,
-            specialization,
-            &parameter.ty,
-            &BTreeMap::new(),
-            location.clone(),
-        )?;
-        let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
-            unsatisfied(
-                BytecodeLinkObligation::ConcreteTargetTables,
-                location.clone(),
-                "interface parameter type is absent".to_string(),
-            )
-        })?;
-        let plan = type_linker.plan_for_concrete_type(&concrete, location.clone())?;
-        parameter_types.push(ty);
-        parameter_plans.push(plan);
-    }
-    let result_types = if matches!(return_type, TypeRefIr::Builtin { name, .. } if name == "void") {
-        Vec::new()
-    } else {
-        vec![type_linker.intern_concrete_type(
-            package,
-            specialization,
-            return_type,
-            &BTreeMap::new(),
-            location.clone(),
-        )?]
-    };
-    let mut result_plans = Vec::new();
-    for ty in &result_types {
-        let concrete = type_linker.linked_type_ref(*ty).cloned().ok_or_else(|| {
-            unsatisfied(
-                BytecodeLinkObligation::ConcreteTargetTables,
-                location.clone(),
-                "interface result type is absent".to_string(),
-            )
-        })?;
-        result_plans.push(type_linker.plan_for_concrete_type(&concrete, location.clone())?);
-    }
-    let parameter_mode_count = parameter_types.len();
-    LinkedCallableSignature::new(
-        parameter_types.into_boxed_slice(),
-        vec![ParamModeIr::Value; parameter_mode_count].into_boxed_slice(),
-        parameter_plans.into_boxed_slice(),
-        result_types.into_boxed_slice(),
-        result_plans.into_boxed_slice(),
-        CallableEffectSummary::Unknown {
-            reason: skiff_artifact_model::CallableEffectUnknownReason::AnalysisPending,
-        },
-    )
-    .map_err(|error| {
-        unsatisfied(
-            BytecodeLinkObligation::ConcreteTargetTables,
-            location.clone(),
-            error.to_string(),
-        )
-    })
-}
-
-fn interface_method_signature(
-    package: &HydratedBytecodePackage,
-    specialization: &SpecializationKey,
-    method: &skiff_artifact_model::InterfaceMethodSignature,
-    type_linker: &mut TypeLinker<'_>,
-    location: &BytecodeLinkLocation,
-) -> Result<LinkedCallableSignature, BytecodeLinkError> {
-    interface_slot_signature_from_types(
-        package,
-        specialization,
-        &method.params,
-        &method.return_type,
-        type_linker,
-        location,
-    )
 }
 
 fn native_signature(
@@ -2430,10 +1179,8 @@ fn native_signature(
     })
 }
 
-/// Looks up a host effect relocation in the frozen registry by its canonical
-/// binding ID. The registry is the only typed authority: an absent binding ID
-/// fails closed, and the returned entry never borrows the artifact's
-/// self-reported signature.
+/// Looks up the executable identity and ABI template by canonical binding ID.
+/// Concrete types and transfer plans remain compiler-owned artifact facts.
 fn registry_entry_for(
     effect: &skiff_artifact_model::HostEffectReference,
     location: &BytecodeLinkLocation,
@@ -2477,190 +1224,200 @@ fn executable_identity_for(
     })
 }
 
-/// Proves the artifact's canonical facts (exact target, metadata, binding ID
-/// and self-reported signature) against the frozen registry. Any mismatch is
-/// fatal: there is no std-binding bypass.
-fn validate_host_effect_authority<R: ValueLifecycleFactResolver>(
+/// Matches exact target, metadata and callable ABI against the frozen registry.
+/// This deliberately does not derive or replace compiler-owned transfer plans.
+fn validate_host_effect_authority(
     effect: &skiff_artifact_model::HostEffectReference,
-    self_reported: &skiff_artifact_model::HostEffectSignature,
-    resolver: &mut R,
-    budget: &mut ValueLifecyclePolicyBudget,
     location: &BytecodeLinkLocation,
-) -> Result<(), BytecodeLinkError> {
-    let matched = skiff_artifact_model::host_effect_registry()
-        .match_reference(&effect.target, self_reported, resolver, budget)
-        .map_err(|error| {
-            unsatisfied(
-                BytecodeLinkObligation::ConcreteTargetTables,
-                location.clone(),
-                format!("host effect registry rejected the artifact's canonical facts: {error:?}"),
-            )
-        })?;
+) -> Result<&'static HostEffectRegistryEntry, BytecodeLinkError> {
+    let entry = registry_entry_for(effect, location)?;
     let artifact_target = if effect.target.namespace.is_empty() {
         effect.target.symbol.clone()
     } else {
         format!("{}.{}", effect.target.namespace, effect.target.symbol)
     };
-    if matched.entry.target != artifact_target {
-        return Err(unsatisfied(
-            BytecodeLinkObligation::ConcreteTargetTables,
-            location.clone(),
+    if entry.target != artifact_target {
+        return Err(host_abi_mismatch(
+            location,
             format!(
-                "host effect target `{artifact_target}` is an alias; exact canonical target `{}` is required",
-                matched.entry.target
+                "host effect target `{artifact_target}` is not exact registry target `{}`",
+                entry.target
             ),
+        ));
+    }
+    if !entry.metadata.matches(&effect.target.metadata) {
+        return Err(host_abi_mismatch(
+            location,
+            "host effect metadata does not match the exact registry ABI".to_string(),
+        ));
+    }
+    validate_host_signature_abi(&entry.signature, &effect.signature, location)?;
+    Ok(entry)
+}
+
+fn validate_host_signature_abi(
+    expected: &skiff_artifact_model::CallableRegistrySignature,
+    actual: &skiff_artifact_model::HostEffectSignature,
+    location: &BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    for (name, expected, actual) in [
+        (
+            "parameter types",
+            expected.parameter_types.len(),
+            actual.parameter_types.len(),
+        ),
+        (
+            "parameter modes",
+            expected.parameter_modes.len(),
+            actual.parameter_modes.len(),
+        ),
+        (
+            "parameter plans",
+            expected.parameter_plans.len(),
+            actual.parameter_plans.len(),
+        ),
+        (
+            "result types",
+            expected.result_types.len(),
+            actual.result_types.len(),
+        ),
+        (
+            "result plans",
+            expected.result_plans.len(),
+            actual.result_plans.len(),
+        ),
+    ] {
+        if expected != actual {
+            return Err(host_abi_mismatch(
+                location,
+                format!(
+                    "host effect {name} arity is {actual}, exact registry ABI requires {expected}"
+                ),
+            ));
+        }
+    }
+    if expected.parameter_modes != actual.parameter_modes {
+        return Err(host_abi_mismatch(
+            location,
+            "host effect parameter modes differ from the exact registry ABI".to_string(),
+        ));
+    }
+    if expected.effects != actual.effects {
+        return Err(host_abi_mismatch(
+            location,
+            "host effect effects differ from the exact registry ABI".to_string(),
+        ));
+    }
+
+    let mut type_arguments = vec![None; expected.type_parameter_count as usize];
+    for (position, templates, types) in [
+        (
+            "parameter",
+            expected.parameter_types.as_slice(),
+            actual.parameter_types.as_slice(),
+        ),
+        (
+            "result",
+            expected.result_types.as_slice(),
+            actual.result_types.as_slice(),
+        ),
+    ] {
+        for (ordinal, (template, ty)) in templates.iter().zip(types).enumerate() {
+            match_registry_type_expression(template, ty, &mut type_arguments).map_err(
+                |detail| {
+                    host_abi_mismatch(
+                        location,
+                        format!(
+                            "host effect {position} {ordinal} differs from registry ABI: {detail}"
+                        ),
+                    )
+                },
+            )?;
+        }
+    }
+    if type_arguments.iter().any(Option::is_none) {
+        return Err(host_abi_mismatch(
+            location,
+            "host effect registry type parameter is not bound by the artifact ABI".to_string(),
         ));
     }
     Ok(())
 }
 
-impl DeploymentLinker<'_> {
-    /// Builds the linked native signature exclusively from the frozen
-    /// registry entry. The artifact's self-reported signature is never
-    /// copied.
-    fn registry_native_signature(
-        &self,
-        entry: &HostEffectRegistryEntry,
-        package: &HydratedBytecodePackage,
-        specialization: &SpecializationKey,
-        type_linker: &mut TypeLinker<'_>,
-        location: &BytecodeLinkLocation,
-    ) -> Result<LinkedNativeCallableSignature, BytecodeLinkError> {
-        let mut parameter_types = Vec::new();
-        let mut parameter_plans = Vec::new();
-        for (ty, plan) in entry
-            .signature
-            .parameter_types
-            .iter()
-            .zip(&entry.signature.parameter_plans)
-        {
-            let mut ty = registry_type_expression(ty, location)?;
-            self.fill_package_abi(&mut ty);
-            let index = type_linker.intern_concrete_type(
-                package,
-                specialization,
-                &ty,
-                &BTreeMap::new(),
-                location.clone(),
-            )?;
-            let concrete = type_linker.linked_type_ref(index).cloned().ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "registry host parameter type is absent".to_string(),
-                )
-            })?;
-            parameter_types.push(index);
-            parameter_plans.push(type_linker.link_registry_plan_for_type_at(
-                package,
-                specialization,
-                &BTreeMap::new(),
-                &registry_plan_expression(plan, location)?,
-                &concrete,
-                location.clone(),
-            )?);
-        }
-        let mut result_types = Vec::new();
-        let mut result_plans = Vec::new();
-        for (ty, plan) in entry
-            .signature
-            .result_types
-            .iter()
-            .zip(&entry.signature.result_plans)
-        {
-            let mut ty = registry_type_expression(ty, location)?;
-            self.fill_package_abi(&mut ty);
-            let index = type_linker.intern_concrete_type(
-                package,
-                specialization,
-                &ty,
-                &BTreeMap::new(),
-                location.clone(),
-            )?;
-            let concrete = type_linker.linked_type_ref(index).cloned().ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "registry host result type is absent".to_string(),
-                )
-            })?;
-            result_types.push(index);
-            result_plans.push(type_linker.link_registry_plan_for_type_at(
-                package,
-                specialization,
-                &BTreeMap::new(),
-                &registry_plan_expression(plan, location)?,
-                &concrete,
-                location.clone(),
-            )?);
-        }
-        LinkedNativeCallableSignature::new(
-            parameter_types.into_boxed_slice(),
-            entry.signature.parameter_modes.clone().into_boxed_slice(),
-            parameter_plans.into_boxed_slice(),
-            result_types.into_boxed_slice(),
-            result_plans.into_boxed_slice(),
-            entry.signature.effects.clone(),
-        )
-        .map_err(|error| {
-            unsatisfied(
-                BytecodeLinkObligation::ConcreteTargetTables,
-                location.clone(),
-                error.to_string(),
-            )
-        })
-    }
-}
-
-fn registry_type_expression(
-    ty: &CallableRegistryTypeExpression,
-    location: &BytecodeLinkLocation,
-) -> Result<TypeRefIr, BytecodeLinkError> {
-    Ok(match ty {
+fn match_registry_type_expression(
+    template: &CallableRegistryTypeExpression,
+    actual: &TypeRefIr,
+    arguments: &mut [Option<TypeRefIr>],
+) -> Result<(), String> {
+    match template {
         CallableRegistryTypeExpression::TypeParameter { ordinal } => {
-            return Err(unsatisfied(
-                BytecodeLinkObligation::ConcreteTargetTables,
-                location.clone(),
-                format!(
-                    "registry host signature type parameter {ordinal} requires an instantiation and is not admitted"
-                ),
-            ))
+            let slot = arguments
+                .get_mut(*ordinal as usize)
+                .ok_or_else(|| "type parameter ordinal is outside declared arity".to_string())?;
+            if let Some(previous) = slot {
+                if previous != actual {
+                    return Err("type parameter has inconsistent instantiations".to_string());
+                }
+            } else {
+                *slot = Some(actual.clone());
+            }
+            Ok(())
         }
-        CallableRegistryTypeExpression::Builtin { name, arguments } => TypeRefIr::Builtin {
-            name: name.clone(),
-            args: arguments
-                .iter()
-                .map(|argument| registry_type_expression(argument, location))
-                .collect::<Result<_, _>>()?,
-        },
+        CallableRegistryTypeExpression::Builtin {
+            name,
+            arguments: expected_arguments,
+        } => {
+            let (actual_name, actual_arguments): (&str, &[TypeRefIr]) = match actual {
+                TypeRefIr::Builtin { name, args } => (name, args),
+                TypeRefIr::Nullable { inner } if name == "Nullable" => {
+                    ("Nullable", std::slice::from_ref(inner.as_ref()))
+                }
+                _ => return Err(format!("expected builtin {name}")),
+            };
+            if actual_name != name || actual_arguments.len() != expected_arguments.len() {
+                return Err(format!("expected builtin {name} with exact arity"));
+            }
+            for (expected, actual) in expected_arguments.iter().zip(actual_arguments) {
+                match_registry_type_expression(expected, actual, arguments)?;
+            }
+            Ok(())
+        }
         CallableRegistryTypeExpression::PackageSymbol {
             package_id,
             symbol_path,
-        } => TypeRefIr::PackageSymbol {
-            symbol: PackageSymbolRef {
-                package: PackageRefIr::PackageId {
-                    package_id: package_id.clone(),
-                },
-                symbol_path: symbol_path.clone(),
-                abi_expectation: None,
-            },
-        },
-    })
-}
-
-fn registry_plan_expression(
-    plan: &skiff_artifact_model::CallableRegistryPlanExpression,
-    location: &BytecodeLinkLocation,
-) -> Result<skiff_artifact_model::ValueTransferPlan, BytecodeLinkError> {
-    match plan {
-        skiff_artifact_model::CallableRegistryPlanExpression::FromType { ty } => {
-            Ok(skiff_artifact_model::ValueTransferPlan::FromType {
-                ty: registry_type_expression(ty, location)?,
-            })
+        } => {
+            let symbol = match actual {
+                TypeRefIr::PackageSymbol { symbol } => symbol,
+                TypeRefIr::AppliedNominal {
+                    base: skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol },
+                    arguments,
+                } if arguments.is_empty() => symbol,
+                _ => return Err("expected exact package symbol".to_string()),
+            };
+            let PackageRefIr::PackageId {
+                package_id: actual_package_id,
+            } = &symbol.package
+            else {
+                return Err("package symbol retains an unresolved dependency alias".to_string());
+            };
+            if actual_package_id != package_id || symbol.symbol_path != *symbol_path {
+                return Err("package symbol owner/path mismatch".to_string());
+            }
+            if symbol.abi_expectation.as_deref().is_none_or(str::is_empty) {
+                return Err("package symbol lacks exact ABI identity".to_string());
+            }
+            Ok(())
         }
     }
 }
 
+fn host_abi_mismatch(location: &BytecodeLinkLocation, detail: String) -> BytecodeLinkError {
+    unsatisfied(
+        BytecodeLinkObligation::ConcreteTargetTables,
+        location.clone(),
+        detail,
+    )
+}
 struct DeploymentLifecycleResolver<'a> {
     deployment: &'a HydratedDeploymentBytecode,
     caller: &'a HydratedBytecodePackage,
