@@ -1212,13 +1212,17 @@ fn linked_emit_stream_shape_rejects_missing_out_of_range_nominal_and_plan_drift(
 
     let mut wrong_nominal = clone_candidate_parts(&candidate);
     let original = wrong_nominal.shapes[0].clone();
+    let wrong_nominal_type = wrong_nominal.functions[0]
+        .stream_result_type_ref()
+        .expect("stream producer has its function-wide Stream<T> row");
+    let wrong_nominal_plan = wrong_nominal.types[wrong_nominal_type.get() as usize]
+        .plan()
+        .clone();
     wrong_nominal.shapes[0] = LinkedShapeEntry::new(
         original.index(),
         original.origin().clone(),
-        wrong_nominal.functions[0]
-            .stream_result_type_ref()
-            .expect("stream producer has its function-wide Stream<T> row"),
-        original.plan().clone(),
+        wrong_nominal_type,
+        wrong_nominal_plan,
         original.privileged_affine_composite(),
         original.fields().into(),
     )
