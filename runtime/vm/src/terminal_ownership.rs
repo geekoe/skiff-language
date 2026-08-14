@@ -1,0 +1,962 @@
+use std::{fmt, sync::Arc};
+
+use skiff_artifact_model::{Opcode, TypeRefIr};
+use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
+use skiff_runtime_linked_bytecode::{
+    FunctionIndex, InstructionIndex, LinkedValueTransferPlan, TypeIndex,
+};
+use skiff_runtime_linker::DeploymentExecutionImage;
+use skiff_runtime_model::{
+    service_error::RequestException,
+    vm_heap::{VmHeap, VmHeapError},
+    vm_root::{VmRootSource, VmRootVisitor},
+    vm_value::{ValueKind, ValueSlot},
+};
+
+use crate::{
+    admission::is_discardable_root,
+    control::{visit_values, visit_vm_error, ResumeOutcome, VmResumeToken},
+    lifecycle::LifecycleExecutor,
+    VmError,
+};
+
+/// Values whose image-local handles remain pinned to the exact verified image
+/// that created them.
+///
+/// Construction is crate-private so downstream code cannot attach a raw
+/// `ValueSlot` to an unrelated image pin.
+#[must_use = "owned VM values retain roots and an exact verified-image pin"]
+pub struct VmOwnedValues {
+    image: Arc<DeploymentExecutionImage>,
+    values: Box<[ValueSlot]>,
+    /// Exact producer-side lifecycle plans. `None` is reserved for an
+    /// internally detected damaged invariant and can only become retained
+    /// terminal ownership; it is never inferred again from a runtime tag.
+    release_plans: Box<[Option<LinkedValueTransferPlan>]>,
+}
+
+impl VmOwnedValues {
+    pub(crate) fn new_exact(
+        image: Arc<DeploymentExecutionImage>,
+        values: Box<[ValueSlot]>,
+        plans: Box<[LinkedValueTransferPlan]>,
+    ) -> Self {
+        let release_plans = if values.len() == plans.len() {
+            plans.into_vec().into_iter().map(Some).collect()
+        } else {
+            // A linked invariant mismatch is damaged state. Preserve every
+            // owner and refuse to guess its cleanup primitive.
+            vec![None; values.len()].into_boxed_slice()
+        };
+        Self {
+            image,
+            values,
+            release_plans,
+        }
+    }
+
+    /// Creates an owned, zero-result resume envelope pinned to `image`.
+    ///
+    /// The only externally constructible `VmOwnedValues` is empty: it can
+    /// resume a verified zero-result site such as `EmitStream`, but cannot
+    /// attach a raw `ValueSlot` to an unrelated image pin.
+    pub(crate) fn empty(image: Arc<DeploymentExecutionImage>) -> Self {
+        Self {
+            image,
+            values: Box::new([]),
+            release_plans: Box::new([]),
+        }
+    }
+
+    /// Binds externally materialized values to the exact result authority of
+    /// one live resume token. The token is borrowed, so a rejection returns
+    /// all values while the scheduler still retains the unique continuation.
+    pub fn try_from_resume(
+        resume: &VmResumeToken,
+        values: Box<[ValueSlot]>,
+    ) -> Result<Self, VmOwnedValuesRejected> {
+        let image = Arc::clone(resume.image());
+        let Some(site) = image
+            .resume_sites()
+            .get(resume.resume_site())
+            .filter(|site| {
+                site.function() == resume.function()
+                    && site.site() == resume.instruction()
+                    && site.resume() == resume.resume_instruction()
+            })
+        else {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::ResumeTokenMismatch,
+                values,
+            ));
+        };
+        let expected = usize::try_from(resume.expected_result_count()).unwrap_or(usize::MAX);
+        if values.len() != expected
+            || site.result_types().len() != expected
+            || site.result_plans().len() != expected
+        {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::ResumeShapeMismatch {
+                    expected,
+                    actual: values.len(),
+                },
+                values,
+            ));
+        }
+        if values
+            .iter()
+            .zip(site.result_types())
+            .zip(site.result_plans())
+            .any(|((value, ty), plan)| !resume_value_matches(&image, value, *ty, plan))
+        {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::ResumeTokenMismatch,
+                values,
+            ));
+        }
+        let plans = site.result_plans().to_vec().into_boxed_slice();
+        Ok(Self::new_exact(image, values, plans))
+    }
+
+    pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
+        &self.image
+    }
+
+    pub fn owner(&self) -> &DeploymentOwnerIdentity {
+        self.image.owner()
+    }
+
+    pub fn values(&self) -> &[ValueSlot] {
+        &self.values
+    }
+
+    pub fn len(&self) -> usize {
+        self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
+    /// Consumes values that can no longer be delivered to their verified
+    /// destination and moves every physical owner into terminal cleanup.
+    /// Exact plans were captured at the producer or resume-token boundary;
+    /// damaged entries remain explicitly retained without tag-based lookup.
+    pub fn into_terminal_escrow(self) -> VmTerminalEscrow {
+        let site = VmLifecycleSite {
+            function: FunctionIndex::new(0),
+            instruction: InstructionIndex::new(0),
+            opcode: Opcode::Return,
+        };
+        VmTerminalEscrow::from_slots(
+            self.image,
+            self.values.into_vec(),
+            self.release_plans.into_vec(),
+            site,
+        )
+    }
+}
+
+impl VmRootSource for VmOwnedValues {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        visit_values(&self.values, visitor)
+    }
+}
+
+/// Owner-returning rejection from [`VmOwnedValues::try_from_resume`].
+/// Construction is sealed; callers may inspect the error and then consume
+/// the carrier to recover the unchanged values without dropping roots.
+#[must_use = "rejected resume values still own their original VM roots"]
+pub struct VmOwnedValuesRejected {
+    image: Arc<DeploymentExecutionImage>,
+    error: VmError,
+    values: Box<[ValueSlot]>,
+}
+
+impl VmOwnedValuesRejected {
+    fn new(image: Arc<DeploymentExecutionImage>, error: VmError, values: Box<[ValueSlot]>) -> Self {
+        Self {
+            image,
+            error,
+            values,
+        }
+    }
+
+    pub const fn error(&self) -> &VmError {
+        &self.error
+    }
+
+    pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
+        &self.image
+    }
+
+    pub fn values(&self) -> &[ValueSlot] {
+        &self.values
+    }
+
+    /// Converts a rejected, therefore untrusted, value batch into explicit
+    /// damaged retention. No runtime tag is allowed to mint a cleanup plan.
+    pub fn into_terminal_escrow(self) -> (VmError, VmTerminalEscrow) {
+        let Self {
+            image,
+            error,
+            values,
+        } = self;
+        let plans = vec![None; values.len()];
+        let escrow = VmTerminalEscrow::from_slots(
+            image,
+            values.into_vec(),
+            plans,
+            VmLifecycleSite {
+                function: FunctionIndex::new(0),
+                instruction: InstructionIndex::new(0),
+                opcode: Opcode::Return,
+            },
+        );
+        (error, escrow)
+    }
+}
+
+impl fmt::Debug for VmOwnedValuesRejected {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VmOwnedValuesRejected")
+            .field("error", &self.error)
+            .field("value_count", &self.values.len())
+            .finish()
+    }
+}
+
+impl VmRootSource for VmOwnedValuesRejected {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        visit_values(&self.values, visitor)
+    }
+}
+
+fn resume_value_matches(
+    image: &DeploymentExecutionImage,
+    value: &ValueSlot,
+    expected: TypeIndex,
+    plan: &LinkedValueTransferPlan,
+) -> bool {
+    let Some(kind) = value.kind() else {
+        return false;
+    };
+    match kind {
+        ValueKind::Null
+        | ValueKind::Bool
+        | ValueKind::Number
+        | ValueKind::Integer
+        | ValueKind::Date => image
+            .types()
+            .get(expected.get() as usize)
+            .filter(|entry| entry.index() == expected)
+            .is_some_and(|entry| immediate_type_matches(entry.type_ref(), kind)),
+        ValueKind::RequestHeapRef => {
+            // The resume TCB binds these values to the request heap shared by
+            // producer and receiver; the image-local tag and exact linked plan
+            // then prove the destination carrier. Other reference kinds need
+            // their own origin/table authority and are rejected below.
+            runtime_tag_matches(value, expected)
+                && matches!(
+                    plan,
+                    LinkedValueTransferPlan::SnapshotShare { .. }
+                        | LinkedValueTransferPlan::MoveOnly { .. }
+                )
+        }
+        ValueKind::ConstRef
+        | ValueKind::ResourceRef
+        | ValueKind::ActorStateRef
+        | ValueKind::CallbackClosureRef => false,
+    }
+}
+
+fn runtime_tag_matches(value: &ValueSlot, expected: TypeIndex) -> bool {
+    value
+        .compact_type_tag()
+        .is_some_and(|tag| tag.type_index() == expected.get())
+}
+
+fn immediate_type_matches(expected: &TypeRefIr, actual: ValueKind) -> bool {
+    let TypeRefIr::Builtin { name, args } = expected else {
+        return false;
+    };
+    args.is_empty()
+        && matches!(
+            (name.as_str(), actual),
+            ("null", ValueKind::Null)
+                | ("bool", ValueKind::Bool)
+                | ("number", ValueKind::Number)
+                | ("integer", ValueKind::Integer)
+                | ("Date", ValueKind::Date)
+        )
+}
+
+/// Non-cloneable ownership carrier for roots left behind by a terminal VM
+/// fiber. The scheduler must move this value across every terminal boundary
+/// before dropping the corresponding fiber or trampoline. Request teardown
+/// may release its owners synchronously, but a failed release leaves the
+/// failing owner and the remaining suffix inside this same root source.
+#[must_use = "terminal VM roots must be released or retained through request heap teardown"]
+pub struct VmTerminalEscrow {
+    images: Vec<Arc<DeploymentExecutionImage>>,
+    owners: Vec<VmTerminalOwner>,
+}
+
+pub(crate) struct VmTerminalOwner {
+    value: ValueSlot,
+    release: VmTerminalReleaseAuthority,
+    site: VmLifecycleSite,
+    diagnostic_index: usize,
+}
+
+pub(crate) enum VmTerminalReleaseAuthority {
+    /// An exact compiler-emitted plan resolved into the pinned execution
+    /// image. Cleanup must consume this complete plan rather than infer a
+    /// physical primitive from `ValueKind`.
+    Exact(LinkedValueTransferPlan),
+    /// An owned value observed only after linked state was found damaged.
+    /// Keeping it explicit prevents an absent plan from silently becoming a
+    /// kind-based release. The request retains this owner until the concrete
+    /// heap/resource authority is torn down.
+    DamagedRetained,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct VmLifecycleSite {
+    pub(crate) function: FunctionIndex,
+    pub(crate) instruction: InstructionIndex,
+    pub(crate) opcode: Opcode,
+}
+
+/// An opaque exception envelope bound to the execution image that produced
+/// its VM-local payload. Construction stays inside the VM crate; scheduler
+/// code can only move, inspect, root-walk, or consume this carrier. The exact
+/// linked plan is captured at construction, before the image-local TypeIndex
+/// can cross a continuation boundary.
+#[must_use = "an owned VM exception must be resumed, released, or retained"]
+pub struct VmOwnedException {
+    image: Arc<DeploymentExecutionImage>,
+    exception: Arc<RequestException>,
+    owner: Option<VmTerminalOwner>,
+}
+
+impl VmOwnedException {
+    pub(crate) fn from_origin_authority(
+        image: Arc<DeploymentExecutionImage>,
+        exception: Arc<RequestException>,
+        plan: Option<LinkedValueTransferPlan>,
+        site: VmLifecycleSite,
+    ) -> Self {
+        let owner = exception.vm_local_slot().and_then(|value| {
+            if is_discardable_root(&value) {
+                return None;
+            }
+            Some(match plan.clone() {
+                Some(plan) => VmTerminalOwner::exact(value, plan, site, 0),
+                None => VmTerminalOwner::damaged_retained(value, site, 0),
+            })
+        });
+        Self {
+            image,
+            exception,
+            owner,
+        }
+    }
+
+    pub fn origin_owner(&self) -> &DeploymentOwnerIdentity {
+        self.image.owner()
+    }
+
+    pub const fn origin_image(&self) -> &Arc<DeploymentExecutionImage> {
+        &self.image
+    }
+
+    pub fn exception(&self) -> &RequestException {
+        &self.exception
+    }
+
+    pub fn root_count(&self) -> usize {
+        usize::from(self.owner.is_some())
+    }
+
+    pub fn unresolved_count(&self) -> usize {
+        usize::from(self.owner.as_ref().is_some_and(|owner| {
+            matches!(&owner.release, VmTerminalReleaseAuthority::DamagedRetained)
+        }))
+    }
+
+    /// Releases the cause-owned payload only after request projection has
+    /// borrowed it. A failed release leaves the exact same owner in this
+    /// carrier for retention/retry; success makes future root visits empty.
+    pub fn release_all(&mut self, heap: &mut dyn VmHeap) -> Result<(), VmError> {
+        let Some(owner) = self.owner.as_ref() else {
+            return Ok(());
+        };
+        match &owner.release {
+            VmTerminalReleaseAuthority::Exact(plan) => {
+                LifecycleExecutor::new(heap)
+                    .release(&owner.value, plan)
+                    .map_err(|error| {
+                        error.into_vm_error(
+                            owner.site.function,
+                            owner.site.instruction,
+                            owner.site.opcode,
+                        )
+                    })?;
+            }
+            VmTerminalReleaseAuthority::DamagedRetained => {
+                return Err(VmError::TerminalRootLifecycleUnavailable {
+                    index: owner.diagnostic_index,
+                    kind: owner.value.kind(),
+                });
+            }
+        }
+        self.owner = None;
+        Ok(())
+    }
+
+    pub(crate) fn into_terminal_escrow(self) -> VmTerminalEscrow {
+        let Self {
+            image,
+            exception: _,
+            owner,
+        } = self;
+        VmTerminalEscrow::new(image, owner.into_iter().collect())
+    }
+
+    pub(crate) fn into_unwind_parts(
+        self,
+    ) -> (Arc<RequestException>, Option<LinkedValueTransferPlan>) {
+        let plan = self.owner.and_then(|owner| match owner.release {
+            VmTerminalReleaseAuthority::Exact(plan) => Some(plan),
+            VmTerminalReleaseAuthority::DamagedRetained => None,
+        });
+        (self.exception, plan)
+    }
+}
+
+impl fmt::Debug for VmOwnedException {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VmOwnedException")
+            .field("origin", self.origin_owner())
+            .field("root_count", &self.root_count())
+            .field("unresolved_count", &self.unresolved_count())
+            .finish()
+    }
+}
+
+impl VmRootSource for VmOwnedException {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        if let Some(owner) = &self.owner {
+            visitor.visit_root(&owner.value)?;
+        }
+        Ok(())
+    }
+}
+
+/// Non-cloneable terminal primary cause. An uncaught VM exception keeps its
+/// diagnostic envelope and exact release authority in this same carrier, so
+/// request projection may borrow the live exception before monotonically
+/// releasing its payload without creating a second root-bearing
+/// `VmError::Thrown` copy.
+#[must_use = "a terminal VM cause may own an uncaught exception payload"]
+pub struct VmTerminalCause {
+    kind: VmTerminalCauseKind,
+}
+
+enum VmTerminalCauseKind {
+    Diagnostic {
+        image: Arc<DeploymentExecutionImage>,
+        error: VmError,
+    },
+    Thrown(VmOwnedException),
+    /// A naked `VmError::Thrown` has lost the producer's exact payload plan.
+    /// Keep the diagnostic envelope and its raw owner together, but never
+    /// mislabel the caller-supplied retention image as exception provenance.
+    DamagedThrown {
+        retention_image: Arc<DeploymentExecutionImage>,
+        exception: Arc<RequestException>,
+        owner: Option<VmTerminalOwner>,
+    },
+}
+
+impl VmTerminalCause {
+    pub(crate) fn from_error(image: Arc<DeploymentExecutionImage>, error: VmError) -> Self {
+        let kind = match error {
+            // A naked thrown error no longer carries its origin plan. It must
+            // never mint the origin-bound `VmOwnedException`; only the
+            // producing fiber's completion seam has that authority.
+            VmError::Thrown(exception) => VmTerminalCauseKind::DamagedThrown {
+                retention_image: image,
+                owner: exception.vm_local_slot().and_then(|value| {
+                    (!is_discardable_root(&value)).then(|| {
+                        VmTerminalOwner::damaged_retained(
+                            value,
+                            VmLifecycleSite {
+                                function: FunctionIndex::new(0),
+                                instruction: InstructionIndex::new(0),
+                                opcode: Opcode::Throw,
+                            },
+                            0,
+                        )
+                    })
+                }),
+                exception,
+            },
+            error => VmTerminalCauseKind::Diagnostic { image, error },
+        };
+        Self { kind }
+    }
+
+    pub(crate) fn from_owned_exception(exception: VmOwnedException) -> Self {
+        Self {
+            kind: VmTerminalCauseKind::Thrown(exception),
+        }
+    }
+
+    pub fn owner(&self) -> &DeploymentOwnerIdentity {
+        match &self.kind {
+            VmTerminalCauseKind::Diagnostic { image, .. } => image.owner(),
+            VmTerminalCauseKind::Thrown(exception) => exception.origin_owner(),
+            VmTerminalCauseKind::DamagedThrown {
+                retention_image, ..
+            } => retention_image.owner(),
+        }
+    }
+
+    pub fn diagnostic(&self) -> Option<&VmError> {
+        match &self.kind {
+            VmTerminalCauseKind::Diagnostic { error, .. } => Some(error),
+            VmTerminalCauseKind::Thrown(_) | VmTerminalCauseKind::DamagedThrown { .. } => None,
+        }
+    }
+
+    /// Borrows the live uncaught exception for request error projection. The
+    /// caller must complete any heap-backed projection before `release_all`.
+    pub fn thrown(&self) -> Option<&RequestException> {
+        match &self.kind {
+            VmTerminalCauseKind::Thrown(exception) => Some(exception.exception()),
+            VmTerminalCauseKind::DamagedThrown { exception, .. } => Some(exception),
+            VmTerminalCauseKind::Diagnostic { .. } => None,
+        }
+    }
+
+    pub fn root_count(&self) -> usize {
+        match &self.kind {
+            VmTerminalCauseKind::Diagnostic { .. } => 0,
+            VmTerminalCauseKind::Thrown(exception) => exception.root_count(),
+            VmTerminalCauseKind::DamagedThrown { owner, .. } => usize::from(owner.is_some()),
+        }
+    }
+
+    pub fn unresolved_count(&self) -> usize {
+        match &self.kind {
+            VmTerminalCauseKind::Diagnostic { .. } => 0,
+            VmTerminalCauseKind::Thrown(exception) => exception.unresolved_count(),
+            VmTerminalCauseKind::DamagedThrown { owner, .. } => usize::from(owner.is_some()),
+        }
+    }
+
+    pub fn release_all(&mut self, heap: &mut dyn VmHeap) -> Result<(), VmError> {
+        match &mut self.kind {
+            VmTerminalCauseKind::Diagnostic { .. } => Ok(()),
+            VmTerminalCauseKind::Thrown(exception) => exception.release_all(heap),
+            VmTerminalCauseKind::DamagedThrown { owner: None, .. } => Ok(()),
+            VmTerminalCauseKind::DamagedThrown {
+                owner: Some(owner), ..
+            } => Err(VmError::TerminalRootLifecycleUnavailable {
+                index: owner.diagnostic_index,
+                kind: owner.value.kind(),
+            }),
+        }
+    }
+}
+
+impl fmt::Debug for VmTerminalCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            VmTerminalCauseKind::Diagnostic { error, .. } => formatter
+                .debug_tuple("VmTerminalCause::Diagnostic")
+                .field(error)
+                .finish(),
+            VmTerminalCauseKind::Thrown(exception) => exception.fmt(formatter),
+            VmTerminalCauseKind::DamagedThrown { owner, .. } => formatter
+                .debug_struct("VmTerminalCause::DamagedThrown")
+                .field("root_count", &usize::from(owner.is_some()))
+                .finish(),
+        }
+    }
+}
+
+impl fmt::Display for VmTerminalCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            VmTerminalCauseKind::Diagnostic { error, .. } => fmt::Display::fmt(error, formatter),
+            VmTerminalCauseKind::Thrown(_) | VmTerminalCauseKind::DamagedThrown { .. } => {
+                formatter.write_str("VM threw an uncaught request-local exception")
+            }
+        }
+    }
+}
+
+impl VmRootSource for VmTerminalCause {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        match &self.kind {
+            VmTerminalCauseKind::Thrown(exception) => exception.visit_roots(visitor)?,
+            VmTerminalCauseKind::DamagedThrown {
+                owner: Some(owner), ..
+            } => visitor.visit_root(&owner.value)?,
+            VmTerminalCauseKind::Diagnostic { .. }
+            | VmTerminalCauseKind::DamagedThrown { owner: None, .. } => {}
+        }
+        Ok(())
+    }
+}
+
+impl VmTerminalOwner {
+    pub(crate) fn exact(
+        value: ValueSlot,
+        plan: LinkedValueTransferPlan,
+        site: VmLifecycleSite,
+        diagnostic_index: usize,
+    ) -> Self {
+        Self {
+            value,
+            release: VmTerminalReleaseAuthority::Exact(plan),
+            site,
+            diagnostic_index,
+        }
+    }
+
+    pub(crate) fn damaged_retained(
+        value: ValueSlot,
+        site: VmLifecycleSite,
+        diagnostic_index: usize,
+    ) -> Self {
+        Self {
+            value,
+            release: VmTerminalReleaseAuthority::DamagedRetained,
+            site,
+            diagnostic_index,
+        }
+    }
+}
+
+impl VmTerminalEscrow {
+    pub(crate) fn new(
+        image: Arc<DeploymentExecutionImage>,
+        mut owners: Vec<VmTerminalOwner>,
+    ) -> Self {
+        // Damaged retained owners cannot be released without guessing. Keep
+        // them at the front so the exact suffix is still drained
+        // monotonically before `release_all` reports the retained remainder.
+        // Stable ordering preserves the deterministic extraction order inside
+        // each authority class.
+        owners.sort_by_key(|owner| matches!(&owner.release, VmTerminalReleaseAuthority::Exact(_)));
+        Self {
+            images: vec![image],
+            owners,
+        }
+    }
+
+    pub(crate) fn empty(image: Arc<DeploymentExecutionImage>) -> Self {
+        Self::new(image, Vec::new())
+    }
+
+    pub fn owner(&self) -> &DeploymentOwnerIdentity {
+        self.images[0].owner()
+    }
+
+    pub fn root_count(&self) -> usize {
+        self.owners.len()
+    }
+
+    pub fn unresolved_count(&self) -> usize {
+        self.owners
+            .iter()
+            .filter(|owner| matches!(&owner.release, VmTerminalReleaseAuthority::DamagedRetained))
+            .count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.owners.is_empty()
+    }
+
+    /// Consumes a root result that cannot be delivered (for example because a
+    /// scheduler stream-finalization port failed after completion). The
+    /// primary scheduler error remains separate; this carrier owns only the
+    /// abandoned result roots.
+    pub fn from_abandoned_result(
+        image: Arc<DeploymentExecutionImage>,
+        result: Result<VmOwnedValues, VmError>,
+    ) -> (Option<VmTerminalCause>, Self) {
+        match result {
+            Ok(values) => (None, values.into_terminal_escrow()),
+            Err(error) => {
+                let escrow = Self::empty(Arc::clone(&image));
+                (Some(VmTerminalCause::from_error(image, error)), escrow)
+            }
+        }
+    }
+
+    /// Consumes a resume outcome rejected before a VM unit could accept it.
+    /// The outcome itself remains the sole ownership authority until this
+    /// conversion; no scheduler error is inspected to infer cleanup.
+    pub fn from_abandoned_resume(
+        image: Arc<DeploymentExecutionImage>,
+        outcome: ResumeOutcome,
+    ) -> Self {
+        match outcome {
+            ResumeOutcome::Values(values) => values.into_terminal_escrow(),
+            ResumeOutcome::Throw(exception) => exception.into_terminal_escrow(),
+            // A raw thrown error has no origin image authority. It is a
+            // malformed resume outcome and must be retained as damaged rather
+            // than interpreting its image-local TypeIndex in the receiver.
+            ResumeOutcome::Failure(VmError::Thrown(envelope)) => {
+                Self::from_unbound_exception(image, envelope)
+            }
+            ResumeOutcome::Empty
+            | ResumeOutcome::StreamEnd
+            | ResumeOutcome::Failure(_)
+            | ResumeOutcome::InternalTerminal(_) => Self::empty(image),
+        }
+    }
+
+    /// Consumes an exception envelope that can no longer be projected or
+    /// resumed. The opaque payload remains the sole logical owner represented
+    /// by the resulting carrier.
+    fn from_unbound_exception(
+        image: Arc<DeploymentExecutionImage>,
+        envelope: Arc<RequestException>,
+    ) -> Self {
+        let site = VmLifecycleSite {
+            function: FunctionIndex::new(0),
+            instruction: InstructionIndex::new(0),
+            opcode: Opcode::Throw,
+        };
+        let owners = envelope
+            .vm_local_slot()
+            .into_iter()
+            .filter(|value| !is_discardable_root(value))
+            .enumerate()
+            .map(|(diagnostic_index, value)| {
+                VmTerminalOwner::damaged_retained(value, site, diagnostic_index)
+            })
+            .collect();
+        Self::new(image, owners)
+    }
+
+    pub(crate) fn from_slots(
+        image: Arc<DeploymentExecutionImage>,
+        values: Vec<ValueSlot>,
+        plans: Vec<Option<LinkedValueTransferPlan>>,
+        site: VmLifecycleSite,
+    ) -> Self {
+        let mut owners = Vec::with_capacity(values.len());
+        for (diagnostic_index, value) in values.into_iter().enumerate() {
+            if is_discardable_root(&value) {
+                continue;
+            }
+            let plan = plans.get(diagnostic_index).cloned().flatten();
+            owners.push(match plan {
+                Some(plan) => Self::exact_owner(value, plan, site, diagnostic_index),
+                None => VmTerminalOwner::damaged_retained(value, site, diagnostic_index),
+            });
+        }
+        Self::new(image, owners)
+    }
+
+    // The linear R2 scheduler join consumes this seam when it collects every
+    // active/blocked fiber carrier. V1 keeps it crate-sealed until that join.
+    #[allow(dead_code)]
+    pub(crate) fn merge(&mut self, mut other: Self) {
+        for image in other.images.drain(..) {
+            if !self
+                .images
+                .iter()
+                .any(|current| Arc::ptr_eq(current, &image))
+            {
+                self.images.push(image);
+            }
+        }
+        self.owners.append(&mut other.owners);
+        self.owners
+            .sort_by_key(|owner| matches!(&owner.release, VmTerminalReleaseAuthority::Exact(_)));
+    }
+
+    fn exact_owner(
+        value: ValueSlot,
+        plan: LinkedValueTransferPlan,
+        site: VmLifecycleSite,
+        diagnostic_index: usize,
+    ) -> VmTerminalOwner {
+        VmTerminalOwner::exact(value, plan, site, diagnostic_index)
+    }
+
+    /// Releases a fixed suffix monotonically through exact linked plans.
+    /// Successful owners are removed immediately. Any heap or plan failure
+    /// returns without removing the failing owner, so the caller can retain
+    /// this carrier and retry without re-releasing a completed suffix.
+    pub fn release_all(&mut self, heap: &mut dyn VmHeap) -> Result<(), VmError> {
+        let mut executor = LifecycleExecutor::new(heap);
+        while let Some(owner) = self.owners.last() {
+            match &owner.release {
+                VmTerminalReleaseAuthority::Exact(plan) => {
+                    executor.release(&owner.value, plan).map_err(|error| {
+                        error.into_vm_error(
+                            owner.site.function,
+                            owner.site.instruction,
+                            owner.site.opcode,
+                        )
+                    })?;
+                }
+                VmTerminalReleaseAuthority::DamagedRetained => {
+                    return Err(VmError::TerminalRootLifecycleUnavailable {
+                        index: owner.diagnostic_index,
+                        kind: owner.value.kind(),
+                    });
+                }
+            }
+            self.owners.pop();
+        }
+        Ok(())
+    }
+}
+
+impl VmRootSource for VmTerminalEscrow {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        for owner in &self.owners {
+            visitor.visit_root(&owner.value)?;
+        }
+        Ok(())
+    }
+}
+
+/// Terminal result of attempting to bind one scheduler resume token.
+///
+/// A validation rejection returns both the exact token and its input without
+/// consuming either. Only a matching, accepted rootless terminal outcome uses
+/// `Terminal`; owned Values/Throw inputs can never be hidden in that variant.
+#[must_use = "a failed resume may return an outcome that still owns VM roots"]
+pub struct VmResumeFailure {
+    kind: VmResumeFailureKind,
+}
+
+enum VmResumeFailureKind {
+    Terminal(VmError),
+    Rejected {
+        error: VmError,
+        resume: VmResumeToken,
+        outcome: ResumeOutcome,
+    },
+}
+
+impl fmt::Debug for VmResumeFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.kind {
+            VmResumeFailureKind::Terminal(error) => formatter
+                .debug_tuple("VmResumeFailure::Terminal")
+                .field(error)
+                .finish(),
+            VmResumeFailureKind::Rejected { error, .. } => formatter
+                .debug_struct("VmResumeFailure::Rejected")
+                .field("error", error)
+                .field("resume", &"<owned resume token>")
+                .field("outcome", &"<owned resume outcome>")
+                .finish(),
+        }
+    }
+}
+
+impl VmResumeFailure {
+    pub(crate) fn terminal(error: VmError) -> Self {
+        debug_assert!(
+            !matches!(&error, VmError::Thrown(_)),
+            "a root-bearing thrown outcome must be rejected unchanged"
+        );
+        Self {
+            kind: VmResumeFailureKind::Terminal(error),
+        }
+    }
+
+    pub(crate) fn rejected(error: VmError, resume: VmResumeToken, outcome: ResumeOutcome) -> Self {
+        debug_assert!(
+            !matches!(&error, VmError::Thrown(_)),
+            "resume rejection diagnostics cannot own the returned outcome"
+        );
+        Self {
+            kind: VmResumeFailureKind::Rejected {
+                error,
+                resume,
+                outcome,
+            },
+        }
+    }
+
+    pub const fn error(&self) -> &VmError {
+        match &self.kind {
+            VmResumeFailureKind::Terminal(error) | VmResumeFailureKind::Rejected { error, .. } => {
+                error
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rejected_parts(&self) -> Option<(&VmResumeToken, &ResumeOutcome)> {
+        match &self.kind {
+            VmResumeFailureKind::Rejected {
+                resume, outcome, ..
+            } => Some((resume, outcome)),
+            VmResumeFailureKind::Terminal(_) => None,
+        }
+    }
+
+    /// Consumes the sealed failure. `None` is a rootless accepted terminal
+    /// outcome; `Some` returns the exact unique token and unconsumed input.
+    pub fn into_parts(self) -> (VmError, Option<(VmResumeToken, ResumeOutcome)>) {
+        match self.kind {
+            VmResumeFailureKind::Terminal(error) => (error, None),
+            VmResumeFailureKind::Rejected {
+                error,
+                resume,
+                outcome,
+            } => (error, Some((resume, outcome))),
+        }
+    }
+
+    /// Converts a rejected owned input into terminal cleanup. The receiving
+    /// fiber supplies the image pin only for envelope inputs; `Values` retains
+    /// and consumes its own origin image pin.
+    pub fn into_terminal_escrow(
+        self,
+        image: Arc<DeploymentExecutionImage>,
+    ) -> (VmTerminalCause, VmTerminalEscrow) {
+        match self.kind {
+            VmResumeFailureKind::Terminal(error) => {
+                let escrow = VmTerminalEscrow::empty(Arc::clone(&image));
+                (VmTerminalCause::from_error(image, error), escrow)
+            }
+            VmResumeFailureKind::Rejected { error, outcome, .. } => {
+                let escrow = VmTerminalEscrow::from_abandoned_resume(Arc::clone(&image), outcome);
+                (VmTerminalCause::from_error(image, error), escrow)
+            }
+        }
+    }
+}
+
+impl VmRootSource for VmResumeFailure {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        match &self.kind {
+            VmResumeFailureKind::Terminal(error) => visit_vm_error(error, visitor),
+            VmResumeFailureKind::Rejected { error, outcome, .. } => {
+                visit_vm_error(error, visitor)?;
+                outcome.visit_roots(visitor)
+            }
+        }
+    }
+}

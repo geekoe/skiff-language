@@ -1,4 +1,5 @@
 mod intrinsic_dispatch;
+mod ownership_transactions;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -19,7 +20,7 @@ use skiff_artifact_model::{
     ContractOperationId, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
     DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity, IngressProtocol,
     IngressSelector, InstructionSourceSite, Opcode, PackageArtifact, ParamModeIr, ServiceContract,
-    ServiceDeployment, SourcePosition, SourceSpanRef, TypeRefIr, SERVICE_CONTRACT_SCHEMA_VERSION,
+    ServiceDeployment, TypeRefIr, SERVICE_CONTRACT_SCHEMA_VERSION,
     SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
@@ -31,8 +32,8 @@ use skiff_compiler::{
 use skiff_runtime_linked_bytecode::{
     FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex, IntrinsicIndex,
     LinkedCatchMatcher, LinkedExceptionRegion, LinkedInstructionTarget, LinkedIntrinsicKind,
-    LinkedIntrinsicTarget, LinkedNativeCallableSignature, LinkedResourceDropPlan,
-    LinkedValueDropPlan, LinkedValueTransferPlan, ResumeSiteIndex, TypeIndex,
+    LinkedIntrinsicTarget, LinkedNativeCallableSignature, LinkedValueDropPlan,
+    LinkedValueTransferPlan, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_linker::{
     link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage, LinkLimits,
@@ -47,7 +48,7 @@ use skiff_runtime_model::bytecode_execution_observation::{
     VmFunctionReturned, VmLocalCallDispatched, VmObservedFrameRole,
 };
 use skiff_runtime_model::service_error::{
-    CatchIdentity, ErrorCorrelation, ExceptionStackFrame, NominalTypeIdentity, RequestException,
+    CatchIdentity, ErrorCorrelation, NominalTypeIdentity, RequestException,
 };
 use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmHeapOperation, VmRecordField};
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
@@ -57,8 +58,7 @@ use super::{
     allocate_store_string_constant, catch_matches, compact_record_type_tags, compact_type_tag,
     comparable_equality, comparable_equality_with_string_resolver, find_exception_region,
     linked_type_catch_identity, materialize_intrinsic_result, nominal_type_index, opcode_supported,
-    release_intrinsic_argument_window, runtime_leaf_catch_identity,
-    store_slot_string_constant_authorized, transfer_materialized_store_owner, DispatchOutcome,
+    runtime_leaf_catch_identity, store_slot_string_constant_authorized, DispatchOutcome,
     IntrinsicResultPayload, Vm, VmFiber,
 };
 use crate::control::VmResumeAuthority;
@@ -577,14 +577,10 @@ fn store_slot_string_constant_transfers_and_releases_each_owned_cell_once() {
     .expect("exact compiler-owned string carrier is materialized");
     assert_eq!(materialized.compact_type_tag(), Some(compact_tag(7)));
     let mut executor = LifecycleExecutor::new(&mut heap);
-    let moved = transfer_materialized_store_owner(
-        &mut executor,
-        &materialized,
-        &plan,
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
-    )
-    .unwrap();
+    let moved = match executor.transfer(&materialized, &plan) {
+        Ok(moved) => moved,
+        Err(_) => panic!("the materialized owner must remain transferable"),
+    };
     assert!(
         executor.release(&moved, &plan).is_ok(),
         "the transferred owner must retain its exact release plan"
@@ -598,7 +594,7 @@ fn store_slot_string_constant_transfers_and_releases_each_owned_cell_once() {
 }
 
 #[test]
-fn store_slot_string_constant_cleans_the_new_owner_when_transfer_fails() {
+fn store_slot_string_constant_keeps_the_new_owner_available_when_transfer_fails() {
     let (constant_type, string_type, plan) = store_string_types_and_plan();
     let mut heap = StoreStringRecordingHeap {
         fail_next_transfer: true,
@@ -617,21 +613,20 @@ fn store_slot_string_constant_cleans_the_new_owner_when_transfer_fails() {
     .unwrap()
     .expect("exact compiler-owned string carrier is materialized");
     let mut executor = LifecycleExecutor::new(&mut heap);
-    let error = match transfer_materialized_store_owner(
-        &mut executor,
-        &materialized,
-        &plan,
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
-    ) {
+    let error = match executor.transfer(&materialized, &plan) {
         Err(error) => error,
         Ok(_) => panic!("injected transfer failure must reject the store"),
     };
+    assert!(executor.heap().validate_live(&materialized).is_ok());
+    assert!(
+        executor.release(&materialized, &plan).is_ok(),
+        "the caller-retained owner remains cleanup-capable"
+    );
     drop(executor);
 
     assert!(matches!(
         error,
-        VmError::Heap(VmHeapError::HeapOperationFailed {
+        crate::lifecycle::LifecycleError::Heap(VmHeapError::HeapOperationFailed {
             operation: VmHeapOperation::TransferOwner,
             ..
         })
@@ -659,12 +654,6 @@ impl IntrinsicReleaseRecordingHeap {
         self.next_handle = self.next_handle.max(handle);
         assert!(self.request_live.insert(handle));
         ValueSlot::request_heap_ref(VmHandle::new(handle), compact_tag(tag), ValueFlags::new(0))
-    }
-
-    fn resource(&mut self, handle: u64, tag: u32) -> ValueSlot {
-        self.next_handle = self.next_handle.max(handle);
-        assert!(self.resource_live.insert(handle));
-        ValueSlot::resource_ref(VmHandle::new(handle), compact_tag(tag), ValueFlags::new(0))
     }
 
     fn allocate_request(
@@ -789,113 +778,6 @@ fn intrinsic_snapshot_plan() -> LinkedValueTransferPlan {
     }
 }
 
-fn intrinsic_resource_plan() -> LinkedValueTransferPlan {
-    LinkedValueTransferPlan::AffineResource {
-        drop: LinkedResourceDropPlan::ResourceTableRelease,
-    }
-}
-
-#[test]
-fn intrinsic_cleanup_releases_heap_arguments_but_never_image_constant_borrows() {
-    let plan = intrinsic_snapshot_plan();
-    let mut heap = IntrinsicReleaseRecordingHeap::default();
-    let heap_argument = heap.request(10, 7);
-    let constant_argument =
-        ValueSlot::const_ref(VmHandle::new(1), compact_tag(8), ValueFlags::new(0));
-    let mut storage = vec![constant_argument, heap_argument];
-    let mut live = vec![true, true];
-    let values = storage.clone();
-    let mut executor = LifecycleExecutor::new(&mut heap);
-    release_intrinsic_argument_window(
-        &mut executor,
-        &values,
-        &[plan.clone(), plan],
-        &mut storage,
-        &mut live,
-        0,
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
-    )
-    .expect("borrowed intrinsic arguments clean up in place");
-    drop(executor);
-
-    assert_eq!(live, [false, false]);
-    assert!(storage.iter().all(ValueSlot::is_null));
-    assert_eq!(heap.snapshot_releases, 1);
-    assert!(heap.request_live.is_empty());
-}
-
-#[test]
-fn intrinsic_cleanup_failure_keeps_the_failing_and_later_owners_rooted() {
-    for (fail_release_at, expected_operation, expected_live) in [
-        (2, VmHeapOperation::ReleaseResource, [false, true, true]),
-        (3, VmHeapOperation::ReleaseSnapshot, [false, false, true]),
-    ] {
-        let mut heap = IntrinsicReleaseRecordingHeap {
-            fail_release_at: Some(fail_release_at),
-            ..IntrinsicReleaseRecordingHeap::default()
-        };
-        let first = heap.request(1, 7);
-        let second = heap.resource(2, 8);
-        let third = heap.request(3, 9);
-        let mut storage = vec![first, second, third];
-        let mut live = vec![true, true, true];
-        let values = storage.clone();
-        let plans = [
-            intrinsic_snapshot_plan(),
-            intrinsic_resource_plan(),
-            intrinsic_snapshot_plan(),
-        ];
-        let mut executor = LifecycleExecutor::new(&mut heap);
-        let error = release_intrinsic_argument_window(
-            &mut executor,
-            &values,
-            &plans,
-            &mut storage,
-            &mut live,
-            0,
-            FunctionIndex::new(1),
-            InstructionIndex::new(2),
-        )
-        .expect_err("the injected nth release must fail closed");
-        drop(executor);
-
-        assert!(matches!(
-            error,
-            VmError::Heap(VmHeapError::HeapOperationFailed { operation, .. })
-                if operation == expected_operation
-        ));
-        assert_eq!(live, expected_live);
-        for (index, expected) in expected_live.into_iter().enumerate() {
-            assert_eq!(storage[index] == values[index], expected);
-        }
-        assert_eq!(heap.request_live.contains(&3), expected_live[2]);
-        assert_eq!(heap.resource_live.contains(&2), expected_live[1]);
-
-        heap.fail_release_at = None;
-        let first_live = live.iter().position(|slot| *slot).unwrap();
-        let retry_values = storage[first_live..].to_vec();
-        let mut executor = LifecycleExecutor::new(&mut heap);
-        release_intrinsic_argument_window(
-            &mut executor,
-            &retry_values,
-            &plans[first_live..],
-            &mut storage,
-            &mut live,
-            first_live,
-            FunctionIndex::new(1),
-            InstructionIndex::new(2),
-        )
-        .expect("retained suffix owners remain available for terminal cleanup");
-        drop(executor);
-        assert!(live.iter().all(|slot| !slot));
-        assert_eq!(heap.snapshot_releases, 2);
-        assert_eq!(heap.resource_releases, 1);
-        assert!(heap.request_live.is_empty());
-        assert!(heap.resource_live.is_empty());
-    }
-}
-
 #[test]
 fn intrinsic_cleanup_precedes_result_materialization_failure() {
     let plan = intrinsic_snapshot_plan();
@@ -904,26 +786,15 @@ fn intrinsic_cleanup_precedes_result_materialization_failure() {
         ..IntrinsicReleaseRecordingHeap::default()
     };
     let argument = heap.request(4, 7);
-    let mut storage = vec![argument];
-    let mut live = vec![true];
     let mut executor = LifecycleExecutor::new(&mut heap);
-    release_intrinsic_argument_window(
-        &mut executor,
-        &[argument],
-        std::slice::from_ref(&plan),
-        &mut storage,
-        &mut live,
-        0,
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
-    )
-    .expect("input owner cleanup");
+    assert!(
+        executor.release(&argument, &plan).is_ok(),
+        "input owner cleanup"
+    );
     let error = match materialize_intrinsic_result(
         executor.heap(),
         IntrinsicResultPayload::String("joined".to_string()),
-        TypeIndex::new(9),
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
+        compact_tag(9),
     ) {
         Err(error) => error,
         Ok(_) => panic!("injected result allocation failure must reject materialization"),
@@ -937,7 +808,6 @@ fn intrinsic_cleanup_precedes_result_materialization_failure() {
             ..
         })
     ));
-    assert_eq!(live, [false]);
     assert_eq!(heap.snapshot_releases, 1);
     assert!(heap.request_live.is_empty());
 }
@@ -948,17 +818,13 @@ fn intrinsic_string_and_bytes_results_keep_the_exact_signature_type() {
     let string = materialize_intrinsic_result(
         &mut heap,
         IntrinsicResultPayload::String("value".to_string()),
-        TypeIndex::new(12),
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
+        compact_tag(12),
     )
     .expect("typed string result");
     let bytes = materialize_intrinsic_result(
         &mut heap,
         IntrinsicResultPayload::Bytes(b"value".to_vec()),
-        TypeIndex::new(13),
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
+        compact_tag(13),
     )
     .expect("typed bytes result");
 
@@ -2021,26 +1887,202 @@ impl VmBudget for ResumeBudget {
     }
 }
 
+const OWNED_THROW_RESUME_SOURCE: &str = "type Leaf { marker: number }\n\
+     function run(seed: number) -> number {\n\
+       if seed == 0 { throw Leaf { marker: seed } }\n\
+       final attempt = catch<Leaf>(throw Leaf { marker: seed })\n\
+       return 1\n\
+     }\n";
+
+#[derive(Default)]
+struct ResumeRootCollector(Vec<ValueSlot>);
+
+impl VmRootVisitor for ResumeRootCollector {
+    fn visit_root(&mut self, root: &ValueSlot) -> Result<(), VmHeapError> {
+        self.0.push(*root);
+        Ok(())
+    }
+}
+
+fn origin_throw_completion(
+    fixture: &ObservationFixture,
+    heap: &mut dyn VmHeap,
+) -> (VmFiber, crate::VmResult, *const RequestException) {
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut origin = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(0.0)]));
+    origin.set_error_correlation(ErrorCorrelation {
+        trace_id: "origin-owned-throw-trace".to_string(),
+        error_id: "origin-owned-throw-error".to_string(),
+    });
+    let mut budget = ResumeBudget;
+    let control = loop {
+        match origin.run_segment(heap, &mut budget) {
+            VmControl::Continue => {}
+            control @ VmControl::Complete(Err(VmError::Thrown(_))) => break control,
+            _ => panic!("origin fiber must complete with its uncaught local exception"),
+        }
+    };
+    let mut control_roots = ResumeRootCollector::default();
+    control.visit_roots(&mut control_roots).unwrap();
+    assert!(
+        control_roots.0.is_empty(),
+        "the outward thrown diagnostic is not a second root authority"
+    );
+    let mut fiber_roots = ResumeRootCollector::default();
+    origin.visit_roots(&mut fiber_roots).unwrap();
+    assert_eq!(fiber_roots.0.len(), 1);
+
+    let VmControl::Complete(completed) = control else {
+        unreachable!()
+    };
+    let Err(VmError::Thrown(exception)) = &completed else {
+        unreachable!()
+    };
+    let exception_pointer = exception.as_ref() as *const RequestException;
+    (origin, completed, exception_pointer)
+}
+
+fn origin_owned_throw(
+    fixture: &ObservationFixture,
+    heap: &mut dyn VmHeap,
+) -> (ResumeOutcome, *const RequestException) {
+    let (mut origin, completed, exception_pointer) = origin_throw_completion(fixture, heap);
+    let outcome = origin.completion_to_resume_outcome(completed);
+    let ResumeOutcome::Throw(exception) = &outcome else {
+        panic!("the origin fiber seals its exact unwind state into Throw")
+    };
+    assert_eq!(exception.exception() as *const _, exception_pointer);
+    let mut remaining_fiber_roots = ResumeRootCollector::default();
+    origin.visit_roots(&mut remaining_fiber_roots).unwrap();
+    assert!(remaining_fiber_roots.0.is_empty());
+    let mut outcome_roots = ResumeRootCollector::default();
+    outcome.visit_roots(&mut outcome_roots).unwrap();
+    assert_eq!(outcome_roots.0.len(), 1);
+    (outcome, exception_pointer)
+}
+
+#[test]
+fn resume_throw_rejects_a_duplicate_type_index_from_another_execution_image() {
+    let origin =
+        ObservationFixture::build("test.skiff/fiber-resume-shared", OWNED_THROW_RESUME_SOURCE);
+    let receiving =
+        ObservationFixture::build("test.skiff/fiber-resume-shared", OWNED_THROW_RESUME_SOURCE);
+    let origin_function = &origin.image.functions()[origin.root_function_index() as usize];
+    let receiving_function_index = FunctionIndex::new(receiving.root_function_index());
+    let receiving_function = &receiving.image.functions()[receiving_function_index.get() as usize];
+    let LinkedCatchMatcher::Type(origin_leaf) =
+        origin_function.exception_regions()[0].catch_matchers()[0]
+    else {
+        panic!("origin fixture has an exact Leaf catch")
+    };
+    let receiving_region = receiving_function.exception_regions()[0].clone();
+    let LinkedCatchMatcher::Type(receiving_leaf) = receiving_region.catch_matchers()[0] else {
+        panic!("receiving fixture has an exact Leaf catch")
+    };
+    assert_eq!(
+        origin_leaf, receiving_leaf,
+        "the regression requires colliding image-local TypeIndex values"
+    );
+    assert!(!Arc::ptr_eq(&origin.image, &receiving.image));
+
+    let mut heap = ResumeHeap { next: 100 };
+    let (outcome, exception_pointer) = origin_owned_throw(&origin, &mut heap);
+    let ResumeOutcome::Throw(exception) = &outcome else {
+        unreachable!()
+    };
+    let payload = exception
+        .exception()
+        .vm_local_slot()
+        .expect("origin completion retains its exact payload");
+    let origin_identity = runtime_leaf_catch_identity(&origin.image, &payload)
+        .expect("origin image resolves its local Leaf identity");
+    assert_eq!(
+        linked_type_catch_identity(&receiving.image, receiving_leaf).as_ref(),
+        Some(&origin_identity),
+        "the regression requires stable catch identity across distinct image allocations"
+    );
+
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = receiving.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    while fiber.current_frame().unwrap().instruction() != receiving_region.start() {
+        assert!(matches!(
+            fiber.dispatch_one(&mut heap).unwrap(),
+            DispatchOutcome::Continue
+        ));
+    }
+    let token = fiber
+        .mint_resume(
+            receiving_function_index,
+            receiving_region.start(),
+            VmResumeAuthority::Child(ChildTarget::StreamNext),
+            ResumeSiteIndex::new(0),
+            receiving_region.start(),
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    let sequence = token.sequence();
+    fiber.state = VmFiberState::BlockedOnChild;
+
+    let failure = fiber
+        .resume(token, outcome)
+        .expect_err("cross-image TypeIndex collision must fail closed");
+
+    assert!(matches!(failure.error(), VmError::ResumeTokenMismatch));
+    let Some((resume, ResumeOutcome::Throw(returned))) = failure.rejected_parts() else {
+        panic!("rejection returns the exact token and Throw outcome")
+    };
+    assert_eq!(resume.sequence(), sequence);
+    assert!(Arc::ptr_eq(returned.origin_image(), &origin.image));
+    assert_eq!(returned.exception() as *const _, exception_pointer);
+    assert_eq!(fiber.state(), VmFiberState::Terminal);
+
+    let (primary, mut escrow) = fiber.escrow_rejected_resume(failure);
+    assert_eq!(primary.diagnostic(), Some(&VmError::ResumeTokenMismatch));
+    assert_eq!(escrow.root_count(), 1);
+    escrow
+        .release_all(&mut heap)
+        .expect("foreign Throw cleanup uses its captured origin plan");
+    fiber
+        .discard_terminal_roots(&mut heap)
+        .expect("the rejected receiving fiber drains its independent roots");
+}
+
 #[test]
 fn controlled_resume_throw_preserves_the_exact_envelope_into_the_catch_handler() {
-    const SOURCE: &str = "type LeafA { marker: number }\n\
-         function run(seed: number) -> number {\n\
-           final attempt = catch<LeafA>(throw LeafA { marker: seed })\n\
-           return 1\n\
-         }\n";
-    let fixture = ObservationFixture::build("test.skiff/fiber-resume", SOURCE);
+    let fixture = ObservationFixture::build("test.skiff/fiber-resume", OWNED_THROW_RESUME_SOURCE);
     let function_index = FunctionIndex::new(fixture.root_function_index());
     let function = &fixture.image.functions()[function_index.get() as usize];
     let region = function.exception_regions()[0].clone();
-    let LinkedCatchMatcher::Type(leaf_type) = region.catch_matchers()[0] else {
-        panic!("the fixture catch region matches the exact LeafA type");
+    assert!(matches!(
+        region.catch_matchers()[0],
+        LinkedCatchMatcher::Type(_)
+    ));
+
+    let mut heap = ResumeHeap { next: 100 };
+    let (outcome, exception_pointer) = origin_owned_throw(&fixture, &mut heap);
+    let ResumeOutcome::Throw(exception) = &outcome else {
+        unreachable!()
     };
+    let baseline = (
+        exception.exception().actual_catch_identity().cloned(),
+        exception.exception().source().clone(),
+        exception.exception().stack().to_vec(),
+        exception.exception().correlation().clone(),
+        exception.exception().vm_local_slot(),
+    );
 
     let sink = Arc::new(RecordingSink::default());
     let observer = BytecodeExecutionObserver::new(sink, observation_correlation());
     let argument = ValueSlot::number(1.0);
     let mut fiber = fixture.start(vm_limits(), observer, Box::new([argument]));
-    let mut heap = ResumeHeap { next: 100 };
     loop {
         let current = fiber
             .frames
@@ -2056,47 +2098,6 @@ fn controlled_resume_throw_preserves_the_exact_envelope_into_the_catch_handler()
         }
     }
 
-    let payload = ValueSlot::request_heap_ref(
-        VmHandle::new(7),
-        compact_tag(leaf_type.get()),
-        ValueFlags::new(0),
-    );
-    let identity = runtime_leaf_catch_identity(&fixture.image, &payload)
-        .expect("the leaf-tagged payload carries its runtime catch identity");
-    let source = InstructionSourceSite::Source {
-        span: SourceSpanRef {
-            source_id: 0,
-            start: SourcePosition::new(3, 3),
-            end: SourcePosition::new(3, 7),
-        },
-    };
-    let stack = vec![ExceptionStackFrame::Local {
-        site: source.clone(),
-    }];
-    let correlation = ErrorCorrelation {
-        trace_id: "fiber-resume-trace".to_string(),
-        error_id: "fiber-resume-error".to_string(),
-    };
-    let envelope = Arc::new(
-        RequestException::local_vm(
-            payload,
-            identity,
-            source.clone(),
-            stack.clone(),
-            correlation.clone(),
-        )
-        .expect("the controlled envelope is well formed"),
-    );
-    fiber.set_error_correlation(correlation.clone());
-
-    let baseline = (
-        envelope.actual_catch_identity().cloned(),
-        envelope.source().clone(),
-        envelope.stack().to_vec(),
-        envelope.correlation().clone(),
-        envelope.vm_local_slot(),
-    );
-
     let token = fiber
         .mint_resume(
             function_index,
@@ -2111,7 +2112,7 @@ fn controlled_resume_throw_preserves_the_exact_envelope_into_the_catch_handler()
         .expect("mint a pending resume at the protected throw site");
     fiber.state = VmFiberState::BlockedOnChild;
     fiber
-        .resume(token, ResumeOutcome::Throw(Arc::clone(&envelope)))
+        .resume(token, outcome)
         .expect("the throw envelope resumes the pending continuation");
     assert_eq!(
         fiber.state(),
@@ -2130,10 +2131,7 @@ fn controlled_resume_throw_preserves_the_exact_envelope_into_the_catch_handler()
         .values()
         .next()
         .expect("the handler keeps the caught envelope");
-    assert!(
-        Arc::ptr_eq(&envelope, &caught.envelope),
-        "resume_throw and the catch reuse the exact envelope allocation"
-    );
+    assert_eq!(Arc::as_ptr(&caught.envelope), exception_pointer);
     assert_eq!(caught.envelope.actual_catch_identity(), baseline.0.as_ref());
     assert_eq!(caught.envelope.source(), &baseline.1);
     assert_eq!(caught.envelope.stack(), baseline.2.as_slice());

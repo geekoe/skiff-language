@@ -33,7 +33,9 @@ import std
 
 function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
   final base = "left".concat("-")
-  final joined = base.concat("right")
+  final suffix = "ri".concat("ght")
+  var joined = base.concat(suffix)
+  joined = joined.concat("")
   final body = bytes.fromUtf8(joined)
   final text = body.toUtf8String()
   emit({ tag: "chunk", value: bytes.fromUtf8(text) })
@@ -49,6 +51,15 @@ struct IntrinsicDispatchFixture {
 
 impl IntrinsicDispatchFixture {
     fn build() -> Self {
+        Self::build_source(
+            "example.com/vm-p5-intrinsic-dispatch",
+            "/vm/intrinsic-dispatch",
+            INTRINSIC_DISPATCH_SOURCE,
+            "intrinsic-dispatch",
+        )
+    }
+
+    fn build_source(package_id: &str, path: &str, source: &str, temp_label: &str) -> Self {
         static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -56,7 +67,7 @@ impl IntrinsicDispatchFixture {
             .expect("VM crate has a repository root")
             .to_path_buf();
         let temp = std::env::temp_dir().join(format!(
-            "skiff-vm-p5-intrinsic-dispatch-{}-{}-{}",
+            "skiff-vm-p5-{temp_label}-{}-{}-{}",
             std::process::id(),
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed),
             std::time::SystemTime::now()
@@ -70,21 +81,23 @@ impl IntrinsicDispatchFixture {
         std::fs::create_dir_all(&artifact_root).unwrap();
         std::fs::write(
             fixture_root.join("package.yml"),
-            "id: example.com/vm-p5-intrinsic-dispatch\nversion: 1.0.0\n",
+            format!("id: {package_id}\nversion: 1.0.0\n"),
         )
         .unwrap();
         std::fs::write(
             fixture_root.join("service.yml"),
-            "id: example.com/vm-p5-intrinsic-dispatch\n",
+            format!("id: {package_id}\n"),
         )
         .unwrap();
         std::fs::write(fixture_root.join("api.yml"), "{}\n").unwrap();
         std::fs::write(
             fixture_root.join("http.yml"),
-            "run:\n  method: POST\n  path: /vm/intrinsic-dispatch\n  kind: rawHttp\n  handler: main.run\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n",
+            format!(
+                "run:\n  method: POST\n  path: {path}\n  kind: rawHttp\n  handler: main.run\n  adapterArgs:\n    - param: request\n      source: {{ kind: http.request }}\n"
+            ),
         )
         .unwrap();
-        std::fs::write(fixture_root.join("main.skiff"), INTRINSIC_DISPATCH_SOURCE).unwrap();
+        std::fs::write(fixture_root.join("main.skiff"), source).unwrap();
 
         let platform_sources = CompilerPlatformSources::new(&repository_root)
             .expect("open repository platform sources");
@@ -118,7 +131,7 @@ impl IntrinsicDispatchFixture {
             .find(|binding| {
                 binding.selector.protocol == IngressProtocol::Http
                     && binding.selector.method.as_deref() == Some("POST")
-                    && binding.selector.path == "/vm/intrinsic-dispatch"
+                    && binding.selector.path == path
             })
             .expect("intrinsic fixture publishes its exact HTTP ingress");
         let selector = ingress.selector.clone();
@@ -155,37 +168,125 @@ fn intrinsic_dispatch_fixture() -> &'static IntrinsicDispatchFixture {
     FIXTURE.get_or_init(IntrinsicDispatchFixture::build)
 }
 
+const HOST_RESUME_SOURCE: &str = r#"
+import std
+
+function headers() -> Array<std.http.HttpHeader> { return [] }
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final response = std.http.request(std.http.HttpClientRequest {
+    method: "GET",
+    url: "http://127.0.0.1/owned-values",
+    headers: headers(),
+    body: null,
+    timeoutMs: 1,
+  })
+  emit({ tag: "chunk", value: response.body })
+  return null
+}
+"#;
+
+fn host_resume_fixture() -> &'static IntrinsicDispatchFixture {
+    static FIXTURE: OnceLock<IntrinsicDispatchFixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        IntrinsicDispatchFixture::build_source(
+            "example.com/vm-p5-owned-values-resume",
+            "/vm/owned-values-resume",
+            HOST_RESUME_SOURCE,
+            "owned-values-resume",
+        )
+    })
+}
+
+pub(super) fn host_result_resume_token() -> crate::VmResumeToken {
+    let fixture = host_resume_fixture();
+    let entry = fixture.target();
+    let function_index = entry.function();
+    let function = fixture
+        .image
+        .functions()
+        .get(function_index.get() as usize)
+        .filter(|function| function.index() == function_index)
+        .expect("host fixture root function remains linked");
+    let (instruction_ordinal, instruction) = function
+        .instructions()
+        .iter()
+        .enumerate()
+        .find(|(_, instruction)| instruction.opcode() == Opcode::InvokeHost)
+        .expect("host fixture emits one exact InvokeHost");
+    let instruction_index = InstructionIndex::new(instruction_ordinal as u32);
+    let adapter = instruction
+        .resolved_operands()
+        .iter()
+        .find(|operand| operand.operand_ordinal() == 0)
+        .and_then(|operand| match operand.target() {
+            LinkedInstructionTarget::HostEffectAdapter(adapter) => Some(adapter),
+            _ => None,
+        })
+        .expect("InvokeHost resolves its exact adapter");
+    let resume_site = instruction
+        .resolved_operands()
+        .iter()
+        .find(|operand| operand.operand_ordinal() == 3)
+        .and_then(|operand| match operand.target() {
+            LinkedInstructionTarget::ResumeSite(resume) => Some(resume),
+            _ => None,
+        })
+        .expect("InvokeHost resolves its exact resume site");
+    let resume = fixture
+        .image
+        .resume_sites()
+        .get(resume_site)
+        .filter(|resume| resume.function() == function_index && resume.site() == instruction_index)
+        .expect("InvokeHost resume descriptor matches its instruction");
+    crate::VmResumeToken::new(
+        Arc::clone(&fixture.image),
+        1,
+        function_index,
+        instruction_index,
+        resume.resume(),
+        resume.end_resume(),
+        resume_site,
+        resume.expected_stack_height_before_result(),
+        u32::try_from(resume.result_types().len()).unwrap(),
+        VmResumeAuthority::Adapter(adapter),
+    )
+}
+
 #[derive(Clone)]
-enum IntrinsicDispatchValue {
+pub(super) enum IntrinsicDispatchValue {
     Opaque,
     String(String),
     Bytes(Vec<u8>),
     Record(Vec<VmRecordField>),
 }
 
-struct IntrinsicDispatchEntry {
+pub(super) struct IntrinsicDispatchEntry {
     owners: usize,
     value: IntrinsicDispatchValue,
 }
 
 #[derive(Default)]
-struct IntrinsicDispatchHeap {
+pub(super) struct IntrinsicDispatchHeap {
     next_handle: u64,
-    entries: BTreeMap<u64, IntrinsicDispatchEntry>,
-    transfer_attempts: usize,
+    pub(super) entries: BTreeMap<u64, IntrinsicDispatchEntry>,
+    pub(super) transfer_attempts: usize,
     fail_transfer_at: Option<usize>,
-    release_attempts: usize,
-    fail_release_at: Option<usize>,
+    pub(super) change_transfer_at: Option<usize>,
+    pub(super) release_attempts: usize,
+    pub(super) fail_release_at: Option<usize>,
     typed_string_allocations: usize,
     fail_typed_string_at: Option<usize>,
+    pub(super) typed_bytes_allocations: usize,
+    pub(super) fail_typed_bytes_at: Option<usize>,
     record_allocations: usize,
     fail_record_allocation: bool,
-    fail_bytes_read: bool,
+    pub(super) fail_bytes_read: bool,
     array_push_attempts: usize,
 }
 
 impl IntrinsicDispatchHeap {
-    fn allocate(
+    pub(super) fn allocate(
         &mut self,
         value: IntrinsicDispatchValue,
         tag: CompactTypeTag,
@@ -202,12 +303,12 @@ impl IntrinsicDispatchHeap {
 
     fn handle(value: &ValueSlot) -> Result<u64, VmHeapError> {
         value
-            .as_request_heap_ref()
+            .as_handle()
             .map(VmHandle::get)
             .ok_or(VmHeapError::InvalidValueMetadata)
     }
 
-    fn owner_count(&self, handle: u64) -> usize {
+    pub(super) fn owner_count(&self, handle: u64) -> usize {
         self.entries.get(&handle).map_or(0, |entry| entry.owners)
     }
 
@@ -255,7 +356,14 @@ impl VmHeap for IntrinsicDispatchHeap {
             ) => Ok(()),
             Some(skiff_runtime_model::vm_value::ValueKind::RequestHeapRef)
                 if value
-                    .as_request_heap_ref()
+                    .as_handle()
+                    .is_some_and(|handle| self.entries.contains_key(&handle.get())) =>
+            {
+                Ok(())
+            }
+            Some(skiff_runtime_model::vm_value::ValueKind::ResourceRef)
+                if value
+                    .as_handle()
                     .is_some_and(|handle| self.entries.contains_key(&handle.get())) =>
             {
                 Ok(())
@@ -283,6 +391,24 @@ impl VmHeap for IntrinsicDispatchHeap {
                 message: "injected record field transfer failure".to_string(),
             });
         }
+        if self.change_transfer_at == Some(self.transfer_attempts) {
+            let handle = source
+                .as_handle()
+                .ok_or(VmHeapError::InvalidValueMetadata)?;
+            let tag = source
+                .compact_type_tag()
+                .ok_or(VmHeapError::InvalidValueMetadata)?;
+            let flags = ValueFlags::new(source.flags().bits() ^ 1);
+            return match source.kind() {
+                Some(skiff_runtime_model::vm_value::ValueKind::RequestHeapRef) => {
+                    Ok(ValueSlot::request_heap_ref(handle, tag, flags))
+                }
+                Some(skiff_runtime_model::vm_value::ValueKind::ResourceRef) => {
+                    Ok(ValueSlot::resource_ref(handle, tag, flags))
+                }
+                _ => Err(VmHeapError::InvalidValueMetadata),
+            };
+        }
         Ok(*source)
     }
 
@@ -298,11 +424,15 @@ impl VmHeap for IntrinsicDispatchHeap {
         self.release_handle(handle)
     }
 
-    fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
-        Err(VmHeapError::OperationKindMismatch {
-            operation: VmHeapOperation::ReleaseResource,
-            kind: skiff_runtime_model::vm_value::ValueKind::ResourceRef,
-        })
+    fn release_resource(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+        self.release_attempts += 1;
+        if self.fail_release_at == Some(self.release_attempts) {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseResource,
+                message: "injected resource release failure".to_string(),
+            });
+        }
+        self.release_handle(Self::handle(owner)?)
     }
 
     fn alloc_typed_string(
@@ -327,6 +457,13 @@ impl VmHeap for IntrinsicDispatchHeap {
         tag: CompactTypeTag,
         flags: ValueFlags,
     ) -> Result<ValueSlot, VmHeapError> {
+        self.typed_bytes_allocations += 1;
+        if self.fail_typed_bytes_at == Some(self.typed_bytes_allocations) {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::AllocateRepresentation,
+                message: "injected intrinsic bytes allocation failure".to_string(),
+            });
+        }
         Ok(self.allocate(IntrinsicDispatchValue::Bytes(value), tag, flags))
     }
 
@@ -436,7 +573,7 @@ impl VmHeap for IntrinsicDispatchHeap {
 }
 
 #[derive(Default)]
-struct IntrinsicRootHandles(Vec<u64>);
+pub(super) struct IntrinsicRootHandles(pub(super) Vec<u64>);
 
 impl VmRootVisitor for IntrinsicRootHandles {
     fn visit_root(&mut self, root: &ValueSlot) -> Result<(), VmHeapError> {
@@ -447,7 +584,7 @@ impl VmRootVisitor for IntrinsicRootHandles {
     }
 }
 
-fn current_intrinsic(fiber: &VmFiber) -> Option<(String, TypeIndex)> {
+pub(super) fn current_intrinsic(fiber: &VmFiber) -> Option<(String, TypeIndex)> {
     let frame = fiber.current_frame().ok()?;
     let instruction = fiber
         .function(frame.function())
@@ -501,6 +638,28 @@ fn drive_to_new_record(fiber: &mut VmFiber, heap: &mut IntrinsicDispatchHeap) {
     panic!("intrinsic fixture did not reach NewRecord within the step cap");
 }
 
+pub(super) fn drive_to_opcode_occurrence(
+    fiber: &mut VmFiber,
+    heap: &mut IntrinsicDispatchHeap,
+    target: Opcode,
+    occurrence: usize,
+) {
+    let mut seen = 0;
+    for _ in 0..10_000 {
+        if current_opcode(fiber) == Some(target) {
+            seen += 1;
+            if seen == occurrence {
+                return;
+            }
+        }
+        assert!(matches!(
+            fiber.dispatch_one(heap).expect("drive to target opcode"),
+            DispatchOutcome::Continue
+        ));
+    }
+    panic!("fixture did not reach {target:?} occurrence {occurrence} within the step cap");
+}
+
 fn new_record_operand_window(fiber: &VmFiber) -> (usize, usize, Vec<ValueSlot>) {
     let frame = fiber.current_frame().expect("NewRecord frame").clone();
     let decoded = fiber
@@ -542,7 +701,7 @@ fn assert_new_record_window_rooted(
     }
 }
 
-fn intrinsic_fiber(heap: &mut IntrinsicDispatchHeap) -> VmFiber {
+pub(super) fn intrinsic_fiber(heap: &mut IntrinsicDispatchHeap) -> VmFiber {
     let fixture = intrinsic_dispatch_fixture();
     let entry = fixture.target();
     let [parameter_type] = entry.signature().parameter_types() else {
@@ -561,7 +720,10 @@ fn intrinsic_fiber(heap: &mut IntrinsicDispatchHeap) -> VmFiber {
         .expect("start exact server-stream intrinsic entry")
 }
 
-fn drive_intrinsic_fiber_to_completion(fiber: &mut VmFiber, heap: &mut IntrinsicDispatchHeap) {
+pub(super) fn drive_intrinsic_fiber_to_completion(
+    fiber: &mut VmFiber,
+    heap: &mut IntrinsicDispatchHeap,
+) {
     for _ in 0..10_000 {
         match fiber
             .dispatch_one(heap)
@@ -580,6 +742,81 @@ fn drive_intrinsic_fiber_to_completion(fiber: &mut VmFiber, heap: &mut Intrinsic
         }
     }
     panic!("intrinsic fixture did not terminate within the step cap");
+}
+
+pub(super) fn drive_to_owned_concat(fiber: &mut VmFiber, heap: &mut IntrinsicDispatchHeap) {
+    let mut concat_count = 0;
+    for _ in 0..10_000 {
+        if current_intrinsic(fiber).is_some_and(|(key, _)| {
+            if key == "receiver:string.concat@1" {
+                concat_count += 1;
+            }
+            key == "receiver:string.concat@1" && concat_count == 3
+        }) {
+            return;
+        }
+        assert!(matches!(
+            fiber.dispatch_one(heap).expect("drive to second concat"),
+            DispatchOutcome::Continue
+        ));
+    }
+    panic!("intrinsic fixture did not reach its two-owner concat within the step cap");
+}
+
+pub(super) fn drive_to_intrinsic_key(
+    fiber: &mut VmFiber,
+    heap: &mut IntrinsicDispatchHeap,
+    expected_key: &str,
+) {
+    for _ in 0..10_000 {
+        if current_intrinsic(fiber).is_some_and(|(key, _)| key == expected_key) {
+            return;
+        }
+        assert!(matches!(
+            fiber.dispatch_one(heap).expect("drive to intrinsic key"),
+            DispatchOutcome::Continue
+        ));
+    }
+    panic!("intrinsic fixture did not reach {expected_key}");
+}
+
+pub(super) fn drive_to_root_return(fiber: &mut VmFiber, heap: &mut IntrinsicDispatchHeap) {
+    for _ in 0..10_000 {
+        if fiber.frames.len() == 1 && current_opcode(fiber) == Some(Opcode::Return) {
+            return;
+        }
+        match fiber.dispatch_one(heap).expect("drive to root return") {
+            DispatchOutcome::Continue => {}
+            DispatchOutcome::Handoff(VmControl::EmitStream(item)) => {
+                let resume = item.release(heap).expect("release emitted chunk owner");
+                fiber
+                    .resume(resume, ResumeOutcome::Empty)
+                    .expect("resume after emitted chunk");
+            }
+            DispatchOutcome::Complete(_) => panic!("fixture completed before its root Return"),
+            DispatchOutcome::Handoff(_) => panic!("fixture exposes only EmitStream handoff"),
+            DispatchOutcome::Throw(_) => panic!("fixture must not throw"),
+        }
+    }
+    panic!("fixture did not reach its root Return within the step cap");
+}
+
+pub(super) fn heap_owner_total(heap: &IntrinsicDispatchHeap) -> usize {
+    heap.entries.values().map(|entry| entry.owners).sum()
+}
+
+pub(super) fn live_string_owner(fiber: &VmFiber, heap: &IntrinsicDispatchHeap) -> ValueSlot {
+    fiber
+        .values
+        .iter()
+        .copied()
+        .zip(fiber.live_values.iter().copied())
+        .find_map(|(value, live)| {
+            let handle = value.as_request_heap_ref()?;
+            let entry = heap.entries.get(&handle.get())?;
+            (live && matches!(&entry.value, IntrinsicDispatchValue::String(_))).then_some(value)
+        })
+        .expect("the intrinsic fixture keeps a request-owned string live")
 }
 
 #[test]
@@ -688,110 +925,13 @@ fn intrinsic_dispatch_executes_phase_5_string_and_bytes_ops_with_typed_rooted_re
         completed,
         "intrinsic fixture must complete within the step cap"
     );
-    assert_eq!(seen.get("receiver:string.concat@1"), Some(&2));
+    assert_eq!(seen.get("receiver:string.concat@1"), Some(&4));
     assert_eq!(seen.get("core.bytes.fromUtf8"), Some(&2));
     assert_eq!(seen.get("receiver:bytes.toUtf8String@1"), Some(&1));
     assert!(
         heap.entries.is_empty(),
         "frame exit releases every result owner"
     );
-}
-
-#[test]
-fn intrinsic_dispatch_read_failure_releases_only_the_borrowed_operand_owner() {
-    let mut heap = IntrinsicDispatchHeap::default();
-    let mut fiber = intrinsic_fiber(&mut heap);
-
-    for _ in 0..10_000 {
-        if current_intrinsic(&fiber).is_some_and(|(key, _)| key == "receiver:bytes.toUtf8String@1")
-        {
-            break;
-        }
-        assert!(matches!(
-            fiber.dispatch_one(&mut heap).unwrap(),
-            DispatchOutcome::Continue
-        ));
-    }
-    let frame = fiber.current_frame().unwrap().clone();
-    let input_index = frame.operand_base() + frame.operand_height() - 1;
-    let input = fiber.values[input_index];
-    let handle = input.as_request_heap_ref().unwrap().get();
-    assert_eq!(heap.owner_count(handle), 2, "slot plus borrowed operand");
-    heap.fail_bytes_read = true;
-
-    let error = match fiber.dispatch_one(&mut heap) {
-        Err(error) => error,
-        Ok(_) => panic!("bytes payload read failure must fail the intrinsic"),
-    };
-
-    assert!(matches!(
-        error,
-        VmError::Heap(VmHeapError::HeapOperationFailed {
-            operation: VmHeapOperation::RepresentationPayload,
-            ..
-        })
-    ));
-    assert_eq!(heap.owner_count(handle), 1);
-    let mut roots = IntrinsicRootHandles::default();
-    fiber.visit_roots(&mut roots).unwrap();
-    assert_eq!(roots.0.iter().filter(|root| **root == handle).count(), 1);
-}
-
-#[test]
-fn intrinsic_dispatch_first_release_failure_keeps_operand_rooted_until_retry() {
-    let mut heap = IntrinsicDispatchHeap::default();
-    let mut fiber = intrinsic_fiber(&mut heap);
-    let mut concat_count = 0;
-
-    for _ in 0..10_000 {
-        if current_intrinsic(&fiber).is_some_and(|(key, _)| {
-            if key == "receiver:string.concat@1" {
-                concat_count += 1;
-            }
-            key == "receiver:string.concat@1" && concat_count == 2
-        }) {
-            break;
-        }
-        assert!(matches!(
-            fiber.dispatch_one(&mut heap).unwrap(),
-            DispatchOutcome::Continue
-        ));
-    }
-    let frame = fiber.current_frame().unwrap().clone();
-    let first_argument_index = frame.operand_base() + frame.operand_height() - 2;
-    let first_argument = fiber.values[first_argument_index];
-    let handle = first_argument.as_request_heap_ref().unwrap().get();
-    let height = frame.operand_height();
-    assert_eq!(heap.owner_count(handle), 2, "slot plus borrowed operand");
-    heap.fail_release_at = Some(heap.release_attempts + 1);
-
-    let error = match fiber.dispatch_one(&mut heap) {
-        Err(error) => error,
-        Ok(_) => panic!("the first owned argument release is injected to fail"),
-    };
-
-    assert!(matches!(
-        error,
-        VmError::Heap(VmHeapError::HeapOperationFailed {
-            operation: VmHeapOperation::ReleaseSnapshot,
-            ..
-        })
-    ));
-    assert_eq!(fiber.current_frame().unwrap().operand_height(), height);
-    assert!(fiber.values[first_argument_index] == first_argument);
-    assert!(fiber.live_values[first_argument_index]);
-    assert_eq!(heap.owner_count(handle), 2);
-    let mut roots = IntrinsicRootHandles::default();
-    fiber.visit_roots(&mut roots).unwrap();
-    assert_eq!(roots.0.iter().filter(|root| **root == handle).count(), 2);
-
-    heap.fail_release_at = None;
-    assert!(matches!(
-        fiber.dispatch_one(&mut heap).unwrap(),
-        DispatchOutcome::Continue
-    ));
-    drive_intrinsic_fiber_to_completion(&mut fiber, &mut heap);
-    assert!(heap.entries.is_empty());
 }
 
 #[test]

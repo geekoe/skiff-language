@@ -1,7 +1,6 @@
 use std::{fmt, num::NonZeroU64, sync::Arc};
 
 use skiff_artifact_model::Opcode;
-use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex, InterfaceTableIndex,
     LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex, ShapeIndex,
@@ -9,7 +8,6 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
-    service_error::RequestException,
     vm_heap::{VmHeap, VmHeapError},
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{ValueSlot, VmHandle},
@@ -19,69 +17,11 @@ use crate::{lifecycle::LifecycleExecutor, VmBudgetClosed, VmError};
 
 pub type VmResult = Result<VmOwnedValues, VmError>;
 
-/// Values whose image-local handles remain pinned to the exact verified image
-/// that created them.
-///
-/// Construction is crate-private so downstream code cannot attach a raw
-/// `ValueSlot` to an unrelated image pin.
-#[must_use = "owned VM values retain roots and an exact verified-image pin"]
-pub struct VmOwnedValues {
-    image: Arc<DeploymentExecutionImage>,
-    values: Box<[ValueSlot]>,
-}
-
-impl VmOwnedValues {
-    pub(crate) fn new(image: Arc<DeploymentExecutionImage>, values: Box<[ValueSlot]>) -> Self {
-        Self { image, values }
-    }
-
-    /// Creates an owned, zero-result resume envelope pinned to `image`.
-    ///
-    /// The only externally constructible `VmOwnedValues` is empty: it can
-    /// resume a verified zero-result site such as `EmitStream`, but cannot
-    /// attach a raw `ValueSlot` to an unrelated image pin.
-    pub fn empty(image: Arc<DeploymentExecutionImage>) -> Self {
-        Self {
-            image,
-            values: Box::new([]),
-        }
-    }
-
-    /// Creates an owned result envelope for a verified adapter execution.
-    ///
-    /// The caller must have produced every slot from the same request heap
-    /// that will resume this outcome; the VM cannot validate heap provenance
-    /// at construction time.
-    pub fn from_values(image: Arc<DeploymentExecutionImage>, values: Box<[ValueSlot]>) -> Self {
-        Self { image, values }
-    }
-
-    pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
-        &self.image
-    }
-
-    pub fn owner(&self) -> &DeploymentOwnerIdentity {
-        self.image.owner()
-    }
-
-    pub fn values(&self) -> &[ValueSlot] {
-        &self.values
-    }
-
-    pub fn len(&self) -> usize {
-        self.values.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
-    }
-}
-
-impl VmRootSource for VmOwnedValues {
-    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
-        visit_values(&self.values, visitor)
-    }
-}
+pub(crate) use crate::terminal_ownership::{VmLifecycleSite, VmTerminalOwner};
+pub use crate::terminal_ownership::{
+    VmOwnedException, VmOwnedValues, VmOwnedValuesRejected, VmResumeFailure, VmTerminalCause,
+    VmTerminalEscrow,
+};
 
 /// Arguments transferred out of the operand stack for one verified host
 /// effect, paired with their exact linked lifecycle plans.
@@ -709,7 +649,7 @@ pub enum ResumeOutcome {
     /// A child boundary delivered the exact opaque exception envelope. The
     /// parent reuses this same envelope (`resume_throw`) without re-wrapping,
     /// so the actual catch identity stays unchanged.
-    Throw(Arc<RequestException>),
+    Throw(VmOwnedException),
     Failure(VmError),
     InternalTerminal(VmInternalTerminal),
 }
@@ -718,13 +658,9 @@ impl VmRootSource for ResumeOutcome {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         match self {
             Self::Values(values) => values.visit_roots(visitor),
-            Self::Throw(envelope) => {
-                if let Some(slot) = envelope.vm_local_slot() {
-                    visitor.visit_root(&slot)?;
-                }
-                Ok(())
-            }
-            Self::Empty | Self::StreamEnd | Self::Failure(_) | Self::InternalTerminal(_) => Ok(()),
+            Self::Throw(exception) => exception.visit_roots(visitor),
+            Self::Failure(error) => visit_vm_error(error, visitor),
+            Self::Empty | Self::StreamEnd | Self::InternalTerminal(_) => Ok(()),
         }
     }
 }
@@ -744,6 +680,11 @@ impl VmRootSource for VmControl {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         match self {
             Self::Complete(Ok(values)) => values.visit_roots(visitor),
+            // Root uncaught throws remain owned by the originating fiber's
+            // exact UnwindState until the scheduler consumes the completion
+            // into VmOwnedException/VmTerminalCause. Visiting the diagnostic
+            // alias here would enumerate a second root authority.
+            Self::Complete(Err(VmError::Thrown(_))) => Ok(()),
             Self::Complete(Err(error)) => visit_vm_error(error, visitor),
             Self::EnterChild(invocation) => invocation.visit_roots(visitor),
             Self::EnterAdapter(invocation) => invocation.visit_roots(visitor),
@@ -813,7 +754,10 @@ impl VmRootSource for AdapterControl {
     }
 }
 
-fn visit_vm_error(error: &VmError, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+pub(crate) fn visit_vm_error(
+    error: &VmError,
+    visitor: &mut dyn VmRootVisitor,
+) -> Result<(), VmHeapError> {
     if let VmError::Thrown(envelope) = error {
         if let Some(slot) = envelope.vm_local_slot() {
             visitor.visit_root(&slot)?;
@@ -822,7 +766,10 @@ fn visit_vm_error(error: &VmError, visitor: &mut dyn VmRootVisitor) -> Result<()
     Ok(())
 }
 
-fn visit_values(values: &[ValueSlot], visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+pub(crate) fn visit_values(
+    values: &[ValueSlot],
+    visitor: &mut dyn VmRootVisitor,
+) -> Result<(), VmHeapError> {
     for value in values {
         visitor.visit_root(value)?;
     }

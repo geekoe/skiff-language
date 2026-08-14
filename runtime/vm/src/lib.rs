@@ -18,6 +18,7 @@ mod lifecycle;
 mod limits;
 mod projection;
 mod statement;
+mod terminal_ownership;
 
 pub use budget::{
     VmBudget, VmBudgetClosed, VmBudgetTerminal, VmSemanticCharge, VmSemanticChargeKind,
@@ -26,7 +27,8 @@ pub use control::{
     AdapterControl, AdapterInvocation, BoundaryStart, ChildInvocation, ChildTarget, EffectStart,
     PendingOperation, PendingTicket, ResumeOutcome, StreamEndpointRef, StreamInvocation,
     StreamItem, StreamItemReleaseError, VmControl, VmHostEffectArguments, VmInternalTerminal,
-    VmOwnedValues, VmResult, VmResumeKind, VmResumeToken,
+    VmOwnedException, VmOwnedValues, VmOwnedValuesRejected, VmResult, VmResumeFailure,
+    VmResumeKind, VmResumeToken, VmTerminalCause, VmTerminalEscrow,
 };
 pub use error::{VmEntryArgumentRejection, VmError, VmValueLocation, VmVerifiedInvariant};
 pub use fiber::{Vm, VmFiber, VmFiberState};
