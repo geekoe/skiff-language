@@ -19,6 +19,8 @@ pub struct RequestObservation {
     pub path: String,
     pub response_head_sent: bool,
     pub chunks_sent: usize,
+    pub peer_closed: bool,
+    pub late_chunk_attempted: bool,
 }
 
 /// Hermetic upstream for VCP-5.  Its blocking threads are the remote-server
@@ -125,6 +127,30 @@ impl Phase5TcpServer {
         .await
     }
 
+    pub async fn wait_for_chunks_async(
+        &self,
+        path: &str,
+        chunks: usize,
+        timeout: Duration,
+    ) -> bool {
+        self.wait_for_observation_async(timeout, |entry| {
+            entry.path == path && entry.chunks_sent >= chunks
+        })
+        .await
+    }
+
+    pub async fn wait_for_peer_close_async(&self, path: &str, timeout: Duration) -> bool {
+        self.wait_for_observation_async(timeout, |entry| entry.path == path && entry.peer_closed)
+            .await
+    }
+
+    pub async fn wait_for_late_chunk_attempt_async(&self, path: &str, timeout: Duration) -> bool {
+        self.wait_for_observation_async(timeout, |entry| {
+            entry.path == path && entry.late_chunk_attempted
+        })
+        .await
+    }
+
     async fn wait_for_observation_async(
         &self,
         timeout: Duration,
@@ -202,6 +228,8 @@ fn serve_connection(mut stream: TcpStream, shared: &Shared) {
             path: path.clone(),
             response_head_sent: false,
             chunks_sent: 0,
+            peer_closed: false,
+            late_chunk_attempted: false,
         },
     );
 
@@ -226,6 +254,17 @@ fn serve_connection(mut stream: TcpStream, shared: &Shared) {
     write_chunked_head(&mut stream, 200);
     mark_head(shared, ordinal);
     wait_for_release(shared, &path);
+    if path == "/stream/drop-left" {
+        write_chunk(&mut stream, chunks[0]);
+        mark_chunk(shared, ordinal);
+        if wait_for_peer_close(&mut stream, shared) {
+            mark_peer_closed(shared, ordinal);
+        }
+        wait_for_release(shared, "/stream/drop-left#late");
+        mark_late_chunk_attempted(shared, ordinal);
+        let _ = write_chunk_fallible(&mut stream, chunks[1]);
+        return;
+    }
     for chunk in chunks {
         write_chunk(&mut stream, chunk);
         mark_chunk(shared, ordinal);
@@ -306,6 +345,65 @@ fn mark_chunk(shared: &Shared, ordinal: u64) {
     shared.changed.notify_all();
 }
 
+fn mark_peer_closed(shared: &Shared, ordinal: u64) {
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    state
+        .observations
+        .iter_mut()
+        .find(|entry| entry.ordinal == ordinal)
+        .expect("recorded request ordinal")
+        .peer_closed = true;
+    shared.changed.notify_all();
+}
+
+fn mark_late_chunk_attempted(shared: &Shared, ordinal: u64) {
+    let mut state = shared
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    state
+        .observations
+        .iter_mut()
+        .find(|entry| entry.ordinal == ordinal)
+        .expect("recorded request ordinal")
+        .late_chunk_attempted = true;
+    shared.changed.notify_all();
+}
+
+fn wait_for_peer_close(stream: &mut TcpStream, shared: &Shared) -> bool {
+    let deadline = Instant::now() + IO_TIMEOUT;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(10)))
+        .expect("set peer-close observation timeout");
+    let mut byte = [0_u8; 1];
+    while !shared.stopping.load(Ordering::Acquire) && Instant::now() < deadline {
+        match stream.read(&mut byte) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::BrokenPipe
+                ) =>
+            {
+                return true;
+            }
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
 fn write_fixed(stream: &mut TcpStream, status: u16, body: &[u8]) {
     write!(
         stream,
@@ -327,10 +425,14 @@ fn write_chunked_head(stream: &mut TcpStream, status: u16) {
 }
 
 fn write_chunk(stream: &mut TcpStream, chunk: &[u8]) {
-    write!(stream, "{:x}\r\n", chunk.len()).expect("write chunk length");
-    stream.write_all(chunk).expect("write chunk body");
-    stream.write_all(b"\r\n").expect("write chunk delimiter");
-    stream.flush().expect("flush chunk");
+    write_chunk_fallible(stream, chunk).expect("write chunk");
+}
+
+fn write_chunk_fallible(stream: &mut TcpStream, chunk: &[u8]) -> std::io::Result<()> {
+    write!(stream, "{:x}\r\n", chunk.len())?;
+    stream.write_all(chunk)?;
+    stream.write_all(b"\r\n")?;
+    stream.flush()
 }
 
 #[test]

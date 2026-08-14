@@ -1,4 +1,10 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use skiff_artifact_model::{GatewayAdapterKind, GatewayAdapterSource};
 use skiff_runtime_capability_context::CancellationToken;
@@ -6,6 +12,7 @@ use skiff_runtime_model::{
     bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
     request_heap::RequestHeapLimits,
 };
+use skiff_runtime_request::execution_budget::{AdmittedRequestDeadline, ExecutionWinner};
 use skiff_runtime_request::{
     drive_runtime_bytecode_request_async, BinaryHttpRequest, BinaryHttpRequestMetadata,
     BoundaryResponse, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
@@ -35,6 +42,7 @@ pub async fn verify_to_scheduler() {
     let input = production_request_input(
         &fixture,
         &server,
+        VCP_PATH,
         cancellation,
         Arc::clone(&execution_budget),
         "phase-5-s5",
@@ -101,14 +109,244 @@ pub async fn verify_to_scheduler() {
     );
 }
 
+/// G8 cancel/deadline races use the same socket Pending boundary as S5. The
+/// proof never settles a pending cell directly: cancellation enters through
+/// the request token, deadline through the admitted monotonic budget, and the
+/// production scheduler/provider must converge each race to one terminal and
+/// an empty owner inventory.
+pub async fn lifecycle_race_matrix() {
+    cancellation_while_http_pending().await;
+    deadline_while_http_pending().await;
+    early_break_releases_body_before_late_chunk().await;
+}
+
+pub async fn single_worker_canary() {
+    let fixture = published_positive("single-worker-canary");
+    let server = Phase5TcpServer::start();
+    let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(None));
+    let input = production_request_input(
+        &fixture,
+        &server,
+        VCP_PATH,
+        CancellationToken::new(),
+        Arc::clone(&execution_budget),
+        "phase-5-canary",
+    );
+    let keep_ticking = Arc::new(AtomicBool::new(true));
+    let ticks = Arc::new(AtomicU64::new(0));
+    let canary = {
+        let keep_ticking = Arc::clone(&keep_ticking);
+        let ticks = Arc::clone(&ticks);
+        tokio::spawn(async move {
+            while keep_ticking.load(Ordering::Acquire) {
+                ticks.fetch_add(1, Ordering::Relaxed);
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+    let drive = tokio::spawn(drive_runtime_bytecode_request_async(input));
+
+    assert!(
+        server
+            .wait_for_path_async("/request", IO_OBSERVATION_TIMEOUT)
+            .await,
+        "single-worker request never reached real socket Pending"
+    );
+    assert_canary_advances(&ticks, "unary response Pending").await;
+    assert!(!drive.is_finished());
+    server.release("/request");
+    for path in ["/stream/left", "/stream/right"] {
+        assert!(
+            server
+                .wait_for_response_head_async(path, IO_OBSERVATION_TIMEOUT)
+                .await,
+            "single-worker request never opened {path}"
+        );
+    }
+    assert_canary_advances(&ticks, "two simultaneous body streams Pending").await;
+    assert!(!drive.is_finished());
+    server.release("/stream/left");
+    server.release("/stream/right");
+
+    let driven = tokio::time::timeout(IO_OBSERVATION_TIMEOUT, drive)
+        .await
+        .expect("single-worker request did not finish")
+        .expect("join single-worker request");
+    keep_ticking.store(false, Ordering::Release);
+    canary.await.expect("join single-worker canary");
+    assert_exact_outbound_routes(&server.snapshot());
+    assert_successful_cleanup(driven, &execution_budget);
+}
+
+async fn cancellation_while_http_pending() {
+    let fixture = published_positive("lifecycle-cancel");
+    let server = Phase5TcpServer::start();
+    let cancellation = CancellationToken::new();
+    let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(None));
+    let input = production_request_input(
+        &fixture,
+        &server,
+        VCP_PATH,
+        cancellation.clone(),
+        Arc::clone(&execution_budget),
+        "phase-5-cancel",
+    );
+    let drive = tokio::spawn(drive_runtime_bytecode_request_async(input));
+    assert!(
+        server
+            .wait_for_path_async("/request", IO_OBSERVATION_TIMEOUT)
+            .await,
+        "cancel scenario never reached actual HTTP Pending"
+    );
+    assert!(!drive.is_finished(), "cancel scenario was pseudo-Ready");
+    cancellation.cancel();
+    let driven = tokio::time::timeout(IO_OBSERVATION_TIMEOUT, drive)
+        .await
+        .expect("request cancellation did not wake the pending HTTP operation")
+        .expect("join cancelled request");
+    server.release("/request");
+    assert_terminal_cleanup(driven, &execution_budget, ExecutionWinner::Cancelled);
+    assert_eq!(
+        server
+            .snapshot()
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>(),
+        ["/request"],
+        "a cancelled unary operation must not issue either stream request"
+    );
+}
+
+async fn deadline_while_http_pending() {
+    let fixture = published_positive("lifecycle-deadline");
+    let server = Phase5TcpServer::start();
+    let deadline = AdmittedRequestDeadline::new(
+        Instant::now()
+            .checked_add(Duration::from_millis(250))
+            .expect("represent Phase 5 deadline"),
+    );
+    let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(Some(deadline)));
+    let input = production_request_input(
+        &fixture,
+        &server,
+        VCP_PATH,
+        CancellationToken::new(),
+        Arc::clone(&execution_budget),
+        "phase-5-deadline",
+    );
+    let drive = tokio::spawn(drive_runtime_bytecode_request_async(input));
+    assert!(
+        server
+            .wait_for_path_async("/request", IO_OBSERVATION_TIMEOUT)
+            .await,
+        "deadline scenario never reached actual HTTP Pending"
+    );
+    assert!(!drive.is_finished(), "deadline scenario was pseudo-Ready");
+    let driven = tokio::time::timeout(IO_OBSERVATION_TIMEOUT, drive)
+        .await
+        .expect("deadline did not wake the pending HTTP operation")
+        .expect("join deadline request");
+    server.release("/request");
+    assert_terminal_cleanup(driven, &execution_budget, ExecutionWinner::DeadlineExceeded);
+    assert_eq!(
+        server
+            .snapshot()
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>(),
+        ["/request"],
+        "an expired unary operation must not issue either stream request"
+    );
+}
+
+async fn early_break_releases_body_before_late_chunk() {
+    const DROP_PATH: &str = "/phase-5/drop-left";
+    let fixture = published_positive("lifecycle-early-break");
+    let server = Phase5TcpServer::start();
+    let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(None));
+    let input = production_request_input(
+        &fixture,
+        &server,
+        DROP_PATH,
+        CancellationToken::new(),
+        Arc::clone(&execution_budget),
+        "phase-5-early-break",
+    );
+    let drive = tokio::spawn(drive_runtime_bytecode_request_async(input));
+    for path in ["/stream/drop-left", "/stream/drop-right"] {
+        assert!(
+            server
+                .wait_for_response_head_async(path, IO_OBSERVATION_TIMEOUT)
+                .await,
+            "early-break request never opened {path}"
+        );
+    }
+    server.release("/stream/drop-left");
+    assert!(
+        server
+            .wait_for_chunks_async("/stream/drop-left", 1, IO_OBSERVATION_TIMEOUT)
+            .await,
+        "early-break source never delivered its first item"
+    );
+    server.release("/stream/drop-right");
+    assert!(
+        server
+            .wait_for_peer_close_async("/stream/drop-left", IO_OBSERVATION_TIMEOUT)
+            .await,
+        "breaking the body loop did not release the affine source before late data"
+    );
+    server.release("/stream/drop-left#late");
+    assert!(
+        server
+            .wait_for_late_chunk_attempt_async("/stream/drop-left", IO_OBSERVATION_TIMEOUT)
+            .await,
+        "upstream never raced late data against the released source"
+    );
+    let driven = tokio::time::timeout(IO_OBSERVATION_TIMEOUT, drive)
+        .await
+        .expect("early-break request did not reach its response terminal")
+        .expect("join early-break request");
+    assert_successful_cleanup(driven, &execution_budget);
+
+    let observations = server.snapshot();
+    assert_eq!(
+        observations
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect::<Vec<_>>(),
+        ["/stream/drop-left", "/stream/drop-right"]
+    );
+    let left = observations
+        .iter()
+        .find(|entry| entry.path == "/stream/drop-left")
+        .expect("left observation");
+    assert_eq!(left.chunks_sent, 1, "late item entered the released source");
+    assert!(left.peer_closed, "left source never observed exact release");
+    assert!(
+        left.late_chunk_attempted,
+        "upstream did not race late data against the released source"
+    );
+}
+
+async fn assert_canary_advances(ticks: &AtomicU64, phase: &str) {
+    let before = ticks.load(Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let after = ticks.load(Ordering::Relaxed);
+    assert!(
+        after >= before.saturating_add(8),
+        "the single Tokio worker stopped advancing during {phase}: {before} -> {after}"
+    );
+}
+
 fn production_request_input(
     fixture: &super::fixture::PublishedFixture,
     server: &Phase5TcpServer,
+    ingress_path: &str,
     cancellation: CancellationToken,
     execution_budget: Arc<ExecutionBudget>,
     request_id: &str,
 ) -> BytecodeRequestExecutionInput {
-    let gateway = fixture.gateway(VCP_PATH);
+    let gateway = fixture.gateway(ingress_path);
     let image = fixture.link();
     let target = image
         .http_gateway_entry(&gateway.ingress, &gateway.identity)
@@ -147,8 +385,8 @@ fn production_request_input(
         binary_http: Some(BinaryHttpRequest {
             metadata: BinaryHttpRequestMetadata {
                 method: "POST".to_string(),
-                url: format!("http://phase-5.invalid{VCP_PATH}"),
-                path: VCP_PATH.to_string(),
+                url: format!("http://phase-5.invalid{ingress_path}"),
+                path: ingress_path.to_string(),
                 query: Vec::<HttpNameValue>::new(),
                 headers: Vec::<HttpNameValue>::new(),
             },
@@ -172,6 +410,61 @@ fn production_request_input(
         },
         heap: None,
     }
+}
+
+fn assert_successful_cleanup(
+    driven: skiff_runtime_request::DrivenBytecodeRequest,
+    execution_budget: &ExecutionBudget,
+) {
+    let inventory = driven.owner_inventory.into_snapshot();
+    assert!(
+        matches!(&driven.result, Ok(BoundaryResponse::StreamSent)),
+        "successful serverStream drive returned {:?}",
+        driven.result
+    );
+    drop(driven.retention);
+    assert_zero_current(inventory);
+    assert!(inventory.pending.ever_created);
+    assert!(inventory.resource.ever_created);
+    assert_eq!(
+        execution_budget
+            .settlement()
+            .expect("successful request has one terminal")
+            .winner(),
+        ExecutionWinner::Succeeded
+    );
+}
+
+fn assert_terminal_cleanup(
+    driven: skiff_runtime_request::DrivenBytecodeRequest,
+    execution_budget: &ExecutionBudget,
+    winner: ExecutionWinner,
+) {
+    let inventory = driven.owner_inventory.into_snapshot();
+    assert!(
+        driven.result.is_err(),
+        "terminal race returned a successful response: {:?}",
+        driven.result
+    );
+    drop(driven.retention);
+    assert_zero_current(inventory);
+    assert!(
+        inventory.pending.ever_created,
+        "terminal race never parked an actual pending HTTP operation"
+    );
+    assert_eq!(
+        execution_budget
+            .settlement()
+            .expect("terminal race has one budget winner")
+            .winner(),
+        winner
+    );
+}
+
+fn assert_zero_current(inventory: skiff_runtime_request::RequestExecutionOwnerInventorySnapshot) {
+    assert_eq!(inventory.pending.current, 0, "pending owners leaked");
+    assert_eq!(inventory.resource.current, 0, "resource owners leaked");
+    assert_eq!(inventory.child.current, 0, "child owners leaked");
 }
 
 fn request_adapter_from_published_plan(

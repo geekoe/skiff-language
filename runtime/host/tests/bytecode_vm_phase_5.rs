@@ -67,6 +67,16 @@ async fn phase_5_vcp_production_composition() {
     host_chain::vcp_production_composition().await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn phase_5_lifecycle_race_matrix() {
+    runtime::lifecycle_race_matrix().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase_5_single_worker_canary() {
+    runtime::single_worker_canary().await;
+}
+
 fn assert_exact_rejection(
     outcome: BuildOutcome,
     label: &str,
