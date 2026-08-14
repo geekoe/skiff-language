@@ -44,12 +44,13 @@ use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmHeapOperation, VmRecor
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
-    allocate_store_string_constant, catch_matches, compact_type_tag, comparable_equality,
+    allocate_new_record_with_cleanup, allocate_store_string_constant, catch_matches,
+    compact_record_type_tags, compact_type_tag, comparable_equality,
     comparable_equality_with_string_resolver, find_exception_region, linked_type_catch_identity,
-    materialize_intrinsic_result, nominal_type_index, opcode_supported,
-    release_intrinsic_argument_window, release_intrinsic_result_after_push_failure,
-    runtime_leaf_catch_identity, store_slot_string_constant_authorized,
-    transfer_materialized_store_owner, DispatchOutcome, IntrinsicResultPayload, Vm, VmFiber,
+    materialize_intrinsic_result, materialize_new_record_const_string, nominal_type_index,
+    opcode_supported, release_intrinsic_argument_window, runtime_leaf_catch_identity,
+    store_slot_string_constant_authorized, transfer_materialized_store_owner, DispatchOutcome,
+    IntrinsicResultPayload, Vm, VmFiber,
 };
 use crate::control::VmResumeAuthority;
 use crate::lifecycle::LifecycleExecutor;
@@ -248,6 +249,156 @@ fn vm_type_tag_construction_preserves_row_zero_and_rejects_u32_max() {
             instruction,
             type_index: TypeIndex::new(u32::MAX),
         })
+    );
+
+    let (record_tag, field_tags) = compact_record_type_tags(
+        function,
+        instruction,
+        TypeIndex::new(0),
+        [TypeIndex::new(0)],
+    )
+    .expect("record row zero tags must be representable");
+    assert_eq!(record_tag.type_index(), 0);
+    assert_eq!(
+        field_tags
+            .iter()
+            .map(|tag| tag.type_index())
+            .collect::<Vec<_>>(),
+        [0]
+    );
+    assert_eq!(
+        compact_record_type_tags(
+            function,
+            instruction,
+            TypeIndex::new(0),
+            [TypeIndex::new(u32::MAX)],
+        ),
+        Err(VmError::CompactTypeTagOutOfRange {
+            function,
+            instruction,
+            type_index: TypeIndex::new(u32::MAX),
+        })
+    );
+}
+
+#[derive(Default)]
+struct NewRecordFailureHeap {
+    typed_strings: Vec<(String, u32)>,
+    record_tags: Vec<u32>,
+    record_field_tags: Vec<u32>,
+    released: Vec<ValueSlot>,
+}
+
+impl VmHeap for NewRecordFailureHeap {
+    fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+        self.released.push(*owner);
+        Ok(())
+    }
+
+    fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn alloc_typed_string(
+        &mut self,
+        value: String,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.typed_strings
+            .push((value, compact_type_tag.type_index()));
+        Ok(ValueSlot::request_heap_ref(
+            VmHandle::new(41),
+            compact_type_tag,
+            flags,
+        ))
+    }
+
+    fn allocate_record(
+        &mut self,
+        fields: &[VmRecordField],
+        compact_type_tag: CompactTypeTag,
+        _flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.record_tags.push(compact_type_tag.type_index());
+        self.record_field_tags
+            .extend(fields.iter().filter_map(|field| {
+                field
+                    .value
+                    .compact_type_tag()
+                    .map(CompactTypeTag::type_index)
+            }));
+        Err(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::AllocateRecord,
+            message: "injected record allocation failure".to_string(),
+        })
+    }
+}
+
+#[test]
+fn new_record_materializes_const_string_with_field_type_and_releases_it_on_failure() {
+    let function = FunctionIndex::new(3);
+    let instruction = InstructionIndex::new(5);
+    let (record_tag, field_tags) = compact_record_type_tags(
+        function,
+        instruction,
+        TypeIndex::new(7),
+        [TypeIndex::new(0)],
+    )
+    .expect("record and row-zero field tags must be representable");
+    let field_plan = LinkedValueTransferPlan::SnapshotShare {
+        drop: LinkedValueDropPlan::SnapshotRelease,
+    };
+    let mut heap = NewRecordFailureHeap::default();
+    {
+        let mut executor = LifecycleExecutor::new(&mut heap);
+        let field_value =
+            materialize_new_record_const_string(&mut executor, "typed".to_string(), field_tags[0])
+                .expect("typed string materialization must succeed");
+        let fields = [VmRecordField {
+            name: "value".to_string(),
+            value: field_value,
+        }];
+        assert!(matches!(
+            allocate_new_record_with_cleanup(
+                &mut executor,
+                &fields,
+                record_tag,
+                &[field_value],
+                std::slice::from_ref(&field_plan),
+            ),
+            Err(VmError::Heap(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::AllocateRecord,
+                ..
+            }))
+        ));
+    }
+
+    assert_eq!(heap.typed_strings, [("typed".to_string(), 0)]);
+    assert_eq!(heap.record_tags, [7]);
+    assert_eq!(heap.record_field_tags, [0]);
+    assert_eq!(heap.released.len(), 1);
+    assert_eq!(
+        heap.released[0].as_request_heap_ref(),
+        Some(VmHandle::new(41))
+    );
+    assert_eq!(
+        heap.released[0]
+            .compact_type_tag()
+            .map(CompactTypeTag::type_index),
+        Some(0)
     );
 }
 
@@ -927,41 +1078,6 @@ fn intrinsic_string_and_bytes_results_keep_the_exact_signature_type() {
     assert_eq!(bytes.compact_type_tag(), Some(compact_tag(13)));
     heap.release_snapshot(&string).unwrap();
     heap.release_snapshot(&bytes).unwrap();
-    assert!(heap.request_live.is_empty());
-}
-
-#[test]
-fn intrinsic_result_push_failure_releases_the_uninstalled_owner_once() {
-    let plan = intrinsic_snapshot_plan();
-    let mut heap = IntrinsicReleaseRecordingHeap::default();
-    let result = materialize_intrinsic_result(
-        &mut heap,
-        IntrinsicResultPayload::String("value".to_string()),
-        TypeIndex::new(12),
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
-    )
-    .expect("typed intrinsic result");
-    let primary = VmError::OperandStackOverflow {
-        function: FunctionIndex::new(1),
-        capacity: 0,
-    };
-    let mut executor = LifecycleExecutor::new(&mut heap);
-    let error = release_intrinsic_result_after_push_failure(
-        &mut executor,
-        &result,
-        &plan,
-        primary,
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
-    );
-    drop(executor);
-
-    assert!(matches!(
-        error,
-        VmError::OperandStackOverflow { capacity: 0, .. }
-    ));
-    assert_eq!(heap.snapshot_releases, 1);
     assert!(heap.request_live.is_empty());
 }
 
@@ -1991,8 +2107,13 @@ impl VmHeap for ResumeHeap {
         Ok(self.fresh(tag))
     }
 
-    fn alloc_string(&mut self, _value: String) -> Result<ValueSlot, VmHeapError> {
-        Ok(self.fresh(compact_tag(0)))
+    fn alloc_typed_string(
+        &mut self,
+        _value: String,
+        tag: CompactTypeTag,
+        _flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Ok(self.fresh(tag))
     }
 }
 

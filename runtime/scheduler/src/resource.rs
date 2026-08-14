@@ -1563,6 +1563,11 @@ mod tests {
         })
     }
 
+    fn compact_tag(type_index: u32) -> CompactTypeTag {
+        CompactTypeTag::try_from_type_index(type_index)
+            .expect("test type index must fit compact tag")
+    }
+
     struct RecordingByteStream {
         events: Arc<Mutex<Vec<Event>>>,
         bytes: Vec<u8>,
@@ -1672,12 +1677,12 @@ mod tests {
         let events = Arc::new(Mutex::new(Vec::new()));
         let handle = table.register(resource(&events)).unwrap();
         let copied = handle;
-        let slot = ValueSlot::resource_ref(
-            copied.vm_handle(),
-            skiff_runtime_model::vm_value::CompactTypeTag::new(0),
-            skiff_runtime_model::vm_value::ValueFlags::new(0),
-        );
+        let slot = ValueSlot::resource_ref(copied.vm_handle(), compact_tag(0), ValueFlags::new(0));
 
+        assert_eq!(
+            slot.compact_type_tag().map(CompactTypeTag::type_index),
+            Some(0)
+        );
         assert_eq!(
             table.validate_vm_route(slot.as_resource_ref().unwrap()),
             Ok(handle)
@@ -1705,7 +1710,7 @@ mod tests {
         let (table, freeze) = table();
         let events = Arc::new(Mutex::new(Vec::new()));
         let handle = table.register(resource(&events)).unwrap();
-        let tag = CompactTypeTag::new(17);
+        let tag = compact_tag(17);
         let flags = ValueFlags::new(3);
 
         assert_eq!(
@@ -1721,7 +1726,7 @@ mod tests {
             Ok(handle)
         );
         assert_eq!(
-            table.validate_vm_route_metadata(handle.vm_handle(), CompactTypeTag::new(18), flags,),
+            table.validate_vm_route_metadata(handle.vm_handle(), compact_tag(18), flags,),
             Err(RequestResourceLookupError::VmMetadataMismatch)
         );
         assert_eq!(
@@ -1733,11 +1738,7 @@ mod tests {
             Ok(RequestResourceRelease::AlreadyReleased)
         );
         assert_eq!(
-            table.release_vm_route_metadata(
-                handle.vm_handle(),
-                CompactTypeTag::new(tag.get() + 1),
-                flags,
-            ),
+            table.release_vm_route_metadata(handle.vm_handle(), compact_tag(18), flags,),
             Err(RequestResourceLookupError::VmMetadataMismatch)
         );
         assert_eq!(
@@ -2125,7 +2126,7 @@ mod tests {
                 bytes: b"right".to_vec(),
             }))
             .unwrap();
-        let tag = CompactTypeTag::new(21);
+        let tag = compact_tag(21);
         let flags = ValueFlags::new(0);
         for handle in [left, right] {
             assert_eq!(table.claim_vm_route(handle.vm_handle()), Ok(handle));

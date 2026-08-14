@@ -2190,38 +2190,63 @@ impl VmFiber {
                 opcode: Opcode::NewRecord,
             });
         }
+        let (record_tag, field_tags) = compact_record_type_tags(
+            function,
+            instruction,
+            shape.nominal_type(),
+            shape.fields().iter().map(|field| field.ty()),
+        )?;
         let frame = self.current_frame()?.clone();
-        let values = self.pop_operands(field_count, false)?;
+        let field_plans = (0..field_count)
+            .map(|ordinal| self.operand_plan(&frame, instruction, field_count - 1 - ordinal))
+            .collect::<Result<Vec<_>, _>>()?;
+        if !field_plans.iter().all(LifecycleExecutor::supports_release) {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::NewRecord,
+            });
+        }
+        let mut values = self.pop_operands(field_count, false)?;
         let mut fields = Vec::with_capacity(field_count);
-        for (ordinal, (field, value)) in shape.fields().iter().zip(values).enumerate() {
-            let value = if matches!(value.kind(), Some(ValueKind::ConstRef)) {
-                match self.string_slot_value(executor.heap(), &value) {
-                    Ok(string) => executor
-                        .heap()
-                        .alloc_string(string)
-                        .map_err(VmError::Heap)?,
-                    Err(_) => value,
+        for (ordinal, field) in shape.fields().iter().enumerate() {
+            let source = values[ordinal];
+            let value = if matches!(source.kind(), Some(ValueKind::ConstRef)) {
+                match self.string_slot_value(executor.heap(), &source) {
+                    Ok(string) => match materialize_new_record_const_string(
+                        executor,
+                        string,
+                        field_tags[ordinal],
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            release_unadopted_new_record_values(executor, &values, &field_plans);
+                            return Err(error);
+                        }
+                    },
+                    Err(_) => source,
                 }
             } else {
-                let plan = self.operand_plan(&frame, instruction, field_count - 1 - ordinal)?;
-                executor.transfer(&value, &plan).map_err(|error| {
-                    error.into_vm_error(function, instruction, Opcode::NewRecord)
-                })?
+                match executor.transfer(&source, &field_plans[ordinal]) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        release_unadopted_new_record_values(executor, &values, &field_plans);
+                        return Err(error.into_vm_error(function, instruction, Opcode::NewRecord));
+                    }
+                }
             };
+            values[ordinal] = value;
             fields.push(VmRecordField {
                 name: field.name().to_string(),
                 value,
             });
         }
-        let value = executor
-            .heap()
-            .allocate_record(
-                &fields,
-                compact_type_tag(function, instruction, shape.nominal_type())?,
-                ValueFlags::new(0),
-            )
-            .map_err(VmError::Heap)?;
-        self.push_operand(value)?;
+        let value =
+            allocate_new_record_with_cleanup(executor, &fields, record_tag, &values, &field_plans)?;
+        if let Err(error) = self.push_operand(value) {
+            let _ = executor.release(&value, shape.plan());
+            return Err(error);
+        }
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
@@ -4701,6 +4726,66 @@ fn compact_type_tag(
         instruction,
         type_index,
     })
+}
+
+fn compact_record_type_tags(
+    function: FunctionIndex,
+    instruction: InstructionIndex,
+    nominal_type: TypeIndex,
+    field_types: impl IntoIterator<Item = TypeIndex>,
+) -> Result<(CompactTypeTag, Vec<CompactTypeTag>), VmError> {
+    let record_tag = compact_type_tag(function, instruction, nominal_type)?;
+    let field_tags = field_types
+        .into_iter()
+        .map(|field_type| compact_type_tag(function, instruction, field_type))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((record_tag, field_tags))
+}
+
+fn materialize_new_record_const_string(
+    executor: &mut LifecycleExecutor<'_>,
+    value: String,
+    field_tag: CompactTypeTag,
+) -> Result<ValueSlot, VmError> {
+    executor
+        .heap()
+        .alloc_typed_string(value, field_tag, ValueFlags::new(0))
+        .map_err(VmError::Heap)
+}
+
+fn allocate_new_record_with_cleanup(
+    executor: &mut LifecycleExecutor<'_>,
+    fields: &[VmRecordField],
+    record_tag: CompactTypeTag,
+    unadopted_values: &[ValueSlot],
+    field_plans: &[LinkedValueTransferPlan],
+) -> Result<ValueSlot, VmError> {
+    match executor
+        .heap()
+        .allocate_record(fields, record_tag, ValueFlags::new(0))
+    {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            release_unadopted_new_record_values(executor, unadopted_values, field_plans);
+            Err(VmError::Heap(error))
+        }
+    }
+}
+
+fn release_unadopted_new_record_values(
+    executor: &mut LifecycleExecutor<'_>,
+    values: &[ValueSlot],
+    plans: &[LinkedValueTransferPlan],
+) {
+    let mut owned_values = Vec::with_capacity(values.len());
+    let mut owned_plans = Vec::with_capacity(plans.len());
+    for (value, plan) in values.iter().zip(plans) {
+        if !matches!(value.kind(), Some(ValueKind::ConstRef)) {
+            owned_values.push(*value);
+            owned_plans.push(plan.clone());
+        }
+    }
+    let _ = executor.release_batch(&owned_values, &owned_plans);
 }
 
 fn nominal_type_index(value: &ValueSlot) -> Option<TypeIndex> {
