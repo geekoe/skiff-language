@@ -61,21 +61,26 @@ async function main() {
   const runtimeBin = await requiredFile(RUNTIME_BIN_ENV);
   const routerBin = await requiredFile(ROUTER_BIN_ENV);
   const tempRoot = await mkdtemp(join(tmpdir(), 'skiff-phase5-router-vcp-'));
-  const lease = await leaseConsecutiveLocalPorts({
-    rangeStart: 46000,
-    rangeEnd: 46999,
-    count: 3,
-  });
-  const [httpPort, runtimePort, relayPort] = lease.ports;
-  const upstream = await createGatedUpstream();
-  const disconnectUpstream = await createGatedUpstream();
-  const timeoutUpstream = await createGatedUpstream();
-  const mongo = await MongodLiveHarness.create({ repoRoot: repository });
+  let lease;
+  let upstream;
+  let disconnectUpstream;
+  let timeoutUpstream;
+  let mongo;
   let router;
   let runtime;
   let relay;
   let primaryError;
   try {
+    lease = await leaseConsecutiveLocalPorts({
+      rangeStart: 46000,
+      rangeEnd: 46999,
+      count: 3,
+    });
+    const [httpPort, runtimePort, relayPort] = lease.ports;
+    upstream = await createGatedUpstream();
+    disconnectUpstream = await createGatedUpstream();
+    timeoutUpstream = await createGatedUpstream();
+    mongo = await MongodLiveHarness.create({ repoRoot: repository });
     await mongo.start();
     const runtimeHome = join(tempRoot, 'runtime-home');
     await mkdir(runtimeHome, { recursive: true });
@@ -220,18 +225,24 @@ async function main() {
     primaryError = error;
     throw error;
   } finally {
-    upstream.releaseBodies();
-    disconnectUpstream.releaseBodies();
-    timeoutUpstream.releaseBodies();
+    upstream?.releaseBodies();
+    disconnectUpstream?.releaseBodies();
+    timeoutUpstream?.releaseBodies();
     const cleanupErrors = [];
     await cleanupProcess(router, 'Phase 5 Router', 'SIGTERM', cleanupErrors);
     await cleanupProcess(runtime, 'Phase 5 Runtime', 'SIGINT', cleanupErrors);
     if (relay !== undefined) await relay.close().catch((error) => cleanupErrors.push(error));
-    await upstream.close().catch((error) => cleanupErrors.push(error));
-    await disconnectUpstream.close().catch((error) => cleanupErrors.push(error));
-    await timeoutUpstream.close().catch((error) => cleanupErrors.push(error));
-    await mongo.cleanup().catch((error) => cleanupErrors.push(error));
-    await lease.release().catch((error) => cleanupErrors.push(error));
+    if (upstream !== undefined) {
+      await upstream.close().catch((error) => cleanupErrors.push(error));
+    }
+    if (disconnectUpstream !== undefined) {
+      await disconnectUpstream.close().catch((error) => cleanupErrors.push(error));
+    }
+    if (timeoutUpstream !== undefined) {
+      await timeoutUpstream.close().catch((error) => cleanupErrors.push(error));
+    }
+    if (mongo !== undefined) await mongo.cleanup().catch((error) => cleanupErrors.push(error));
+    if (lease !== undefined) await lease.release().catch((error) => cleanupErrors.push(error));
     await rm(tempRoot, { recursive: true, force: true }).catch((error) => cleanupErrors.push(error));
     if (primaryError === undefined && cleanupErrors.length > 0) {
       throw new AggregateError(cleanupErrors, 'Phase 5 Router proof cleanup failed');
