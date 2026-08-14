@@ -215,11 +215,38 @@ pub async fn drive_runtime_bytecode_request_async(
         match drive {
             ControlledBytecodeDrive::Complete(driven) => return driven,
             ControlledBytecodeDrive::Parked(parked) => {
-                parked.wait_for_pending_wake().await;
+                wait_for_pending_wake(Arc::clone(&parked.runtime)).await;
                 drive = parked.resume_with_claimed_signal();
             }
         }
     }
+}
+
+/// Waits only on the shared pending runtime. Keeping the parked carrier out of
+/// this future is essential: its unique VM heap, budget adapter and sync wake
+/// receiver are `Send` owners but intentionally not `Sync` shared state.
+async fn wait_for_pending_wake(runtime: Arc<RequestPendingRuntime>) {
+    let cancellation = runtime.execution_control.cancellation_token();
+    let deadline = runtime.execution_control.deadline();
+    let deadline_wait = async move {
+        match deadline {
+            Some(deadline) => {
+                tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(deadline_wait);
+    tokio::select! {
+        _ = runtime.wake_queue.wait() => return,
+        _ = cancellation.wait_cancelled() => {
+            let _ = runtime.budget.request_cancel();
+        }
+        _ = &mut deadline_wait => {
+            let _ = runtime.budget.pending_terminal_winner();
+        }
+    }
+    runtime.wake_queue.wait().await;
 }
 
 /// One controlled-drive step.
@@ -1499,30 +1526,6 @@ impl ParkedBytecodeRequest {
         }
     }
 
-    async fn wait_for_pending_wake(&self) {
-        let cancellation = self.runtime.execution_control.cancellation_token();
-        let deadline = self.runtime.execution_control.deadline();
-        let deadline_wait = async move {
-            match deadline {
-                Some(deadline) => {
-                    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
-                }
-                None => std::future::pending::<()>().await,
-            }
-        };
-        tokio::pin!(deadline_wait);
-        tokio::select! {
-            _ = self.runtime.wake_queue.wait() => return,
-            _ = cancellation.wait_cancelled() => {
-                let _ = self.runtime.budget.request_cancel();
-            }
-            _ = &mut deadline_wait => {
-                let _ = self.runtime.budget.pending_terminal_winner();
-            }
-        }
-        self.runtime.wake_queue.wait().await;
-    }
-
     /// Completes the parked effect deterministically and resumes the request.
     pub fn complete_and_resume(self) -> ControlledBytecodeDrive {
         let parked = self;
@@ -2264,6 +2267,17 @@ mod tests {
             manual_sleep_completion: Mutex::new(None),
         });
         (runtime, context)
+    }
+
+    #[test]
+    fn phase_5_first_poll_async_driver_future_is_send() {
+        fn accepts_send_future<F>(_: fn(BytecodeRequestExecutionInput) -> F)
+        where
+            F: Future<Output = DrivenBytecodeRequest> + Send,
+        {
+        }
+
+        accepts_send_future(drive_runtime_bytecode_request_async);
     }
 
     #[test]
