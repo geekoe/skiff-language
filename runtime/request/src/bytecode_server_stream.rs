@@ -4,14 +4,15 @@ use skiff_runtime_linked_bytecode::{LinkedShapeEntry, ShapeIndex, TypeIndex};
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{error::RuntimeErrorPayload, vm_heap::VmHeap, vm_value::ValueSlot};
 use skiff_runtime_scheduler::{
-    BytecodeHandoff, BytecodeSchedulerError, BytecodeStreamHandoff, BytecodeStreamSupervisor,
-    PendingWakeQueue, RequestResourceHandle, RequestResourceTable, RequestResourceTermination,
+    BytecodeHandoff, BytecodeParkFailure, BytecodeParkRequest, BytecodePortFailure,
+    BytecodeSchedulerError, BytecodeStreamHandoff, BytecodeStreamSupervisor, PendingWakeQueue,
+    RequestResourceHandle, RequestResourceTable, RequestResourceTermination,
     RequestServerStreamEventKind, RequestServerStreamPhase, RequestServerStreamReservation,
     RequestServerStreamReserveError,
 };
 use skiff_runtime_vm::{
-    PendingOperation, ResumeOutcome, StreamItem, VmBudget, VmError, VmFiber, VmInternalTerminal,
-    VmResult, VmResumeToken,
+    ResumeOutcome, StreamItem, StreamItemReleaseError, VmBudget, VmCompletion, VmError, VmFiber,
+    VmInternalTerminal, VmResumeToken,
 };
 
 use crate::{
@@ -318,21 +319,57 @@ fn prepare_root_server_stream_frame<T>(
     decode()
 }
 
+enum ReleaseAfterDecodeFailure<R, E> {
+    Continuation {
+        reason: BytecodeSchedulerError,
+        resume: R,
+    },
+    Terminal {
+        primary: Option<BytecodeSchedulerError>,
+        failure: E,
+    },
+}
+
+fn combine_release_after_decode<T, R, E>(
+    prepared: Result<T, BytecodeSchedulerError>,
+    released: Result<R, E>,
+) -> Result<(T, R), ReleaseAfterDecodeFailure<R, E>> {
+    match (prepared, released) {
+        (Ok(prepared), Ok(resume)) => Ok((prepared, resume)),
+        (Err(reason), Ok(resume)) => {
+            Err(ReleaseAfterDecodeFailure::Continuation { reason, resume })
+        }
+        (prepared, Err(failure)) => Err(ReleaseAfterDecodeFailure::Terminal {
+            primary: prepared.err(),
+            failure,
+        }),
+    }
+}
+
 fn release_stream_item_after_decode<T>(
     prepared: Result<T, BytecodeSchedulerError>,
     item: StreamItem,
     heap: &mut dyn VmHeap,
-    runtime: &RequestPendingRuntime,
-) -> Result<(T, VmResumeToken), BytecodeSchedulerError> {
-    let released = item.release(heap).map_err(|failure| {
-        let (roots, error) = failure.into_cleanup_roots();
-        runtime.escrow_cleanup_roots(roots);
-        BytecodeSchedulerError::from(error)
-    });
-    match (prepared, released) {
-        (Ok(prepared), Ok(resume)) => Ok((prepared, resume)),
-        (Err(error), Ok(_resume)) => Err(error),
-        (_, Err(release_error)) => Err(release_error),
+) -> Result<(T, VmResumeToken), BytecodePortFailure<StreamItem, VmResumeToken>> {
+    let released: Result<VmResumeToken, StreamItemReleaseError> = item.release(heap);
+    match combine_release_after_decode(prepared, released) {
+        Ok(released) => Ok(released),
+        Err(ReleaseAfterDecodeFailure::Continuation { reason, resume }) => {
+            Err(BytecodePortFailure::continuation(reason, resume))
+        }
+        // Decoding already selected the request-visible failure. The sealed
+        // terminal carrier keeps the independent release diagnostic beside
+        // its exact escrow instead of replacing it.
+        Err(ReleaseAfterDecodeFailure::Terminal {
+            primary: Some(primary),
+            failure,
+        }) => Err(BytecodePortFailure::terminal_stream_release_with_primary(
+            primary, failure,
+        )),
+        Err(ReleaseAfterDecodeFailure::Terminal {
+            primary: None,
+            failure,
+        }) => Err(BytecodePortFailure::terminal_stream_release(failure)),
     }
 }
 
@@ -394,7 +431,8 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
         depth: usize,
         heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodeSchedulerError> {
+    ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodePortFailure<StreamItem, VmResumeToken>>
+    {
         let prepared = prepare_root_server_stream_frame(depth, || {
             decode_server_stream_frame(
                 item.resume().image(),
@@ -407,8 +445,7 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
         // This is the sole ownership exit for every decode result. The
         // transport future below can therefore retain only its owned,
         // heap-free frame; pending root escrow stays empty.
-        let (decoded, resume) =
-            release_stream_item_after_decode(prepared, item, heap, &self.runtime)?;
+        let (decoded, resume) = release_stream_item_after_decode(prepared, item, heap)?;
         let reservation = match self
             .runtime
             .resources
@@ -424,12 +461,13 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
         };
         let frame = match decoded.into_writer_frame(reservation) {
             Ok(frame) => frame,
-            Err(error) => {
-                let _ = self
-                    .runtime
-                    .resources
-                    .terminate(&self.handle, RequestResourceTermination::HostError);
-                return Err(error);
+            Err(reason) => {
+                let reason = terminate_server_stream_after_continuation_failure(
+                    &self.runtime.resources,
+                    &self.handle,
+                    reason,
+                );
+                return Err(BytecodePortFailure::continuation(reason, resume));
             }
         };
         let mut future = self
@@ -452,22 +490,35 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
                     outcome,
                 }))
             }
-            Poll::Pending => self
-                .runtime
-                .begin_server_stream_pending(resume, future, reservation)
-                .map(BytecodeStreamHandoff::Pending),
+            Poll::Pending => {
+                match self
+                    .runtime
+                    .begin_server_stream_pending(resume, future, reservation)
+                {
+                    Ok(operation) => Ok(BytecodeStreamHandoff::Pending(operation)),
+                    Err(failure) => {
+                        let (reason, resume) = failure.into_parts();
+                        let reason = terminate_server_stream_after_continuation_failure(
+                            &self.runtime.resources,
+                            &self.handle,
+                            reason,
+                        );
+                        Err(BytecodePortFailure::continuation(reason, resume))
+                    }
+                }
+            }
         }
     }
 
     fn park(
         &self,
-        operation: PendingOperation,
-        suspended: VmSuspended,
+        request: BytecodeParkRequest<VmFiber>,
         _heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<(), BytecodeSchedulerError> {
+    ) -> Result<(), BytecodeParkFailure<VmFiber>> {
         let queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, RequestPendingOutcome>> =
             self.runtime.wake_queue.clone();
+        let (operation, suspended) = request.into_parts();
         match self
             .runtime
             .registry
@@ -475,19 +526,28 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
         {
             Ok(_) => Ok(()),
             Err(error) => {
-                let message = error.to_string();
-                drop(error);
-                Err(terminalize_server_stream_publication_failure(
+                let reason = terminalize_server_stream_publication_failure(
                     &self.runtime.resources,
                     &self.handle,
-                    message,
+                    error.reason().to_string(),
+                );
+                Err(BytecodeParkFailure::pending_draft(
+                    reason,
+                    error.into_draft(),
                 ))
             }
         }
     }
 
-    fn finish_stream(&self, depth: usize, result: &VmResult) -> Result<(), BytecodeSchedulerError> {
-        if depth != 0 || result.is_err() {
+    fn finish_stream(
+        &self,
+        depth: usize,
+        completion: &VmCompletion,
+    ) -> Result<(), BytecodeSchedulerError> {
+        if !finish_stream_requires_end(
+            depth,
+            completion.returned_values().map(|values| values.len()),
+        ) {
             return Ok(());
         }
         let snapshot = self
@@ -501,6 +561,23 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
             ));
         }
         Ok(())
+    }
+}
+
+fn finish_stream_requires_end(depth: usize, returned_value_count: Option<usize>) -> bool {
+    depth == 0 && returned_value_count == Some(0)
+}
+
+fn terminate_server_stream_after_continuation_failure(
+    resources: &RequestResourceTable,
+    handle: &RequestResourceHandle,
+    reason: BytecodeSchedulerError,
+) -> BytecodeSchedulerError {
+    match resources.terminate(handle, RequestResourceTermination::HostError) {
+        Ok(_) => reason,
+        Err(cleanup_error) => BytecodeSchedulerError::Port(format!(
+            "{reason}; server-stream continuation cleanup failed: {cleanup_error}"
+        )),
     }
 }
 
@@ -535,11 +612,17 @@ pub(super) fn materialize_server_stream_flush_outcome(
         Ok(()) => match resources.complete_server_stream_flush(reservation) {
             Ok(_) => ResumeOutcome::Empty,
             Err(error) => {
-                let _ = resources.terminate(
+                let message = error.to_string();
+                let message = match resources.terminate(
                     &reservation.handle(),
                     RequestResourceTermination::WriterFailed,
-                );
-                resource_failure_outcome(error.to_string())
+                ) {
+                    Ok(_) => message,
+                    Err(cleanup_error) => {
+                        format!("{message}; server-stream flush cleanup failed: {cleanup_error}")
+                    }
+                };
+                resource_failure_outcome(message)
             }
         },
         Err(BytecodeServerStreamWriteFailure::Cancelled) => {
@@ -591,9 +674,92 @@ pub(super) fn materialize_server_stream_flush_outcome(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
     use skiff_runtime_scheduler::{BytecodeSchedulerPorts, RequestExecutionContext};
 
     use super::*;
+
+    #[test]
+    fn phase_5_stream_decode_failure_with_successful_release_returns_continuation() {
+        let prepared = Err::<(), _>(BytecodeSchedulerError::Port(
+            "injected decode failure".to_string(),
+        ));
+        let released = Ok::<_, ()>("exact-resume");
+
+        let failure = combine_release_after_decode(prepared, released)
+            .expect_err("decode failure cannot become a successful handoff");
+
+        match failure {
+            ReleaseAfterDecodeFailure::Continuation { reason, resume } => {
+                assert!(matches!(
+                    reason,
+                    BytecodeSchedulerError::Port(message)
+                        if message == "injected decode failure"
+                ));
+                assert_eq!(resume, "exact-resume");
+            }
+            ReleaseAfterDecodeFailure::Terminal { .. } => {
+                panic!("a successful release must return the exact continuation")
+            }
+        }
+    }
+
+    struct ExactReleaseRetry {
+        exact_plan: &'static str,
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl ExactReleaseRetry {
+        fn retry(self) -> &'static str {
+            assert_eq!(self.attempts.fetch_add(1, Ordering::AcqRel), 0);
+            self.exact_plan
+        }
+    }
+
+    #[test]
+    fn phase_5_stream_release_failure_retains_decode_primary_and_exact_retry_owner() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let prepared = Err::<(), _>(BytecodeSchedulerError::Port(
+            "primary decode failure".to_string(),
+        ));
+        let released = Err::<(), _>(ExactReleaseRetry {
+            exact_plan: "linked-plan-17",
+            attempts: Arc::clone(&attempts),
+        });
+
+        let failure = combine_release_after_decode(prepared, released)
+            .expect_err("a failed exact release must stay terminal");
+
+        let ReleaseAfterDecodeFailure::Terminal {
+            primary: Some(primary),
+            failure,
+        } = failure
+        else {
+            panic!("decode plus release failure must retain both primary and owner")
+        };
+        assert!(matches!(
+            primary,
+            BytecodeSchedulerError::Port(message) if message == "primary decode failure"
+        ));
+        assert_eq!(attempts.load(Ordering::Acquire), 0);
+        assert_eq!(failure.retry(), "linked-plan-17");
+        assert_eq!(attempts.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn phase_5_stream_finish_borrows_only_root_empty_success_for_end_check() {
+        assert!(finish_stream_requires_end(0, Some(0)));
+        assert!(!finish_stream_requires_end(1, Some(0)));
+        assert!(!finish_stream_requires_end(0, Some(1)));
+        assert!(
+            !finish_stream_requires_end(0, None),
+            "thrown and failed completions retain their owner without a fabricated stream result"
+        );
+    }
 
     #[test]
     fn phase_5_stream_publication_failure_closes_in_flight_resource() {
@@ -616,6 +782,96 @@ mod tests {
             error,
             BytecodeSchedulerError::Port(message)
                 if message == "injected sealed publication failure"
+        ));
+        assert_eq!(resources.snapshot().live, 0);
+        assert_eq!(resources.snapshot().terminal, 0);
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+    }
+
+    #[test]
+    fn phase_5_stream_continuation_failure_closes_resource_without_replacing_reason() {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let resources = context.resource_table();
+        let handle = resources
+            .register_server_response_stream(std::num::NonZeroUsize::new(16).unwrap())
+            .unwrap();
+        let _reservation = resources
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::Start)
+            .unwrap();
+
+        let reason = terminate_server_stream_after_continuation_failure(
+            &resources,
+            &handle,
+            BytecodeSchedulerError::UnsupportedStream,
+        );
+
+        assert!(matches!(reason, BytecodeSchedulerError::UnsupportedStream));
+        assert_eq!(resources.snapshot().live, 0);
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+    }
+
+    #[test]
+    fn phase_5_stream_end_ack_is_idempotent_without_a_second_terminal() {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let resources = context.resource_table();
+        let handle = resources
+            .register_server_response_stream(std::num::NonZeroUsize::new(16).unwrap())
+            .unwrap();
+        let start = resources
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::Start)
+            .unwrap();
+        assert!(matches!(
+            materialize_server_stream_flush_outcome(&resources, start, Ok(())),
+            ResumeOutcome::Empty
+        ));
+        let end = resources
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::End)
+            .unwrap();
+        assert!(matches!(
+            materialize_server_stream_flush_outcome(&resources, end, Ok(())),
+            ResumeOutcome::Empty
+        ));
+        assert!(matches!(
+            materialize_server_stream_flush_outcome(&resources, end, Ok(())),
+            ResumeOutcome::Empty
+        ));
+        let snapshot = resources.server_stream_snapshot(&handle).unwrap();
+        assert_eq!(snapshot.phase, RequestServerStreamPhase::Ended);
+        assert!(!snapshot.flush_in_progress);
+
+        resources
+            .terminate(&handle, RequestResourceTermination::RequestCompleted)
+            .unwrap();
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_stream_cancel_wins_once_and_late_ack_cannot_revive_resource() {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let resources = context.resource_table();
+        let handle = resources
+            .register_server_response_stream(std::num::NonZeroUsize::new(16).unwrap())
+            .unwrap();
+        let reservation = resources
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::Start)
+            .unwrap();
+
+        assert!(matches!(
+            materialize_server_stream_flush_outcome(
+                &resources,
+                reservation,
+                Err(BytecodeServerStreamWriteFailure::Cancelled),
+            ),
+            ResumeOutcome::InternalTerminal(VmInternalTerminal::OwnerStopped)
+        ));
+        assert!(matches!(
+            materialize_server_stream_flush_outcome(&resources, reservation, Ok(())),
+            ResumeOutcome::Failure(_)
         ));
         assert_eq!(resources.snapshot().live, 0);
         assert_eq!(resources.snapshot().terminal, 0);
