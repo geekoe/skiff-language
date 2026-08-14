@@ -5,7 +5,7 @@ use skiff_compiler_core::type_ref::walk_type_ref;
 use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
 use super::{
-    admission::AdmittedPhase1BytecodeMir,
+    admission::{AdmittedPhase1BytecodeMir, RepresentationCarrierFact},
     carriers::{analyze_machine_carriers, PackageMachineCarrierFacts},
     inputs::{canonical_function_key, is_void},
     BytecodeEmissionError,
@@ -27,6 +27,7 @@ pub fn derive_bytecode_value_transfer_plans(
     derive_bytecode_value_transfer_plans_with_carriers(
         admitted.units(),
         admitted.machine_carriers(),
+        admitted.representation_carriers(),
         plan_for,
     )
 }
@@ -36,12 +37,13 @@ pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
     plan_for: impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
     let machine_carriers = analyze_machine_carriers(units)?;
-    derive_bytecode_value_transfer_plans_with_carriers(units, &machine_carriers, plan_for)
+    derive_bytecode_value_transfer_plans_with_carriers(units, &machine_carriers, &[], plan_for)
 }
 
 fn derive_bytecode_value_transfer_plans_with_carriers(
     units: &[MirUnit],
     machine_carriers: &PackageMachineCarrierFacts,
+    representation_carriers: &[RepresentationCarrierFact],
     plan_for: impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
     let mut functions = BTreeMap::new();
@@ -71,6 +73,7 @@ fn derive_bytecode_value_transfer_plans_with_carriers(
                     &function_key,
                     &format!("slot `{}`", slot.name),
                     ty,
+                    representation_carriers,
                 )?);
                 slot_plans.push(planned.plan().clone());
             }
@@ -91,6 +94,7 @@ fn derive_bytecode_value_transfer_plans_with_carriers(
                     &function_key,
                     "return value",
                     result_ty.ty(),
+                    representation_carriers,
                 )?);
                 vec![planned.plan().clone()]
             };
@@ -114,11 +118,13 @@ fn derive_bytecode_value_transfer_plans_with_carriers(
                     &constant.symbol,
                     "constant",
                     &constant.ty,
+                    representation_carriers,
                 )?,
             );
         }
     }
-    let type_plans = collect_exact_type_plans(units, machine_carriers, &plan_for)?;
+    let type_plans =
+        collect_exact_type_plans(units, machine_carriers, representation_carriers, &plan_for)?;
     Ok(BytecodeValueTransferPlans::new_with_type_plans(
         functions, constants, type_plans,
     ))
@@ -127,14 +133,41 @@ fn derive_bytecode_value_transfer_plans_with_carriers(
 fn collect_exact_type_plans(
     units: &[MirUnit],
     machine_carriers: &PackageMachineCarrierFacts,
+    representation_carriers: &[RepresentationCarrierFact],
     plan_for: &impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<Vec<TypeValueTransferPlan>, BytecodeEmissionError> {
     let mut rows = Vec::new();
     for unit in units {
         let module_path = unit.module_path.as_str();
         let mut register = |ty: &TypeRefIr, location: &str| {
-            register_type_tree(&mut rows, plan_for, unit, module_path, location, ty)
+            register_type_tree(
+                &mut rows,
+                plan_for,
+                representation_carriers,
+                unit,
+                module_path,
+                location,
+                ty,
+            )
         };
+        for (fact_index, fact) in representation_carriers
+            .iter()
+            .filter(|fact| fact.module_path() == module_path)
+            .enumerate()
+        {
+            register(
+                fact.owner(),
+                &format!("admitted representation carrier {fact_index} owner"),
+            )?;
+            register(
+                fact.representation(),
+                &format!("admitted representation carrier {fact_index} representation"),
+            )?;
+            register(
+                fact.physical_carrier(),
+                &format!("admitted representation carrier {fact_index} physical carrier"),
+            )?;
+        }
         for constant in &unit.constants {
             register(&constant.ty, &format!("constant `{}`", constant.symbol))?;
         }
@@ -303,6 +336,7 @@ fn collect_exact_type_plans(
 fn register_type_tree(
     rows: &mut Vec<TypeValueTransferPlan>,
     plan_for: &impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
+    representation_carriers: &[RepresentationCarrierFact],
     unit: &MirUnit,
     module_path: &str,
     location: &str,
@@ -317,7 +351,14 @@ fn register_type_tree(
         {
             continue;
         }
-        let plan = exact_source_plan(plan_for, module_path, location, "type", &ty)?;
+        let plan = exact_source_plan(
+            plan_for,
+            module_path,
+            location,
+            "type",
+            &ty,
+            representation_carriers,
+        )?;
         rows.push(TypeValueTransferPlan {
             module_path: module_path.to_string(),
             ty: ty.clone(),
@@ -357,7 +398,15 @@ fn register_type_tree(
         };
         if let Some(fields) = fields {
             for field_ty in fields {
-                register_type_tree(rows, plan_for, unit, module_path, location, &field_ty)?;
+                register_type_tree(
+                    rows,
+                    plan_for,
+                    representation_carriers,
+                    unit,
+                    module_path,
+                    location,
+                    &field_ty,
+                )?;
             }
         }
     }
@@ -370,6 +419,53 @@ fn register_type_tree(
 /// function and slot/result location. No `SnapshotRelease` or any other
 /// type-shaped fallback is invented on this path.
 fn exact_source_plan(
+    plan_for: &impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
+    module_path: &str,
+    function_key: &str,
+    location: &str,
+    ty: &TypeRefIr,
+    representation_carriers: &[RepresentationCarrierFact],
+) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+    let mut matching_facts = representation_carriers
+        .iter()
+        .filter(|fact| fact.module_path() == module_path && fact.owner() == ty);
+    if let Some(fact) = matching_facts.next() {
+        if matching_facts.next().is_some() {
+            return Err(BytecodeEmissionError::UnsupportedConstruct {
+                function_key: function_key.to_string(),
+                construct: "admitted representation carrier fact",
+                location: format!(" {location}: duplicate exact owner fact for {ty:?}"),
+            });
+        }
+        let representation_plan = direct_source_plan(
+            plan_for,
+            module_path,
+            function_key,
+            location,
+            fact.representation(),
+        )?;
+        let physical_plan = direct_source_plan(
+            plan_for,
+            module_path,
+            function_key,
+            location,
+            fact.physical_carrier(),
+        )?;
+        if representation_plan != physical_plan {
+            return Err(BytecodeEmissionError::UnsupportedConstruct {
+                function_key: function_key.to_string(),
+                construct: "admitted representation carrier fact",
+                location: format!(
+                    " {location}: representation plan {representation_plan:?} differs from physical carrier plan {physical_plan:?}"
+                ),
+            });
+        }
+        return Ok(representation_plan);
+    }
+    direct_source_plan(plan_for, module_path, function_key, location, ty)
+}
+
+fn direct_source_plan(
     plan_for: &impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
     module_path: &str,
     function_key: &str,
@@ -395,7 +491,6 @@ fn unsupported_slot_type(function_key: &str, slot: &MirSlot) -> BytecodeEmission
 pub(crate) fn derive_test_bytecode_value_transfer_plans(
     units: &[MirUnit],
 ) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
-    use skiff_artifact_model::{PackageRefIr, ValueDropPlan};
     use skiff_compiler_source::{
         source_value_transfer_plan, SourceValueTransferFacts, SourceValueTransferNominalFact,
         SourceValueTransferNominalId, SourceValueTransferNominalSemantics,
@@ -430,19 +525,6 @@ pub(crate) fn derive_test_bytecode_value_transfer_plans(
         }
     }
     derive_bytecode_value_transfer_plans_unchecked(units, |module_path, ty| {
-        if matches!(
-            ty,
-            TypeRefIr::PackageSymbol { symbol }
-                if symbol.package
-                    == PackageRefIr::PackageId {
-                        package_id: "skiff.run/std".to_string(),
-                    }
-                    && symbol.symbol_path == "std.time.Duration"
-        ) {
-            return Ok(ValueTransferPlan::SnapshotShare {
-                drop: ValueDropPlan::Trivial,
-            });
-        }
         source_value_transfer_plan(
             &facts,
             SourceValueTransferPlanInput::concrete(module_path, ty),

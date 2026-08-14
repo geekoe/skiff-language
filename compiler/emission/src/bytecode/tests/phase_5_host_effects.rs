@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use skiff_artifact_identity::{assign_bytecode_identity, validate_bytecode_identity};
 use skiff_artifact_model::{
     bytecode::BoundedDecoder, BytecodePoolEntry, BytecodeRelocation, CallableEffectSummary,
     HostEffectExecutorIdentity, Opcode, PendingEffectCategory, PrivilegedAffineCompositeIdentity,
@@ -21,12 +22,16 @@ use crate::{
 const PACKAGE_ID: &str = "example.com/phase5-host-effect-source";
 
 fn lower(source: &str) -> LoweredPackage {
+    lower_module("main", source)
+}
+
+fn lower_module(module_path: &str, source: &str) -> LoweredPackage {
     let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     lower_single_source_program(SingleSourceProgram {
         platform_root: &platform_root,
         package_id: PACKAGE_ID,
-        module_path: "main",
-        relative_path: "main.skiff",
+        module_path,
+        relative_path: &format!("{module_path}.skiff"),
         source,
     })
     .expect("real Phase 5 source lowers through the production source/MIR API")
@@ -55,10 +60,6 @@ fn phase_5_test_plan(ty: &skiff_artifact_model::TypeRefIr) -> Result<ValueTransf
         skiff_artifact_model::TypeRefIr::Builtin { name, args }
             if args.is_empty()
                 && matches!(name.as_str(), "bool" | "integer" | "null" | "number")
-    ) || matches!(
-        ty,
-        skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
-            if symbol.symbol_path == "std.time.Duration"
     );
     if matches!(
         ty,
@@ -82,6 +83,22 @@ fn phase_5_test_plan(ty: &skiff_artifact_model::TypeRefIr) -> Result<ValueTransf
             ValueDropPlan::SnapshotRelease
         },
     })
+}
+
+fn duration_scalar_plan(ty: &skiff_artifact_model::TypeRefIr) -> Result<ValueTransferPlan, String> {
+    if matches!(
+        ty,
+        skiff_artifact_model::TypeRefIr::Builtin { name, args }
+            if args.is_empty()
+                && matches!(name.as_str(), "void" | "integer" | "number")
+    ) {
+        return Ok(ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::Trivial,
+        });
+    }
+    Err(format!(
+        "no source nominal lifecycle exists for {ty:?}; an admitted materializer fact is required"
+    ))
 }
 
 #[test]
@@ -217,6 +234,203 @@ function broken(input: Stream<bytes>) -> void {
             "{symbol} must release the endpoint exactly once"
         );
     }
+}
+
+#[test]
+fn duration_materializer_emits_exact_carrier_fact_without_representation_wordcode() {
+    let lowered = lower(
+        r#"
+import std
+
+function sleeping() -> void {
+  std.time.sleep(Duration.milliseconds(1))
+}
+"#,
+    );
+    let admitted = admit_phase_1_bytecode_mir(lowered.mir_units())
+        .expect("the exact literal materializer and Sleep closure are admitted");
+    let [fact] = admitted.representation_carriers() else {
+        panic!("one exact materializer must produce one representation carrier fact")
+    };
+    assert_eq!(
+        fact.representation(),
+        &skiff_artifact_model::TypeRefIr::builtin("integer")
+    );
+    assert_eq!(
+        fact.physical_carrier(),
+        &skiff_artifact_model::TypeRefIr::builtin("number")
+    );
+    let owner = fact.owner().clone();
+    let plans = derive_bytecode_value_transfer_plans(&admitted, |_module_path, ty| {
+        duration_scalar_plan(ty)
+    })
+    .expect("the admitted fact closes the otherwise absent Duration lifecycle");
+    let bundles = lowered
+        .file_ir_units()
+        .iter()
+        .map(|unit| {
+            ConstEvaluator::new(Bounds::default())
+                .evaluate_unit(unit)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let artifact = emit_bytecode_artifact(&admitted, &bundles, &plans)
+        .expect("public emission writes the admitted carrier fact");
+    validate_bytecode_identity(&artifact).expect("the exact fact is inside the identity preimage");
+
+    let (owner_index, declaration, owner_plan) = artifact
+        .image
+        .pools
+        .types
+        .iter()
+        .enumerate()
+        .find_map(|(index, entry)| match entry {
+            BytecodePoolEntry::TypeRef {
+                ty,
+                representation_carrier: Some(declaration),
+                plan,
+            } if ty == &owner => Some((index, declaration, plan)),
+            _ => None,
+        })
+        .expect("the exact Duration TypeRef owns the emitted fact");
+    let representation = &artifact.image.pools.types[declaration.representation_type_ref as usize];
+    let physical = &artifact.image.pools.types[declaration.physical_carrier_type_ref as usize];
+    assert!(matches!(
+        representation,
+        BytecodePoolEntry::TypeRef { ty, plan, representation_carrier: None }
+            if ty == &skiff_artifact_model::TypeRefIr::builtin("integer") && plan == owner_plan
+    ));
+    assert!(matches!(
+        physical,
+        BytecodePoolEntry::TypeRef { ty, plan, representation_carrier: None }
+            if ty == &skiff_artifact_model::TypeRefIr::builtin("number") && plan == owner_plan
+    ));
+    assert_eq!(
+        artifact
+            .image
+            .pools
+            .types
+            .iter()
+            .filter(|entry| matches!(
+                entry,
+                BytecodePoolEntry::TypeRef {
+                    representation_carrier: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        1
+    );
+    assert!(artifact.image.functions.values().all(|function| {
+        BoundedDecoder::new()
+            .decode_function(&function.words)
+            .expect("emitted Duration wordcode decodes")
+            .instructions
+            .iter()
+            .all(|instruction| instruction.descriptor.kind != Opcode::RepresentationWrap)
+    }));
+
+    let original_identity = artifact.bytecode_identity.clone();
+    let mut without_fact = artifact.clone();
+    let BytecodePoolEntry::TypeRef {
+        representation_carrier,
+        ..
+    } = &mut without_fact.image.pools.types[owner_index]
+    else {
+        unreachable!("owner index was selected from a TypeRef row")
+    };
+    *representation_carrier = None;
+    assign_bytecode_identity(&mut without_fact).expect("the fact-free mutation remains structural");
+    assert_ne!(
+        without_fact.bytecode_identity, original_identity,
+        "representationCarrier must participate in the canonical identity preimage"
+    );
+}
+
+#[test]
+fn duration_without_a_materializer_emits_no_fact_and_has_no_plan_fallback() {
+    let lowered = lower(
+        r#"
+import std
+
+function sleeping(duration: Duration) -> void {
+  std.time.sleep(duration)
+}
+"#,
+    );
+    let admitted = admit_phase_1_bytecode_mir(lowered.mir_units())
+        .expect("the exact Sleep parameter may enter through an ordinary source parameter");
+    assert!(admitted.representation_carriers().is_empty());
+    let error = derive_bytecode_value_transfer_plans(&admitted, |_module_path, ty| {
+        duration_scalar_plan(ty)
+    })
+    .expect_err("no materializer fact means no synthesized Duration lifecycle");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedConstruct {
+            construct: "exact source value-transfer plan",
+            location,
+            ..
+        } if location.contains("an admitted materializer fact is required")
+    ));
+}
+
+#[test]
+fn identical_duration_facts_from_two_modules_share_one_resolved_type_row() {
+    const SOURCE: &str = r#"
+import std
+
+function sleeping() -> void {
+  std.time.sleep(Duration.milliseconds(1))
+}
+
+function sleepingAgain() -> void {
+  std.time.sleep(Duration.milliseconds(2))
+}
+"#;
+    let left = lower_module("left", SOURCE);
+    let right = lower_module("right", SOURCE);
+    let units = vec![left.mir_units()[0].clone(), right.mir_units()[0].clone()];
+    let admitted = admit_phase_1_bytecode_mir(&units)
+        .expect("both exact module-local materializers are admitted");
+    assert_eq!(
+        admitted.representation_carriers().len(),
+        2,
+        "two constructors per module deduplicate before both modules resolve to one pool row"
+    );
+    let plans = derive_bytecode_value_transfer_plans(&admitted, |_module_path, ty| {
+        duration_scalar_plan(ty)
+    })
+    .expect("each module's admitted fact closes its exact owner lifecycle");
+    let bundles = left
+        .file_ir_units()
+        .iter()
+        .chain(right.file_ir_units())
+        .map(|unit| {
+            ConstEvaluator::new(Bounds::default())
+                .evaluate_unit(unit)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let artifact = emit_bytecode_artifact(&admitted, &bundles, &plans)
+        .expect("identical resolved package-symbol facts deduplicate");
+    assert_eq!(
+        artifact
+            .image
+            .pools
+            .types
+            .iter()
+            .filter(|entry| matches!(
+                entry,
+                BytecodePoolEntry::TypeRef {
+                    representation_carrier: Some(_),
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "two modules must resolve to one canonical external Duration TypeRef row"
+    );
 }
 
 #[test]

@@ -356,23 +356,6 @@ fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransf
         SourceValueTransferNominalId,
         Option<SourceValueTransferNominalFact>,
     >::new();
-    // The Phase 4 pinned sleep argument is the std transparent alias
-    // `Duration = integer`. User packages reference it as a package symbol and
-    // therefore do not contribute a local/publication type-table fact for it.
-    facts.insert_nominal(
-        SourceValueTransferNominalId::PackageSymbol {
-            package: SourceValueTransferPackageRef::PackageId("skiff.run/std".to_string()),
-            symbol_path: "std.time.Duration".to_string(),
-            abi_expectation: None,
-        },
-        SourceValueTransferNominalFact {
-            declaration_module: "std.time".to_string(),
-            type_parameters: Vec::new(),
-            semantics: SourceValueTransferNominalSemantics::Ordinary(TypeDescriptorIr::Alias {
-                target: TypeRefIr::builtin("integer"),
-            }),
-        },
-    );
     for unit in units {
         let mut package_symbol_counts = std::collections::BTreeMap::new();
         for symbol in &unit.external_refs.package_symbols {
@@ -404,10 +387,6 @@ fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransf
             {
                 TypeDescriptorIr::Record {
                     fields: fields.clone(),
-                }
-            } else if package_id == "skiff.run/std" && symbol_path == "std.time.Duration" {
-                TypeDescriptorIr::Alias {
-                    target: TypeRefIr::builtin("integer"),
                 }
             } else if package_id == skiff_artifact_model::http_boundary::HTTP_BOUNDARY_PACKAGE_ID {
                 let Some(contract) = canonical_http_boundary_type(&symbol_path) else {

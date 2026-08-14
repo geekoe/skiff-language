@@ -2,8 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     AssignTargetIr, BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, LiteralIr,
-    NamedUnionBranchIr, NativeTarget, NominalTypeRefBaseIr, PackageRefIr, StatementAttributionId,
-    TypeDescriptorIr, TypeRefIr,
+    NamedUnionBranchIr, NativeTarget, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -21,20 +20,18 @@ use super::{
 mod gateway_parameter;
 mod host_effects;
 mod package_type_authority;
+mod representation_carrier;
 mod server_stream;
 
 pub(crate) use gateway_parameter::DenseParameterMaterializationFact;
 use host_effects::{HostEffectAdmissions, RegistryValueAuthority};
+pub(crate) use representation_carrier::RepresentationCarrierFact;
 use server_stream::ServerStreamAdmissions;
 
 pub use gateway_parameter::GatewayParameterAuthority;
 pub use server_stream::{ServerStreamEmitFact, ServerStreamGatewayAuthority};
 
 const CANONICAL_DURATION_MILLISECONDS_BINDING_KEY: &str = "core.duration.milliseconds";
-const CANONICAL_SLEEP_DURATION_PACKAGE: &str = "skiff.run/std";
-const CANONICAL_SLEEP_DURATION_PATH: &str = "std.time.Duration";
-const CANONICAL_SLEEP_DURATION_MODULE: &str = "std.time";
-const CANONICAL_SLEEP_DURATION_NAME: &str = "Duration";
 
 /// Opaque proof that one exact MIR slice passed the Phase 1 bytecode boundary.
 ///
@@ -48,6 +45,7 @@ pub struct AdmittedPhase1BytecodeMir {
     units: Vec<MirUnit>,
     dense_parameter_materializations: BTreeMap<String, DenseParameterMaterializationFact>,
     machine_carriers: PackageMachineCarrierFacts,
+    representation_carriers: Vec<RepresentationCarrierFact>,
 }
 
 impl AdmittedPhase1BytecodeMir {
@@ -63,6 +61,10 @@ impl AdmittedPhase1BytecodeMir {
 
     pub(crate) fn machine_carriers(&self) -> &PackageMachineCarrierFacts {
         &self.machine_carriers
+    }
+
+    pub(crate) fn representation_carriers(&self) -> &[RepresentationCarrierFact] {
+        &self.representation_carriers
     }
 
     /// Returns the normalized, admitted MIR used to project source-owned
@@ -221,10 +223,12 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities(
         }
     }
     let machine_carriers = analyze_machine_carriers(&units)?;
+    let representation_carriers = representation_carrier::analyze(&units, &machine_carriers)?;
     Ok(AdmittedPhase1BytecodeMir {
         units,
         dense_parameter_materializations,
         machine_carriers,
+        representation_carriers,
     })
 }
 
@@ -1066,7 +1070,6 @@ fn admit_expression_with_host_effects(
     let registry_authorities = host_effects.expression_authorities(expression.index);
     if let ExprIr::Call { call } = &expression.expression {
         admit_call(
-            units,
             unit,
             function_key,
             function,
@@ -1075,25 +1078,6 @@ fn admit_expression_with_host_effects(
             host_effects,
             server_stream,
         )?;
-        if matches!(
-            &call.target,
-            CallTargetIr::Native { target }
-                if target.binding_key.as_deref()
-                    == Some(CANONICAL_DURATION_MILLISECONDS_BINDING_KEY)
-        ) && !registry_authorities
-            .iter()
-            .any(|authority| authority.admits(&expression.ty))
-        {
-            return Err(rejected_function(
-                unit,
-                function_key,
-                Phase1UnsupportedCapability::HostTarget,
-                &format!(
-                    "expression {} Duration.milliseconds is outside an exact Sleep argument",
-                    expression.index
-                ),
-            ));
-        }
     }
     if let ExprIr::Construct { type_ref, .. } = &expression.expression {
         if !server_stream.admits_construct(expression.index, type_ref)
@@ -1289,7 +1273,6 @@ fn admit_expression_with_host_effects(
 }
 
 fn admit_call(
-    units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
@@ -1368,13 +1351,13 @@ fn admit_call(
         CallTargetIr::Native { target } => {
             if target.binding_key.as_deref() == Some(CANONICAL_DURATION_MILLISECONDS_BINDING_KEY) {
                 admit_duration_milliseconds_constructor(
-                    units,
                     unit,
                     function_key,
                     function,
                     expression,
                     call,
                     target,
+                    host_effects,
                 )?;
             } else if server_stream.admits_intrinsic_call(function, expression.index) {
                 return Ok(());
@@ -1468,13 +1451,13 @@ fn admit_call(
 /// remains emitted as a synchronous constant/identity operation by the
 /// bytecode emitter rather than an `InvokeHost` adapter.
 fn admit_duration_milliseconds_constructor(
-    units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
     expression: &skiff_compiler_lowering::mir::MirExpression,
     call: &skiff_artifact_model::CallIr,
     target: &NativeTarget,
+    host_effects: &HostEffectAdmissions,
 ) -> Result<(), BytecodeEmissionError> {
     if target.namespace != "Duration"
         || target.symbol != "milliseconds"
@@ -1535,66 +1518,18 @@ fn admit_duration_milliseconds_constructor(
             ),
         ));
     }
-    if !is_canonical_sleep_duration_type(units, unit, &expression.ty) {
+    if !host_effects.admits_duration_constructor(expression.index, &expression.ty) {
         return Err(rejected_function(
             unit,
             function_key,
             Phase1UnsupportedCapability::HostTarget,
             &format!(
-                "expression {} Duration.milliseconds result type {:?} is not the pinned skiff.run/std::std.time.Duration",
-                expression.index, expression.ty
+                "expression {} Duration.milliseconds lacks the exact Sleep parameter closure",
+                expression.index
             ),
         ));
     }
     Ok(())
-}
-
-/// Exact pinned identity of the `std.time.sleep` `Duration` parameter.
-///
-/// A `Duration` fact resolves to the same canonical type in three exact
-/// source-owned shapes: a package symbol owned by `skiff.run/std` (ordinary
-/// user-package references), an empty applied nominal over that same symbol,
-/// and — only while the std package itself is compiled — the `Duration`
-/// declaration in module `std.time`, addressed locally or across std modules.
-fn is_canonical_sleep_duration_type(units: &[MirUnit], unit: &MirUnit, ty: &TypeRefIr) -> bool {
-    match ty {
-        TypeRefIr::PackageSymbol { symbol } => is_canonical_sleep_duration_symbol(symbol),
-        TypeRefIr::AppliedNominal {
-            base: NominalTypeRefBaseIr::PackageSymbol { symbol },
-            arguments,
-        } => arguments.is_empty() && is_canonical_sleep_duration_symbol(symbol),
-        TypeRefIr::LocalType { type_index }
-            if unit.module_path == CANONICAL_SLEEP_DURATION_MODULE =>
-        {
-            is_canonical_sleep_duration_declaration(unit, *type_index)
-        }
-        TypeRefIr::PublicationType {
-            module_path,
-            type_index,
-        } => {
-            module_path == CANONICAL_SLEEP_DURATION_MODULE
-                && units
-                    .iter()
-                    .find(|candidate| candidate.module_path == *module_path)
-                    .is_some_and(|owning_unit| {
-                        is_canonical_sleep_duration_declaration(owning_unit, *type_index)
-                    })
-        }
-        _ => false,
-    }
-}
-
-fn is_canonical_sleep_duration_symbol(symbol: &skiff_artifact_model::PackageSymbolRef) -> bool {
-    matches!(
-        &symbol.package,
-        PackageRefIr::PackageId { package_id } if package_id == CANONICAL_SLEEP_DURATION_PACKAGE
-    ) && symbol.symbol_path == CANONICAL_SLEEP_DURATION_PATH
-}
-
-fn is_canonical_sleep_duration_declaration(unit: &MirUnit, type_index: u32) -> bool {
-    unit.type_table
-        .get(type_index as usize)
-        .is_some_and(|declaration| declaration.name == CANONICAL_SLEEP_DURATION_NAME)
 }
 
 fn admit_local_call_abi(

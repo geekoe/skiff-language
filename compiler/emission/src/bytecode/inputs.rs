@@ -7,7 +7,8 @@ use skiff_compiler_lowering::{
 };
 
 use super::{
-    admission::DenseParameterMaterializationFact, carriers::PackageMachineCarrierFacts,
+    admission::{DenseParameterMaterializationFact, RepresentationCarrierFact},
+    carriers::PackageMachineCarrierFacts,
     BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTransferPlans,
 };
 
@@ -20,6 +21,7 @@ pub(crate) struct ValidatedEmissionInputs<'a> {
     pub(crate) dense_parameter_materializations:
         &'a BTreeMap<String, DenseParameterMaterializationFact>,
     pub(crate) machine_carriers: &'a PackageMachineCarrierFacts,
+    pub(crate) representation_carriers: &'a [RepresentationCarrierFact],
 }
 
 pub(crate) struct ValidatedConstant<'a> {
@@ -37,6 +39,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
         transfer_plans: &'a BytecodeValueTransferPlans,
         dense_parameter_materializations: &'a BTreeMap<String, DenseParameterMaterializationFact>,
         machine_carriers: &'a PackageMachineCarrierFacts,
+        representation_carriers: &'a [RepresentationCarrierFact],
     ) -> Result<Self, BytecodeEmissionError> {
         let mut units_by_module = BTreeMap::new();
         for unit in units {
@@ -195,6 +198,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
             units: units_by_module,
             dense_parameter_materializations,
             machine_carriers,
+            representation_carriers,
         })
     }
 }

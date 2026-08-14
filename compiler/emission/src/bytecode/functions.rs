@@ -5071,7 +5071,9 @@ mod tests {
 
     use super::*;
     use crate::bytecode::constants::build_constant_image;
-    use crate::bytecode::plans::derive_test_bytecode_value_transfer_plans;
+    use crate::bytecode::plans::{
+        derive_bytecode_value_transfer_plans_unchecked, derive_test_bytecode_value_transfer_plans,
+    };
 
     #[test]
     fn stream_backedge_state_distinguishes_shared_and_consumed_items() {
@@ -5201,6 +5203,7 @@ mod tests {
             &plans,
             &dense_parameter_materializations,
             &machine_carriers,
+            &[],
         )
         .expect("test inputs validate");
         let mut image = build_constant_image(&inputs).expect("test image builds");
@@ -5689,8 +5692,15 @@ mod tests {
             constants: Vec::new(),
             functions: vec![function],
         };
-        let plans = derive_test_bytecode_value_transfer_plans(std::slice::from_ref(&unit))
-            .expect("the source classifier covers the test MIR");
+        let plans = derive_bytecode_value_transfer_plans_unchecked(
+            std::slice::from_ref(&unit),
+            |_module_path, _ty| {
+                Ok(ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::Trivial,
+                })
+            },
+        )
+        .expect("the explicit raw-backend fixture plan covers the test MIR");
         let artifact =
             crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
                 .expect("canonical sleep emission succeeds");

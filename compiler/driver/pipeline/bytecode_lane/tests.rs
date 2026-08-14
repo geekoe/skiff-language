@@ -1539,6 +1539,30 @@ fn phase_2_bytecode_admission_source_facts_export_local_and_publication_nominals
 }
 
 #[test]
+fn phase_4_source_facts_do_not_synthesize_duration_alias_semantics() {
+    let unit = package_fact_unit(
+        skiff_artifact_model::PackageRefIr::PackageId {
+            package_id: "skiff.run/std".to_string(),
+        },
+        "std.time.Duration",
+        None,
+        BTreeMap::new(),
+    );
+    let facts = source_value_transfer_facts_for_units(&[unit]);
+    let identity = skiff_compiler_source::SourceValueTransferNominalId::PackageSymbol {
+        package: skiff_compiler_source::SourceValueTransferPackageRef::PackageId(
+            "skiff.run/std".to_string(),
+        ),
+        symbol_path: "std.time.Duration".to_string(),
+        abi_expectation: None,
+    };
+    assert!(
+        facts.nominal(&identity).is_none(),
+        "Duration lifecycle must come only from an admitted materializer fact"
+    );
+}
+
+#[test]
 fn phase_5_source_facts_require_exact_canonical_package_record_authority() {
     const ABI: &str = "sha256:exact-http-abi";
     const PATH: &str = "std.http.HttpClientRequest";

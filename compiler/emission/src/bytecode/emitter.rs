@@ -36,6 +36,7 @@ pub fn emit_bytecode_artifact(
         transfer_plans,
         admitted.dense_parameter_materializations(),
         admitted.machine_carriers(),
+        admitted.representation_carriers(),
         SourceAttributionMode::AdmittedPhase1,
     )
 }
@@ -56,6 +57,7 @@ pub(super) fn emit_bytecode_artifact_unchecked(
         transfer_plans,
         &Default::default(),
         &machine_carriers,
+        &[],
         SourceAttributionMode::PrivateBackend,
     )
 }
@@ -69,6 +71,7 @@ fn emit_bytecode_artifact_with_mode(
         super::admission::DenseParameterMaterializationFact,
     >,
     machine_carriers: &PackageMachineCarrierFacts,
+    representation_carriers: &[super::admission::RepresentationCarrierFact],
     source_attribution: SourceAttributionMode,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
     let inputs = ValidatedEmissionInputs::validate(
@@ -77,6 +80,7 @@ fn emit_bytecode_artifact_with_mode(
         transfer_plans,
         dense_parameter_materializations,
         machine_carriers,
+        representation_carriers,
     )?;
 
     let mut constants = build_constant_image(&inputs)?;

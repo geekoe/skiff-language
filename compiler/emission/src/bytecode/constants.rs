@@ -4,9 +4,10 @@ use skiff_artifact_model::{
     bytecode::limits, BytecodeConstantRef, BytecodePoolEntry, BytecodePools,
     CallableRegistryTypeExpression, ExprIr, FrozenConstantGraph, FrozenConstantNode,
     NativeResourceDropPlan, NativeValueDropPlan, NativeValueLifecycleConcrete,
-    NominalTypeRefBaseIr, PackageRefIr, PrivilegedAffineCompositeIdentity, ResourceDropPlan,
-    ResumeDescriptor, ShapeDeclaration, ShapeFieldDeclaration, TypeRefIr, ValueDropPlan,
-    ValueTransferPlan, WritablePathDeclaration, WritablePathSegment,
+    NominalTypeRefBaseIr, PackageRefIr, PrivilegedAffineCompositeIdentity,
+    RepresentationCarrierDeclaration, ResourceDropPlan, ResumeDescriptor, ShapeDeclaration,
+    ShapeFieldDeclaration, TypeRefIr, ValueDropPlan, ValueTransferPlan, WritablePathDeclaration,
+    WritablePathSegment,
 };
 use skiff_compiler_core::type_ref::{map_type_ref, walk_type_ref};
 use skiff_compiler_lowering::mir::{MirFunction, MirUnit};
@@ -437,7 +438,7 @@ pub(crate) fn build_constant_image(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, BytecodeEmissionError>>()?;
-    let types = canonical_types
+    let mut types = canonical_types
         .into_values()
         .map(|ty| {
             let plan = exact_qualified_type_plan(
@@ -452,6 +453,7 @@ pub(crate) fn build_constant_image(
             })
         })
         .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
+    apply_representation_carriers(inputs, &type_indices, &mut types)?;
     let pools = BytecodePools {
         types,
         ..BytecodePools::default()
@@ -502,7 +504,173 @@ fn collect_canonical_types(
             unit.type_table.len(),
         )?;
     }
+    for (fact_index, fact) in inputs.representation_carriers.iter().enumerate() {
+        let module_path = fact.module_path();
+        let unit = inputs.units.get(module_path).ok_or_else(|| {
+            BytecodeEmissionError::CanonicalSerialization {
+                context: format!("admitted representation carrier {fact_index}"),
+                message: format!("module owner `{module_path}` is absent"),
+            }
+        })?;
+        for (label, ty) in [
+            ("owner", fact.owner()),
+            ("representation", fact.representation()),
+            ("physical carrier", fact.physical_carrier()),
+        ] {
+            let context = format!("admitted representation carrier {fact_index} {label}");
+            validate_local_types(module_path, unit.type_table.len(), &context, ty)?;
+            let mut result = Ok(());
+            walk_type_ref(ty, &mut |nested| {
+                if result.is_ok() {
+                    result = insert_type(
+                        &mut types,
+                        qualify_local_types(module_path, nested),
+                        context.clone(),
+                    )
+                    .map(|_| ());
+                }
+            });
+            result?;
+        }
+    }
     Ok(types)
+}
+
+fn apply_representation_carriers(
+    inputs: &ValidatedEmissionInputs<'_>,
+    type_indices: &BTreeMap<String, u32>,
+    types: &mut [BytecodePoolEntry],
+) -> Result<(), BytecodeEmissionError> {
+    let mut declarations = BTreeMap::<u32, RepresentationCarrierDeclaration>::new();
+    for (fact_index, fact) in inputs.representation_carriers.iter().enumerate() {
+        let context = format!("admitted representation carrier {fact_index}");
+        let owner = fact_type_index(
+            type_indices,
+            fact.module_path(),
+            fact.owner(),
+            &format!("{context} owner"),
+        )?;
+        let representation_type_ref = fact_type_index(
+            type_indices,
+            fact.module_path(),
+            fact.representation(),
+            &format!("{context} representation"),
+        )?;
+        let physical_carrier_type_ref = fact_type_index(
+            type_indices,
+            fact.module_path(),
+            fact.physical_carrier(),
+            &format!("{context} physical carrier"),
+        )?;
+        if owner == representation_type_ref
+            || owner == physical_carrier_type_ref
+            || representation_type_ref == physical_carrier_type_ref
+        {
+            return Err(BytecodeEmissionError::CanonicalSerialization {
+                context,
+                message: "owner, representation, and physical carrier rows are not distinct"
+                    .to_string(),
+            });
+        }
+        let declaration = RepresentationCarrierDeclaration {
+            representation_type_ref,
+            physical_carrier_type_ref,
+        };
+        if let Some(existing) = declarations.get(&owner) {
+            if existing != &declaration {
+                return Err(BytecodeEmissionError::CanonicalSerialization {
+                    context,
+                    message: format!(
+                        "conflicting resolved owner fact {existing:?} versus {declaration:?}"
+                    ),
+                });
+            }
+        } else {
+            declarations.insert(owner, declaration);
+        }
+    }
+
+    for (owner, declaration) in &declarations {
+        if declarations.contains_key(&declaration.representation_type_ref)
+            || declarations.contains_key(&declaration.physical_carrier_type_ref)
+        {
+            return Err(BytecodeEmissionError::CanonicalSerialization {
+                context: format!("admitted representation carrier owner TypeRef {owner}"),
+                message: "representation facts must remain a one-layer closure".to_string(),
+            });
+        }
+        let owner_plan = type_entry_plan(types, *owner, "owner")?;
+        let representation_plan =
+            type_entry_plan(types, declaration.representation_type_ref, "representation")?;
+        let physical_plan = type_entry_plan(
+            types,
+            declaration.physical_carrier_type_ref,
+            "physical carrier",
+        )?;
+        if owner_plan != representation_plan || owner_plan != physical_plan {
+            return Err(BytecodeEmissionError::CanonicalSerialization {
+                context: format!("admitted representation carrier owner TypeRef {owner}"),
+                message: "owner, representation, and physical carrier plans differ".to_string(),
+            });
+        }
+    }
+
+    for (owner, declaration) in declarations {
+        let entry = types.get_mut(owner as usize).ok_or_else(|| {
+            BytecodeEmissionError::CanonicalSerialization {
+                context: format!("admitted representation carrier owner TypeRef {owner}"),
+                message: "owner TypeRef is out of bounds".to_string(),
+            }
+        })?;
+        let BytecodePoolEntry::TypeRef {
+            representation_carrier,
+            ..
+        } = entry
+        else {
+            return Err(BytecodeEmissionError::CanonicalSerialization {
+                context: format!("admitted representation carrier owner TypeRef {owner}"),
+                message: "owner is not a TypeRef row".to_string(),
+            });
+        };
+        if representation_carrier.replace(declaration).is_some() {
+            return Err(BytecodeEmissionError::CanonicalSerialization {
+                context: format!("admitted representation carrier owner TypeRef {owner}"),
+                message: "owner already has a representation carrier declaration".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn fact_type_index(
+    type_indices: &BTreeMap<String, u32>,
+    module_path: &str,
+    ty: &TypeRefIr,
+    context: &str,
+) -> Result<u32, BytecodeEmissionError> {
+    let qualified = qualify_local_types(module_path, ty);
+    let key = type_key(&qualified, context)?;
+    type_indices
+        .get(&key)
+        .copied()
+        .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+            context: context.to_string(),
+            message: format!("exact qualified TypeRef {qualified:?} is absent"),
+        })
+}
+
+fn type_entry_plan<'a>(
+    types: &'a [BytecodePoolEntry],
+    index: u32,
+    role: &str,
+) -> Result<&'a ValueTransferPlan, BytecodeEmissionError> {
+    let Some(BytecodePoolEntry::TypeRef { plan, .. }) = types.get(index as usize) else {
+        return Err(BytecodeEmissionError::CanonicalSerialization {
+            context: format!("admitted representation carrier {role} TypeRef {index}"),
+            message: format!("{role} is absent or not a TypeRef row"),
+        });
+    };
+    Ok(plan)
 }
 
 fn collect_function_types(

@@ -91,6 +91,11 @@ impl RegistryValueAuthority {
         matches!(self.role, RegistryValueRole::Parameter { .. })
     }
 
+    fn is_sleep_duration_parameter(&self) -> bool {
+        self.executor_identity == HostEffectExecutorIdentity::Sleep
+            && matches!(self.role, RegistryValueRole::Parameter { ordinal: 0 })
+    }
+
     fn is_privileged_stream(&self) -> bool {
         matches!(self.role, RegistryValueRole::PrivilegedField { .. })
     }
@@ -567,6 +572,16 @@ impl HostEffectAdmissions {
             .get(&expression_index)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    pub(super) fn admits_duration_constructor(
+        &self,
+        expression_index: u32,
+        actual: &TypeRefIr,
+    ) -> bool {
+        self.expression_authorities(expression_index)
+            .iter()
+            .any(|authority| authority.is_sleep_duration_parameter() && authority.admits(actual))
     }
 
     pub(super) fn slot_authorities(&self, slot: u32) -> &[RegistryValueAuthority] {
