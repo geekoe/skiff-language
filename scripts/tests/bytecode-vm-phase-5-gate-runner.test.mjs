@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+  lstat,
   mkdir,
   mkdtemp,
   readFile,
@@ -110,6 +111,59 @@ test('runner receipts all ninety-three commands and freezes the actual environme
       [PHASE5_CARRIER_ENV]: `${outputDir}.carrier`,
       [PHASE5_RUNTIME_BIN_ENV]: `${PHASE5_CARGO_TARGET_DIR}/debug/runtime`,
     }));
+  } finally {
+    await rm(created, { recursive: true, force: true });
+  }
+});
+
+test('runner records every later receipt after one executable expected-red workload', async () => {
+  const created = await mkdtemp(join(tmpdir(), 'skiff-phase5-no-fail-fast-'));
+  const temp = await realpath(created);
+  const repoRoot = join(temp, 'repo');
+  const outputDir = join(temp, 'evidence');
+  const observed = [];
+  try {
+    await mkdir(repoRoot);
+    const result = await runPhase5Gate({
+      outputDir, expectedCommit: COMMIT, expectedTree: TREE,
+    }, {
+      repoRoot,
+      env: { PATH: '/usr/bin:/bin' },
+      acquireCargoLease: fakeCargoLease,
+      capture: async (command, args, { env }) => {
+        observed.push([command, ...args].join(' '));
+        if (args.includes('phase_5_stage_sentinel_source_to_admission')) {
+          await mkdir(env[PHASE5_CARRIER_ENV]);
+          return {
+            code: 101,
+            signal: null,
+            error: null,
+            stdout: 'test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.01s\n',
+            stderr: 'production admission gap\n',
+          };
+        }
+        return successfulOutcome(command, args);
+      },
+    });
+    assert.equal(result.manifest.verdict, 'FAIL');
+    assert.equal(result.checkerError, null);
+    assert.deepEqual(result.manifest.counts.commands, { total: 93, passed: 92, failed: 1 });
+    assert.equal(observed.length, 93, 'one red workload must not truncate the Gate matrix');
+    assert.equal(
+      result.manifest.commands.find(({ id }) => id === 'phase-5-s1-source-to-admission')?.status,
+      'FAIL',
+    );
+    assert.equal(
+      result.manifest.commands.find(({ id }) => id === 'phase-5-router-full-chain-vcp')?.status,
+      'PASS',
+      'the Router selector must still execute after an earlier producer red',
+    );
+    assert.equal(
+      result.manifest.commands.find(({ id }) => id === 'fresh-status')?.status,
+      'PASS',
+      'candidate closure probes must still execute after workload reds',
+    );
+    await assert.rejects(lstat(`${outputDir}.carrier`), { code: 'ENOENT' });
   } finally {
     await rm(created, { recursive: true, force: true });
   }
