@@ -1171,24 +1171,31 @@ pub(super) fn live_string_owner(fiber: &VmFiber, heap: &IntrinsicDispatchHeap) -
         .expect("the intrinsic fixture keeps a request-owned string live")
 }
 
-#[test]
-fn stream_item_release_failure_returns_the_rooted_carrier_for_exact_retry() {
-    let mut heap = IntrinsicDispatchHeap::default();
-    let mut fiber = intrinsic_fiber(&mut heap);
-    let item = loop {
+fn next_intrinsic_stream_item(
+    fiber: &mut VmFiber,
+    heap: &mut IntrinsicDispatchHeap,
+) -> crate::StreamItem {
+    loop {
         match fiber
-            .dispatch_one(&mut heap)
+            .dispatch_one(heap)
             .expect("drive intrinsic fixture to EmitStream")
         {
             DispatchOutcome::Continue => {}
-            DispatchOutcome::Handoff(VmControl::EmitStream(item)) => break item,
+            DispatchOutcome::Handoff(VmControl::EmitStream(item)) => return item,
             DispatchOutcome::Handoff(_) => {
                 panic!("intrinsic fixture has only EmitStream handoff")
             }
             DispatchOutcome::Complete(_) => panic!("fixture completed before EmitStream"),
             DispatchOutcome::Throw(_) => panic!("intrinsic fixture must not throw"),
         }
-    };
+    }
+}
+
+#[test]
+fn stream_item_release_failure_returns_the_rooted_carrier_for_exact_retry() {
+    let mut heap = IntrinsicDispatchHeap::default();
+    let mut fiber = intrinsic_fiber(&mut heap);
+    let item = next_intrinsic_stream_item(&mut fiber, &mut heap);
     let [root] = item.item().values() else {
         panic!("EmitStream transfers exactly one item owner")
     };
@@ -1211,17 +1218,114 @@ fn stream_item_release_failure_returns_the_rooted_carrier_for_exact_retry() {
     failure.visit_roots(&mut roots).unwrap();
     assert_eq!(roots.0, [handle]);
 
+    let attempts_after_failure = heap.release_attempts;
     let (item, _error) = failure.into_parts();
     heap.fail_release_at = None;
     let resume = item
         .release(&mut heap)
         .expect("the unchanged carrier can retry on the same heap");
     assert_eq!(heap.owner_count(handle), 0);
+    assert_eq!(heap.release_attempts, attempts_after_failure + 1);
+    assert_eq!(
+        heap.release_history
+            .iter()
+            .filter(|released| **released == handle)
+            .count(),
+        1
+    );
     fiber
         .resume(resume, ResumeOutcome::Empty)
         .expect("the same continuation resumes after release retry");
     drive_intrinsic_fiber_to_completion(&mut fiber, &mut heap);
     assert!(heap.entries.is_empty());
+    assert_eq!(
+        heap.release_history
+            .iter()
+            .filter(|released| **released == handle)
+            .count(),
+        1,
+        "the retried item owner must never be released twice"
+    );
+}
+
+#[test]
+fn stream_item_release_failure_moves_exact_owner_into_terminal_escrow() {
+    let mut heap = IntrinsicDispatchHeap::default();
+    let mut fiber = intrinsic_fiber(&mut heap);
+    let item = next_intrinsic_stream_item(&mut fiber, &mut heap);
+    let [root] = item.item().values() else {
+        panic!("EmitStream transfers exactly one item owner")
+    };
+    let handle = root.as_request_heap_ref().unwrap().get();
+    heap.fail_release_at = Some(heap.release_attempts + 1);
+
+    let failure = item
+        .release(&mut heap)
+        .expect_err("the injected release must return its rooted carrier");
+    let mut carrier_roots = IntrinsicRootHandles::default();
+    failure.visit_roots(&mut carrier_roots).unwrap();
+    assert_eq!(carrier_roots.0, [handle]);
+    assert_eq!(heap.owner_count(handle), 1);
+
+    let attempts_after_failure = heap.release_attempts;
+    let (mut escrow, error) = failure.into_terminal_escrow();
+    assert!(matches!(
+        error,
+        VmError::Heap(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::ReleaseSnapshot,
+            ..
+        })
+    ));
+    assert_eq!(escrow.root_count(), 1);
+    assert_eq!(escrow.unresolved_count(), 0, "the exact plan must survive");
+    let mut escrow_roots = IntrinsicRootHandles::default();
+    escrow.visit_roots(&mut escrow_roots).unwrap();
+    assert_eq!(escrow_roots.0, [handle]);
+    assert_eq!(
+        heap.debug_inventory()
+            .iter()
+            .filter(|(entry, _, _)| *entry == handle)
+            .map(|(_, owners, _)| *owners)
+            .collect::<Vec<_>>(),
+        [1]
+    );
+
+    heap.fail_release_at = None;
+    escrow
+        .release_all(&mut heap)
+        .expect("terminal escrow releases through the captured exact plan");
+    assert!(escrow.is_empty());
+    assert_eq!(escrow.root_count(), 0);
+    assert_eq!(heap.owner_count(handle), 0);
+    assert!(heap
+        .debug_inventory()
+        .iter()
+        .all(|(entry, _, _)| *entry != handle));
+    let mut released_roots = IntrinsicRootHandles::default();
+    escrow.visit_roots(&mut released_roots).unwrap();
+    assert!(released_roots.0.is_empty());
+    assert_eq!(heap.release_attempts, attempts_after_failure + 1);
+    assert_eq!(
+        heap.release_history
+            .iter()
+            .filter(|released| **released == handle)
+            .count(),
+        1
+    );
+
+    let attempts_after_release = heap.release_attempts;
+    escrow
+        .release_all(&mut heap)
+        .expect("an empty terminal escrow is idempotent");
+    assert_eq!(heap.release_attempts, attempts_after_release);
+    assert_eq!(
+        heap.release_history
+            .iter()
+            .filter(|released| **released == handle)
+            .count(),
+        1,
+        "terminal cleanup must never release the consumed owner twice"
+    );
 }
 
 #[test]

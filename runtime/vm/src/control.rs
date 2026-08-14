@@ -496,8 +496,9 @@ pub struct StreamItem {
 ///
 /// Heap release is transactional, so `item` remains the logical owner and may
 /// be visited or retried. A request owner that has already chosen a terminal
-/// outcome may instead consume this error through [`Self::into_cleanup_roots`]
-/// and transfer the values into its explicit terminal cleanup escrow.
+/// outcome may instead consume this error through [`Self::into_terminal_escrow`]
+/// and transfer the values plus their captured lifecycle authority into
+/// explicit terminal cleanup escrow.
 #[must_use = "a failed stream-item release still owns its item and continuation"]
 pub struct StreamItemReleaseError {
     item: StreamItem,
@@ -518,14 +519,15 @@ impl StreamItemReleaseError {
         (self.item, self.error)
     }
 
-    /// Transfers the failed value owner into terminal cleanup escrow.
+    /// Transfers the failed value owner and its exact lifecycle plan into
+    /// terminal cleanup escrow.
     ///
     /// The continuation is deliberately abandoned only on this explicit
     /// terminal path; callers that may resume must use [`Self::into_parts`].
-    pub fn into_cleanup_roots(self) -> (Box<[ValueSlot]>, VmError) {
+    pub fn into_terminal_escrow(self) -> (VmTerminalEscrow, VmError) {
         let Self { item, error } = self;
         let StreamItem { item, .. } = item;
-        (item.values, error)
+        (item.into_terminal_escrow(), error)
     }
 }
 
