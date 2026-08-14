@@ -151,7 +151,7 @@ async function main() {
     }
     const nonzeroHealth = await waitForHealth(relay, fromIndex, (counters) => (
       counters?.outboundStreamLeasesActive === 2
-      && counters?.streamRuntimeStreamsActive === 2
+      && counters?.streamRuntimeStreamsActive === 0
     ), 'two coexisting production stream authorities');
     upstream.releaseBodies();
     const outcome = await responseOutcome;

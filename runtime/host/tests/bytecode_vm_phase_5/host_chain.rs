@@ -13,15 +13,16 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_host::{RuntimeConfig, RuntimeHost};
 use skiff_runtime_transport::protocol::{
     decode_response_chunk_frame, decode_response_end_frame, decode_response_start_frame,
-    decode_runtime_capabilities_frame, decode_typed_binary_frame, encode_binary_frame,
-    encode_router_bootstrap_frame, encode_runtime_registered_frame, BytecodeHttpRequestFrameHeader,
-    BytecodeRequestCallerFrameHeader, BytecodeRequestIngressFrameHeader,
-    BytecodeRequestIngressProtocol, BytecodeRequestRoutingFrameHeader,
-    BytecodeRequestStartFrameHeader, BytecodeRequestTraceFrameHeader, ResponseEndFrameMetadata,
+    decode_runtime_capabilities_frame, decode_runtime_health_frame, decode_typed_binary_frame,
+    encode_binary_frame, encode_router_bootstrap_frame, encode_runtime_registered_frame,
+    BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
+    BytecodeRequestIngressFrameHeader, BytecodeRequestIngressProtocol,
+    BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
+    BytecodeRequestTraceFrameHeader, ResponseEndFrameMetadata,
     RouterBootstrapActivationFrameHeader, RouterBootstrapFrameHeader,
     RouterBootstrapHttpFrameHeader, RouterBootstrapServiceDbFrameHeader,
-    RuntimeDispatchModeCapability, RuntimeRegisteredFrameHeader, TypedEnvelope,
-    RUNTIME_FRAME_SCHEMA_VERSION,
+    RuntimeDispatchModeCapability, RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
+    TypedEnvelope, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
@@ -40,6 +41,8 @@ struct TopLevelEvidence {
     response_headers: Vec<(String, String)>,
     response_chunks: Vec<Vec<u8>>,
     outbound: Vec<RequestObservation>,
+    active_health: RuntimeHealthCountersFrameHeader,
+    terminal_health: RuntimeHealthCountersFrameHeader,
 }
 
 pub async fn scheduler_to_request_response() {
@@ -71,6 +74,42 @@ pub async fn vcp_production_composition() {
             ("GET", "/stream/left"),
             ("GET", "/stream/right"),
         ]
+    );
+}
+
+pub async fn structural_no_bypass() {
+    let evidence = drive_top_level_vcp("structural", "phase-5-structural").await;
+    assert_eq!(evidence.response_status, 207);
+    assert_eq!(
+        evidence.response_chunks.concat(),
+        b"U=UNARY|A=LEFT-1LEFT-2|B=RIGHT-1RIGHT-2",
+        "the structural proof must execute the production HTTP provider"
+    );
+    assert_eq!(
+        evidence
+            .outbound
+            .iter()
+            .map(|entry| (entry.method.as_str(), entry.path.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("GET", "/request"),
+            ("GET", "/stream/left"),
+            ("GET", "/stream/right"),
+        ],
+        "no test executor may replace the exact production outbound routes"
+    );
+    assert_eq!(
+        evidence.active_health.outbound_stream_leases_active, 2,
+        "the one request table must own exactly the two coexisting stream handles"
+    );
+    assert_eq!(
+        evidence.active_health.stream_runtime_streams_active, 0,
+        "the legacy StreamRuntime registry must stay inactive on the bytecode path"
+    );
+    assert!(
+        health_counters_all_zero(&evidence.terminal_health),
+        "the single production owner inventory did not return to zero: {:?}",
+        evidence.terminal_health
     );
 }
 
@@ -154,6 +193,11 @@ async fn drive_top_level_vcp(prefix: &str, request_id: &str) -> TopLevelEvidence
         ))
         .await
         .expect("send runtime.registered");
+    let initial_health = next_health(&mut websocket).await;
+    assert!(
+        health_counters_all_zero(&initial_health),
+        "RuntimeHost registration began with residual authority: {initial_health:?}"
+    );
 
     let gateway = fixture.gateway(VCP_PATH);
     let request_header = BytecodeRequestStartFrameHeader {
@@ -222,6 +266,11 @@ async fn drive_top_level_vcp(prefix: &str, request_id: &str) -> TopLevelEvidence
             "RuntimeHost never opened exact stream target {path}"
         );
     }
+    let active_health = next_health(&mut websocket).await;
+    assert_eq!(
+        active_health.outbound_stream_leases_active, 2,
+        "both response heads are Ready but the request table does not own two stream leases"
+    );
     upstream.release("/stream/left");
     upstream.release("/stream/right");
 
@@ -257,6 +306,12 @@ async fn drive_top_level_vcp(prefix: &str, request_id: &str) -> TopLevelEvidence
         }
     }
     assert!(expected_seq > 0, "serverStream emitted no chunks");
+    let terminal_health = loop {
+        let counters = next_health(&mut websocket).await;
+        if health_counters_all_zero(&counters) {
+            break counters;
+        }
+    };
     websocket.close(None).await.expect("close RuntimeHost peer");
     drop(host_task);
 
@@ -270,7 +325,33 @@ async fn drive_top_level_vcp(prefix: &str, request_id: &str) -> TopLevelEvidence
             .collect(),
         response_chunks,
         outbound: upstream.snapshot(),
+        active_health,
+        terminal_health,
     }
+}
+
+async fn next_health<S>(websocket: &mut WebSocketStream<S>) -> RuntimeHealthCountersFrameHeader
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let bytes = next_binary(websocket).await;
+    let (typed, _) = decode_typed_binary_frame::<TypedEnvelope>(&bytes)
+        .expect("decode RuntimeHost health envelope");
+    assert_eq!(
+        typed.envelope_type, "runtime.health",
+        "unexpected RuntimeHost frame while waiting for owner inventory"
+    );
+    decode_runtime_health_frame(&bytes)
+        .expect("RuntimeHost emitted canonical runtime.health")
+        .counters
+}
+
+fn health_counters_all_zero(counters: &RuntimeHealthCountersFrameHeader) -> bool {
+    counters.outbound_requests_pending == 0
+        && counters.outbound_stream_leases_active == 0
+        && counters.stream_runtime_streams_active == 0
+        && counters.flag_backed_cancel_waiters_active == 0
+        && counters.task_requests_active == 0
 }
 
 async fn next_binary_of_type<S>(websocket: &mut WebSocketStream<S>, wanted: &str) -> Vec<u8>

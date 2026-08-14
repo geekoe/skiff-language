@@ -81,6 +81,16 @@ async fn phase_5_single_worker_canary() {
     runtime::single_worker_canary().await;
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn phase_5_structural_no_bypass() {
+    // Reuse the actual production authoring boundary for every positive and
+    // fail-closed companion. The RuntimeHost leg below reloads that published
+    // deployment; neither half constructs an artifact, image, executor,
+    // resource handle, or response frame for the VM.
+    phase_5_stage_sentinel_source_to_admission();
+    host_chain::structural_no_bypass().await;
+}
+
 fn assert_exact_rejection(
     outcome: BuildOutcome,
     label: &str,
