@@ -11,8 +11,11 @@ use skiff_compiler_lowering::mir::{
 };
 
 use super::{
-    inputs::canonical_function_key, BytecodeEmissionError, Phase1MirFactMismatch,
-    Phase1UnsupportedCapability,
+    carriers::{
+        analyze_machine_carriers, may_share_scalar_machine_carrier, PackageMachineCarrierFacts,
+    },
+    inputs::canonical_function_key,
+    BytecodeEmissionError, Phase1MirFactMismatch, Phase1UnsupportedCapability,
 };
 
 mod gateway_parameter;
@@ -44,6 +47,7 @@ const CANONICAL_SLEEP_DURATION_NAME: &str = "Duration";
 pub struct AdmittedPhase1BytecodeMir {
     units: Vec<MirUnit>,
     dense_parameter_materializations: BTreeMap<String, DenseParameterMaterializationFact>,
+    machine_carriers: PackageMachineCarrierFacts,
 }
 
 impl AdmittedPhase1BytecodeMir {
@@ -55,6 +59,10 @@ impl AdmittedPhase1BytecodeMir {
         &self,
     ) -> &BTreeMap<String, DenseParameterMaterializationFact> {
         &self.dense_parameter_materializations
+    }
+
+    pub(crate) fn machine_carriers(&self) -> &PackageMachineCarrierFacts {
+        &self.machine_carriers
     }
 
     /// Returns the normalized, admitted MIR used to project source-owned
@@ -212,9 +220,11 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities(
             )?;
         }
     }
+    let machine_carriers = analyze_machine_carriers(&units)?;
     Ok(AdmittedPhase1BytecodeMir {
         units,
         dense_parameter_materializations,
+        machine_carriers,
     })
 }
 
@@ -1177,7 +1187,7 @@ fn admit_expression_with_host_effects(
             let slot_type = function.slot_type(*slot)?;
             if slot_type != &expression.ty
                 && !is_catch_result_narrowed_load(slot_type, &expression.ty)
-                && !server_stream.admits_writable_string_slot_load(function, *slot, &expression.ty)
+                && !may_share_scalar_machine_carrier(slot_type, &expression.ty)
             {
                 return Err(fact_mismatch(
                     unit,

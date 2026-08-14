@@ -7,8 +7,8 @@ use skiff_compiler_lowering::{
 };
 
 use super::{
-    admission::DenseParameterMaterializationFact, BytecodeEmissionError,
-    BytecodeValueTransferPlans, FunctionValueTransferPlans,
+    admission::DenseParameterMaterializationFact, carriers::PackageMachineCarrierFacts,
+    BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTransferPlans,
 };
 
 pub(crate) struct ValidatedEmissionInputs<'a> {
@@ -19,6 +19,7 @@ pub(crate) struct ValidatedEmissionInputs<'a> {
     pub(crate) units: BTreeMap<String, &'a MirUnit>,
     pub(crate) dense_parameter_materializations:
         &'a BTreeMap<String, DenseParameterMaterializationFact>,
+    pub(crate) machine_carriers: &'a PackageMachineCarrierFacts,
 }
 
 pub(crate) struct ValidatedConstant<'a> {
@@ -35,6 +36,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
         bundles: &'a [FrozenConstantBundle],
         transfer_plans: &'a BytecodeValueTransferPlans,
         dense_parameter_materializations: &'a BTreeMap<String, DenseParameterMaterializationFact>,
+        machine_carriers: &'a PackageMachineCarrierFacts,
     ) -> Result<Self, BytecodeEmissionError> {
         let mut units_by_module = BTreeMap::new();
         for unit in units {
@@ -139,6 +141,30 @@ impl<'a> ValidatedEmissionInputs<'a> {
                 let function_key = canonical_function_key(module_path, &function.symbol)?;
                 validate_mir_function(&function_key, function)?;
 
+                let carriers = machine_carriers.function(&function_key).ok_or_else(|| {
+                    BytecodeEmissionError::UnsupportedConstruct {
+                        function_key: function_key.clone(),
+                        construct: "exact machine carrier facts",
+                        location: " validated emission input has no function row".to_string(),
+                    }
+                })?;
+                if function
+                    .expressions
+                    .iter()
+                    .any(|expression| carriers.expression(expression.index).is_none())
+                    || function
+                        .slots
+                        .iter()
+                        .any(|slot| carriers.slot(slot.slot).is_none())
+                {
+                    return Err(BytecodeEmissionError::UnsupportedConstruct {
+                        function_key: function_key.clone(),
+                        construct: "exact machine carrier facts",
+                        location: " validated emission input has incomplete carrier coverage"
+                            .to_string(),
+                    });
+                }
+
                 if functions.contains_key(&function_key) {
                     return Err(BytecodeEmissionError::DuplicateFunctionKey { function_key });
                 }
@@ -168,6 +194,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
             transfer_plans,
             units: units_by_module,
             dense_parameter_materializations,
+            machine_carriers,
         })
     }
 }

@@ -8,7 +8,7 @@ use skiff_artifact_model::{
     GatewayExternalSchema, GatewayProtocolSurface, LiteralIr, NominalTypeRefBaseIr,
     PackageCallableId, PackageRefIr, TypeRefIr,
 };
-use skiff_compiler_lowering::mir::{MirFunction, MirSlotKind, MirStmtKind, MirUnit};
+use skiff_compiler_lowering::mir::{MirFunction, MirStmtKind, MirUnit};
 
 use crate::bytecode::intrinsics::static_intrinsic_canonical_key;
 
@@ -341,27 +341,6 @@ impl ServerStreamAdmissions {
 
     pub(super) fn admits_closure_carrier(&self, ty: &TypeRefIr) -> bool {
         self.closure_carriers.iter().any(|carrier| carrier == ty)
-    }
-
-    pub(super) fn admits_writable_string_slot_load(
-        &self,
-        function: &MirFunction,
-        slot: u32,
-        load_type: &TypeRefIr,
-    ) -> bool {
-        if self.result_type.is_none() || load_type != &TypeRefIr::builtin("string") {
-            return false;
-        }
-        function.slot(slot).is_ok_and(|slot| {
-            slot.kind == MirSlotKind::Local
-                && slot.writable_local
-                && matches!(
-                    &slot.ty,
-                    Some(TypeRefIr::Literal {
-                        value: LiteralIr::String { .. }
-                    })
-                )
-        })
     }
 
     pub(super) fn admits_intrinsic_call(
@@ -1156,52 +1135,13 @@ function outbound(url: string) -> std.http.HttpClientRequest {
     }
 
     #[test]
-    fn exact_server_stream_admits_writable_literal_string_slot_widening() {
+    fn exact_server_stream_uses_package_machine_carriers_for_writable_string_slots() {
         let (units, authority) = fixture_for_source(MUTABLE_STRING_SOURCE);
         super::super::admit_phase_1_bytecode_mir_with_server_stream_authorities(
             &units,
             &[authority],
         )
         .expect("exact server-stream authority admits its writable string carrier");
-    }
-
-    #[test]
-    fn string_slot_widening_requires_authority_writable_slot_and_builtin_string() {
-        let (units, authority) = fixture_for_source(MUTABLE_STRING_SOURCE);
-        let function = &units[0].functions[0];
-        let slot = function
-            .slots
-            .iter()
-            .find(|slot| slot.name == "body")
-            .expect("fixture has body slot");
-        let admissions = ServerStreamAdmissions::analyze(&units[0], function, &[authority])
-            .expect("exact authority analyzes");
-
-        assert!(admissions.admits_writable_string_slot_load(
-            function,
-            slot.slot,
-            &TypeRefIr::builtin("string")
-        ));
-        assert!(
-            !ServerStreamAdmissions::default().admits_writable_string_slot_load(
-                function,
-                slot.slot,
-                &TypeRefIr::builtin("string")
-            )
-        );
-        assert!(!admissions.admits_writable_string_slot_load(
-            function,
-            slot.slot,
-            &TypeRefIr::builtin("bytes")
-        ));
-
-        let mut non_writable = function.clone();
-        non_writable.slots[slot.slot as usize].writable_local = false;
-        assert!(!admissions.admits_writable_string_slot_load(
-            &non_writable,
-            slot.slot,
-            &TypeRefIr::builtin("string")
-        ));
     }
 
     #[test]

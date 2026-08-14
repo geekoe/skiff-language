@@ -5096,11 +5096,14 @@ mod tests {
             .expect("the source classifier covers the test MIR");
         let bundles = [bundle];
         let dense_parameter_materializations = BTreeMap::new();
+        let machine_carriers = super::super::carriers::analyze_machine_carriers(&units)
+            .expect("test machine carriers analyze");
         let inputs = ValidatedEmissionInputs::validate(
             &units,
             &bundles,
             &plans,
             &dense_parameter_materializations,
+            &machine_carriers,
         )
         .expect("test inputs validate");
         let mut image = build_constant_image(&inputs).expect("test image builds");

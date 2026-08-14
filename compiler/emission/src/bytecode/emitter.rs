@@ -9,6 +9,7 @@ use skiff_compiler_lowering::{mir::MirUnit, FrozenConstantBundle};
 
 use super::{
     admission::AdmittedPhase1BytecodeMir,
+    carriers::{analyze_machine_carriers, PackageMachineCarrierFacts},
     constants::build_constant_image,
     functions::{emit_functions, SourceAttributionMode},
     inputs::ValidatedEmissionInputs,
@@ -34,6 +35,7 @@ pub fn emit_bytecode_artifact(
         constants,
         transfer_plans,
         admitted.dense_parameter_materializations(),
+        admitted.machine_carriers(),
         SourceAttributionMode::AdmittedPhase1,
     )
 }
@@ -47,11 +49,13 @@ pub(super) fn emit_bytecode_artifact_unchecked(
     constants: &[FrozenConstantBundle],
     transfer_plans: &BytecodeValueTransferPlans,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
+    let machine_carriers = analyze_machine_carriers(units)?;
     emit_bytecode_artifact_with_mode(
         units,
         constants,
         transfer_plans,
         &Default::default(),
+        &machine_carriers,
         SourceAttributionMode::PrivateBackend,
     )
 }
@@ -64,6 +68,7 @@ fn emit_bytecode_artifact_with_mode(
         String,
         super::admission::DenseParameterMaterializationFact,
     >,
+    machine_carriers: &PackageMachineCarrierFacts,
     source_attribution: SourceAttributionMode,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
     let inputs = ValidatedEmissionInputs::validate(
@@ -71,6 +76,7 @@ fn emit_bytecode_artifact_with_mode(
         constants,
         transfer_plans,
         dense_parameter_materializations,
+        machine_carriers,
     )?;
 
     let mut constants = build_constant_image(&inputs)?;

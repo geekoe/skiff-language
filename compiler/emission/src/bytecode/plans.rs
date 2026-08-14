@@ -6,6 +6,7 @@ use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
 use super::{
     admission::AdmittedPhase1BytecodeMir,
+    carriers::{analyze_machine_carriers, PackageMachineCarrierFacts},
     inputs::{canonical_function_key, is_void},
     BytecodeEmissionError,
 };
@@ -23,22 +24,42 @@ pub fn derive_bytecode_value_transfer_plans(
     admitted: &AdmittedPhase1BytecodeMir,
     plan_for: impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
-    derive_bytecode_value_transfer_plans_unchecked(admitted.units(), plan_for)
+    derive_bytecode_value_transfer_plans_with_carriers(
+        admitted.units(),
+        admitted.machine_carriers(),
+        plan_for,
+    )
 }
 
 pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
     units: &[MirUnit],
     plan_for: impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
+    let machine_carriers = analyze_machine_carriers(units)?;
+    derive_bytecode_value_transfer_plans_with_carriers(units, &machine_carriers, plan_for)
+}
+
+fn derive_bytecode_value_transfer_plans_with_carriers(
+    units: &[MirUnit],
+    machine_carriers: &PackageMachineCarrierFacts,
+    plan_for: impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
+) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
     let mut functions = BTreeMap::new();
     for unit in units {
         for function in &unit.functions {
             let function_key = canonical_function_key(&unit.module_path, &function.symbol)?;
+            let carriers = machine_carriers.function(&function_key).ok_or_else(|| {
+                BytecodeEmissionError::UnsupportedConstruct {
+                    function_key: function_key.clone(),
+                    construct: "exact machine carrier facts",
+                    location: " function carrier row is absent".to_string(),
+                }
+            })?;
             let mut slot_plans = Vec::with_capacity(function.slots.len());
             for slot in &function.slots {
-                let ty = slot
-                    .ty
-                    .as_ref()
+                let ty = carriers
+                    .slot(slot.slot)
+                    .map(|carrier| carrier.ty())
                     .ok_or_else(|| unsupported_slot_type(&function_key, slot))?;
                 slot_plans.push(exact_source_plan(
                     &plan_for,
@@ -52,12 +73,19 @@ pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
             {
                 Vec::new()
             } else {
+                let result_ty = carriers.result().ok_or_else(|| {
+                    BytecodeEmissionError::UnsupportedConstruct {
+                        function_key: function_key.clone(),
+                        construct: "exact machine carrier facts",
+                        location: " non-void function result carrier is absent".to_string(),
+                    }
+                })?;
                 vec![exact_source_plan(
                     &plan_for,
                     &unit.module_path,
                     &function_key,
                     "return value",
-                    &function.return_type,
+                    result_ty.ty(),
                 )?]
             };
             functions.insert(
@@ -84,7 +112,7 @@ pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
             );
         }
     }
-    let type_plans = collect_exact_type_plans(units, &plan_for)?;
+    let type_plans = collect_exact_type_plans(units, machine_carriers, &plan_for)?;
     Ok(BytecodeValueTransferPlans::new_with_type_plans(
         functions, constants, type_plans,
     ))
@@ -92,6 +120,7 @@ pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
 
 fn collect_exact_type_plans(
     units: &[MirUnit],
+    machine_carriers: &PackageMachineCarrierFacts,
     plan_for: &impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<Vec<TypeValueTransferPlan>, BytecodeEmissionError> {
     let mut rows = Vec::new();
@@ -105,6 +134,19 @@ fn collect_exact_type_plans(
         }
         for function in &unit.functions {
             let function_key = canonical_function_key(module_path, &function.symbol)?;
+            let carriers = machine_carriers.function(&function_key).ok_or_else(|| {
+                BytecodeEmissionError::UnsupportedConstruct {
+                    function_key: function_key.clone(),
+                    construct: "exact machine carrier facts",
+                    location: " function carrier row is absent".to_string(),
+                }
+            })?;
+            for (carrier_index, carrier) in carriers.carriers().enumerate() {
+                register(
+                    carrier.ty(),
+                    &format!("function `{function_key}` machine carrier {carrier_index}"),
+                )?;
+            }
             register(
                 &TypeRefIr::builtin("number"),
                 &format!("function `{function_key}` generated attribution carrier"),

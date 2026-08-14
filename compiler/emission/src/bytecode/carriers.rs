@@ -1087,6 +1087,19 @@ pub(crate) fn literal_carrier_type(literal: &LiteralIr) -> TypeRefIr {
     })
 }
 
+/// Admission-side precondition for a later exact carrier join.
+///
+/// This does not choose a carrier and is intentionally weaker than the graph
+/// result: it only says that two source types have a single identical scalar
+/// physical face.  The complete writer graph must still prove that exact face
+/// before an admitted artifact can be emitted.
+pub(crate) fn may_share_scalar_machine_carrier(left: &TypeRefIr, right: &TypeRefIr) -> bool {
+    left == right
+        || scalar_semantic_carrier(left)
+            .zip(scalar_semantic_carrier(right))
+            .is_some_and(|(left, right)| left == right)
+}
+
 fn semantic_accepts_carrier(semantic: &TypeRefIr, carrier: &TypeRefIr, role: SemanticRole) -> bool {
     if semantic == carrier {
         return true;
