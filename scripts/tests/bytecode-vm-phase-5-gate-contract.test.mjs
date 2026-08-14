@@ -34,7 +34,7 @@ test('r1 schemas cannot accept a receipt from the interrupted Phase 5 epoch', ()
 test('r1 matrix names all G1-G10 owners and uses only executable commands', () => {
   const scenarios = phase5ScenarioSpecs(ROOT);
   const workloads = phase5WorkloadSpecs(ROOT);
-  assert.equal(scenarios.length, 42);
+  assert.equal(scenarios.length, 44);
   assert.doesNotThrow(() => assertPhase5LaneCoverage(workloads));
   const observed = new Set(workloads.flatMap(({ lanes }) => lanes));
   for (const lane of PHASE5_REQUIRED_LANES) {
@@ -127,6 +127,12 @@ test('A5/C5/V5 focused joins pin every typed positive and fail-closed companion'
   assert.equal(byId['v5-verifier-executor-identity-rejections'].expectedTests, 2);
   assert.equal(byId['v5-affine-take-proof'].args.includes('affine_take_tests'), true);
   assert.equal(byId['v5-affine-take-proof'].expectedTests, 6);
+  assert.equal(byId['v5-privileged-sibling-read-verifier-rejections'].args.includes(
+    'get_dense_field_cannot_read_privileged_'), true);
+  assert.equal(byId['v5-privileged-sibling-read-verifier-rejections'].expectedTests, 2);
+  assert.equal(byId['v5-privileged-sibling-read-linker-rejection'].args.includes(
+    'privileged_headers_and_status_dense_reads_fail_closed'), true);
+  assert.equal(byId['v5-privileged-sibling-read-linker-rejection'].expectedTests, 1);
   assert.equal(byId['h5-production-bytecode-http-composition'].args.includes(
     'phase_5_bytecode_http'), true);
   assert.equal(byId['h5-production-bytecode-http-composition'].expectedTests, 3);
@@ -160,8 +166,8 @@ test('the accepted Phase 4 matrix is reused verbatim as the Phase 1-4 regression
 
 test('candidate closure and command count are frozen by the matrix', () => {
   assert.equal(phase5CandidateSpecs(ROOT).length, 12);
-  assert.equal(phase5WorkloadSpecs(ROOT).length, 97);
-  assert.equal(phase5CandidateSpecs(ROOT).length + phase5WorkloadSpecs(ROOT).length, 109);
+  assert.equal(phase5WorkloadSpecs(ROOT).length, 99);
+  assert.equal(phase5CandidateSpecs(ROOT).length + phase5WorkloadSpecs(ROOT).length, 111);
   assert.deepEqual(phase5CandidateSpecs(ROOT).slice(-3).map(({ id }) => id), [
     'fresh-head', 'fresh-tree', 'fresh-status',
   ]);

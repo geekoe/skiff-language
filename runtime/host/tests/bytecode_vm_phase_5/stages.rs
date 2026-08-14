@@ -345,13 +345,15 @@ fn phase_5_stage_sentinel_link_to_verify() {
         assert_eq!(body.ty(), privileged_shape.fields()[0].ty());
         assert_eq!(body.plan(), privileged_shape.fields()[0].plan());
     }
-    assert!(function.instructions().iter().all(|instruction| {
-        instruction.opcode() != Opcode::GetDenseField
-            || instruction.operands().get(1).copied() != Some(0)
-            || !instruction.resolved_operands().iter().any(|operand| {
-                operand.target() == LinkedInstructionTarget::Shape(privileged_shape.index())
-            })
-    }));
+    assert!(
+        function.instructions().iter().all(|instruction| {
+            instruction.opcode() != Opcode::GetDenseField
+                || !instruction.resolved_operands().iter().any(|operand| {
+                    operand.target() == LinkedInstructionTarget::Shape(privileged_shape.index())
+                })
+        }),
+        "verified production code must not GetDenseField any body, headers, or status ordinal from the privileged stream shape"
+    );
     assert_eq!(
         function
             .frame()
