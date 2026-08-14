@@ -46,9 +46,9 @@ export const PHASE5_REQUIRED_LANES = Object.freeze([
 const HOST_TEST = Object.freeze({
   tcp: 'tcp_server::deterministic_tcp_server_gates_unary_and_distinguishes_streams',
   s1: 'phase_5_stage_sentinel_source_to_admission',
-  s2: 'phase_5_stage_sentinel_admission_to_emission',
-  s3: 'phase_5_stage_sentinel_emission_to_link',
-  s4: 'phase_5_stage_sentinel_link_to_verify',
+  s2: 'stages::phase_5_stage_sentinel_admission_to_emission',
+  s3: 'stages::phase_5_stage_sentinel_emission_to_link',
+  s4: 'stages::phase_5_stage_sentinel_link_to_verify',
   s5: 'phase_5_stage_sentinel_verify_to_scheduler',
   s6: 'phase_5_stage_sentinel_scheduler_to_request_response',
   vcp: 'phase_5_vcp_production_composition',

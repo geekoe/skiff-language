@@ -5,12 +5,23 @@ use std::{
 };
 
 use serde_json::Value;
-use skiff_artifact_model::{PackageArtifactRef, ServiceDeploymentRef};
+use skiff_artifact_identity::ValidatedBytecodeArtifact;
+use skiff_artifact_model::{
+    GatewayEntryIdentity, IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef,
+    ServiceDeployment, ServiceDeploymentRef,
+};
 use skiff_compiler::{
     authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
     CompilerPlatformSources,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
+use skiff_runtime_bytecode_verifier::VerificationLimits;
+use skiff_runtime_linker::{
+    link_deployment_execution_image, DeploymentExecutionImage, DeploymentExecutionLimits,
+    LinkLimits,
+};
+use skiff_runtime_loader::load_deployment_bytecode_from_store;
+use std::sync::Arc;
 
 const PROFILE: &str = "skiff-test";
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -29,6 +40,11 @@ pub struct PublishedFixture {
     pub package: PackageArtifactRef,
     pub deployment: ServiceDeploymentRef,
     pub receipt: Value,
+}
+
+pub struct GatewayFacts {
+    pub ingress: IngressSelector,
+    pub identity: GatewayEntryIdentity,
 }
 
 #[derive(Clone, Copy)]
@@ -126,6 +142,66 @@ impl FixtureSpec {
     }
 }
 
+impl PublishedFixture {
+    pub fn store(&self) -> CanonicalArtifactStore {
+        CanonicalArtifactStore::open(&self.artifact_root).expect("open published carrier store")
+    }
+
+    pub fn package_artifact(&self) -> Arc<PackageArtifact> {
+        self.store()
+            .read_package_artifact(&self.package)
+            .expect("read published carrier package")
+    }
+
+    pub fn deployment_artifact(&self) -> Arc<ServiceDeployment> {
+        self.store()
+            .read_service_deployment(&self.deployment)
+            .expect("read published carrier deployment")
+    }
+
+    pub fn bytecode(&self) -> Arc<ValidatedBytecodeArtifact> {
+        let package = self.package_artifact();
+        let bytecode = package
+            .bytecode
+            .as_ref()
+            .expect("admitted carrier package has bytecode");
+        self.store()
+            .read_package_bytecode(&self.package, bytecode)
+            .expect("read admitted carrier bytecode")
+    }
+
+    pub fn gateway(&self, path: &str) -> GatewayFacts {
+        let deployment = self.deployment_artifact();
+        let binding = deployment
+            .ingress
+            .iter()
+            .find(|binding| {
+                binding.selector.protocol == IngressProtocol::Http
+                    && binding.selector.method.as_deref() == Some("POST")
+                    && binding.selector.path == path
+            })
+            .unwrap_or_else(|| panic!("published carrier has POST {path}"));
+        let gateway = deployment
+            .gateway_entries
+            .get(&binding.gateway_entry_key)
+            .expect("published carrier ingress has gateway entry");
+        GatewayFacts {
+            ingress: binding.selector.clone(),
+            identity: gateway.gateway_entry_identity.clone(),
+        }
+    }
+
+    pub fn link(&self) -> Arc<DeploymentExecutionImage> {
+        let store = self.store();
+        let hydrated = load_deployment_bytecode_from_store(&store, &self.deployment)
+            .expect("hydrate admitted carrier through production loader");
+        Arc::new(
+            link_deployment_execution_image(hydrated, &production_execution_limits())
+                .expect("link and verify admitted carrier through production linker"),
+        )
+    }
+}
+
 struct TempRoot(PathBuf);
 
 impl TempRoot {
@@ -165,4 +241,47 @@ fn error_chain(mut error: &(dyn std::error::Error + 'static)) -> String {
         error = source;
     }
     parts.join(" :: ")
+}
+
+fn production_execution_limits() -> DeploymentExecutionLimits {
+    DeploymentExecutionLimits::new(
+        LinkLimits {
+            max_packages: 256,
+            max_root_specializations: 100_000,
+            max_specializations: 1_000_000,
+            max_code_words_per_function: 1_000_000,
+            max_total_code_words: 100_000_000,
+            max_relocations_per_function: 100_000,
+            max_total_relocations: 10_000_000,
+            max_image_table_entries: 1_000_000,
+            max_total_image_table_entries: 10_000_000,
+            max_total_function_table_entries: 10_000_000,
+            max_type_nesting_depth: 64,
+            max_expanded_type_nodes: 1_000_000,
+            max_expanded_type_bytes: 64 * 1024 * 1024,
+            max_constant_graph_nodes: 1_000_000,
+            max_constant_graph_edges: 1_000_000,
+        },
+        VerificationLimits {
+            max_functions: 100_000,
+            max_total_instructions: 100_000_000,
+            max_instructions_per_function: 1_000_000,
+            max_frame_slots_per_function: 65_536,
+            max_operand_depth: 65_536,
+            max_control_flow_edges_per_function: 1_000_000,
+            max_exception_regions_per_function: 1_000_000,
+            max_switch_targets_per_function: 65_536,
+            max_statement_events_per_pc: 100_000,
+            max_statement_events_per_function: 1_000_000,
+            max_total_statement_events: 10_000_000,
+            max_source_map_entries_per_function: 1_000_000,
+            max_image_table_entries: 1_000_000,
+            max_arity: 256,
+            max_callback_captures_per_callback: 4_096,
+            max_type_nesting_depth: 64,
+            max_value_lifecycle_nodes: 1_000_000,
+            max_value_lifecycle_canonical_bytes: 64 * 1024 * 1024,
+            max_constant_graph_edges: 1_000_000,
+        },
+    )
 }

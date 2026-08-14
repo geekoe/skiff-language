@@ -1,5 +1,7 @@
 #[path = "bytecode_vm_phase_5/fixture.rs"]
 mod fixture;
+#[path = "bytecode_vm_phase_5/stages.rs"]
+mod stages;
 #[path = "bytecode_vm_phase_5/tcp_server.rs"]
 mod tcp_server;
 
