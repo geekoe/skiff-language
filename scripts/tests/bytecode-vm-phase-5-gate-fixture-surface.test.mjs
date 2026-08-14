@@ -19,8 +19,17 @@ test('positive fixture is the rawHttp serverStream carrier consumed by Rust proo
   assert.equal((source.match(/std\.http\.stream\(/g) ?? []).length, 4);
   assert.match(source, /for chunk in left\.body/);
   assert.match(source, /for chunk in right\.body/);
-  assert.match(source, /std\.http\.streamStart\(207/);
-  assert.match(source, /std\.http\.streamEnd\(\)/);
+  const dropLeftOffset = source.indexOf('function dropLeft(');
+  assert.notEqual(dropLeftOffset, -1);
+  const runSource = source.slice(0, dropLeftOffset);
+  const dropLeftSource = source.slice(dropLeftOffset);
+  assert.match(runSource, /emit\(\{ tag: "start", status: 207, headers: headers\(\) \}\)/);
+  assert.equal((runSource.match(/emit\(\{ tag: "chunk", value:/g) ?? []).length, 6);
+  assert.equal((runSource.match(/emit\(\{ tag: "end" \}\)/g) ?? []).length, 1);
+  assert.match(dropLeftSource, /emit\(\{ tag: "start", status: 208, headers: headers\(\) \}\)/);
+  assert.equal((dropLeftSource.match(/emit\(\{ tag: "chunk", value:/g) ?? []).length, 2);
+  assert.equal((dropLeftSource.match(/emit\(\{ tag: "end" \}\)/g) ?? []).length, 1);
+  assert.doesNotMatch(source, /std\.http\.stream(?:Start|Chunk|End)\(/);
   assert.doesNotMatch(source, /phase5\.test|127\.0\.0\.1:0/);
 });
 

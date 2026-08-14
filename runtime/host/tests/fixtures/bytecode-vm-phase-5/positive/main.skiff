@@ -29,14 +29,14 @@ function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStrea
     rightBody = rightBody.concat(chunk.toUtf8String())
   }
 
-  emit(std.http.streamStart(207, headers()))
-  emit(std.http.streamChunk(bytes.fromUtf8("U=")))
-  emit(std.http.streamChunk(unary.body))
-  emit(std.http.streamChunk(bytes.fromUtf8("|A=")))
-  emit(std.http.streamChunk(bytes.fromUtf8(leftBody)))
-  emit(std.http.streamChunk(bytes.fromUtf8("|B=")))
-  emit(std.http.streamChunk(bytes.fromUtf8(rightBody)))
-  emit(std.http.streamEnd())
+  emit({ tag: "start", status: 207, headers: headers() })
+  emit({ tag: "chunk", value: bytes.fromUtf8("U=") })
+  emit({ tag: "chunk", value: unary.body })
+  emit({ tag: "chunk", value: bytes.fromUtf8("|A=") })
+  emit({ tag: "chunk", value: bytes.fromUtf8(leftBody) })
+  emit({ tag: "chunk", value: bytes.fromUtf8("|B=") })
+  emit({ tag: "chunk", value: bytes.fromUtf8(rightBody) })
+  emit({ tag: "end" })
   return null
 }
 
@@ -53,9 +53,9 @@ function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponse
   for chunk in right.body {
     rightBody = rightBody.concat(chunk.toUtf8String())
   }
-  emit(std.http.streamStart(208, headers()))
-  emit(std.http.streamChunk(bytes.fromUtf8("A=".concat(firstLeft))))
-  emit(std.http.streamChunk(bytes.fromUtf8("|B=".concat(rightBody))))
-  emit(std.http.streamEnd())
+  emit({ tag: "start", status: 208, headers: headers() })
+  emit({ tag: "chunk", value: bytes.fromUtf8("A=".concat(firstLeft)) })
+  emit({ tag: "chunk", value: bytes.fromUtf8("|B=".concat(rightBody)) })
+  emit({ tag: "end" })
   return null
 }
