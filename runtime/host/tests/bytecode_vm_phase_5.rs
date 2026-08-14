@@ -2,6 +2,8 @@
 mod fixture;
 #[path = "bytecode_vm_phase_5/host_chain.rs"]
 mod host_chain;
+#[path = "bytecode_vm_phase_5/host_harness.rs"]
+mod host_harness;
 #[path = "bytecode_vm_phase_5/runtime.rs"]
 mod runtime;
 #[path = "bytecode_vm_phase_5/stages.rs"]

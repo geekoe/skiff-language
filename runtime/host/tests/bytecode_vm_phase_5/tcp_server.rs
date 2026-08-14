@@ -234,7 +234,9 @@ fn serve_connection(mut stream: TcpStream, shared: &Shared) {
     );
 
     if path == "/request" {
-        wait_for_release(shared, &path);
+        if !wait_for_release(shared, &path) {
+            return;
+        }
         write_fixed(&mut stream, 200, b"UNARY");
         mark_head(shared, ordinal);
         return;
@@ -253,14 +255,18 @@ fn serve_connection(mut stream: TcpStream, shared: &Shared) {
     };
     write_chunked_head(&mut stream, 200);
     mark_head(shared, ordinal);
-    wait_for_release(shared, &path);
+    if !wait_for_release(shared, &path) {
+        return;
+    }
     if path == "/stream/drop-left" {
         write_chunk(&mut stream, chunks[0]);
         mark_chunk(shared, ordinal);
         if wait_for_peer_close(&mut stream, shared) {
             mark_peer_closed(shared, ordinal);
         }
-        wait_for_release(shared, "/stream/drop-left#late");
+        if !wait_for_release(shared, "/stream/drop-left#late") {
+            return;
+        }
         mark_late_chunk_attempted(shared, ordinal);
         let _ = write_chunk_fallible(&mut stream, chunks[1]);
         return;
@@ -294,7 +300,7 @@ fn read_request(stream: &mut TcpStream) -> (String, String) {
     (method, path)
 }
 
-fn wait_for_release(shared: &Shared, path: &str) {
+fn wait_for_release(shared: &Shared, path: &str) -> bool {
     let mut state = shared
         .state
         .lock()
@@ -305,6 +311,7 @@ fn wait_for_release(shared: &Shared, path: &str) {
             .wait(state)
             .unwrap_or_else(|error| error.into_inner());
     }
+    state.released.contains(path)
 }
 
 fn record(shared: &Shared, observation: RequestObservation) {
