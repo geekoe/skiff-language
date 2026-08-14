@@ -5,6 +5,7 @@ use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex, InterfaceTableIndex,
     LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex, SyntheticCallbackIndex,
+    TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -496,19 +497,34 @@ impl VmRootSource for StreamInvocation {
 #[must_use = "a stream item owns its value and unique continuation authority"]
 pub struct StreamItem {
     item: VmOwnedValues,
+    item_type: TypeIndex,
+    plan: LinkedValueTransferPlan,
+    function: FunctionIndex,
+    instruction: InstructionIndex,
     resume: VmResumeToken,
 }
 
 impl StreamItem {
     #[allow(dead_code)]
-    pub(crate) fn new(item: VmOwnedValues, resume: VmResumeToken) -> Result<Self, VmError> {
-        if resume.authority != VmResumeAuthority::StreamItem
-            || !Arc::ptr_eq(item.image(), resume.image())
-            || item.len() != 1
-        {
-            return Err(VmError::ResumeTokenMismatch);
+    pub(crate) fn new(
+        item: VmOwnedValues,
+        item_type: TypeIndex,
+        plan: LinkedValueTransferPlan,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        resume: VmResumeToken,
+    ) -> Self {
+        debug_assert_eq!(resume.authority, VmResumeAuthority::StreamItem);
+        debug_assert!(Arc::ptr_eq(item.image(), resume.image()));
+        debug_assert_eq!(item.len(), 1);
+        Self {
+            item,
+            item_type,
+            plan,
+            function,
+            instruction,
+            resume,
         }
-        Ok(Self { item, resume })
     }
 
     pub const fn item(&self) -> &VmOwnedValues {
@@ -519,20 +535,29 @@ impl StreamItem {
         &self.resume
     }
 
-    /// Scheduler-TCB seam: the item and token remain one logical handoff.
-    pub fn into_parts(self) -> (VmOwnedValues, VmResumeToken) {
-        (self.item, self.resume)
+    /// Exact verified type of the sole item transferred from the producer's
+    /// linked operand stack.
+    pub const fn item_type(&self) -> TypeIndex {
+        self.item_type
     }
 
-    /// Backpressure handoff: keeps the item supervisor-owned and creates the
-    /// pending authority that parks this exact stream resume.
-    ///
-    /// The item and pending operation must remain one logical handoff, so the
-    /// supervisor stores the item and publishes the operation without
-    /// exchanging either part with another stream emission.
-    pub fn into_pending(self, ticket: PendingTicket) -> (VmOwnedValues, PendingOperation) {
-        let (item, resume) = self.into_parts();
-        (item, resume.into_pending(ticket))
+    /// Releases the emitted owner through its exact linked lifecycle plan on
+    /// the request heap thread, then returns the unique zero-result resume.
+    /// No VM value crosses an actual-Pending writer flush.
+    pub fn release(self, heap: &mut dyn VmHeap) -> Result<VmResumeToken, VmError> {
+        let Self {
+            item,
+            item_type: _,
+            plan,
+            function,
+            instruction,
+            resume,
+        } = self;
+        let mut executor = LifecycleExecutor::new(heap);
+        executor
+            .release_batch(item.values(), std::slice::from_ref(&plan))
+            .map_err(|error| error.into_vm_error(function, instruction, Opcode::EmitStream))?;
+        Ok(resume)
     }
 }
 
@@ -741,8 +766,8 @@ mod tests {
     };
 
     use super::{
-        PendingOperation, PendingTicket, ResumeOutcome, StreamItem, VmControl, VmError,
-        VmOwnedValues, VmResumeToken,
+        PendingOperation, PendingTicket, ResumeOutcome, VmControl, VmError, VmOwnedValues,
+        VmResumeToken,
     };
 
     #[test]
@@ -805,17 +830,5 @@ mod tests {
         let _: fn() -> ResumeOutcome = || ResumeOutcome::Empty;
         let _: fn() -> ResumeOutcome = || ResumeOutcome::StreamEnd;
         let _: fn(VmError) -> ResumeOutcome = ResumeOutcome::Failure;
-    }
-
-    #[test]
-    fn stream_item_backpressure_handoff_keeps_item_and_pending_authority() {
-        fn into_pending(
-            item: StreamItem,
-            ticket: PendingTicket,
-        ) -> (VmOwnedValues, PendingOperation) {
-            item.into_pending(ticket)
-        }
-
-        let _ = into_pending;
     }
 }

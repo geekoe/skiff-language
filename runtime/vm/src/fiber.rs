@@ -3585,10 +3585,38 @@ impl VmFiber {
                 opcode: Opcode::EmitStream,
             });
         }
-        let item = self.pop_operands(1, false)?;
+        let frame = self.current_frame()?.clone();
+        if frame.operand_height() < 1 {
+            return Err(VmError::OperandStackUnderflow {
+                function,
+                needed: 1,
+                available: frame.operand_height(),
+            });
+        }
+        let (item_type, item_plan) = self.operand_type_and_plan(&frame, instruction, 0)?;
+        if !LifecycleExecutor::supports_release(&item_plan) {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::EmitStream,
+            });
+        }
+        let remaining_height = frame.operand_height() - 1;
+        let item_index = frame
+            .operand_base()
+            .checked_add(remaining_height)
+            .filter(|index| *index < self.values.len() && *index < self.live_values.len())
+            .ok_or(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            })?;
+        if !self.live_values[item_index] {
+            return Err(VmError::DeadValueRead {
+                location: VmValueLocation::Operand(remaining_height),
+            });
+        }
+        let item = self.values[item_index];
         let expected_stack_height =
-            self.current_frame()?
-                .operand_height()
+            remaining_height
                 .try_into()
                 .map_err(|_| VmError::VerifiedEntryInvariant {
                     invariant: VmVerifiedInvariant::FrameLayoutOverflow,
@@ -3609,10 +3637,22 @@ impl VmFiber {
             0,
         )?;
         let stream_item = StreamItem::new(
-            VmOwnedValues::new(Arc::clone(self.entry.image()), item.into_boxed_slice()),
+            VmOwnedValues::new(Arc::clone(self.entry.image()), Box::new([item])),
+            item_type,
+            item_plan,
+            function,
+            instruction,
             token,
-        )
-        .map_err(|_| VmError::ResumeTokenMismatch)?;
+        );
+        // Every fallible validation and continuation mint completed before
+        // this physical ownership transfer. No `?`, callback or allocation is
+        // permitted between clearing the source slot and returning the sealed
+        // stream-item owner.
+        self.clear_value(item_index);
+        self.frames
+            .last_mut()
+            .expect("validated runnable EmitStream retains its current frame")
+            .set_operand_height(remaining_height);
         self.state = VmFiberState::WaitingHost;
         Ok(DispatchOutcome::Handoff(VmControl::EmitStream(stream_item)))
     }
@@ -4006,6 +4046,34 @@ impl VmFiber {
             },
         )?;
         self.stack_map_operand_plan(frame.function(), instruction, position)
+    }
+
+    fn operand_type_and_plan(
+        &self,
+        frame: &VmFrame,
+        instruction: InstructionIndex,
+        from_top: usize,
+    ) -> Result<(TypeIndex, LinkedValueTransferPlan), VmError> {
+        let position = frame.operand_height().checked_sub(from_top + 1).ok_or(
+            VmError::OperandStackUnderflow {
+                function: frame.function(),
+                needed: from_top + 1,
+                available: frame.operand_height(),
+            },
+        )?;
+        let value = self
+            .function(frame.function())?
+            .stack_map()
+            .entries()
+            .get(instruction.get() as usize)
+            .filter(|entry| entry.instruction() == instruction)
+            .and_then(|entry| entry.stack_before().get(position))
+            .ok_or(VmError::OperandStackShapeMismatch {
+                function: frame.function(),
+                expected: position + 1,
+                actual: frame.operand_height(),
+            })?;
+        Ok((value.ty(), value.plan().clone()))
     }
 
     fn stack_map_operand_plan(

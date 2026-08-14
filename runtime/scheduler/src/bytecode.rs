@@ -130,6 +130,17 @@ pub trait BytecodeUnit: VmRootSource {
         Ok(())
     }
 
+    /// Releases an emitted item rejected because no stream supervisor owns
+    /// the request. VM units use the exact linked item plan on the current
+    /// heap thread before the scheduler reports the missing port.
+    fn release_rejected_stream_item(
+        item: Self::StreamItem,
+        _heap: &mut dyn VmHeap,
+    ) -> Result<(), BytecodeSchedulerError> {
+        drop(item);
+        Ok(())
+    }
+
     /// Reports whether a child invocation is a `StreamNext` consumer poll.
     ///
     /// Scheduler-neutral fixtures can override this with their own invocation
@@ -475,11 +486,10 @@ where
                     }
                 }
                 BytecodeControl::EmitStream(item) => {
-                    let supervisor = self
-                        .ports
-                        .stream_supervisor
-                        .as_ref()
-                        .ok_or(BytecodeSchedulerError::UnsupportedStream)?;
+                    let Some(supervisor) = self.ports.stream_supervisor.as_ref() else {
+                        U::release_rejected_stream_item(item, heap)?;
+                        return Err(BytecodeSchedulerError::UnsupportedStream);
+                    };
                     let depth = self.trampoline.blocked_depth();
                     match supervisor.emit_stream_handoff(item, depth, heap, budget)? {
                         BytecodeStreamHandoff::Ready(handoff) => {
@@ -632,6 +642,15 @@ impl BytecodeUnit for VmFiber {
             .map_err(BytecodeSchedulerError::from)
     }
 
+    fn release_rejected_stream_item(
+        item: VmStreamItem,
+        heap: &mut dyn VmHeap,
+    ) -> Result<(), BytecodeSchedulerError> {
+        item.release(heap)
+            .map(|_resume| ())
+            .map_err(BytecodeSchedulerError::from)
+    }
+
     fn is_stream_next_child(invocation: &VmChildInvocation) -> bool {
         invocation.target() == ChildTarget::StreamNext
     }
@@ -776,6 +795,60 @@ mod tests {
             _heap: &mut dyn VmHeap,
         ) -> Result<(), BytecodeSchedulerError> {
             invocation.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct RejectedStreamProbe {
+        release_count: Arc<AtomicUsize>,
+        emitted: bool,
+    }
+
+    impl VmRootSource for RejectedStreamProbe {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl BytecodeUnit for RejectedStreamProbe {
+        type ResumeToken = usize;
+        type ResumeOutcome = TestResumeOutcome;
+        type RootResult = usize;
+        type ChildInvocation = usize;
+        type AdapterInvocation = usize;
+        type StreamItem = Arc<AtomicUsize>;
+        type PendingOperation = usize;
+
+        fn run_segment(
+            &mut self,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> BytecodeUnitControl<Self> {
+            if self.emitted {
+                BytecodeControl::Complete(0)
+            } else {
+                self.emitted = true;
+                BytecodeControl::EmitStream(Arc::clone(&self.release_count))
+            }
+        }
+
+        fn resume(
+            &mut self,
+            _token: Self::ResumeToken,
+            _outcome: Self::ResumeOutcome,
+        ) -> Result<(), BytecodeSchedulerError> {
+            Ok(())
+        }
+
+        fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome {
+            TestResumeOutcome(completed)
+        }
+
+        fn release_rejected_stream_item(
+            item: Self::StreamItem,
+            _heap: &mut dyn VmHeap,
+        ) -> Result<(), BytecodeSchedulerError> {
+            item.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -1379,6 +1452,25 @@ mod tests {
         assert!(matches!(
             scheduler.run(&mut NoopHeap, &mut NoopBudget),
             Err(BytecodeSchedulerError::UnsupportedAdapter)
+        ));
+        assert_eq!(release_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn phase_5_stream_missing_supervisor_releases_emitted_item_once() {
+        let release_count = Arc::new(AtomicUsize::new(0));
+        let scheduler = BytecodeScheduler::new(
+            RejectedStreamProbe {
+                release_count: Arc::clone(&release_count),
+                emitted: false,
+            },
+            BytecodeSchedulerPorts::default(),
+            child_registration(),
+        );
+
+        assert!(matches!(
+            scheduler.run(&mut NoopHeap, &mut NoopBudget),
+            Err(BytecodeSchedulerError::UnsupportedStream)
         ));
         assert_eq!(release_count.load(Ordering::SeqCst), 1);
     }

@@ -2,6 +2,7 @@ use std::{
     collections::HashMap,
     fmt,
     future::Future,
+    num::NonZeroUsize,
     pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -31,6 +32,7 @@ pub enum RequestResourceTermination {
     Deadline,
     RouterDisconnected,
     WriterFailed,
+    ResponseLimitExceeded,
     RequestNotStarted,
     RequestCompleted,
     RequestFailed,
@@ -88,11 +90,164 @@ pub trait RequestByteStreamSource: VmRootSource + Send + 'static {
     fn terminate(self: Box<Self>, termination: RequestResourceTermination);
 }
 
+/// Closed event vocabulary owned by the request's server-response stream.
+/// Payload bytes and headers remain in the request crate; the central table
+/// owns only protocol order, sequence allocation and the single in-flight
+/// flush permit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestServerStreamEventKind {
+    Start,
+    Chunk { payload_bytes: usize },
+    End,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RequestServerStreamReservationFacts {
+    operation: u64,
+    kind: RequestServerStreamEventKind,
+    sequence: Option<u64>,
+    emitted_bytes_after: usize,
+}
+
+/// Opaque exact reservation for one capacity-one writer flush.
+///
+/// Only the resource table can mint this value. The request driver may copy it
+/// into a heap-free completion payload, but cannot change its handle,
+/// operation, event kind or allocated sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestServerStreamReservation {
+    handle: RequestResourceHandle,
+    facts: RequestServerStreamReservationFacts,
+}
+
+impl RequestServerStreamReservation {
+    pub const fn handle(self) -> RequestResourceHandle {
+        self.handle
+    }
+
+    pub const fn kind(self) -> RequestServerStreamEventKind {
+        self.facts.kind
+    }
+
+    pub const fn sequence(self) -> Option<u64> {
+        self.facts.sequence
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestServerStreamReserveError {
+    FlushInProgress,
+    InvalidTransition,
+    SequenceExhausted,
+    ResponseLimitExceeded {
+        limit_bytes: usize,
+        emitted_bytes: usize,
+        chunk_bytes: usize,
+    },
+    Terminated,
+    WrongResourceKind,
+    Lookup(RequestResourceLookupError),
+}
+
+impl fmt::Display for RequestServerStreamReserveError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FlushInProgress => {
+                formatter.write_str("server response stream already has a flush in progress")
+            }
+            Self::InvalidTransition => {
+                formatter.write_str("server response stream event is out of order")
+            }
+            Self::SequenceExhausted => {
+                formatter.write_str("server response stream sequence space is exhausted")
+            }
+            Self::ResponseLimitExceeded {
+                limit_bytes,
+                emitted_bytes,
+                chunk_bytes,
+            } => write!(
+                formatter,
+                "server response stream exceeds {limit_bytes} byte limit after {emitted_bytes} emitted bytes with a {chunk_bytes} byte chunk"
+            ),
+            Self::Terminated => formatter.write_str("server response stream is terminated"),
+            Self::WrongResourceKind => {
+                formatter.write_str("request resource is not a server response stream")
+            }
+            Self::Lookup(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for RequestServerStreamReserveError {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestServerStreamFlushCompletion {
+    Committed,
+    AlreadyCommitted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestServerStreamFlushError {
+    WrongOperation,
+    Terminated,
+    WrongResourceKind,
+    Lookup(RequestResourceLookupError),
+}
+
+impl fmt::Display for RequestServerStreamFlushError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::WrongOperation => "server response stream flush reservation does not match",
+            Self::Terminated => "server response stream is terminated",
+            Self::WrongResourceKind => "request resource is not a server response stream",
+            Self::Lookup(error) => return error.fmt(formatter),
+        })
+    }
+}
+
+impl std::error::Error for RequestServerStreamFlushError {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestServerStreamPhase {
+    AwaitingStart,
+    Streaming,
+    Ended,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestServerStreamSnapshot {
+    pub phase: RequestServerStreamPhase,
+    pub next_sequence: u64,
+    pub flush_in_progress: bool,
+    pub emitted_bytes: usize,
+    pub max_response_bytes: usize,
+}
+
 pub(crate) trait RequestResourceState: VmRootSource + Send + 'static {
     fn start_byte_stream_pull(
         &self,
     ) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError> {
         Err(RequestByteStreamPullStartError::WrongResourceKind)
+    }
+
+    fn reserve_server_stream(
+        &mut self,
+        _kind: RequestServerStreamEventKind,
+    ) -> Result<RequestServerStreamReservationFacts, RequestServerStreamReserveError> {
+        Err(RequestServerStreamReserveError::WrongResourceKind)
+    }
+
+    fn complete_server_stream_flush(
+        &mut self,
+        _facts: RequestServerStreamReservationFacts,
+    ) -> Result<RequestServerStreamFlushCompletion, RequestServerStreamFlushError> {
+        Err(RequestServerStreamFlushError::WrongResourceKind)
+    }
+
+    fn server_stream_snapshot(
+        &self,
+    ) -> Result<RequestServerStreamSnapshot, RequestServerStreamFlushError> {
+        Err(RequestServerStreamFlushError::WrongResourceKind)
     }
 
     fn terminate(self: Box<Self>, termination: RequestResourceTermination);
@@ -118,6 +273,145 @@ impl RequestResourceState for RequestByteStreamResource {
     fn terminate(self: Box<Self>, termination: RequestResourceTermination) {
         self.source.terminate(termination);
     }
+}
+
+struct RequestServerStreamResource {
+    phase: RequestServerStreamPhase,
+    next_sequence: u64,
+    next_operation: u64,
+    in_flight: Option<RequestServerStreamReservationFacts>,
+    last_committed: Option<RequestServerStreamReservationFacts>,
+    emitted_bytes: usize,
+    max_response_bytes: usize,
+}
+
+impl RequestServerStreamResource {
+    fn new(max_response_bytes: usize) -> Self {
+        Self {
+            phase: RequestServerStreamPhase::AwaitingStart,
+            next_sequence: 0,
+            next_operation: 1,
+            in_flight: None,
+            last_committed: None,
+            emitted_bytes: 0,
+            max_response_bytes,
+        }
+    }
+}
+
+impl VmRootSource for RequestServerStreamResource {
+    fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+}
+
+impl RequestResourceState for RequestServerStreamResource {
+    fn reserve_server_stream(
+        &mut self,
+        kind: RequestServerStreamEventKind,
+    ) -> Result<RequestServerStreamReservationFacts, RequestServerStreamReserveError> {
+        if self.in_flight.is_some() {
+            return Err(RequestServerStreamReserveError::FlushInProgress);
+        }
+        let (sequence, emitted_bytes_after) = match (self.phase, kind) {
+            (RequestServerStreamPhase::AwaitingStart, RequestServerStreamEventKind::Start) => {
+                (None, self.emitted_bytes)
+            }
+            (
+                RequestServerStreamPhase::Streaming,
+                RequestServerStreamEventKind::Chunk { payload_bytes },
+            ) => {
+                if self.next_sequence == u64::MAX {
+                    return Err(RequestServerStreamReserveError::SequenceExhausted);
+                }
+                let emitted_bytes_after = self.emitted_bytes.checked_add(payload_bytes).ok_or(
+                    RequestServerStreamReserveError::ResponseLimitExceeded {
+                        limit_bytes: self.max_response_bytes,
+                        emitted_bytes: self.emitted_bytes,
+                        chunk_bytes: payload_bytes,
+                    },
+                )?;
+                if emitted_bytes_after > self.max_response_bytes {
+                    return Err(RequestServerStreamReserveError::ResponseLimitExceeded {
+                        limit_bytes: self.max_response_bytes,
+                        emitted_bytes: self.emitted_bytes,
+                        chunk_bytes: payload_bytes,
+                    });
+                }
+                (Some(self.next_sequence), emitted_bytes_after)
+            }
+            (RequestServerStreamPhase::Streaming, RequestServerStreamEventKind::End) => {
+                (None, self.emitted_bytes)
+            }
+            (RequestServerStreamPhase::Ended, _) => {
+                return Err(RequestServerStreamReserveError::Terminated);
+            }
+            _ => return Err(RequestServerStreamReserveError::InvalidTransition),
+        };
+        let operation = self.next_operation;
+        self.next_operation = self
+            .next_operation
+            .checked_add(1)
+            .ok_or(RequestServerStreamReserveError::SequenceExhausted)?;
+        let facts = RequestServerStreamReservationFacts {
+            operation,
+            kind,
+            sequence,
+            emitted_bytes_after,
+        };
+        self.in_flight = Some(facts);
+        Ok(facts)
+    }
+
+    fn complete_server_stream_flush(
+        &mut self,
+        facts: RequestServerStreamReservationFacts,
+    ) -> Result<RequestServerStreamFlushCompletion, RequestServerStreamFlushError> {
+        if self.last_committed == Some(facts) && self.in_flight.is_none() {
+            return Ok(RequestServerStreamFlushCompletion::AlreadyCommitted);
+        }
+        if self.in_flight != Some(facts) {
+            return Err(RequestServerStreamFlushError::WrongOperation);
+        }
+        match facts.kind {
+            RequestServerStreamEventKind::Start => {
+                self.phase = RequestServerStreamPhase::Streaming;
+            }
+            RequestServerStreamEventKind::Chunk { .. } => {
+                let expected = facts
+                    .sequence
+                    .ok_or(RequestServerStreamFlushError::WrongOperation)?;
+                if expected != self.next_sequence {
+                    return Err(RequestServerStreamFlushError::WrongOperation);
+                }
+                self.next_sequence = self
+                    .next_sequence
+                    .checked_add(1)
+                    .ok_or(RequestServerStreamFlushError::WrongOperation)?;
+                self.emitted_bytes = facts.emitted_bytes_after;
+            }
+            RequestServerStreamEventKind::End => {
+                self.phase = RequestServerStreamPhase::Ended;
+            }
+        }
+        self.in_flight = None;
+        self.last_committed = Some(facts);
+        Ok(RequestServerStreamFlushCompletion::Committed)
+    }
+
+    fn server_stream_snapshot(
+        &self,
+    ) -> Result<RequestServerStreamSnapshot, RequestServerStreamFlushError> {
+        Ok(RequestServerStreamSnapshot {
+            phase: self.phase,
+            next_sequence: self.next_sequence,
+            flush_in_progress: self.in_flight.is_some(),
+            emitted_bytes: self.emitted_bytes,
+            max_response_bytes: self.max_response_bytes,
+        })
+    }
+
+    fn terminate(self: Box<Self>, _termination: RequestResourceTermination) {}
 }
 
 const RESOURCE_OWNER_SHIFT: u32 = 32;
@@ -250,6 +544,7 @@ pub enum RequestResourceRegistrationError {
     OwnerSpaceExhausted,
     TableClosed,
     SlotSpaceExhausted,
+    ServerResponseStreamAlreadyRegistered,
 }
 
 impl fmt::Display for RequestResourceRegistrationError {
@@ -263,6 +558,9 @@ impl fmt::Display for RequestResourceRegistrationError {
             Self::SlotSpaceExhausted => {
                 formatter.write_str("request resource slot space is exhausted")
             }
+            Self::ServerResponseStreamAlreadyRegistered => {
+                formatter.write_str("request already owns a server response stream")
+            }
         }
     }
 }
@@ -271,7 +569,10 @@ impl std::error::Error for RequestResourceRegistrationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::OwnerCreation(error) => Some(error),
-            Self::OwnerSpaceExhausted | Self::TableClosed | Self::SlotSpaceExhausted => None,
+            Self::OwnerSpaceExhausted
+            | Self::TableClosed
+            | Self::SlotSpaceExhausted
+            | Self::ServerResponseStreamAlreadyRegistered => None,
         }
     }
 }
@@ -411,6 +712,35 @@ impl RequestResourceEntry {
             .ok_or(RequestByteStreamPullStartError::Terminated)?
             .start_byte_stream_pull()
     }
+
+    fn reserve_server_stream(
+        &mut self,
+        kind: RequestServerStreamEventKind,
+    ) -> Result<RequestServerStreamReservationFacts, RequestServerStreamReserveError> {
+        self.state
+            .as_mut()
+            .ok_or(RequestServerStreamReserveError::Terminated)?
+            .reserve_server_stream(kind)
+    }
+
+    fn complete_server_stream_flush(
+        &mut self,
+        facts: RequestServerStreamReservationFacts,
+    ) -> Result<RequestServerStreamFlushCompletion, RequestServerStreamFlushError> {
+        self.state
+            .as_mut()
+            .ok_or(RequestServerStreamFlushError::Terminated)?
+            .complete_server_stream_flush(facts)
+    }
+
+    fn server_stream_snapshot(
+        &self,
+    ) -> Result<RequestServerStreamSnapshot, RequestServerStreamFlushError> {
+        self.state
+            .as_ref()
+            .ok_or(RequestServerStreamFlushError::Terminated)?
+            .server_stream_snapshot()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -454,6 +784,7 @@ enum RequestResourceTablePhase {
 
 struct RequestResourceTableState {
     phase: RequestResourceTablePhase,
+    server_response_stream_registered: bool,
     next_slot: u32,
     free_slots: Vec<RequestResourceSlot>,
     generations: HashMap<RequestResourceSlot, RequestResourceGeneration>,
@@ -465,6 +796,7 @@ impl RequestResourceTableState {
     fn open() -> Self {
         Self {
             phase: RequestResourceTablePhase::Open,
+            server_response_stream_registered: false,
             next_slot: 1,
             free_slots: Vec::new(),
             generations: HashMap::new(),
@@ -587,6 +919,12 @@ pub struct RequestResourceTable {
     owner_registration: ResourceOwnerRegistration,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestResourceRegistrationKind {
+    General,
+    ServerResponseStream,
+}
+
 /// Opaque root-only pin to one request's exact resource table.
 ///
 /// This capability exposes neither registration nor lifecycle transitions. It
@@ -630,6 +968,14 @@ impl RequestResourceTable {
         &self,
         state: Box<dyn RequestResourceState>,
     ) -> Result<RequestResourceHandle, RequestResourceRegistrationFailure> {
+        self.register_with_kind(state, RequestResourceRegistrationKind::General)
+    }
+
+    fn register_with_kind(
+        &self,
+        state: Box<dyn RequestResourceState>,
+        kind: RequestResourceRegistrationKind,
+    ) -> Result<RequestResourceHandle, RequestResourceRegistrationFailure> {
         let Some(table_owner) = self.shared.owner else {
             return Err(RequestResourceRegistrationFailure {
                 reason: RequestResourceRegistrationError::OwnerSpaceExhausted,
@@ -654,6 +1000,16 @@ impl RequestResourceTable {
                 state,
             });
         }
+        if kind == RequestResourceRegistrationKind::ServerResponseStream
+            && table.server_response_stream_registered
+        {
+            drop(table);
+            drop(owner);
+            return Err(RequestResourceRegistrationFailure {
+                reason: RequestResourceRegistrationError::ServerResponseStreamAlreadyRegistered,
+                state,
+            });
+        }
         let key = match table.mint_key() {
             Ok(key) => key,
             Err(reason) => {
@@ -667,6 +1023,9 @@ impl RequestResourceTable {
             (key.generation, RequestResourceEntry::unarmed(state)),
         );
         assert!(previous.is_none(), "a minted resource slot is vacant");
+        if kind == RequestResourceRegistrationKind::ServerResponseStream {
+            table.server_response_stream_registered = true;
+        }
         let lease = owner.commit();
         table
             .entries
@@ -686,6 +1045,28 @@ impl RequestResourceTable {
         source: Box<dyn RequestByteStreamSource>,
     ) -> Result<RequestResourceHandle, RequestResourceRegistrationError> {
         match self.register(Box::new(RequestByteStreamResource { source })) {
+            Ok(handle) => Ok(handle),
+            Err(failure) => {
+                let reason = failure.reason();
+                failure
+                    .into_state()
+                    .terminate(RequestResourceTermination::HostError);
+                Err(reason)
+            }
+        }
+    }
+
+    /// Installs the request's sole server-response stream state. The table,
+    /// not the transport writer, owns event order, sequence allocation,
+    /// response-byte accounting and the capacity-one in-flight permit.
+    pub fn register_server_response_stream(
+        &self,
+        max_response_bytes: NonZeroUsize,
+    ) -> Result<RequestResourceHandle, RequestResourceRegistrationError> {
+        match self.register_with_kind(
+            Box::new(RequestServerStreamResource::new(max_response_bytes.get())),
+            RequestResourceRegistrationKind::ServerResponseStream,
+        ) {
             Ok(handle) => Ok(handle),
             Err(failure) => {
                 let reason = failure.reason();
@@ -817,6 +1198,84 @@ impl RequestResourceTable {
             .expect("a validated resource entry remains live")
             .1
             .start_byte_stream_pull()
+    }
+
+    /// Reserves the single server-response flush permit and, for a chunk,
+    /// allocates its exact sequence after response-cap preflight. No bytes are
+    /// counted and no protocol state advances until the matching writer ACK
+    /// is committed.
+    pub fn reserve_server_stream_event(
+        &self,
+        handle: &RequestResourceHandle,
+        kind: RequestServerStreamEventKind,
+    ) -> Result<RequestServerStreamReservation, RequestServerStreamReserveError> {
+        let key = self
+            .shared
+            .key_for(*handle)
+            .map_err(RequestServerStreamReserveError::Lookup)?;
+        let mut table = self.shared.lock();
+        table
+            .validate_key(key)
+            .map_err(RequestServerStreamReserveError::Lookup)?;
+        let facts = table
+            .entries
+            .get_mut(&key.slot)
+            .expect("a validated resource entry remains live")
+            .1
+            .reserve_server_stream(kind)?;
+        Ok(RequestServerStreamReservation {
+            handle: *handle,
+            facts,
+        })
+    }
+
+    /// Commits the exact event only after the transport reports a real flush
+    /// acknowledgement. A duplicate of the immediately committed reservation
+    /// is idempotent; any other drift fails closed.
+    pub fn complete_server_stream_flush(
+        &self,
+        reservation: RequestServerStreamReservation,
+    ) -> Result<RequestServerStreamFlushCompletion, RequestServerStreamFlushError> {
+        let key = self
+            .shared
+            .key_for(reservation.handle)
+            .map_err(RequestServerStreamFlushError::Lookup)?;
+        let mut table = self.shared.lock();
+        if table.closed.contains_key(&key) {
+            return Err(RequestServerStreamFlushError::Terminated);
+        }
+        table
+            .validate_key(key)
+            .map_err(RequestServerStreamFlushError::Lookup)?;
+        table
+            .entries
+            .get_mut(&key.slot)
+            .expect("a validated resource entry remains live")
+            .1
+            .complete_server_stream_flush(reservation.facts)
+    }
+
+    pub fn server_stream_snapshot(
+        &self,
+        handle: &RequestResourceHandle,
+    ) -> Result<RequestServerStreamSnapshot, RequestServerStreamFlushError> {
+        let key = self
+            .shared
+            .key_for(*handle)
+            .map_err(RequestServerStreamFlushError::Lookup)?;
+        let table = self.shared.lock();
+        if table.closed.contains_key(&key) {
+            return Err(RequestServerStreamFlushError::Terminated);
+        }
+        table
+            .validate_key(key)
+            .map_err(RequestServerStreamFlushError::Lookup)?;
+        table
+            .entries
+            .get(&key.slot)
+            .expect("a validated resource entry remains live")
+            .1
+            .server_stream_snapshot()
     }
 
     /// Consumes provider state exactly once while retaining the affine owner
@@ -1486,6 +1945,166 @@ mod tests {
             *events.lock().unwrap(),
             [Event::Terminated(RequestResourceTermination::Exhausted)]
         );
+        assert_eq!(freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_stream_server_response_capacity_one_commits_only_after_flush_ack() {
+        let (table, freeze) = table();
+        let handle = table
+            .register_server_response_stream(NonZeroUsize::new(5).unwrap())
+            .unwrap();
+
+        let start = table
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::Start)
+            .unwrap();
+        assert_eq!(start.sequence(), None);
+        assert_eq!(
+            table.server_stream_snapshot(&handle).unwrap(),
+            RequestServerStreamSnapshot {
+                phase: RequestServerStreamPhase::AwaitingStart,
+                next_sequence: 0,
+                flush_in_progress: true,
+                emitted_bytes: 0,
+                max_response_bytes: 5,
+            }
+        );
+        assert_eq!(
+            table.reserve_server_stream_event(
+                &handle,
+                RequestServerStreamEventKind::Chunk { payload_bytes: 1 },
+            ),
+            Err(RequestServerStreamReserveError::FlushInProgress)
+        );
+        assert_eq!(
+            table.complete_server_stream_flush(start),
+            Ok(RequestServerStreamFlushCompletion::Committed)
+        );
+
+        let first = table
+            .reserve_server_stream_event(
+                &handle,
+                RequestServerStreamEventKind::Chunk { payload_bytes: 3 },
+            )
+            .unwrap();
+        assert_eq!(first.sequence(), Some(0));
+        assert_eq!(
+            table.server_stream_snapshot(&handle).unwrap().emitted_bytes,
+            0,
+            "unacknowledged bytes are reserved but not committed"
+        );
+        assert_eq!(
+            table.complete_server_stream_flush(first),
+            Ok(RequestServerStreamFlushCompletion::Committed)
+        );
+        assert_eq!(
+            table.complete_server_stream_flush(first),
+            Ok(RequestServerStreamFlushCompletion::AlreadyCommitted)
+        );
+        assert_eq!(
+            table.server_stream_snapshot(&handle).unwrap(),
+            RequestServerStreamSnapshot {
+                phase: RequestServerStreamPhase::Streaming,
+                next_sequence: 1,
+                flush_in_progress: false,
+                emitted_bytes: 3,
+                max_response_bytes: 5,
+            }
+        );
+
+        assert_eq!(
+            table.reserve_server_stream_event(
+                &handle,
+                RequestServerStreamEventKind::Chunk { payload_bytes: 3 },
+            ),
+            Err(RequestServerStreamReserveError::ResponseLimitExceeded {
+                limit_bytes: 5,
+                emitted_bytes: 3,
+                chunk_bytes: 3,
+            })
+        );
+        assert_eq!(
+            table.terminate(&handle, RequestResourceTermination::ResponseLimitExceeded,),
+            Ok(RequestResourceRelease::Released)
+        );
+        assert_eq!(freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_resource_server_response_stream_registration_is_one_shot_per_request() {
+        let (table, freeze) = table();
+        let first = table
+            .register_server_response_stream(NonZeroUsize::new(8).unwrap())
+            .unwrap();
+
+        assert_eq!(
+            table.register_server_response_stream(NonZeroUsize::new(16).unwrap()),
+            Err(RequestResourceRegistrationError::ServerResponseStreamAlreadyRegistered)
+        );
+        assert_eq!(table.snapshot().live, 1);
+        assert_eq!(table.current_owner_count_for_test(), 1);
+
+        assert_eq!(table.release(&first), Ok(RequestResourceRelease::Released));
+        assert_eq!(
+            table.register_server_response_stream(NonZeroUsize::new(16).unwrap()),
+            Err(RequestResourceRegistrationError::ServerResponseStreamAlreadyRegistered),
+            "releasing the sole stream cannot mint a second production owner"
+        );
+        assert_eq!(table.current_owner_count_for_test(), 0);
+        assert_eq!(freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_stream_server_response_orders_start_chunks_and_end_exactly() {
+        let (table, freeze) = table();
+        let handle = table
+            .register_server_response_stream(NonZeroUsize::new(usize::MAX).unwrap())
+            .unwrap();
+
+        assert_eq!(
+            table.reserve_server_stream_event(
+                &handle,
+                RequestServerStreamEventKind::Chunk { payload_bytes: 0 },
+            ),
+            Err(RequestServerStreamReserveError::InvalidTransition)
+        );
+        let start = table
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::Start)
+            .unwrap();
+        table.complete_server_stream_flush(start).unwrap();
+        let chunk = table
+            .reserve_server_stream_event(
+                &handle,
+                RequestServerStreamEventKind::Chunk { payload_bytes: 0 },
+            )
+            .unwrap();
+        assert_eq!(chunk.sequence(), Some(0));
+        let drift = RequestServerStreamReservation {
+            handle,
+            facts: RequestServerStreamReservationFacts {
+                operation: chunk.facts.operation + 1,
+                ..chunk.facts
+            },
+        };
+        assert_eq!(
+            table.complete_server_stream_flush(drift),
+            Err(RequestServerStreamFlushError::WrongOperation)
+        );
+        table.complete_server_stream_flush(chunk).unwrap();
+        let end = table
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::End)
+            .unwrap();
+        table.complete_server_stream_flush(end).unwrap();
+        assert_eq!(
+            table.server_stream_snapshot(&handle).unwrap().phase,
+            RequestServerStreamPhase::Ended
+        );
+        assert_eq!(
+            table.reserve_server_stream_event(&handle, RequestServerStreamEventKind::End),
+            Err(RequestServerStreamReserveError::Terminated)
+        );
+
+        table.close_all(RequestResourceTermination::RequestCompleted);
         assert_eq!(freeze.freeze().resource.current, 0);
     }
 

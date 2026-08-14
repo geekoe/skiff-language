@@ -25,7 +25,6 @@ mod pending;
 mod resource;
 mod root_escrow;
 mod stream;
-mod stream_driver;
 mod trampoline;
 
 pub use bytecode::{
@@ -49,7 +48,9 @@ pub use resource::{
     RequestByteStreamSource, RequestResourceFinish, RequestResourceFinishReason,
     RequestResourceHandle, RequestResourceLookupError, RequestResourceRegistrationError,
     RequestResourceRelease, RequestResourceRootPin, RequestResourceTable,
-    RequestResourceTableSnapshot, RequestResourceTermination,
+    RequestResourceTableSnapshot, RequestResourceTermination, RequestServerStreamEventKind,
+    RequestServerStreamFlushCompletion, RequestServerStreamFlushError, RequestServerStreamPhase,
+    RequestServerStreamReservation, RequestServerStreamReserveError, RequestServerStreamSnapshot,
 };
 pub use root_escrow::{RootDisposition, RootEscrow, RootEscrowBacking};
 pub use skiff_runtime_model::bytecode_execution_observation::{
@@ -60,7 +61,6 @@ pub use stream::{
     StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll, StreamProducer,
     StreamSupervisor, WakeSignal, STREAM_BUFFER_CAPACITY,
 };
-pub use stream_driver::{VmStreamConsumerExecutor, VmStreamSupervisor, VmStreamTerminal};
 pub use trampoline::{
     BlockedUnit, EnterChildError, FlatTrampoline, ParentResume, SuspendedTrampoline,
     TrampolineCompletion,
