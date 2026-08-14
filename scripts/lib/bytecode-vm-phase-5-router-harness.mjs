@@ -129,7 +129,26 @@ async function main() {
       (error) => ({ error }),
     );
 
-    await upstream.waitForTwoOpenStreams();
+    try {
+      await upstream.waitForTwoOpenStreams();
+    } catch (error) {
+      const early = await responseOutcome;
+      const external = early.error === undefined
+        ? {
+          status: early.value.status,
+          aborted: early.value.aborted,
+          body: early.value.body.toString('utf8'),
+        }
+        : { error: early.error?.message ?? String(early.error) };
+      const frames = relay.records.slice(fromIndex).map((record) => ({
+        direction: record.direction,
+        type: record.type,
+        requestId: record.header?.requestId,
+      }));
+      throw new Error(
+        `${error.message}; external=${JSON.stringify(external)}; relay=${JSON.stringify(frames)}`,
+      );
+    }
     const nonzeroHealth = await waitForHealth(relay, fromIndex, (counters) => (
       counters?.outboundStreamLeasesActive === 2
       && counters?.streamRuntimeStreamsActive === 2
