@@ -356,6 +356,33 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
             drop: skiff_runtime_linked_bytecode::LinkedResourceDropPlan::ResourceTableRelease,
         }
     ));
+    let shape_type = image.types()[shape.nominal_type().get() as usize].type_ref();
+    let handle_rows = image
+        .types()
+        .iter()
+        .filter(|entry| entry.type_ref() == shape_type)
+        .collect::<Vec<_>>();
+    assert!(
+        handle_rows.len() >= 2,
+        "two reachable stream handlers must produce duplicate linked handle rows"
+    );
+    let first_origin = handle_rows[0].origin();
+    assert!(handle_rows.iter().all(|entry| {
+        entry.origin().package_build_id() == first_origin.package_build_id()
+            && entry.origin().artifact_index() == first_origin.artifact_index()
+            && entry.plan()
+                == &LinkedValueTransferPlan::MoveOnly {
+                    drop: LinkedValueDropPlan::RecursiveShape {
+                        shape: shape.index(),
+                    },
+                }
+    }));
+    assert!(handle_rows.iter().enumerate().any(|(left_index, left)| {
+        handle_rows.iter().skip(left_index + 1).any(|right| {
+            left.index() != right.index()
+                && left.origin().specialization() != right.origin().specialization()
+        })
+    }));
 
     let host_resume_index = host_call
         .resolved_operands()
@@ -375,7 +402,15 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
         InstructionIndex::new(u32::try_from(host_ordinal).unwrap())
     );
     assert_eq!(host_resume.kind(), &ExecutionResumeKind::HostEffect);
-    assert_eq!(host_resume.result_types(), &[shape.nominal_type()]);
+    let [host_result_type] = host_resume.result_types() else {
+        panic!("stream host resume carries one exact result row")
+    };
+    assert_eq!(
+        image.types()[host_result_type.get() as usize].type_ref(),
+        shape_type,
+        "resume and shape close by normalized TypeRef/ABI across duplicate linked rows"
+    );
+    assert_eq!(host_resume.result_plans(), &[shape.plan().clone()]);
     assert_eq!(
         host_resume.result_types(),
         target.signature().result_types()
@@ -406,7 +441,11 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
     let [root] = before.stack_before() else {
         panic!("TakeDenseField must consume exactly one aggregate root")
     };
-    assert_eq!(root.ty(), shape.nominal_type());
+    assert_eq!(
+        image.types()[root.ty().get() as usize].type_ref(),
+        shape_type,
+        "affine take root closes by normalized TypeRef/ABI across duplicate linked rows"
+    );
     assert!(matches!(
         root.plan(),
         skiff_runtime_linked_bytecode::LinkedValueTransferPlan::MoveOnly {

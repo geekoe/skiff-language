@@ -50,22 +50,16 @@ impl TypeLinker<'_> {
             substitutions,
             location.clone(),
         )?;
-        let row = self.shape(shape).ok_or_else(|| {
-            obligation_error(
-                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                location.clone(),
-                format!("recursive type plan shape {} is absent", shape.get()),
-            )
-        })?;
-        if row.nominal_type() != type_index || row.privileged_affine_composite().is_none() {
-            return Err(obligation_error(
-                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                location,
-                format!(
-                    "recursive compiler plan for {concrete_type:?} does not bind its exact TypeRef row"
-                ),
-            ));
-        }
+        let row = self.shape(shape);
+        let shape_nominal_type = row.and_then(|row| self.linked_type_ref(row.nominal_type()));
+        validate_recursive_shape_binding(
+            shape,
+            row,
+            shape_nominal_type,
+            type_index,
+            concrete_type,
+            location,
+        )?;
         Ok(LinkedValueTransferPlan::MoveOnly {
             drop: LinkedValueDropPlan::RecursiveShape { shape },
         })
@@ -468,6 +462,76 @@ impl TypeLinker<'_> {
     }
 }
 
+fn validate_recursive_shape_binding(
+    shape: ShapeIndex,
+    row: Option<&LinkedShapeEntry>,
+    shape_nominal_type: Option<&TypeRefIr>,
+    type_index: TypeIndex,
+    concrete_type: &TypeRefIr,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let row = row.ok_or_else(|| {
+        obligation_error(
+            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            location.clone(),
+            format!(
+                "recursive compiler plan for linked type row {} references absent shape {}",
+                type_index.get(),
+                shape.get()
+            ),
+        )
+    })?;
+    let shape_nominal_type = shape_nominal_type.ok_or_else(|| {
+        obligation_error(
+            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            location.clone(),
+            format!(
+                "recursive compiler plan shape {} references absent nominal type row {}",
+                shape.get(),
+                row.nominal_type().get()
+            ),
+        )
+    })?;
+    if shape_nominal_type != concrete_type {
+        return Err(obligation_error(
+            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            location,
+            format!(
+                "recursive compiler plan for linked type row {} has a different normalized TypeRef/ABI than shape {}",
+                type_index.get(),
+                shape.get()
+            ),
+        ));
+    }
+    if row.privileged_affine_composite().is_none() {
+        return Err(obligation_error(
+            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            location,
+            format!(
+                "recursive compiler plan for linked type row {} references non-privileged shape {}",
+                type_index.get(),
+                shape.get()
+            ),
+        ));
+    }
+    if !matches!(
+        row.plan(),
+        LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape { shape: bound_shape },
+        } if *bound_shape == shape
+    ) {
+        return Err(obligation_error(
+            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            location,
+            format!(
+                "recursive compiler plan shape {} does not carry its exact self-reference",
+                shape.get()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn matches_registry_type(expected: &CallableRegistryTypeExpression, actual: &TypeRefIr) -> bool {
     match (expected, actual) {
         (
@@ -612,5 +676,131 @@ fn obligation_error(
         obligation,
         location,
         detail,
+    }
+}
+
+#[cfg(test)]
+mod recursive_shape_binding_tests {
+    use skiff_artifact_model::{
+        DeploymentArtifactIdentity, DeploymentRevision, PackageBuildId, PackageRefIr,
+        PackageSymbolRef, ServiceDeploymentRef,
+    };
+    use skiff_runtime_linked_bytecode::{ArtifactShapeIndex, LinkedArtifactPoolOrigin};
+
+    use super::*;
+
+    #[test]
+    fn duplicate_type_row_binds_by_exact_normalized_type_and_abi_not_numeric_index() {
+        let shape_index = ShapeIndex::new(3);
+        let shape = privileged_shape(shape_index, TypeIndex::new(2), shape_index);
+        let handle = package_type("std.http.HttpClientStreamHandle", "abi:std");
+
+        validate_recursive_shape_binding(
+            shape_index,
+            Some(&shape),
+            Some(&handle),
+            TypeIndex::new(9),
+            &handle,
+            location(),
+        )
+        .expect("a duplicate linked row may bind the same exact normalized TypeRef/ABI");
+    }
+
+    #[test]
+    fn recursive_binding_rejects_wrong_type_abi_and_shape_reference() {
+        let shape_index = ShapeIndex::new(3);
+        let shape = privileged_shape(shape_index, TypeIndex::new(2), shape_index);
+        let handle = package_type("std.http.HttpClientStreamHandle", "abi:std");
+        for wrong in [
+            package_type("std.http.HttpClientStreamHandle.Other", "abi:std"),
+            package_type("std.http.HttpClientStreamHandle", "abi:other"),
+        ] {
+            assert_binding_rejected(validate_recursive_shape_binding(
+                shape_index,
+                Some(&shape),
+                Some(&wrong),
+                TypeIndex::new(9),
+                &handle,
+                location(),
+            ));
+        }
+
+        assert_binding_rejected(validate_recursive_shape_binding(
+            ShapeIndex::new(u32::MAX),
+            None,
+            None,
+            TypeIndex::new(9),
+            &handle,
+            location(),
+        ));
+
+        let wrong_ref = ShapeIndex::new(4);
+        let non_self_bound_shape = privileged_shape(wrong_ref, TypeIndex::new(2), shape_index);
+        assert_binding_rejected(validate_recursive_shape_binding(
+            wrong_ref,
+            Some(&non_self_bound_shape),
+            Some(&handle),
+            TypeIndex::new(9),
+            &handle,
+            location(),
+        ));
+    }
+
+    fn assert_binding_rejected(result: Result<(), BytecodeLinkError>) {
+        assert!(matches!(
+            result,
+            Err(BytecodeLinkError::UnsatisfiedObligation {
+                obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                ..
+            })
+        ));
+    }
+
+    fn privileged_shape(
+        index: ShapeIndex,
+        nominal_type: TypeIndex,
+        self_shape: ShapeIndex,
+    ) -> LinkedShapeEntry {
+        LinkedShapeEntry::new(
+            index,
+            LinkedArtifactPoolOrigin::new(
+                PackageBuildId::new("build:recursive-binding"),
+                ArtifactShapeIndex::new(index.get()),
+                None,
+            )
+            .unwrap(),
+            nominal_type,
+            LinkedValueTransferPlan::MoveOnly {
+                drop: LinkedValueDropPlan::RecursiveShape { shape: self_shape },
+            },
+            Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle),
+            Box::new([]),
+        )
+        .unwrap()
+    }
+
+    fn package_type(symbol_path: &str, abi_expectation: &str) -> TypeRefIr {
+        TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: "skiff.run/std".to_string(),
+                },
+                symbol_path: symbol_path.to_string(),
+                abi_expectation: Some(abi_expectation.to_string()),
+            },
+        }
+    }
+
+    fn location() -> BytecodeLinkLocation {
+        BytecodeLinkLocation::Deployment {
+            deployment: Box::new(ServiceDeploymentRef {
+                service_id: "test.skiff/recursive-binding".to_string(),
+                contract_version: "1.0.0".to_string(),
+                deployment_revision: DeploymentRevision::new("revision:recursive-binding"),
+                deployment_artifact_identity: DeploymentArtifactIdentity::new(
+                    "deployment:recursive-binding",
+                ),
+            }),
+        }
     }
 }

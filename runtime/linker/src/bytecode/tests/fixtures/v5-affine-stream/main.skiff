@@ -6,3 +6,10 @@ function consume(input: std.http.HttpClientRequest) -> bool {
   }
   return true
 }
+
+function consumeSecond(input: std.http.HttpClientRequest) -> bool {
+  final response = std.http.stream(input)
+  for chunk in response.body {
+  }
+  return true
+}

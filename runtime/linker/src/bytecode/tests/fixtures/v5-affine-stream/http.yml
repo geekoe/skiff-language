@@ -6,3 +6,11 @@ consume:
   adapterArgs:
     - param: input
       source: { kind: http.body }
+consumeSecond:
+  method: POST
+  path: /phase-5/linker-second
+  kind: typedJson
+  handler: main.consumeSecond
+  adapterArgs:
+    - param: input
+      source: { kind: http.body }
