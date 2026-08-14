@@ -37,6 +37,7 @@ pub enum PendingCellState {
 ///
 /// Neither the draft nor its fields need to implement `Clone`. Publication
 /// consumes the draft, preventing two pending owners for one VM resume site.
+/// Until then, the draft enumerates the suspended chain as its root source.
 #[must_use = "a pending owner draft must be published or synchronously unwound"]
 #[derive(Debug)]
 pub struct PendingOwnerDraft<R, S> {
@@ -66,6 +67,15 @@ impl<R, S> PendingOwnerDraft<R, S> {
             suspended: self.suspended,
             owner_lease,
         }
+    }
+}
+
+impl<R, S> VmRootSource for PendingOwnerDraft<R, S>
+where
+    S: VmRootSource,
+{
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.suspended.visit_roots(visitor)
     }
 }
 
@@ -202,6 +212,62 @@ pub(crate) struct MappedPendingWakeGuard<R, S, O> {
     outcome: Option<O>,
 }
 
+/// Ownership-aware rejection from one mapped pending resume attempt.
+///
+/// `Rejected` returns the untouched resume inputs so the pending guard can
+/// keep owning and enumerating them. `Terminal` is only valid after the
+/// callback has committed validation and consumed both inputs into a rootless
+/// terminal state.
+#[derive(Debug)]
+pub(crate) enum PendingResumeFailure<R, O, E> {
+    Terminal(E),
+    Rejected { error: E, resume: R, outcome: O },
+}
+
+/// A failed resume together with the complete mapped pending owner.
+///
+/// Callers must route or explicitly terminate this carrier. In particular,
+/// ordinary error propagation must not implicitly discard the suspended
+/// owner, its pending lease or its retained request-resource pin.
+#[must_use = "a failed mapped pending owner must be routed or explicitly terminated"]
+pub(crate) struct MappedPendingResumeFailure<R, S, O, E> {
+    error: E,
+    guard: MappedPendingWakeGuard<R, S, O>,
+}
+
+impl<R, S, O, E> MappedPendingResumeFailure<R, S, O, E> {
+    pub(crate) const fn error(&self) -> &E {
+        &self.error
+    }
+
+    pub(crate) fn into_parts(self) -> (E, MappedPendingWakeGuard<R, S, O>) {
+        (self.error, self.guard)
+    }
+}
+
+impl<R, S, O, E> fmt::Debug for MappedPendingResumeFailure<R, S, O, E>
+where
+    E: fmt::Debug,
+{
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MappedPendingResumeFailure")
+            .field("error", &self.error)
+            .field("guard", &"opaque pending owner")
+            .finish()
+    }
+}
+
+impl<R, S, O, E> VmRootSource for MappedPendingResumeFailure<R, S, O, E>
+where
+    S: VmRootSource,
+    O: VmRootSource,
+{
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.guard.visit_roots(visitor)
+    }
+}
+
 impl<R, S, O> MappedPendingWakeGuard<R, S, O> {
     /// Rehouses the suspended owner without exposing decomposed root-bearing
     /// parts. The only production use converts a `SuspendedTrampoline` into a
@@ -243,13 +309,19 @@ impl<R, S, O> MappedPendingWakeGuard<R, S, O> {
     /// a safepoint. Phase 6 must register this guard with the process-wide
     /// safepoint before relaxing that rule. On success only, `commit` moves the
     /// resumed owner and retained resource pin into the runnable scheduler. On
-    /// error, dropping this guard releases the pending lease and retained pin;
-    /// transferred roots have already taken their exact settlement terminal.
+    /// rejection, the callback must return the resume token and outcome in a
+    /// [`PendingResumeFailure::Rejected`]; this method reinstalls both before
+    /// returning the complete guard. A [`PendingResumeFailure::Terminal`] is
+    /// only valid after the callback has consumed both into a rootless terminal
+    /// state. Either failure keeps the suspended owner, pending lease and
+    /// retained resource pin in a [`MappedPendingResumeFailure`] for explicit
+    /// caller routing or termination. Transferred roots have already taken
+    /// their exact settlement terminal before the callback runs.
     pub(crate) fn resume_and_commit<T, E>(
         mut self,
-        resume: impl FnOnce(&mut S, R, O) -> Result<(), E>,
+        resume: impl FnOnce(&mut S, R, O) -> Result<(), PendingResumeFailure<R, O, E>>,
         commit: impl FnOnce(S, Option<RequestResourceRootPin>) -> T,
-    ) -> Result<T, E>
+    ) -> Result<T, MappedPendingResumeFailure<R, S, O, E>>
     where
         S: VmRootSource,
         O: VmRootSource,
@@ -265,7 +337,23 @@ impl<R, S, O> MappedPendingWakeGuard<R, S, O> {
             .outcome
             .take()
             .expect("a mapped pending wake installs its outcome once");
-        resume(&mut self.owner.suspended, resume_token, outcome)?;
+        match resume(&mut self.owner.suspended, resume_token, outcome) {
+            Ok(()) => {}
+            Err(PendingResumeFailure::Rejected {
+                error,
+                resume,
+                outcome,
+            }) => {
+                debug_assert!(self.owner.resume.is_none());
+                debug_assert!(self.outcome.is_none());
+                self.owner.resume = Some(resume);
+                self.outcome = Some(outcome);
+                return Err(MappedPendingResumeFailure { error, guard: self });
+            }
+            Err(PendingResumeFailure::Terminal(error)) => {
+                return Err(MappedPendingResumeFailure { error, guard: self });
+            }
+        }
 
         let resource_roots = self.owner.roots.take_retained();
         let PendingOwner {
@@ -353,7 +441,10 @@ pub enum PendingPublication {
 }
 
 /// A publication failure returns the still-owned draft so the current fiber
-/// can synchronously unwind without releasing an Actor lease first.
+/// can synchronously unwind without releasing an Actor lease first. The
+/// carrier must not be flattened into a reason string or discarded before the
+/// caller recovers the draft and explicitly routes that suspended owner.
+#[must_use = "a publication failure still owns the unpublished suspended draft"]
 #[derive(Debug)]
 pub struct PendingPublicationError<R, S> {
     draft: PendingOwnerDraft<R, S>,
@@ -1014,8 +1105,8 @@ mod tests {
 
     use super::{
         lock_unpoisoned, BeginPendingError, PendingCellState, PendingOwnerDraft,
-        PendingPublication, PendingRegistry, PendingRootSet, PendingWake, PendingWakeQueue,
-        SettleDisposition, SettlementSource,
+        PendingPublication, PendingRegistry, PendingResumeFailure, PendingRootSet, PendingWake,
+        PendingWakeQueue, SettleDisposition, SettlementSource,
     };
     use crate::{
         owner_inventory::{PendingOwnerRegistration, RequestExecutionOwnerInventory},
@@ -1471,7 +1562,7 @@ mod tests {
                     assert_eq!(resume, 7);
                     assert_eq!(*suspended, NoRoots);
                     assert_eq!(outcome, NoRoots);
-                    Ok::<(), ()>(())
+                    Ok::<(), PendingResumeFailure<u64, NoRoots, ()>>(())
                 },
                 |suspended, resource_roots| {
                     assert!(resource_roots.is_none());
@@ -1529,7 +1620,7 @@ mod tests {
                 |suspended, resume, NoRoots| {
                     resumes.fetch_add(1, Ordering::SeqCst);
                     assert_eq!((*suspended, resume), (NoRoots, 17));
-                    Ok::<(), ()>(())
+                    Ok::<(), PendingResumeFailure<u64, NoRoots, ()>>(())
                 },
                 |suspended, resource_roots| {
                     assert!(resource_roots.is_none());
@@ -1614,7 +1705,7 @@ mod tests {
             .resume_and_commit(
                 |suspended, resume, NoRoots| {
                     assert_eq!((*suspended, resume), (NoRoots, 1));
-                    Ok::<(), ()>(())
+                    Ok::<(), PendingResumeFailure<u64, NoRoots, ()>>(())
                 },
                 |_suspended, resource_roots| {
                     drop(resource_roots);
@@ -1666,7 +1757,7 @@ mod tests {
             .resume_and_commit(
                 |suspended, resume, NoRoots| {
                     assert_eq!((*suspended, resume), (NoRoots, 2));
-                    Ok::<(), ()>(())
+                    Ok::<(), PendingResumeFailure<u64, NoRoots, ()>>(())
                 },
                 |_suspended, resource_roots| {
                     drop(resource_roots);
@@ -2015,6 +2106,246 @@ mod tests {
         fn enqueue(&self, wake: PendingWake<u64, SafepointSuspended, SafepointSettlement>) {
             self.0.lock().unwrap().push(wake);
         }
+    }
+
+    struct SafepointNoRootQueue(Mutex<Vec<PendingWake<u64, SafepointSuspended, NoRoots>>>);
+
+    impl PendingWakeQueue<u64, SafepointSuspended, NoRoots> for SafepointNoRootQueue {
+        fn enqueue(&self, wake: PendingWake<u64, SafepointSuspended, NoRoots>) {
+            self.0.lock().unwrap().push(wake);
+        }
+    }
+
+    #[test]
+    fn publication_failure_returns_a_root_enumerable_suspended_draft() {
+        let target = PendingRegistry::<u64, SafepointSuspended, SafepointSettlement>::new(
+            pending_registration(),
+        );
+        let source = PendingRegistry::<u64, SafepointSuspended, SafepointSettlement>::new(
+            pending_registration(),
+        );
+        let completion = target.begin(RootEscrow::empty()).unwrap();
+        let counts = Arc::new(RootWalkCounts::default());
+        let queue = Arc::new(SafepointQueue(Mutex::new(Vec::new())));
+
+        let error = source
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(
+                    7,
+                    SafepointSuspended {
+                        root: ValueSlot::integer(2),
+                        counts: Arc::clone(&counts),
+                    },
+                ),
+                queue,
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error.reason(),
+            super::PendingPublicationFailure::UnknownOrAlreadyPublishedTicket
+        );
+        let draft = error.into_draft();
+        let mut visitor = CountingVisitor::default();
+        draft.visit_roots(&mut visitor).unwrap();
+        assert_eq!(visitor.0, 1);
+        assert_eq!(counts.source_visits.load(Ordering::Relaxed), 1);
+        let (resume, _suspended) = draft.into_parts();
+        assert_eq!(resume, 7);
+
+        assert!(target.abandon(completion.ticket()));
+        assert_eq!(target.live_count(), 0);
+        assert_eq!(source.live_count(), 0);
+    }
+
+    #[test]
+    fn rejected_resume_reinstalls_owner_inputs_and_keeps_them_root_enumerable() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (mut registrations, freeze) = inventory.into_parts();
+        let registry = PendingRegistry::<u64, SafepointSuspended, SafepointSettlement>::new(
+            registrations.take_pending().unwrap(),
+        );
+        let counts = Arc::new(RootWalkCounts::default());
+        let queue = Arc::new(SafepointQueue(Mutex::new(Vec::new())));
+        let completion = registry.begin(RootEscrow::empty()).unwrap();
+        registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(
+                    7,
+                    SafepointSuspended {
+                        root: ValueSlot::integer(2),
+                        counts: Arc::clone(&counts),
+                    },
+                ),
+                queue.clone(),
+            )
+            .unwrap();
+        assert!(matches!(
+            completion.complete(SafepointSettlement {
+                root: ValueSlot::integer(3),
+                counts: Arc::clone(&counts),
+            }),
+            SettleDisposition::Enqueued
+        ));
+
+        let failure = queue
+            .0
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap()
+            .claim()
+            .map(|_, outcome, _| outcome)
+            .resume_and_commit(
+                |_suspended, resume, outcome| {
+                    Err(PendingResumeFailure::Rejected {
+                        error: "resume rejected",
+                        resume,
+                        outcome,
+                    })
+                },
+                |_suspended, _resource_roots| NoRoots,
+            )
+            .unwrap_err();
+
+        assert_eq!(failure.error(), &"resume rejected");
+        let mut visitor = CountingVisitor::default();
+        failure.visit_roots(&mut visitor).unwrap();
+        assert_eq!(visitor.0, 2);
+        assert_eq!(counts.source_visits.load(Ordering::Relaxed), 2);
+        assert_eq!(freeze.freeze().pending.current, 1);
+
+        let (error, guard) = failure.into_parts();
+        assert_eq!(error, "resume rejected");
+        assert_eq!(guard.owner.resume.as_ref(), Some(&7));
+        assert!(guard.outcome.is_some());
+        drop(guard);
+    }
+
+    #[test]
+    fn terminal_resume_failure_retains_suspended_and_request_resource_roots() {
+        let mut context = RequestExecutionContext::<skiff_runtime_vm::VmFiber>::create(
+            BytecodeSchedulerPorts::default(),
+        );
+        let table = context.resource_table();
+        let resource = table
+            .register_byte_stream(Box::new(RetainedByteStreamRoot(ValueSlot::integer(73))))
+            .unwrap();
+        let registry = PendingRegistry::<u64, SafepointSuspended, NoRoots>::new(
+            context.take_pending_registration().unwrap(),
+        );
+        let counts = Arc::new(RootWalkCounts::default());
+        let queue = Arc::new(SafepointNoRootQueue(Mutex::new(Vec::new())));
+        let completion = registry
+            .begin_with_resource_roots(RootEscrow::empty(), table.root_pin())
+            .unwrap();
+        registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(
+                    11,
+                    SafepointSuspended {
+                        root: ValueSlot::integer(2),
+                        counts: Arc::clone(&counts),
+                    },
+                ),
+                queue.clone(),
+            )
+            .unwrap();
+        assert!(matches!(
+            completion.complete(NoRoots),
+            SettleDisposition::Enqueued
+        ));
+
+        let failure = queue
+            .0
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap()
+            .claim()
+            .map(|_, outcome, _| outcome)
+            .resume_and_commit(
+                |_suspended, _resume, NoRoots| {
+                    Err(PendingResumeFailure::Terminal("terminal resume"))
+                },
+                |_suspended, _resource_roots| NoRoots,
+            )
+            .unwrap_err();
+
+        assert_eq!(failure.error(), &"terminal resume");
+        let mut visitor = CountingVisitor::default();
+        failure.visit_roots(&mut visitor).unwrap();
+        assert_eq!(visitor.0, 2);
+        assert_eq!(counts.source_visits.load(Ordering::Relaxed), 1);
+
+        let (error, guard) = failure.into_parts();
+        assert_eq!(error, "terminal resume");
+        assert!(guard.owner.resume.is_none());
+        assert!(guard.outcome.is_none());
+        drop(guard);
+        drop(registry);
+        assert_eq!(
+            table.finish(&resource, RequestResourceFinishReason::Exhausted),
+            Ok(RequestResourceFinish::Finished)
+        );
+        assert_eq!(
+            table.release(&resource),
+            Ok(RequestResourceRelease::Released)
+        );
+        drop(table);
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.pending.current, 0);
+        assert_eq!(snapshot.resource.current, 0);
+    }
+
+    #[test]
+    fn pending_lease_releases_only_when_resume_failure_carrier_is_dropped() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (mut registrations, freeze) = inventory.into_parts();
+        let identity = registrations.resource().root_inventory_identity();
+        let registry =
+            PendingRegistry::<u64, NoRoots, NoRoots>::new(registrations.take_pending().unwrap());
+        let baseline_strong_count = Arc::strong_count(&identity);
+        let queue = Arc::new(NoRootWakeQueue::default());
+        let completion = registry.begin(RootEscrow::empty()).unwrap();
+        registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(13, NoRoots),
+                queue.clone(),
+            )
+            .unwrap();
+        assert!(matches!(
+            completion.complete(NoRoots),
+            SettleDisposition::Enqueued
+        ));
+        let failure = queue
+            .0
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap()
+            .claim()
+            .map(|_, outcome, _| outcome)
+            .resume_and_commit(
+                |_suspended, _resume, NoRoots| {
+                    Err(PendingResumeFailure::Terminal("terminal resume"))
+                },
+                |_suspended, _resource_roots| NoRoots,
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            Arc::strong_count(&identity),
+            baseline_strong_count + 1,
+            "the failure carrier must still own the pending lease"
+        );
+        drop(failure);
+        assert_eq!(Arc::strong_count(&identity), baseline_strong_count);
+        assert_eq!(freeze.freeze().pending.current, 0);
     }
 
     #[test]
