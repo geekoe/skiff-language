@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     host_effect_registry, CallIr, CallableMayEffects, CallableRegistryTypeExpression, ExprIr,
     HostEffectExecutorIdentity, HostEffectReceiverSemantics, HostEffectRegistryEntry, NativeTarget,
-    NominalTypeRefBaseIr, PackageRefIr, PrivilegedAffineCompositeIdentity,
+    NominalTypeRefBaseIr, PackageRefIr, PendingEffectCategory, PrivilegedAffineCompositeIdentity,
     PrivilegedAffineFieldAccess, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{MirForInBinding, MirForInItemKind, MirFunction, MirStmtKind};
@@ -85,6 +85,10 @@ impl RegistryValueAuthority {
             && matches!(self.role, RegistryValueRole::Result { ordinal: 0 })
     }
 
+    fn is_parameter(&self) -> bool {
+        matches!(self.role, RegistryValueRole::Parameter { .. })
+    }
+
     fn is_privileged_stream(&self) -> bool {
         matches!(self.role, RegistryValueRole::PrivilegedField { .. })
     }
@@ -120,7 +124,6 @@ pub(super) struct HostEffectAdmissions {
     calls: BTreeMap<u32, HostEffectExecutorIdentity>,
     expressions: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     slots: BTreeMap<u32, Vec<RegistryValueAuthority>>,
-    entries: Vec<&'static HostEffectRegistryEntry>,
     stream_for_in_statements: BTreeSet<u32>,
     stream_next_statements: BTreeSet<u32>,
 }
@@ -151,7 +154,6 @@ impl HostEffectAdmissions {
                     })?;
 
             admissions.calls.insert(expression.index, executor_identity);
-            admissions.entries.push(entry);
             for (ordinal, argument) in call.args.iter().enumerate() {
                 let authority = RegistryValueAuthority {
                     entry,
@@ -210,6 +212,46 @@ impl HostEffectAdmissions {
                 for authority in authorities {
                     if authority.is_http_stream_result() && authority.admits(slot_type) {
                         admissions.slots.entry(*slot).or_default().push(authority);
+                    }
+                }
+            }
+        }
+
+        // A host parameter may be constructed in one source local before the
+        // exact call loads it. Propagate only backwards across that InitSlot
+        // edge, retaining the exact executor/parameter ordinal and requiring
+        // both sides to match its registry type. No type-only or position-only
+        // inference is performed.
+        for block in &function.blocks {
+            for statement in &block.statements {
+                let MirStmtKind::InitSlot { slot, value } = &statement.kind else {
+                    continue;
+                };
+                let slot_type =
+                    function
+                        .slot_type(*slot)
+                        .map_err(|error| HostEffectAdmissionError {
+                            expression_index: value.expression,
+                            detail: format!("host parameter source slot is absent: {error}"),
+                        })?;
+                let value_type = &function
+                    .expression(*value)
+                    .map_err(|error| HostEffectAdmissionError {
+                        expression_index: value.expression,
+                        detail: format!("host parameter source expression is absent: {error}"),
+                    })?
+                    .ty;
+                if slot_type != value_type {
+                    continue;
+                }
+                let authorities = admissions.slots.get(slot).cloned().unwrap_or_default();
+                for authority in authorities {
+                    if authority.is_parameter() && authority.admits(value_type) {
+                        admissions
+                            .expressions
+                            .entry(value.expression)
+                            .or_default()
+                            .push(authority);
                     }
                 }
             }
@@ -532,30 +574,38 @@ impl HostEffectAdmissions {
         !self.stream_for_in_statements.is_empty() || !self.stream_next_statements.is_empty()
     }
 
-    pub(super) fn has_host_pending(&self) -> bool {
-        !self.entries.is_empty()
-    }
-
     pub(super) fn validate_effect_coverage(
         &self,
         actual: &CallableMayEffects,
+        stream_pending: bool,
     ) -> Result<(), String> {
-        for entry in &self.entries {
-            let expected = &entry.signature.effects;
-            if expected.may_pending && !actual.may_pending {
-                return Err(format!(
-                    "registry executor {:?} is pending but the callable summary is not",
-                    entry.executor_identity
-                ));
-            }
-            for category in &expected.pending_effect_categories {
-                if !actual.pending_effect_categories.contains(category) {
-                    return Err(format!(
-                        "registry executor {:?} requires pending category {category:?}",
-                        entry.executor_identity
-                    ));
-                }
-            }
+        let mut expected = BTreeSet::new();
+        for executor in self.calls.values() {
+            expected.insert(match executor {
+                HostEffectExecutorIdentity::Sleep => PendingEffectCategory::NativeCall,
+                HostEffectExecutorIdentity::HttpClientRequest
+                | HostEffectExecutorIdentity::HttpClientStream => PendingEffectCategory::HostEffect,
+            });
+        }
+        if stream_pending {
+            expected.insert(PendingEffectCategory::Stream);
+        }
+
+        let actual_categories = actual
+            .pending_effect_categories
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if actual_categories.len() != actual.pending_effect_categories.len() {
+            return Err("callable summary repeats a pending category".to_string());
+        }
+        if actual.may_pending != !actual_categories.is_empty() {
+            return Err("callable mayPending disagrees with its exact category set".to_string());
+        }
+        if actual_categories != expected {
+            return Err(format!(
+                "callable categories {actual_categories:?} differ from exact producer categories {expected:?}"
+            ));
         }
         Ok(())
     }

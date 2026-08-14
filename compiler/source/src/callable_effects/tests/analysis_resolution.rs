@@ -931,7 +931,7 @@ fn missing_dynamic_mutable_and_capability_semantics_remain_fail_closed() {
     ));
     assert_eq!(
         effects_in(&model, "std.effect_test", "httpWrapper"),
-        pending_only_effects(vec![PendingEffectCategory::NativeCall])
+        pending_only_effects(vec![PendingEffectCategory::HostEffect])
     );
     assert!(matches!(
         provenance_in(&model, "std.effect_test", "httpWrapper"),

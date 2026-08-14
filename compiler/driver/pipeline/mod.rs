@@ -23,6 +23,9 @@ use skiff_compiler_projection_input::ResolvedPackageSchema;
 use skiff_deployment::storage::CanonicalArtifactStore;
 
 use crate::{
+    http_gateway_projection::{
+        project_http_gateway_after_package_validation, HttpGatewayProjectionError,
+    },
     input::{
         PackageCompileInput, PackageContractCompileDependency, PackageDependency,
         PublicationResourceInput,
@@ -49,6 +52,21 @@ pub use bytecode_lane::{PackageBytecodeLane, PackageCompileOutput};
 pub fn compile_package(
     input: PackageCompileInput<'_>,
 ) -> Result<PackageCompileOutput, PackageCompileError> {
+    compile_package_core(input, None).map_err(|error| match error {
+        ServicePackageCompileError::Package(error) => error,
+        ServicePackageCompileError::HttpGateway(error) => PackageCompileError::ContractValidation {
+            message: error.to_string(),
+        },
+        ServicePackageCompileError::ServiceApi(error) => PackageCompileError::ContractValidation {
+            message: error.to_string(),
+        },
+    })
+}
+
+fn compile_package_core(
+    input: PackageCompileInput<'_>,
+    service_root: Option<&ServicePackageRoot>,
+) -> Result<PackageCompileOutput, ServicePackageCompileError> {
     skiff_compiler_source::prelude_registry::initialize_prelude_registry(input.platform_sources())
         .map_err(|error| PackageCompileError::ContractValidation {
             message: error.to_string(),
@@ -65,12 +83,13 @@ pub fn compile_package(
         &pre_source_package_schemas,
         canonical_artifact_store.as_ref(),
     )?;
-    skiff_compiler_source::validate_source_execution_semantics(compiled.compile_model())?;
+    skiff_compiler_source::validate_source_execution_semantics(compiled.compile_model())
+        .map_err(PackageCompileError::from)?;
     let public_instance_operations =
         skiff_compiler_compiled::service_contract::build_public_instance_operation_facts(
             compiled.compile_model(),
-        )?;
-    let bytecode = bytecode_lane::compile_bytecode_lane(input.emit_bytecode(), &compiled)?;
+        )
+        .map_err(PackageCompileError::from)?;
     let service_requirements = compiled
         .lowered()
         .service_calls()
@@ -108,10 +127,88 @@ pub fn compile_package(
         service_call_refs,
     })
     .map_err(package_projection_error)?;
+    let file_ir_units =
+        publish_file_ir_artifacts(projection.view()).map_err(PackageCompileError::from)?;
+    let unattached = publish_projected_package_artifact(&projected, &file_ir_units)
+        .map_err(PackageCompileError::from)?;
+    let http = service_root.and_then(|root| root.http.as_ref());
+    let projector_package_closure = if http.is_some() {
+        let mut loaded = input.available_packages.to_vec();
+        for dependency in input.dependency_packages {
+            if !loaded
+                .iter()
+                .any(|candidate| candidate.package_build_id == dependency.package_build_id)
+            {
+                loaded.push(dependency.clone());
+            }
+        }
+        crate::authoring::resolve_reachable_package_closure(
+            &unattached.artifact,
+            &loaded,
+            |package_id, package_version| -> crate::authoring::AuthoringResult<PackageArtifact> {
+                let store = canonical_artifact_store.as_ref().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "gateway projector closure requirement {package_id}@{package_version} has no loaded candidate or canonical store resolver"
+                        ),
+                    )
+                })?;
+                let pointer = store
+                    .read_package_artifact_pointer(package_id, package_version)?
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!(
+                                "gateway projector closure requirement {package_id}@{package_version} has no exact pointer"
+                            ),
+                        )
+                    })?;
+                Ok(store
+                    .read_package_artifact(&pointer.artifact)?
+                    .as_ref()
+                    .clone())
+            },
+        )
+        .map_err(|error| package_schema_input_error(error.to_string()))?
+    } else {
+        Vec::new()
+    };
+    let projected_gateway = project_http_gateway_after_package_validation(
+        http,
+        &unattached.artifact,
+        &projector_package_closure,
+        &unattached.resolved_package_schema_type_records,
+    )?;
+    let bytecode = bytecode_lane::compile_bytecode_lane(
+        input.emit_bytecode(),
+        &compiled,
+        &projected_gateway,
+        &unattached.artifact,
+    )?;
     let projected = bytecode_lane::attach_bytecode_execution(&projected, &bytecode)?;
-    let file_ir_units = publish_file_ir_artifacts(projection.view())?;
-    let package = publish_projected_package_artifact(&projected, &file_ir_units)?;
-    PackageCompileOutput::try_new(package, bytecode, public_instance_operations)
+    let package = publish_projected_package_artifact(&projected, &file_ir_units)
+        .map_err(PackageCompileError::from)?;
+    let attached_gateway = project_http_gateway_after_package_validation(
+        http,
+        &package.artifact,
+        &projector_package_closure,
+        &package.resolved_package_schema_type_records,
+    )?;
+    if attached_gateway.gateway_entries != projected_gateway.gateway_entries
+        || attached_gateway.ingress != projected_gateway.ingress
+    {
+        return Err(PackageCompileError::ContractValidation {
+            message: "canonical HTTP gateway projection changed after bytecode attachment"
+                .to_string(),
+        }
+        .into());
+    }
+    Ok(PackageCompileOutput::try_new(
+        package,
+        bytecode,
+        public_instance_operations,
+    )?)
 }
 
 /// Resolves the exact canonical schema owners needed while validating service
@@ -424,6 +521,8 @@ pub enum ServicePackageCompileError {
     #[error(transparent)]
     Package(#[from] PackageCompileError),
     #[error(transparent)]
+    HttpGateway(#[from] HttpGatewayProjectionError),
+    #[error(transparent)]
     ServiceApi(#[from] ContractDefinitionError),
 }
 
@@ -440,7 +539,7 @@ pub fn compile_service_package(
         }
         .into());
     }
-    let compilation = compile_package(input)?;
+    let compilation = compile_package_core(input, Some(service_root))?;
     let service_api = project_compiled_service_api(&compilation, service_root)?;
     let (package, bytecode) = compilation.into_parts();
     Ok(CompiledServicePackage {

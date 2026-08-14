@@ -5,11 +5,11 @@ use super::{
     resolve_reachable_package_closure, run_after_platform_context_guard, AuthoringObject,
 };
 use serde_json::json;
-use skiff_artifact_identity::package_schema_index_identity;
+use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
     current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
     PackageArtifact, PackageArtifactRef, PackageBinding, PackageBuildId, PackageLocalAbiIdentity,
-    PackageRequirement, PackageRequirementKey,
+    PackageLocalAbiSymbol, PackageRequirement, PackageRequirementKey, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_input::{package_config::read_user_package_manifest, CompilerPlatformSources};
 use skiff_compiler_source::prelude_registry::{
@@ -80,7 +80,7 @@ fn p5_f149_reachable_package_closure_is_transitive_and_excludes_unused_candidate
 
     let closure = resolve_reachable_package_closure(
         &implementation,
-        &[middle.clone(), unused],
+        &[middle.clone(), unused.clone()],
         |id, version| {
             resolutions.push((id.to_string(), version.to_string()));
             if id == leaf.package_id && version == leaf.package_version {
@@ -91,14 +91,20 @@ fn p5_f149_reachable_package_closure_is_transitive_and_excludes_unused_candidate
         },
     )
     .unwrap();
+    let reordered =
+        resolve_reachable_package_closure(&implementation, &[unused, middle], |id, version| {
+            assert_eq!((id, version), (leaf.package_id.as_str(), "1.0.0"));
+            Ok(leaf.clone())
+        })
+        .unwrap();
 
-    assert_eq!(
-        closure
-            .iter()
-            .map(|artifact| artifact.package_id.as_str())
-            .collect::<Vec<_>>(),
-        ["example.com/leaf", "example.com/middle"]
-    );
+    assert_eq!(closure, reordered);
+    let mut package_ids = closure
+        .iter()
+        .map(|artifact| artifact.package_id.as_str())
+        .collect::<Vec<_>>();
+    package_ids.sort_unstable();
+    assert_eq!(package_ids, ["example.com/leaf", "example.com/middle"]);
     assert_eq!(
         resolutions,
         [("example.com/leaf".to_string(), "1.0.0".to_string())]
@@ -121,7 +127,25 @@ fn p5_f149_reachable_package_closure_fails_closed_on_each_exact_edge() {
     .unwrap_err();
     assert!(error
         .to_string()
-        .contains("expected local ABI expected-abi"));
+        .contains(expected.package_local_abi.local_abi_identity.as_ref()));
+
+    let error = resolve_reachable_package_closure(
+        &implementation,
+        &[expected.clone(), expected.clone()],
+        |_, _| panic!("duplicate exact loaded candidates must not reach store resolution"),
+    )
+    .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("multiple exact loaded candidates"));
+
+    let mut identity_drift = expected.clone();
+    identity_drift.package_build_id = PackageBuildId::new("forged-build");
+    let error = resolve_reachable_package_closure(&implementation, &[identity_drift], |_, _| {
+        panic!("an exact loaded coordinate with forged identities must not reach store resolution")
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("invalid canonical identities"));
 
     let wrong_coordinate = package("example.com/other", "1.0.0", "expected-abi", []);
     let error =
@@ -224,7 +248,7 @@ fn package(
         package_schema_index_identity(id, &Default::default()).unwrap();
     let bytecode_statement_manifest_identity =
         derive_bytecode_statement_manifest_identity(id, &[]).unwrap();
-    serde_json::from_value(json!({
+    let mut artifact: PackageArtifact = serde_json::from_value(json!({
         "schemaVersion": "skiff-package-artifact-v15",
         "packageId": id,
         "packageVersion": version,
@@ -258,7 +282,23 @@ fn package(
         "boundaryProjections": {},
         "serviceCallRefs": []
     }))
-    .unwrap()
+    .unwrap();
+    artifact.package_local_abi.public_symbols.insert(
+        "Marker".to_string(),
+        PackageLocalAbiSymbol::Type {
+            local_type_id: format!("type:{local_abi}"),
+            descriptor: TypeDescriptorIr::Representation {
+                representation: TypeRefIr::builtin("string"),
+            },
+            is_alias: false,
+            is_interface: false,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+            actor: None,
+        },
+    );
+    assign_package_artifact_identities(&mut artifact).unwrap();
+    artifact
 }
 
 fn requirement(alias: &str, package: &PackageArtifact) -> PackageRequirement {

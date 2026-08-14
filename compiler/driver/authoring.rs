@@ -13,8 +13,9 @@ use std::{
 
 use serde_json::{json, Map, Value};
 use skiff_artifact_identity::{
-    package_artifact_ref, service_contract_ref, service_deployment_ref, PackageArtifactPointerPath,
-    ReleasePointerPath, ServiceContractPointerPath, ServiceDeploymentPointerPath,
+    package_artifact_ref, service_contract_ref, service_deployment_ref,
+    validate_package_artifact_identities, PackageArtifactPointerPath, ReleasePointerPath,
+    ServiceContractPointerPath, ServiceDeploymentPointerPath,
 };
 use skiff_artifact_model::{ContractRequirement, PackageArtifact, ServiceAuthoringKind};
 use skiff_compiler_input::{
@@ -558,7 +559,7 @@ fn reachable_package_closure(
     })
 }
 
-fn resolve_reachable_package_closure(
+pub(crate) fn resolve_reachable_package_closure(
     implementation: &PackageArtifact,
     loaded: &[PackageArtifact],
     mut resolve: impl FnMut(&str, &str) -> AuthoringResult<PackageArtifact>,
@@ -580,29 +581,33 @@ fn resolve_reachable_package_closure(
                         && candidate.package_version == requirement.exact_version
                 })
                 .collect::<Vec<_>>();
-            let candidate = if let Some(candidate) = matching_coordinates.iter().find(|candidate| {
-                candidate.package_local_abi.local_abi_identity == requirement.expected_local_abi
-                    && requirement
-                        .expected_package_build
-                        .as_ref()
-                        .is_none_or(|expected| expected == &candidate.package_build_id)
-            }) {
-                (*candidate).clone()
-            } else if matching_coordinates.is_empty() {
-                let candidate = resolve(&requirement.package_id, &requirement.exact_version)?;
-                validate_package_requirement_candidate(requirement, &candidate)?;
-                candidates.push(candidate.clone());
-                candidate
-            } else {
-                return Err(invalid_input(format!(
-                    "exact package requirement {}@{} expected local ABI {}, but the loaded candidate has {}",
-                    requirement.package_id,
-                    requirement.exact_version,
-                    requirement.expected_local_abi,
-                    matching_coordinates[0]
-                        .package_local_abi
-                        .local_abi_identity
-                )));
+            let exact_matches = matching_coordinates
+                .iter()
+                .copied()
+                .filter(|candidate| package_requirement_matches(requirement, candidate))
+                .collect::<Vec<_>>();
+            let candidate = match exact_matches.as_slice() {
+                [candidate] => (*candidate).clone(),
+                [] if matching_coordinates.is_empty() => {
+                    let candidate = resolve(&requirement.package_id, &requirement.exact_version)?;
+                    validate_package_requirement_candidate(requirement, &candidate)?;
+                    candidates.push(candidate.clone());
+                    candidate
+                }
+                [] => {
+                    return Err(invalid_input(format!(
+                        "exact package requirement {}@{} has loaded candidates, but none matches local ABI {} and optional build authority",
+                        requirement.package_id,
+                        requirement.exact_version,
+                        requirement.expected_local_abi,
+                    )))
+                }
+                _ => {
+                    return Err(invalid_input(format!(
+                        "exact package requirement {}@{} has multiple exact loaded candidates",
+                        requirement.package_id, requirement.exact_version,
+                    )))
+                }
             };
             validate_package_requirement_candidate(requirement, &candidate)?;
             if candidate.package_build_id != implementation.package_build_id {
@@ -621,6 +626,12 @@ fn validate_package_requirement_candidate(
     requirement: &skiff_artifact_model::PackageRequirement,
     candidate: &PackageArtifact,
 ) -> AuthoringResult<()> {
+    validate_package_artifact_identities(candidate).map_err(|error| {
+        invalid_input(format!(
+            "exact package requirement {}@{} resolved an artifact with invalid canonical identities: {error}",
+            requirement.package_id, requirement.exact_version,
+        ))
+    })?;
     if candidate.package_id != requirement.package_id
         || candidate.package_version != requirement.exact_version
     {
@@ -653,6 +664,19 @@ fn validate_package_requirement_candidate(
         }
     }
     Ok(())
+}
+
+fn package_requirement_matches(
+    requirement: &skiff_artifact_model::PackageRequirement,
+    candidate: &PackageArtifact,
+) -> bool {
+    candidate.package_id == requirement.package_id
+        && candidate.package_version == requirement.exact_version
+        && candidate.package_local_abi.local_abi_identity == requirement.expected_local_abi
+        && requirement
+            .expected_package_build
+            .as_ref()
+            .is_none_or(|expected| expected == &candidate.package_build_id)
 }
 
 fn package_aliases(

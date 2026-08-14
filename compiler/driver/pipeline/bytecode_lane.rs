@@ -1,7 +1,9 @@
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity,
     validate_current_platform_error_projection_registry_ref, BytecodeArtifactRef,
-    BytecodeFunctionStatementManifest, PackageArtifact, TypeDescriptorIr, TypeRefIr,
+    BytecodeFunctionStatementManifest, GatewayDispatchMode, GatewayProtocolSurface,
+    PackageArtifact, PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, TypeDescriptorIr,
+    TypeRefIr,
 };
 use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
@@ -9,10 +11,15 @@ use skiff_compiler_compiled::{
 };
 use skiff_compiler_contract::ServicePublicInstanceOperationFacts;
 use skiff_compiler_emission::bytecode::{
-    admit_phase_1_bytecode_mir, derive_bytecode_value_transfer_plans, emit_bytecode_artifact,
+    admit_phase_1_bytecode_mir_with_server_stream_authorities,
+    derive_bytecode_value_transfer_plans, emit_bytecode_artifact, ServerStreamEmitFact,
+    ServerStreamGatewayAuthority,
 };
 use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
-use skiff_compiler_lowering::{mir::MirUnit, Bounds, ConstEvaluator};
+use skiff_compiler_lowering::{
+    mir::{MirStmtKind, MirUnit},
+    Bounds, ConstEvaluator,
+};
 use skiff_compiler_projection::package_artifact::{
     attach_package_execution as attach_projected_package_execution, PackageExecutionAttachment,
     ProjectedPackageArtifact,
@@ -23,6 +30,7 @@ use skiff_compiler_source::{
     SourceValueTransferPackageRef, SourceValueTransferPlanInput,
 };
 
+use crate::http_gateway_projection::ProjectedHttpGateway;
 use crate::shared::package_compile_error::PackageCompileError;
 
 /// Successful bytecode state for one package compilation.
@@ -128,9 +136,15 @@ impl PackageCompileOutput {
 pub(super) fn compile_bytecode_lane(
     emit_bytecode: bool,
     compiled: &CompiledPackage,
+    projected_gateway: &ProjectedHttpGateway,
+    unattached_package: &PackageArtifact,
 ) -> Result<PackageBytecodeLane, PackageCompileError> {
     let outcome: BytecodeCompilationOutcome<PackageCompileError> = if emit_bytecode {
-        BytecodeCompilationOutcome::from_enabled_result(emit_enabled_bytecode(compiled))
+        BytecodeCompilationOutcome::from_enabled_result(emit_enabled_bytecode(
+            compiled,
+            projected_gateway,
+            unattached_package,
+        ))
     } else {
         BytecodeCompilationOutcome::disabled()
     };
@@ -148,10 +162,17 @@ fn finish_bytecode_lane(
 
 fn emit_enabled_bytecode(
     compiled: &CompiledPackage,
+    projected_gateway: &ProjectedHttpGateway,
+    unattached_package: &PackageArtifact,
 ) -> Result<BytecodeCompilationHandoff, PackageCompileError> {
     let package_id = compiled.compile_model().policy().package_id().to_string();
     let units = compiled.lowered().mir_units();
-    let admitted = admit_phase_1_bytecode_mir(units)?;
+    let server_stream_authorities =
+        server_stream_gateway_authorities(projected_gateway, unattached_package, units)?;
+    let admitted = admit_phase_1_bytecode_mir_with_server_stream_authorities(
+        units,
+        &server_stream_authorities,
+    )?;
     let mut bundles = Vec::new();
     for unit in compiled.lowered().file_ir_units() {
         let bundle = ConstEvaluator::new(Bounds::default())
@@ -161,7 +182,7 @@ fn emit_enabled_bytecode(
             })?;
         bundles.push(bundle);
     }
-    let facts = source_value_transfer_facts_for_units(units);
+    let facts = source_value_transfer_facts_for_units(admitted.source_value_transfer_units());
     let plans = derive_bytecode_value_transfer_plans(&admitted, |module_path, ty| {
         source_value_transfer_plan(
             &facts,
@@ -198,6 +219,111 @@ fn emit_enabled_bytecode(
     )?)
 }
 
+fn server_stream_gateway_authorities(
+    projected: &ProjectedHttpGateway,
+    implementation: &PackageArtifact,
+    units: &[MirUnit],
+) -> Result<Vec<ServerStreamGatewayAuthority>, PackageCompileError> {
+    let mut authorities = Vec::new();
+    for entry in projected.gateway_entries.values() {
+        let GatewayProtocolSurface::Http(surface) = &entry.protocol_surface.protocol else {
+            continue;
+        };
+        if surface.dispatch_mode != GatewayDispatchMode::ServerStream {
+            continue;
+        }
+        let handler = entry.handler.as_ref().ok_or_else(|| {
+            gateway_authority_error("projected server-stream entry lacks a handler")
+        })?;
+        let signatures = implementation
+            .package_local_abi
+            .implementation_symbols
+            .values()
+            .filter_map(|symbol| match symbol {
+                PackageLocalAbiSymbol::Callable {
+                    callable_id,
+                    signature,
+                } if callable_id == handler => Some(signature),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [signature] = signatures.as_slice() else {
+            return Err(gateway_authority_error(
+                "projected server-stream handler lacks one exact implementation signature",
+            ));
+        };
+        let stream_item_type = exact_mir_stream_item(&signature.return_type).ok_or_else(|| {
+            gateway_authority_error(
+                "projected server-stream signature does not retain an exact MIR item type",
+            )
+        })?;
+        let functions = units
+            .iter()
+            .flat_map(|unit| &unit.functions)
+            .filter(|function| &function.effect_summary_ref == handler)
+            .collect::<Vec<_>>();
+        let [function] = functions.as_slice() else {
+            return Err(gateway_authority_error(
+                "projected server-stream handler lacks one exact MIR implementation",
+            ));
+        };
+        if function
+            .stream_result
+            .as_ref()
+            .map(|stream| &stream.item_type)
+            != Some(&stream_item_type)
+        {
+            return Err(gateway_authority_error(
+                "projected server-stream signature differs from MIR stream result facts",
+            ));
+        }
+        let emit_facts = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter_map(|statement| match &statement.kind {
+                MirStmtKind::Emit { value, .. } => Some(ServerStreamEmitFact::new(
+                    statement.statement_index,
+                    value.expression,
+                )),
+                _ => None,
+            })
+            .collect();
+        authorities.push(ServerStreamGatewayAuthority::new(
+            entry.clone(),
+            stream_item_type,
+            emit_facts,
+        ));
+    }
+    Ok(authorities)
+}
+
+fn exact_mir_stream_item(return_type: &PackageTypeRef) -> Option<TypeRefIr> {
+    match return_type {
+        PackageTypeRef::Local {
+            local_type: TypeRefIr::Builtin { name, args },
+        } if name == "Stream" => {
+            let [item] = args.as_slice() else {
+                return None;
+            };
+            Some(item.clone())
+        }
+        PackageTypeRef::Container { name, arguments } if name == "Stream" => {
+            let [PackageTypeRef::Local { local_type }] = arguments.as_slice() else {
+                return None;
+            };
+            Some(local_type.clone())
+        }
+        _ => None,
+    }
+}
+
+fn gateway_authority_error(message: impl Into<String>) -> PackageCompileError {
+    PackageCompileError::ContractValidation {
+        message: format!("server-stream gateway authority: {}", message.into()),
+    }
+}
+
 /// Builds the source-owned exact nominal facts from the lowered type tables.
 ///
 /// This is the pipeline's single injection of source value-transfer facts into
@@ -206,6 +332,10 @@ fn emit_enabled_bytecode(
 /// resolve through the same exact declarations.
 fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransferFacts {
     let mut facts = SourceValueTransferFacts::new();
+    let mut package_facts = std::collections::BTreeMap::<
+        SourceValueTransferNominalId,
+        Option<SourceValueTransferNominalFact>,
+    >::new();
     // The Phase 4 pinned sleep argument is the std transparent alias
     // `Duration = integer`. User packages reference it as a package symbol and
     // therefore do not contribute a local/publication type-table fact for it.
@@ -224,6 +354,62 @@ fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransf
         },
     );
     for unit in units {
+        let mut package_symbol_counts = std::collections::BTreeMap::new();
+        for symbol in &unit.external_refs.package_symbols {
+            let PackageRefIr::PackageId { package_id } = &symbol.package else {
+                continue;
+            };
+            let Some(abi) = symbol
+                .abi_expectation
+                .as_deref()
+                .filter(|abi| !abi.trim().is_empty())
+            else {
+                continue;
+            };
+            *package_symbol_counts
+                .entry((
+                    package_id.clone(),
+                    symbol.symbol_path.clone(),
+                    abi.to_string(),
+                ))
+                .or_insert(0_usize) += 1;
+        }
+        for ((package_id, symbol_path, abi), count) in package_symbol_counts {
+            if count != 1 {
+                continue;
+            }
+            let Some(fields) = unit
+                .package_type_records
+                .get(&(package_id.clone(), symbol_path.clone()))
+            else {
+                continue;
+            };
+            let declaration_module = symbol_path
+                .rsplit_once('.')
+                .map_or_else(|| symbol_path.clone(), |(module, _)| module.to_string());
+            let identity = SourceValueTransferNominalId::PackageSymbol {
+                package: SourceValueTransferPackageRef::PackageId(package_id),
+                symbol_path,
+                abi_expectation: Some(abi),
+            };
+            let fact = SourceValueTransferNominalFact {
+                declaration_module,
+                type_parameters: Vec::new(),
+                semantics: SourceValueTransferNominalSemantics::Ordinary(
+                    TypeDescriptorIr::Record {
+                        fields: fields.clone(),
+                    },
+                ),
+            };
+            package_facts
+                .entry(identity)
+                .and_modify(|existing| {
+                    if existing.as_ref() != Some(&fact) {
+                        *existing = None;
+                    }
+                })
+                .or_insert(Some(fact));
+        }
         for (type_index, declaration) in unit.type_table.iter().enumerate() {
             let fact = SourceValueTransferNominalFact {
                 declaration_module: unit.module_path.clone(),
@@ -247,6 +433,11 @@ fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransf
                 },
                 fact,
             );
+        }
+    }
+    for (identity, fact) in package_facts {
+        if let Some(fact) = fact {
+            facts.insert_nominal(identity, fact);
         }
     }
     facts

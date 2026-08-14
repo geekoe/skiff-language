@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use skiff_artifact_model::{
-    bytecode::BoundedDecoder, BytecodePoolEntry, BytecodeRelocation, HostEffectExecutorIdentity,
-    Opcode, PrivilegedAffineCompositeIdentity, ResourceDropPlan, ValueDropPlan, ValueTransferPlan,
+    bytecode::BoundedDecoder, BytecodePoolEntry, BytecodeRelocation, CallableEffectSummary,
+    HostEffectExecutorIdentity, Opcode, PendingEffectCategory, PrivilegedAffineCompositeIdentity,
+    ResourceDropPlan, ValueDropPlan, ValueTransferPlan,
 };
 use skiff_compiler_lowering::{
     mir::source_program::{lower_single_source_program, SingleSourceProgram},
@@ -128,6 +129,81 @@ function stream(input: std.http.HttpClientRequest) -> void {
             .count(),
         3
     );
+}
+
+#[test]
+fn mixed_sleep_and_http_require_both_exact_effect_categories() {
+    let lowered = lower(
+        r#"
+import std
+
+function mixed(input: std.http.HttpClientRequest) -> void {
+  std.time.sleep(Duration.milliseconds(1))
+  std.http.request(input)
+}
+"#,
+    );
+    let CallableEffectSummary::Analyzed { effects } =
+        &lowered.mir_units()[0].functions[0].effect_summary
+    else {
+        panic!("real source carries analyzed effects")
+    };
+    assert_eq!(
+        effects
+            .pending_effect_categories
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>(),
+        std::collections::BTreeSet::from([
+            PendingEffectCategory::NativeCall,
+            PendingEffectCategory::HostEffect,
+        ])
+    );
+    admit_phase_1_bytecode_mir(lowered.mir_units())
+        .expect("mixed source owns both exact producer categories");
+
+    let mut wrong = lowered.mir_units().to_vec();
+    let CallableEffectSummary::Analyzed { effects } = &mut wrong[0].functions[0].effect_summary
+    else {
+        panic!("real source carries analyzed effects")
+    };
+    effects.pending_effect_categories = vec![PendingEffectCategory::NativeCall];
+    let error = admit_phase_1_bytecode_mir(&wrong)
+        .expect_err("mixed source missing HostEffect authority must fail closed");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedPhase1Capability {
+            capability: Phase1UnsupportedCapability::PendingEffect,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn http_executor_rejects_native_call_category_laundering() {
+    let lowered = lower(
+        r#"
+import std
+function request(input: std.http.HttpClientRequest) -> void {
+  std.http.request(input)
+}
+"#,
+    );
+    let mut wrong = lowered.mir_units().to_vec();
+    let CallableEffectSummary::Analyzed { effects } = &mut wrong[0].functions[0].effect_summary
+    else {
+        panic!("real source carries analyzed effects")
+    };
+    effects.pending_effect_categories = vec![PendingEffectCategory::NativeCall];
+    let error = admit_phase_1_bytecode_mir(&wrong)
+        .expect_err("HTTP cannot borrow Sleep's NativeCall category");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedPhase1Capability {
+            capability: Phase1UnsupportedCapability::PendingEffect,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -315,6 +391,25 @@ fn generic_string_and_stream_shapes_remain_outside_the_exact_registry_slice() {
                     | Phase1UnsupportedCapability::Stream,
                 ..
             }
+        ));
+    }
+}
+
+#[test]
+fn stream_result_without_gateway_authority_fails_before_emit_shape_matters() {
+    for item in ["string", "bytes"] {
+        let lowered = lower(&format!(
+            "function run() -> Stream<{item}> {{ return null }}"
+        ));
+        let error = admit_phase_1_bytecode_mir(lowered.mir_units())
+            .expect_err("a stream signature without gateway authority must fail closed");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::Stream,
+                location,
+                ..
+            } if location.contains("lacks exact canonical gateway authority")
         ));
     }
 }

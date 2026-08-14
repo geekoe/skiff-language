@@ -1,10 +1,12 @@
 use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
-    builtin_receiver_callable_semantics, native_callable_semantics, BoundaryCallbackContract,
-    BoundaryOperationDescriptor, BoundaryStreamContract, BuiltinReceiverOp,
-    CallableProvenanceUnknownReason, PendingEffectCategory, ValueProjectionPath,
+    builtin_receiver_callable_semantics, host_effect_registry, native_callable_semantics,
+    BoundaryCallbackContract, BoundaryOperationDescriptor, BoundaryStreamContract,
+    BuiltinReceiverOp, CallableMayEffects, CallableProvenanceUnknownReason,
+    HostEffectExecutorIdentity, PackageCallableId, PendingEffectCategory, ValueProjectionPath,
 };
+use skiff_compiler_core::{id::SKIFF_STD_PUBLICATION_ID, public_package_callable_id};
 
 use crate::{
     shared::ast::{CallArg, Expr},
@@ -97,6 +99,7 @@ impl Evaluator<'_, '_> {
             }
             Some(ResolvedCallTarget::DependencyPackageFunction {
                 package_requirement_alias,
+                compiler_owned,
                 package_callable_id,
                 expected_local_abi,
                 exact_signature,
@@ -126,28 +129,14 @@ impl Evaluator<'_, '_> {
                     .map(|signature| signature.may_suspend)
                     .unwrap_or(true);
                 callee.effects.may_pending = may_pending;
-                let preserve_sleep_native_call =
-                    package_callable_id.to_string().contains("std.time.sleep");
-                if may_pending && !preserve_sleep_native_call {
-                    if callee
-                        .effects
-                        .pending_effect_categories
-                        .contains(&PendingEffectCategory::NativeCall)
-                    {
-                        callee
-                            .effects
-                            .pending_effect_categories
-                            .retain(|category| *category != PendingEffectCategory::NativeCall);
-                        if !callee
-                            .effects
-                            .pending_effect_categories
-                            .contains(&PendingEffectCategory::HostEffect)
-                        {
-                            callee
-                                .effects
-                                .pending_effect_categories
-                                .push(PendingEffectCategory::HostEffect);
-                        }
+                if !may_pending {
+                    callee.effects.pending_effect_categories.clear();
+                } else {
+                    if compiler_owned {
+                        project_exact_package_executor_category(
+                            &mut callee.effects,
+                            &package_callable_id,
+                        );
                     }
                     if callee.effects.pending_effect_categories.is_empty() {
                         callee
@@ -155,13 +144,6 @@ impl Evaluator<'_, '_> {
                             .pending_effect_categories
                             .push(PendingEffectCategory::Unknown);
                     }
-                } else if !may_pending {
-                    callee.effects.pending_effect_categories.clear();
-                } else if callee.effects.pending_effect_categories.is_empty() {
-                    callee
-                        .effects
-                        .pending_effect_categories
-                        .push(PendingEffectCategory::Unknown);
                 }
                 self.apply_callee(
                     &callee,
@@ -286,7 +268,7 @@ impl Evaluator<'_, '_> {
         actuals: &[AbstractValue],
         return_reference: bool,
     ) -> AbstractValue {
-        let Some(callee) = native_callable_callee(binding_key) else {
+        let Some(mut callee) = native_callable_callee(binding_key) else {
             return self.apply_unknown_call_with_callee(
                 callee_value,
                 actuals,
@@ -294,6 +276,7 @@ impl Evaluator<'_, '_> {
                 EscapeLane::Native,
             );
         };
+        project_exact_executor_category(&mut callee.effects, binding_key);
         self.apply_callee(&callee, actuals, return_reference, None)
     }
 
@@ -613,6 +596,60 @@ fn native_callable_callee(binding_key: &str) -> Option<CallableState> {
         }
         _ => None,
     }
+}
+
+fn project_exact_executor_category(effects: &mut CallableMayEffects, binding_key: &str) {
+    if !effects.may_pending {
+        return;
+    }
+    let Some(executor) = host_effect_registry()
+        .entries()
+        .iter()
+        .find(|entry| entry.binding_key == binding_key)
+        .and_then(|entry| entry.executor_identity)
+    else {
+        return;
+    };
+    project_executor_category(effects, executor);
+}
+
+fn project_exact_package_executor_category(
+    effects: &mut CallableMayEffects,
+    callable_id: &PackageCallableId,
+) {
+    if !effects.may_pending {
+        return;
+    }
+    let mut matches = host_effect_registry().entries().iter().filter_map(|entry| {
+        let executor = entry.executor_identity?;
+        let expected = public_package_callable_id(SKIFF_STD_PUBLICATION_ID, &entry.target).ok()?;
+        (expected == *callable_id).then_some(executor)
+    });
+    let Some(executor) = matches.next() else {
+        return;
+    };
+    if matches.next().is_some() {
+        return;
+    }
+    project_executor_category(effects, executor);
+}
+
+fn project_executor_category(
+    effects: &mut CallableMayEffects,
+    executor: HostEffectExecutorIdentity,
+) {
+    let category = match executor {
+        HostEffectExecutorIdentity::Sleep => PendingEffectCategory::NativeCall,
+        HostEffectExecutorIdentity::HttpClientRequest
+        | HostEffectExecutorIdentity::HttpClientStream => PendingEffectCategory::HostEffect,
+    };
+    effects.pending_effect_categories.retain(|candidate| {
+        !matches!(
+            candidate,
+            PendingEffectCategory::NativeCall | PendingEffectCategory::HostEffect
+        )
+    });
+    effects.pending_effect_categories.push(category);
 }
 
 fn receiver_callable_callee(op: BuiltinReceiverOp) -> Option<CallableState> {

@@ -464,7 +464,7 @@ fn exact_http_client_stream_is_fresh_detached_and_suspending_through_raw_request
     assert_eq!(effects(&model, "rawRequest"), no_effects());
     assert_eq!(
         effects(&model, "responses"),
-        pending_only_effects(vec![PendingEffectCategory::NativeCall])
+        pending_only_effects(vec![PendingEffectCategory::HostEffect])
     );
     assert!(matches!(
         provenance(&model, "responses"),
@@ -865,7 +865,7 @@ fn exact_package_boundary_callables_transfer_canonical_effects_and_provenance() 
 
     assert_eq!(
         effects_in(&model, "std.effect_test", "request"),
-        pending_only_effects(vec![PendingEffectCategory::NativeCall])
+        pending_only_effects(vec![PendingEffectCategory::HostEffect])
     );
     let CallableProvenanceSummary::Analyzed { return_origins, .. } =
         provenance_in(&model, "std.effect_test", "request")

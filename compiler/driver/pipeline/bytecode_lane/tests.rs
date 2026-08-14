@@ -22,6 +22,31 @@ use skiff_compiler_emission::package_artifact::publish_projected_package_artifac
 use super::*;
 
 const PACKAGE_ID: &str = "example.com/bytecode-attachment";
+const PRODUCTION_SERVER_STREAM_SOURCE: &str = r#"import std
+
+function consume(
+  request: std.http.HttpRequest
+) -> Stream<std.http.HttpResponseStreamEvent> {
+  final outbound = std.http.HttpClientRequest {
+    method: request.method,
+    url: request.body.toUtf8String(),
+    headers: request.headers,
+    body: null,
+    timeoutMs: null,
+  }
+  final response = std.http.stream(outbound)
+  emit({
+    tag: "start",
+    status: 207,
+    headers: Array.empty<std.http.HttpHeader>(),
+  })
+  for chunk in response.body {
+    emit({ tag: "chunk", value: chunk })
+  }
+  emit({ tag: "end" })
+  return null
+}
+"#;
 
 #[test]
 fn explicitly_disabled_outcome_is_the_only_none_lane() {
@@ -125,6 +150,260 @@ fn enabled_lane_attaches_exact_handoff_ref_and_manifest_to_a_new_projection() {
         PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
         "skiff-package-build-v14:sha256"
     );
+}
+
+#[test]
+fn production_authoring_publishes_exact_affine_http_stream_bytecode() {
+    let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler manifest has repository root")
+        .to_path_buf();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock follows Unix epoch")
+        .as_nanos();
+    let temp = std::env::temp_dir().join(format!(
+        "skiff-c5-production-affine-{}-{nonce}",
+        std::process::id()
+    ));
+    let package_root = temp.join("package");
+    let artifact_root = temp.join("artifacts");
+    std::fs::create_dir_all(&package_root).expect("create production fixture root");
+    for (path, contents) in [
+        (
+            "package.yml",
+            "id: test.skiff/c5-production-affine\nversion: 1.0.0\n",
+        ),
+        ("service.yml", "id: test.skiff/c5-production-affine\n"),
+        ("api.yml", "{}\n"),
+        (
+            "http.yml",
+            "consume:\n  method: POST\n  path: /phase-5/compiler\n  kind: rawHttp\n  handler: main.consume\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n",
+        ),
+        (
+            "main.skiff",
+            PRODUCTION_SERVER_STREAM_SOURCE,
+        ),
+    ] {
+        std::fs::write(package_root.join(path), contents).expect("write production fixture");
+    }
+
+    let platform = crate::CompilerPlatformSources::new(&repository_root)
+        .expect("open production platform sources");
+    crate::authoring::seed_official_std_package(&platform, &artifact_root)
+        .expect("seed exact compiler-owned std package");
+    let receipt = crate::authoring::build_authoring_object(
+        &platform,
+        crate::authoring::AuthoringObject::Package,
+        &package_root,
+        &artifact_root,
+        "skiff-test",
+        true,
+    )
+    .expect("production authoring must consume resolved std package authority");
+    let package_ref: skiff_artifact_model::PackageArtifactRef =
+        serde_json::from_value(receipt["packageArtifactReceipt"]["artifact"].clone())
+            .expect("authoring receipt carries exact package ref");
+    let store = skiff_deployment::storage::CanonicalArtifactStore::open(&artifact_root)
+        .expect("open production artifact store");
+    let package = store
+        .read_package_artifact(&package_ref)
+        .expect("read production package artifact");
+    let bytecode_ref = package
+        .bytecode
+        .as_ref()
+        .expect("production publication attaches bytecode");
+    let bytecode = store
+        .read_package_bytecode(&package_ref, bytecode_ref)
+        .expect("production publication persists admitted bytecode");
+    let function = bytecode
+        .artifact()
+        .image
+        .functions
+        .get("main::consume")
+        .expect("production bytecode carries the source handler");
+    let decoded = skiff_artifact_model::bytecode::BoundedDecoder::new()
+        .decode_function(&function.words)
+        .expect("published wordcode decodes");
+    assert!(decoded.instructions.windows(2).any(|pair| {
+        pair[0].descriptor.kind == Opcode::TakeSlot
+            && pair[1].descriptor.kind == Opcode::TakeDenseField
+    }));
+    let deployment_ref: skiff_artifact_model::ServiceDeploymentRef =
+        serde_json::from_value(receipt["serviceDeploymentReceipt"]["deployment"].clone())
+            .expect("authoring receipt carries the formal deployment reference");
+    let deployment = store
+        .read_service_deployment(&deployment_ref)
+        .expect("read the formally projected service deployment");
+    let entry_key = skiff_artifact_model::GatewayEntryKey::parse("consume")
+        .expect("fixture gateway key is canonical");
+    let entry = deployment
+        .gateway_entries
+        .get(&entry_key)
+        .expect("formal deployment carries the admitted gateway entry");
+    assert_eq!(deployment.gateway_entries.len(), 1);
+    assert_eq!(entry.handler.as_ref(), Some(&function.effect_summary_ref));
+    assert_eq!(
+        entry.gateway_entry_identity,
+        skiff_artifact_identity::gateway_entry_identity(&entry.protocol_surface)
+            .expect("formal gateway identity is derived from its exact typed surface")
+    );
+    let skiff_artifact_model::GatewayProtocolSurface::Http(surface) =
+        &entry.protocol_surface.protocol
+    else {
+        panic!("formal raw HTTP entry must retain its HTTP protocol surface")
+    };
+    assert_eq!(
+        surface.adapter_kind,
+        skiff_artifact_model::GatewayAdapterKind::RawHttp
+    );
+    assert_eq!(
+        surface.dispatch_mode,
+        skiff_artifact_model::GatewayDispatchMode::ServerStream
+    );
+    assert_eq!(
+        surface.external_sources,
+        [skiff_artifact_model::GatewayAdapterSource::HttpRequest]
+    );
+    assert!(surface.request_body_schema.is_none());
+    assert!(surface.response_schema.is_none());
+    assert!(surface.stream_item_schema.is_some());
+    std::fs::remove_dir_all(temp).expect("remove production fixture tree");
+}
+
+#[test]
+fn production_gateway_negatives_fail_before_package_or_release_pointer() {
+    for (label, http, expected_field) in [
+        (
+            "wrong-kind",
+            "consume:\n  method: POST\n  path: /phase-5/compiler\n  kind: typedJson\n  handler: main.consume\n  adapterArgs:\n    - param: request\n      source: { kind: http.body }\n",
+            "handler",
+        ),
+        (
+            "wrong-handler",
+            "consume:\n  method: POST\n  path: /phase-5/compiler\n  kind: rawHttp\n  handler: main.missing\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n",
+            "handler",
+        ),
+    ] {
+        let package_id = format!("test.skiff/c5-production-{label}");
+        let (platform, package_root, artifact_root, temp) =
+            production_fixture(&package_id, Some(http));
+        let error = crate::authoring::build_authoring_object(
+            &platform,
+            crate::authoring::AuthoringObject::Package,
+            &package_root,
+            &artifact_root,
+            "skiff-test",
+            true,
+        )
+        .expect_err("invalid canonical gateway input must fail before publication");
+        let typed = error
+            .downcast_ref::<crate::ServicePackageCompileError>()
+            .expect("gateway projection preserves its typed service compile error");
+        assert!(matches!(
+            typed,
+            crate::ServicePackageCompileError::HttpGateway(
+                crate::http_gateway_projection::HttpGatewayProjectionError::InvalidEntry {
+                    field,
+                    ..
+                }
+            ) if *field == expected_field
+        ));
+        assert_no_publication_pointers(&artifact_root, &package_id);
+        std::fs::remove_dir_all(temp).expect("remove negative fixture tree");
+    }
+}
+
+#[test]
+fn ordinary_package_stream_shape_has_no_gateway_authority() {
+    let package_id = "test.skiff/c5-ordinary-stream-shape";
+    let (platform, package_root, artifact_root, temp) = production_fixture(package_id, None);
+    let error = crate::authoring::build_authoring_object(
+        &platform,
+        crate::authoring::AuthoringObject::Package,
+        &package_root,
+        &artifact_root,
+        "skiff-test",
+        true,
+    )
+    .expect_err("a Stream nominal/type shape without gateway authority must fail closed");
+    let typed = error
+        .downcast_ref::<PackageCompileError>()
+        .expect("ordinary package preserves its typed compiler rejection");
+    assert!(matches!(
+        typed,
+        PackageCompileError::BytecodeEmission {
+            source: skiff_compiler_emission::BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: skiff_compiler_emission::Phase1UnsupportedCapability::Stream,
+                ..
+            }
+        }
+    ));
+    assert_no_publication_pointers(&artifact_root, package_id);
+    std::fs::remove_dir_all(temp).expect("remove ordinary fixture tree");
+}
+
+fn production_fixture(
+    package_id: &str,
+    http: Option<&str>,
+) -> (
+    crate::CompilerPlatformSources,
+    std::path::PathBuf,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("compiler manifest has repository root")
+        .to_path_buf();
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock follows Unix epoch")
+        .as_nanos();
+    let temp = std::env::temp_dir().join(format!(
+        "skiff-c5-production-negative-{}-{nonce}",
+        std::process::id()
+    ));
+    let package_root = temp.join("package");
+    let artifact_root = temp.join("artifacts");
+    std::fs::create_dir_all(&package_root).expect("create production fixture root");
+    std::fs::write(
+        package_root.join("package.yml"),
+        format!("id: {package_id}\nversion: 1.0.0\n"),
+    )
+    .expect("write package manifest");
+    std::fs::write(package_root.join("api.yml"), "{}\n").expect("write API document");
+    std::fs::write(
+        package_root.join("main.skiff"),
+        PRODUCTION_SERVER_STREAM_SOURCE,
+    )
+    .expect("write source fixture");
+    if let Some(http) = http {
+        std::fs::write(
+            package_root.join("service.yml"),
+            format!("id: {package_id}\n"),
+        )
+        .expect("write service manifest");
+        std::fs::write(package_root.join("http.yml"), http).expect("write HTTP gateway document");
+    }
+    let platform = crate::CompilerPlatformSources::new(&repository_root)
+        .expect("open production platform sources");
+    crate::authoring::seed_official_std_package(&platform, &artifact_root)
+        .expect("seed exact compiler-owned std package");
+    (platform, package_root, artifact_root, temp)
+}
+
+fn assert_no_publication_pointers(artifact_root: &std::path::Path, package_id: &str) {
+    let store = skiff_deployment::storage::CanonicalArtifactStore::open(artifact_root)
+        .expect("open negative fixture store");
+    assert!(store
+        .read_package_artifact_pointer(package_id, "1.0.0")
+        .expect("read package pointer")
+        .is_none());
+    assert!(store
+        .read_release_pointer("skiff-test", package_id, "1.0.0")
+        .expect("read release pointer")
+        .is_none());
 }
 
 #[test]
@@ -507,14 +786,148 @@ fn phase_2_bytecode_admission_source_facts_export_local_and_publication_nominals
     );
 }
 
-/// Compiles one real `.skiff` fixture through the production bytecode lane.
-///
-/// This mirrors the Phase 1 pipeline fixture helper: real platform sources,
-/// one user module, bytecode enabled. A returned error carries the exact
-/// typed admission/emission rejection and never contains a published artifact.
-fn compile_phase_4_source(
+#[test]
+fn phase_5_source_facts_require_exact_canonical_package_record_authority() {
+    const ABI: &str = "sha256:exact-http-abi";
+    const PATH: &str = "std.http.HttpClientRequest";
+    let fields = BTreeMap::from([(
+        "url".to_string(),
+        skiff_artifact_model::TypeRefIr::builtin("string"),
+    )]);
+    let exact = package_fact_unit(
+        skiff_artifact_model::PackageRefIr::PackageId {
+            package_id: "skiff.run/std".to_string(),
+        },
+        PATH,
+        Some(ABI),
+        fields.clone(),
+    );
+    let facts = source_value_transfer_facts_for_units(std::slice::from_ref(&exact));
+    let identity = skiff_compiler_source::SourceValueTransferNominalId::PackageSymbol {
+        package: skiff_compiler_source::SourceValueTransferPackageRef::PackageId(
+            "skiff.run/std".to_string(),
+        ),
+        symbol_path: PATH.to_string(),
+        abi_expectation: Some(ABI.to_string()),
+    };
+    assert_eq!(
+        facts.nominal(&identity),
+        Some(&skiff_compiler_source::SourceValueTransferNominalFact {
+            declaration_module: "std.http".to_string(),
+            type_parameters: Vec::new(),
+            semantics: skiff_compiler_source::SourceValueTransferNominalSemantics::Ordinary(
+                skiff_artifact_model::TypeDescriptorIr::Record {
+                    fields: fields.clone(),
+                },
+            ),
+        })
+    );
+
+    let mut duplicate = exact.clone();
+    duplicate
+        .external_refs
+        .package_symbols
+        .push(duplicate.external_refs.package_symbols[0].clone());
+    assert!(source_value_transfer_facts_for_units(&[duplicate])
+        .nominal(&identity)
+        .is_none());
+
+    for unowned in [
+        package_fact_unit(
+            skiff_artifact_model::PackageRefIr::Dependency {
+                dependency_ref: "std".to_string(),
+            },
+            PATH,
+            Some(ABI),
+            fields.clone(),
+        ),
+        package_fact_unit(
+            skiff_artifact_model::PackageRefIr::PackageId {
+                package_id: "skiff.run/std".to_string(),
+            },
+            PATH,
+            None,
+            fields.clone(),
+        ),
+    ] {
+        assert!(source_value_transfer_facts_for_units(&[unowned])
+            .nominal(&identity)
+            .is_none());
+    }
+
+    let drifted = package_fact_unit(
+        skiff_artifact_model::PackageRefIr::PackageId {
+            package_id: "skiff.run/std".to_string(),
+        },
+        PATH,
+        Some(ABI),
+        BTreeMap::from([(
+            "url".to_string(),
+            skiff_artifact_model::TypeRefIr::builtin("bytes"),
+        )]),
+    );
+    assert!(source_value_transfer_facts_for_units(&[exact, drifted])
+        .nominal(&identity)
+        .is_none());
+}
+
+fn package_fact_unit(
+    package: skiff_artifact_model::PackageRefIr,
+    symbol_path: &str,
+    abi: Option<&str>,
+    fields: BTreeMap<String, skiff_artifact_model::TypeRefIr>,
+) -> skiff_compiler_lowering::mir::MirUnit {
+    let owner = match &package {
+        skiff_artifact_model::PackageRefIr::PackageId { package_id } => package_id.clone(),
+        skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => dependency_ref.clone(),
+    };
+    skiff_compiler_lowering::mir::MirUnit {
+        file_ir_identity: format!("file:{owner}"),
+        module_path: "main".to_string(),
+        actor_declarations: Vec::new(),
+        external_refs: skiff_artifact_model::ExternalRefTable {
+            package_symbols: vec![skiff_artifact_model::PackageSymbolRef {
+                package,
+                symbol_path: symbol_path.to_string(),
+                abi_expectation: abi.map(str::to_string),
+            }],
+            ..skiff_artifact_model::ExternalRefTable::default()
+        },
+        source_map: skiff_artifact_model::SourceMapDto {
+            format: String::new(),
+            sources: Vec::new(),
+            spans: Vec::new(),
+        },
+        type_table: Vec::new(),
+        package_type_records: BTreeMap::from([((owner, symbol_path.to_string()), fields)]),
+        link_targets: skiff_artifact_model::FileLinkTargets::default(),
+        constants: Vec::new(),
+        functions: Vec::new(),
+    }
+}
+
+#[test]
+fn ordinary_compile_without_http_does_not_touch_gateway_only_closure() {
+    let unreferenced = projected_fixture("example.com/unreferenced-canonical-candidate").artifact;
+    let output = compile_ordinary_source_with_unreferenced_canonical_dependency(
+        "example.com/ordinary-zero-gateway-closure",
+        "function value() -> bool { return true }\n",
+        &unreferenced,
+    )
+    .expect("ordinary compilation must ignore gateway-only closure resolution");
+
+    assert!(output.package().artifact.package_requirements.is_empty());
+    assert!(output.bytecode().is_enabled());
+}
+
+/// Compiles an ordinary real `.skiff` fixture while carrying one canonical
+/// candidate that is neither manifest-declared nor source-referenced. This is
+/// intentionally not a dependency-resolution test: it proves `http = None`
+/// never enters the gateway-only reachable-closure resolver.
+fn compile_ordinary_source_with_unreferenced_canonical_dependency(
     package_id: &str,
     text: &str,
+    dependency: &skiff_artifact_model::PackageArtifact,
 ) -> Result<PackageCompileOutput, PackageCompileError> {
     let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -575,13 +988,10 @@ fn compile_phase_4_source(
         Vec::new(),
     );
     let aliases = BTreeMap::new();
-    let result = crate::compile_package(crate::PackageCompileInput::new(
-        &platform_sources,
-        &package,
-        &aliases,
-        package_id,
-        true,
-    ));
+    let result = crate::compile_package(
+        crate::PackageCompileInput::new(&platform_sources, &package, &aliases, package_id, true)
+            .with_canonical_dependencies(std::slice::from_ref(dependency), &[]),
+    );
     std::fs::remove_dir_all(temp).expect("remove temporary source root");
     result
 }

@@ -89,6 +89,7 @@ struct FunctionEmitter<'a> {
     loop_backedges: BTreeMap<u32, LoopBackedge>,
     value_block_body_blocks: BTreeSet<u32>,
     throw_source_sites: Vec<(usize, InstructionSourceSite)>,
+    stream_source_sites: Vec<(usize, InstructionSourceSite)>,
     operand_depth: usize,
 }
 
@@ -178,6 +179,7 @@ impl<'a> FunctionEmitter<'a> {
             loop_backedges: BTreeMap::new(),
             value_block_body_blocks,
             throw_source_sites: Vec::new(),
+            stream_source_sites: Vec::new(),
             operand_depth: 0,
         })
     }
@@ -625,7 +627,9 @@ impl<'a> FunctionEmitter<'a> {
                         "non-stream emit operations are outside the emitted core",
                     ));
                 }
-                self.emit_stream(*value)?;
+                let instruction = self.emit_stream(*value)?;
+                let site = self.required_statement_site(statement.statement_index)?;
+                self.stream_source_sites.push((instruction, site));
             }
             MirStmtKind::StreamNext {
                 endpoint_slot,
@@ -1600,7 +1604,7 @@ impl<'a> FunctionEmitter<'a> {
         Ok(())
     }
 
-    fn emit_stream(&mut self, value: ExprRefIr) -> Result<(), BytecodeEmissionError> {
+    fn emit_stream(&mut self, value: ExprRefIr) -> Result<usize, BytecodeEmissionError> {
         let stream = self.function.stream_result.as_ref().ok_or_else(|| {
             unsupported(
                 &self.key,
@@ -1609,7 +1613,16 @@ impl<'a> FunctionEmitter<'a> {
             )
         })?;
         let value_expression = self.function.expression(value)?;
-        if !stream_item_type_matches(&value_expression.ty, &stream.item_type) {
+        let admitted_nominal_branch = matches!(
+            self.source_attribution,
+            SourceAttributionMode::AdmittedPhase1
+        ) && matches!(
+            &value_expression.expression,
+            ExprIr::Construct { type_ref, .. } if type_ref == &stream.item_type
+        );
+        if !stream_item_type_matches(&value_expression.ty, &stream.item_type)
+            && !admitted_nominal_branch
+        {
             return Err(unsupported(
                 &self.key,
                 "EmitStream",
@@ -1633,7 +1646,38 @@ impl<'a> FunctionEmitter<'a> {
             result_ty: None,
             end_block: None,
         });
-        Ok(())
+        Ok(instruction)
+    }
+
+    fn required_statement_site(
+        &self,
+        statement_index: u32,
+    ) -> Result<InstructionSourceSite, BytecodeEmissionError> {
+        let sites = self
+            .events
+            .iter()
+            .filter_map(|event| {
+                matches!(
+                    event.anchor,
+                    MirEmissionAnchor::Statement {
+                        statement_index: anchored,
+                        ..
+                    } | MirEmissionAnchor::GeneratedStatement {
+                        statement_index: anchored,
+                        ..
+                    } if anchored == statement_index
+                )
+                .then_some(&event.site)
+            })
+            .collect::<Vec<_>>();
+        let [site] = sites.as_slice() else {
+            return Err(unsupported(
+                &self.key,
+                "EmitStream source attribution",
+                "statement lacks one exact source or synthetic site",
+            ));
+        };
+        Ok((*site).clone())
     }
 
     fn emit_stream_next(
@@ -3787,7 +3831,11 @@ impl<'a> FunctionEmitter<'a> {
                 site: event.site.clone(),
             });
         }
-        for (instruction_index, site) in &self.throw_source_sites {
+        for (instruction_index, site) in self
+            .throw_source_sites
+            .iter()
+            .chain(&self.stream_source_sites)
+        {
             let start_pc = *pcs
                 .get(*instruction_index)
                 .ok_or_else(|| arithmetic(&self.key, "throw source site instruction pc lookup"))?;

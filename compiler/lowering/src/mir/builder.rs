@@ -29,9 +29,11 @@ use super::{
 
 mod actor_authority;
 mod call_contract;
+mod package_type_authority;
 
 use actor_authority::validate_actor_declarations;
 use call_contract::{build_receiver_facts, direct_call_parameter_modes, MirPackageCatalog};
+use package_type_authority::project_package_type_authority;
 
 struct MirFunctionBuildInput<'a, 'catalog> {
     package_id: &'a str,
@@ -251,14 +253,16 @@ fn build_mir_unit_with_catalog(
     }
     validate_actor_declarations(unit)?;
     let constants = clone_constant_facts(unit)?;
+    let package_type_authority =
+        project_package_type_authority(&unit.external_refs, package_type_records);
     let mir = MirUnit {
         file_ir_identity: unit.file_ir_identity.clone(),
         module_path: unit.module_path.clone(),
         actor_declarations: unit.actor_declarations.clone(),
-        external_refs: unit.external_refs.clone(),
+        external_refs: package_type_authority.external_refs,
         source_map: unit.source_map.clone(),
         type_table: unit.type_table.clone(),
-        package_type_records: package_type_records.clone(),
+        package_type_records: package_type_authority.package_type_records,
         link_targets: unit.link_targets.clone(),
         constants,
         functions,

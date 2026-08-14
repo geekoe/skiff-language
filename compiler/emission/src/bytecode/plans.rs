@@ -18,7 +18,7 @@ use super::{
 /// or type shape to invent a plan, and a missing exact plan becomes a stable
 /// typed [`BytecodeEmissionError`] rather than a `SnapshotRelease` fallback.
 pub fn derive_bytecode_value_transfer_plans(
-    admitted: &AdmittedPhase1BytecodeMir<'_>,
+    admitted: &AdmittedPhase1BytecodeMir,
     plan_for: impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
     derive_bytecode_value_transfer_plans_unchecked(admitted.units(), plan_for)

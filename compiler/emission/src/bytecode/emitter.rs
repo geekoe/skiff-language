@@ -25,7 +25,7 @@ use super::{
 /// structural validation, canonical identity assignment and C9 identity
 /// validation.
 pub fn emit_bytecode_artifact(
-    admitted: &AdmittedPhase1BytecodeMir<'_>,
+    admitted: &AdmittedPhase1BytecodeMir,
     constants: &[FrozenConstantBundle],
     transfer_plans: &BytecodeValueTransferPlans,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
@@ -107,8 +107,8 @@ mod tests {
     #[test]
     fn phase_1_bytecode_admission_is_required_by_the_public_emitter_type() {
         fn require_admitted_signature(
-            _emitter: for<'token, 'units, 'constants, 'plans> fn(
-                &'token AdmittedPhase1BytecodeMir<'units>,
+            _emitter: for<'token, 'constants, 'plans> fn(
+                &'token AdmittedPhase1BytecodeMir,
                 &'constants [FrozenConstantBundle],
                 &'plans BytecodeValueTransferPlans,
             ) -> Result<

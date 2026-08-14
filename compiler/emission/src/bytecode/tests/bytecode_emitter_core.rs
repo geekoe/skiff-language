@@ -1432,7 +1432,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_return_derives_affine_plan_and_emits_bytecode() {
+    fn stream_return_without_source_attribution_fails_closed_after_plan_derivation() {
         let item_type = TypeRefIr::builtin("number");
         let stream_type = TypeRefIr::Builtin {
             name: "Stream".to_string(),
@@ -1520,37 +1520,16 @@ mod tests {
             "stream producer body return arity is zero"
         );
 
-        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
-            .expect("stream producer emits bytecode");
-        let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
-            .expect("stream producer bytecode must validate");
-        let function = view
-            .functions()
-            .iter()
-            .find(|function| function.function_key == "streams::produce")
-            .expect("stream producer function");
-        assert_eq!(function.frame_layout.result_count, 0);
-        assert!(function.frame_layout.result_plans.is_empty());
-        let stream_result_type_ref = function
-            .frame_layout
-            .stream_result_type_ref
-            .expect("stream producer frame carries Stream<T> authority");
-        let BytecodePoolEntry::TypeRef { ty } =
-            &artifact.image.pools.types[stream_result_type_ref as usize]
-        else {
-            panic!("stream authority type ref must select the types pool");
-        };
-        assert_eq!(ty, &stream_type);
-        assert!(function.instructions.iter().any(|instruction| {
-            instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::EmitStream
-        }));
-        assert!(function.instructions.iter().all(|instruction| {
-            instruction.descriptor.kind != skiff_artifact_model::bytecode::Opcode::StreamNext
-        }));
-        assert!(artifact.image.pools.resume.iter().all(|entry| {
-            matches!(entry, BytecodePoolEntry::ResumeDescriptor(descriptor)
-                if descriptor.end_resume_pc.is_none() && descriptor.result_plans.is_empty())
-        }));
+        let error = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect_err("hand-built stream MIR without producer source facts must fail closed");
+        assert!(matches!(
+            error,
+            crate::BytecodeEmissionError::UnsupportedConstruct {
+                function_key,
+                construct: "EmitStream source attribution",
+                ..
+            } if function_key == "streams::produce"
+        ));
     }
 
     #[test]
