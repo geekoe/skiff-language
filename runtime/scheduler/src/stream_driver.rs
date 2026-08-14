@@ -215,7 +215,7 @@ where
         if invocation.target() != ChildTarget::StreamNext {
             return Err(BytecodeSchedulerError::UnsupportedChild);
         }
-        let (_target, _arguments, resume) = invocation.into_parts();
+        let (_target, _arguments, _endpoint, resume) = invocation.into_parts();
         let end_resume_pc = resume
             .image()
             .resume_sites()

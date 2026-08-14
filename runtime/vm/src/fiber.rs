@@ -3430,7 +3430,14 @@ impl VmFiber {
         // StreamNext borrows the affine endpoint from its frame slot. The
         // endpoint stays live across item/end resumes so loop-backed polls can
         // read the same slot again; the child handoff carries no owned payload.
-        self.read_slot(&frame, slot_count, endpoint_slot)?;
+        let endpoint = self
+            .read_slot(&frame, slot_count, endpoint_slot)?
+            .as_resource_ref()
+            .ok_or(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::StreamNext,
+            })?;
         let resume = self
             .linked_resume_site(function, instruction, Opcode::StreamNext, resume_site)?
             .clone();
@@ -3467,8 +3474,12 @@ impl VmFiber {
             expected_stack_height,
             1,
         )?;
-        let invocation = ChildInvocation::new(ChildTarget::StreamNext, arguments, token)
-            .map_err(|_| VmError::ResumeTokenMismatch)?;
+        let invocation = ChildInvocation::new_stream_next(
+            crate::control::StreamEndpointRef::new(endpoint),
+            arguments,
+            token,
+        )
+        .map_err(|_| VmError::ResumeTokenMismatch)?;
         self.state = VmFiberState::BlockedOnChild;
         Ok(DispatchOutcome::Handoff(VmControl::EnterChild(invocation)))
     }

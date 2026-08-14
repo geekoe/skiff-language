@@ -10,7 +10,7 @@ use skiff_runtime_model::{
     service_error::RequestException,
     vm_heap::VmHeapError,
     vm_root::{VmRootSource, VmRootVisitor},
-    vm_value::ValueSlot,
+    vm_value::{ValueSlot, VmHandle},
 };
 
 use crate::{VmBudgetClosed, VmError};
@@ -212,6 +212,25 @@ pub enum ChildTarget {
     StreamNext,
 }
 
+/// Non-owning route to the exact affine endpoint borrowed by `StreamNext`.
+///
+/// This route deliberately owns no VM value and contributes no GC root. The
+/// endpoint itself stays live in the originating frame slot while the child
+/// invocation is outstanding; the scheduler may only use this opaque route to
+/// select the matching request resource.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StreamEndpointRef(VmHandle);
+
+impl StreamEndpointRef {
+    pub(crate) const fn new(route: VmHandle) -> Self {
+        Self(route)
+    }
+
+    pub const fn route(self) -> VmHandle {
+        self.0
+    }
+}
+
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VmResumeAuthority {
@@ -226,6 +245,7 @@ pub(crate) enum VmResumeAuthority {
 pub struct ChildInvocation {
     target: ChildTarget,
     arguments: VmOwnedValues,
+    stream_endpoint: Option<StreamEndpointRef>,
     resume: VmResumeToken,
 }
 
@@ -236,7 +256,8 @@ impl ChildInvocation {
         arguments: VmOwnedValues,
         resume: VmResumeToken,
     ) -> Result<Self, VmError> {
-        if resume.authority != VmResumeAuthority::Child(target)
+        if target == ChildTarget::StreamNext
+            || resume.authority != VmResumeAuthority::Child(target)
             || !Arc::ptr_eq(arguments.image(), resume.image())
         {
             return Err(VmError::ResumeTokenMismatch);
@@ -244,6 +265,26 @@ impl ChildInvocation {
         Ok(Self {
             target,
             arguments,
+            stream_endpoint: None,
+            resume,
+        })
+    }
+
+    pub(crate) fn new_stream_next(
+        endpoint: StreamEndpointRef,
+        arguments: VmOwnedValues,
+        resume: VmResumeToken,
+    ) -> Result<Self, VmError> {
+        if !arguments.is_empty()
+            || resume.authority != VmResumeAuthority::Child(ChildTarget::StreamNext)
+            || !Arc::ptr_eq(arguments.image(), resume.image())
+        {
+            return Err(VmError::ResumeTokenMismatch);
+        }
+        Ok(Self {
+            target: ChildTarget::StreamNext,
+            arguments,
+            stream_endpoint: Some(endpoint),
             resume,
         })
     }
@@ -256,14 +297,30 @@ impl ChildInvocation {
         &self.arguments
     }
 
+    pub const fn stream_endpoint(&self) -> Option<StreamEndpointRef> {
+        self.stream_endpoint
+    }
+
     pub const fn resume(&self) -> &VmResumeToken {
         &self.resume
     }
 
-    /// Scheduler-TCB seam: all three parts remain one logical handoff and must
+    /// Scheduler-TCB seam: all four parts remain one logical handoff and must
     /// not be exchanged with parts from another invocation.
-    pub fn into_parts(self) -> (ChildTarget, VmOwnedValues, VmResumeToken) {
-        (self.target, self.arguments, self.resume)
+    pub fn into_parts(
+        self,
+    ) -> (
+        ChildTarget,
+        VmOwnedValues,
+        Option<StreamEndpointRef>,
+        VmResumeToken,
+    ) {
+        (
+            self.target,
+            self.arguments,
+            self.stream_endpoint,
+            self.resume,
+        )
     }
 }
 
