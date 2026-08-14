@@ -180,10 +180,10 @@ fn prove_dense_field_contract(
     location: VerificationLocation,
 ) -> Result<(), VerificationError> {
     if opcode == Opcode::GetDenseField {
-        if privileged.is_some_and(|fact| fact.affine_field_ordinal == ordinal) {
+        if privileged.is_some() {
             return Err(violation(
                 location,
-                "GetDenseField may not share the exact privileged affine field",
+                "GetDenseField may not read any field of a privileged affine root",
             ));
         }
         return Ok(());
@@ -1171,7 +1171,8 @@ mod affine_take_tests {
             identity,
             Box::new([
                 LinkedShapeField::new("body", TypeIndex::new(1), field_plan).unwrap(),
-                LinkedShapeField::new("status", TypeIndex::new(2), snapshot_plan()).unwrap(),
+                LinkedShapeField::new("headers", TypeIndex::new(2), snapshot_plan()).unwrap(),
+                LinkedShapeField::new("status", TypeIndex::new(3), snapshot_plan()).unwrap(),
             ]),
         )
         .unwrap()
@@ -1227,7 +1228,27 @@ mod affine_take_tests {
             body_plan(),
         );
         let error = prove(Opcode::GetDenseField, &row, 0, Some(&fact()), None).unwrap_err();
-        assert!(error.to_string().contains("may not share"));
+        assert!(error.to_string().contains("may not read any field"));
+    }
+
+    #[test]
+    fn get_dense_field_cannot_read_privileged_headers() {
+        let row = shape(
+            Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle),
+            body_plan(),
+        );
+        let error = prove(Opcode::GetDenseField, &row, 1, Some(&fact()), None).unwrap_err();
+        assert!(error.to_string().contains("may not read any field"));
+    }
+
+    #[test]
+    fn get_dense_field_cannot_read_privileged_status() {
+        let row = shape(
+            Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle),
+            body_plan(),
+        );
+        let error = prove(Opcode::GetDenseField, &row, 2, Some(&fact()), None).unwrap_err();
+        assert!(error.to_string().contains("may not read any field"));
     }
 
     #[test]

@@ -46,6 +46,19 @@ impl DeploymentLinker<'_> {
                         admit_opcode(instruction.opcode(), location.clone())?;
                         admit_typed_host_call(candidate, instruction, location)?;
                     }
+                    Opcode::GetDenseField => {
+                        admit_opcode(instruction.opcode(), location.clone())?;
+                        admit_dense_field_read(candidate, instruction, location.clone())?;
+                        for resolved in instruction.resolved_operands() {
+                            admit_resolved_target(
+                                self,
+                                candidate,
+                                resolved.target(),
+                                &mut admitted_symbols,
+                                location.clone(),
+                            )?;
+                        }
+                    }
                     Opcode::StreamNext | Opcode::EmitStream => {
                         admit_stream_instruction(
                             self.function_is_server_stream_root(candidate, function.index()),
@@ -453,6 +466,37 @@ fn admit_typed_host_call(
         );
     }
     Ok(())
+}
+
+fn admit_dense_field_read(
+    candidate: &LinkedBytecodeCandidate,
+    instruction: &LinkedInstruction,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let shape = instruction
+        .resolved_operands()
+        .iter()
+        .find_map(|resolved| match resolved.target() {
+            LinkedInstructionTarget::Shape(index) => candidate
+                .shapes()
+                .get(index.get() as usize)
+                .filter(|row| row.index() == index),
+            _ => None,
+        })
+        .ok_or_else(|| rejected_error(Phase1LinkedCapability::ValueShape, location.clone()))?;
+    admit_privileged_dense_field_read(shape.privileged_affine_composite(), location)
+}
+
+fn admit_privileged_dense_field_read(
+    identity: Option<skiff_artifact_model::PrivilegedAffineCompositeIdentity>,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    match identity {
+        None => Ok(()),
+        Some(skiff_artifact_model::PrivilegedAffineCompositeIdentity::HttpClientStreamHandle) => {
+            rejected(Phase1LinkedCapability::Resource, location)
+        }
+    }
 }
 
 fn function_has_stream_result(
@@ -1494,8 +1538,9 @@ mod tests {
     };
 
     use super::{
-        admit_opcode, admit_structural_leaf, admit_typed_host_call,
-        is_discriminator_string_constant, is_string_type, ordinary_snapshot_plan,
+        admit_opcode, admit_privileged_dense_field_read, admit_structural_leaf,
+        admit_typed_host_call, is_discriminator_string_constant, is_string_type,
+        ordinary_snapshot_plan,
     };
     use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability};
 
@@ -1527,6 +1572,26 @@ mod tests {
             skiff_artifact_model::Opcode::Rethrow,
         ] {
             assert!(admit_opcode(opcode, location()).is_ok(), "{opcode:?}");
+        }
+    }
+
+    #[test]
+    fn privileged_headers_and_status_dense_reads_fail_closed() {
+        for field in ["headers", "status"] {
+            let error = admit_privileged_dense_field_read(
+                Some(
+                    skiff_artifact_model::PrivilegedAffineCompositeIdentity::HttpClientStreamHandle,
+                ),
+                location(),
+            )
+            .expect_err(field);
+            assert!(matches!(
+                error,
+                BytecodeLinkError::UnsupportedPhase1Capability {
+                    capability: Phase1LinkedCapability::Resource,
+                    ..
+                }
+            ));
         }
     }
 

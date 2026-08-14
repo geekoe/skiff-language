@@ -193,8 +193,14 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
     );
     assert_eq!(host_resume.kind(), &VerifiedResumeKind::HostEffect);
     assert_eq!(host_resume.result_types(), &[shape.nominal_type()]);
-    assert_eq!(host_resume.result_types(), target.signature().result_types());
-    assert_eq!(host_resume.result_plans(), target.signature().result_plans());
+    assert_eq!(
+        host_resume.result_types(),
+        target.signature().result_types()
+    );
+    assert_eq!(
+        host_resume.result_plans(),
+        target.signature().result_plans()
+    );
 
     let (function, take_ordinal, take) = image
         .functions()
@@ -232,12 +238,14 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
         .expect("TakeDenseField produces the exact affine body value");
     assert_eq!(body.ty(), shape.fields()[0].ty());
     assert_eq!(body.plan(), shape.fields()[0].plan());
-    assert!(function.instructions().iter().all(|instruction| {
-        instruction.opcode() != Opcode::GetDenseField
-            || instruction.operands().get(1).copied() != Some(0)
-            || instruction.resolved_operands()[0].target()
-                != LinkedInstructionTarget::Shape(shape.index())
-    }));
+    assert!(
+        function.instructions().iter().all(|instruction| {
+            instruction.opcode() != Opcode::GetDenseField
+                || instruction.resolved_operands()[0].target()
+                    != LinkedInstructionTarget::Shape(shape.index())
+        }),
+        "privileged handle fields are never pre-read before consume-whole take"
+    );
 
     let (stream_ordinal, stream_next) = function
         .instructions()
