@@ -1,4 +1,4 @@
-import { lstat, mkdir, realpath, rmdir } from 'node:fs/promises';
+import { lstat, mkdir, realpath, rm, rmdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { captureOwnedCommand } from './owned-command.mjs';
@@ -20,6 +20,8 @@ import { writePhase5CommandReceipt } from './bytecode-vm-phase-5-receipts.mjs';
 const OUTPUT_ENV = 'SKIFF_BYTECODE_VM_PHASE5_EVIDENCE_DIR';
 const COMMIT_ENV = 'SKIFF_BYTECODE_VM_PHASE5_CANDIDATE_COMMIT';
 const TREE_ENV = 'SKIFF_BYTECODE_VM_PHASE5_CANDIDATE_TREE';
+export const PHASE5_CARRIER_ENV = 'SKIFF_BYTECODE_VM_PHASE5_CARRIER_ROOT';
+export const PHASE5_RUNTIME_BIN_ENV = 'SKIFF_BYTECODE_VM_PHASE5_RUNTIME_BIN';
 export const PHASE5_CARGO_LEASE_DIR = '/tmp/skiff-bcvm-p5-r1-cargo.lockdir';
 export const PHASE5_CARGO_TARGET_DIR = '/Users/geek/workspace/.skiff-cargo-target';
 
@@ -68,7 +70,12 @@ export async function runPhase5Gate(options, {
   const candidateSpecs = phase5CandidateSpecs(input.repoRoot);
   const workloadSpecs = phase5WorkloadSpecs(input.repoRoot);
   assertPhase5LaneCoverage(workloadSpecs);
-  const childEnvironment = { ...env, CARGO_TARGET_DIR: PHASE5_CARGO_TARGET_DIR };
+  const childEnvironment = {
+    ...env,
+    CARGO_TARGET_DIR: PHASE5_CARGO_TARGET_DIR,
+    [PHASE5_CARRIER_ENV]: input.carrierRoot,
+    [PHASE5_RUNTIME_BIN_ENV]: join(PHASE5_CARGO_TARGET_DIR, 'debug', 'runtime'),
+  };
   const commandEnvironments = new Map(
     [...candidateSpecs, ...workloadSpecs]
       .map((spec) => [spec.id, snapshotCommandEnvironment(childEnvironment)]),
@@ -100,27 +107,31 @@ export async function runPhase5Gate(options, {
     if (releaseCargoLease !== null) await releaseCargoLease();
     for (const [signal, handler] of handlers) signalTarget.off(signal, handler);
   }
-  const manifest = await finalizePhase5Evidence({
-    evidenceRoot,
-    repoRoot: input.repoRoot,
-    expectedCommit: input.expectedCommit,
-    expectedTree: input.expectedTree,
-    commandEnvironments,
-    startedAt,
-    finishedAt: now(),
-  });
-  let checkerError = null;
   try {
-    await checkPhase5Evidence(input.outputDir, {
-      ...input,
-      directoryIdentities: evidenceRoot.identities(),
+    const manifest = await finalizePhase5Evidence({
+      evidenceRoot,
+      repoRoot: input.repoRoot,
+      expectedCommit: input.expectedCommit,
+      expectedTree: input.expectedTree,
       commandEnvironments,
+      startedAt,
+      finishedAt: now(),
     });
-    await evidenceRoot.assertAll();
-  } catch (error) {
-    checkerError = error instanceof Error ? error.message : String(error);
+    let checkerError = null;
+    try {
+      await checkPhase5Evidence(input.outputDir, {
+        ...input,
+        directoryIdentities: evidenceRoot.identities(),
+        commandEnvironments,
+      });
+      await evidenceRoot.assertAll();
+    } catch (error) {
+      checkerError = error instanceof Error ? error.message : String(error);
+    }
+    return { manifest, checkerError, outputDir: input.outputDir };
+  } finally {
+    await rm(input.carrierRoot, { recursive: true, force: true });
   }
-  return { manifest, checkerError, outputDir: input.outputDir };
 
   async function execute(spec) {
     await evidenceRoot.assertAll();
@@ -190,9 +201,20 @@ async function validateInput(options, repoRoot) {
   if (join(await realpath(parent), outputDir.slice(parent.length + 1)) !== outputDir) {
     throw new Error('--output-dir parent must not use a symlink');
   }
+  const carrierRoot = `${outputDir}.carrier`;
+  if (contains(repoRoot, carrierRoot) || contains(carrierRoot, repoRoot)) {
+    throw new Error('Phase 5 carrier root must not overlap the candidate repository');
+  }
+  try {
+    await lstat(carrierRoot);
+    throw new Error('Phase 5 carrier root must not already exist');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
   return {
     repoRoot,
     outputDir,
+    carrierRoot,
     expectedCommit: assertGitObject(options?.expectedCommit, '--candidate'),
     expectedTree: assertGitObject(options?.expectedTree, '--tree'),
   };

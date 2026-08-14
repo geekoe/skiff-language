@@ -45,6 +45,10 @@ fn phase_5_stage_sentinel_source_to_admission() {
         ));
     }
 
+    if let Ok(path) = std::env::var("SKIFF_BYTECODE_VM_PHASE5_CARRIER_ROOT") {
+        println!("phase-5-router-carrier={path}");
+    }
+
     assert!(
         failures.is_empty(),
         "S1 production carrier failures:\n- {}",

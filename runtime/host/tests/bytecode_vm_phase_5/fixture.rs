@@ -24,6 +24,8 @@ use skiff_runtime_loader::load_deployment_bytecode_from_store;
 use std::sync::Arc;
 
 const PROFILE: &str = "skiff-test";
+const ROUTER_CARRIER_ENV: &str = "SKIFF_BYTECODE_VM_PHASE5_CARRIER_ROOT";
+const POSITIVE_PACKAGE_ID: &str = "test.skiff/bytecode-vm-phase-5";
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
 pub enum BuildOutcome {
@@ -90,7 +92,17 @@ impl FixtureSpec {
     pub fn build(self, prefix: &str) -> BuildOutcome {
         let repository = repository_root();
         let fixture = repository.join(self.relative);
-        let root = TempRoot::new(prefix);
+        let root = self.carrier_root(prefix, &repository);
+        if let Some((package, deployment)) = self.existing_carrier_refs(&root) {
+            let artifact_root = root.path().to_path_buf();
+            return BuildOutcome::Published(PublishedFixture {
+                _root: root,
+                artifact_root,
+                package,
+                deployment,
+                receipt: Value::Null,
+            });
+        }
         let sources = CompilerPlatformSources::new(&repository)
             .expect("open repository compiler platform sources");
         seed_official_std_package(&sources, root.path())
@@ -139,6 +151,41 @@ impl FixtureSpec {
             deployment,
             receipt,
         })
+    }
+
+    fn carrier_root(self, prefix: &str, repository: &Path) -> TempRoot {
+        if self.package_id != POSITIVE_PACKAGE_ID {
+            return TempRoot::new(prefix);
+        }
+        let Some(path) = std::env::var_os(ROUTER_CARRIER_ENV).map(PathBuf::from) else {
+            return TempRoot::new(prefix);
+        };
+        assert!(path.is_absolute(), "{ROUTER_CARRIER_ENV} must be absolute");
+        assert!(
+            !path.starts_with(repository) && !repository.starts_with(&path),
+            "{ROUTER_CARRIER_ENV} must not overlap the candidate repository"
+        );
+        fs::create_dir_all(&path).expect("create retained Phase 5 Router carrier");
+        TempRoot::retained(path)
+    }
+
+    fn existing_carrier_refs(
+        self,
+        root: &TempRoot,
+    ) -> Option<(PackageArtifactRef, ServiceDeploymentRef)> {
+        let store = CanonicalArtifactStore::open(root.path()).ok()?;
+        let pointer = store
+            .read_release_pointer(PROFILE, self.package_id, self.version)
+            .expect("read retained Phase 5 release pointer")?;
+        let deployment = pointer.deployment;
+        let deployment_artifact = store
+            .read_service_deployment(&deployment)
+            .expect("read retained Phase 5 deployment");
+        let package = deployment_artifact.implementation.clone();
+        store
+            .read_package_artifact(&package)
+            .expect("read retained Phase 5 package");
+        Some((package, deployment))
     }
 }
 
@@ -202,7 +249,10 @@ impl PublishedFixture {
     }
 }
 
-struct TempRoot(PathBuf);
+struct TempRoot {
+    path: PathBuf,
+    cleanup: bool,
+}
 
 impl TempRoot {
     fn new(prefix: &str) -> Self {
@@ -212,17 +262,29 @@ impl TempRoot {
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("create carrier root");
-        Self(path)
+        Self {
+            path,
+            cleanup: true,
+        }
+    }
+
+    fn retained(path: PathBuf) -> Self {
+        Self {
+            path,
+            cleanup: false,
+        }
     }
 
     fn path(&self) -> &Path {
-        &self.0
+        &self.path
     }
 }
 
 impl Drop for TempRoot {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        if self.cleanup {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }
 

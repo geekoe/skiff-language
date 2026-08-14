@@ -81,6 +81,9 @@ export function phase5ScenarioSpecs(root) {
       ['G5', 'G8', 'K5', 'H5', 'P5G']),
     hostExact(root, 'phase-5-structural-no-bypass', HOST_TEST.structure,
       ['G9', 'A5', 'V5', 'K5', 'H5', 'P5G']),
+    spec(root, 'phase-5-runtime-process-binary', 'cargo', [
+      'build', '-p', 'runtime', '--bin', 'runtime',
+    ], null, ['G7', 'G8', 'H5', 'P5G']),
     routerExact(root, 'phase-5-router-full-chain-vcp', ROUTER_VCP, ['G7', 'G8', 'H5', 'P5G']),
     rustSuite(root, 'a5-exact-executor-registry', 'skiff-artifact-model',
       'bytecode_executor_identity_is_closed_exact_and_registry_owned', ['G3', 'G9', 'A5']),

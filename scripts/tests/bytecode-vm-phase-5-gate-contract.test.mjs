@@ -34,7 +34,7 @@ test('r1 schemas cannot accept a receipt from the interrupted Phase 5 epoch', ()
 test('r1 matrix names all G1-G10 owners and uses only executable commands', () => {
   const scenarios = phase5ScenarioSpecs(ROOT);
   const workloads = phase5WorkloadSpecs(ROOT);
-  assert.equal(scenarios.length, 25);
+  assert.equal(scenarios.length, 26);
   assert.doesNotThrow(() => assertPhase5LaneCoverage(workloads));
   const observed = new Set(workloads.flatMap(({ lanes }) => lanes));
   for (const lane of PHASE5_REQUIRED_LANES) {
@@ -77,6 +77,21 @@ test('G7 is a Router integration binary rather than a host fake dispatcher', () 
   });
 });
 
+test('G7 builds the production Runtime process before the Router integration selector', () => {
+  const scenarios = phase5ScenarioSpecs(ROOT);
+  const buildIndex = scenarios.findIndex(({ id }) => id === 'phase-5-runtime-process-binary');
+  const routerIndex = scenarios.findIndex(({ id }) => id === 'phase-5-router-full-chain-vcp');
+  assert.equal(buildIndex >= 0 && buildIndex < routerIndex, true);
+  assert.deepEqual(scenarios[buildIndex], {
+    id: 'phase-5-runtime-process-binary',
+    command: 'cargo',
+    args: Object.freeze(['build', '-p', 'runtime', '--bin', 'runtime']),
+    cwd: ROOT,
+    testFormat: null,
+    lanes: Object.freeze(['G7', 'G8', 'H5', 'P5G']),
+  });
+});
+
 test('G5/G8 include the gated TCP upstream and single-worker canary', () => {
   const byId = Object.fromEntries(phase5ScenarioSpecs(ROOT).map((entry) => [entry.id, entry]));
   assert.equal(byId['phase-5-deterministic-tcp-upstream'].args.includes(
@@ -106,8 +121,8 @@ test('the accepted Phase 4 matrix is reused verbatim as the Phase 1-4 regression
 
 test('candidate closure and command count are frozen by the matrix', () => {
   assert.equal(phase5CandidateSpecs(ROOT).length, 12);
-  assert.equal(phase5WorkloadSpecs(ROOT).length, 80);
-  assert.equal(phase5CandidateSpecs(ROOT).length + phase5WorkloadSpecs(ROOT).length, 92);
+  assert.equal(phase5WorkloadSpecs(ROOT).length, 81);
+  assert.equal(phase5CandidateSpecs(ROOT).length + phase5WorkloadSpecs(ROOT).length, 93);
   assert.deepEqual(phase5CandidateSpecs(ROOT).slice(-3).map(({ id }) => id), [
     'fresh-head', 'fresh-tree', 'fresh-status',
   ]);

@@ -15,6 +15,8 @@ import {
   acquirePhase5CargoLease,
   parsePhase5GateArgs,
   PHASE5_CARGO_TARGET_DIR,
+  PHASE5_CARRIER_ENV,
+  PHASE5_RUNTIME_BIN_ENV,
   runPhase5Gate,
 } from '../lib/bytecode-vm-phase-5-gate-runner.mjs';
 import { COMMIT, TREE, tap } from './bytecode-vm-phase-5-gate-fixture.mjs';
@@ -63,7 +65,7 @@ test('runner rejects each missing caller input before capturing any command', as
   }
 });
 
-test('runner receipts all ninety-two commands and freezes the actual environment', async () => {
+test('runner receipts all ninety-three commands and freezes the actual environment', async () => {
   const created = await mkdtemp(join(tmpdir(), 'skiff-phase5-runner-'));
   const temp = await realpath(created);
   const repoRoot = join(temp, 'repo');
@@ -90,13 +92,13 @@ test('runner receipts all ninety-two commands and freezes the actual environment
     });
     assert.equal(result.manifest.verdict, 'PASS');
     assert.equal(result.checkerError, null);
-    assert.deepEqual(result.manifest.counts.commands, { total: 92, passed: 92, failed: 0 });
+    assert.deepEqual(result.manifest.counts.commands, { total: 93, passed: 93, failed: 0 });
     const regression = result.manifest.commands.filter(({ id }) => id.startsWith('phase-4-regression-'));
     const phase5 = result.manifest.commands.filter(({ id }) => !id.startsWith('phase-4-regression-'));
     assert.equal(regression.length, 55);
-    assert.equal(phase5.length, 37);
+    assert.equal(phase5.length, 38);
     assert.equal(regression.every(({ status }) => status === 'PASS'), true);
-    assert.equal(observed.length, 92);
+    assert.equal(observed.length, 93);
     assert.equal(observed.every((value) => value === 'before'), true);
     const receipt = JSON.parse(await readFile(
       join(outputDir, 'commands', 'phase-5-gate-self-tests.receipt.json'),
@@ -105,6 +107,8 @@ test('runner receipts all ninety-two commands and freezes the actual environment
     assert.deepEqual(receipt.identity.environment, commandEnvironmentIdentity({
       PATH: '/usr/bin:/bin', GIT_PAGER: 'cat', PHASE5_UNRECORDED_ENV: 'before',
       CARGO_TARGET_DIR: PHASE5_CARGO_TARGET_DIR,
+      [PHASE5_CARRIER_ENV]: `${outputDir}.carrier`,
+      [PHASE5_RUNTIME_BIN_ENV]: `${PHASE5_CARGO_TARGET_DIR}/debug/runtime`,
     }));
   } finally {
     await rm(created, { recursive: true, force: true });
