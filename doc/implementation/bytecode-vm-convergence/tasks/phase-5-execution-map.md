@@ -1,6 +1,6 @@
 # MAP5：Phase 5 rolling execution map
 
-> Status: active; revision 17; recovery epoch `r1`; canonical architecture amendment awaits fresh Design review; no implementation/proof lane complete
+> Status: active; revision 18; recovery epoch `r1`; canonical cross-document convergence in progress after fresh Design FAIL; no implementation/proof lane complete
 >
 > Phase Contract: [`phase-5-typed-host-effects-resources-streams.md`](../phases/phase-5-typed-host-effects-resources-streams.md), Amendment r2
 >
@@ -206,6 +206,18 @@ architecture不记录crate删除/selector迁移步骤；这些仍只属于 DEC1/
 D5 是本 revision 唯一 docs owner，exact write set见下表。该 docs commit必须先接受一次全新 independent Design
 review；PASS前不得创建 V5R code worktree或恢复 K5/H5 overlap。旧 `4cc8dd80` review结果不能升级为PASS复用。
 
+### 2.18 Fresh Design review cross-document closure
+
+对 `f8370b3376632e0eae7328752ad991bb0787c5a1` 的 fresh Design review 仍为 **FAIL**。该 commit 已正确删除
+`bytecode-vm.md` 中的独立 semantic verifier authority，但 canonical lazy-load、deployment、DB、interface、
+tail-call 与 reference 文档仍保留 post-link semantic verification 或 verifier-owned source semantics；同一文档还
+残留 bytecode schema v7 / ISA v4，而 r1 当前 epoch 已是 schema v8 / ISA v5。
+
+D5 因此临时扩展为下表列出的完整 cross-document closure。修订必须保持 compiler-only source semantics、single
+atomic image mint、construction-local bounded structural closure 与 checked runtime safe failure，并明确拆分 tail-call
+的 relocatable compiler facts 与 deployment concrete-specialization resolution。修订完成后必须由另一名全新
+independent Design owner 从 clean exact HEAD 重新审查；PASS 前 V5R/K5/H5 继续暂停。
+
 ## 3. Lanes、唯一 write sets 与 rolling join
 
 表内 write set 是本 Phase 唯一文件清单权威；lane 内 focused unit test 可放在所列 module 的现有/新 test
@@ -213,7 +225,7 @@ review；PASS前不得创建 V5R code worktree或恢复 K5/H5 overlap。旧 `4cc
 
 | Lane / status | Branch / worktree | 唯一 write set | Depends / join |
 | --- | --- | --- | --- |
-| D5 canonical architecture + Design/Contract/MAP / ready for fresh review | `codex/bcvm-p5-integration-r1` / `skiff-bcvm-p5-integration-r1` | `doc/architecture/bytecode-vm.md`；`doc/implementation/bytecode-vm-convergence/decisions/dec1-executable-image-authority.md`；`doc/implementation/bytecode-vm-convergence/phases/phase-5-typed-host-effects-resources-streams.md`；`doc/implementation/bytecode-vm-convergence/tasks/phase-5-execution-map.md` | user architecture ruling；docs-only checkpoint；fresh independent Design review before V5R |
+| D5 canonical architecture + cross-document closure / fresh review FAIL, revision active | `codex/bcvm-p5-integration-r1` / `skiff-bcvm-p5-integration-r1` | `doc/architecture/{bytecode-vm.md,tail-call-execution.md,runtime-lazy-load-deployment.md,package-service-contract-deployment.md,db-capability-architecture.md,any-interface-value.md}`；`doc/reference/{interface.md,any-interface.md,static-semantics.md,runtime.md,std-surface.md}`；`doc/implementation/bytecode-vm-convergence/decisions/dec1-executable-image-authority.md`；`doc/implementation/bytecode-vm-convergence/phases/phase-5-typed-host-effects-resources-streams.md`；`doc/implementation/bytecode-vm-convergence/tasks/phase-5-execution-map.md` | user architecture ruling；docs-only checkpoint；new clean-HEAD independent Design PASS before V5R |
 | A5 authority + affine schema / ready | `codex/bcvm-p5-authority-r1` / `skiff-bcvm-p5-authority-r1` | `artifact-model/src/host_effect_registry/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/native_value_lifecycle/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/value_lifecycle_policy/**`；`artifact-model/src/bytecode/{dto.rs,opcodes/**,validate/{instructions.rs,plans.rs},tests/**}`；`artifact-model/src/lib.rs`；`artifact-identity/src/tests/mod.rs`（mechanical schema identity pin）；`runtime/native-contract/src/http_targets.rs`（仅复用/集中 canonical constants，不得成为第二 bytecode authority） | docs; join 1，首个非文档 commit |
 | C5 compiler / ready after A5 API | `codex/bcvm-p5-compiler-r1` / `skiff-bcvm-p5-compiler-r1` | `compiler/source/src/{value_transfer/**,callable_effects/**}`；`compiler/source/src/expression_type_model.rs`；`compiler/source/src/expression_type_model/{assignability.rs,expression_assignability.rs,materialization.rs,object_materialization/tests.rs}`；`compiler/lowering/src/mir/**`；`compiler/lowering/src/function_lowering.rs`；`compiler/lowering/src/function_lowering/{object_literal.rs,object_literal/fact_validation.rs}`；`compiler/lowering/src/source_file_lowering/tests/object_materialization.rs`；`compiler/emission/src/bytecode/{admission.rs,admission/**,constants.rs,emitter.rs,functions.rs,plans.rs,mod.rs,tests/**}`；`compiler/compiled/src/bytecode_handoff/tests.rs`（schema pin/full publication regression only）；`compiler/driver/authoring.rs`；`compiler/driver/authoring/tests.rs`（only if canonical resolver focused regression is required）；`compiler/driver/pipeline/mod.rs`；`compiler/driver/pipeline/bytecode_lane.rs`；`compiler/driver/pipeline/bytecode_lane/tests.rs`（schema pin/full publication regression only） | A5; join 2a；Phase 5 admission放新子模块，避免继续膨胀单文件 |
 | V5R atomic image + verifier retirement / redispatch after Design PASS | `codex/bcvm-p5-image-r1` / `skiff-bcvm-p5-image-r1`（从本 docs commit后的 clean integration HEAD新建） | typed transport：`runtime/linked-bytecode/src/{authority.rs,targets.rs,targets/**,plan.rs,candidate/**,tests/**,lib.rs}`（`authority.rs` 仍仅 mechanical schema-comment pin）；hard cut：`Cargo.toml`、`Cargo.lock`、`runtime/bytecode-verifier/**`（delete）、`runtime/linker/Cargo.toml`、`runtime/linker/src/{lib.rs,bytecode/**}`、`runtime/linker/tests/phase_1_contract/**`；consumer/dependency migration：`runtime/host/Cargo.toml`、`runtime/host/src/loader/bytecode_admission.rs`、`runtime/host/src/host/request_entry/phase_4_vcp_tests.rs`、`runtime/request/Cargo.toml`、`runtime/request/tests/bytecode_request.rs`、`runtime/vm/Cargo.toml`、`runtime/vm/src/{fiber.rs,statement.rs}`、`runtime/vm/src/fiber/{projection_tests.rs,tests.rs}`、`runtime/vm/tests/vertical.rs`、`runtime/package-test/{Cargo.toml,src/lib.rs}`、`test-runner/{Cargo.toml,src/runtime_execution.rs}`；structural registry：`scripts/check-runtime-crate-dag.mjs`、`scripts/lib/verify-rust-subjects.mjs` | A5+C5 facts + new independent Design PASS；atomic join 2b with P5G selector companion；old V5 dirty tree audit-only |
@@ -247,7 +259,7 @@ Gate regression、workspace rustfmt、workspace clippy、Gate self-tests、candi
 
 ## 5. Integration、validation 与 evidence epoch
 
-- Rolling join：本 rev17 canonical docs → fresh independent Design PASS → V5R hard cut + P5G selector companion（同一 atomic
+- Rolling join：本 rev18 canonical cross-document closure → new clean-HEAD independent Design PASS → V5R hard cut + P5G selector companion（同一 atomic
   checkpoint）→ K5 rebase/resume → H5 rebase/resume → P5G final。A5/C5 已产生的 facts继续作为输入；若 V5R 发现
   source-semantic fact缺口则退回对应 owner并先 Amend MAP，禁止在 linker补。每次 join只机械合流 lane commit，
   不在 integration临时补语义；focused red立即退回原 owner。
