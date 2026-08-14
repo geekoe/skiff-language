@@ -36,6 +36,10 @@ use crate::OwnedExecutionControl;
 pub type BytecodeHttpFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, BytecodeHttpFailure>> + Send + 'static>>;
 
+/// Heap-free owned future returned by the transport-only server-stream writer.
+pub type BytecodeServerStreamWriteFuture =
+    Pin<Box<dyn Future<Output = Result<(), BytecodeServerStreamWriteFailure>> + Send + 'static>>;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BytecodeHttpRequest {
     pub method: String,
@@ -60,6 +64,77 @@ pub struct BytecodeHttpStreamResponse {
     pub headers: Vec<HttpNameValue>,
     pub body: RequestResourceHandle,
 }
+
+/// Exact request-thread projection of one linked
+/// `std.http.HttpResponseStreamEvent`.
+///
+/// Sequence numbers are allocated by the central resource table. The host
+/// writer may encode and flush this event but cannot assign sequence, buffer
+/// capacity or terminal state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BytecodeServerStreamFrame {
+    Start {
+        status: u16,
+        headers: Vec<HttpNameValue>,
+    },
+    Chunk {
+        sequence: u64,
+        payload: Vec<u8>,
+    },
+    End,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BytecodeServerStreamWriteFailure {
+    Cancelled,
+    DeadlineExceeded,
+    RouterDisconnected,
+    WriterFailed(String),
+    InvalidProviderContract(String),
+}
+
+impl std::fmt::Display for BytecodeServerStreamWriteFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => formatter.write_str("server-stream write was cancelled"),
+            Self::DeadlineExceeded => {
+                formatter.write_str("server-stream write deadline was exceeded")
+            }
+            Self::RouterDisconnected => {
+                formatter.write_str("Router disconnected before server-stream flush")
+            }
+            Self::WriterFailed(message) => {
+                write!(formatter, "server-stream writer failed: {message}")
+            }
+            Self::InvalidProviderContract(message) => {
+                write!(
+                    formatter,
+                    "server-stream writer contract is invalid: {message}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for BytecodeServerStreamWriteFailure {}
+
+/// Transport-only writer for one request's server-stream response.
+///
+/// Implementations capture the exact request id and Router sender. They may
+/// encode/enqueue a frame and await its sole flush acknowledgement, but own no
+/// sequence, capacity, mailbox or terminal authority. `flush` only constructs
+/// the owned future: encoding and enqueueing begin on that future's first poll.
+/// Once a frame is enqueued the future waits for its real acknowledgement; it
+/// does not race a second cancellation or deadline authority.
+pub trait BytecodeServerStreamWriterPort: Send + Sync {
+    fn flush(
+        &self,
+        frame: BytecodeServerStreamFrame,
+        execution: OwnedExecutionControl,
+    ) -> BytecodeServerStreamWriteFuture;
+}
+
+pub(crate) type SharedBytecodeServerStreamWriterPort = Arc<dyn BytecodeServerStreamWriterPort>;
 
 /// Narrow authority supplied only to the typed HTTP stream method.
 ///

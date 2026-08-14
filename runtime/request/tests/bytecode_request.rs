@@ -1,13 +1,17 @@
-// These integration tests keep the request boundary on verifier-backed typed
+// These integration tests keep the request boundary on image-backed typed
 // values and exercise both immediate completion and the production pending lane.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
+    future::Future,
+    num::NonZeroUsize,
     path::PathBuf,
+    pin::Pin,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, Mutex, OnceLock,
     },
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
@@ -44,18 +48,26 @@ use skiff_runtime_loader::{
 use skiff_runtime_model::{
     bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
     request_heap::RequestHeapLimits,
+    service_error::CatchIdentity,
+    vm_heap::{
+        VmContainerElements, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment, VmMapEntry,
+        VmRecordField, WritablePathPreparation,
+    },
+    vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle},
 };
 use skiff_runtime_request::execution_budget::{
-    AdmittedRequestDeadline, ExecutionBudgetPolicy, TrustedMonotonicClock,
+    AdmittedRequestDeadline, ExecutionBudgetPolicy, ExecutionWinner, TrustedMonotonicClock,
 };
 use skiff_runtime_request::{
     drive_runtime_bytecode_request, drive_runtime_bytecode_request_controlled, BinaryHttpRequest,
     BinaryHttpRequestMetadata, BoundaryResponse, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, ControlledBytecodeDrive, DrivenBytecodeRequestOwnerInventory,
-    ExecutionBudget, GatewayAdapterArg as RequestGatewayAdapterArg,
+    BytecodeRequestExecutionInput, BytecodeServerStreamFrame, BytecodeServerStreamWriteFailure,
+    BytecodeServerStreamWriteFuture, BytecodeServerStreamWriterPort, ControlledBytecodeDrive,
+    DrivenBytecodeRequestOwnerInventory, ExecutionBudget,
+    GatewayAdapterArg as RequestGatewayAdapterArg,
     GatewayAdapterSource as RequestGatewayAdapterSource, HttpAdapter, HttpAdapterCallable,
     HttpAdapterKind, RequestEnvelope, RequestError, RequestExecutionOwnerInventorySnapshot,
-    ResponseEnd, ResponseEvent,
+    RequestVmHeap, ResponseEnd, ResponseEvent,
 };
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
@@ -510,6 +522,606 @@ fn pending_sleep_fixture() -> &'static PendingSleepFixture {
     FIXTURE.get_or_init(PendingSleepFixture::build)
 }
 
+struct ServerStreamFixture {
+    image: Arc<DeploymentExecutionImage>,
+    selector: IngressSelector,
+    gateway_identity: GatewayEntryIdentity,
+}
+
+static NEXT_SERVER_STREAM_TEST_TEMP: AtomicU64 = AtomicU64::new(0);
+
+impl ServerStreamFixture {
+    fn build() -> Self {
+        let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .expect("request crate has a repository root")
+            .to_path_buf();
+        let temp = std::env::temp_dir().join(format!(
+            "skiff-request-p5-server-stream-{}-{}-{}",
+            std::process::id(),
+            NEXT_SERVER_STREAM_TEST_TEMP.fetch_add(1, Ordering::Relaxed),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let fixture_root = temp.join("source");
+        let artifact_root = temp.join("artifacts");
+        std::fs::create_dir_all(&fixture_root).unwrap();
+        std::fs::create_dir_all(&artifact_root).unwrap();
+        for (name, contents) in [
+            (
+                "package.yml",
+                "id: test.skiff/bytecode-vm-phase-5-request\nversion: 1.0.0\n",
+            ),
+            (
+                "service.yml",
+                "id: test.skiff/bytecode-vm-phase-5-request\n",
+            ),
+            ("api.yml", "{}\n"),
+            (
+                "http.yml",
+                "run:\n  method: POST\n  path: /phase-5/request-stream\n  kind: rawHttp\n  handler: main.run\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n",
+            ),
+            (
+                "main.skiff",
+                "import std\n\nfunction run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {\n  emit({ tag: \"start\", status: 207, headers: [] })\n  emit({ tag: \"chunk\", value: bytes.fromUtf8(request.body.toUtf8String()) })\n  emit({ tag: \"end\" })\n  return null\n}\n",
+            ),
+        ] {
+            std::fs::write(fixture_root.join(name), contents).unwrap();
+        }
+
+        let platform_sources = CompilerPlatformSources::new(&repository_root)
+            .expect("open repository platform sources");
+        seed_official_std_package(&platform_sources, &artifact_root)
+            .expect("seed canonical std into the server-stream fixture store");
+        let receipt = build_authoring_object(
+            &platform_sources,
+            AuthoringObject::Package,
+            &fixture_root,
+            &artifact_root,
+            "skiff-test",
+            true,
+        )
+        .unwrap_or_else(|error| panic!("production authoring accepts stream fixture: {error}"));
+        let deployment_reference =
+            serde_json::from_value::<skiff_artifact_model::ServiceDeploymentRef>(
+                receipt
+                    .pointer("/serviceDeploymentReceipt/deployment")
+                    .cloned()
+                    .expect("authoring receipt carries deployment"),
+            )
+            .expect("authoring deployment receipt remains typed");
+        let store = CanonicalArtifactStore::open(&artifact_root).unwrap();
+        let deployment = store
+            .read_service_deployment(&deployment_reference)
+            .expect("read canonical server-stream deployment");
+        let ingress = deployment
+            .ingress
+            .iter()
+            .find(|binding| {
+                binding.selector.protocol == IngressProtocol::Http
+                    && binding.selector.method.as_deref() == Some("POST")
+                    && binding.selector.path == "/phase-5/request-stream"
+            })
+            .expect("server-stream fixture publishes its exact HTTP ingress");
+        let selector = ingress.selector.clone();
+        let gateway_identity = deployment
+            .gateway_entries
+            .get(&ingress.gateway_entry_key)
+            .expect("server-stream ingress pins a gateway entry")
+            .gateway_entry_identity
+            .clone();
+        let resolver = FilesystemDeploymentBytecodeContentResolver::open(&artifact_root)
+            .expect("open canonical server-stream fixture resolver");
+        let hydrated = DeploymentBytecodeLoader::new(&resolver)
+            .load(&deployment_reference)
+            .expect("load canonical server-stream fixture closure");
+        let image = execution_image(hydrated);
+        std::fs::remove_dir_all(temp).unwrap();
+        Self {
+            image,
+            selector,
+            gateway_identity,
+        }
+    }
+
+    fn target(&self) -> DeploymentExecutionEntry {
+        self.image
+            .http_gateway_entry(&self.selector, &self.gateway_identity)
+            .unwrap()
+    }
+}
+
+fn server_stream_fixture() -> &'static ServerStreamFixture {
+    static FIXTURE: OnceLock<ServerStreamFixture> = OnceLock::new();
+    FIXTURE.get_or_init(ServerStreamFixture::build)
+}
+
+#[derive(Default)]
+struct PendingWriterAckState {
+    result: Mutex<Option<Result<(), BytecodeServerStreamWriteFailure>>>,
+    waker: Mutex<Option<Waker>>,
+    waiting: AtomicBool,
+    completed: AtomicBool,
+    dropped: AtomicUsize,
+}
+
+#[derive(Clone, Default)]
+struct PendingWriterAck(Arc<PendingWriterAckState>);
+
+impl PendingWriterAck {
+    fn complete(&self, result: Result<(), BytecodeServerStreamWriteFailure>) -> bool {
+        if !self.0.waiting.load(Ordering::Acquire)
+            || self
+                .0
+                .completed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return false;
+        }
+        *self
+            .0
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
+        if let Some(waker) = self
+            .0
+            .waker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            waker.wake();
+        }
+        true
+    }
+
+    fn dropped_count(&self) -> usize {
+        self.0.dropped.load(Ordering::Acquire)
+    }
+
+    fn has_live_waiter(&self) -> bool {
+        self.0.waiting.load(Ordering::Acquire)
+    }
+}
+
+struct PendingWriterAckFuture {
+    ack: PendingWriterAck,
+    waiting: bool,
+}
+
+impl Future for PendingWriterAckFuture {
+    type Output = Result<(), BytecodeServerStreamWriteFailure>;
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        let result = self
+            .ack
+            .0
+            .result
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(result) = result {
+            self.ack.0.waiting.store(false, Ordering::Release);
+            self.waiting = false;
+            return Poll::Ready(result);
+        }
+        self.ack.0.waiting.store(true, Ordering::Release);
+        *self
+            .ack
+            .0
+            .waker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(context.waker().clone());
+        self.waiting = true;
+        Poll::Pending
+    }
+}
+
+impl Drop for PendingWriterAckFuture {
+    fn drop(&mut self) {
+        if self.waiting {
+            self.ack.0.waiting.store(false, Ordering::Release);
+            self.ack
+                .0
+                .waker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            self.ack.0.dropped.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
+enum WriterPlan {
+    Ready(Result<(), BytecodeServerStreamWriteFailure>),
+    Pending(PendingWriterAck),
+}
+
+#[derive(Clone)]
+struct ControlledServerStreamWriter {
+    plans: Arc<Mutex<VecDeque<WriterPlan>>>,
+    frames: Arc<Mutex<Vec<BytecodeServerStreamFrame>>>,
+}
+
+impl ControlledServerStreamWriter {
+    fn new(plans: impl IntoIterator<Item = WriterPlan>) -> Self {
+        Self {
+            plans: Arc::new(Mutex::new(plans.into_iter().collect())),
+            frames: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn frames(&self) -> Vec<BytecodeServerStreamFrame> {
+        self.frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl BytecodeServerStreamWriterPort for ControlledServerStreamWriter {
+    fn flush(
+        &self,
+        frame: BytecodeServerStreamFrame,
+        _execution: skiff_runtime_request::OwnedExecutionControl,
+    ) -> BytecodeServerStreamWriteFuture {
+        let plans = Arc::clone(&self.plans);
+        let frames = Arc::clone(&self.frames);
+        Box::pin(async move {
+            let plan = plans
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .pop_front()
+                .expect("server-stream test writer has one plan per polled frame");
+            frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(frame);
+            match plan {
+                WriterPlan::Ready(result) => result,
+                WriterPlan::Pending(ack) => {
+                    PendingWriterAckFuture {
+                        ack,
+                        waiting: false,
+                    }
+                    .await
+                }
+            }
+        })
+    }
+}
+
+fn server_stream_input(
+    writer: Arc<dyn BytecodeServerStreamWriterPort>,
+    cancellation: CancellationToken,
+    execution_budget: Arc<ExecutionBudget>,
+    max_response_bytes: NonZeroUsize,
+) -> BytecodeRequestExecutionInput {
+    let fixture = server_stream_fixture();
+    let mut request = request_envelope();
+    request.request_id = "phase-5-request-server-stream".to_string();
+    request.mode = "serverStream".to_string();
+    request.service_id = Some("test.skiff/bytecode-vm-phase-5-request".to_string());
+    request.ingress_selector = Some(fixture.selector.clone());
+    request.binary_http = Some(BinaryHttpRequest {
+        metadata: BinaryHttpRequestMetadata {
+            method: "POST".to_string(),
+            url: "https://example.test/phase-5/request-stream".to_string(),
+            path: "/phase-5/request-stream".to_string(),
+            query: vec![skiff_runtime_request::HttpNameValue {
+                name: "q".to_string(),
+                value: "typed".to_string(),
+            }],
+            headers: vec![skiff_runtime_request::HttpNameValue {
+                name: "x-phase".to_string(),
+                value: "5".to_string(),
+            }],
+        },
+        body: b"chunk".to_vec(),
+    });
+    request.http_adapter = Some(HttpAdapter {
+        kind: HttpAdapterKind::RawHttp,
+        handler: HttpAdapterCallable::PackageFunction {
+            package_id: "test.skiff/bytecode-vm-phase-5-request".to_string(),
+            symbol_path: "main.run".to_string(),
+        },
+        guard: None,
+        pre: None,
+        adapter_args: vec![RequestGatewayAdapterArg {
+            param: "request".to_string(),
+            source: RequestGatewayAdapterSource::HttpRequest,
+        }],
+    });
+    BytecodeRequestExecutionInput {
+        target: fixture.target(),
+        request,
+        observer: noop_observer(),
+        cancellation,
+        execution_budget,
+        handles: BytecodeRequestExecutionHandles {
+            request_heap_limits: RequestHeapLimits::default(),
+            max_response_bytes,
+        },
+        http_client: None,
+        server_stream_writer: Some(writer),
+        heap: None,
+    }
+}
+
+fn expected_server_stream_frames() -> Vec<BytecodeServerStreamFrame> {
+    vec![
+        BytecodeServerStreamFrame::Start {
+            status: 207,
+            headers: Vec::new(),
+        },
+        BytecodeServerStreamFrame::Chunk {
+            sequence: 0,
+            payload: b"chunk".to_vec(),
+        },
+        BytecodeServerStreamFrame::End,
+    ]
+}
+
+struct ServerStreamHeapTrace {
+    item_type_tag: u32,
+    item_releases: AtomicUsize,
+    fail_item_decode: AtomicBool,
+}
+
+impl ServerStreamHeapTrace {
+    fn new(item_type_tag: u32, fail_item_decode: bool) -> Arc<Self> {
+        Arc::new(Self {
+            item_type_tag,
+            item_releases: AtomicUsize::new(0),
+            fail_item_decode: AtomicBool::new(fail_item_decode),
+        })
+    }
+}
+
+struct RecordingServerStreamHeap {
+    inner: RequestVmHeap,
+    trace: Arc<ServerStreamHeapTrace>,
+}
+
+impl RecordingServerStreamHeap {
+    fn new(trace: Arc<ServerStreamHeapTrace>) -> Self {
+        Self {
+            inner: RequestVmHeap::new(RequestHeapLimits::default()),
+            trace,
+        }
+    }
+}
+
+impl VmHeap for RecordingServerStreamHeap {
+    fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
+        self.inner.validate_live(value)
+    }
+
+    fn admit_resource_ref(
+        &mut self,
+        route: VmHandle,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner
+            .admit_resource_ref(route, compact_type_tag, flags)
+    }
+
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.inner.snapshot_share(source)
+    }
+
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.inner.transfer_owner(source)
+    }
+
+    fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+        self.inner.release_snapshot(owner)?;
+        if owner.compact_type_tag().get() == self.trace.item_type_tag {
+            self.trace.item_releases.fetch_add(1, Ordering::AcqRel);
+        }
+        Ok(())
+    }
+
+    fn release_resource(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+        self.inner.release_resource(owner)
+    }
+
+    fn allocate_array(
+        &mut self,
+        elements: &[ValueSlot],
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner.allocate_array(elements, compact_type_tag, flags)
+    }
+
+    fn allocate_map(
+        &mut self,
+        entries: &[VmMapEntry],
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner.allocate_map(entries, compact_type_tag, flags)
+    }
+
+    fn allocate_record(
+        &mut self,
+        fields: &[VmRecordField],
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner.allocate_record(fields, compact_type_tag, flags)
+    }
+
+    fn allocate_representation(
+        &mut self,
+        payload: &ValueSlot,
+        identity: CatchIdentity,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner
+            .allocate_representation(payload, identity, compact_type_tag, flags)
+    }
+
+    fn alloc_bytes(&mut self, value: Vec<u8>) -> Result<ValueSlot, VmHeapError> {
+        self.inner.alloc_bytes(value)
+    }
+
+    fn alloc_typed_bytes(
+        &mut self,
+        value: Vec<u8>,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner.alloc_typed_bytes(value, compact_type_tag, flags)
+    }
+
+    fn alloc_string(&mut self, value: String) -> Result<ValueSlot, VmHeapError> {
+        self.inner.alloc_string(value)
+    }
+
+    fn alloc_typed_string(
+        &mut self,
+        value: String,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner
+            .alloc_typed_string(value, compact_type_tag, flags)
+    }
+
+    fn string_value(&self, value: &ValueSlot) -> Result<String, VmHeapError> {
+        self.inner.string_value(value)
+    }
+
+    fn bytes_value(&self, value: &ValueSlot) -> Result<Vec<u8>, VmHeapError> {
+        self.inner.bytes_value(value)
+    }
+
+    fn array_get(&self, array: &ValueSlot, index: usize) -> Result<ValueSlot, VmHeapError> {
+        self.inner.array_get(array, index)
+    }
+
+    fn array_len(&self, array: &ValueSlot) -> Result<usize, VmHeapError> {
+        self.inner.array_len(array)
+    }
+
+    fn map_get(&self, map: &ValueSlot, key: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.inner.map_get(map, key)
+    }
+
+    fn map_len(&self, map: &ValueSlot) -> Result<usize, VmHeapError> {
+        self.inner.map_len(map)
+    }
+
+    fn map_entry_at(&self, map: &ValueSlot, ordinal: usize) -> Result<VmMapEntry, VmHeapError> {
+        self.inner.map_entry_at(map, ordinal)
+    }
+
+    fn record_field(&self, record: &ValueSlot, field: &str) -> Result<ValueSlot, VmHeapError> {
+        if record.compact_type_tag().get() == self.trace.item_type_tag
+            && field == "tag"
+            && self.trace.fail_item_decode.swap(false, Ordering::AcqRel)
+        {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::RecordField,
+                message: "injected server-stream decode failure".to_string(),
+            });
+        }
+        self.inner.record_field(record, field)
+    }
+
+    fn representation_payload(&self, representation: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.inner.representation_payload(representation)
+    }
+
+    fn array_push_owned(&mut self, array: &ValueSlot, value: ValueSlot) -> Result<(), VmHeapError> {
+        self.inner.array_push_owned(array, value)
+    }
+
+    fn map_put_owned(
+        &mut self,
+        map: &ValueSlot,
+        key: ValueSlot,
+        value: ValueSlot,
+    ) -> Result<bool, VmHeapError> {
+        self.inner.map_put_owned(map, key, value)
+    }
+
+    fn prepare_writable_path(
+        &mut self,
+        root: &ValueSlot,
+        segments: &[VmHeapPathSegment],
+        selectors: &[ValueSlot],
+    ) -> Result<WritablePathPreparation, VmHeapError> {
+        self.inner.prepare_writable_path(root, segments, selectors)
+    }
+
+    fn commit_writable_path(
+        &mut self,
+        prepared: WritablePathPreparation,
+        value: ValueSlot,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner.commit_writable_path(prepared, value)
+    }
+
+    fn get_dense_field(
+        &self,
+        record: &ValueSlot,
+        field_ordinal: usize,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner.get_dense_field(record, field_ordinal)
+    }
+
+    fn take_dense_field(
+        &mut self,
+        record: &ValueSlot,
+        field_ordinal: usize,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner.take_dense_field(record, field_ordinal)
+    }
+
+    fn container_elements(
+        &self,
+        container: &ValueSlot,
+    ) -> Result<VmContainerElements, VmHeapError> {
+        self.inner.container_elements(container)
+    }
+}
+
+fn server_stream_item_type_tag() -> u32 {
+    let target = server_stream_fixture().target();
+    let function = target
+        .image()
+        .functions()
+        .get(target.function().get() as usize)
+        .filter(|row| row.index() == target.function())
+        .expect("server-stream entry function remains exact");
+    function
+        .stream_result_type_ref()
+        .expect("server-stream function has exact stream authority");
+    let item_type_tag = function
+        .instructions()
+        .iter()
+        .enumerate()
+        .find(|(_, instruction)| instruction.opcode() == skiff_artifact_model::Opcode::EmitStream)
+        .and_then(|(position, _)| function.stack_map().entries().get(position))
+        .and_then(|entry| entry.stack_before().last())
+        .map(|value| value.ty().get())
+        .expect("linked EmitStream has one exact item type");
+    assert_ne!(
+        item_type_tag, 0,
+        "typed server-stream items never use the legacy zero tag"
+    );
+    item_type_tag
+}
+
 struct TestMonotonicClock(Mutex<Instant>);
 
 impl TestMonotonicClock {
@@ -568,8 +1180,10 @@ fn pending_sleep_input(
         execution_budget,
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
+            max_response_bytes: NonZeroUsize::new(1024).unwrap(),
         },
         http_client: None,
+        server_stream_writer: None,
         heap: None,
     }
 }
@@ -765,8 +1379,10 @@ fn execute_scalar_gateway(
         execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
+            max_response_bytes: NonZeroUsize::new(1024).unwrap(),
         },
         http_client: None,
+        server_stream_writer: None,
         heap: None,
     })
 }
@@ -821,8 +1437,10 @@ mod tests {
             execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
+                max_response_bytes: NonZeroUsize::new(1024).unwrap(),
             },
             http_client: None,
+            server_stream_writer: None,
             heap: None,
         });
 
@@ -857,8 +1475,10 @@ mod tests {
             execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
+                max_response_bytes: NonZeroUsize::new(1024).unwrap(),
             },
             http_client: None,
+            server_stream_writer: None,
             heap: None,
         });
 
@@ -976,7 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_http_body_remains_heap_bytes() {
+    fn raw_http_body_requires_the_exact_linked_bytes_parameter() {
         let error = execute_scalar_gateway(
             "number",
             HttpAdapterKind::RawHttp,
@@ -985,10 +1605,14 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(
-            error,
-            RequestError::Unsupported(message) if message.contains("expected number")
-        ));
+        assert!(
+            matches!(
+                &error,
+                RequestError::Decode(message)
+                    if message.contains("is not exact builtin \"bytes\"")
+            ),
+            "unexpected raw HTTP body result: {error:?}"
+        );
     }
 
     #[test]
@@ -1016,8 +1640,10 @@ mod tests {
             execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
             handles: BytecodeRequestExecutionHandles {
                 request_heap_limits: RequestHeapLimits::default(),
+                max_response_bytes: NonZeroUsize::new(1024).unwrap(),
             },
             http_client: None,
+            server_stream_writer: None,
             heap: None,
         })
         .unwrap();
@@ -1027,6 +1653,386 @@ mod tests {
             panic!("bytecode request returned a non-payload response: {response:?}");
         };
         assert_eq!(serde_json::from_slice::<f64>(&payload).unwrap(), 2.0);
+    }
+
+    #[test]
+    fn phase_5_stream_ready_flushes_never_mint_pending_owner() {
+        let writer = Arc::new(ControlledServerStreamWriter::new([
+            WriterPlan::Ready(Ok(())),
+            WriterPlan::Ready(Ok(())),
+            WriterPlan::Ready(Ok(())),
+        ]));
+        let driven = drive_runtime_bytecode_request(server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(64).unwrap(),
+        ));
+
+        assert!(
+            matches!(&driven.result, Ok(BoundaryResponse::StreamSent)),
+            "unexpected server-stream result: {:?}",
+            driven.result
+        );
+        assert_eq!(writer.frames(), expected_server_stream_frames());
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(!snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
+    }
+
+    #[test]
+    fn phase_5_stream_typed_decode_success_releases_every_emitted_item_once() {
+        let trace = ServerStreamHeapTrace::new(server_stream_item_type_tag(), false);
+        let writer = Arc::new(ControlledServerStreamWriter::new([
+            WriterPlan::Ready(Ok(())),
+            WriterPlan::Ready(Ok(())),
+            WriterPlan::Ready(Ok(())),
+        ]));
+        let mut input = server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(64).unwrap(),
+        );
+        input.heap = Some(Box::new(RecordingServerStreamHeap::new(Arc::clone(&trace))));
+
+        let driven = drive_runtime_bytecode_request(input);
+
+        assert!(
+            matches!(&driven.result, Ok(BoundaryResponse::StreamSent)),
+            "unexpected server-stream result: {:?}",
+            driven.result
+        );
+        assert_eq!(writer.frames(), expected_server_stream_frames());
+        assert_eq!(trace.item_releases.load(Ordering::Acquire), 3);
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
+    }
+
+    #[test]
+    fn phase_5_stream_typed_decode_failure_releases_item_before_terminal() {
+        let trace = ServerStreamHeapTrace::new(server_stream_item_type_tag(), true);
+        let writer = Arc::new(ControlledServerStreamWriter::new([]));
+        let mut input = server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(64).unwrap(),
+        );
+        input.heap = Some(Box::new(RecordingServerStreamHeap::new(Arc::clone(&trace))));
+
+        let driven = drive_runtime_bytecode_request(input);
+
+        assert!(driven.result.is_err());
+        assert!(writer.frames().is_empty());
+        assert_eq!(trace.item_releases.load(Ordering::Acquire), 1);
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn phase_5_stream_pending_flush_uses_shared_wake_and_commits_after_ack() {
+        let ack = PendingWriterAck::default();
+        let writer = Arc::new(ControlledServerStreamWriter::new([
+            WriterPlan::Ready(Ok(())),
+            WriterPlan::Pending(ack.clone()),
+            WriterPlan::Ready(Ok(())),
+        ]));
+        let drive = drive_runtime_bytecode_request_controlled(server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(64).unwrap(),
+        ));
+        let parked = match drive {
+            ControlledBytecodeDrive::Parked(parked) => parked,
+            ControlledBytecodeDrive::Complete(driven) => {
+                panic!("actual-Pending writer must park: {:?}", driven.result)
+            }
+        };
+
+        assert_eq!(writer.frames(), expected_server_stream_frames()[..2]);
+        assert!(
+            !parked.pending_completion().complete(),
+            "server-stream Pending cannot use the Sleep-only Empty authority"
+        );
+        assert!(
+            ack.complete(Ok(())),
+            "the real flush future owns the waiter"
+        );
+        assert!(
+            !ack.complete(Ok(())),
+            "the exact flush acknowledgement has one completion winner"
+        );
+        let resumed = tokio::task::spawn_blocking(move || parked.resume())
+            .await
+            .unwrap();
+        let ControlledBytecodeDrive::Complete(driven) = resumed else {
+            panic!("one ACK resumes the exact EmitStream site")
+        };
+
+        assert!(matches!(driven.result, Ok(BoundaryResponse::StreamSent)));
+        assert_eq!(writer.frames(), expected_server_stream_frames());
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
+    }
+
+    #[test]
+    fn phase_5_stream_forged_early_writer_deadline_cannot_win_request_budget() {
+        let execution_budget = Arc::new(ExecutionBudget::for_runtime_request(None));
+        let writer = Arc::new(ControlledServerStreamWriter::new([WriterPlan::Ready(Err(
+            BytecodeServerStreamWriteFailure::DeadlineExceeded,
+        ))]));
+        let driven = drive_runtime_bytecode_request(server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::clone(&execution_budget),
+            NonZeroUsize::new(64).unwrap(),
+        ));
+
+        assert!(driven.result.is_err());
+        assert!(!matches!(
+            &driven.result,
+            Err(RequestError::ExecutionBudgetExceeded { .. }) | Err(RequestError::Cancelled)
+        ));
+        assert_eq!(writer.frames().len(), 1);
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(!snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        drop(driven.retention);
+    }
+
+    #[test]
+    fn phase_5_stream_writer_failure_terminates_resource_and_clears_inventory() {
+        let writer = Arc::new(ControlledServerStreamWriter::new([WriterPlan::Ready(Err(
+            BytecodeServerStreamWriteFailure::WriterFailed("ack failed".to_string()),
+        ))]));
+        let driven = drive_runtime_bytecode_request(server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(64).unwrap(),
+        ));
+
+        assert!(driven.result.is_err());
+        assert_eq!(writer.frames().len(), 1);
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        drop(driven.retention);
+    }
+
+    #[test]
+    fn phase_5_stream_response_limit_rejects_chunk_before_transport_poll() {
+        let writer = Arc::new(ControlledServerStreamWriter::new([WriterPlan::Ready(Ok(
+            (),
+        ))]));
+        let driven = drive_runtime_bytecode_request(server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(4).unwrap(),
+        ));
+
+        assert!(driven.result.is_err());
+        assert_eq!(
+            writer.frames(),
+            vec![BytecodeServerStreamFrame::Start {
+                status: 207,
+                headers: Vec::new(),
+            }],
+            "the over-limit chunk never reaches the transport port"
+        );
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(!snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        drop(driven.retention);
+    }
+
+    async fn assert_cancelled_stream_retains_waiter_until_late_ack(
+        late_result: Result<(), BytecodeServerStreamWriteFailure>,
+    ) {
+        let cancellation = CancellationToken::new();
+        let ack = PendingWriterAck::default();
+        let writer = Arc::new(ControlledServerStreamWriter::new([WriterPlan::Pending(
+            ack.clone(),
+        )]));
+        let drive = drive_runtime_bytecode_request_controlled(server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            cancellation.clone(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(64).unwrap(),
+        ));
+        let parked = match drive {
+            ControlledBytecodeDrive::Parked(parked) => parked,
+            ControlledBytecodeDrive::Complete(driven) => {
+                panic!("actual-Pending start flush must park: {:?}", driven.result)
+            }
+        };
+
+        cancellation.cancel();
+        let resumed = tokio::task::spawn_blocking(move || parked.resume())
+            .await
+            .unwrap();
+        let ControlledBytecodeDrive::Complete(driven) = resumed else {
+            panic!("cancellation must settle the shared pending cell")
+        };
+        assert!(matches!(driven.result, Err(RequestError::Cancelled)));
+        assert_eq!(ack.dropped_count(), 0);
+        assert!(
+            ack.has_live_waiter(),
+            "the irrevocably enqueued frame retains its real ACK waiter after request terminal"
+        );
+        assert_eq!(writer.frames().len(), 1);
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert!(
+            ack.complete(late_result),
+            "the Router/session terminal still resolves the retained writer future"
+        );
+        for _ in 0..100 {
+            if !ack.has_live_waiter() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(!ack.has_live_waiter());
+        assert_eq!(ack.dropped_count(), 0);
+        assert!(
+            !ack.complete(Ok(())),
+            "a late transport result has exactly one completion"
+        );
+        drop(driven.retention);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn phase_5_stream_cancel_retains_writer_until_late_ok_without_reviving_request() {
+        assert_cancelled_stream_retains_waiter_until_late_ack(Ok(())).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn phase_5_stream_cancel_retains_writer_until_late_error_without_reviving_request() {
+        assert_cancelled_stream_retains_waiter_until_late_ack(Err(
+            BytecodeServerStreamWriteFailure::RouterDisconnected,
+        ))
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn phase_5_stream_due_deadline_retains_writer_until_late_ack_without_reviving_request() {
+        let start = Instant::now();
+        let deadline_at = start.checked_add(Duration::from_secs(30)).unwrap();
+        let clock = Arc::new(TestMonotonicClock::new(start));
+        let execution_budget = Arc::new(ExecutionBudget::new(
+            ExecutionBudgetPolicy::runtime_default(),
+            Some(AdmittedRequestDeadline::new(deadline_at)),
+            clock.clone(),
+        ));
+        let ack = PendingWriterAck::default();
+        let writer = Arc::new(ControlledServerStreamWriter::new([WriterPlan::Pending(
+            ack.clone(),
+        )]));
+        let drive = drive_runtime_bytecode_request_controlled(server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::clone(&execution_budget),
+            NonZeroUsize::new(64).unwrap(),
+        ));
+        let parked = match drive {
+            ControlledBytecodeDrive::Parked(parked) => parked,
+            ControlledBytecodeDrive::Complete(driven) => {
+                panic!("actual-Pending start flush must park: {:?}", driven.result)
+            }
+        };
+
+        clock.set(deadline_at.checked_add(Duration::from_millis(1)).unwrap());
+        assert_eq!(
+            execution_budget.pending_terminal_winner(),
+            Some(ExecutionWinner::DeadlineExceeded)
+        );
+        let resumed = tokio::task::spawn_blocking(move || parked.resume())
+            .await
+            .unwrap();
+        let ControlledBytecodeDrive::Complete(driven) = resumed else {
+            panic!("deadline must settle the shared pending cell")
+        };
+        assert!(matches!(
+            driven.result,
+            Err(RequestError::ExecutionBudgetExceeded {
+                reason: ExecutionBudgetReason::DeadlineExceeded,
+                ..
+            })
+        ));
+        assert_eq!(ack.dropped_count(), 0);
+        assert!(ack.has_live_waiter());
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert!(ack.complete(Ok(())));
+        for _ in 0..100 {
+            if !ack.has_live_waiter() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(!ack.has_live_waiter());
+        assert_eq!(ack.dropped_count(), 0);
+        assert!(!ack.complete(Ok(())));
+        drop(driven.retention);
+    }
+
+    #[test]
+    fn phase_5_stream_begin_pending_failure_closes_in_flight_resource() {
+        let ack = PendingWriterAck::default();
+        let writer = Arc::new(ControlledServerStreamWriter::new([WriterPlan::Pending(
+            ack.clone(),
+        )]));
+        let drive = drive_runtime_bytecode_request_controlled(server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(64).unwrap(),
+        ));
+        let ControlledBytecodeDrive::Complete(driven) = drive else {
+            panic!("Pending outside Tokio must fail before publication")
+        };
+
+        assert!(driven.result.is_err());
+        assert_eq!(ack.dropped_count(), 1);
+        assert!(!ack.complete(Ok(())));
+        assert_eq!(writer.frames().len(), 1);
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(!snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        drop(driven.retention);
     }
 
     #[tokio::test(flavor = "current_thread")]

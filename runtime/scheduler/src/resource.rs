@@ -102,7 +102,7 @@ pub enum RequestServerStreamEventKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RequestServerStreamReservationFacts {
+pub(crate) struct RequestServerStreamReservationFacts {
     operation: u64,
     kind: RequestServerStreamEventKind,
     sequence: Option<u64>,

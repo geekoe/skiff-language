@@ -2,6 +2,7 @@
 
 mod bytecode_host_effects;
 mod bytecode_ingress;
+mod bytecode_server_stream;
 pub mod cancellation;
 mod envelope;
 mod error;
@@ -16,6 +17,8 @@ pub mod vm_heap;
 pub use bytecode_host_effects::{
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,
     BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,
+    BytecodeServerStreamFrame, BytecodeServerStreamWriteFailure, BytecodeServerStreamWriteFuture,
+    BytecodeServerStreamWriterPort,
 };
 pub use bytecode_ingress::{
     drive_runtime_bytecode_request, drive_runtime_bytecode_request_async,
