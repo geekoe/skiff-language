@@ -154,6 +154,18 @@ struct PendingResume {
     authority: VmResumeAuthority,
 }
 
+/// A push destination whose frame, bounds, liveness, and next height have all
+/// been checked. Nothing that allocates or otherwise creates a new owner may
+/// run before this reservation exists; committing it is deliberately
+/// infallible so a newly created owner can never fall between the VM stack and
+/// cleanup.
+#[derive(Clone, Copy)]
+struct OperandPushReservation {
+    frame_ordinal: usize,
+    value_index: usize,
+    next_height: usize,
+}
+
 impl VmFiber {
     fn start(
         entry: DeploymentExecutionEntry,
@@ -2918,6 +2930,25 @@ impl VmFiber {
                 table: CandidateTable::Intrinsics,
                 row: intrinsic_index.get(),
             })?;
+        self.execute_resolved_intrinsic(
+            executor,
+            function,
+            instruction,
+            &intrinsic,
+            arg_count,
+            result_count,
+        )
+    }
+
+    fn execute_resolved_intrinsic(
+        &mut self,
+        executor: &mut LifecycleExecutor<'_>,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        intrinsic: &skiff_runtime_linked_bytecode::LinkedIntrinsicTarget,
+        arg_count: usize,
+        result_count: usize,
+    ) -> Result<DispatchOutcome, VmError> {
         validate_native_signature_counts(
             intrinsic.signature(),
             arg_count,
@@ -2989,6 +3020,7 @@ impl VmFiber {
             instruction,
         )?;
         self.set_current_frame_operand_height(&frame, frame.operand_height() - arg_count)?;
+        let result_destination = self.reserve_operand_push()?;
         let payload = computed?;
         let result_type = result_type.ok_or(VmError::FullValueLifecyclePlanUnavailable {
             function,
@@ -3002,19 +3034,7 @@ impl VmFiber {
             function,
             instruction,
         )?;
-        if let Err(primary) = self.push_operand(result) {
-            if let Some(plan) = result_plan {
-                return Err(release_intrinsic_result_after_push_failure(
-                    executor,
-                    &result,
-                    plan,
-                    primary,
-                    function,
-                    instruction,
-                ));
-            }
-            return Err(primary);
-        }
+        self.commit_operand_push(result_destination, result);
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
@@ -4487,8 +4507,16 @@ impl VmFiber {
             .map(|()| values)
     }
 
-    fn push_operand(&mut self, value: ValueSlot) -> Result<(), VmError> {
-        let frame = self.current_frame()?.clone();
+    fn reserve_operand_push(&self) -> Result<OperandPushReservation, VmError> {
+        let frame_ordinal = self
+            .frames
+            .len()
+            .checked_sub(1)
+            .ok_or(VmError::FiberNotRunnable { state: self.state })?;
+        let frame = self
+            .frames
+            .get(frame_ordinal)
+            .ok_or(VmError::FiberNotRunnable { state: self.state })?;
         let function = frame.function();
         if frame.operand_height() >= frame.operand_capacity() {
             return Err(VmError::OperandStackOverflow {
@@ -4496,22 +4524,59 @@ impl VmFiber {
                 capacity: frame.operand_capacity(),
             });
         }
-        let index = frame.operand_base() + frame.operand_height();
-        if self.live_values.get(index).copied() == Some(true) {
+        let next_height =
+            frame
+                .operand_height()
+                .checked_add(1)
+                .ok_or(VmError::OperandStackOverflow {
+                    function,
+                    capacity: frame.operand_capacity(),
+                })?;
+        let value_index = frame
+            .operand_base()
+            .checked_add(frame.operand_height())
+            .ok_or(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            })?;
+        let destination_live =
+            self.live_values
+                .get(value_index)
+                .copied()
+                .ok_or(VmError::VerifiedEntryInvariant {
+                    invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+                })?;
+        self.values
+            .get(value_index)
+            .ok_or(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            })?;
+        if destination_live {
             return Err(VmError::LiveDestination {
                 function: frame.function(),
                 instruction: frame.instruction(),
                 location: VmValueLocation::Operand(frame.operand_height()),
             });
         }
-        if index >= self.values.len() {
-            return Err(VmError::VerifiedEntryInvariant {
-                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
-            });
-        }
-        self.values[index] = value;
-        self.live_values[index] = true;
-        self.set_current_frame_operand_height(&frame, frame.operand_height() + 1)
+        Ok(OperandPushReservation {
+            frame_ordinal,
+            value_index,
+            next_height,
+        })
+    }
+
+    fn commit_operand_push(&mut self, reservation: OperandPushReservation, value: ValueSlot) {
+        // `reserve_operand_push` checked all three indices and there is no
+        // intervening fiber mutation at any call site. Commit therefore has
+        // no fallible tail after the owner becomes live.
+        self.frames[reservation.frame_ordinal].set_operand_height(reservation.next_height);
+        self.values[reservation.value_index] = value;
+        self.live_values[reservation.value_index] = true;
+    }
+
+    fn push_operand(&mut self, value: ValueSlot) -> Result<(), VmError> {
+        let reservation = self.reserve_operand_push()?;
+        self.commit_operand_push(reservation, value);
+        Ok(())
     }
 
     fn set_current_frame_operand_height(
@@ -4773,20 +4838,6 @@ fn release_intrinsic_argument_window(
         live[index] = false;
     }
     Ok(())
-}
-
-fn release_intrinsic_result_after_push_failure(
-    executor: &mut LifecycleExecutor<'_>,
-    result: &ValueSlot,
-    plan: &LinkedValueTransferPlan,
-    primary: VmError,
-    function: FunctionIndex,
-    instruction: InstructionIndex,
-) -> VmError {
-    match executor.release(result, plan) {
-        Ok(()) => primary,
-        Err(cleanup) => cleanup.into_vm_error(function, instruction, Opcode::InvokeIntrinsic),
-    }
 }
 
 fn store_slot_string_constant_authorized(
