@@ -197,7 +197,7 @@ DB、actor、queue、timer 和 runtime request 都应产生观测事件，但观
 - actor put / remove、method call、owner lease renewal、dispatch submit / execution 可以产生 trace / metric / health。
 - queue wait、claim batch、lease renew、deadline miss、cancel、timeout、failure 可以产生 trace / metric / log。
 - runtime request start / end / error / cancel 是 request frame 的基础 trace 事件。
-- deployment image load / link / verify / cache / rejection、VM fiber / owner transfer 和 managed heap / GC
+- deployment image load / single atomic construction / cache / rejection、VM fiber / owner transfer 和 managed heap / GC
   应产生可按 exact `buildId` 与 `runtimeSessionId` 聚合的 metric / health 事件。
 
 这些事件用于诊断和告警；真正的业务状态仍在 service-owned database、queue store、timer store 或业务 durable state 中。

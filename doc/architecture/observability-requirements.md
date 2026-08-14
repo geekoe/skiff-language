@@ -130,8 +130,9 @@ runtime activation identity 或 assembly generation。Actor activation id 和 cl
 - 跨 service / Actor / callback owner transfer 的次数、耗时和 terminal / rejection 分类；
 - managed heap 的 allocation bytes / objects、current / peak bytes、limit rejection，以及 GC 次数、
   pause 耗时和 reclaimed bytes；
-- deployment image load / link / verify 分阶段耗时、cache hit / miss / wait，load rejection 按
-  missing / decode / structural validation / link / semantic verification / resource limit / timeout 分类。
+- deployment image load / single atomic construction 分阶段耗时、cache hit / miss / wait，load rejection 按
+  missing / decode / bounded structural validation / exact reference closure / resource limit / timeout 分类；不存在独立
+  semantic verification 阶段或对应的 rejection 类别。
 
 上述指标必须可按 exact deployment `buildId`、`runtimeId` 和 `runtimeSessionId` 聚合；Actor
 activation id 或 socket generation 只在相应 owner / socket 事件中作 scoped 维度。
@@ -202,7 +203,7 @@ activation id 或 socket generation 只在相应 owner / socket 事件中作 sco
 - 消费端 telemetry `/metrics`（或等价查询）能看到 service-db 写 p95 升高与
   `skiff-router.tasks` 操作率异常；
 - service owner 能通过 trace 看到一次 `/chat/send` 的完整阶段耗时；
-- runtime 查询能按 exact deployment `buildId` 和 `runtimeSessionId` 分解 image load / link / verify /
+- runtime 查询能按 exact deployment `buildId` 和 `runtimeSessionId` 分解 image load / atomic construction /
   cache / rejection、fiber / owner transfer 与 heap / GC 指标；
 - `std.log` 可以出现在导出 service 方法中并被 `/logs` 查询到；
 - 空遥测窗口会产生 warn。

@@ -190,9 +190,11 @@ db object Thread implements agent/model.AgentThread {
 
 #### 1.3.3 绑定与覆盖校验
 
-- 绑定发生在 exact `DeploymentExecutionImage`的 image-local link/verification：契约的 db target 解析到
+- 绑定发生在 exact `DeploymentExecutionImage`的 single atomic construction：compiler 发出的契约/实现 schema facts
+  是唯一 source-semantics authority；constructor 只把契约的 db target exact-resolve 到
   当前 deployment package closure 内实现声明的物理集合；引擎读行按自己的字段子集 plan 解码，宿主读行按
-  完整字段集解码。绑定或覆盖校验失败在编译或 image load 阶段 fail closed，不进入业务`catch`。
+  完整字段集解码，并闭合这些 emitted facts 的有限引用一致性。绑定或覆盖校验失败在编译或 image construction
+  阶段 fail closed，不进入业务`catch`；constructor 不按字段形状重建 compiler 的 schema 语义。
 - 覆盖校验（fail closed）：
   - 实现类型字段集覆盖契约类型字段集；重叠字段的 schema identity 逐字段一致（identity 按
     `static-semantics.md §16/§17` 的 schema / wire identity 规则判定）。**identity 一致 = 归一化

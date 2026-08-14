@@ -329,7 +329,7 @@ std.time.DecodeError
 std.websocket.WebSocketRequestError
 ```
 
-首次 hard cut 的 version owner 同时升级：bytecode schema `skiff-bytecode-v6` →
+platform error projection registry 首次落地时已经完成以下 version hard cut：bytecode schema `skiff-bytecode-v6` →
 `skiff-bytecode-v7`；bytecode identity generation 4 → 5、marker `skiff-bytecode-artifact-v4` →
 `skiff-bytecode-artifact-v5`、prefix `skiff-bytecode-image-v4:sha256` →
 `skiff-bytecode-image-v5:sha256`；PackageArtifact schema `skiff-package-artifact-v14` →
@@ -340,20 +340,24 @@ std.websocket.WebSocketRequestError
 它并与 build 的 PackageArtifact descriptor exact-match 后才可 dispatch。旧 frame、缺失 descriptor、
 PackageArtifact/bytecode descriptor不一致都 strict reject，不提供 dual reader。
 
-Bytecode ISA仍是`skiff-bytecode-isa-v4`；新增required header authority不改变opcode number、operand layout或
-operand-stack semantics。Package Local ABI和ServiceProtocol的schema/identity generation同样不因本次registry
-pin而升级。
+该 registry cut 本身没有改变当时的 `skiff-bytecode-isa-v4` opcode/operand contract。随后 Phase 5 hard cut 已将
+当前唯一可接受 envelope 从 bytecode schema `skiff-bytecode-v7` / ISA `skiff-bytecode-isa-v4` 升级为
+`skiff-bytecode-v8` / `skiff-bytecode-isa-v5`，增加 `TakeDenseField` opcode 与 shape row 上的显式
+`privilegedAffineComposite` identity；bytecode identity generation、marker 与 prefix仍是上述 v5。v7/v4 不保留
+reader或兼容路径。Package Local ABI和ServiceProtocol的schema/identity generation不因这两次 registry/ISA cut
+而升级。
 
-这些 carrier/version 变化不能只由本文单独落地。M3 canonical docs cutover必须同步更新
+这些 carrier/version 变化不能只由本文单独落地。M3 canonical docs cutover已经同步更新
 [`bytecode-vm.md`](bytecode-vm.md) §3.1 与
 [`package-service-contract-deployment.md`](package-service-contract-deployment.md) §3/§5.1/§6.3，以及
 [`runtime-lazy-load-deployment.md`](runtime-lazy-load-deployment.md)和[`router-rust.md`](router-rust.md)的
-session/routing contract，再修改schema/code；canonical contracts与随后生成的schema必须持续一致，M8不能
-补写这一决定。
+session/routing contract；Phase 5 schema/ISA cut再同步更新 `bytecode-vm.md` §3.1与schema/code。canonical contracts
+与generated schema必须持续一致，后续里程碑不得补写或回退这些决定。
 
-本文所处的canonical docs checkpoint先于production schema/code hard cut；在后者合入前，仓库实现仍可能是
-closed `builtinErrorIdentity`、bytecode v6五authority和runtime-frame-v4。那是明确的待迁移implementation
-lag，不是dual-format协议：任何M3 production commit都必须整体切到上述target，不得出现新旧字段混用。
+本文当前 canonical checkpoint 位于两次 production hard cut 之后。当前仓库必须同时使用
+`skiff-bytecode-v8`、`skiff-bytecode-isa-v5`、PackageArtifact v15 与 runtime-frame-v5，并携带六个 required
+authority和 Phase 5 privileged affine carrier；任何 v6/v7、ISA v4、五authority或 runtime-frame-v4 的 production
+路径都是缺陷，不是允许的 implementation lag 或 dual-format 协议。
 
 Rolling runtime upgrade 期间，不同 registry fingerprint 的 runtime session 可以并存；release pointer仍
 引用旧 fingerprint artifact 时，operator不得先清退最后一个 matching runtime。旧 registry/runtime 的回收

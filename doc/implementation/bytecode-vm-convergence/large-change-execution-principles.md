@@ -9,8 +9,9 @@
 > 本文不定义任何产品或语言语义。
 
 大型任务没有一套可以机械套用的完整工作流。通用流程只固定一个小的安全内核：同一份 Phase Contract、
-一条开发线、一条证明线、滚动 Execution Map，以及 frozen candidate 上的独立验收。调查、设计和专项审查
-都由实际问题条件触发，不是每个 Phase 必经的前置流水线。
+一条开发线、一条证明线、滚动 Execution Map，以及 frozen candidate 上的独立验收。调查和设计由实际问题
+条件触发；architecture/decision 文档不设置独立 review/PASS 前置门禁。专项 review 只针对已经形成的实现候选，
+不是开码前的文档流水线。
 
 本文的目标不是增加角色和文档，而是让工作尽快产生可执行反馈，同时避免开发者自己定义成功、自己制造
 证据、自己宣布通过。
@@ -159,11 +160,13 @@ NeedDesign =
 一个 Design task 只关闭一个决定或一个不可分割的决定簇，交付包含：decision、理由、被拒方案、Contract/API
 影响、消费者、证明义务和未决项。它不顺手生成完整 Phase DAG、所有测试场景或上千行迁移说明。
 
-设计者仍然是球员，可以随后进入开发线实现该决定；但不得独立审查或验收自己的设计/实现。
+设计者仍然是球员，可以随后进入开发线实现该决定。设计文档不需要交给另一个 Agent 审查后才能开码；最终
+frozen implementation candidate 仍由未参与候选写入的 semantic reviewer / Acceptance owner核对实际代码和证据。
 
-### 4.3 何时需要独立 Design Review
+### 4.3 Architecture / Design 文档不设 review gate
 
-Design task 只有在改变下列高风险共享事实时需要独立 review：
+Design task 写到足以指导当前实现即可，不要求为完备性遍历所有 architecture/reference 文档，也不要求独立
+Design Review 或 PASS receipt。包括下列高风险共享事实也直接进入实现与可执行验证：
 
 - authority 或 ownership owner；
 - persistent/public schema 或跨进程 ABI；
@@ -171,8 +174,9 @@ Design task 只有在改变下列高风险共享事实时需要独立 review：
 - Ready/Pending/error/cancel/drop 等跨 owner 状态机；
 - Development/Proof 两条线的共同成功定义。
 
-Review 只审查对应 decision receipt，不等待整个 Phase 设计完毕。`FAIL` 只阻塞消费该决定的 task；其它工作
-继续。普通局部设计由代码 review、focused tests 和最终 Acceptance 覆盖。
+这些决定必须写出核心 invariant、failure envelope、迁移边界和可执行验收条件；正确性由 focused tests、Gate、
+frozen candidate semantic review 与 Acceptance 证明。实现过程中发现真实冲突时就地 amendment，外围文档措辞
+漂移记为 non-blocking debt，不能扩大成开放集合的全仓文档审查。
 
 ## 5. Execution Map 与主 Agent
 
@@ -338,12 +342,11 @@ main checkout                       始终停在 main
 - **Proof owner(s)**：canonical tests/VCP/Gate/evidence；
 - **Acceptance owner**：frozen candidate 的独立 verdict。
 
-Clarification、Design、专项 Reviewer 都是 conditional task。强制分离只有：
+Clarification 与 Design 都是 conditional task；专项 Reviewer只用于实现候选。强制分离只有：
 
-- Acceptance owner 不参与 candidate production/test/Gate 写入；
+- Frozen candidate semantic reviewer / Acceptance owner 不参与 candidate production/test/Gate 写入；
 - Proof owner 不修改 production code 来制造 PASS；
 - 多个 owner 不共同拥有同一状态机；
-- reviewer 不审查自己的高风险共享设计；
 - integrator 不在 merge 时补语义。
 
 设计者可以成为开发者；开发者可以写局部 unit tests；同一 Agent 可以串行拥有多个不冲突的 leaf。不要为了

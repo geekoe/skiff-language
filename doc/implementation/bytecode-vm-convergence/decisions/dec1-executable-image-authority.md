@@ -1,6 +1,6 @@
 # DEC1-K1: deployment executable-image authority
 
-> Status: corrected decision; requires a new independent Design review before K1 starts
+> Status: corrected decision; Amendment r2 hard cut authorized; no architecture-review gate
 >
 > Input: `76a0a1894d76e24d2f1118a18c209eb5b6f0e50d`
 >
@@ -426,9 +426,10 @@ its tests do not constitute Phase 1 Acceptance.
   prevent mechanical proof of a single mint and are unnecessary for an
   unpublished language.
 
-## Required new independent Design review
+## Historical review questions (non-blocking)
 
-A reviewer who did not write either version of this decision must answer:
+The following questions were used by the earlier process. They remain historical design prompts, not an independent
+review/PASS prerequisite. Amendment r2 supersedes question 5 and every retained-verifier premise below.
 
 1. Is there exactly one `DeploymentExecutionImage` and cache slot per exact
    deployment build, with no entry/root dimension or route input to the atomic
@@ -535,7 +536,8 @@ runtime failure strategy.
 Historical receipts and tests that mention the removed stage remain historical
 evidence only. The active Phase 5 Contract and MAP own the exact cutover write
 set, stage-sentinel renaming, dependency removal, test migration, and Gate
-selector replacement. A new independent Design review must confirm that the
-implementation contains one compiler semantic authority, one atomic linker
-image mint, no verifier-shaped compatibility surface, and the complete safe
-failure envelope above before the hard-cut implementation is joined.
+selector replacement. No independent architecture/decision review is required
+before implementation. Focused tests, the canonical Gate, frozen-candidate
+semantic review and Acceptance must prove one compiler semantic authority, one
+atomic linker image mint, no verifier-shaped compatibility surface, and the
+complete safe-failure envelope before Phase 5 is accepted.

@@ -150,7 +150,8 @@ timeout/cancel winner、late completion cleanup，以及同一单线程 Tokio wo
 - [ ] 六个真实 stage sentinels、full-chain Router VCP、race/negative/structural no-bypass matrix 全绿且非 skip/zero；
 - [ ] legacy stream registry active=0，pending/resource terminal 后 current=0，exact-once observations 可核对；
 - [ ] Phase 1/2/3/4 canonical regressions与 workspace fmt/clippy/checker 全绿；
-- [ ] frozen candidate 经全新 semantic reviewer 与全新只读 Acceptance owner 给出 PASS。
+- [ ] frozen implementation candidate 经全新 semantic reviewer 与全新只读 Acceptance owner 对实际代码、Gate 与
+  evidence 给出 PASS；architecture/reference 文档完备性不是 verdict 条件。
 
 出现下列任一情况停止相应 lane并先 Amend Contract/MAP：需要新增 host binding/Stream placement；需要第二
 registry/root/pending/executor authority；需要 hand-built proof seam；需要 Router production 修改；shared typed
@@ -214,3 +215,12 @@ S3/S4 是同一原子 constructor 的输入与完成态哨兵，不是两个 pro
 candidate/facts/image。G9 还必须反向证明 crate、symbols、dependencies、imports、old test selectors与 dual path
 全部为零。若删除 verifier 暴露 artifact 缺少 source-semantic fact，立即停止 V5R并回到 A5/C5 Amend schema/producer；
 不得在 linker补推导。
+
+### 6.4 Process ruling: documentation does not block implementation
+
+Architecture、reference、decision、Contract、MAP 与原则文档不需要独立 Design review 或 PASS 才能开始/继续
+Phase 5 实现，也不要求为了“完备”做开放集合的全仓文档一致性扫描。它们只需记录当前核心 authority、failure
+envelope、支持面与 write ownership；实现中出现真实矛盾再 amendment，外围措辞漂移是 non-blocking debt。
+
+最终 semantic review 与 Acceptance 仍保留，但对象是 frozen implementation candidate、可执行 Gate 与 raw
+evidence；只有实际第二 authority、fallback、unsafe failure、回归或假绿能阻断 verdict，文档覆盖范围本身不能。

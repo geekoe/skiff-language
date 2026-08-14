@@ -3,7 +3,8 @@
 每个 Phase 只按这 9 步执行。这是**唯一**的流程权威；其它文档是语义参考，不另立步骤。
 
 1. **契约**：`phases/phase-N-*.md` 写三件事——本 Phase 支持面（含 fail-closed 面）、VCP、acceptance
-   checklist。没有就写；写完语义不再改，只允许 Amendments。VCP = 一条 full-chain closure + **stage-sentinel
+   checklist。没有就写；写完语义不再改，只允许 Amendments。契约、architecture、decision 与 MAP 写到足以指导
+   当前实现即可，不做全仓文档完备性 review，也不需要独立 PASS 才能开码。VCP = 一条 full-chain closure + **stage-sentinel
    矩阵**：同一组真实 fixture 在 source→admission、admission→emission、emission→atomic-link input、
    atomic-link→image、image→scheduler、scheduler→request→response 每个阶段边界各挂一个独立 test case；
    atomic-link input与image是同一constructor的输入/完成态sentinel，不是两个production API；哨兵输入必须是上一阶段
@@ -26,12 +27,13 @@
    留 expected-red baseline（非 zero/skip/ignore），证明矩阵可执行且覆盖契约全部 required scenario；这不是
    重跑上一 Phase 的 Gate，后续用它区分新旧红。
 6. **Gate**：merged preflight 全绿 → freeze（exact commit/tree）→ 新建 detached acceptance worktree。
-7. **独立 review**（全新只读 agent）：只判语义——契约落实、已接受 Phase 不变式、假绿/第二权威/fallback、
-   fail-closed。不判簿记和格式（那是 integrator 在 join 时的机械检查）。
+7. **Frozen candidate semantic review**（全新只读 agent）：只判实际代码/测试——核心契约落实、已接受 Phase
+   不变式、假绿/第二权威/fallback、fail-closed。不审查 architecture 文档完备性，不因外围文档措辞漂移 FAIL；
+   簿记和格式由 integrator 在 join 时机械检查。
 8. **独立 Acceptance**（全新只读 agent）：完整 Gate + checklist + raw evidence 核对。PASS → 写
    `results/phase-N.md` → 合入 main → push → 清理 worktree。机械-only 的 FAIL 修复后，新 agent 的验收信封
    可以只复核变更面 + 完整 Gate，不整份重读。
 9. **上报格式**（所有 lane）：`{完成了什么, 意外点, 尝试过什么, 需要什么}`。
 
-强制隔离只有三条：reviewer / Acceptance 必须是没写本 Phase 候选的全新 agent；proof 不修改生产制造 PASS；
+强制隔离只有三条：frozen candidate semantic reviewer / Acceptance 必须是没写本 Phase 候选的全新 agent；proof 不修改生产制造 PASS；
 kernel 状态机只有一个 write owner。
