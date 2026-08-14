@@ -84,7 +84,12 @@ function candidateOutput(id, options) {
 function workloadOutput(spec, options) {
   if (spec.testFormat === 'node-tap') return tap(options?.nodeCounts);
   if (spec.testFormat === 'rust-exact') return rust({ ...options?.rustCounts, passed: 1 });
-  if (spec.testFormat === 'rust-suite') return rust(options?.rustCounts);
+  if (spec.testFormat === 'rust-suite') {
+    return rust({
+      ...options?.rustCounts,
+      passed: options?.rustCounts?.passed ?? spec.expectedTests ?? 3,
+    });
+  }
   return '';
 }
 

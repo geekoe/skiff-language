@@ -81,7 +81,7 @@ export function phase5CommandIdentity(spec, actualEnv) {
 }
 
 function commandIdentity(spec, actualEnv) {
-  return {
+  const identity = {
     id: spec.id,
     command: spec.command,
     args: [...spec.args],
@@ -90,6 +90,8 @@ function commandIdentity(spec, actualEnv) {
     testFormat: spec.testFormat,
     lanes: [...spec.lanes],
   };
+  if (spec.expectedTests !== undefined) identity.expectedTests = spec.expectedTests;
+  return identity;
 }
 
 function commandStatus(outcome) {
@@ -129,6 +131,12 @@ function validateReceipt(receipt, spec, actualEnv, stdout, stderr) {
     const summary = parsePhase5TestSummary(spec.testFormat, `${stdout}\n${stderr}`);
     if (summary?.valid !== true) {
       failures.push(failure('command.test-count', `${spec.id} test summary is not exact and complete`));
+    } else if (Number.isSafeInteger(spec.expectedTests)
+      && summary.total !== spec.expectedTests) {
+      failures.push(failure(
+        'command.test-count',
+        `${spec.id} executed ${summary.total} tests; expected exactly ${spec.expectedTests}`,
+      ));
     }
   }
   return failures;

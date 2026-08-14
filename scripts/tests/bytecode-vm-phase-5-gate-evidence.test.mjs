@@ -10,10 +10,10 @@ import {
   withPhase5EvidenceBundle,
 } from './bytecode-vm-phase-5-gate-fixture.mjs';
 
-test('checker accepts exactly ninety-eight receipts on one clean candidate', async () => {
+test('checker accepts exactly one hundred seven receipts on one clean candidate', async () => {
   await withPhase5EvidenceBundle({}, async (bundle) => {
     assert.equal(bundle.manifest.verdict, 'PASS');
-    assert.deepEqual(bundle.manifest.counts.commands, { total: 98, passed: 98, failed: 0 });
+    assert.deepEqual(bundle.manifest.counts.commands, { total: 107, passed: 107, failed: 0 });
     assert.equal(bundle.manifest.counts.tests.declared > 0, true);
     assert.equal((await check(bundle)).verdict, 'PASS');
   });
@@ -84,6 +84,13 @@ test('checker rejects actual child environment drift from the bound snapshot', a
   await withPhase5EvidenceBundle({ environmentDriftId: 'phase-5-vcp-production-composition' }, async (bundle) => {
     assert.equal(bundle.manifest.verdict, 'FAIL');
     assert.equal(bundle.manifest.failures.some(({ code }) => code === 'command.identity'), true);
+  });
+});
+
+test('checker rejects a passing Rust suite with fewer tests than its frozen matrix row', async () => {
+  await withPhase5EvidenceBundle({ rustCounts: { passed: 1 } }, async (bundle) => {
+    assert.equal(bundle.manifest.verdict, 'FAIL');
+    assert.equal(bundle.manifest.failures.some(({ code }) => code === 'command.test-count'), true);
   });
 });
 

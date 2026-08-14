@@ -156,6 +156,7 @@ function summarizeCommand(spec, record) {
   return {
     id: spec.id,
     lanes: [...spec.lanes],
+    expectedTests: spec.expectedTests ?? null,
     status: record?.valid === true ? 'PASS' : 'FAIL',
     outcome: record?.receipt?.outcome?.status ?? 'MISSING',
     testSummary: record?.testSummary ?? null,
