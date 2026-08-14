@@ -5,8 +5,7 @@ use skiff_artifact_model::{Opcode, PackageBuildId};
 use crate::{
     CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedBytecodeCandidateError,
     LinkedBytecodeCandidateParts, LinkedConstantReference, LinkedFrozenConstantValue,
-    LinkedResumeResultMaterialization, LinkedValueDropPlan, LinkedValueTransferPlan,
-    LinkedWritablePathSegment,
+    LinkedResumeResultMaterialization, LinkedWritablePathSegment,
 };
 
 use super::{
@@ -62,6 +61,7 @@ fn validate_shape(
         shape.nominal_type().get(),
         parts.types.len(),
     )?;
+    validate_plan(shape.plan(), location, parts)?;
     for field in shape.fields() {
         check_index(
             location,
@@ -410,35 +410,21 @@ fn validate_resume_site(
             parts.shapes.len(),
         )?;
         let shape = &parts.shapes[shape.get() as usize];
-        let result_type = &parts.types[resume.result_types()[result_index].get() as usize];
-        let nominal_type = &parts.types[shape.nominal_type().get() as usize];
-        if result_type.type_ref() != nominal_type.type_ref() {
+        if resume.result_types()[result_index] != shape.nominal_type() {
             return Err(
                 LinkedBytecodeCandidateError::ResumeResultMaterializationMismatch {
                     resume_site: resume.index().get(),
                     result_index,
-                    detail: "shape nominal TypeRef/ABI differs from the resume result",
+                    detail: "shape nominal type differs from the exact resume result type",
                 },
             );
         }
-        let snapshot_plan = LinkedValueTransferPlan::SnapshotShare {
-            drop: LinkedValueDropPlan::SnapshotRelease,
-        };
-        if resume.result_plans()[result_index] != snapshot_plan || shape.plan() != &snapshot_plan {
+        if &resume.result_plans()[result_index] != shape.plan() {
             return Err(
                 LinkedBytecodeCandidateError::ResumeResultMaterializationMismatch {
                     resume_site: resume.index().get(),
                     result_index,
-                    detail: "result and shape must use SnapshotShare/SnapshotRelease",
-                },
-            );
-        }
-        if shape.privileged_affine_composite().is_some() {
-            return Err(
-                LinkedBytecodeCandidateError::ResumeResultMaterializationMismatch {
-                    resume_site: resume.index().get(),
-                    result_index,
-                    detail: "dense materialization cannot use a privileged shape",
+                    detail: "shape plan differs from the exact resume result plan",
                 },
             );
         }
