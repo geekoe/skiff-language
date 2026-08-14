@@ -1,6 +1,8 @@
 use std::fmt;
 
-use skiff_artifact_model::{LiteralIr, PackageBuildId, PackageSymbolRef, TypeRefIr};
+use skiff_artifact_model::{
+    LiteralIr, PackageBuildId, PackageSymbolRef, PrivilegedAffineCompositeIdentity, TypeRefIr,
+};
 
 use crate::{
     ArtifactConstantIndex, ArtifactConstantNodeIndex, ArtifactFunctionKey, ArtifactShapeIndex,
@@ -334,6 +336,7 @@ pub struct LinkedShapeEntry {
     index: ShapeIndex,
     origin: LinkedArtifactPoolOrigin<ArtifactShapeIndex>,
     nominal_type: TypeIndex,
+    privileged_affine_composite: Option<PrivilegedAffineCompositeIdentity>,
     fields: Box<[LinkedShapeField]>,
 }
 
@@ -342,6 +345,7 @@ impl LinkedShapeEntry {
         index: ShapeIndex,
         origin: LinkedArtifactPoolOrigin<ArtifactShapeIndex>,
         nominal_type: TypeIndex,
+        privileged_affine_composite: Option<PrivilegedAffineCompositeIdentity>,
         fields: Box<[LinkedShapeField]>,
     ) -> Result<Self, LinkedShapeError> {
         let mut previous_name: Option<&str> = None;
@@ -360,6 +364,7 @@ impl LinkedShapeEntry {
             index,
             origin,
             nominal_type,
+            privileged_affine_composite,
             fields,
         })
     }
@@ -374,6 +379,13 @@ impl LinkedShapeEntry {
 
     pub const fn nominal_type(&self) -> TypeIndex {
         self.nominal_type
+    }
+
+    /// Registry-owned authority transported from the exact admitted artifact
+    /// shape. `None` is an ordinary shape and is never upgraded by matching a
+    /// nominal name or field layout.
+    pub const fn privileged_affine_composite(&self) -> Option<PrivilegedAffineCompositeIdentity> {
+        self.privileged_affine_composite
     }
 
     pub fn fields(&self) -> &[LinkedShapeField] {

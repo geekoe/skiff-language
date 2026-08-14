@@ -1,10 +1,11 @@
+use skiff_artifact_model::HostEffectExecutorIdentity;
 use skiff_runtime_linked_bytecode::{
     CandidateTable, LinkedBytecodeCandidate, LinkedCallableSignature, LinkedInterfaceTableKind,
     LinkedNativeCallableSignature, LinkedValueTransferPlan, TypeIndex,
 };
 
 use super::super::ConcreteValueFacts;
-use super::{prove_position, table_location};
+use super::{prove_host_result_position, prove_ordinary_position, table_location};
 use crate::{VerificationError, VerificationLocation};
 
 pub(super) fn prove_signature_plans(
@@ -129,6 +130,7 @@ pub(super) fn prove_signature_plans(
         prove_native_signature(
             facts,
             target.signature(),
+            Some(target.executor_identity()),
             VerificationLocation::Table {
                 table: CandidateTable::HostEffectAdapters,
                 row: target.index().get(),
@@ -140,6 +142,7 @@ pub(super) fn prove_signature_plans(
         prove_native_signature(
             facts,
             target.signature(),
+            None,
             VerificationLocation::Table {
                 table: CandidateTable::Intrinsics,
                 row: target.index().get(),
@@ -164,6 +167,7 @@ fn prove_callable_signature(
             result_types: signature.result_types(),
             result_plans: signature.result_plans(),
         },
+        None,
         location,
         owner,
     )
@@ -172,6 +176,7 @@ fn prove_callable_signature(
 fn prove_native_signature(
     facts: &ConcreteValueFacts,
     signature: &LinkedNativeCallableSignature,
+    executor_identity: Option<HostEffectExecutorIdentity>,
     location: VerificationLocation,
     owner: &str,
 ) -> Result<(), VerificationError> {
@@ -183,6 +188,7 @@ fn prove_native_signature(
             result_types: signature.result_types(),
             result_plans: signature.result_plans(),
         },
+        executor_identity,
         location,
         owner,
     )
@@ -198,6 +204,7 @@ struct SignatureParts<'a> {
 fn prove_signature_parts(
     facts: &ConcreteValueFacts,
     signature: SignatureParts<'_>,
+    executor_identity: Option<HostEffectExecutorIdentity>,
     location: VerificationLocation,
     owner: &str,
 ) -> Result<(), VerificationError> {
@@ -208,7 +215,7 @@ fn prove_signature_parts(
         .zip(signature.parameter_plans)
         .enumerate()
     {
-        prove_position(
+        prove_ordinary_position(
             facts,
             ty,
             plan,
@@ -223,13 +230,12 @@ fn prove_signature_parts(
         .zip(signature.result_plans)
         .enumerate()
     {
-        prove_position(
-            facts,
-            ty,
-            plan,
-            location,
-            format!("{owner} result ordinal {ordinal}"),
-        )?;
+        let position = format!("{owner} result ordinal {ordinal}");
+        if let Some(identity) = executor_identity {
+            prove_host_result_position(facts, ty, plan, identity, ordinal, location, position)?;
+        } else {
+            prove_ordinary_position(facts, ty, plan, location, position)?;
+        }
     }
     Ok(())
 }

@@ -6,9 +6,12 @@ mod streams;
 mod types;
 
 use skiff_artifact_model::{
-    NativeValueDropPlan, NativeValueLifecycleConcrete, NativeValueLifecycleResolution, TypeRefIr,
+    NativeValueDropPlan, NativeValueLifecycleConcrete, NativeValueLifecycleResolution,
+    PrivilegedAffineCompositeIdentity, TypeRefIr,
 };
-use skiff_runtime_linked_bytecode::{LinkedBytecodeCandidate, LinkedValueTransferPlan, TypeIndex};
+use skiff_runtime_linked_bytecode::{
+    LinkedBytecodeCandidate, LinkedValueTransferPlan, ShapeIndex, TypeIndex,
+};
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use crate::{VerificationError, VerificationLimits};
@@ -23,6 +26,15 @@ pub(crate) struct ConcreteValueFacts {
     types: Box<[ConcreteTypeFact]>,
     classes: Box<[ConcreteTypeClass]>,
     implicit_builtins: ImplicitBuiltinClasses,
+    privileged_affine_shapes: Box<[PrivilegedAffineShapeFact]>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PrivilegedAffineShapeFact {
+    pub(crate) identity: PrivilegedAffineCompositeIdentity,
+    pub(crate) shape: ShapeIndex,
+    pub(crate) nominal_type: TypeIndex,
+    pub(crate) affine_field_ordinal: u32,
 }
 
 /// One normalized concrete type and its independently classified lifecycle.
@@ -63,6 +75,7 @@ impl ConcreteValueFacts {
             types: Box::new([]),
             classes: Box::new([]),
             implicit_builtins: ImplicitBuiltinClasses::default(),
+            privileged_affine_shapes: Box::new([]),
         }
     }
 
@@ -195,6 +208,12 @@ impl ConcreteValueFacts {
         declared: &LinkedValueTransferPlan,
     ) -> bool {
         plans::matches_declared_plan(self, coordinate, declared)
+    }
+
+    pub(crate) fn privileged_shape(&self, shape: ShapeIndex) -> Option<&PrivilegedAffineShapeFact> {
+        self.privileged_affine_shapes
+            .iter()
+            .find(|fact| fact.shape == shape)
     }
 
     /// Derives the item class from the independently normalized `Stream<T>`

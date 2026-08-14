@@ -13,14 +13,16 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
-    HostEffectExecutorIdentity, InstructionSourceSite, Opcode, ServiceDeploymentRef,
-    SourcePosition, SourceSpanRef, StatementAttributionId, StructuralValidationError,
-    SyntheticInstructionSiteReason, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    HostEffectExecutorIdentity, InstructionSourceSite, Opcode, PrivilegedAffineCompositeIdentity,
+    ServiceDeploymentRef, SourcePosition, SourceSpanRef, StatementAttributionId,
+    StructuralValidationError, SyntheticInstructionSiteReason, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
     CompilerPlatformSources,
 };
+use skiff_runtime_bytecode_verifier::VerifiedResumeKind;
 use skiff_runtime_linked_bytecode::{
     HostEffectAdapterIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind,
     LinkedFunction, LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedSlotState,
@@ -32,7 +34,7 @@ use skiff_runtime_loader::{
 use crate::bytecode::{
     link_deployment, link_deployment_backend_for_test, link_deployment_execution_image,
     BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation, CodeEntryLookupError,
-    Phase1LinkedCapability,
+    DeploymentExecutionImage, Phase1LinkedCapability,
 };
 
 use super::{
@@ -42,6 +44,16 @@ use super::{
     },
     generous_limits,
 };
+
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+
+struct TempArtifactRoot(PathBuf);
+
+impl Drop for TempArtifactRoot {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 #[test]
 fn production_execution_image_links_distinct_operation_entries_to_shared_image() {
@@ -83,59 +95,10 @@ fn production_execution_image_links_distinct_operation_entries_to_shared_image()
 
 #[test]
 fn production_sleep_image_exposes_only_the_indexed_typed_executor_target() {
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-
-    struct TempArtifactRoot(PathBuf);
-    impl Drop for TempArtifactRoot {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .expect("linker crate has a repository root")
-        .to_path_buf();
-    let fixture_root = repository_root
-        .join("runtime/host/src/host/request_entry/phase_4_proof_support/fixtures/vcp4-sleep");
-    let artifact_root = TempArtifactRoot(std::env::temp_dir().join(format!(
-        "skiff-v5-linker-sleep-{}-{}-{}",
-        std::process::id(),
-        NEXT_TEMP.fetch_add(1, Ordering::Relaxed),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    )));
-    std::fs::create_dir_all(&artifact_root.0).unwrap();
-    let platform =
-        CompilerPlatformSources::new(&repository_root).expect("open repository platform sources");
-    seed_official_std_package(&platform, &artifact_root.0)
-        .expect("seed the exact compiler-owned std package");
-    let receipt = build_authoring_object(
-        &platform,
-        AuthoringObject::Package,
-        &fixture_root,
-        &artifact_root.0,
-        "skiff-test",
-        true,
-    )
-    .expect("production authoring accepts the canonical sleep fixture");
-    let deployment = serde_json::from_value::<ServiceDeploymentRef>(
-        receipt
-            .pointer("/serviceDeploymentReceipt/deployment")
-            .cloned()
-            .expect("authoring receipt carries the exact deployment"),
-    )
-    .expect("authoring deployment receipt remains typed");
-    let resolver = FilesystemDeploymentBytecodeContentResolver::open(&artifact_root.0)
-        .expect("open production artifact resolver");
-    let hydrated = DeploymentBytecodeLoader::new(&resolver)
-        .load(&deployment)
-        .expect("load exact production deployment");
-    let image = link_deployment_execution_image(hydrated, &super::generous_execution_limits())
-        .expect("production link and independent verification accept canonical sleep");
+    let image = production_execution_image(
+        "runtime/host/src/host/request_entry/phase_4_proof_support/fixtures/vcp4-sleep",
+        "sleep",
+    );
     let index = image
         .functions()
         .iter()
@@ -162,6 +125,160 @@ fn production_sleep_image_exposes_only_the_indexed_typed_executor_target() {
 }
 
 #[test]
+fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() {
+    let image = production_execution_image(
+        "runtime/linker/src/bytecode/tests/fixtures/v5-affine-stream",
+        "affine-stream",
+    );
+    let (host_function, host_ordinal, host_call) = image
+        .functions()
+        .iter()
+        .find_map(|function| {
+            function
+                .instructions()
+                .iter()
+                .enumerate()
+                .find(|(_, instruction)| instruction.opcode() == Opcode::InvokeHost)
+                .map(|(ordinal, instruction)| (function, ordinal, instruction))
+        })
+        .expect("real source retains its exact host call");
+    let target_index = host_call
+        .resolved_operands()
+        .iter()
+        .find_map(|operand| match operand.target() {
+            LinkedInstructionTarget::HostEffectAdapter(index) => Some(index),
+            _ => None,
+        })
+        .expect("real host call retains its exact typed target index");
+    let target = image
+        .host_effect_target(target_index)
+        .expect("verified target remains accessible only by its opaque index");
+    assert_eq!(
+        target.executor_identity(),
+        HostEffectExecutorIdentity::HttpClientStream
+    );
+
+    let shape = image
+        .shapes()
+        .iter()
+        .find(|shape| {
+            shape.privileged_affine_composite()
+                == Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
+        })
+        .expect("production image transports the exact privileged shape identity");
+    assert_eq!(shape.fields()[0].name(), "body");
+    assert!(matches!(
+        shape.fields()[0].plan(),
+        skiff_runtime_linked_bytecode::LinkedValueTransferPlan::AffineResource {
+            drop: skiff_runtime_linked_bytecode::LinkedResourceDropPlan::ResourceTableRelease,
+        }
+    ));
+
+    let host_resume_index = host_call
+        .resolved_operands()
+        .iter()
+        .find_map(|operand| match operand.target() {
+            LinkedInstructionTarget::ResumeSite(index) => Some(index),
+            _ => None,
+        })
+        .expect("real host call retains one typed resume target");
+    let host_resume = image
+        .resume_sites()
+        .get(host_resume_index)
+        .expect("verified image retains the exact host resume certificate");
+    assert_eq!(host_resume.function(), host_function.index());
+    assert_eq!(
+        host_resume.site(),
+        InstructionIndex::new(u32::try_from(host_ordinal).unwrap())
+    );
+    assert_eq!(host_resume.kind(), &VerifiedResumeKind::HostEffect);
+    assert_eq!(host_resume.result_types(), &[shape.nominal_type()]);
+    assert_eq!(host_resume.result_types(), target.signature().result_types());
+    assert_eq!(host_resume.result_plans(), target.signature().result_plans());
+
+    let (function, take_ordinal, take) = image
+        .functions()
+        .iter()
+        .find_map(|function| {
+            function
+                .instructions()
+                .iter()
+                .enumerate()
+                .find(|(_, instruction)| instruction.opcode() == Opcode::TakeDenseField)
+                .map(|(ordinal, instruction)| (function, ordinal, instruction))
+        })
+        .expect("real body projection emits one affine dense-field take");
+    assert_eq!(take.operands()[1], 0, "body is exact dense ordinal zero");
+    assert_eq!(
+        take.resolved_operands()[0].target(),
+        LinkedInstructionTarget::Shape(shape.index())
+    );
+    let before = &function.stack_map().entries()[take_ordinal];
+    let [root] = before.stack_before() else {
+        panic!("TakeDenseField must consume exactly one aggregate root")
+    };
+    assert_eq!(root.ty(), shape.nominal_type());
+    assert!(matches!(
+        root.plan(),
+        skiff_runtime_linked_bytecode::LinkedValueTransferPlan::MoveOnly {
+            drop: skiff_runtime_linked_bytecode::LinkedValueDropPlan::RecursiveShape {
+                shape: root_shape,
+            },
+        } if *root_shape == shape.index()
+    ));
+    let body = function.stack_map().entries()[take_ordinal + 1]
+        .stack_before()
+        .last()
+        .expect("TakeDenseField produces the exact affine body value");
+    assert_eq!(body.ty(), shape.fields()[0].ty());
+    assert_eq!(body.plan(), shape.fields()[0].plan());
+    assert!(function.instructions().iter().all(|instruction| {
+        instruction.opcode() != Opcode::GetDenseField
+            || instruction.operands().get(1).copied() != Some(0)
+            || instruction.resolved_operands()[0].target()
+                != LinkedInstructionTarget::Shape(shape.index())
+    }));
+
+    let (stream_ordinal, stream_next) = function
+        .instructions()
+        .iter()
+        .enumerate()
+        .find(|(_, instruction)| instruction.opcode() == Opcode::StreamNext)
+        .expect("real affine body consumption emits StreamNext");
+    let resume_index = stream_next
+        .resolved_operands()
+        .iter()
+        .find_map(|operand| match operand.target() {
+            LinkedInstructionTarget::ResumeSite(index) => Some(index),
+            _ => None,
+        })
+        .expect("StreamNext retains one typed resume target");
+    let resume = image
+        .resume_sites()
+        .get(resume_index)
+        .expect("verified image retains the exact StreamNext certificate");
+    assert_eq!(resume.function(), function.index());
+    assert_eq!(
+        resume.site(),
+        InstructionIndex::new(u32::try_from(stream_ordinal).unwrap())
+    );
+    let VerifiedResumeKind::StreamRead {
+        item_type,
+        end_resume,
+        ..
+    } = resume.kind()
+    else {
+        panic!("StreamNext must carry a verified StreamRead certificate")
+    };
+    assert_eq!(resume.result_types(), std::slice::from_ref(item_type));
+    assert_eq!(resume.end_resume(), Some(*end_resume));
+    assert!(matches!(
+        image.types()[item_type.get() as usize].type_ref(),
+        TypeRefIr::Builtin { name, args } if name == "bytes" && args.is_empty()
+    ));
+}
+
+#[test]
 fn production_entry_links_exact_ordinary_root_local_call_and_return() {
     let fixture = Fixture::exact_local();
     let hydrated = fixture.hydrate();
@@ -182,7 +299,7 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         .packages()
         .get(&fixture.package_reference.package_build_id)
         .unwrap();
-    assert_exact_v7_provenance(provenance, hydrated_package);
+    assert_exact_v8_provenance(provenance, hydrated_package);
     // The loader is the only safe hydrated-deployment constructor, so its
     // mixed-registry negative tests own impossible receipt construction. The
     // linker tests prove that the opaque joined receipt survives unchanged.
@@ -582,6 +699,52 @@ fn function<'a>(candidate: &'a LinkedBytecodeCandidate, key: &str) -> &'a Linked
         .unwrap()
 }
 
+fn production_execution_image(fixture_relative: &str, label: &str) -> DeploymentExecutionImage {
+    let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("linker crate has a repository root")
+        .to_path_buf();
+    let fixture_root = repository_root.join(fixture_relative);
+    let artifact_root = TempArtifactRoot(std::env::temp_dir().join(format!(
+        "skiff-v5-linker-{label}-{}-{}-{}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )));
+    std::fs::create_dir_all(&artifact_root.0).unwrap();
+    let platform =
+        CompilerPlatformSources::new(&repository_root).expect("open repository platform sources");
+    seed_official_std_package(&platform, &artifact_root.0)
+        .expect("seed the exact compiler-owned std package");
+    let receipt = build_authoring_object(
+        &platform,
+        AuthoringObject::Package,
+        &fixture_root,
+        &artifact_root.0,
+        "skiff-test",
+        true,
+    )
+    .unwrap_or_else(|error| panic!("production authoring accepts {label}: {error}"));
+    let deployment = serde_json::from_value::<ServiceDeploymentRef>(
+        receipt
+            .pointer("/serviceDeploymentReceipt/deployment")
+            .cloned()
+            .expect("authoring receipt carries the exact deployment"),
+    )
+    .expect("authoring deployment receipt remains typed");
+    let resolver = FilesystemDeploymentBytecodeContentResolver::open(&artifact_root.0)
+        .expect("open production artifact resolver");
+    let hydrated = DeploymentBytecodeLoader::new(&resolver)
+        .load(&deployment)
+        .expect("load exact production deployment");
+    link_deployment_execution_image(hydrated, &super::generous_execution_limits())
+        .unwrap_or_else(|error| panic!("production link and verification accept {label}: {error}"))
+}
+
 fn statement_manifest(
     package: &HydratedBytecodePackage,
 ) -> skiff_artifact_model::BytecodeStatementManifestIdentity {
@@ -612,7 +775,7 @@ fn source_site(source_id: u64) -> InstructionSourceSite {
     }
 }
 
-fn assert_exact_v7_provenance(
+fn assert_exact_v8_provenance(
     provenance: &LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
 ) {
@@ -620,8 +783,8 @@ fn assert_exact_v7_provenance(
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");
-    assert_eq!(provenance.schema_version(), "skiff-bytecode-v7");
-    assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v4");
+    assert_eq!(provenance.schema_version(), "skiff-bytecode-v8");
+    assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v5");
     assert_eq!(provenance.schema_version(), view.schema_version());
     assert_eq!(provenance.isa_version(), view.isa_version());
     assert_eq!(

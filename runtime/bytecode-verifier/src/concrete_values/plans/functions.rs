@@ -1,7 +1,7 @@
 use skiff_runtime_linked_bytecode::{LinkedBytecodeCandidate, LinkedSlotState, LinkedStackValue};
 
 use super::super::ConcreteValueFacts;
-use super::prove_position;
+use super::{prove_ordinary_position, prove_request_local_position, prove_server_stream_type};
 use crate::{VerificationError, VerificationLocation};
 
 pub(super) fn prove_function_plans(
@@ -21,7 +21,7 @@ pub(super) fn prove_function_plans(
             .zip(frame.slot_plans())
             .enumerate()
         {
-            prove_position(
+            prove_request_local_position(
                 facts,
                 ty,
                 plan,
@@ -36,7 +36,7 @@ pub(super) fn prove_function_plans(
             .zip(frame.result_plans())
             .enumerate()
         {
-            prove_position(
+            prove_ordinary_position(
                 facts,
                 ty,
                 plan,
@@ -56,7 +56,7 @@ pub(super) fn prove_function_plans(
                     ),
                 ));
             };
-            prove_position(
+            prove_request_local_position(
                 facts,
                 ty,
                 parameter.plan(),
@@ -92,6 +92,15 @@ pub(super) fn prove_function_plans(
                 }
             }
         }
+
+        if let Some(stream) = frame.stream_result_type_ref() {
+            prove_server_stream_type(
+                facts,
+                stream,
+                location,
+                "function server-stream result authority",
+            )?;
+        }
     }
     Ok(())
 }
@@ -102,5 +111,5 @@ fn prove_stack_value(
     location: VerificationLocation,
     position: String,
 ) -> Result<(), VerificationError> {
-    prove_position(facts, value.ty(), value.plan(), location, position)
+    prove_request_local_position(facts, value.ty(), value.plan(), location, position)
 }

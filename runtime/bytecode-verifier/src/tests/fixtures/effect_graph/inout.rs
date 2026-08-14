@@ -27,7 +27,7 @@ pub(super) fn artifact_pools(
             )
     }) {
         pools.types.push(BytecodePoolEntry::TypeRef {
-            ty: skiff_artifact_model::TypeRefIr::builtin("string"),
+            ty: skiff_artifact_model::TypeRefIr::builtin("bytes"),
         });
         if functions
             .iter()
@@ -135,7 +135,7 @@ pub(super) fn package_parameters(kind: EffectGraphCallKind) -> Vec<PackageCallab
         return vec![PackageCallableParameter {
             name: "item".to_string(),
             ty: PackageTypeRef::Local {
-                local_type: skiff_artifact_model::TypeRefIr::builtin("string"),
+                local_type: skiff_artifact_model::TypeRefIr::builtin("bytes"),
             },
             mode: ParamModeIr::Value,
         }];
@@ -320,7 +320,7 @@ pub(super) fn extend_linked_parts(
     parts.types.push(LinkedTypeEntry::new(
         TypeIndex::new(0),
         LinkedArtifactPoolOrigin::new(build.clone(), ArtifactTypeIndex::new(0), None).unwrap(),
-        skiff_artifact_model::TypeRefIr::builtin("string"),
+        skiff_artifact_model::TypeRefIr::builtin("bytes"),
         None,
     ));
     if functions.iter().any(|function| {
@@ -396,6 +396,6 @@ fn artifact_stream_plan() -> ValueTransferPlan {
 fn stream_type() -> skiff_artifact_model::TypeRefIr {
     skiff_artifact_model::TypeRefIr::Builtin {
         name: "Stream".to_string(),
-        args: vec![skiff_artifact_model::TypeRefIr::builtin("string")],
+        args: vec![skiff_artifact_model::TypeRefIr::builtin("bytes")],
     }
 }

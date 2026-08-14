@@ -1,7 +1,7 @@
 use skiff_runtime_linked_bytecode::{CandidateTable, LinkedBytecodeCandidate};
 
 use super::super::ConcreteValueFacts;
-use super::prove_position;
+use super::{prove_ordinary_position, prove_position, prove_request_local_position};
 use crate::{VerificationError, VerificationLocation};
 
 pub(super) fn prove_data_plans(
@@ -42,7 +42,7 @@ pub(super) fn prove_data_plans(
         }
     }
     for constant in candidate.constants() {
-        prove_position(
+        prove_ordinary_position(
             facts,
             constant.ty(),
             constant.plan(),
@@ -59,7 +59,7 @@ pub(super) fn prove_data_plans(
             row: layout.index().get(),
         };
         for (ordinal, capture) in layout.captures().iter().enumerate() {
-            prove_position(
+            prove_ordinary_position(
                 facts,
                 capture.ty(),
                 capture.plan(),
@@ -83,7 +83,7 @@ pub(super) fn prove_data_plans(
             .zip(resume.result_plans())
             .enumerate()
         {
-            prove_position(
+            prove_request_local_position(
                 facts,
                 ty,
                 plan,

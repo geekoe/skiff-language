@@ -41,21 +41,34 @@ impl DeploymentLinker<'_> {
             for instruction in function.instructions() {
                 let location =
                     self.instruction_location(package, source, instruction.artifact_pc());
-                // The opcode owns the primary capability category at this
-                // exact PC; resolved operands then close every target fact
-                // for otherwise admitted opcodes.
-                admit_opcode(instruction.opcode(), location.clone())?;
-                if instruction.opcode() == Opcode::InvokeHost {
-                    admit_typed_host_call(candidate, instruction, location)?;
-                } else {
-                    for resolved in instruction.resolved_operands() {
-                        admit_resolved_target(
-                            self,
+                match instruction.opcode() {
+                    Opcode::InvokeHost => {
+                        admit_opcode(instruction.opcode(), location.clone())?;
+                        admit_typed_host_call(candidate, instruction, location)?;
+                    }
+                    Opcode::StreamNext | Opcode::EmitStream => {
+                        admit_stream_instruction(
+                            self.function_is_server_stream_root(candidate, function.index()),
                             candidate,
-                            resolved.target(),
-                            &mut admitted_symbols,
-                            location.clone(),
+                            function,
+                            instruction,
+                            location,
                         )?;
+                    }
+                    _ => {
+                        // The opcode owns the primary capability category at
+                        // this exact PC; resolved operands then close every
+                        // target fact for otherwise admitted opcodes.
+                        admit_opcode(instruction.opcode(), location.clone())?;
+                        for resolved in instruction.resolved_operands() {
+                            admit_resolved_target(
+                                self,
+                                candidate,
+                                resolved.target(),
+                                &mut admitted_symbols,
+                                location.clone(),
+                            )?;
+                        }
                     }
                 }
             }
@@ -66,7 +79,9 @@ impl DeploymentLinker<'_> {
                 return rejected(Phase1LinkedCapability::Generic, function_location);
             }
             let frame = function.frame();
-            if frame.stream_result_type_ref().is_some() {
+            if frame.stream_result_type_ref().is_some()
+                && !self.function_is_server_stream_root(candidate, function.index())
+            {
                 return rejected(Phase1LinkedCapability::Stream, function_location);
             }
             if frame
@@ -76,13 +91,24 @@ impl DeploymentLinker<'_> {
             {
                 return rejected(Phase1LinkedCapability::InOut, function_location);
             }
-            for plan in frame
-                .slot_plans()
-                .iter()
-                .chain(frame.result_plans())
-                .chain(frame.parameters().iter().map(|parameter| parameter.plan()))
-            {
-                admit_transfer_plan(plan, function_location.clone())?;
+            for (ty, plan) in frame.slot_types().iter().zip(frame.slot_plans()) {
+                admit_transfer_plan(candidate, *ty, plan, function_location.clone())?;
+            }
+            for (ty, plan) in frame.result_types().iter().zip(frame.result_plans()) {
+                admit_transfer_plan(candidate, *ty, plan, function_location.clone())?;
+            }
+            for parameter in frame.parameters() {
+                let ty = frame
+                    .slot_types()
+                    .get(parameter.slot().get() as usize)
+                    .copied()
+                    .ok_or_else(|| {
+                        rejected_error(
+                            Phase1LinkedCapability::ValueShape,
+                            function_location.clone(),
+                        )
+                    })?;
+                admit_transfer_plan(candidate, ty, parameter.plan(), function_location.clone())?;
             }
             for ty in frame.slot_types().iter().chain(frame.result_types()) {
                 admit_type_index(
@@ -153,6 +179,7 @@ impl DeploymentLinker<'_> {
                 function.declarative_effect_summary(),
                 function_location,
                 function_reaches_typed_host_effect(candidate, function.index()),
+                function_reaches_stream_effect(candidate, function.index()),
             )?;
         }
 
@@ -165,6 +192,7 @@ impl DeploymentLinker<'_> {
                 candidate,
                 entry.signature(),
                 function_reaches_typed_host_effect(candidate, entry.function()),
+                function_reaches_stream_effect(candidate, entry.function()),
                 &mut admitted_symbols,
                 BytecodeLinkLocation::OperationEntry {
                     deployment: Box::new(self.deployment.reference().clone()),
@@ -179,6 +207,7 @@ impl DeploymentLinker<'_> {
                     candidate,
                     callable.signature(),
                     function_reaches_typed_host_effect(candidate, callable.function()),
+                    function_reaches_stream_effect(candidate, callable.function()),
                     &mut admitted_symbols,
                     BytecodeLinkLocation::GatewayEntry {
                         deployment: Box::new(self.deployment.reference().clone()),
@@ -208,8 +237,18 @@ impl DeploymentLinker<'_> {
             let Some(operation) = contract.operations.get(entry.contract_operation_id()) else {
                 return rejected(Phase1LinkedCapability::ServiceTarget, location);
             };
-            if !matches!(&operation.contract.stream, BoundaryStreamContract::Unary) {
-                return rejected(Phase1LinkedCapability::Stream, location);
+            match &operation.contract.stream {
+                BoundaryStreamContract::Unary
+                    if !function_has_stream_result(candidate, entry.function()) => {}
+                BoundaryStreamContract::Unary => {
+                    return rejected(Phase1LinkedCapability::Stream, location);
+                }
+                BoundaryStreamContract::ServerStream { .. }
+                    if self.function_is_server_stream_root(candidate, entry.function()) => {}
+                BoundaryStreamContract::ServerStream { .. }
+                | BoundaryStreamContract::Unsupported { .. } => {
+                    return rejected(Phase1LinkedCapability::Stream, location);
+                }
             }
             if !matches!(
                 &operation.contract.callbacks,
@@ -226,7 +265,17 @@ impl DeploymentLinker<'_> {
             };
             match &entry.protocol_surface().protocol {
                 GatewayProtocolSurface::Http(http)
-                    if http.dispatch_mode == GatewayDispatchMode::Unary => {}
+                    if http.dispatch_mode == GatewayDispatchMode::Unary
+                        && entry.callables().iter().all(|callable| {
+                            !function_has_stream_result(candidate, callable.function())
+                        }) => {}
+                GatewayProtocolSurface::Http(http)
+                    if http.dispatch_mode == GatewayDispatchMode::ServerStream
+                        && entry.callables().iter().any(|callable| {
+                            callable.role() == LinkedGatewayCallableRole::Handler
+                                && self
+                                    .function_is_server_stream_root(candidate, callable.function())
+                        }) => {}
                 GatewayProtocolSurface::Http(_) => {
                     return rejected(Phase1LinkedCapability::Stream, location);
                 }
@@ -251,6 +300,48 @@ impl DeploymentLinker<'_> {
             }
         }
         Ok(())
+    }
+
+    fn function_is_server_stream_root(
+        &self,
+        candidate: &LinkedBytecodeCandidate,
+        function: skiff_runtime_linked_bytecode::FunctionIndex,
+    ) -> bool {
+        let Some(row) = candidate
+            .functions()
+            .get(function.get() as usize)
+            .filter(|row| {
+                row.index() == function && row.frame().stream_result_type_ref().is_some()
+            })
+        else {
+            return false;
+        };
+        let contract = self
+            .deployment
+            .contract_store()
+            .get(&self.deployment.deployment().contract)
+            .expect("hydrated deployment retains its exact validated contract");
+        candidate.operation_entries().iter().any(|entry| {
+            entry.function() == row.index()
+                && contract
+                    .operations
+                    .get(entry.contract_operation_id())
+                    .is_some_and(|operation| {
+                        matches!(
+                            operation.contract.stream,
+                            BoundaryStreamContract::ServerStream { .. }
+                        )
+                    })
+        }) || candidate.gateway_entries().iter().any(|entry| {
+            matches!(
+                &entry.protocol_surface().protocol,
+                GatewayProtocolSurface::Http(http)
+                    if http.dispatch_mode == GatewayDispatchMode::ServerStream
+            ) && entry.callables().iter().any(|callable| {
+                callable.role() == LinkedGatewayCallableRole::Handler
+                    && callable.function() == row.index()
+            })
+        })
     }
 
     fn admit_global_tables(
@@ -300,6 +391,13 @@ impl DeploymentLinker<'_> {
                 if discriminator_nodes.is_empty() {
                     return rejected(Phase1LinkedCapability::ValueShape, location);
                 }
+                continue;
+            }
+            if candidate.functions().iter().any(|function| {
+                self.function_is_server_stream_root(candidate, function.index())
+                    && function.frame().stream_result_type_ref() == Some(ty.index())
+            }) {
+                admit_server_stream_type(self, ty.type_ref(), admitted_symbols, location.clone())?;
                 continue;
             }
             admit_type(
@@ -355,6 +453,104 @@ fn admit_typed_host_call(
         );
     }
     Ok(())
+}
+
+fn function_has_stream_result(
+    candidate: &LinkedBytecodeCandidate,
+    function: skiff_runtime_linked_bytecode::FunctionIndex,
+) -> bool {
+    candidate
+        .functions()
+        .get(function.get() as usize)
+        .filter(|row| row.index() == function)
+        .is_some_and(|row| row.frame().stream_result_type_ref().is_some())
+}
+
+fn admit_stream_instruction(
+    server_stream_root: bool,
+    candidate: &LinkedBytecodeCandidate,
+    function: &skiff_runtime_linked_bytecode::LinkedFunction,
+    instruction: &LinkedInstruction,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let resume = instruction
+        .resolved_operands()
+        .iter()
+        .find_map(|operand| match operand.target() {
+            LinkedInstructionTarget::ResumeSite(index) => candidate
+                .resume_sites()
+                .get(index.get() as usize)
+                .filter(|row| row.index() == index),
+            _ => None,
+        })
+        .filter(|row| {
+            row.function() == function.index()
+                && function
+                    .instructions()
+                    .get(row.site().get() as usize)
+                    .is_some_and(|site| std::ptr::eq(site, instruction))
+        })
+        .ok_or_else(|| rejected_error(Phase1LinkedCapability::Stream, location.clone()))?;
+
+    match instruction.opcode() {
+        Opcode::StreamNext => {
+            let slot = instruction
+                .resolved_operands()
+                .iter()
+                .find_map(|operand| match operand.target() {
+                    LinkedInstructionTarget::FrameSlot(slot) => Some(slot),
+                    _ => None,
+                })
+                .ok_or_else(|| rejected_error(Phase1LinkedCapability::Stream, location.clone()))?;
+            let (ty, plan) = function
+                .frame()
+                .slot_types()
+                .get(slot.get() as usize)
+                .copied()
+                .zip(function.frame().slot_plans().get(slot.get() as usize))
+                .ok_or_else(|| rejected_error(Phase1LinkedCapability::Stream, location.clone()))?;
+            let exact_type = candidate
+                .types()
+                .get(ty.get() as usize)
+                .filter(|row| row.index() == ty)
+                .is_some_and(|row| is_exact_http_body_stream(row.type_ref()));
+            if !exact_type
+                || !matches!(
+                    plan,
+                    LinkedValueTransferPlan::AffineResource {
+                        drop: skiff_runtime_linked_bytecode::LinkedResourceDropPlan::ResourceTableRelease,
+                    }
+                )
+                || resume.end_resume().is_none()
+                || resume.result_types().len() != 1
+            {
+                return rejected(Phase1LinkedCapability::Stream, location);
+            }
+            Ok(())
+        }
+        Opcode::EmitStream => {
+            let exact_stream = function
+                .frame()
+                .stream_result_type_ref()
+                .and_then(|ty| candidate.types().get(ty.get() as usize))
+                .is_some_and(|row| {
+                    matches!(
+                        row.type_ref(),
+                        TypeRefIr::Builtin { name, args }
+                            if name == "Stream" && args.len() == 1
+                    )
+                });
+            if !server_stream_root
+                || !exact_stream
+                || resume.end_resume().is_some()
+                || !resume.result_types().is_empty()
+            {
+                return rejected(Phase1LinkedCapability::Stream, location);
+            }
+            Ok(())
+        }
+        _ => rejected(Phase1LinkedCapability::Stream, location),
+    }
 }
 
 /// Exhaustive closed-set admission. A future registry identity cannot become
@@ -450,7 +646,7 @@ fn admit_constant(
             location.clone(),
         )?;
     }
-    admit_transfer_plan(constant.plan(), location)
+    admit_transfer_plan(candidate, constant.ty(), constant.plan(), location)
 }
 
 /// The set of constant indexes cited by at least one `Const` instruction.
@@ -523,6 +719,7 @@ fn admit_opcode(opcode: Opcode, location: BytecodeLinkLocation) -> Result<(), By
             | Opcode::GreaterOrEqual
             | Opcode::NewRecord
             | Opcode::GetDenseField
+            | Opcode::TakeDenseField
             | Opcode::SetWritablePath
             | Opcode::NewArrayBuilder
             | Opcode::ArrayBuilderPush
@@ -654,7 +851,7 @@ fn admit_constant_reference(
             location.clone(),
         )?;
     }
-    admit_transfer_plan(constant.plan(), location.clone())?;
+    admit_transfer_plan(candidate, constant.ty(), constant.plan(), location.clone())?;
     match node.value() {
         LinkedFrozenConstantValue::Literal(value)
             if immediate_literal(value) || matches!(value, LiteralIr::String { .. }) =>
@@ -683,15 +880,59 @@ fn is_discriminator_string_constant(
 }
 
 fn admit_transfer_plan(
+    candidate: &LinkedBytecodeCandidate,
+    ty: TypeIndex,
     plan: &LinkedValueTransferPlan,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
+    let type_row = candidate
+        .types()
+        .get(ty.get() as usize)
+        .filter(|row| row.index() == ty)
+        .ok_or_else(|| rejected_error(Phase1LinkedCapability::ValueShape, location.clone()))?;
+    if ordinary_snapshot_plan(plan) {
+        return Ok(());
+    }
     match plan {
-        LinkedValueTransferPlan::SnapshotShare {
-            drop: LinkedValueDropPlan::Trivial | LinkedValueDropPlan::SnapshotRelease,
-        } => Ok(()),
+        LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape { shape },
+        } if candidate
+            .shapes()
+            .get(shape.get() as usize)
+            .filter(|row| row.index() == *shape && row.nominal_type() == ty)
+            .is_some_and(|row| {
+                matches!(
+                    row.privileged_affine_composite(),
+                    Some(
+                        skiff_artifact_model::PrivilegedAffineCompositeIdentity::HttpClientStreamHandle
+                    )
+                )
+            }) => Ok(()),
+        LinkedValueTransferPlan::AffineResource {
+            drop: skiff_runtime_linked_bytecode::LinkedResourceDropPlan::ResourceTableRelease,
+        } if is_exact_http_body_stream(type_row.type_ref())
+            && candidate.shapes().iter().any(|shape| {
+                matches!(
+                    shape.privileged_affine_composite(),
+                    Some(
+                        skiff_artifact_model::PrivilegedAffineCompositeIdentity::HttpClientStreamHandle
+                    )
+                ) && shape.fields().first().is_some_and(|field| {
+                    field.name() == "body" && field.ty() == ty && field.plan() == plan
+                })
+            })
+        => Ok(()),
         _ => rejected(Phase1LinkedCapability::Resource, location),
     }
+}
+
+fn ordinary_snapshot_plan(plan: &LinkedValueTransferPlan) -> bool {
+    matches!(
+        plan,
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial | LinkedValueDropPlan::SnapshotRelease,
+        }
+    )
 }
 
 fn admit_signature(
@@ -699,6 +940,7 @@ fn admit_signature(
     candidate: &LinkedBytecodeCandidate,
     signature: &LinkedCallableSignature,
     allow_typed_pending: bool,
+    allow_stream_pending: bool,
     admitted_symbols: &mut BTreeSet<String>,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
@@ -723,14 +965,25 @@ fn admit_signature(
             location.clone(),
         )?;
     }
-    for plan in signature
-        .parameter_plans()
+    for (ty, plan) in signature
+        .parameter_types()
         .iter()
-        .chain(signature.result_plans())
+        .zip(signature.parameter_plans())
+        .chain(
+            signature
+                .result_types()
+                .iter()
+                .zip(signature.result_plans()),
+        )
     {
-        admit_transfer_plan(plan, location.clone())?;
+        admit_transfer_plan(candidate, *ty, plan, location.clone())?;
     }
-    admit_effect_summary(signature.effect_summary(), location, allow_typed_pending)
+    admit_effect_summary(
+        signature.effect_summary(),
+        location,
+        allow_typed_pending,
+        allow_stream_pending,
+    )
 }
 
 fn function_reaches_typed_host_effect(
@@ -774,10 +1027,47 @@ fn function_reaches_typed_host_effect(
     visit(candidate, function, &mut BTreeSet::new())
 }
 
+fn function_reaches_stream_effect(
+    candidate: &LinkedBytecodeCandidate,
+    function: skiff_runtime_linked_bytecode::FunctionIndex,
+) -> bool {
+    fn visit(
+        candidate: &LinkedBytecodeCandidate,
+        function: skiff_runtime_linked_bytecode::FunctionIndex,
+        visited: &mut BTreeSet<skiff_runtime_linked_bytecode::FunctionIndex>,
+    ) -> bool {
+        if !visited.insert(function) {
+            return false;
+        }
+        let Some(function) = candidate
+            .functions()
+            .get(function.get() as usize)
+            .filter(|row| row.index() == function)
+        else {
+            return false;
+        };
+        function.instructions().iter().any(|instruction| {
+            matches!(
+                instruction.opcode(),
+                Opcode::StreamNext | Opcode::EmitStream
+            ) || instruction
+                .resolved_operands()
+                .iter()
+                .any(|resolved| match resolved.target() {
+                    LinkedInstructionTarget::Function(index) => visit(candidate, index, visited),
+                    _ => false,
+                })
+        })
+    }
+
+    visit(candidate, function, &mut BTreeSet::new())
+}
+
 fn admit_effect_summary(
     summary: &CallableEffectSummary,
     location: BytecodeLinkLocation,
     allow_typed_pending: bool,
+    allow_stream_pending: bool,
 ) -> Result<(), BytecodeLinkError> {
     let effects = match summary {
         CallableEffectSummary::Unknown { .. } => {
@@ -787,15 +1077,21 @@ fn admit_effect_summary(
     };
     // Pending authority must be reachable from this exact function through a
     // typed host target; unrelated candidate rows cannot authorize it.
-    let typed_pending = allow_typed_pending
-        && effects.may_pending
+    let typed_pending = effects.may_pending
         && !effects.pending_effect_categories.is_empty()
-        && effects.pending_effect_categories.iter().all(|category| {
-            matches!(
-                category,
-                PendingEffectCategory::NativeCall | PendingEffectCategory::HostEffect
-            )
-        });
+        && effects
+            .pending_effect_categories
+            .iter()
+            .all(|category| match category {
+                PendingEffectCategory::NativeCall | PendingEffectCategory::HostEffect => {
+                    allow_typed_pending
+                }
+                PendingEffectCategory::Stream => allow_stream_pending,
+                PendingEffectCategory::ServiceCall
+                | PendingEffectCategory::ActorCall
+                | PendingEffectCategory::InterfaceCall
+                | PendingEffectCategory::Unknown => false,
+            });
     if (effects.may_pending || !effects.pending_effect_categories.is_empty()) && !typed_pending {
         return rejected(
             Phase1LinkedCapability::PendingEffect(
@@ -836,7 +1132,7 @@ fn admit_stack_value(
         admitted_symbols,
         location.clone(),
     )?;
-    admit_transfer_plan(plan, location)
+    admit_transfer_plan(candidate, ty, plan, location)
 }
 
 /// Admits one transient operand-stack value. This is the only position where
@@ -868,7 +1164,7 @@ fn admit_transient_stack_value(
             location.clone(),
         )?;
     }
-    admit_transfer_plan(plan, location)
+    admit_transfer_plan(candidate, ty, plan, location)
 }
 
 fn admit_type_index(
@@ -891,6 +1187,24 @@ fn admit_type_index(
     )
 }
 
+fn admit_server_stream_type(
+    linker: &DeploymentLinker<'_>,
+    ty: &TypeRefIr,
+    admitted_symbols: &mut BTreeSet<String>,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let TypeRefIr::Builtin { name, args } = ty else {
+        return rejected(Phase1LinkedCapability::Stream, location);
+    };
+    let [item] = args.as_slice() else {
+        return rejected(Phase1LinkedCapability::Stream, location);
+    };
+    if name != "Stream" {
+        return rejected(Phase1LinkedCapability::Stream, location);
+    }
+    admit_type(linker, item, false, admitted_symbols, location)
+}
+
 fn admit_type(
     linker: &DeploymentLinker<'_>,
     ty: &TypeRefIr,
@@ -907,6 +1221,16 @@ fn admit_type(
         }
         TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => {
             admit_type(linker, &args[0], false, admitted_symbols, location.clone())?;
+            return Ok(());
+        }
+        TypeRefIr::Builtin { name, args }
+            if name == "Stream"
+                && matches!(
+                    args.as_slice(),
+                    [TypeRefIr::Builtin { name, args }]
+                        if name == "bytes" && args.is_empty()
+                ) =>
+        {
             return Ok(());
         }
         TypeRefIr::Union { items } => {
@@ -975,6 +1299,19 @@ fn is_string_type(ty: &TypeRefIr) -> bool {
     )
 }
 
+fn is_exact_http_body_stream(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args }
+            if name == "Stream"
+                && matches!(
+                    args.as_slice(),
+                    [TypeRefIr::Builtin { name, args }]
+                        if name == "bytes" && args.is_empty()
+                )
+    )
+}
+
 /// Linker-free admission for the immediate leaf shapes. Anonymous record and
 /// array recursion is handled by [`admit_type`] so nested package nominals can
 /// be resolved; every other shape is rejected at this single boundary.
@@ -986,8 +1323,10 @@ fn admit_structural_leaf(
     match ty {
         TypeRefIr::Builtin { name, args }
             if args.is_empty()
-                && (matches!(name.as_str(), "integer" | "number" | "bool" | "null")
-                    || (allow_void && name == "void")) =>
+                && (matches!(
+                    name.as_str(),
+                    "integer" | "number" | "bool" | "null" | "bytes"
+                ) || (allow_void && name == "void")) =>
         {
             Ok(())
         }
@@ -1120,10 +1459,17 @@ fn rejected<T>(
     capability: Phase1LinkedCapability,
     location: BytecodeLinkLocation,
 ) -> Result<T, BytecodeLinkError> {
-    Err(BytecodeLinkError::UnsupportedPhase1Capability {
+    Err(rejected_error(capability, location))
+}
+
+fn rejected_error(
+    capability: Phase1LinkedCapability,
+    location: BytecodeLinkLocation,
+) -> BytecodeLinkError {
+    BytecodeLinkError::UnsupportedPhase1Capability {
         capability,
         location,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -1148,8 +1494,8 @@ mod tests {
     };
 
     use super::{
-        admit_opcode, admit_structural_leaf, admit_transfer_plan, admit_typed_host_call,
-        is_discriminator_string_constant, is_string_type,
+        admit_opcode, admit_structural_leaf, admit_typed_host_call,
+        is_discriminator_string_constant, is_string_type, ordinary_snapshot_plan,
     };
     use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, Phase1LinkedCapability};
 
@@ -1283,31 +1629,20 @@ mod tests {
 
     #[test]
     fn capability_admission_admits_exact_snapshot_plans_only() {
-        assert!(admit_transfer_plan(
+        assert!(ordinary_snapshot_plan(
             &LinkedValueTransferPlan::SnapshotShare {
                 drop: LinkedValueDropPlan::Trivial,
             },
-            location(),
-        )
-        .is_ok());
-        assert!(admit_transfer_plan(
+        ));
+        assert!(ordinary_snapshot_plan(
             &LinkedValueTransferPlan::SnapshotShare {
                 drop: LinkedValueDropPlan::SnapshotRelease,
             },
-            location(),
-        )
-        .is_ok());
-        assert!(matches!(
-            admit_transfer_plan(
-                &LinkedValueTransferPlan::MoveOnly {
-                    drop: LinkedValueDropPlan::SnapshotRelease,
-                },
-                location(),
-            ),
-            Err(BytecodeLinkError::UnsupportedPhase1Capability {
-                capability: Phase1LinkedCapability::Resource,
-                ..
-            })
+        ));
+        assert!(!ordinary_snapshot_plan(
+            &LinkedValueTransferPlan::MoveOnly {
+                drop: LinkedValueDropPlan::SnapshotRelease,
+            },
         ));
     }
 
@@ -1394,7 +1729,7 @@ mod tests {
             BytecodeArtifactRef::new("test-identity"),
             "test-identity",
             "magic",
-            "schema-v7",
+            "schema-v8",
             "isa-v1",
             opcode_table_fingerprint(),
             LinkedBytecodeAuthorityPins::new(

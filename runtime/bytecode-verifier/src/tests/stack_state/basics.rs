@@ -9,7 +9,7 @@ use super::{
 use crate::{
     tests::fixtures::stack_state::{
         constant_fixture, fixture, plain, rich_fixture, rich_shape_decl, slot_instruction,
-        stream_of_string, two_slot_instruction, FunctionSpec,
+        stream_of_bytes, two_slot_instruction, FunctionSpec,
     },
     VerificationError, VerificationLocation, VerificationObligation,
 };
@@ -263,27 +263,47 @@ fn canonical_slot_and_stack_operations_share_one_transfer_engine() {
 }
 
 #[test]
-fn ordinary_stream_result_return_is_not_treated_as_producer() {
+fn request_local_stream_cannot_become_an_ordinary_function_result() {
     let fixture = fixture(
-        vec![stream_of_string()],
+        vec![stream_of_bytes()],
         spec(
             vec![0],
-            vec![(0, ParamModeIr::Value)],
+            Vec::new(),
             vec![0],
             vec![slot_instruction(Opcode::TakeSlot, 0), plain(Opcode::Return)],
             1,
         )
-        .with_hints(vec![hint(&[], &[live(0)]), hint(&[0], &[moved()])]),
+        .with_hints(vec![hint(&[], &[uninitialized()]), hint(&[0], &[moved()])]),
     );
-    prove(&fixture)
-        .expect("an ordinary Stream<T> return is a normal result, not a producer authority");
+    let error = prove(&fixture).expect_err("request-local Stream<T> is not a public result");
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ValueTransferAndDrop,
+            location: VerificationLocation::Function { .. },
+            detail,
+        } if detail.contains("frame result ordinal 0")
+            && detail.contains("not an Ordinary value placement")
+    ));
 }
 
 #[test]
 fn isolated_const_lifecycle_gate_accepts_string_and_rejects_stream() {
     prove(&constant_fixture(TypeRefIr::builtin("string")))
         .expect("assumed-bound Ordinary SnapshotShare constant is materializable");
-    assert_instruction_violation(prove(&constant_fixture(stream_of_string())).unwrap_err(), 0);
+    let error = prove(&constant_fixture(stream_of_bytes()))
+        .expect_err("Forbidden Stream<T> cannot acquire frozen constant placement");
+    assert!(matches!(
+        error,
+        VerificationError::SemanticViolation {
+            obligation: VerificationObligation::ValueTransferAndDrop,
+            location: VerificationLocation::Table {
+                table: skiff_runtime_linked_bytecode::CandidateTable::Constants,
+                row: 0,
+            },
+            detail,
+        } if detail.contains("not an Ordinary value placement")
+    ));
 }
 
 #[test]
@@ -340,7 +360,7 @@ fn slot_write_requires_the_exact_semantic_class() {
 #[test]
 fn copy_of_non_shareable_value_is_rejected() {
     let fixture = fixture(
-        vec![stream_of_string()],
+        vec![stream_of_bytes()],
         spec(
             vec![0, 0],
             vec![(0, ParamModeIr::Value)],

@@ -1,0 +1,8 @@
+consume:
+  method: POST
+  path: /phase-5/linker
+  kind: typedJson
+  handler: main.consume
+  adapterArgs:
+    - param: input
+      source: { kind: http.body }

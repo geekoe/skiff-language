@@ -349,6 +349,7 @@ fn array_candidate(element_plan: LinkedValueTransferPlan, include_shape: bool) -
     let source_shapes = if include_shape {
         vec![ShapeDeclaration {
             type_ref: 0,
+            privileged_affine_composite: None,
             fields: Vec::new(),
         }]
     } else {
@@ -378,6 +379,7 @@ fn array_candidate(element_plan: LinkedValueTransferPlan, include_shape: bool) -
             )
             .unwrap(),
             TypeIndex::new(0),
+            None,
             Vec::new().into_boxed_slice(),
         )
         .unwrap()]

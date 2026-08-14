@@ -226,6 +226,7 @@ fn prove_instruction(
         | Opcode::Trap
         | Opcode::NewRecord
         | Opcode::GetDenseField
+        | Opcode::TakeDenseField
         | Opcode::SetWritablePath
         | Opcode::RepresentationWrap
         | Opcode::NewArrayBuilder

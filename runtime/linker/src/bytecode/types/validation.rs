@@ -1,23 +1,337 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    classify_value_lifecycle, native_value_lifecycle_registry, ContractTypeRef,
-    InterfaceInstantiationRef, LiteralIr, NativeResourceDropPlan, NativeValueAdapterRole,
-    NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete, PackageLocalAbiSymbol,
-    PackageRefIr, PackageSchemaTypeRecord, PositionalTypeEnvironment, ResolvedPackageValueType,
+    classify_value_lifecycle, native_value_lifecycle_registry, BytecodePoolEntry,
+    CallableRegistryTypeExpression, ContractTypeRef, InterfaceInstantiationRef, LiteralIr,
+    NativeResourceDropPlan, NativeValueAdapterRole, NativeValueDropPlan, NativeValueEmbedding,
+    NativeValueLifecycleConcrete, PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeRecord,
+    PositionalTypeEnvironment, PrivilegedAffineCompositeIdentity, ResolvedPackageValueType,
     ResourceDropPlan, TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueLifecycleFactResolver,
     ValueLifecyclePolicyBudget, ValueLifecycleResolverError, ValueTransferPlan,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
+    LinkedResourceDropPlan, LinkedShapeField, LinkedValueDropPlan, LinkedValueTransferPlan,
+    ShapeIndex, SpecializationKey,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
 use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation};
 
-use super::{interner::TypeLinker, normalize_type};
+use super::{interner::TypeLinker, normalize_type, substitution::substitute_type};
 
 impl TypeLinker<'_> {
+    /// Eliminates a plan expression owned by a fingerprinted callable
+    /// registry row. Ordinary `FromType` remains unavailable everywhere else;
+    /// the registry row is the authority for this exact signature position.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::bytecode) fn link_registry_plan_for_type_at(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        substitutions: &BTreeMap<String, TypeRefIr>,
+        declared: &ValueTransferPlan,
+        concrete_type: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
+        let ValueTransferPlan::FromType { ty } = declared else {
+            return self.link_plan_for_type_at(
+                package,
+                specialization,
+                substitutions,
+                declared,
+                concrete_type,
+                location,
+            );
+        };
+        let declared_type = substitute_type(ty, substitutions, &location)?;
+        let declared_type = normalize_type(self.deployment(), package, &declared_type, &location)?;
+        if declared_type != *concrete_type {
+            return Err(obligation_error(
+                BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location,
+                "registry FromType plan does not name its exact normalized signature type"
+                    .to_string(),
+            ));
+        }
+        self.plan_for_concrete_type_at(
+            package,
+            specialization,
+            substitutions,
+            concrete_type,
+            location,
+        )
+    }
+
+    /// Links a lifecycle plan at an exact artifact position. Recursive shape
+    /// references are never accepted without the current package and
+    /// specialization, so a linked `ShapeIndex` cannot be manufactured from a
+    /// type name or a registry lifecycle alone.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::bytecode) fn link_plan_for_type_at(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        substitutions: &BTreeMap<String, TypeRefIr>,
+        declared: &ValueTransferPlan,
+        concrete_type: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
+        match declared {
+            ValueTransferPlan::FromType { ty } => {
+                if privileged_identity_for_type(concrete_type).is_none() {
+                    return Err(BytecodeLinkError::ImplementationUnavailable {
+                        obligation: BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location,
+                    });
+                }
+                let declared_type = substitute_type(ty, substitutions, &location)?;
+                let declared_type =
+                    normalize_type(self.deployment(), package, &declared_type, &location)?;
+                if declared_type != *concrete_type {
+                    return Err(obligation_error(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location,
+                        "FromType plan does not name its exact normalized placement type"
+                            .to_string(),
+                    ));
+                }
+                self.plan_for_concrete_type_at(
+                    package,
+                    specialization,
+                    substitutions,
+                    concrete_type,
+                    location,
+                )
+            }
+            ValueTransferPlan::MoveOnly {
+                drop: ValueDropPlan::RecursiveShape { shape_ref },
+            } => {
+                let shape = self.intern_pool_shape(
+                    package,
+                    specialization,
+                    *shape_ref,
+                    substitutions,
+                    location.clone(),
+                )?;
+                self.require_privileged_root_shape(shape, concrete_type, location)?;
+                Ok(LinkedValueTransferPlan::MoveOnly {
+                    drop: LinkedValueDropPlan::RecursiveShape { shape },
+                })
+            }
+            concrete => self.link_transfer_plan(concrete, substitutions, location),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::bytecode) fn plan_for_concrete_type_at(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        substitutions: &BTreeMap<String, TypeRefIr>,
+        ty: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
+        let Some(identity) = privileged_identity_for_type(ty) else {
+            return self.plan_for_concrete_type(ty, location);
+        };
+        let shape = self.find_exact_privileged_shape(
+            package,
+            specialization,
+            substitutions,
+            identity,
+            ty,
+            location.clone(),
+        )?;
+        self.require_privileged_root_shape(shape, ty, location)?;
+        Ok(LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape { shape },
+        })
+    }
+
+    fn find_exact_privileged_shape(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        substitutions: &BTreeMap<String, TypeRefIr>,
+        identity: PrivilegedAffineCompositeIdentity,
+        concrete_type: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<ShapeIndex, BytecodeLinkError> {
+        let bytecode = package.bytecode().ok_or_else(|| {
+            obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                "privileged affine value owner has no admitted bytecode shape pool".to_string(),
+            )
+        })?;
+        let matches = bytecode
+            .view()
+            .pools()
+            .shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| match entry {
+                BytecodePoolEntry::ShapeRef { shape }
+                    if shape.privileged_affine_composite == Some(identity) =>
+                {
+                    u32::try_from(index).ok()
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [artifact_shape] = matches.as_slice() else {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                format!(
+                    "privileged affine identity {identity:?} requires exactly one explicit admitted shape, found {}",
+                    matches.len()
+                ),
+            ));
+        };
+        let shape = self.intern_pool_shape(
+            package,
+            specialization,
+            *artifact_shape,
+            substitutions,
+            location.clone(),
+        )?;
+        self.require_privileged_root_shape(shape, concrete_type, location)?;
+        Ok(shape)
+    }
+
+    pub(in crate::bytecode) fn validate_privileged_shape_authority(
+        &self,
+        identity: Option<PrivilegedAffineCompositeIdentity>,
+        nominal_type: skiff_runtime_linked_bytecode::TypeIndex,
+        fields: &[LinkedShapeField],
+        location: BytecodeLinkLocation,
+    ) -> Result<(), BytecodeLinkError> {
+        let nominal = self.linked_type_ref(nominal_type).ok_or_else(|| {
+            obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                "linked privileged shape nominal type is absent".to_string(),
+            )
+        })?;
+        let registry = native_value_lifecycle_registry();
+        let symbol_schema = match nominal {
+            TypeRefIr::PackageSymbol { symbol } => {
+                registry.privileged_affine_composite_for_symbol(symbol)
+            }
+            _ => None,
+        };
+        let Some(identity) = identity else {
+            if symbol_schema.is_some() {
+                return Err(obligation_error(
+                    BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                    location,
+                    "privileged affine nominal type lacks explicit linked shape authority"
+                        .to_string(),
+                ));
+            }
+            return Ok(());
+        };
+        let schema = registry
+            .privileged_affine_composite(identity)
+            .ok_or_else(|| {
+                obligation_error(
+                    BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                    location.clone(),
+                    format!("linked privileged affine identity {identity:?} is not pinned"),
+                )
+            })?;
+        if symbol_schema.map(|row| row.identity) != Some(identity) {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                "linked privileged affine identity does not match its exact nominal symbol"
+                    .to_string(),
+            ));
+        }
+        let lifecycle = registry.lookup(nominal).map_err(|error| {
+            obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                format!("privileged affine nominal lifecycle is not exact: {error}"),
+            )
+        })?;
+        if lifecycle.lifecycle != schema.lifecycle || lifecycle.embedding != schema.embedding {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                "privileged affine root lifecycle differs from the pinned schema".to_string(),
+            ));
+        }
+        if fields.len() != schema.fields.len() {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "privileged affine linked field count differs from the pinned schema".to_string(),
+            ));
+        }
+        for (ordinal, (field, expected)) in fields.iter().zip(&schema.fields).enumerate() {
+            let actual_type = self.linked_type_ref(field.ty()).ok_or_else(|| {
+                obligation_error(
+                    BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                    location.clone(),
+                    format!("privileged affine field {ordinal} type is absent"),
+                )
+            })?;
+            let expected_plan =
+                bridge_nonrecursive_lifecycle(&expected.lifecycle).ok_or_else(|| {
+                    obligation_error(
+                        BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                        location.clone(),
+                        format!("privileged affine field {ordinal} has a recursive registry plan"),
+                    )
+                })?;
+            if field.name() != expected.name
+                || !matches_registry_type(&expected.ty, actual_type)
+                || field.plan() != &expected_plan
+            {
+                return Err(obligation_error(
+                    BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                    location.clone(),
+                    format!(
+                        "privileged affine linked field {ordinal} differs from its exact pinned name/type/lifecycle"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn require_privileged_root_shape(
+        &self,
+        shape: ShapeIndex,
+        concrete_type: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<(), BytecodeLinkError> {
+        let row = self.shape(shape).ok_or_else(|| {
+            obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                format!("privileged affine shape {} is absent", shape.get()),
+            )
+        })?;
+        let nominal = self.linked_type_ref(row.nominal_type()).ok_or_else(|| {
+            obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                "privileged affine shape nominal type is absent".to_string(),
+            )
+        })?;
+        if nominal != concrete_type || row.privileged_affine_composite().is_none() {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "recursive root plan does not bind the exact privileged nominal shape".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(in crate::bytecode) fn link_transfer_plan(
         &self,
         plan: &ValueTransferPlan,
@@ -58,20 +372,6 @@ impl TypeLinker<'_> {
         }
     }
 
-    pub(in crate::bytecode) fn link_plan_for_type(
-        &self,
-        declared: &ValueTransferPlan,
-        concrete_type: &TypeRefIr,
-        location: BytecodeLinkLocation,
-    ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
-        match declared {
-            ValueTransferPlan::FromType { .. } => {
-                self.plan_for_concrete_type(concrete_type, location)
-            }
-            concrete => self.link_transfer_plan(concrete, &BTreeMap::new(), location),
-        }
-    }
-
     pub(in crate::bytecode) fn plan_for_concrete_type(
         &self,
         ty: &TypeRefIr,
@@ -89,22 +389,15 @@ impl TypeLinker<'_> {
                     .map_err(|error| {
                         obligation_error(
                             BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                            location,
+                            location.clone(),
                             format!("concrete literal has no authoritative lifecycle: {error}"),
                         )
                     })?;
-                Ok(link_native_lifecycle(resolution.lifecycle))
+                link_native_lifecycle(resolution.lifecycle, location)
             }
             TypeRefIr::PackageSymbol { symbol } if symbol.symbol_path == "std.time.Duration" => {
                 Ok(LinkedValueTransferPlan::SnapshotShare {
                     drop: LinkedValueDropPlan::Trivial,
-                })
-            }
-            TypeRefIr::PackageSymbol { symbol }
-                if symbol.symbol_path == "std.http.HttpClientStreamHandle" =>
-            {
-                Ok(LinkedValueTransferPlan::SnapshotShare {
-                    drop: LinkedValueDropPlan::SnapshotRelease,
                 })
             }
             TypeRefIr::PackageSymbol { symbol } => {
@@ -152,7 +445,7 @@ impl TypeLinker<'_> {
                         error.to_string(),
                     )
                 })?;
-                Ok(link_native_lifecycle(resolution.lifecycle))
+                link_native_lifecycle(resolution.lifecycle, location)
             }
             TypeRefIr::Builtin { name, args }
                 if (name == "Exception" || name == "CatchResult") && !args.is_empty() =>
@@ -180,51 +473,12 @@ impl TypeLinker<'_> {
                     .map_err(|error| {
                         obligation_error(
                             BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                            location,
+                            location.clone(),
                             format!("concrete value has no authoritative lifecycle: {error}"),
                         )
                     })?;
-                Ok(link_native_lifecycle(resolution.lifecycle))
+                link_native_lifecycle(resolution.lifecycle, location)
             }
-        }
-    }
-
-    fn first_package_symbol_package_id(ty: &TypeRefIr) -> Option<&str> {
-        match ty {
-            TypeRefIr::PackageSymbol { symbol } => match &symbol.package {
-                PackageRefIr::PackageId { package_id } => Some(package_id.as_str()),
-                PackageRefIr::Dependency { .. } => None,
-            },
-            TypeRefIr::Builtin { args, .. } => {
-                args.iter().find_map(Self::first_package_symbol_package_id)
-            }
-            TypeRefIr::Nullable { inner } => Self::first_package_symbol_package_id(inner),
-            TypeRefIr::Union { items } => {
-                items.iter().find_map(Self::first_package_symbol_package_id)
-            }
-            TypeRefIr::AppliedNominal { arguments, .. } => arguments
-                .iter()
-                .find_map(Self::first_package_symbol_package_id),
-            TypeRefIr::Record { fields } => fields
-                .values()
-                .find_map(Self::first_package_symbol_package_id),
-            _ => None,
-        }
-    }
-
-    fn first_publication_module(ty: &TypeRefIr) -> Option<&str> {
-        match ty {
-            TypeRefIr::PublicationType { module_path, .. } => Some(module_path.as_str()),
-            TypeRefIr::Builtin { args, .. } => args.iter().find_map(Self::first_publication_module),
-            TypeRefIr::Nullable { inner } => Self::first_publication_module(inner),
-            TypeRefIr::Union { items } => items.iter().find_map(Self::first_publication_module),
-            TypeRefIr::AppliedNominal { arguments, .. } => {
-                arguments.iter().find_map(Self::first_publication_module)
-            }
-            TypeRefIr::Record { fields } => {
-                fields.values().find_map(Self::first_publication_module)
-            }
-            _ => None,
         }
     }
 
@@ -273,7 +527,8 @@ impl TypeLinker<'_> {
                 "frozen constant type is not an Ordinary SnapshotShare value".to_string(),
             ));
         }
-        let expected = link_native_lifecycle(resolution.lifecycle);
+        let expected = link_native_lifecycle(resolution.lifecycle, location.clone())
+            .map_err(|error| constant_plan_error(location.clone(), error.to_string()))?;
         let actual = match declared {
             ValueTransferPlan::FromType { ty } if ty == concrete_type => expected.clone(),
             ValueTransferPlan::FromType { .. } => {
@@ -559,6 +814,97 @@ fn lifecycle_registry_type(ty: &TypeRefIr) -> TypeRefIr {
     }
 }
 
+fn privileged_identity_for_type(ty: &TypeRefIr) -> Option<PrivilegedAffineCompositeIdentity> {
+    let TypeRefIr::PackageSymbol { symbol } = ty else {
+        return None;
+    };
+    native_value_lifecycle_registry()
+        .privileged_affine_composite_for_symbol(symbol)
+        .map(|schema| schema.identity)
+}
+
+fn matches_registry_type(expected: &CallableRegistryTypeExpression, actual: &TypeRefIr) -> bool {
+    match (expected, actual) {
+        (
+            CallableRegistryTypeExpression::Builtin { name, arguments },
+            TypeRefIr::Builtin {
+                name: actual_name,
+                args,
+            },
+        ) => {
+            name == actual_name
+                && arguments.len() == args.len()
+                && arguments
+                    .iter()
+                    .zip(args)
+                    .all(|(expected, actual)| matches_registry_type(expected, actual))
+        }
+        (
+            CallableRegistryTypeExpression::PackageSymbol {
+                package_id,
+                symbol_path,
+            },
+            TypeRefIr::PackageSymbol { symbol },
+        ) => {
+            symbol.symbol_path == *symbol_path
+                && matches!(
+                    &symbol.package,
+                    PackageRefIr::PackageId {
+                        package_id: actual_package_id,
+                    } if actual_package_id == package_id
+                )
+        }
+        _ => false,
+    }
+}
+
+fn bridge_nonrecursive_lifecycle(
+    lifecycle: &NativeValueLifecycleConcrete,
+) -> Option<LinkedValueTransferPlan> {
+    match lifecycle {
+        NativeValueLifecycleConcrete::SnapshotShare { drop } => {
+            Some(LinkedValueTransferPlan::SnapshotShare {
+                drop: match drop {
+                    NativeValueDropPlan::Trivial => LinkedValueDropPlan::Trivial,
+                    NativeValueDropPlan::SnapshotRelease => LinkedValueDropPlan::SnapshotRelease,
+                    NativeValueDropPlan::NativeAdapter { adapter } => {
+                        LinkedValueDropPlan::NativeAdapter {
+                            adapter: adapter.clone(),
+                        }
+                    }
+                    NativeValueDropPlan::PrivilegedRecursiveShape => return None,
+                },
+            })
+        }
+        NativeValueLifecycleConcrete::MoveOnly { drop } => {
+            Some(LinkedValueTransferPlan::MoveOnly {
+                drop: match drop {
+                    NativeValueDropPlan::Trivial => LinkedValueDropPlan::Trivial,
+                    NativeValueDropPlan::SnapshotRelease => LinkedValueDropPlan::SnapshotRelease,
+                    NativeValueDropPlan::NativeAdapter { adapter } => {
+                        LinkedValueDropPlan::NativeAdapter {
+                            adapter: adapter.clone(),
+                        }
+                    }
+                    NativeValueDropPlan::PrivilegedRecursiveShape => return None,
+                },
+            })
+        }
+        NativeValueLifecycleConcrete::AffineResource { drop } => {
+            Some(LinkedValueTransferPlan::AffineResource {
+                drop: link_native_resource_drop(drop.clone()),
+            })
+        }
+        NativeValueLifecycleConcrete::ExplicitCloneLease {
+            clone_adapter,
+            drop,
+        } => Some(LinkedValueTransferPlan::ExplicitCloneLease {
+            clone_adapter: clone_adapter.clone(),
+            drop: link_native_resource_drop(drop.clone()),
+        }),
+    }
+}
+
 fn constant_plan_error(location: BytecodeLinkLocation, detail: String) -> BytecodeLinkError {
     BytecodeLinkError::UnsatisfiedObligation {
         obligation: BytecodeLinkObligation::ConstantInitializationPlan,
@@ -667,39 +1013,17 @@ fn lifecycle_adapter(
         })
 }
 
-fn link_native_lifecycle(lifecycle: NativeValueLifecycleConcrete) -> LinkedValueTransferPlan {
-    match lifecycle {
-        NativeValueLifecycleConcrete::SnapshotShare { drop } => {
-            LinkedValueTransferPlan::SnapshotShare {
-                drop: link_native_value_drop(drop),
-            }
-        }
-        NativeValueLifecycleConcrete::MoveOnly { drop } => LinkedValueTransferPlan::MoveOnly {
-            drop: link_native_value_drop(drop),
-        },
-        NativeValueLifecycleConcrete::AffineResource { drop } => {
-            LinkedValueTransferPlan::AffineResource {
-                drop: link_native_resource_drop(drop),
-            }
-        }
-        NativeValueLifecycleConcrete::ExplicitCloneLease {
-            clone_adapter,
-            drop,
-        } => LinkedValueTransferPlan::ExplicitCloneLease {
-            clone_adapter,
-            drop: link_native_resource_drop(drop),
-        },
-    }
-}
-
-fn link_native_value_drop(drop: NativeValueDropPlan) -> LinkedValueDropPlan {
-    match drop {
-        NativeValueDropPlan::Trivial => LinkedValueDropPlan::Trivial,
-        NativeValueDropPlan::SnapshotRelease => LinkedValueDropPlan::SnapshotRelease,
-        NativeValueDropPlan::NativeAdapter { adapter } => {
-            LinkedValueDropPlan::NativeAdapter { adapter }
-        }
-    }
+fn link_native_lifecycle(
+    lifecycle: NativeValueLifecycleConcrete,
+    location: BytecodeLinkLocation,
+) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
+    bridge_nonrecursive_lifecycle(&lifecycle).ok_or_else(|| {
+        obligation_error(
+            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            location,
+            "privileged recursive lifecycle requires an exact explicit artifact shape".to_string(),
+        )
+    })
 }
 
 fn link_native_resource_drop(drop: NativeResourceDropPlan) -> LinkedResourceDropPlan {

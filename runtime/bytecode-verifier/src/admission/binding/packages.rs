@@ -129,7 +129,7 @@ fn prove_package_header(
         return Err(semantic_violation(
             location,
             format!(
-                "package {} candidate header is not the exact admitted v7 header/reference",
+                "package {} candidate header is not the exact admitted v8 header/reference",
                 package.reference().package_build_id
             ),
         ));

@@ -28,11 +28,11 @@ fn exact_empty_admission_completes_the_vacuous_effect_proof() {
 }
 
 #[test]
-fn current_v7_platform_error_registry_getter_matrix_passes_exact_admission() {
+fn current_v8_platform_error_registry_getter_matrix_passes_exact_admission() {
     let hydrated = exact_hydration();
     let candidate = candidate_for(&hydrated, None);
     let current = current_platform_error_projection_registry_ref();
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v7");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v8");
     {
         let candidate_package = &candidate.packages()[0];
         let hydrated_package = hydrated.packages().values().next().unwrap();
@@ -73,7 +73,7 @@ fn current_v7_platform_error_registry_getter_matrix_passes_exact_admission() {
     }
 
     verify_facts(hydrated, candidate, &generous_limits())
-        .expect("the current v7 registry authority matrix must verify exactly");
+        .expect("the current v8 registry authority matrix must verify exactly");
 }
 
 #[test]

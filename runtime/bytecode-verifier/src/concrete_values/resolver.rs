@@ -7,16 +7,17 @@ use std::collections::BTreeSet;
 use skiff_artifact_model::{
     BytecodePoolEntry, ContractTypeDescriptor, ContractTypeRef, InterfaceInstantiationRef,
     PackageBuildId, PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSymbolRef,
-    ResolvedPackageValueType, TypeDescriptorIr, TypeRefIr, ValidatedFunction,
+    ResolvedPackageValueType, ShapeDeclaration, TypeDescriptorIr, TypeRefIr, ValidatedFunction,
     ValueLifecycleFactResolver, ValueLifecycleResolverError, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_runtime_linked_bytecode::{
-    ArtifactTypeIndex, LinkedBytecodeCandidate, SpecializationKey,
+    ArtifactShapeIndex, ArtifactTypeIndex, LinkedBytecodeCandidate, SpecializationKey,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
 const SCOPE_AUTHORITY: &str = "hydratedValueLifecycle.scope";
 const SOURCE_TYPE_AUTHORITY: &str = "hydratedValueLifecycle.sourceType";
+const SOURCE_SHAPE_AUTHORITY: &str = "hydratedValueLifecycle.sourceShape";
 const SOURCE_FUNCTION_AUTHORITY: &str = "hydratedValueLifecycle.sourceFunction";
 const PACKAGE_SYMBOL_AUTHORITY: &str = "hydratedValueLifecycle.packageSymbol";
 const PACKAGE_SCHEMA_AUTHORITY: &str = "hydratedValueLifecycle.packageSchema";
@@ -156,6 +157,44 @@ impl<'a> HydratedValueLifecycleResolver<'a> {
                 SOURCE_TYPE_AUTHORITY,
                 format!(
                     "unknown admitted artifact type row {} in package build {}",
+                    artifact_index.get(),
+                    package.reference().package_build_id
+                ),
+            )),
+        }
+    }
+
+    /// Reads one shape row only from the current exact admitted artifact.
+    pub(super) fn source_shape(
+        &self,
+        artifact_index: ArtifactShapeIndex,
+    ) -> Result<&ShapeDeclaration, ValueLifecycleResolverError> {
+        let package = self.current_package(SOURCE_SHAPE_AUTHORITY)?;
+        let index = usize::try_from(artifact_index.get()).map_err(|_| {
+            resolver_error(
+                SOURCE_SHAPE_AUTHORITY,
+                "artifact shape index does not fit usize",
+            )
+        })?;
+        let bytecode = package.bytecode().ok_or_else(|| {
+            resolver_error(
+                SOURCE_SHAPE_AUTHORITY,
+                "current package is type-only and has no bytecode shape pool",
+            )
+        })?;
+        match bytecode.view().pools().shapes.get(index) {
+            Some(BytecodePoolEntry::ShapeRef { shape }) => Ok(shape),
+            Some(_) => Err(resolver_error(
+                SOURCE_SHAPE_AUTHORITY,
+                format!(
+                    "admitted artifact shape row {} has the wrong pool kind",
+                    artifact_index.get()
+                ),
+            )),
+            None => Err(resolver_error(
+                SOURCE_SHAPE_AUTHORITY,
+                format!(
+                    "unknown admitted artifact shape row {} in package build {}",
                     artifact_index.get(),
                     package.reference().package_build_id
                 ),

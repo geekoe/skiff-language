@@ -2377,7 +2377,14 @@ fn native_signature(
             )
         })?;
         parameter_types.push(index);
-        parameter_plans.push(type_linker.link_plan_for_type(plan, &concrete, location.clone())?);
+        parameter_plans.push(type_linker.link_plan_for_type_at(
+            package,
+            specialization,
+            &BTreeMap::new(),
+            plan,
+            &concrete,
+            location.clone(),
+        )?);
     }
     let mut result_types = Vec::new();
     let mut result_plans = Vec::new();
@@ -2397,7 +2404,14 @@ fn native_signature(
             )
         })?;
         result_types.push(index);
-        result_plans.push(type_linker.link_plan_for_type(plan, &concrete, location.clone())?);
+        result_plans.push(type_linker.link_plan_for_type_at(
+            package,
+            specialization,
+            &BTreeMap::new(),
+            plan,
+            &concrete,
+            location.clone(),
+        )?);
     }
     LinkedNativeCallableSignature::new(
         parameter_types.into_boxed_slice(),
@@ -2537,7 +2551,10 @@ impl DeploymentLinker<'_> {
                 )
             })?;
             parameter_types.push(index);
-            parameter_plans.push(type_linker.link_plan_for_type(
+            parameter_plans.push(type_linker.link_registry_plan_for_type_at(
+                package,
+                specialization,
+                &BTreeMap::new(),
                 &registry_plan_expression(plan, location)?,
                 &concrete,
                 location.clone(),
@@ -2568,7 +2585,10 @@ impl DeploymentLinker<'_> {
                 )
             })?;
             result_types.push(index);
-            result_plans.push(type_linker.link_plan_for_type(
+            result_plans.push(type_linker.link_registry_plan_for_type_at(
+                package,
+                specialization,
+                &BTreeMap::new(),
                 &registry_plan_expression(plan, location)?,
                 &concrete,
                 location.clone(),

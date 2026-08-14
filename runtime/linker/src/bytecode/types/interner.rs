@@ -444,7 +444,14 @@ impl<'a> TypeLinker<'a> {
                     format!("linked shape field type {} is absent", ty.get()),
                 )
             })?;
-            let plan = self.link_plan_for_type(&field.plan, &concrete, location.clone())?;
+            let plan = self.link_plan_for_type_at(
+                package,
+                specialization,
+                substitutions,
+                &field.plan,
+                &concrete,
+                location.clone(),
+            )?;
             fields.push(
                 LinkedShapeField::new(field.name.clone(), ty, plan)
                     .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
@@ -458,9 +465,21 @@ impl<'a> TypeLinker<'a> {
             Some(specialization.clone()),
         )
         .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
+        self.validate_privileged_shape_authority(
+            shape.privileged_affine_composite,
+            nominal_type,
+            &fields,
+            location.clone(),
+        )?;
         self.shape_entries.push(
-            LinkedShapeEntry::new(index, origin, nominal_type, fields.into_boxed_slice())
-                .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
+            LinkedShapeEntry::new(
+                index,
+                origin,
+                nominal_type,
+                shape.privileged_affine_composite,
+                fields.into_boxed_slice(),
+            )
+            .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
         );
         Ok(index)
     }
@@ -697,7 +716,14 @@ impl<'a> TypeLinker<'a> {
                     format!("linked callback capture type {} is absent", ty.get()),
                 )
             })?;
-            let plan = self.link_plan_for_type(&capture.plan, &concrete, location.clone())?;
+            let plan = self.link_plan_for_type_at(
+                package,
+                &target_specialization,
+                &BTreeMap::new(),
+                &capture.plan,
+                &concrete,
+                location.clone(),
+            )?;
             captures.push(LinkedCallbackCapture::new(
                 skiff_runtime_linked_bytecode::FrameSlotIndex::new(capture.target_slot),
                 ty,
@@ -827,7 +853,14 @@ impl<'a> TypeLinker<'a> {
                     format!("linked resume result type {} is absent", type_index.get()),
                 )
             })?;
-            result_plans.push(self.link_plan_for_type(plan, &concrete, location.clone())?);
+            result_plans.push(self.link_plan_for_type_at(
+                package,
+                specialization,
+                &BTreeMap::new(),
+                plan,
+                &concrete,
+                location.clone(),
+            )?);
         }
         let origin_key = (
             package.reference().package_build_id.clone(),

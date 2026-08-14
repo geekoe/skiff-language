@@ -46,19 +46,64 @@ impl DeploymentLinker<'_> {
             .frame_layout
             .slot_plans
             .iter()
-            .map(|plan| type_linker.link_transfer_plan(plan, &substitutions, location.clone()))
+            .enumerate()
+            .map(|(ordinal, plan)| {
+                let ty = slot_types.get(ordinal).copied().ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        format!("frame slot plan ordinal {ordinal} has no exact slot type"),
+                    )
+                })?;
+                let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        format!("frame slot type {} is absent", ty.get()),
+                    )
+                })?;
+                type_linker.link_plan_for_type_at(
+                    package,
+                    key,
+                    &substitutions,
+                    plan,
+                    &concrete,
+                    location.clone(),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let parameters = function
             .frame_layout
             .parameter_slots
             .iter()
             .map(|parameter| {
+                let slot = FrameSlotIndex::new(parameter.slot);
+                let ty = slot_types
+                    .get(slot.get() as usize)
+                    .copied()
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::FrameAndValueTransferPlan,
+                            location.clone(),
+                            format!("frame parameter slot {} has no exact type", slot.get()),
+                        )
+                    })?;
+                let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        format!("frame parameter type {} is absent", ty.get()),
+                    )
+                })?;
                 Ok(LinkedParameterSlot::new(
-                    FrameSlotIndex::new(parameter.slot),
+                    slot,
                     parameter.mode,
-                    type_linker.link_transfer_plan(
-                        &parameter.plan,
+                    type_linker.link_plan_for_type_at(
+                        package,
+                        key,
                         &substitutions,
+                        &parameter.plan,
+                        &concrete,
                         location.clone(),
                     )?,
                 ))
@@ -82,7 +127,31 @@ impl DeploymentLinker<'_> {
             .frame_layout
             .result_plans
             .iter()
-            .map(|plan| type_linker.link_transfer_plan(plan, &substitutions, location.clone()))
+            .enumerate()
+            .map(|(ordinal, plan)| {
+                let ty = result_types.get(ordinal).copied().ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        format!("frame result plan ordinal {ordinal} has no exact result type"),
+                    )
+                })?;
+                let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        format!("frame result type {} is absent", ty.get()),
+                    )
+                })?;
+                type_linker.link_plan_for_type_at(
+                    package,
+                    key,
+                    &substitutions,
+                    plan,
+                    &concrete,
+                    location.clone(),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let stream_result_type_ref = function
             .frame_layout

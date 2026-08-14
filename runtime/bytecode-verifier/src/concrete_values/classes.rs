@@ -98,6 +98,7 @@ pub(super) fn build_type_classes(
         types: types.into_boxed_slice(),
         classes: classes.into_boxed_slice(),
         implicit_builtins,
+        privileged_affine_shapes: Box::new([]),
     })
 }
 

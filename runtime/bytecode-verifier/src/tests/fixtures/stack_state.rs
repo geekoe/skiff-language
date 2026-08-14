@@ -178,6 +178,7 @@ fn linked_shapes(
                 LinkedArtifactPoolOrigin::new(build.clone(), ArtifactShapeIndex::new(index), None)
                     .expect("rich test shape origin is valid"),
                 TypeIndex::new(shape.type_ref),
+                shape.privileged_affine_composite,
                 fields.into_boxed_slice(),
             )
             .expect("rich shape entry is valid")
@@ -199,6 +200,7 @@ pub(crate) fn rich_shape_decl(
 ) -> ShapeDeclaration {
     ShapeDeclaration {
         type_ref: nominal_type_ref,
+        privileged_affine_composite: None,
         fields: fields
             .into_iter()
             .map(
@@ -482,9 +484,9 @@ fn plan_for(ty: &TypeRefIr) -> LinkedValueTransferPlan {
     }
 }
 
-pub(crate) fn stream_of_string() -> TypeRefIr {
+pub(crate) fn stream_of_bytes() -> TypeRefIr {
     TypeRefIr::Builtin {
         name: "Stream".to_string(),
-        args: vec![TypeRefIr::builtin("string")],
+        args: vec![TypeRefIr::builtin("bytes")],
     }
 }

@@ -8,7 +8,8 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_linked_bytecode::{
     ActiveRegionIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind,
-    LinkedFunction, LinkedInstruction, LinkedInstructionTarget, TypeIndex,
+    LinkedFunction, LinkedInstruction, LinkedInstructionTarget, LinkedResourceDropPlan,
+    LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
 };
 
 use super::super::{
@@ -97,6 +98,7 @@ pub(super) fn apply(
         return apply_stream_next(before, &context);
     }
     require_supported(instruction.opcode(), location)?;
+    prove_dense_field_access(&context)?;
 
     let (mut stack, inputs) = consume_inputs(before, &context)?;
     let next_slots = slots::apply(before, &inputs, &context)?;
@@ -110,6 +112,136 @@ pub(super) fn apply(
         active_regions: active_regions.into_boxed_slice(),
         writable_loans: writable_loans.into_boxed_slice(),
     }))
+}
+
+fn prove_dense_field_access(context: &Context<'_>) -> Result<(), VerificationError> {
+    if context.instruction.opcode() == Opcode::NewRecord {
+        let shape = values::resolve_shape(context, OperandRole::ShapeRef)?;
+        if context.facts.privileged_shape(shape).is_some() {
+            return Err(violation(
+                context.location,
+                "NewRecord cannot construct a registry-owned privileged affine shape",
+            ));
+        }
+        return Ok(());
+    }
+    if !matches!(
+        context.instruction.opcode(),
+        Opcode::GetDenseField | Opcode::TakeDenseField
+    ) {
+        return Ok(());
+    }
+    let shape = values::resolve_shape(context, OperandRole::ShapeRef)?;
+    let ordinal = context
+        .contract
+        .operand_word(OperandRole::FieldOrdinal, context.instruction.operands())
+        .ok_or_else(|| violation(context.location, "dense-field ordinal is absent"))?;
+    let shape_row = context
+        .candidate
+        .shapes()
+        .get(shape.get() as usize)
+        .filter(|row| row.index() == shape)
+        .ok_or_else(|| violation(context.location, "TakeDenseField shape row is absent"))?;
+    let input_plan = if context.instruction.opcode() == Opcode::TakeDenseField {
+        Some(
+            context
+                .function
+                .stack_map()
+                .entries()
+                .get(context.instruction_index.get() as usize)
+                .filter(|row| row.instruction() == context.instruction_index)
+                .and_then(|row| row.stack_before().last())
+                .map(|value| value.plan())
+                .ok_or_else(|| {
+                    violation(context.location, "TakeDenseField stack-map input is absent")
+                })?,
+        )
+    } else {
+        None
+    };
+    prove_dense_field_contract(
+        context.instruction.opcode(),
+        shape,
+        shape_row,
+        ordinal,
+        context.facts.privileged_shape(shape),
+        input_plan,
+        context.location,
+    )
+}
+
+fn prove_dense_field_contract(
+    opcode: Opcode,
+    shape: skiff_runtime_linked_bytecode::ShapeIndex,
+    shape_row: &skiff_runtime_linked_bytecode::LinkedShapeEntry,
+    ordinal: u32,
+    privileged: Option<&crate::concrete_values::PrivilegedAffineShapeFact>,
+    input_plan: Option<&LinkedValueTransferPlan>,
+    location: VerificationLocation,
+) -> Result<(), VerificationError> {
+    if opcode == Opcode::GetDenseField {
+        if privileged.is_some_and(|fact| fact.affine_field_ordinal == ordinal) {
+            return Err(violation(
+                location,
+                "GetDenseField may not share the exact privileged affine field",
+            ));
+        }
+        return Ok(());
+    }
+    let fact = privileged.ok_or_else(|| {
+        violation(
+            location,
+            "TakeDenseField target lacks exact verified privileged shape authority",
+        )
+    })?;
+    match fact.identity {
+        skiff_artifact_model::PrivilegedAffineCompositeIdentity::HttpClientStreamHandle => {}
+    }
+    if ordinal != fact.affine_field_ordinal {
+        return Err(violation(
+            location,
+            format!(
+                "TakeDenseField ordinal {ordinal} differs from exact affine ordinal {}",
+                fact.affine_field_ordinal
+            ),
+        ));
+    }
+    if shape_row.privileged_affine_composite() != Some(fact.identity)
+        || shape_row.nominal_type() != fact.nominal_type
+        || shape_row.index() != shape
+    {
+        return Err(violation(
+            location,
+            "TakeDenseField linked shape differs from its verified privileged fact",
+        ));
+    }
+    let field = shape_row
+        .fields()
+        .get(ordinal as usize)
+        .ok_or_else(|| violation(location, "TakeDenseField field is absent"))?;
+    if !matches!(
+        field.plan(),
+        LinkedValueTransferPlan::AffineResource {
+            drop: LinkedResourceDropPlan::ResourceTableRelease,
+        }
+    ) {
+        return Err(violation(
+            location,
+            "TakeDenseField output lacks exact ResourceTableRelease lifecycle",
+        ));
+    }
+    if !matches!(
+        input_plan,
+        Some(LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape { shape: root_shape },
+        }) if *root_shape == shape
+    ) {
+        return Err(violation(
+            location,
+            "TakeDenseField input root plan is not bound to the exact target shape",
+        ));
+    }
+    Ok(())
 }
 
 fn apply_stream_next(
@@ -250,6 +382,7 @@ fn require_supported(
         | Opcode::InvokeCallback
         | Opcode::NewRecord
         | Opcode::GetDenseField
+        | Opcode::TakeDenseField
         | Opcode::SetWritablePath
         | Opcode::RepresentationWrap
         | Opcode::NewArrayBuilder
@@ -988,5 +1121,177 @@ fn violation(location: VerificationLocation, detail: impl Into<String>) -> Verif
         obligation: VerificationObligation::StackAndSlotState,
         location,
         detail: detail.into(),
+    }
+}
+
+#[cfg(test)]
+mod affine_take_tests {
+    use skiff_artifact_model::{PackageBuildId, PrivilegedAffineCompositeIdentity};
+    use skiff_runtime_linked_bytecode::{
+        ArtifactShapeIndex, LinkedArtifactPoolOrigin, LinkedShapeEntry, LinkedShapeField,
+        LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex, TypeIndex,
+    };
+
+    use super::{prove_dense_field_contract, Opcode, VerificationLocation};
+    use crate::concrete_values::PrivilegedAffineShapeFact;
+
+    fn body_plan() -> LinkedValueTransferPlan {
+        LinkedValueTransferPlan::AffineResource {
+            drop: skiff_runtime_linked_bytecode::LinkedResourceDropPlan::ResourceTableRelease,
+        }
+    }
+
+    fn snapshot_plan() -> LinkedValueTransferPlan {
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        }
+    }
+
+    fn root_plan(shape: u32) -> LinkedValueTransferPlan {
+        LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape {
+                shape: ShapeIndex::new(shape),
+            },
+        }
+    }
+
+    fn shape(
+        identity: Option<PrivilegedAffineCompositeIdentity>,
+        field_plan: LinkedValueTransferPlan,
+    ) -> LinkedShapeEntry {
+        LinkedShapeEntry::new(
+            ShapeIndex::new(0),
+            LinkedArtifactPoolOrigin::new(
+                PackageBuildId::new("build:affine-take"),
+                ArtifactShapeIndex::new(0),
+                None,
+            )
+            .unwrap(),
+            TypeIndex::new(0),
+            identity,
+            Box::new([
+                LinkedShapeField::new("body", TypeIndex::new(1), field_plan).unwrap(),
+                LinkedShapeField::new("status", TypeIndex::new(2), snapshot_plan()).unwrap(),
+            ]),
+        )
+        .unwrap()
+    }
+
+    fn fact() -> PrivilegedAffineShapeFact {
+        PrivilegedAffineShapeFact {
+            identity: PrivilegedAffineCompositeIdentity::HttpClientStreamHandle,
+            shape: ShapeIndex::new(0),
+            nominal_type: TypeIndex::new(0),
+            affine_field_ordinal: 0,
+        }
+    }
+
+    fn prove(
+        opcode: Opcode,
+        row: &LinkedShapeEntry,
+        ordinal: u32,
+        authority: Option<&PrivilegedAffineShapeFact>,
+        input: Option<&LinkedValueTransferPlan>,
+    ) -> Result<(), crate::VerificationError> {
+        prove_dense_field_contract(
+            opcode,
+            ShapeIndex::new(0),
+            row,
+            ordinal,
+            authority,
+            input,
+            VerificationLocation::Image,
+        )
+    }
+
+    #[test]
+    fn exact_body_take_accepts_shape_root_ordinal_and_release_plan() {
+        let row = shape(
+            Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle),
+            body_plan(),
+        );
+        prove(
+            Opcode::TakeDenseField,
+            &row,
+            0,
+            Some(&fact()),
+            Some(&root_plan(0)),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn get_dense_field_cannot_share_privileged_body() {
+        let row = shape(
+            Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle),
+            body_plan(),
+        );
+        let error = prove(Opcode::GetDenseField, &row, 0, Some(&fact()), None).unwrap_err();
+        assert!(error.to_string().contains("may not share"));
+    }
+
+    #[test]
+    fn take_dense_field_rejects_forged_privilege() {
+        let row = shape(None, body_plan());
+        let error = prove(
+            Opcode::TakeDenseField,
+            &row,
+            0,
+            Some(&fact()),
+            Some(&root_plan(0)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("verified privileged fact"));
+    }
+
+    #[test]
+    fn take_dense_field_rejects_shape_swap() {
+        let row = shape(
+            Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle),
+            body_plan(),
+        );
+        let error = prove(
+            Opcode::TakeDenseField,
+            &row,
+            0,
+            Some(&fact()),
+            Some(&root_plan(1)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exact target shape"));
+    }
+
+    #[test]
+    fn take_dense_field_rejects_ordinal_swap() {
+        let row = shape(
+            Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle),
+            body_plan(),
+        );
+        let error = prove(
+            Opcode::TakeDenseField,
+            &row,
+            1,
+            Some(&fact()),
+            Some(&root_plan(0)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exact affine ordinal"));
+    }
+
+    #[test]
+    fn take_dense_field_rejects_output_plan_swap() {
+        let row = shape(
+            Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle),
+            snapshot_plan(),
+        );
+        let error = prove(
+            Opcode::TakeDenseField,
+            &row,
+            0,
+            Some(&fact()),
+            Some(&root_plan(0)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("ResourceTableRelease"));
     }
 }

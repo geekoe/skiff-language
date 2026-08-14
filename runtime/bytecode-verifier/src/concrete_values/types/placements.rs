@@ -1,21 +1,31 @@
-use skiff_artifact_model::{NativeValueEmbedding, NativeValueLifecycleConcrete, TypeRefIr};
+use skiff_artifact_model::{
+    native_value_lifecycle_registry, CallableRegistryTypeExpression, NativeResourceDropPlan,
+    NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete,
+    PrivilegedAffineFieldAccess, ResourceDropPlan, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+};
 use skiff_runtime_linked_bytecode::{
-    CandidateTable, LinkedBytecodeCandidate, LinkedContainerLayout, LinkedContainerLayoutKind,
-    LinkedContainerPosition, LinkedShapeEntry, LinkedTypeEntry, LinkedWritablePathSegment,
+    ArtifactTypeIndex, CandidateTable, LinkedBytecodeCandidate, LinkedContainerLayout,
+    LinkedContainerLayoutKind, LinkedContainerPosition, LinkedResourceDropPlan, LinkedShapeEntry,
+    LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan, LinkedWritablePathSegment,
     TypeIndex,
 };
 
 use crate::{VerificationError, VerificationLocation, VerificationObligation};
 
-use super::super::{ConcreteTypeFact, ConcreteValueFacts};
+use super::super::{
+    resolver::HydratedValueLifecycleResolver, ConcreteTypeFact, ConcreteValueFacts,
+    PrivilegedAffineShapeFact,
+};
 
 pub(super) fn prove_type_placements(
     candidate: &LinkedBytecodeCandidate,
     facts: &ConcreteValueFacts,
-) -> Result<(), VerificationError> {
+    resolver: &mut HydratedValueLifecycleResolver<'_>,
+) -> Result<Box<[PrivilegedAffineShapeFact]>, VerificationError> {
     prove_container_layouts(candidate, facts)?;
-    prove_shape_layouts(candidate, facts)?;
-    prove_writable_paths(candidate, facts)
+    let privileged = prove_shape_layouts(candidate, facts, resolver)?;
+    prove_writable_paths(candidate, facts, &privileged)?;
+    Ok(privileged)
 }
 
 fn prove_container_layouts(
@@ -144,30 +154,31 @@ fn prove_position(
     require_ordinary_snapshot(fact, location, role)
 }
 
-fn is_std_http_client_stream_handle(ty: &skiff_artifact_model::TypeRefIr) -> bool {
-    matches!(
-        ty,
-        skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
-            if symbol.symbol_path == "std.http.HttpClientStreamHandle"
-                && matches!(
-                    &symbol.package,
-                    skiff_artifact_model::PackageRefIr::PackageId { package_id }
-                        if package_id == "skiff.run/std"
-                )
-    )
-}
-
 fn prove_shape_layouts(
     candidate: &LinkedBytecodeCandidate,
     facts: &ConcreteValueFacts,
-) -> Result<(), VerificationError> {
+    resolver: &mut HydratedValueLifecycleResolver<'_>,
+) -> Result<Box<[PrivilegedAffineShapeFact]>, VerificationError> {
+    let mut privileged = Vec::new();
     for shape in candidate.shapes() {
         let location = table_location(CandidateTable::Shapes, shape.index().get());
         let nominal = fact_for(facts, shape.nominal_type(), location, "shape nominal type")?;
-        let stream_handle = is_std_http_client_stream_handle(&nominal.normalized_type);
-        for field in shape.fields() {
-            let field_fact = fact_for(facts, field.ty(), location, "shape field type")?;
-            if !stream_handle {
+        if let Some(identity) = shape.privileged_affine_composite() {
+            privileged.push(prove_privileged_shape(
+                candidate, facts, resolver, shape, nominal, identity, location,
+            )?);
+        } else {
+            if matches!(
+                nominal.lifecycle.embedding,
+                NativeValueEmbedding::Privileged
+            ) {
+                return Err(violation(
+                    location,
+                    "privileged nominal type lacks explicit linked composite identity",
+                ));
+            }
+            for field in shape.fields() {
+                let field_fact = fact_for(facts, field.ty(), location, "shape field type")?;
                 require_ordinary_snapshot(field_fact, location, "shape field")?;
             }
         }
@@ -175,7 +186,151 @@ fn prove_shape_layouts(
             prove_structural_shape(shape, fields, facts, location)?;
         }
     }
-    Ok(())
+    Ok(privileged.into_boxed_slice())
+}
+
+fn prove_privileged_shape(
+    candidate: &LinkedBytecodeCandidate,
+    facts: &ConcreteValueFacts,
+    resolver: &mut HydratedValueLifecycleResolver<'_>,
+    shape: &LinkedShapeEntry,
+    nominal: &ConcreteTypeFact,
+    identity: skiff_artifact_model::PrivilegedAffineCompositeIdentity,
+    location: VerificationLocation,
+) -> Result<PrivilegedAffineShapeFact, VerificationError> {
+    resolver
+        .begin_row(shape.origin().package_build_id())
+        .map_err(|error| {
+            violation(
+                location,
+                format!(
+                    "privileged shape origin is not exact at {}: {}",
+                    error.authority, error.message
+                ),
+            )
+        })?;
+    let source = resolver
+        .source_shape(*shape.origin().artifact_index())
+        .map_err(|error| {
+            violation(
+                location,
+                format!(
+                    "privileged source shape is unavailable at {}: {}",
+                    error.authority, error.message
+                ),
+            )
+        })?;
+    if source.privileged_affine_composite != Some(identity) {
+        return Err(violation(
+            location,
+            "linked privileged identity differs from its exact admitted source shape",
+        ));
+    }
+    require_exact_type_origin(
+        candidate,
+        shape,
+        shape.nominal_type(),
+        source.type_ref,
+        location,
+        "privileged nominal type",
+    )?;
+
+    let registry = native_value_lifecycle_registry();
+    let schema = registry
+        .privileged_affine_composite(identity)
+        .ok_or_else(|| {
+            violation(
+                location,
+                "linked privileged identity is absent from the pinned lifecycle registry",
+            )
+        })?;
+    let TypeRefIr::PackageSymbol { symbol } = &nominal.normalized_type else {
+        return Err(violation(
+            location,
+            "privileged shape nominal type is not a package symbol",
+        ));
+    };
+    if registry
+        .privileged_affine_composite_for_symbol(symbol)
+        .map(|row| row.identity)
+        != Some(identity)
+    {
+        return Err(violation(
+            location,
+            "privileged shape identity does not match the exact registry symbol",
+        ));
+    }
+    if nominal.lifecycle.lifecycle != schema.lifecycle
+        || nominal.lifecycle.embedding != schema.embedding
+    {
+        return Err(violation(
+            location,
+            "privileged shape root lifecycle differs from independent classification",
+        ));
+    }
+    if source.fields.len() != schema.fields.len() || shape.fields().len() != schema.fields.len() {
+        return Err(violation(
+            location,
+            "privileged shape field coverage differs from the exact registry schema",
+        ));
+    }
+
+    let mut affine_field_ordinal = None;
+    for (ordinal, ((source_field, linked_field), expected)) in source
+        .fields
+        .iter()
+        .zip(shape.fields())
+        .zip(&schema.fields)
+        .enumerate()
+    {
+        let ordinal_u32 = u32::try_from(ordinal)
+            .map_err(|_| violation(location, "privileged field ordinal exceeds u32"))?;
+        require_exact_type_origin(
+            candidate,
+            shape,
+            linked_field.ty(),
+            source_field.type_ref,
+            location,
+            "privileged field type",
+        )?;
+        let field_fact = fact_for(facts, linked_field.ty(), location, "privileged field type")?;
+        let expected_plan = bridge_field_lifecycle(&expected.lifecycle).ok_or_else(|| {
+            violation(
+                location,
+                "privileged field registry lifecycle is recursively shaped",
+            )
+        })?;
+        if source_field.name != expected.name
+            || linked_field.name() != expected.name
+            || !matches_registry_type(&expected.ty, &field_fact.normalized_type)
+            || field_fact.lifecycle.lifecycle != expected.lifecycle
+            || !artifact_plan_matches_lifecycle(&source_field.plan, &expected.lifecycle)
+            || linked_field.plan() != &expected_plan
+        {
+            return Err(violation(
+                location,
+                format!(
+                    "privileged field ordinal {ordinal} differs from its exact source/registry name, type, or lifecycle"
+                ),
+            ));
+        }
+        if expected.access == PrivilegedAffineFieldAccess::AffineTake
+            && affine_field_ordinal.replace(ordinal_u32).is_some()
+        {
+            return Err(violation(
+                location,
+                "privileged shape has more than one affine-take field",
+            ));
+        }
+    }
+    let affine_field_ordinal = affine_field_ordinal
+        .ok_or_else(|| violation(location, "privileged shape has no exact affine-take field"))?;
+    Ok(PrivilegedAffineShapeFact {
+        identity,
+        shape: shape.index(),
+        nominal_type: shape.nominal_type(),
+        affine_field_ordinal,
+    })
 }
 
 fn prove_structural_shape(
@@ -208,9 +363,182 @@ fn prove_structural_shape(
     Ok(())
 }
 
+fn require_exact_type_origin(
+    candidate: &LinkedBytecodeCandidate,
+    shape: &LinkedShapeEntry,
+    ty: TypeIndex,
+    artifact_type: u32,
+    location: VerificationLocation,
+    role: &'static str,
+) -> Result<(), VerificationError> {
+    let row = candidate
+        .types()
+        .get(ty.get() as usize)
+        .filter(|row| row.index() == ty)
+        .ok_or_else(|| violation(location, format!("{role} linked row is absent")))?;
+    if row.origin().package_build_id() != shape.origin().package_build_id()
+        || row.origin().artifact_index() != &ArtifactTypeIndex::new(artifact_type)
+        || row.origin().specialization() != shape.origin().specialization()
+    {
+        return Err(violation(
+            location,
+            format!("{role} does not retain the exact source pool coordinate"),
+        ));
+    }
+    Ok(())
+}
+
+fn matches_registry_type(expected: &CallableRegistryTypeExpression, actual: &TypeRefIr) -> bool {
+    match (expected, actual) {
+        (
+            CallableRegistryTypeExpression::Builtin { name, arguments },
+            TypeRefIr::Builtin {
+                name: actual_name,
+                args,
+            },
+        ) => {
+            name == actual_name
+                && arguments.len() == args.len()
+                && arguments
+                    .iter()
+                    .zip(args)
+                    .all(|(expected, actual)| matches_registry_type(expected, actual))
+        }
+        (
+            CallableRegistryTypeExpression::PackageSymbol {
+                package_id,
+                symbol_path,
+            },
+            TypeRefIr::PackageSymbol { symbol },
+        ) => {
+            symbol.symbol_path == *symbol_path
+                && matches!(
+                    &symbol.package,
+                    skiff_artifact_model::PackageRefIr::PackageId {
+                        package_id: actual_package_id,
+                    } if actual_package_id == package_id
+                )
+        }
+        _ => false,
+    }
+}
+
+fn bridge_field_lifecycle(
+    lifecycle: &NativeValueLifecycleConcrete,
+) -> Option<LinkedValueTransferPlan> {
+    Some(match lifecycle {
+        NativeValueLifecycleConcrete::SnapshotShare { drop } => {
+            LinkedValueTransferPlan::SnapshotShare {
+                drop: match drop {
+                    NativeValueDropPlan::Trivial => LinkedValueDropPlan::Trivial,
+                    NativeValueDropPlan::SnapshotRelease => LinkedValueDropPlan::SnapshotRelease,
+                    NativeValueDropPlan::NativeAdapter { adapter } => {
+                        LinkedValueDropPlan::NativeAdapter {
+                            adapter: adapter.clone(),
+                        }
+                    }
+                    NativeValueDropPlan::PrivilegedRecursiveShape => return None,
+                },
+            }
+        }
+        NativeValueLifecycleConcrete::MoveOnly { drop } => LinkedValueTransferPlan::MoveOnly {
+            drop: match drop {
+                NativeValueDropPlan::Trivial => LinkedValueDropPlan::Trivial,
+                NativeValueDropPlan::SnapshotRelease => LinkedValueDropPlan::SnapshotRelease,
+                NativeValueDropPlan::NativeAdapter { adapter } => {
+                    LinkedValueDropPlan::NativeAdapter {
+                        adapter: adapter.clone(),
+                    }
+                }
+                NativeValueDropPlan::PrivilegedRecursiveShape => return None,
+            },
+        },
+        NativeValueLifecycleConcrete::AffineResource { drop } => {
+            LinkedValueTransferPlan::AffineResource {
+                drop: match drop {
+                    NativeResourceDropPlan::ResourceTableRelease => {
+                        LinkedResourceDropPlan::ResourceTableRelease
+                    }
+                    NativeResourceDropPlan::NativeAdapter { adapter } => {
+                        LinkedResourceDropPlan::NativeAdapter {
+                            adapter: adapter.clone(),
+                        }
+                    }
+                },
+            }
+        }
+        NativeValueLifecycleConcrete::ExplicitCloneLease {
+            clone_adapter,
+            drop,
+        } => LinkedValueTransferPlan::ExplicitCloneLease {
+            clone_adapter: clone_adapter.clone(),
+            drop: match drop {
+                NativeResourceDropPlan::ResourceTableRelease => {
+                    LinkedResourceDropPlan::ResourceTableRelease
+                }
+                NativeResourceDropPlan::NativeAdapter { adapter } => {
+                    LinkedResourceDropPlan::NativeAdapter {
+                        adapter: adapter.clone(),
+                    }
+                }
+            },
+        },
+    })
+}
+
+fn artifact_plan_matches_lifecycle(
+    plan: &ValueTransferPlan,
+    lifecycle: &NativeValueLifecycleConcrete,
+) -> bool {
+    match (plan, lifecycle) {
+        (
+            ValueTransferPlan::SnapshotShare { drop },
+            NativeValueLifecycleConcrete::SnapshotShare {
+                drop: expected_drop,
+            },
+        )
+        | (
+            ValueTransferPlan::MoveOnly { drop },
+            NativeValueLifecycleConcrete::MoveOnly {
+                drop: expected_drop,
+            },
+        ) => match (drop, expected_drop) {
+            (ValueDropPlan::Trivial, NativeValueDropPlan::Trivial)
+            | (ValueDropPlan::SnapshotRelease, NativeValueDropPlan::SnapshotRelease) => true,
+            (
+                ValueDropPlan::NativeAdapter { adapter },
+                NativeValueDropPlan::NativeAdapter { adapter: expected },
+            ) => adapter.binding_key == expected.binding_key,
+            (
+                ValueDropPlan::RecursiveShape { .. },
+                NativeValueDropPlan::PrivilegedRecursiveShape,
+            ) => true,
+            _ => false,
+        },
+        (
+            ValueTransferPlan::AffineResource { drop },
+            NativeValueLifecycleConcrete::AffineResource {
+                drop: expected_drop,
+            },
+        ) => match (drop, expected_drop) {
+            (
+                ResourceDropPlan::ResourceTableRelease,
+                NativeResourceDropPlan::ResourceTableRelease,
+            ) => true,
+            (
+                ResourceDropPlan::NativeAdapter { adapter },
+                NativeResourceDropPlan::NativeAdapter { adapter: expected },
+            ) => adapter.binding_key == expected.binding_key,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn prove_writable_paths(
     candidate: &LinkedBytecodeCandidate,
     facts: &ConcreteValueFacts,
+    privileged: &[PrivilegedAffineShapeFact],
 ) -> Result<(), VerificationError> {
     for path in candidate.writable_paths() {
         let location = table_location(CandidateTable::WritablePaths, path.index().get());
@@ -221,9 +549,15 @@ fn prove_writable_paths(
                 LinkedWritablePathSegment::DenseField {
                     shape,
                     field_ordinal,
-                } => {
-                    prove_dense_field(candidate, facts, current, *shape, *field_ordinal, location)?
-                }
+                } => prove_dense_field(
+                    candidate,
+                    facts,
+                    privileged,
+                    current,
+                    *shape,
+                    *field_ordinal,
+                    location,
+                )?,
                 LinkedWritablePathSegment::ArrayIndex {
                     selector_ordinal,
                     element_type,
@@ -261,6 +595,7 @@ fn prove_writable_paths(
 fn prove_dense_field<'a>(
     candidate: &'a LinkedBytecodeCandidate,
     facts: &'a ConcreteValueFacts,
+    privileged: &[PrivilegedAffineShapeFact],
     current: &ConcreteTypeFact,
     shape_index: skiff_runtime_linked_bytecode::ShapeIndex,
     field_ordinal: u32,
@@ -270,6 +605,12 @@ fn prove_dense_field<'a>(
         .shapes()
         .get(shape_index.get() as usize)
         .ok_or_else(|| violation(location, "writable path shape index is out of bounds"))?;
+    if privileged.iter().any(|fact| fact.shape == shape_index) {
+        return Err(violation(
+            location,
+            "writable paths cannot project through a privileged affine shape",
+        ));
+    }
     let nominal = fact_for(
         facts,
         shape.nominal_type(),
