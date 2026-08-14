@@ -1,6 +1,6 @@
 # MAP5：Phase 5 rolling execution map
 
-> Status: active; revision 1; recovery epoch `r1`; no implementation/proof lane complete
+> Status: active; revision 2; recovery epoch `r1`; no implementation/proof lane complete
 >
 > Phase Contract: [`phase-5-typed-host-effects-resources-streams.md`](../phases/phase-5-typed-host-effects-resources-streams.md), Amendment r1
 >
@@ -43,6 +43,15 @@ commit 都不得整笔 merge/cherry-pick；新 owner 只能在 r1 worktree 中�
    full chain；不手造 image/executor/handle/frame。
 7. Router production：默认无改动；现有 production gateway/dispatcher/session/chunked writer是被测 consumer。
 
+### 2.1 Shared design receipt
+
+2026-08-14 的独立 shared-design review 对 r1 authority/lifecycle 决定给出 **PASS**。affine composite 采用
+stack consume-whole `TakeDenseField(shape, ordinal)`（stack `1 → 1`），不引入 slot partial mask：compiler 在
+take 前对源 slot 执行 `TakeSlot`，并把该 slot 的 source fact 置为 `Moved`；VM 原子取得 exact field owner后立即
+按 recursive plan drop aggregate remainder。heap 的 generation/owner-bound take guard 防御重复或伪造 take，
+但不成为第二 lifecycle authority。slot 已整体 moved，所以 verifier 沿现有 stack/control-flow owner状态证明，
+无需新增 partial-state merge或 stack-map事实。
+
 ## 3. Lanes、唯一 write sets 与 rolling join
 
 表内 write set 是本 Phase 唯一文件清单权威；lane 内 focused unit test 可放在所列 module 的现有/新 test
@@ -53,8 +62,8 @@ commit 都不得整笔 merge/cherry-pick；新 owner 只能在 r1 worktree 中�
 | A5 authority + affine schema / ready | `codex/bcvm-p5-authority-r1` / `skiff-bcvm-p5-authority-r1` | `artifact-model/src/host_effect_registry/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/native_value_lifecycle/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/value_lifecycle_policy/**`；`artifact-model/src/bytecode/{dto.rs,opcodes/**,validate/{instructions.rs,plans.rs},tests/**}`；`artifact-model/src/lib.rs`；`runtime/native-contract/src/http_targets.rs`（仅复用/集中 canonical constants，不得成为第二 bytecode authority） | docs; join 1，首个非文档 commit |
 | C5 compiler / ready after A5 API | `codex/bcvm-p5-compiler-r1` / `skiff-bcvm-p5-compiler-r1` | `compiler/source/src/{value_transfer/**,callable_effects/**}`；`compiler/lowering/src/mir/**`；`compiler/emission/src/bytecode/{admission.rs,admission/**,functions.rs,plans.rs,mod.rs,tests/**}` | A5; join 2a；Phase 5 admission放新子模块，避免继续膨胀单文件 |
 | V5 link + verify / ready after A5 API | `codex/bcvm-p5-verify-r1` / `skiff-bcvm-p5-verify-r1` | `runtime/linked-bytecode/src/{targets.rs,targets/**,plan.rs,candidate/**,tests/**,lib.rs}`；`runtime/linker/src/bytecode/{link/**,execution_image.rs,types/**,tests/**}`；`runtime/bytecode-verifier/src/**` | A5; join 2b；与 C5 可并行 |
-| K5 Resource/Pending/VM kernel / ready after V5 typed view | `codex/bcvm-p5-kernel-r1` / `skiff-bcvm-p5-kernel-r1` | `runtime/scheduler/src/{owner_inventory.rs,pending.rs,resource.rs,stream.rs,stream_driver.rs,bytecode.rs,lib.rs}`；`runtime/model/src/{vm_heap.rs,vm_value.rs,lib.rs}`；`runtime/request/Cargo.toml`；`runtime/request/src/{bytecode_ingress.rs,bytecode_host_effects.rs,vm_heap.rs,execution_budget.rs,response_event.rs,outbound.rs,lib.rs}`；`runtime/request/tests/bytecode_request.rs`；`runtime/vm/src/{control.rs,fiber.rs,lifecycle.rs,lib.rs,fiber/tests.rs}`；`runtime/vm/tests/vertical/**` | A5+V5 API; join 3；ResourceTable只在 scheduler，禁止写 `runtime/model/src/resource.rs` |
-| H5 production host/session composition / ready after K5 port | `codex/bcvm-p5-host-r1` / `skiff-bcvm-p5-host-r1` | `runtime/capability-context/src/{http.rs,outbound_control.rs}`；`runtime/host/Cargo.toml`；`runtime/host/src/capability_context/http.rs`；`runtime/host/src/host/{mod.rs,runtime_host.rs,http_client_runtime.rs,http_runtime/**,http_response_ceiling.rs,request_supervisor.rs,router_session.rs,router_session/**,bytecode_capability_adapter.rs}`；`runtime/host/src/host/request_entry.rs`；`runtime/host/src/host/request_entry/{assembly.rs,assembly_wire.rs,websocket_jsonrpc.rs,bytecode_host_effects.rs,server_stream.rs}` | K5 public port; join 4；复用 existing lower，HTTP/SSE之外不恢复 tree evaluator adapter |
+| K5 Resource/Pending/VM kernel / ready after V5 typed view | `codex/bcvm-p5-kernel-r1` / `skiff-bcvm-p5-kernel-r1` | `runtime/scheduler/src/{owner_inventory.rs,pending.rs,resource.rs,root_escrow.rs,stream.rs,stream_driver.rs,bytecode.rs,lib.rs}`；`runtime/model/src/{vm_heap.rs,vm_value.rs,lib.rs}`；`runtime/request/Cargo.toml`；`runtime/request/src/{bytecode_ingress.rs,bytecode_host_effects.rs,vm_heap.rs,execution_budget.rs,response_event.rs,outbound.rs,lib.rs}`；`runtime/request/tests/bytecode_request.rs`；`runtime/vm/src/{control.rs,fiber.rs,lifecycle.rs,lib.rs,fiber/tests.rs}`；`runtime/vm/tests/vertical/**` | A5+V5 API; join 3；ResourceTable只在 scheduler，禁止写 `runtime/model/src/resource.rs` |
+| H5 production host/session composition / ready after K5 port | `codex/bcvm-p5-host-r1` / `skiff-bcvm-p5-host-r1` | `runtime/capability-context/src/{http.rs,outbound_control.rs}`；`runtime/transport/src/response_mapper.rs`；`runtime/transport/src/response_mapper/tests.rs`；`runtime/host/Cargo.toml`；`runtime/host/src/capability_context/http.rs`；`runtime/host/src/host/{mod.rs,runtime_host.rs,http_client_runtime.rs,http_runtime/**,http_response_ceiling.rs,request_supervisor.rs,router_session.rs,router_session/**,bytecode_capability_adapter.rs}`；`runtime/host/src/host/request_entry.rs`；`runtime/host/src/host/request_entry/{assembly.rs,assembly_wire.rs,websocket_jsonrpc.rs,bytecode_host_effects.rs,server_stream.rs}` | K5 public port; join 4；复用 existing lower，HTTP/SSE之外不恢复 tree evaluator adapter |
 | P5G proof + Router composition + Gate / active from docs | `codex/bcvm-p5-proof-gate-r1` / `skiff-bcvm-p5-proof-gate-r1` | `runtime/host/tests/bytecode_vm_phase_5.rs`；`runtime/host/tests/bytecode_vm_phase_5/**`；`runtime/host/tests/fixtures/bytecode-vm-phase-5/**`；`router/tests/bytecode_vm_phase_5.rs`；`router/tests/bytecode_vm_phase_5/**`；`scripts/lib/bytecode-vm-phase-5-*.mjs`；`scripts/run-bytecode-vm-phase-5-gate.mjs`；`scripts/tests/bytecode-vm-phase-5-*.mjs`；`scripts/lib/{verify-cli.mjs,verify-plan.mjs,verify-selector-graph.mjs}` | docs→expected-red commit before join 1；final proof join 5 after H5；不得写 production |
 | R5-fix conditional / not dispatched | none | `∅` | 只有真实 P5G 证据定位 Router defect 后，先修 Contract/MAP并列 exact Router write set，再创建 owner |
 
