@@ -16,11 +16,13 @@ use skiff_runtime_model::bytecode_execution_observation::{
 use skiff_runtime_model::service_error::{
     ErrorCorrelation, OpaqueServiceError, ServiceErrorEnvelope,
 };
+#[cfg(test)]
+use skiff_runtime_request::execution_budget::RequestPendingSink;
 use skiff_runtime_request::{
     cancellation::CancellationToken,
     execution_budget::{
         AdmittedRequestDeadline, CompletionCandidate, ExecutionBudget, ExecutionSettlement,
-        ExecutionWinner, RequestPendingSink,
+        ExecutionWinner,
     },
     execution_budget_trace_attrs, response_error_to_telemetry_map, RequestCancel, RequestEnvelope,
     RequestExecutionOwnerInventorySnapshot, ResponseError,

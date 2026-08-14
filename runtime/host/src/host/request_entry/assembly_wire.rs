@@ -96,7 +96,7 @@ impl RuntimeHost {
             }
             BytecodeRequestStartFrameWireHeader::Task(header) => header.request_id.clone(),
         };
-        if let Err(error) = admit_synchronous_unary_http_lane(&header) {
+        if let Err(error) = admit_synchronous_http_lane(&header) {
             self.send_bytecode_wire_admission_error(&request_id, &error, &sender);
             return;
         }
@@ -527,19 +527,19 @@ fn wire_routing_build_id(header: &BytecodeRequestStartFrameWireHeader) -> Option
     Some(deployment.deployment_artifact_identity.as_str().to_string())
 }
 
-fn admit_synchronous_unary_http_lane(header: &BytecodeRequestStartFrameWireHeader) -> Result<()> {
+fn admit_synchronous_http_lane(header: &BytecodeRequestStartFrameWireHeader) -> Result<()> {
     match header {
         BytecodeRequestStartFrameWireHeader::Http(header) => validate_http_header(header),
         BytecodeRequestStartFrameWireHeader::WebSocketConnect(_)
         | BytecodeRequestStartFrameWireHeader::WebSocketConnectionClosed(_)
         | BytecodeRequestStartFrameWireHeader::WebSocketJsonRpc(_) => Err(
             RuntimeError::Unsupported(
-                "bytecode request admission supports only exact unary HTTP gateway requests; the WebSocket request lane is disabled"
+                "bytecode request admission supports only exact HTTP gateway requests; the WebSocket request lane is disabled"
                     .to_string(),
             ),
         ),
         BytecodeRequestStartFrameWireHeader::Task(_) => Err(RuntimeError::Unsupported(
-            "bytecode request admission supports only exact unary HTTP gateway requests; the task request lane is disabled"
+            "bytecode request admission supports only exact HTTP gateway requests; the task request lane is disabled"
                 .to_string(),
         )),
     }
@@ -551,9 +551,9 @@ fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> 
             "canonical request.start requestId must be non-empty".to_string(),
         ));
     }
-    if header.mode != "unary" {
+    if !matches!(header.mode.as_str(), "unary" | "serverStream") {
         return Err(RuntimeError::Unsupported(format!(
-            "bytecode HTTP ingress only supports unary request.start, got {}",
+            "bytecode HTTP ingress supports only unary or serverStream request.start, got {}",
             header.mode
         )));
     }
@@ -580,19 +580,19 @@ fn validate_http_header(header: &BytecodeRequestStartFrameHeader) -> Result<()> 
     }
     if header.client_session.is_some() {
         return Err(RuntimeError::Unsupported(
-            "bytecode request admission supports only the synchronous unary HTTP gateway lane; client-session requests are disabled"
+            "bytecode request admission supports only the synchronous HTTP gateway lane; client-session requests are disabled"
                 .to_string(),
         ));
     }
     if header.test_case_parent_request_id.is_some() {
         return Err(RuntimeError::Unsupported(
-            "bytecode request admission supports only the synchronous unary HTTP gateway lane; child requests are disabled"
+            "bytecode request admission supports only the synchronous HTTP gateway lane; child requests are disabled"
                 .to_string(),
         ));
     }
     if header.test_effects_enabled {
         return Err(RuntimeError::Unsupported(
-            "bytecode request admission supports only the synchronous unary HTTP gateway lane; host test-effect requests are disabled"
+            "bytecode request admission supports only the synchronous HTTP gateway lane; host test-effect requests are disabled"
                 .to_string(),
         ));
     }

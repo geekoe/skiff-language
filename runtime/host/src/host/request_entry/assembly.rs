@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    num::NonZeroUsize,
+    sync::{Arc, Mutex},
+};
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
@@ -28,6 +31,7 @@ use super::{
 use crate::{
     error::RuntimeError,
     host::{
+        bytecode_server_stream_writer::production_bytecode_server_stream_writer_for_entry,
         request_supervisor::{
             ActivationOutcome, CleanupPermit, CompletionTrace, RequestReservation,
             SupervisedRequest,
@@ -87,9 +91,16 @@ impl RuntimeHost {
         let http_client =
             Some(self.bytecode_http_client_port(cancellation.clone(), http_response_max_bytes));
         let execution_budget = supervised_request.execution_budget();
-        let handles = BytecodeRequestExecutionHandles {
-            request_heap_limits: self.request_heap_limits(),
-        };
+        let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
+        let server_stream_writer = production_bytecode_server_stream_writer_for_entry(
+            request_envelope.request_id.clone(),
+            &request_envelope.mode,
+            request_envelope
+                .http_adapter
+                .as_ref()
+                .map(|adapter| adapter.kind),
+            sender.clone(),
+        );
         let response_sink = Arc::new(HostHttpGatewayResponseSink::new(sender.clone()));
         let request_id = header.request_id.clone();
         let host = self.clone();
@@ -107,6 +118,7 @@ impl RuntimeHost {
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
                     http_client,
+                    server_stream_writer,
                     heap: None,
                 },
             )
@@ -170,9 +182,7 @@ impl RuntimeHost {
         let http_client =
             Some(self.bytecode_http_client_port(cancellation.clone(), http_response_max_bytes));
         let execution_budget = supervised_request.execution_budget();
-        let handles = BytecodeRequestExecutionHandles {
-            request_heap_limits: self.request_heap_limits(),
-        };
+        let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
@@ -189,6 +199,7 @@ impl RuntimeHost {
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
                     http_client,
+                    server_stream_writer: None,
                     heap: None,
                 },
             )
@@ -278,9 +289,7 @@ impl RuntimeHost {
         let http_client =
             Some(self.bytecode_http_client_port(cancellation.clone(), http_response_max_bytes));
         let execution_budget = supervised_request.execution_budget();
-        let handles = BytecodeRequestExecutionHandles {
-            request_heap_limits: self.request_heap_limits(),
-        };
+        let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
@@ -297,6 +306,7 @@ impl RuntimeHost {
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
                     http_client,
+                    server_stream_writer: None,
                     heap: None,
                 },
             )
@@ -359,9 +369,7 @@ impl RuntimeHost {
         let http_client =
             Some(self.bytecode_http_client_port(cancellation.clone(), http_response_max_bytes));
         let execution_budget = supervised_request.execution_budget();
-        let handles = BytecodeRequestExecutionHandles {
-            request_heap_limits: self.request_heap_limits(),
-        };
+        let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let host = self.clone();
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
@@ -377,6 +385,7 @@ impl RuntimeHost {
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
                     http_client,
+                    server_stream_writer: None,
                     heap: None,
                 },
             )
@@ -708,6 +717,21 @@ impl RuntimeHost {
 impl RuntimeHost {
     pub(super) fn observe_bytecode_request_cleanup(&self, permit: CleanupPermit) {
         permit.observe_cleanup();
+    }
+}
+
+pub(super) fn validated_http_response_max_bytes(limit: usize) -> NonZeroUsize {
+    NonZeroUsize::new(limit)
+        .expect("Router bootstrap validates http.maxResponseBytes as a positive safe integer")
+}
+
+pub(super) fn bytecode_request_execution_handles(
+    host: &RuntimeHost,
+    http_response_max_bytes: usize,
+) -> BytecodeRequestExecutionHandles {
+    BytecodeRequestExecutionHandles {
+        request_heap_limits: host.request_heap_limits(),
+        max_response_bytes: validated_http_response_max_bytes(http_response_max_bytes),
     }
 }
 

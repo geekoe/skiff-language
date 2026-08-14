@@ -1,9 +1,11 @@
-use skiff_runtime_request::{BoundaryResponse, ResponseEnd, ResponseEvent, ResponseStreamEvent};
+use skiff_runtime_request::{BoundaryResponse, ResponseEnd, ResponseEvent};
 
 use crate::error::RuntimeError;
 
 const RESPONSE_LIMIT_CODE: &str = "ResourceLimitExceeded";
 
+/// Validates only a completed unary body. Server-stream capacity is reserved
+/// and committed by the scheduler-owned request resource table.
 pub(super) fn validate_unary_response(
     response: &BoundaryResponse,
     max_bytes: usize,
@@ -35,16 +37,6 @@ impl HttpResponseCeiling {
         Self {
             max_bytes,
             emitted_bytes: 0,
-        }
-    }
-
-    pub(super) fn account_stream_event(
-        &mut self,
-        event: &ResponseStreamEvent,
-    ) -> Result<(), RuntimeError> {
-        match event {
-            ResponseStreamEvent::Chunk { payload, .. } => self.account(payload.len()),
-            ResponseStreamEvent::Start { .. } | ResponseStreamEvent::End => Ok(()),
         }
     }
 

@@ -25,7 +25,7 @@ async fn phase_1_runtime_vcp_and_expected_red_obligations() {
 
     let mut expected_red = Vec::new();
     prove_scalar_local_call_vcp(&host, &bootstrap, &fixture, &recording, &mut expected_red).await;
-    prove_disabled_route_is_fail_closed(&host, &bootstrap, &fixture, &recording).await;
+    prove_scalar_stream_mode_is_fail_closed(&host, &recording).await;
     prove_expired_budget_is_a_single_terminal(&host, &bootstrap, &fixture, &recording).await;
 
     assert!(
@@ -79,26 +79,30 @@ fn assert_canonical_scalar_fixture() {
     assert!(source.contains("return result - 4"));
 }
 
-async fn prove_disabled_route_is_fail_closed(
+async fn prove_scalar_stream_mode_is_fail_closed(
     host: &super::RuntimeHost,
-    bootstrap: &crate::host::router_session::ConnectionBootstrap,
-    fixture: &PublishedFixture,
     recording: &Phase1RecordingSink,
 ) {
+    let fixture =
+        PublishedFixture::build("phase-1-raw-http-scalar-negative").into_raw_http_scalar_negative();
+    let bootstrap = fixture.connection_bootstrap();
     let correlation = phase_1_correlation("disabled-server-stream");
     let mut request = fixture.canonical_request(&correlation, "unary");
     let BytecodeRequestStartFrameWireHeader::Http(header) = &mut request.header else {
         panic!("canonical scalar fixture remains HTTP")
     };
     header.mode = "serverStream".to_string();
-    let response = run_phase_1_request(host, bootstrap, &correlation, request).await;
+    let response = run_phase_1_request(host, &bootstrap, &correlation, request).await;
     assert_control_error(
         response,
         "UnsupportedRuntimeFeature",
-        "bytecode HTTP ingress only supports unary request.start, got serverStream",
+        "serverStream bytecode ingress entry has no linked stream-result authority",
         None,
     );
-    assert!(recording.for_correlation(&correlation).is_empty());
+    assert!(
+        !recording.for_correlation(&correlation).is_empty(),
+        "scalar serverStream mismatch must fail after exact route admission"
+    );
 }
 
 async fn prove_expired_budget_is_a_single_terminal(

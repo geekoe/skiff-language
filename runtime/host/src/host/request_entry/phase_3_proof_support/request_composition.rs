@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_model::{
@@ -93,8 +93,10 @@ pub(in crate::host::request_entry) async fn drive_phase_3_vcp_request(
         execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
+            max_response_bytes: NonZeroUsize::new(1024).expect("test response limit is non-zero"),
         },
         http_client: None,
+        server_stream_writer: None,
         heap: Some(heap),
     });
     let owner_inventory = driven.owner_inventory.into_snapshot();

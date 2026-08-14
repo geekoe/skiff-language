@@ -114,9 +114,11 @@ impl RuntimeHostHarness {
             next_binary_of_type(&mut websocket, "runtime.capabilities", deadline).await;
         let capabilities = decode_runtime_capabilities_frame(&capabilities_bytes)
             .expect("decode production runtime.capabilities");
+        let canonical_artifact_root = fs::canonicalize(&fixture.artifact_root)
+            .expect("canonicalize published Phase 5 artifact root");
         assert_eq!(
             capabilities.capabilities.artifact_root.as_deref(),
-            Some(fixture.artifact_root.to_string_lossy().as_ref())
+            Some(canonical_artifact_root.to_string_lossy().as_ref())
         );
         assert!(capabilities.capabilities.lazy_load);
         assert!(capabilities
@@ -237,6 +239,9 @@ impl RuntimeHostHarness {
             let bytes = next_binary(&mut self.websocket, deadline, context).await;
             let (typed, _) = decode_typed_binary_frame::<TypedEnvelope>(&bytes)
                 .expect("decode RuntimeHost health envelope");
+            if typed.envelope_type == "runtime.capabilities" {
+                continue;
+            }
             assert_eq!(
                 typed.envelope_type, "runtime.health",
                 "unexpected RuntimeHost frame while waiting for {context}"
@@ -341,9 +346,13 @@ async fn next_binary_of_type(
         if typed.envelope_type == wanted {
             return bytes;
         }
-        assert_eq!(
-            typed.envelope_type, "runtime.health",
-            "unexpected RuntimeHost frame before {wanted}"
+        assert!(
+            matches!(
+                typed.envelope_type.as_str(),
+                "runtime.capabilities" | "runtime.health"
+            ),
+            "unexpected RuntimeHost frame {} before {wanted}",
+            typed.envelope_type
         );
     }
 }
@@ -358,7 +367,7 @@ async fn next_non_health(
         let (typed, _) = decode_typed_binary_frame::<TypedEnvelope>(&bytes)
             .expect("decode RuntimeHost typed frame");
         match typed.envelope_type.as_str() {
-            "runtime.health" => continue,
+            "runtime.capabilities" | "runtime.health" => continue,
             "response.error" => panic!(
                 "RuntimeHost emitted response.error for {request_id}: {:?}",
                 typed.rest

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use skiff_runtime_capability_context::CancellationToken;
 use skiff_runtime_model::{
@@ -188,8 +188,10 @@ async fn drive_phase_4_seam(
         execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
+            max_response_bytes: NonZeroUsize::new(1024).expect("test response limit is non-zero"),
         },
         http_client: None,
+        server_stream_writer: None,
         heap: Some(heap),
     })
 }

@@ -34,13 +34,21 @@ impl RecordingSink {
             "{scenario} must fail before production emits an execution observation: {observations:?}"
         );
     }
+
+    fn assert_non_empty(&self, scenario: &str) {
+        let observations = self.0.lock().expect("Phase 0 negative recording sink lock");
+        assert!(
+            !observations.is_empty(),
+            "{scenario} must reach pinned production admission before failing closed"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn phase_0_negative_production_boundaries() {
     corrupt_published_bytecode_identity_fails_before_observation().await;
     wrong_gateway_identity_fails_before_observation().await;
-    server_stream_mode_fails_before_observation().await;
+    server_stream_mode_on_scalar_entry_fails_after_pinned_admission().await;
 }
 
 async fn corrupt_published_bytecode_identity_fails_before_observation() {
@@ -72,6 +80,7 @@ async fn corrupt_published_bytecode_identity_fails_before_observation() {
         |request| request,
         "InternalError",
         expected_message,
+        false,
     )
     .await;
 }
@@ -111,14 +120,15 @@ async fn wrong_gateway_identity_fails_before_observation() {
         },
         "InternalError",
         expected_message,
+        false,
     )
     .await;
 }
 
-async fn server_stream_mode_fails_before_observation() {
+async fn server_stream_mode_on_scalar_entry_fails_after_pinned_admission() {
     let scenario = "server-stream-mode";
     let correlation = Correlation::new(scenario);
-    let fixture = PublishedFixture::build(scenario);
+    let fixture = PublishedFixture::build(scenario).into_raw_http_scalar_negative();
     run_negative_request(
         scenario,
         correlation,
@@ -131,7 +141,8 @@ async fn server_stream_mode_fails_before_observation() {
             request
         },
         "UnsupportedRuntimeFeature",
-        "bytecode HTTP ingress only supports unary request.start, got serverStream".to_string(),
+        "serverStream bytecode ingress entry has no linked stream-result authority".to_string(),
+        true,
     )
     .await;
 }
@@ -143,6 +154,7 @@ async fn run_negative_request(
     mutate: impl FnOnce(CanonicalSkbfRequest) -> CanonicalSkbfRequest,
     expected_code: &str,
     expected_message: String,
+    expect_observations: bool,
 ) {
     let canonical = fixture.canonical_request(&correlation, "unary");
     assert!(!canonical.frame.is_empty());
@@ -183,14 +195,22 @@ async fn run_negative_request(
     };
     assert_eq!(error.code, expected_code, "{scenario} error code");
     assert_eq!(error.message, expected_message, "{scenario} error message");
-    recording.assert_empty(scenario);
+    if expect_observations {
+        recording.assert_non_empty(scenario);
+    } else {
+        recording.assert_empty(scenario);
+    }
     timeout(
         std::time::Duration::from_secs(10),
         drain_closed_channel_without_second_terminal(&mut receiver, &correlation.request_id),
     )
     .await
     .expect("production sender must close after the terminal response");
-    recording.assert_empty(scenario);
+    if expect_observations {
+        recording.assert_non_empty(scenario);
+    } else {
+        recording.assert_empty(scenario);
+    }
 }
 
 fn different_gateway_identity(identity: &GatewayEntryIdentity) -> GatewayEntryIdentity {

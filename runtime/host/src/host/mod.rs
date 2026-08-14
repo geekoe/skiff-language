@@ -1,6 +1,7 @@
 pub mod blob_store;
 mod bytecode_capability_adapter;
 mod bytecode_execution_observation;
+mod bytecode_server_stream_writer;
 mod control_plane;
 pub mod file_runtime;
 mod health;

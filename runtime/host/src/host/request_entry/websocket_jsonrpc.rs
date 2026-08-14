@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
-    self as request_runner, BoundaryResponse, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, RequestEnvelope, RequestExecutionOwnerInventorySnapshot,
-    ResponseEnd, ResponseError, ResponseEvent, RouterWriterMessage,
+    self as request_runner, BoundaryResponse, BytecodeRequestExecutionInput, RequestEnvelope,
+    RequestExecutionOwnerInventorySnapshot, ResponseEnd, ResponseError, ResponseEvent,
+    RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -16,7 +16,10 @@ use skiff_runtime_transport::{
 use tokio::sync::mpsc;
 use tracing::error;
 
-use super::assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest;
+use super::{
+    assembly::bytecode_request_execution_handles,
+    assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest,
+};
 use crate::{
     host::{
         request_supervisor::{
@@ -82,9 +85,7 @@ impl RuntimeHost {
         let http_client =
             Some(self.bytecode_http_client_port(cancellation.clone(), http_response_max_bytes));
         let execution_budget = supervised_request.execution_budget();
-        let handles = BytecodeRequestExecutionHandles {
-            request_heap_limits: self.request_heap_limits(),
-        };
+        let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
@@ -101,6 +102,7 @@ impl RuntimeHost {
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
                     http_client,
+                    server_stream_writer: None,
                     heap: None,
                 },
             )

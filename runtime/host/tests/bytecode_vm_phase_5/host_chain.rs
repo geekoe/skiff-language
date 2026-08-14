@@ -79,10 +79,14 @@ async fn drive_top_level_vcp(prefix: &str, request_id: &str) -> TopLevelEvidence
     host.send_http_request(request_id, VCP_PATH, upstream.base_url().as_bytes(), None)
         .await;
 
-    assert!(
-        upstream.wait_for_path_async("/request", IO_TIMEOUT).await,
-        "RuntimeHost never dispatched the pinned unary HTTP target"
-    );
+    tokio::select! {
+        reached = upstream.wait_for_path_async("/request", IO_TIMEOUT) => {
+            assert!(reached, "RuntimeHost never dispatched the pinned unary HTTP target");
+        }
+        error = host.control_error(request_id) => {
+            panic!("RuntimeHost rejected the serverStream request before unary dispatch: {error:?}");
+        }
+    }
     let pending_health = host
         .next_health_matching("one pending unary HTTP request", |counters| {
             counters.outbound_requests_pending == 1
