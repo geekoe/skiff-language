@@ -37,7 +37,9 @@ use skiff_compiler::{
     SourceTree, SourceTreeFile,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
+use skiff_runtime_capability_context::{
+    CancellationToken, ExecutionBudgetReason, StreamPullSource, StreamRuntimeResult,
+};
 use skiff_runtime_linker::{
     link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage, LinkLimits,
 };
@@ -59,15 +61,17 @@ use skiff_runtime_request::execution_budget::{
     AdmittedRequestDeadline, ExecutionBudgetPolicy, ExecutionWinner, TrustedMonotonicClock,
 };
 use skiff_runtime_request::{
-    drive_runtime_bytecode_request, drive_runtime_bytecode_request_controlled, BinaryHttpRequest,
-    BinaryHttpRequestMetadata, BoundaryResponse, BytecodeRequestExecutionHandles,
-    BytecodeRequestExecutionInput, BytecodeServerStreamFrame, BytecodeServerStreamWriteFailure,
-    BytecodeServerStreamWriteFuture, BytecodeServerStreamWriterPort, ControlledBytecodeDrive,
-    DrivenBytecodeRequestOwnerInventory, ExecutionBudget,
-    GatewayAdapterArg as RequestGatewayAdapterArg,
+    drive_runtime_bytecode_request, drive_runtime_bytecode_request_async,
+    drive_runtime_bytecode_request_controlled, BinaryHttpRequest, BinaryHttpRequestMetadata,
+    BoundaryResponse, BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture,
+    BytecodeHttpRequest, BytecodeHttpResponse, BytecodeHttpStreamRegistrar,
+    BytecodeHttpStreamResponse, BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput,
+    BytecodeServerStreamFrame, BytecodeServerStreamWriteFailure, BytecodeServerStreamWriteFuture,
+    BytecodeServerStreamWriterPort, ControlledBytecodeDrive, DrivenBytecodeRequestOwnerInventory,
+    ExecutionBudget, GatewayAdapterArg as RequestGatewayAdapterArg,
     GatewayAdapterSource as RequestGatewayAdapterSource, HttpAdapter, HttpAdapterCallable,
-    HttpAdapterKind, RequestEnvelope, RequestError, RequestExecutionOwnerInventorySnapshot,
-    RequestVmHeap, ResponseEnd, ResponseEvent,
+    HttpAdapterKind, OwnedExecutionControl, RequestEnvelope, RequestError,
+    RequestExecutionOwnerInventorySnapshot, RequestVmHeap, ResponseEnd, ResponseEvent,
 };
 
 fn compile_scalar_package() -> (Arc<PackageArtifact>, Arc<ValidatedBytecodeArtifact>) {
@@ -526,6 +530,7 @@ struct ServerStreamFixture {
     image: Arc<DeploymentExecutionImage>,
     selector: IngressSelector,
     gateway_identity: GatewayEntryIdentity,
+    drop_left: Option<(IngressSelector, GatewayEntryIdentity)>,
     package_id: String,
 }
 
@@ -576,7 +581,7 @@ function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStrea
     rightBody = rightBody.concat(chunk.toUtf8String())
   }
 
-  emit({ tag: "start", status: 207, headers: [] })
+  emit({ tag: "start", status: 207, headers: unary.headers })
   emit({ tag: "chunk", value: bytes.fromUtf8("U=") })
   emit({ tag: "chunk", value: unary.body })
   emit({ tag: "chunk", value: bytes.fromUtf8("|A=") })
@@ -691,6 +696,23 @@ function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponse
             .expect("server-stream ingress pins a gateway entry")
             .gateway_entry_identity
             .clone();
+        let drop_left = deployment
+            .ingress
+            .iter()
+            .find(|binding| {
+                binding.selector.protocol == IngressProtocol::Http
+                    && binding.selector.method.as_deref() == Some("POST")
+                    && binding.selector.path.ends_with("-drop-left")
+            })
+            .map(|binding| {
+                let identity = deployment
+                    .gateway_entries
+                    .get(&binding.gateway_entry_key)
+                    .expect("drop-left ingress pins a gateway entry")
+                    .gateway_entry_identity
+                    .clone();
+                (binding.selector.clone(), identity)
+            });
         let resolver = FilesystemDeploymentBytecodeContentResolver::open(&artifact_root)
             .expect("open canonical server-stream fixture resolver");
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
@@ -702,6 +724,7 @@ function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponse
             image,
             selector,
             gateway_identity,
+            drop_left,
             package_id: package_id.to_string(),
         }
     }
@@ -710,6 +733,19 @@ function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponse
         self.image
             .http_gateway_entry(&self.selector, &self.gateway_identity)
             .unwrap()
+    }
+
+    fn drop_left_target(&self) -> (DeploymentExecutionEntry, IngressSelector) {
+        let (selector, identity) = self
+            .drop_left
+            .as_ref()
+            .expect("fixture publishes the drop-left gateway");
+        (
+            self.image
+                .http_gateway_entry(selector, identity)
+                .expect("drop-left gateway remains linked"),
+            selector.clone(),
+        )
     }
 }
 
@@ -879,6 +915,235 @@ impl BytecodeServerStreamWriterPort for ControlledServerStreamWriter {
     }
 }
 
+struct ReadyHttpBodySource {
+    chunks: VecDeque<Vec<u8>>,
+}
+
+impl StreamPullSource for ReadyHttpBodySource {
+    fn next<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<Option<serde_json::Value>>> + Send + 'a>>
+    {
+        let next = self.chunks.pop_front();
+        Box::pin(
+            async move { Ok(next.map(|chunk| skiff_runtime_boundary::value::bytes_value(&chunk))) },
+        )
+    }
+}
+
+#[derive(Default)]
+struct BreakStreamProbe {
+    left_drops: AtomicUsize,
+    left_drop_notify: tokio::sync::Notify,
+    right_waiting: AtomicBool,
+    right_wait_notify: tokio::sync::Notify,
+    right_open: AtomicBool,
+    right_open_notify: tokio::sync::Notify,
+}
+
+impl BreakStreamProbe {
+    async fn wait_for_left_drop(&self) {
+        while self.left_drops.load(Ordering::Acquire) == 0 {
+            self.left_drop_notify.notified().await;
+        }
+    }
+
+    async fn wait_for_right_pull(&self) {
+        while !self.right_waiting.load(Ordering::Acquire) {
+            self.right_wait_notify.notified().await;
+        }
+    }
+
+    fn open_right(&self) {
+        self.right_open.store(true, Ordering::Release);
+        self.right_open_notify.notify_waiters();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BreakStreamSide {
+    Left,
+    Right,
+}
+
+struct BreakProbeBodySource {
+    side: BreakStreamSide,
+    chunks: VecDeque<Vec<u8>>,
+    probe: Arc<BreakStreamProbe>,
+    first_pull: bool,
+}
+
+impl StreamPullSource for BreakProbeBodySource {
+    fn next<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = StreamRuntimeResult<Option<serde_json::Value>>> + Send + 'a>>
+    {
+        let next = self.chunks.pop_front();
+        let probe = Arc::clone(&self.probe);
+        let gate_right = matches!(self.side, BreakStreamSide::Right) && self.first_pull;
+        self.first_pull = false;
+        Box::pin(async move {
+            if gate_right {
+                probe.right_waiting.store(true, Ordering::Release);
+                probe.right_wait_notify.notify_waiters();
+                while !probe.right_open.load(Ordering::Acquire) {
+                    probe.right_open_notify.notified().await;
+                }
+            }
+            Ok(next.map(|chunk| skiff_runtime_boundary::value::bytes_value(&chunk)))
+        })
+    }
+}
+
+impl Drop for BreakProbeBodySource {
+    fn drop(&mut self) {
+        if matches!(self.side, BreakStreamSide::Left) {
+            self.probe.left_drops.fetch_add(1, Ordering::AcqRel);
+            self.probe.left_drop_notify.notify_waiters();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BreakProbeHttpClient {
+    probe: Arc<BreakStreamProbe>,
+}
+
+impl BytecodeHttpClientPort for BreakProbeHttpClient {
+    fn request(
+        &self,
+        _request: BytecodeHttpRequest,
+        _execution: OwnedExecutionControl,
+    ) -> BytecodeHttpFuture<BytecodeHttpResponse> {
+        Box::pin(std::future::ready(Err(
+            BytecodeHttpFailure::InvalidProviderContract(
+                "drop-left fixture does not issue unary HTTP requests".to_string(),
+            ),
+        )))
+    }
+
+    fn stream(
+        &self,
+        request: BytecodeHttpRequest,
+        execution: OwnedExecutionControl,
+        registrar: BytecodeHttpStreamRegistrar,
+    ) -> BytecodeHttpFuture<BytecodeHttpStreamResponse> {
+        let (side, chunks) = if request.url.ends_with("/stream/drop-left") {
+            (
+                BreakStreamSide::Left,
+                [b"left-1".to_vec(), b"left-2".to_vec()]
+                    .into_iter()
+                    .collect(),
+            )
+        } else if request.url.ends_with("/stream/drop-right") {
+            (
+                BreakStreamSide::Right,
+                [b"right".to_vec()].into_iter().collect(),
+            )
+        } else {
+            return Box::pin(std::future::ready(Err(
+                BytecodeHttpFailure::InvalidProviderContract(format!(
+                    "unexpected break-probe stream URL {:?}",
+                    request.url
+                )),
+            )));
+        };
+        let token = registrar.stream_runtime().pull_stream_with_cancellation(
+            BreakProbeBodySource {
+                side,
+                chunks,
+                probe: Arc::clone(&self.probe),
+                first_pull: true,
+            },
+            execution.cancellation_token(),
+        );
+        let result = registrar
+            .take_exact_route(token)
+            .map(|body| BytecodeHttpStreamResponse {
+                status: 200,
+                headers: Vec::new(),
+                body,
+            });
+        Box::pin(std::future::ready(result))
+    }
+}
+
+#[derive(Clone, Default)]
+struct ReadyHttpClient {
+    requests: Arc<Mutex<Vec<BytecodeHttpRequest>>>,
+}
+
+impl ReadyHttpClient {
+    fn requests(&self) -> Vec<BytecodeHttpRequest> {
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl BytecodeHttpClientPort for ReadyHttpClient {
+    fn request(
+        &self,
+        request: BytecodeHttpRequest,
+        _execution: OwnedExecutionControl,
+    ) -> BytecodeHttpFuture<BytecodeHttpResponse> {
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(request);
+        Box::pin(std::future::ready(Ok(BytecodeHttpResponse {
+            status: 200,
+            headers: vec![skiff_runtime_request::HttpNameValue {
+                name: "x-upstream".to_string(),
+                value: "unary".to_string(),
+            }],
+            body: b"unary".to_vec(),
+        })))
+    }
+
+    fn stream(
+        &self,
+        request: BytecodeHttpRequest,
+        execution: OwnedExecutionControl,
+        registrar: BytecodeHttpStreamRegistrar,
+    ) -> BytecodeHttpFuture<BytecodeHttpStreamResponse> {
+        let chunks = if request.url.ends_with("/stream/left") {
+            [b"left-1".to_vec(), b"left-2".to_vec()]
+                .into_iter()
+                .collect()
+        } else if request.url.ends_with("/stream/right") {
+            [b"right".to_vec()].into_iter().collect()
+        } else {
+            return Box::pin(std::future::ready(Err(
+                BytecodeHttpFailure::InvalidProviderContract(format!(
+                    "unexpected test stream URL {:?}",
+                    request.url
+                )),
+            )));
+        };
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(request);
+        let token = registrar.stream_runtime().pull_stream_with_cancellation(
+            ReadyHttpBodySource { chunks },
+            execution.cancellation_token(),
+        );
+        let result = registrar
+            .take_exact_route(token)
+            .map(|body| BytecodeHttpStreamResponse {
+                status: 200,
+                headers: vec![skiff_runtime_request::HttpNameValue {
+                    name: "x-upstream".to_string(),
+                    value: "stream".to_string(),
+                }],
+                body,
+            });
+        Box::pin(std::future::ready(result))
+    }
+}
+
 fn server_stream_input(
     writer: Arc<dyn BytecodeServerStreamWriterPort>,
     cancellation: CancellationToken,
@@ -951,6 +1216,40 @@ fn server_stream_input_for_fixture(
     }
 }
 
+fn drop_left_server_stream_input(
+    writer: Arc<dyn BytecodeServerStreamWriterPort>,
+    execution_budget: Arc<ExecutionBudget>,
+) -> BytecodeRequestExecutionInput {
+    let fixture = shapeless_raw_http_fixture();
+    let mut input = server_stream_input_for_fixture(
+        fixture,
+        writer,
+        CancellationToken::new(),
+        execution_budget,
+        NonZeroUsize::new(1024).unwrap(),
+    );
+    let (target, selector) = fixture.drop_left_target();
+    input.target = target;
+    input.request.ingress_selector = Some(selector.clone());
+    let binary = input
+        .request
+        .binary_http
+        .as_mut()
+        .expect("server-stream input retains raw HTTP metadata");
+    binary.metadata.path.clone_from(&selector.path);
+    binary.metadata.url = format!("https://example.test{}", selector.path);
+    let adapter = input
+        .request
+        .http_adapter
+        .as_mut()
+        .expect("server-stream input retains its raw HTTP adapter");
+    adapter.handler = HttpAdapterCallable::PackageFunction {
+        package_id: fixture.package_id.clone(),
+        symbol_path: "main.dropLeft".to_string(),
+    };
+    input
+}
+
 fn expected_server_stream_frames() -> Vec<BytecodeServerStreamFrame> {
     vec![
         BytecodeServerStreamFrame::Start {
@@ -1020,7 +1319,10 @@ impl VmHeap for RecordingServerStreamHeap {
 
     fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
         self.inner.release_snapshot(owner)?;
-        if owner.compact_type_tag().get() == self.trace.item_type_tag {
+        if owner
+            .compact_type_tag()
+            .is_some_and(|tag| tag.type_index() == self.trace.item_type_tag)
+        {
             self.trace.item_releases.fetch_add(1, Ordering::AcqRel);
         }
         Ok(())
@@ -1068,10 +1370,6 @@ impl VmHeap for RecordingServerStreamHeap {
             .allocate_representation(payload, identity, compact_type_tag, flags)
     }
 
-    fn alloc_bytes(&mut self, value: Vec<u8>) -> Result<ValueSlot, VmHeapError> {
-        self.inner.alloc_bytes(value)
-    }
-
     fn alloc_typed_bytes(
         &mut self,
         value: Vec<u8>,
@@ -1079,10 +1377,6 @@ impl VmHeap for RecordingServerStreamHeap {
         flags: ValueFlags,
     ) -> Result<ValueSlot, VmHeapError> {
         self.inner.alloc_typed_bytes(value, compact_type_tag, flags)
-    }
-
-    fn alloc_string(&mut self, value: String) -> Result<ValueSlot, VmHeapError> {
-        self.inner.alloc_string(value)
     }
 
     fn alloc_typed_string(
@@ -1124,7 +1418,9 @@ impl VmHeap for RecordingServerStreamHeap {
     }
 
     fn record_field(&self, record: &ValueSlot, field: &str) -> Result<ValueSlot, VmHeapError> {
-        if record.compact_type_tag().get() == self.trace.item_type_tag
+        if record
+            .compact_type_tag()
+            .is_some_and(|tag| tag.type_index() == self.trace.item_type_tag)
             && field == "tag"
             && self.trace.fail_item_decode.swap(false, Ordering::AcqRel)
         {
@@ -1205,7 +1501,7 @@ fn server_stream_item_type_tag() -> u32 {
     function
         .stream_result_type_ref()
         .expect("server-stream function has exact stream authority");
-    let item_type_tag = function
+    function
         .instructions()
         .iter()
         .enumerate()
@@ -1213,12 +1509,7 @@ fn server_stream_item_type_tag() -> u32 {
         .and_then(|(position, _)| function.stack_map().entries().get(position))
         .and_then(|entry| entry.stack_before().last())
         .map(|value| value.ty().get())
-        .expect("linked EmitStream has one exact item type");
-    assert_ne!(
-        item_type_tag, 0,
-        "typed server-stream items never use the legacy zero tag"
-    );
-    item_type_tag
+        .expect("linked EmitStream has one exact item type")
 }
 
 struct TestMonotonicClock(Mutex<Instant>);
@@ -1816,7 +2107,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_5_raw_http_boundary_materializes_without_a_matching_dense_shape() {
+    fn phase_5_raw_http_boundary_uses_entry_shape_across_duplicate_type_rows() {
         let fixture = shapeless_raw_http_fixture();
         let writer = Arc::new(ControlledServerStreamWriter::new([]));
         let input = server_stream_input_for_fixture(
@@ -1829,14 +2120,21 @@ mod tests {
         let [request_type] = input.target.signature().parameter_types() else {
             panic!("raw HTTP server-stream fixture must have one exact request parameter");
         };
-        assert!(
-            !input
-                .target
-                .image()
-                .shapes()
-                .iter()
-                .any(|shape| shape.nominal_type() == *request_type),
-            "the regression fixture must retain the distinct signature/type-row provenance"
+        let shape_index = input
+            .target
+            .parameter_dense_record_shape()
+            .expect("raw HTTP gateway carries compiler-owned parameter materialization");
+        let shape = &input.target.image().shapes()[shape_index.get() as usize];
+        assert_eq!(shape.index(), shape_index);
+        assert_ne!(
+            shape.nominal_type(),
+            *request_type,
+            "the regression fixture must retain duplicate numeric type rows"
+        );
+        assert_eq!(
+            input.target.image().types()[shape.nominal_type().get() as usize].type_ref(),
+            input.target.image().types()[request_type.get() as usize].type_ref(),
+            "the exact compiler-owned shape and gateway signature must agree by complete type/ABI"
         );
 
         let driven = drive_runtime_bytecode_request(input);
@@ -1854,6 +2152,152 @@ mod tests {
         let snapshot = driven.owner_inventory.into_snapshot();
         assert_eq!(snapshot.pending.current, 0);
         assert!(!snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn phase_5_http_client_boundary_uses_exact_type_abi_across_duplicate_rows() {
+        let fixture = shapeless_raw_http_fixture();
+        let writer = Arc::new(ControlledServerStreamWriter::new(
+            std::iter::repeat_with(|| WriterPlan::Ready(Ok(()))).take(8),
+        ));
+        let http_client = Arc::new(ReadyHttpClient::default());
+        let mut input = server_stream_input_for_fixture(
+            fixture,
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(1024).unwrap(),
+        );
+        input.http_client = Some(Arc::clone(&http_client) as Arc<dyn BytecodeHttpClientPort>);
+
+        let driven = drive_runtime_bytecode_request_async(input).await;
+
+        assert!(
+            matches!(&driven.result, Ok(BoundaryResponse::StreamSent)),
+            "exact HTTP client carriers must reach the server-stream writer: {:?}; requests={:?}; frames={:?}",
+            driven.result,
+            http_client.requests(),
+            writer.frames(),
+        );
+        assert_eq!(
+            writer.frames(),
+            vec![
+                BytecodeServerStreamFrame::Start {
+                    status: 207,
+                    headers: vec![skiff_runtime_request::HttpNameValue {
+                        name: "x-upstream".to_string(),
+                        value: "unary".to_string(),
+                    }],
+                },
+                BytecodeServerStreamFrame::Chunk {
+                    sequence: 0,
+                    payload: b"U=".to_vec(),
+                },
+                BytecodeServerStreamFrame::Chunk {
+                    sequence: 1,
+                    payload: b"unary".to_vec(),
+                },
+                BytecodeServerStreamFrame::Chunk {
+                    sequence: 2,
+                    payload: b"|A=".to_vec(),
+                },
+                BytecodeServerStreamFrame::Chunk {
+                    sequence: 3,
+                    payload: b"left-1left-2".to_vec(),
+                },
+                BytecodeServerStreamFrame::Chunk {
+                    sequence: 4,
+                    payload: b"|B=".to_vec(),
+                },
+                BytecodeServerStreamFrame::Chunk {
+                    sequence: 5,
+                    payload: b"right".to_vec(),
+                },
+                BytecodeServerStreamFrame::End,
+            ]
+        );
+        let requests = http_client.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .map(|request| request.url.as_str())
+                .collect::<Vec<_>>(),
+            ["chunk/request", "chunk/stream/left", "chunk/stream/right"]
+        );
+        assert!(requests.iter().all(|request| {
+            request.method == "GET"
+                && request.headers.is_empty()
+                && request.body.is_none()
+                && request.timeout_ms == Some(5000)
+        }));
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(!snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn phase_5_stream_break_promptly_closes_endpoint_before_next_stream() {
+        let probe = Arc::new(BreakStreamProbe::default());
+        let http_client = Arc::new(BreakProbeHttpClient {
+            probe: Arc::clone(&probe),
+        });
+        let writer = Arc::new(ControlledServerStreamWriter::new(
+            std::iter::repeat_with(|| WriterPlan::Ready(Ok(()))).take(4),
+        ));
+        let mut input = drop_left_server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+        );
+        input.http_client = Some(http_client as Arc<dyn BytecodeHttpClientPort>);
+
+        let mut drive = Box::pin(drive_runtime_bytecode_request_async(input));
+        tokio::select! {
+            driven = &mut drive => {
+                panic!("drop-left request completed before the right stream gate: {:?}", driven.result);
+            }
+            () = probe.wait_for_left_drop() => {}
+        }
+        probe.wait_for_right_pull().await;
+
+        assert_eq!(probe.left_drops.load(Ordering::Acquire), 1);
+        assert!(!probe.right_open.load(Ordering::Acquire));
+
+        probe.open_right();
+        let driven = drive.await;
+        assert!(
+            matches!(&driven.result, Ok(BoundaryResponse::StreamSent)),
+            "drop-left request must complete after the right stream opens: {:?}",
+            driven.result
+        );
+        assert_eq!(
+            writer.frames(),
+            vec![
+                BytecodeServerStreamFrame::Start {
+                    status: 208,
+                    headers: Vec::new(),
+                },
+                BytecodeServerStreamFrame::Chunk {
+                    sequence: 0,
+                    payload: b"A=left-1".to_vec(),
+                },
+                BytecodeServerStreamFrame::Chunk {
+                    sequence: 1,
+                    payload: b"|B=right".to_vec(),
+                },
+                BytecodeServerStreamFrame::End,
+            ]
+        );
+        assert_eq!(probe.left_drops.load(Ordering::Acquire), 1);
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
         assert_eq!(snapshot.resource.current, 0);
         assert!(snapshot.resource.ever_created);
         assert_eq!(snapshot.child.current, 0);

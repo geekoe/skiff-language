@@ -71,6 +71,8 @@ function broken(input: Stream<bytes>) -> void {
 "#;
     let artifact = emit_unchecked_source(SOURCE);
     let lowered = lower(SOURCE);
+    let validated = skiff_artifact_model::bytecode::structurally_validate(&artifact)
+        .expect("emitted loop artifact is structurally valid");
 
     for symbol in ["main.normal", "main.continued", "main.broken"] {
         let mir = lowered.mir_units()[0]
@@ -85,15 +87,67 @@ function broken(input: Stream<bytes>) -> void {
             .expect("for-in item slot exists")
             .slot;
         let function_key = symbol.replace('.', "::");
-        let function = artifact
-            .image
-            .functions
-            .get(&function_key)
-            .unwrap_or_else(|| panic!("missing emitted function {function_key}"));
-        let decoded = BoundedDecoder::new()
-            .decode_function(&function.words)
-            .expect("emitted loop decodes");
-        let item_drops_before_jump = decoded
+        let function = validated
+            .functions()
+            .iter()
+            .find(|function| function.function_key == function_key)
+            .unwrap_or_else(|| panic!("missing validated function {function_key}"));
+        let stream_next_position = function
+            .instructions
+            .iter()
+            .position(|instruction| instruction.descriptor.kind == Opcode::StreamNext)
+            .expect("stream loop emits StreamNext");
+        let stream_next = &function.instructions[stream_next_position];
+        let loop_header = stream_next_position
+            .checked_sub(1)
+            .and_then(|position| function.instructions.get(position))
+            .expect("stream loop has a header before StreamNext");
+        assert_eq!(
+            loop_header.descriptor.kind,
+            Opcode::BudgetCheckpoint,
+            "{symbol} backedge must re-enter through the loop budget checkpoint"
+        );
+        let resume = validated
+            .resume_sites()
+            .iter()
+            .find(|resume| resume.function_key == function_key && resume.site_pc == stream_next.pc)
+            .expect("StreamNext carries one exact resume descriptor");
+        let continuation_pc = resume
+            .end_resume_pc
+            .expect("StreamNext carries an independent natural-end continuation");
+        let continuation = function
+            .instructions
+            .iter()
+            .find(|instruction| instruction.pc == continuation_pc)
+            .expect("natural-end continuation is an instruction header");
+        assert_eq!(
+            continuation.descriptor.kind,
+            Opcode::Drop,
+            "{symbol} continuation must begin by releasing the endpoint"
+        );
+        let endpoint_slot = stream_next.operand(0);
+        assert_eq!(
+            continuation.operand(0),
+            endpoint_slot,
+            "{symbol} continuation must release the exact StreamNext endpoint"
+        );
+        let resumed_item_store = function
+            .instructions
+            .iter()
+            .find(|instruction| instruction.pc == resume.resume_pc)
+            .expect("item resume pc is an instruction header");
+        assert_eq!(resumed_item_store.descriptor.kind, Opcode::StoreSlot);
+        assert_eq!(resumed_item_store.operand(0), item_slot);
+
+        let branch_target = |instruction: &skiff_artifact_model::bytecode::DecodedInstruction| {
+            skiff_artifact_model::bytecode::decode_branch_target(
+                instruction.pc,
+                u32::try_from(instruction.operand_words.len()).unwrap(),
+                instruction.operand(0),
+            )
+            .expect("validated Jump has a target")
+        };
+        let item_drop_edges = function
             .instructions
             .windows(2)
             .filter(|pair| {
@@ -101,19 +155,22 @@ function broken(input: Stream<bytes>) -> void {
                     && pair[0].operand(0) == item_slot
                     && pair[1].descriptor.kind == Opcode::Jump
             })
-            .count();
+            .collect::<Vec<_>>();
+        let [item_drop_edge] = item_drop_edges.as_slice() else {
+            panic!("{symbol} must have one exact live-item cleanup edge")
+        };
+        let expected_target = if symbol == "main.broken" {
+            continuation_pc
+        } else {
+            loop_header.pc
+        };
         assert_eq!(
-            item_drops_before_jump, 1,
-            "{symbol} must drop its live item exactly once before leaving the iteration"
+            branch_target(&item_drop_edge[1]),
+            expected_target,
+            "{symbol} item cleanup must target the exact backedge or loop continuation"
         );
-        let endpoint_slot = decoded
-            .instructions
-            .iter()
-            .find(|instruction| instruction.descriptor.kind == Opcode::StreamNext)
-            .expect("stream loop emits StreamNext")
-            .operand(0);
         assert_eq!(
-            decoded
+            function
                 .instructions
                 .iter()
                 .filter(|instruction| {
@@ -122,7 +179,7 @@ function broken(input: Stream<bytes>) -> void {
                 })
                 .count(),
             1,
-            "{symbol} must release the stream endpoint exactly once at loop continuation"
+            "{symbol} must release the endpoint exactly once"
         );
     }
 }

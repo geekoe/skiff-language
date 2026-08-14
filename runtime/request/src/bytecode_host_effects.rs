@@ -10,9 +10,9 @@ use std::{
 
 use serde_json::Value;
 use skiff_runtime_capability_context::{
-    CancellationToken, StreamCancelSignal, StreamCancelSignalApi, StreamLifetimeGuard,
-    StreamPullSource, StreamRuntime, StreamRuntimeApi, StreamRuntimeError, StreamRuntimeResult,
-    StreamSink, StreamSinkApi,
+    CancellationSignals, CancellationSource, CancellationToken, StreamCancelSignal,
+    StreamCancelSignalApi, StreamLifetimeGuard, StreamPullSource, StreamRuntime, StreamRuntimeApi,
+    StreamRuntimeError, StreamRuntimeResult, StreamSink, StreamSinkApi,
 };
 use skiff_runtime_model::{
     error::{RuntimeErrorPayload, WirePayload},
@@ -182,7 +182,8 @@ impl BytecodeHttpStreamRegistrar {
 
 struct CapabilityPullState {
     source: Mutex<Option<Box<dyn StreamPullSource>>>,
-    cancellation: CancellationToken,
+    request_cancellation: CancellationToken,
+    route_cancellation: CancellationSource,
     terminated: AtomicBool,
 }
 
@@ -204,7 +205,8 @@ impl CapabilityByteStreamSource {
         Self {
             shared: Arc::new(CapabilityPullState {
                 source: Mutex::new(Some(source)),
-                cancellation,
+                request_cancellation: cancellation,
+                route_cancellation: CancellationSource::new(),
                 terminated: AtomicBool::new(false),
             }),
         }
@@ -219,7 +221,10 @@ impl VmRootSource for CapabilityByteStreamSource {
 
 impl RequestByteStreamSource for CapabilityByteStreamSource {
     fn start_pull(&self) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError> {
-        if self.shared.terminated.load(Ordering::Acquire) {
+        if self.shared.terminated.load(Ordering::Acquire)
+            || self.shared.request_cancellation.is_cancelled()
+            || self.shared.route_cancellation.is_cancelled()
+        {
             return Err(RequestByteStreamPullStartError::Terminated);
         }
         let mut source = self
@@ -233,8 +238,11 @@ impl RequestByteStreamSource for CapabilityByteStreamSource {
         Ok(Box::pin(async move {
             let output = {
                 let mut next = source.next();
-                let cancellation = shared.cancellation.clone();
-                let mut cancelled = Box::pin(cancellation.wait_cancelled());
+                let cancellations = CancellationSignals::from_tokens([
+                    shared.request_cancellation.clone(),
+                    shared.route_cancellation.token(),
+                ]);
+                let mut cancelled = Box::pin(cancellations.wait_cancelled());
                 std::future::poll_fn(|context| {
                     if cancelled.as_mut().poll(context).is_ready() {
                         return std::task::Poll::Ready(Err(RequestByteStreamFailure::Cancelled));
@@ -278,7 +286,10 @@ impl RequestByteStreamSource for CapabilityByteStreamSource {
 
     fn terminate(self: Box<Self>, _termination: RequestResourceTermination) {
         self.shared.terminated.store(true, Ordering::Release);
-        self.shared.cancellation.cancel();
+        // Resource termination is local to this one stream route. It must
+        // wake an outstanding pull without cancelling the request token shared
+        // by sibling HTTP calls and streams.
+        self.shared.route_cancellation.cancel();
         drop(
             self.shared
                 .source
@@ -651,11 +662,11 @@ mod tests {
         let snapshot = context.into_not_started();
         assert_eq!(snapshot.resource.current, 0);
         assert!(snapshot.resource.ever_created);
-        assert!(cancellation.is_cancelled());
+        assert!(!cancellation.is_cancelled());
     }
 
     #[test]
-    fn outstanding_pull_is_single_consumer_and_termination_cancels_without_revival() {
+    fn outstanding_pull_is_single_consumer_and_route_termination_does_not_cancel_request() {
         let cancellation = CancellationToken::new();
         let source = CapabilityByteStreamSource::new(Box::new(PendingSource), cancellation.clone());
         let shared = Arc::clone(&source.shared);
@@ -669,7 +680,8 @@ mod tests {
         assert!(matches!(pull.as_mut().poll(&mut task), Poll::Pending));
 
         Box::new(source).terminate(RequestResourceTermination::Cancelled);
-        assert!(cancellation.is_cancelled());
+        assert!(!cancellation.is_cancelled());
+        assert!(shared.route_cancellation.is_cancelled());
         assert!(matches!(
             pull.as_mut().poll(&mut task),
             Poll::Ready(Err(RequestByteStreamFailure::Cancelled))

@@ -3813,6 +3813,14 @@ impl VmFiber {
             });
         }
         let (item_type, item_plan) = self.operand_type_and_plan(&frame, instruction, 0)?;
+        let item_shape =
+            resume
+                .emit_stream_item_shape()
+                .ok_or(VmError::FullValueLifecyclePlanUnavailable {
+                    function,
+                    instruction,
+                    opcode: Opcode::EmitStream,
+                })?;
         if !LifecycleExecutor::supports_release(&item_plan) {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
@@ -3858,6 +3866,7 @@ impl VmFiber {
         let stream_item = StreamItem::new(
             VmOwnedValues::new(Arc::clone(self.entry.image()), Box::new([item])),
             item_type,
+            item_shape,
             item_plan,
             function,
             instruction,

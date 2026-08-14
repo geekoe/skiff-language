@@ -150,8 +150,11 @@ impl RequestVmHeap {
         let route = value
             .as_resource_ref()
             .ok_or(VmHeapError::InvalidValueMetadata)?;
+        let compact_type_tag = value
+            .compact_type_tag()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
         self.resources(operation)?
-            .validate_vm_route_metadata(route, value.compact_type_tag(), value.flags())
+            .validate_vm_route_metadata(route, compact_type_tag, value.flags())
             .map_err(|error| Self::map_resource_lookup(route, error))
     }
 
@@ -200,15 +203,6 @@ impl RequestVmHeap {
             ));
         }
         self.register_handle(heap_handle, compact_type_tag, flags)
-    }
-
-    /// Allocates a RequestHeap local carrier cell containing a string value.
-    ///
-    /// Strings do not have a fixed-width immediate slot, so the adapter keeps
-    /// them as request-local carrier cells. This is also the representation
-    /// payload path used by string representation map keys.
-    pub fn alloc_string(&mut self, value: impl Into<String>) -> Result<ValueSlot, VmHeapError> {
-        self.alloc_string_with_metadata(value.into(), CompactTypeTag::new(0), ValueFlags::new(0))
     }
 
     fn alloc_string_with_metadata(
@@ -334,7 +328,8 @@ impl RequestVmHeap {
         let entry = self.live.get(&handle).ok_or_else(|| {
             Self::invalid_handle(handle, VmHandleInvalidReason::StaleGenerationOrEpoch)
         })?;
-        if entry.compact_type_tag != value.compact_type_tag() || entry.flags != value.flags() {
+        if value.compact_type_tag() != Some(entry.compact_type_tag) || entry.flags != value.flags()
+        {
             return Err(VmHeapError::InvalidValueMetadata);
         }
         self.heap.get(entry.heap_handle).map_err(|_| {
@@ -356,7 +351,8 @@ impl RequestVmHeap {
         let entry = self.live.get_mut(&handle).ok_or_else(|| {
             Self::invalid_handle(handle, VmHandleInvalidReason::StaleGenerationOrEpoch)
         })?;
-        if entry.compact_type_tag != value.compact_type_tag() || entry.flags != value.flags() {
+        if value.compact_type_tag() != Some(entry.compact_type_tag) || entry.flags != value.flags()
+        {
             return Err(VmHeapError::InvalidValueMetadata);
         }
         self.heap.get(entry.heap_handle).map_err(|_| {
@@ -817,6 +813,9 @@ impl RequestVmHeap {
     fn clone_container(&mut self, container: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
         let operation = VmHeapOperation::CommitWritablePath;
         let heap_handle = self.request_handle(container, operation)?;
+        let compact_type_tag = container
+            .compact_type_tag()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
         let node = self
             .heap
             .get(heap_handle)
@@ -885,15 +884,13 @@ impl RequestVmHeap {
                 return Err(error);
             }
         };
-        let slot =
-            match self.register_handle(new_handle, container.compact_type_tag(), container.flags())
-            {
-                Ok(slot) => slot,
-                Err(error) => {
-                    self.restore_shares(&shared)?;
-                    return Err(error);
-                }
-            };
+        let slot = match self.register_handle(new_handle, compact_type_tag, container.flags()) {
+            Ok(slot) => slot,
+            Err(error) => {
+                self.restore_shares(&shared)?;
+                return Err(error);
+            }
+        };
         match names {
             None => {
                 self.array_slots.insert(new_handle, shared);
@@ -1164,8 +1161,11 @@ impl VmHeap for RequestVmHeap {
         let route = owner
             .as_resource_ref()
             .ok_or(VmHeapError::InvalidValueMetadata)?;
+        let compact_type_tag = owner
+            .compact_type_tag()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
         self.resources(VmHeapOperation::ReleaseResource)?
-            .release_vm_route_metadata(route, owner.compact_type_tag(), owner.flags())
+            .release_vm_route_metadata(route, compact_type_tag, owner.flags())
             .map_err(|error| Self::map_resource_lookup(route, error))?;
         Ok(())
     }
@@ -1285,10 +1285,6 @@ impl VmHeap for RequestVmHeap {
         Ok(slot)
     }
 
-    fn alloc_bytes(&mut self, value: Vec<u8>) -> Result<ValueSlot, VmHeapError> {
-        self.alloc_bytes_with_metadata(value, CompactTypeTag::new(0), ValueFlags::new(0))
-    }
-
     fn alloc_typed_bytes(
         &mut self,
         value: Vec<u8>,
@@ -1296,10 +1292,6 @@ impl VmHeap for RequestVmHeap {
         flags: ValueFlags,
     ) -> Result<ValueSlot, VmHeapError> {
         self.alloc_bytes_with_metadata(value, compact_type_tag, flags)
-    }
-
-    fn alloc_string(&mut self, value: String) -> Result<ValueSlot, VmHeapError> {
-        self.alloc_string_with_metadata(value, CompactTypeTag::new(0), ValueFlags::new(0))
     }
 
     fn alloc_typed_string(
@@ -1784,12 +1776,16 @@ mod trait_dispatch_tests {
     use super::*;
 
     #[test]
-    fn alloc_bytes_dispatches_through_the_vm_heap_trait_object() {
+    fn alloc_typed_bytes_dispatches_through_the_vm_heap_trait_object() {
         let mut heap = RequestVmHeap::with_domain(9, 0, RequestHeapLimits::default());
         let heap: &mut dyn VmHeap = &mut heap;
         let slot = heap
-            .alloc_bytes(vec![1, 2, 3])
-            .expect("RequestVmHeap must implement alloc_bytes on the heap trait object");
+            .alloc_typed_bytes(
+                vec![1, 2, 3],
+                CompactTypeTag::try_from_type_index(7).unwrap(),
+                ValueFlags::new(0),
+            )
+            .expect("RequestVmHeap must implement typed bytes on the heap trait object");
         assert_eq!(slot.kind(), Some(ValueKind::RequestHeapRef));
         assert_eq!(heap.bytes_value(&slot), Ok(vec![1, 2, 3]));
     }

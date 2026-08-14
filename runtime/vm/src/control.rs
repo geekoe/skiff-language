@@ -4,8 +4,8 @@ use skiff_artifact_model::Opcode;
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex, InterfaceTableIndex,
-    LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex, SyntheticCallbackIndex,
-    TypeIndex,
+    LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex, ShapeIndex,
+    SyntheticCallbackIndex, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -498,6 +498,7 @@ impl VmRootSource for StreamInvocation {
 pub struct StreamItem {
     item: VmOwnedValues,
     item_type: TypeIndex,
+    item_shape: ShapeIndex,
     plan: LinkedValueTransferPlan,
     function: FunctionIndex,
     instruction: InstructionIndex,
@@ -509,6 +510,7 @@ impl StreamItem {
     pub(crate) fn new(
         item: VmOwnedValues,
         item_type: TypeIndex,
+        item_shape: ShapeIndex,
         plan: LinkedValueTransferPlan,
         function: FunctionIndex,
         instruction: InstructionIndex,
@@ -520,6 +522,7 @@ impl StreamItem {
         Self {
             item,
             item_type,
+            item_shape,
             plan,
             function,
             instruction,
@@ -541,6 +544,13 @@ impl StreamItem {
         self.item_type
     }
 
+    /// Exact linker-resolved dense shape emitted for this particular
+    /// `EmitStream` site. This is site authority, not a function-wide nominal
+    /// type lookup.
+    pub const fn item_shape(&self) -> ShapeIndex {
+        self.item_shape
+    }
+
     /// Releases the emitted owner through its exact linked lifecycle plan on
     /// the request heap thread, then returns the unique zero-result resume.
     /// No VM value crosses an actual-Pending writer flush.
@@ -548,6 +558,7 @@ impl StreamItem {
         let Self {
             item,
             item_type: _,
+            item_shape: _,
             plan,
             function,
             instruction,

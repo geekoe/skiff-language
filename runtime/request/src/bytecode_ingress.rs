@@ -7,14 +7,14 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    http_boundary::{canonical_http_boundary_symbol, HTTP_BOUNDARY_PACKAGE_ID, HTTP_REQUEST_TYPE},
+    http_boundary::{HTTP_BOUNDARY_PACKAGE_ID, HTTP_REQUEST_TYPE},
     HostEffectExecutorIdentity, Opcode, PackageRefIr, PrivilegedAffineCompositeIdentity, TypeRefIr,
 };
 use skiff_runtime_boundary::http::HttpBoundaryNameValue;
 use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
 use skiff_runtime_linked_bytecode::{
-    LinkedNativeCallableSignature, LinkedShapeEntry, LinkedValueDropPlan, LinkedValueTransferPlan,
-    TypeIndex,
+    LinkedNativeCallableSignature, LinkedResumeResultMaterialization, LinkedShapeEntry,
+    LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
@@ -30,6 +30,7 @@ use skiff_runtime_model::{
 };
 
 const HTTP_HEADER_TYPE: &str = "std.http.HttpHeader";
+const HTTP_QUERY_PARAM_TYPE: &str = "std.http.HttpQueryParam";
 const HTTP_CLIENT_REQUEST_TYPE: &str = "std.http.HttpClientRequest";
 const HTTP_CLIENT_RESPONSE_TYPE: &str = "std.http.HttpClientResponse";
 const HTTP_CLIENT_STREAM_HANDLE_TYPE: &str = "std.http.HttpClientStreamHandle";
@@ -104,6 +105,29 @@ pub struct BytecodeRequestExecutionHandles {
 pub struct BytecodeRequestRetention {
     heap: Option<Box<dyn VmHeap + Send>>,
     budget: Option<Box<dyn VmBudget + Send>>,
+    cleanup_roots: Vec<ValueSlot>,
+}
+
+impl Drop for BytecodeRequestRetention {
+    fn drop(&mut self) {
+        let Some(heap) = self.heap.as_deref_mut() else {
+            return;
+        };
+        while let Some(root) = self.cleanup_roots.last().copied() {
+            let released = if root.kind() == Some(ValueKind::ResourceRef) {
+                heap.release_resource(&root)
+            } else {
+                heap.release_snapshot(&root)
+            };
+            if released.is_err() {
+                // The concrete heap remains the final owner and is dropped
+                // immediately after this retention carrier. Never discard the
+                // slot before a successful explicit release.
+                break;
+            }
+            self.cleanup_roots.pop();
+        }
+    }
 }
 
 /// The result of the sole synchronous Phase 1 bytecode request drive.
@@ -136,7 +160,6 @@ pub(super) type VmSuspended = SuspendedTrampoline<VmFiber, VmResumeToken>;
 
 struct ServerStreamStart {
     handle: RequestResourceHandle,
-    item_type: TypeIndex,
     writer: SharedBytecodeServerStreamWriterPort,
 }
 
@@ -313,6 +336,7 @@ pub fn drive_runtime_bytecode_request_controlled(
                 retention: BytecodeRequestRetention {
                     heap: None,
                     budget: None,
+                    cleanup_roots: Vec::new(),
                 },
                 owner_inventory: DrivenBytecodeRequestOwnerInventory::NotStarted(
                     context.into_not_started(),
@@ -336,6 +360,7 @@ pub fn drive_runtime_bytecode_request_controlled(
         http_client: start.http_client.clone(),
         execution_control: start.execution_control.clone(),
         stream_registrar,
+        cleanup_roots: Mutex::new(Vec::new()),
         manual_sleep_completion: Mutex::new(None),
     });
     let stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor<VmFiber>>> =
@@ -343,7 +368,6 @@ pub fn drive_runtime_bytecode_request_controlled(
             Arc::new(BytecodeServerStreamSupervisor::new(
                 Arc::clone(&runtime),
                 stream.handle,
-                stream.item_type,
                 Arc::clone(&stream.writer),
             )) as Arc<dyn BytecodeStreamSupervisor<VmFiber>>
         });
@@ -382,9 +406,10 @@ pub fn drive_runtime_bytecode_request_controlled(
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HttpResultLayout {
-    root: TypeIndex,
-    header: TypeIndex,
-    body: TypeIndex,
+    root_tag: CompactTypeTag,
+    header_tag: CompactTypeTag,
+    body_tag: CompactTypeTag,
+    string_tag: CompactTypeTag,
 }
 
 pub(super) enum RequestPendingOutcome {
@@ -520,6 +545,10 @@ pub(super) struct RequestPendingRuntime {
     pub(super) execution_control: crate::OwnedExecutionControl,
     #[allow(dead_code)]
     stream_registrar: BytecodeHttpStreamRegistrar,
+    /// Owners whose explicit release failed during synchronous host-result
+    /// materialization. No pending or GC safepoint intervenes before terminal
+    /// request retention takes this escrow.
+    cleanup_roots: Mutex<Vec<ValueSlot>>,
     /// Deterministic Phase 4 regression authority. Only typed Sleep may
     /// install a handle here; HTTP and StreamNext are host-owned futures and
     /// can never accept an injected empty result.
@@ -606,6 +635,15 @@ fn finish_host_argument_use<T>(
 }
 
 impl RequestPendingRuntime {
+    fn take_cleanup_roots(&self) -> Vec<ValueSlot> {
+        std::mem::take(
+            &mut *self
+                .cleanup_roots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     pub(super) fn begin_pending<T, F, M>(
         &self,
         resume: VmResumeToken,
@@ -868,9 +906,10 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                             "typed bytecode HTTP provider is unavailable".to_string(),
                         )
                     })?;
-                    let request =
+                    let (request, string_type) =
                         decode_http_request(&image, &signature, arguments.values(), heap)?;
-                    let layout = http_result_layout(&image, &signature, false)?;
+                    let layout =
+                        http_result_layout(&image, &signature, &resume, string_type, false)?;
                     let mut future =
                         provider.request(request, self.runtime.execution_control.clone());
                     let first_poll = poll_future_once(future.as_mut());
@@ -884,7 +923,13 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                             let _ = self.runtime.budget.request_cancel();
                         }
                         let outcome = self.runtime.ready_terminal().unwrap_or_else(|| {
-                            materialize_http_request_outcome(&image, layout, result, heap)
+                            materialize_http_request_outcome(
+                                &image,
+                                layout,
+                                result,
+                                &self.runtime.cleanup_roots,
+                                heap,
+                            )
                         });
                         Ok(Self::ready_adapter(resume, outcome))
                     }
@@ -903,9 +948,10 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                             "typed bytecode HTTP provider is unavailable".to_string(),
                         )
                     })?;
-                    let request =
+                    let (request, string_type) =
                         decode_http_request(&image, &signature, arguments.values(), heap)?;
-                    let layout = http_result_layout(&image, &signature, true)?;
+                    let layout =
+                        http_result_layout(&image, &signature, &resume, string_type, true)?;
                     let mut future = provider.stream(
                         request,
                         self.runtime.execution_control.clone(),
@@ -922,7 +968,14 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                             let _ = self.runtime.budget.request_cancel();
                         }
                         let outcome = self.runtime.ready_terminal().unwrap_or_else(|| {
-                            materialize_http_stream_outcome(&image, layout, result, heap)
+                            materialize_http_stream_outcome(
+                                &image,
+                                &self.runtime.resources,
+                                layout,
+                                result,
+                                &self.runtime.cleanup_roots,
+                                heap,
+                            )
                         });
                         Ok(Self::ready_adapter(resume, outcome))
                     }
@@ -1105,20 +1158,6 @@ fn sleep_millis_from_vm_value(value: &ValueSlot) -> Result<u64, BytecodeSchedule
     Ok((value as u64).min(MAX_SLEEP_MILLIS))
 }
 
-pub(super) fn require_exact_slot_type(
-    slot: &ValueSlot,
-    expected: TypeIndex,
-    label: &str,
-) -> Result<(), BytecodeSchedulerError> {
-    if slot.compact_type_tag().get() != expected.get() {
-        return Err(BytecodeSchedulerError::Port(format!(
-            "{label} does not carry linked type {}",
-            expected.get()
-        )));
-    }
-    Ok(())
-}
-
 fn linked_type_ref<'a>(
     image: &'a DeploymentExecutionImage,
     ty: TypeIndex,
@@ -1143,13 +1182,7 @@ pub(super) fn require_exact_slot_type_ref(
     expected: TypeIndex,
     label: &str,
 ) -> Result<TypeIndex, BytecodeSchedulerError> {
-    let raw_actual = slot.compact_type_tag().get();
-    if raw_actual == 0 {
-        return Err(BytecodeSchedulerError::Port(format!(
-            "{label} has no linked concrete type/ABI tag"
-        )));
-    }
-    let actual = TypeIndex::new(raw_actual);
+    let actual = required_slot_type(slot, label)?;
     let expected_ref = linked_type_ref(image, expected, label)?;
     let actual_ref = linked_type_ref(image, actual, label)?;
     if actual_ref != expected_ref {
@@ -1158,6 +1191,43 @@ pub(super) fn require_exact_slot_type_ref(
         )));
     }
     Ok(actual)
+}
+
+pub(super) fn required_slot_type(
+    slot: &ValueSlot,
+    label: &str,
+) -> Result<TypeIndex, BytecodeSchedulerError> {
+    slot.compact_type_tag()
+        .map(CompactTypeTag::type_index)
+        .map(TypeIndex::new)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!("{label} has no linked concrete type/ABI tag"))
+        })
+}
+
+fn scheduler_compact_type_tag(
+    ty: TypeIndex,
+    label: &str,
+) -> Result<CompactTypeTag, BytecodeSchedulerError> {
+    CompactTypeTag::try_from_type_index(ty.get()).ok_or_else(|| {
+        BytecodeSchedulerError::Port(format!(
+            "{label} linked type {} cannot be represented by a VM type tag",
+            ty.get()
+        ))
+    })
+}
+
+fn request_compact_type_tag(ty: TypeIndex, label: &str) -> RequestResult<CompactTypeTag> {
+    CompactTypeTag::try_from_type_index(ty.get()).ok_or_else(|| {
+        RequestError::Decode(format!(
+            "{label} linked type {} cannot be represented by a VM type tag",
+            ty.get()
+        ))
+    })
+}
+
+fn heap_compact_type_tag(ty: TypeIndex) -> Result<CompactTypeTag, VmHeapError> {
+    CompactTypeTag::try_from_type_index(ty.get()).ok_or(VmHeapError::InvalidValueMetadata)
 }
 
 pub(super) fn validate_record_carrier_fields(
@@ -1242,6 +1312,16 @@ fn exact_http_header_element_type(
     expected_abi: &str,
     label: &str,
 ) -> Result<TypeIndex, BytecodeSchedulerError> {
+    exact_std_http_array_element_type(image, array_type, expected_abi, HTTP_HEADER_TYPE, label)
+}
+
+fn exact_std_http_array_element_type(
+    image: &DeploymentExecutionImage,
+    array_type: TypeIndex,
+    expected_abi: &str,
+    expected_element: &str,
+    label: &str,
+) -> Result<TypeIndex, BytecodeSchedulerError> {
     let header_type = array_element_type(image, array_type)?;
     let array_ref = linked_type_ref(image, array_type, label)?;
     let header_ref = linked_type_ref(image, header_type, label)?;
@@ -1255,38 +1335,9 @@ fn exact_http_header_element_type(
             "{label} is not an exact linked Array carrier"
         )));
     }
-    let header_abi = require_std_http_symbol_abi(image, header_type, HTTP_HEADER_TYPE, label)?;
+    let header_abi = require_std_http_symbol_abi(image, header_type, expected_element, label)?;
     require_same_http_abi(header_abi, expected_abi, label)?;
     Ok(header_type)
-}
-
-pub(super) fn exact_shape(
-    image: &DeploymentExecutionImage,
-    ty: TypeIndex,
-) -> Result<&LinkedShapeEntry, BytecodeSchedulerError> {
-    let mut matches = image
-        .shapes()
-        .iter()
-        .filter(|shape| shape.nominal_type() == ty);
-    let shape = matches.next().ok_or_else(|| {
-        let linked_type = image
-            .types()
-            .get(ty.get() as usize)
-            .filter(|entry| entry.index() == ty)
-            .map(|entry| format!("{:?}", entry.type_ref()))
-            .unwrap_or_else(|| "<missing>".to_string());
-        BytecodeSchedulerError::Port(format!(
-            "typed host value type {} ({linked_type}) has no linked dense shape",
-            ty.get(),
-        ))
-    })?;
-    if matches.next().is_some() {
-        return Err(BytecodeSchedulerError::Port(format!(
-            "typed host value type {} has more than one dense shape",
-            ty.get()
-        )));
-    }
-    Ok(shape)
 }
 
 pub(super) fn validate_shape_fields(
@@ -1442,7 +1493,7 @@ fn decode_http_request(
     signature: &LinkedNativeCallableSignature,
     arguments: &[ValueSlot],
     heap: &mut dyn VmHeap,
-) -> Result<BytecodeHttpRequest, BytecodeSchedulerError> {
+) -> Result<(BytecodeHttpRequest, TypeIndex), BytecodeSchedulerError> {
     validate_native_arity(signature, 1, 1)?;
     let request_type = signature.parameter_types()[0];
     let request_abi = require_std_http_symbol_abi(
@@ -1471,24 +1522,33 @@ fn decode_http_request(
         &["body", "headers", "method", "timeoutMs", "url"],
         "typed HTTP request",
     )?;
-    let method = heap
+    let method_slot = heap
         .record_field(request, "method")
-        .and_then(|value| heap.string_value(&value))
         .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-    let url = heap
+    let string_type = required_slot_type(&method_slot, "typed HTTP request method")?;
+    validate_builtin_type(image, string_type, "string")?;
+    let method = heap
+        .string_value(&method_slot)
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let url_slot = heap
         .record_field(request, "url")
-        .and_then(|value| heap.string_value(&value))
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    require_exact_slot_type_ref(image, &url_slot, string_type, "typed HTTP request URL")?;
+    let url = heap
+        .string_value(&url_slot)
         .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
     let headers_value = heap
         .record_field(request, "headers")
         .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-    let raw_header_type = headers_value.compact_type_tag().get();
-    if raw_header_type == 0 {
-        return Err(BytecodeSchedulerError::Port(
-            "typed HTTP headers have no linked element type/ABI tag".to_string(),
-        ));
-    }
-    let header_type = TypeIndex::new(raw_header_type);
+    let header_type = headers_value
+        .compact_type_tag()
+        .map(CompactTypeTag::type_index)
+        .map(TypeIndex::new)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "typed HTTP headers have no linked element type/ABI tag".to_string(),
+            )
+        })?;
     let header_abi =
         require_std_http_symbol_abi(image, header_type, HTTP_HEADER_TYPE, "typed HTTP headers")?;
     require_same_http_abi(header_abi, request_abi, "typed HTTP headers")?;
@@ -1504,11 +1564,17 @@ fn decode_http_request(
         validate_record_carrier_fields(heap, &header, &["name", "value"], "typed HTTP header")?;
         let name = heap
             .record_field(&header, "name")
-            .and_then(|value| heap.string_value(&value))
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        require_exact_slot_type_ref(image, &name, string_type, "typed HTTP header name")?;
+        let name = heap
+            .string_value(&name)
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
         let value = heap
             .record_field(&header, "value")
-            .and_then(|value| heap.string_value(&value))
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        require_exact_slot_type_ref(image, &value, string_type, "typed HTTP header value")?;
+        let value = heap
+            .string_value(&value)
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
         headers.push(HttpNameValue { name, value });
     }
@@ -1542,18 +1608,22 @@ fn decode_http_request(
                 })?,
         )
     };
-    Ok(BytecodeHttpRequest {
-        method,
-        url,
-        headers,
-        body,
-        timeout_ms,
-    })
+    Ok((
+        BytecodeHttpRequest {
+            method,
+            url,
+            headers,
+            body,
+            timeout_ms,
+        },
+        string_type,
+    ))
 }
 
 fn exact_http_result_shape<'a>(
     image: &'a DeploymentExecutionImage,
     signature: &LinkedNativeCallableSignature,
+    resume: &VmResumeToken,
     stream: bool,
 ) -> Result<&'a LinkedShapeEntry, BytecodeSchedulerError> {
     let [root] = signature.result_types() else {
@@ -1566,6 +1636,36 @@ fn exact_http_result_shape<'a>(
             "typed HTTP result has no exact lifecycle plan".to_string(),
         ));
     };
+    let resume_site = image
+        .resume_sites()
+        .get(resume.resume_site())
+        .filter(|resume_site| {
+            resume_site.function() == resume.function()
+                && resume_site.site() == resume.instruction()
+        })
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "typed HTTP invocation has no matching linked resume site".to_string(),
+            )
+        })?;
+    let [resume_type] = resume_site.result_types() else {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP resume site has no exact linked result type".to_string(),
+        ));
+    };
+    let [resume_plan] = resume_site.result_plans() else {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP resume site has no exact linked result lifecycle plan".to_string(),
+        ));
+    };
+    if linked_type_ref(image, *resume_type, "typed HTTP resume result")?
+        != linked_type_ref(image, *root, "typed HTTP result")?
+        || resume_plan != plan
+    {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP resume result differs from its exact host signature".to_string(),
+        ));
+    }
     if stream {
         let LinkedValueTransferPlan::MoveOnly {
             drop: LinkedValueDropPlan::RecursiveShape { shape },
@@ -1611,29 +1711,44 @@ fn exact_http_result_shape<'a>(
             "typed HTTP response result has no exact snapshot lifecycle plan".to_string(),
         ));
     }
-    let root_ref = linked_type_ref(image, *root, "typed HTTP response result")?;
-    let mut matches = image.shapes().iter().filter(|shape| {
-        shape.privileged_affine_composite().is_none()
-            && shape.plan() == plan
-            && linked_type_ref(image, shape.nominal_type(), "typed HTTP response result")
-                .is_ok_and(|nominal| nominal == root_ref)
-    });
-    let shape = matches.next().ok_or_else(|| {
-        BytecodeSchedulerError::Port(
-            "typed HTTP response result has no exact compiler-emitted shape".to_string(),
-        )
-    })?;
-    if matches.next().is_some() {
+    let [Some(LinkedResumeResultMaterialization::DenseRecord { shape })] =
+        resume_site.result_materializations()
+    else {
         return Err(BytecodeSchedulerError::Port(
-            "typed HTTP response result has duplicate exact compiler-emitted shapes".to_string(),
+            "typed HTTP response resume site has no exact dense materialization shape".to_string(),
+        ));
+    };
+    let linked_shape = image
+        .shapes()
+        .get(shape.get() as usize)
+        .filter(|entry| entry.index() == *shape)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "typed HTTP response resume site references a missing materialization shape"
+                    .to_string(),
+            )
+        })?;
+    if linked_shape.privileged_affine_composite().is_some()
+        || linked_shape.plan() != plan
+        || linked_type_ref(
+            image,
+            linked_shape.nominal_type(),
+            "typed HTTP response result",
+        )? != linked_type_ref(image, *root, "typed HTTP response result")?
+    {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP response materialization shape differs from its exact linked signature"
+                .to_string(),
         ));
     }
-    Ok(shape)
+    Ok(linked_shape)
 }
 
 fn http_result_layout(
     image: &DeploymentExecutionImage,
     signature: &LinkedNativeCallableSignature,
+    resume: &VmResumeToken,
+    string_type: TypeIndex,
     stream: bool,
 ) -> Result<HttpResultLayout, BytecodeSchedulerError> {
     validate_native_arity(signature, 1, 1)?;
@@ -1655,7 +1770,8 @@ fn http_result_layout(
         "typed HTTP result signature",
     )?;
     require_same_http_abi(result_abi, request_abi, "typed HTTP request/result")?;
-    let shape = exact_http_result_shape(image, signature, stream)?;
+    let shape = exact_http_result_shape(image, signature, resume, stream)?;
+    validate_builtin_type(image, string_type, "string")?;
     validate_shape_fields(shape, &["body", "headers", "status"])?;
     let headers = shape_field_type(shape, "headers")?;
     let header =
@@ -1669,9 +1785,10 @@ fn http_result_layout(
         validate_builtin_type(image, body, "bytes")?;
     }
     Ok(HttpResultLayout {
-        root: shape.nominal_type(),
-        header,
-        body,
+        root_tag: scheduler_compact_type_tag(shape.nominal_type(), "typed HTTP result root")?,
+        header_tag: scheduler_compact_type_tag(header, "typed HTTP result header")?,
+        body_tag: scheduler_compact_type_tag(body, "typed HTTP result body")?,
+        string_tag: scheduler_compact_type_tag(string_type, "typed HTTP result string")?,
     })
 }
 
@@ -1679,13 +1796,23 @@ fn allocate_http_headers(
     heap: &mut dyn VmHeap,
     layout: HttpResultLayout,
     headers: Vec<HttpNameValue>,
+    cleanup_escrow: &Mutex<Vec<ValueSlot>>,
 ) -> Result<ValueSlot, VmHeapError> {
     let mut owned = Vec::with_capacity(headers.len());
     for header in headers {
         let checkpoint = owned.len();
-        let name = retain_http_materialized_root(heap.alloc_string(header.name), heap, &mut owned)?;
-        let value =
-            retain_http_materialized_root(heap.alloc_string(header.value), heap, &mut owned)?;
+        let name = retain_http_materialized_root(
+            heap.alloc_typed_string(header.name, layout.string_tag, ValueFlags::new(0)),
+            heap,
+            &mut owned,
+            cleanup_escrow,
+        )?;
+        let value = retain_http_materialized_root(
+            heap.alloc_typed_string(header.value, layout.string_tag, ValueFlags::new(0)),
+            heap,
+            &mut owned,
+            cleanup_escrow,
+        )?;
         let record = heap.allocate_record(
             &[
                 VmRecordField {
@@ -1697,12 +1824,19 @@ fn allocate_http_headers(
                     value,
                 },
             ],
-            CompactTypeTag::new(layout.header.get()),
+            layout.header_tag,
             ValueFlags::new(0),
         );
         let record = match record {
             Ok(record) => record,
-            Err(error) => return Err(cleanup_http_materialized_roots(heap, &mut owned, error)),
+            Err(error) => {
+                return Err(cleanup_http_materialized_roots(
+                    heap,
+                    &mut owned,
+                    error,
+                    cleanup_escrow,
+                ));
+            }
         };
         owned.truncate(checkpoint);
         owned.push(record);
@@ -1712,7 +1846,7 @@ fn allocate_http_headers(
         // VM array carriers store their compiler-emitted element TypeIndex,
         // not the enclosing `Array<T>` row. This matches NewArrayBuilder and
         // lets duplicate exact array rows remain non-authoritative at runtime.
-        CompactTypeTag::new(layout.header.get()),
+        layout.header_tag,
         ValueFlags::new(0),
     );
     match array {
@@ -1720,17 +1854,23 @@ fn allocate_http_headers(
             owned.clear();
             Ok(array)
         }
-        Err(error) => Err(cleanup_http_materialized_roots(heap, &mut owned, error)),
+        Err(error) => Err(cleanup_http_materialized_roots(
+            heap,
+            &mut owned,
+            error,
+            cleanup_escrow,
+        )),
     }
 }
 
 fn materialize_http_response_value(
     layout: HttpResultLayout,
     result: BytecodeHttpResponse,
+    cleanup_escrow: &Mutex<Vec<ValueSlot>>,
     heap: &mut dyn VmHeap,
 ) -> Result<ValueSlot, VmHeapError> {
     let mut owned = Vec::with_capacity(2);
-    let headers = match allocate_http_headers(heap, layout, result.headers) {
+    let headers = match allocate_http_headers(heap, layout, result.headers, cleanup_escrow) {
         Ok(headers) => {
             owned.push(headers);
             headers
@@ -1738,13 +1878,10 @@ fn materialize_http_response_value(
         Err(error) => return Err(error),
     };
     let body = retain_http_materialized_root(
-        heap.alloc_typed_bytes(
-            result.body,
-            CompactTypeTag::new(layout.body.get()),
-            ValueFlags::new(0),
-        ),
+        heap.alloc_typed_bytes(result.body, layout.body_tag, ValueFlags::new(0)),
         heap,
         &mut owned,
+        cleanup_escrow,
     )?;
     let record = heap.allocate_record(
         &[
@@ -1761,7 +1898,7 @@ fn materialize_http_response_value(
                 value: ValueSlot::integer(i64::from(result.status)),
             },
         ],
-        CompactTypeTag::new(layout.root.get()),
+        layout.root_tag,
         ValueFlags::new(0),
     );
     match record {
@@ -1769,32 +1906,53 @@ fn materialize_http_response_value(
             owned.clear();
             Ok(record)
         }
-        Err(error) => Err(cleanup_http_materialized_roots(heap, &mut owned, error)),
+        Err(error) => Err(cleanup_http_materialized_roots(
+            heap,
+            &mut owned,
+            error,
+            cleanup_escrow,
+        )),
     }
 }
 
 fn materialize_http_stream_value(
     layout: HttpResultLayout,
     result: BytecodeHttpStreamResponse,
+    resources: &RequestResourceTable,
+    cleanup_escrow: &Mutex<Vec<ValueSlot>>,
     heap: &mut dyn VmHeap,
 ) -> Result<ValueSlot, VmHeapError> {
     let mut owned = Vec::with_capacity(2);
-    let headers = match allocate_http_headers(heap, layout, result.headers) {
+    let headers = match allocate_http_headers(heap, layout, result.headers, cleanup_escrow) {
         Ok(headers) => {
             owned.push(headers);
             headers
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            return Err(release_unadmitted_http_route(
+                resources,
+                &result.body,
+                error,
+            ));
+        }
     };
-    let body = retain_http_materialized_root(
-        heap.admit_resource_ref(
-            result.body.vm_handle(),
-            CompactTypeTag::new(layout.body.get()),
-            ValueFlags::new(0),
-        ),
-        heap,
-        &mut owned,
-    )?;
+    let body =
+        match heap.admit_resource_ref(result.body.vm_handle(), layout.body_tag, ValueFlags::new(0))
+        {
+            Ok(body) => {
+                owned.push(body);
+                body
+            }
+            Err(error) => {
+                let error =
+                    cleanup_http_materialized_roots(heap, &mut owned, error, cleanup_escrow);
+                return Err(release_unadmitted_http_route(
+                    resources,
+                    &result.body,
+                    error,
+                ));
+            }
+        };
     let record = heap.allocate_record(
         &[
             VmRecordField {
@@ -1810,7 +1968,7 @@ fn materialize_http_stream_value(
                 value: ValueSlot::integer(i64::from(result.status)),
             },
         ],
-        CompactTypeTag::new(layout.root.get()),
+        layout.root_tag,
         ValueFlags::new(0),
     );
     match record {
@@ -1818,7 +1976,28 @@ fn materialize_http_stream_value(
             owned.clear();
             Ok(record)
         }
-        Err(error) => Err(cleanup_http_materialized_roots(heap, &mut owned, error)),
+        Err(error) => Err(cleanup_http_materialized_roots(
+            heap,
+            &mut owned,
+            error,
+            cleanup_escrow,
+        )),
+    }
+}
+
+fn release_unadmitted_http_route(
+    resources: &RequestResourceTable,
+    handle: &RequestResourceHandle,
+    primary: VmHeapError,
+) -> VmHeapError {
+    match resources.release(handle) {
+        Ok(_) => primary,
+        Err(error) => VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::ReleaseResource,
+            message: format!(
+                "typed HTTP stream materialization failed: {primary}; route cleanup failed: {error}"
+            ),
+        },
     }
 }
 
@@ -1826,13 +2005,19 @@ fn retain_http_materialized_root(
     result: Result<ValueSlot, VmHeapError>,
     heap: &mut dyn VmHeap,
     owned: &mut Vec<ValueSlot>,
+    cleanup_escrow: &Mutex<Vec<ValueSlot>>,
 ) -> Result<ValueSlot, VmHeapError> {
     match result {
         Ok(value) => {
             owned.push(value);
             Ok(value)
         }
-        Err(error) => Err(cleanup_http_materialized_roots(heap, owned, error)),
+        Err(error) => Err(cleanup_http_materialized_roots(
+            heap,
+            owned,
+            error,
+            cleanup_escrow,
+        )),
     }
 }
 
@@ -1840,42 +2025,55 @@ fn cleanup_http_materialized_roots(
     heap: &mut dyn VmHeap,
     owned: &mut Vec<ValueSlot>,
     primary: VmHeapError,
+    cleanup_escrow: &Mutex<Vec<ValueSlot>>,
 ) -> VmHeapError {
-    let mut cleanup_errors = Vec::new();
-    while let Some(root) = owned.pop() {
+    let mut result = primary.clone();
+    while let Some(root) = owned.last().copied() {
         let released = if root.kind() == Some(ValueKind::ResourceRef) {
             heap.release_resource(&root)
         } else {
             heap.release_snapshot(&root)
         };
-        if let Err(error) = released {
-            cleanup_errors.push(error.to_string());
+        match released {
+            Ok(()) => {
+                owned.pop();
+            }
+            Err(error) => {
+                result = VmHeapError::HeapOperationFailed {
+                    operation: if root.kind() == Some(ValueKind::ResourceRef) {
+                        VmHeapOperation::ReleaseResource
+                    } else {
+                        VmHeapOperation::ReleaseSnapshot
+                    },
+                    message: format!(
+                        "typed HTTP value materialization failed: {primary}; owner cleanup failed: {error}; the failing owner and earlier roots remain escrowed"
+                    ),
+                };
+                break;
+            }
         }
     }
-    if cleanup_errors.is_empty() {
-        primary
-    } else {
-        VmHeapError::HeapOperationFailed {
-            operation: VmHeapOperation::ReleaseSnapshot,
-            message: format!(
-                "typed HTTP value materialization failed: {primary}; owner cleanup failed: {}",
-                cleanup_errors.join("; ")
-            ),
-        }
+    if !owned.is_empty() {
+        cleanup_escrow
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .append(owned);
     }
+    result
 }
 
 fn materialize_http_request_outcome(
     image: &Arc<DeploymentExecutionImage>,
     layout: HttpResultLayout,
     result: Result<BytecodeHttpResponse, BytecodeHttpFailure>,
+    cleanup_escrow: &Mutex<Vec<ValueSlot>>,
     heap: &mut dyn VmHeap,
 ) -> ResumeOutcome {
     let result = match result {
         Ok(result) => result,
         Err(error) => return http_failure_outcome(error),
     };
-    let materialized = materialize_http_response_value(layout, result, heap);
+    let materialized = materialize_http_response_value(layout, result, cleanup_escrow, heap);
     match materialized {
         Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
             Arc::clone(image),
@@ -1887,15 +2085,18 @@ fn materialize_http_request_outcome(
 
 fn materialize_http_stream_outcome(
     image: &Arc<DeploymentExecutionImage>,
+    resources: &RequestResourceTable,
     layout: HttpResultLayout,
     result: Result<BytecodeHttpStreamResponse, BytecodeHttpFailure>,
+    cleanup_escrow: &Mutex<Vec<ValueSlot>>,
     heap: &mut dyn VmHeap,
 ) -> ResumeOutcome {
     let result = match result {
         Ok(result) => result,
         Err(error) => return http_failure_outcome(error),
     };
-    let materialized = materialize_http_stream_value(layout, result, heap);
+    let materialized =
+        materialize_http_stream_value(layout, result, resources, cleanup_escrow, heap);
     match materialized {
         Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
             Arc::clone(image),
@@ -1953,11 +2154,9 @@ fn materialize_stream_next_outcome(
     heap: &mut dyn VmHeap,
 ) -> ResumeOutcome {
     match result {
-        Ok(Some(bytes)) => match heap.alloc_typed_bytes(
-            bytes,
-            CompactTypeTag::new(item_type.get()),
-            ValueFlags::new(0),
-        ) {
+        Ok(Some(bytes)) => match heap_compact_type_tag(item_type)
+            .and_then(|tag| heap.alloc_typed_bytes(bytes, tag, ValueFlags::new(0)))
+        {
             Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
                 Arc::clone(image),
                 vec![value].into_boxed_slice(),
@@ -2004,15 +2203,16 @@ fn materialize_request_pending_outcome(
     image: &Arc<DeploymentExecutionImage>,
     resources: &RequestResourceTable,
     outcome: RequestPendingOutcome,
+    cleanup_escrow: &Mutex<Vec<ValueSlot>>,
     heap: &mut dyn VmHeap,
 ) -> ResumeOutcome {
     match outcome {
         RequestPendingOutcome::Vm(outcome) => outcome,
         RequestPendingOutcome::HttpRequest { layout, result } => {
-            materialize_http_request_outcome(image, layout, result, heap)
+            materialize_http_request_outcome(image, layout, result, cleanup_escrow, heap)
         }
         RequestPendingOutcome::HttpStream { layout, result } => {
-            materialize_http_stream_outcome(image, layout, result, heap)
+            materialize_http_stream_outcome(image, resources, layout, result, cleanup_escrow, heap)
         }
         RequestPendingOutcome::StreamNext {
             handle,
@@ -2149,6 +2349,7 @@ impl ParkedBytecodeRequest {
                             resume.image(),
                             &resources,
                             outcome,
+                            &self.runtime.cleanup_roots,
                             &mut *self.heap,
                         )
                     },
@@ -2189,6 +2390,7 @@ impl ParkedBytecodeRequest {
             execution_budget,
             mode,
             raw_http_adapter,
+            runtime,
             ..
         } = self;
         let result = project_completed_request(
@@ -2204,6 +2406,7 @@ impl ParkedBytecodeRequest {
             retention: BytecodeRequestRetention {
                 heap: Some(heap),
                 budget: Some(budget),
+                cleanup_roots: runtime.take_cleanup_roots(),
             },
             owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(snapshot),
         })
@@ -2215,6 +2418,7 @@ impl ParkedBytecodeRequest {
             heap,
             budget,
             execution_budget,
+            runtime,
             ..
         } = self;
         let result: RequestResult<BoundaryResponse> =
@@ -2225,6 +2429,7 @@ impl ParkedBytecodeRequest {
             retention: BytecodeRequestRetention {
                 heap: Some(heap),
                 budget: Some(budget),
+                cleanup_roots: runtime.take_cleanup_roots(),
             },
             owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(snapshot),
         })
@@ -2466,7 +2671,7 @@ fn materialize_raw_http_body(
         .map_err(|error| RequestError::Decode(error.to_string()))?;
     heap.alloc_typed_bytes(
         binary.body.clone(),
-        CompactTypeTag::new(body_type.get()),
+        request_compact_type_tag(body_type, "raw HTTP body")?,
         ValueFlags::new(0),
     )
     .map_err(heap_error_to_request_error)
@@ -2478,65 +2683,66 @@ fn materialize_http_request(
     ordinal: usize,
     heap: &mut dyn VmHeap,
 ) -> RequestResult<ValueSlot> {
-    let image = entry.image();
-    let request_type = exact_gateway_parameter_type(entry, ordinal)?;
-    let request_entry = image
-        .types()
-        .get(request_type.get() as usize)
-        .filter(|row| row.index() == request_type)
-        .ok_or_else(|| {
-            RequestError::Decode(format!(
-                "raw HTTP request argument {ordinal} references missing linked type {}",
-                request_type.get()
-            ))
-        })?;
-    let TypeRefIr::PackageSymbol { symbol } = request_entry.type_ref() else {
-        return Err(noncanonical_raw_http_request_type(ordinal, request_type));
-    };
-    if canonical_http_boundary_symbol(symbol) != Some(HTTP_REQUEST_TYPE)
-        || symbol.abi_expectation.as_deref().is_none_or(str::is_empty)
-    {
-        return Err(noncanonical_raw_http_request_type(ordinal, request_type));
-    }
-
-    // The canonical raw-HTTP boundary owns this transport materialization.
-    // Nested VM carriers intentionally use tag zero, exactly like VM-created
-    // string/bytes/record constants: the compiler-emitted entry signature and
-    // transfer plan own their static types. A dense opcode shape may use a
-    // different exact artifact-row TypeIndex, so matching it by nominal name
-    // or shape here would manufacture a second type authority.
+    let layout = raw_http_request_layout(entry, ordinal)?;
     let mut owned = Vec::new();
     let method = retain_materialized_root(
-        heap.alloc_string(binary.metadata.method.clone()),
+        heap.alloc_typed_string(
+            binary.metadata.method.clone(),
+            layout.string_tag,
+            ValueFlags::new(0),
+        ),
         heap,
         &mut owned,
     )?;
     let url = retain_materialized_root(
-        heap.alloc_string(binary.metadata.url.clone()),
+        heap.alloc_typed_string(
+            binary.metadata.url.clone(),
+            layout.string_tag,
+            ValueFlags::new(0),
+        ),
         heap,
         &mut owned,
     )?;
     let path = retain_materialized_root(
-        heap.alloc_string(binary.metadata.path.clone()),
+        heap.alloc_typed_string(
+            binary.metadata.path.clone(),
+            layout.string_tag,
+            ValueFlags::new(0),
+        ),
         heap,
         &mut owned,
     )?;
-    let query = match materialize_name_values(&binary.metadata.query, "raw HTTP query", heap) {
+    let query = match materialize_name_values(
+        &binary.metadata.query,
+        "raw HTTP query",
+        layout.query_tag,
+        layout.string_tag,
+        heap,
+    ) {
         Ok(query) => {
             owned.push(query);
             query
         }
         Err(error) => return Err(cleanup_materialized_roots(heap, &mut owned, error)),
     };
-    let headers = match materialize_name_values(&binary.metadata.headers, "raw HTTP headers", heap)
-    {
+    let headers = match materialize_name_values(
+        &binary.metadata.headers,
+        "raw HTTP headers",
+        layout.header_tag,
+        layout.string_tag,
+        heap,
+    ) {
         Ok(headers) => {
             owned.push(headers);
             headers
         }
         Err(error) => return Err(cleanup_materialized_roots(heap, &mut owned, error)),
     };
-    let body = retain_materialized_root(heap.alloc_bytes(binary.body.clone()), heap, &mut owned)?;
+    let body = retain_materialized_root(
+        heap.alloc_typed_bytes(binary.body.clone(), layout.body_tag, ValueFlags::new(0)),
+        heap,
+        &mut owned,
+    )?;
     let fields = [
         VmRecordField {
             name: "body".to_string(),
@@ -2563,11 +2769,7 @@ fn materialize_http_request(
             value: url,
         },
     ];
-    let request = heap.allocate_record(
-        &fields,
-        CompactTypeTag::new(request_type.get()),
-        ValueFlags::new(0),
-    );
+    let request = heap.allocate_record(&fields, layout.root_tag, ValueFlags::new(0));
     match request {
         Ok(request) => {
             owned.clear();
@@ -2581,18 +2783,136 @@ fn materialize_http_request(
     }
 }
 
+#[derive(Clone, Copy)]
+struct RawHttpRequestLayout {
+    root_tag: CompactTypeTag,
+    string_tag: CompactTypeTag,
+    body_tag: CompactTypeTag,
+    header_tag: CompactTypeTag,
+    query_tag: CompactTypeTag,
+}
+
+fn raw_http_request_layout(
+    entry: &DeploymentExecutionEntry,
+    ordinal: usize,
+) -> RequestResult<RawHttpRequestLayout> {
+    if ordinal != 0 || entry.signature().parameter_types().len() != 1 {
+        return Err(RequestError::Decode(format!(
+            "raw HTTP request argument {ordinal} does not identify the gateway's sole exact parameter"
+        )));
+    }
+    let image = entry.image();
+    let request_type = exact_gateway_parameter_type(entry, ordinal)?;
+    let request_ref = linked_type_ref(image, request_type, "raw HTTP request")
+        .map_err(|error| RequestError::Decode(error.to_string()))?;
+    let request_abi =
+        exact_std_http_symbol_abi(request_ref, HTTP_REQUEST_TYPE, "raw HTTP request parameter")
+            .map_err(|error| RequestError::Decode(error.to_string()))?;
+    let shape_index = entry.parameter_dense_record_shape().ok_or_else(|| {
+        RequestError::Decode(
+            "raw HTTP request parameter lacks compiler-owned dense materialization".to_string(),
+        )
+    })?;
+    let shape = image
+        .shapes()
+        .get(shape_index.get() as usize)
+        .filter(|shape| shape.index() == shape_index)
+        .ok_or_else(|| {
+            RequestError::Decode(format!(
+                "raw HTTP request parameter references missing linked shape {}",
+                shape_index.get()
+            ))
+        })?;
+    validate_shape_fields(
+        shape,
+        &["body", "headers", "method", "path", "query", "url"],
+    )
+    .map_err(|error| RequestError::Decode(error.to_string()))?;
+    if shape.privileged_affine_composite().is_some()
+        || linked_type_ref(image, shape.nominal_type(), "raw HTTP request shape")
+            .map_err(|error| RequestError::Decode(error.to_string()))?
+            != request_ref
+        || entry.signature().parameter_plans().get(ordinal) != Some(shape.plan())
+    {
+        return Err(RequestError::Decode(
+            "raw HTTP request parameter dense materialization differs from its exact linked type/plan"
+                .to_string(),
+        ));
+    }
+
+    let body =
+        shape_field_type(shape, "body").map_err(|error| RequestError::Decode(error.to_string()))?;
+    validate_builtin_type(image, body, "bytes")
+        .map_err(|error| RequestError::Decode(error.to_string()))?;
+    let method = shape_field_type(shape, "method")
+        .map_err(|error| RequestError::Decode(error.to_string()))?;
+    validate_builtin_type(image, method, "string")
+        .map_err(|error| RequestError::Decode(error.to_string()))?;
+    let string_ref = linked_type_ref(image, method, "raw HTTP request string")
+        .map_err(|error| RequestError::Decode(error.to_string()))?;
+    for field in ["path", "url"] {
+        let field_type = shape_field_type(shape, field)
+            .map_err(|error| RequestError::Decode(error.to_string()))?;
+        if linked_type_ref(image, field_type, "raw HTTP request string field")
+            .map_err(|error| RequestError::Decode(error.to_string()))?
+            != string_ref
+        {
+            return Err(RequestError::Decode(format!(
+                "raw HTTP request field {field:?} differs from its exact builtin string carrier"
+            )));
+        }
+    }
+
+    let headers = shape_field_type(shape, "headers")
+        .map_err(|error| RequestError::Decode(error.to_string()))?;
+    let header = exact_std_http_array_element_type(
+        image,
+        headers,
+        request_abi,
+        HTTP_HEADER_TYPE,
+        "raw HTTP request headers",
+    )
+    .map_err(|error| RequestError::Decode(error.to_string()))?;
+    let query = shape_field_type(shape, "query")
+        .map_err(|error| RequestError::Decode(error.to_string()))?;
+    let query = exact_std_http_array_element_type(
+        image,
+        query,
+        request_abi,
+        HTTP_QUERY_PARAM_TYPE,
+        "raw HTTP request query",
+    )
+    .map_err(|error| RequestError::Decode(error.to_string()))?;
+
+    Ok(RawHttpRequestLayout {
+        root_tag: request_compact_type_tag(shape.nominal_type(), "raw HTTP request root")?,
+        string_tag: request_compact_type_tag(method, "raw HTTP request string")?,
+        body_tag: request_compact_type_tag(body, "raw HTTP request body")?,
+        header_tag: request_compact_type_tag(header, "raw HTTP request header")?,
+        query_tag: request_compact_type_tag(query, "raw HTTP request query")?,
+    })
+}
+
 fn materialize_name_values(
     items: &[HttpNameValue],
     label: &str,
+    record_tag: CompactTypeTag,
+    string_tag: CompactTypeTag,
     heap: &mut dyn VmHeap,
 ) -> RequestResult<ValueSlot> {
     let mut owned = Vec::with_capacity(items.len());
     for item in items {
         let checkpoint = owned.len();
-        let name =
-            retain_materialized_root(heap.alloc_string(item.name.clone()), heap, &mut owned)?;
-        let value =
-            retain_materialized_root(heap.alloc_string(item.value.clone()), heap, &mut owned)?;
+        let name = retain_materialized_root(
+            heap.alloc_typed_string(item.name.clone(), string_tag, ValueFlags::new(0)),
+            heap,
+            &mut owned,
+        )?;
+        let value = retain_materialized_root(
+            heap.alloc_typed_string(item.value.clone(), string_tag, ValueFlags::new(0)),
+            heap,
+            &mut owned,
+        )?;
         let record = heap.allocate_record(
             &[
                 VmRecordField {
@@ -2604,7 +2924,7 @@ fn materialize_name_values(
                     value,
                 },
             ],
-            CompactTypeTag::new(0),
+            record_tag,
             ValueFlags::new(0),
         );
         let record = match record {
@@ -2620,7 +2940,9 @@ fn materialize_name_values(
         owned.truncate(checkpoint);
         owned.push(record);
     }
-    let array = heap.allocate_array(&owned, CompactTypeTag::new(0), ValueFlags::new(0));
+    // Request VM arrays carry their exact element TypeIndex. The same tag is
+    // therefore used for each canonical name/value record and its array.
+    let array = heap.allocate_array(&owned, record_tag, ValueFlags::new(0));
     match array {
         Ok(array) => {
             owned.clear();
@@ -2634,13 +2956,6 @@ fn materialize_name_values(
             )),
         )),
     }
-}
-
-fn noncanonical_raw_http_request_type(ordinal: usize, ty: TypeIndex) -> RequestError {
-    RequestError::Decode(format!(
-        "raw HTTP request argument {ordinal} linked type {} is not exact canonical {HTTP_REQUEST_TYPE}",
-        ty.get()
-    ))
 }
 
 fn retain_materialized_root(
@@ -2666,20 +2981,19 @@ fn cleanup_materialized_roots(
     owned: &mut Vec<ValueSlot>,
     primary: RequestError,
 ) -> RequestError {
-    let mut cleanup_errors = Vec::new();
-    while let Some(root) = owned.pop() {
-        if let Err(error) = heap.release_snapshot(&root) {
-            cleanup_errors.push(error.to_string());
+    while let Some(root) = owned.last().copied() {
+        match heap.release_snapshot(&root) {
+            Ok(()) => {
+                owned.pop();
+            }
+            Err(error) => {
+                return RequestError::Decode(format!(
+                    "{primary}; raw HTTP request heap cleanup failed: {error}; the failing owner and earlier roots remain escrowed"
+                ));
+            }
         }
     }
-    if cleanup_errors.is_empty() {
-        primary
-    } else {
-        RequestError::Decode(format!(
-            "{primary}; raw HTTP request heap cleanup failed: {}",
-            cleanup_errors.join("; ")
-        ))
-    }
+    primary
 }
 
 fn heap_error_to_request_error(error: VmHeapError) -> RequestError {
@@ -2768,7 +3082,15 @@ fn validate_bytecode_request(
                     "linked server-stream entry retains a scalar result signature".to_string(),
                 ));
             }
-            let item_type = exact_server_stream_item_type(function)?;
+            if !function
+                .instructions()
+                .iter()
+                .any(|instruction| instruction.opcode() == Opcode::EmitStream)
+            {
+                return Err(RequestError::Decode(
+                    "linked serverStream entry has no linked EmitStream site".to_string(),
+                ));
+            }
             let writer = server_stream_writer.ok_or_else(|| {
                 RequestError::Unsupported(
                     "serverStream bytecode ingress has no transport writer".to_string(),
@@ -2781,60 +3103,12 @@ fn validate_bytecode_request(
                         "server response stream registration failed: {error}"
                     ))
                 })?;
-            Ok(Some(ServerStreamStart {
-                handle,
-                item_type,
-                writer,
-            }))
+            Ok(Some(ServerStreamStart { handle, writer }))
         }
         mode => Err(RequestError::Unsupported(format!(
             "bytecode ingress request.start mode {mode:?} is unsupported"
         ))),
     }
-}
-
-fn exact_server_stream_item_type(
-    function: &skiff_runtime_linked_bytecode::LinkedFunction,
-) -> RequestResult<TypeIndex> {
-    let mut item_type = None;
-    for (position, instruction) in function.instructions().iter().enumerate() {
-        if instruction.opcode() != Opcode::EmitStream {
-            continue;
-        }
-        let entry = function
-            .stack_map()
-            .entries()
-            .get(position)
-            .filter(|entry| entry.instruction().get() as usize == position)
-            .ok_or_else(|| {
-                RequestError::Decode(
-                    "serverStream EmitStream has no exact linked stack-map entry".to_string(),
-                )
-            })?;
-        let current = entry
-            .stack_before()
-            .last()
-            .map(|value| value.ty())
-            .ok_or_else(|| {
-                RequestError::Decode(
-                    "serverStream EmitStream has no linked item operand".to_string(),
-                )
-            })?;
-        match item_type {
-            None => item_type = Some(current),
-            Some(expected) if expected == current => {}
-            Some(_) => {
-                return Err(RequestError::Decode(
-                    "serverStream EmitStream sites disagree on their linked item type".to_string(),
-                ));
-            }
-        }
-    }
-    item_type.ok_or_else(|| {
-        RequestError::Decode(
-            "linked serverStream entry has no linked EmitStream item type".to_string(),
-        )
-    })
 }
 
 fn validate_bytecode_request_metadata(request: &RequestEnvelope) -> RequestResult<()> {
@@ -3134,6 +3408,10 @@ mod tests {
         HttpAdapterKind, RequestEnvelope, ResponseEnd, ResponseEvent,
     };
 
+    fn test_tag(type_index: u32) -> CompactTypeTag {
+        CompactTypeTag::try_from_type_index(type_index).expect("test type index fits compact tag")
+    }
+
     fn test_pending_runtime(
         budget: Arc<ExecutionBudget>,
         cancellation: CancellationToken,
@@ -3152,6 +3430,7 @@ mod tests {
             http_client: None,
             execution_control: ExecutionControl::new(cancellation, &budget).owned(),
             stream_registrar: BytecodeHttpStreamRegistrar::new(resources),
+            cleanup_roots: Mutex::new(Vec::new()),
             manual_sleep_completion: Mutex::new(None),
         });
         (runtime, context)
@@ -3265,7 +3544,9 @@ mod tests {
     fn phase_5_first_poll_http_body_preserves_null_and_present_empty() {
         let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
         let null = decode_optional_http_body(&mut heap, &ValueSlot::null()).unwrap();
-        let empty_slot = heap.alloc_bytes(Vec::new()).unwrap();
+        let empty_slot = heap
+            .alloc_typed_bytes(Vec::new(), test_tag(1), ValueFlags::new(0))
+            .unwrap();
         let present_empty = decode_optional_http_body(&mut heap, &empty_slot).unwrap();
 
         assert_eq!(null, None);
@@ -3285,6 +3566,8 @@ mod tests {
                 value: "value".to_string(),
             }],
             "raw HTTP headers",
+            test_tag(2),
+            test_tag(1),
             &mut heap,
         ) {
             Err(error) => error,
@@ -3336,14 +3619,112 @@ mod tests {
 
     fn test_http_result_layout() -> HttpResultLayout {
         HttpResultLayout {
-            root: TypeIndex::new(1),
-            header: TypeIndex::new(2),
-            body: TypeIndex::new(3),
+            root_tag: test_tag(1),
+            header_tag: test_tag(2),
+            body_tag: test_tag(3),
+            string_tag: test_tag(4),
+        }
+    }
+
+    struct FailFirstHttpCleanupHeap {
+        fail_next_release: bool,
+        released: Vec<skiff_runtime_model::vm_value::VmHandle>,
+    }
+
+    impl VmHeap for FailFirstHttpCleanupHeap {
+        fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+
+        fn snapshot_share(&mut self, _source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Err(VmHeapError::InvalidValueMetadata)
+        }
+
+        fn transfer_owner(&mut self, _source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Err(VmHeapError::InvalidValueMetadata)
+        }
+
+        fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+            if self.fail_next_release {
+                self.fail_next_release = false;
+                return Err(VmHeapError::HeapOperationFailed {
+                    operation: VmHeapOperation::ReleaseSnapshot,
+                    message: "injected cleanup release failure".to_string(),
+                });
+            }
+            self.released.push(
+                owner
+                    .as_request_heap_ref()
+                    .ok_or(VmHeapError::InvalidValueMetadata)?,
+            );
+            Ok(())
+        }
+
+        fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            Err(VmHeapError::InvalidValueMetadata)
         }
     }
 
     #[test]
+    fn phase_5_http_cleanup_release_failure_keeps_owner_and_suffix_escrowed() {
+        let tag = test_tag(7);
+        let mut owned = vec![
+            ValueSlot::request_heap_ref(
+                skiff_runtime_model::vm_value::VmHandle::new(1),
+                tag,
+                ValueFlags::new(0),
+            ),
+            ValueSlot::request_heap_ref(
+                skiff_runtime_model::vm_value::VmHandle::new(2),
+                tag,
+                ValueFlags::new(0),
+            ),
+        ];
+        let escrow = Mutex::new(Vec::new());
+        let mut heap = FailFirstHttpCleanupHeap {
+            fail_next_release: true,
+            released: Vec::new(),
+        };
+        let primary = VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::AllocateRecord,
+            message: "injected allocation failure".to_string(),
+        };
+
+        let error = cleanup_http_materialized_roots(&mut heap, &mut owned, primary, &escrow);
+
+        assert!(matches!(
+            error,
+            VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseSnapshot,
+                ..
+            }
+        ));
+        assert!(owned.is_empty());
+        let mut retry = std::mem::take(&mut *escrow.lock().unwrap());
+        assert_eq!(retry.len(), 2);
+        assert!(heap.released.is_empty());
+
+        let retry_escrow = Mutex::new(Vec::new());
+        let retry_primary = VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::ReleaseSnapshot,
+            message: "retry".to_string(),
+        };
+        let _ =
+            cleanup_http_materialized_roots(&mut heap, &mut retry, retry_primary, &retry_escrow);
+        assert!(retry.is_empty());
+        assert!(retry_escrow.lock().unwrap().is_empty());
+        assert_eq!(
+            heap.released,
+            [
+                skiff_runtime_model::vm_value::VmHandle::new(2),
+                skiff_runtime_model::vm_value::VmHandle::new(1),
+            ]
+        );
+    }
+
+    #[test]
     fn phase_5_http_response_partial_materialization_releases_every_heap_owner() {
+        let cleanup_escrow = Mutex::new(Vec::new());
         let mut heap = RequestVmHeap::new(RequestHeapLimits {
             max_nodes: 2,
             ..RequestHeapLimits::default()
@@ -3355,6 +3736,7 @@ mod tests {
                 headers: Vec::new(),
                 body: b"body".to_vec(),
             },
+            &cleanup_escrow,
             &mut heap,
         ) {
             Err(error) => error,
@@ -3373,6 +3755,7 @@ mod tests {
             0,
             "failed response root allocation releases its header array and body"
         );
+        assert!(cleanup_escrow.lock().unwrap().is_empty());
     }
 
     struct EndHttpBodySource;
@@ -3394,16 +3777,115 @@ mod tests {
         }
     }
 
-    #[test]
-    fn phase_5_http_stream_partial_materialization_releases_resource_owner() {
+    fn test_http_stream_route() -> (
+        RequestExecutionContext<VmFiber>,
+        RequestResourceTable,
+        RequestResourceHandle,
+        CancellationToken,
+    ) {
         let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
         let resources = context.resource_table();
         let registrar = BytecodeHttpStreamRegistrar::new(resources.clone());
-        let source_cancellation = CancellationToken::new();
+        let cancellation = CancellationToken::new();
         let token = registrar
             .stream_runtime()
-            .pull_stream_with_cancellation(EndHttpBodySource, source_cancellation.clone());
+            .pull_stream_with_cancellation(EndHttpBodySource, cancellation.clone());
         let handle = registrar.take_exact_route(token).unwrap();
+        (context, resources, handle, cancellation)
+    }
+
+    #[test]
+    fn phase_5_http_stream_header_failure_releases_claimed_route() {
+        let (context, resources, handle, cancellation) = test_http_stream_route();
+        let cleanup_escrow = Mutex::new(Vec::new());
+        let mut heap = RequestVmHeap::for_execution(
+            resources.clone(),
+            RequestHeapLimits {
+                max_nodes: 0,
+                ..RequestHeapLimits::default()
+            },
+        );
+
+        let error = match materialize_http_stream_value(
+            test_http_result_layout(),
+            BytecodeHttpStreamResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: handle,
+            },
+            &resources,
+            &cleanup_escrow,
+            &mut heap,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("header allocation must hit the zero-node limit"),
+        };
+
+        assert!(matches!(
+            error,
+            VmHeapError::ResourceLimitExceeded {
+                operation: VmHeapOperation::AllocateArray,
+                ..
+            }
+        ));
+        assert_eq!(heap.live_value_count(), 0);
+        assert_eq!(resources.live_count(), 0);
+        assert!(
+            !cancellation.is_cancelled(),
+            "releasing one HTTP body route must not cancel its request"
+        );
+        assert!(cleanup_escrow.lock().unwrap().is_empty());
+        drop(heap);
+        drop(resources);
+        assert_eq!(context.into_not_started().resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_http_stream_body_admission_failure_releases_headers_and_route() {
+        let (context, resources, handle, cancellation) = test_http_stream_route();
+        let cleanup_escrow = Mutex::new(Vec::new());
+        // This heap deliberately has no resource-table authority, so body
+        // admission fails after the header array has been allocated.
+        let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
+
+        let error = match materialize_http_stream_value(
+            test_http_result_layout(),
+            BytecodeHttpStreamResponse {
+                status: 200,
+                headers: Vec::new(),
+                body: handle,
+            },
+            &resources,
+            &cleanup_escrow,
+            &mut heap,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("resource admission without the request table must fail"),
+        };
+
+        assert!(matches!(
+            error,
+            VmHeapError::OperationKindMismatch {
+                operation: VmHeapOperation::ValidateLive,
+                kind: ValueKind::ResourceRef,
+            }
+        ));
+        assert_eq!(heap.live_value_count(), 0);
+        assert_eq!(resources.live_count(), 0);
+        assert!(
+            !cancellation.is_cancelled(),
+            "failed route admission must not cancel its request"
+        );
+        assert!(cleanup_escrow.lock().unwrap().is_empty());
+        drop(heap);
+        drop(resources);
+        assert_eq!(context.into_not_started().resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_http_stream_partial_materialization_releases_resource_owner() {
+        let (context, resources, handle, source_cancellation) = test_http_stream_route();
+        let cleanup_escrow = Mutex::new(Vec::new());
         assert_eq!(resources.live_count(), 1);
         let mut heap = RequestVmHeap::for_execution(
             resources.clone(),
@@ -3420,6 +3902,8 @@ mod tests {
                 headers: Vec::new(),
                 body: handle,
             },
+            &resources,
+            &cleanup_escrow,
             &mut heap,
         ) {
             Err(error) => error,
@@ -3435,7 +3919,11 @@ mod tests {
         ));
         assert_eq!(heap.live_value_count(), 0);
         assert_eq!(resources.live_count(), 0);
-        assert!(source_cancellation.is_cancelled());
+        assert!(
+            !source_cancellation.is_cancelled(),
+            "partial stream materialization cleanup must remain route-local"
+        );
+        assert!(cleanup_escrow.lock().unwrap().is_empty());
         drop(heap);
         let snapshot = context.into_not_started();
         assert_eq!(snapshot.resource.current, 0);
@@ -3513,14 +4001,14 @@ mod tests {
                     name: "x".to_string(),
                     value: ValueSlot::number(1.0),
                 }],
-                CompactTypeTag::new(0),
+                test_tag(1),
                 ValueFlags::new(0),
             )
             .unwrap();
         let tags = heap
             .allocate_array(
                 &[ValueSlot::number(1.0), ValueSlot::number(2.0)],
-                CompactTypeTag::new(0),
+                test_tag(2),
                 ValueFlags::new(0),
             )
             .unwrap();
@@ -3536,7 +4024,7 @@ mod tests {
                         value: tags,
                     },
                 ],
-                CompactTypeTag::new(0),
+                test_tag(3),
                 ValueFlags::new(0),
             )
             .unwrap();
@@ -3554,8 +4042,12 @@ mod tests {
     #[test]
     fn http_response_from_vm_values_materializes_metadata_and_body() {
         let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
-        let name = heap.alloc_string("content-type".to_string()).unwrap();
-        let value = heap.alloc_string("text/plain".to_string()).unwrap();
+        let name = heap
+            .alloc_typed_string("content-type".to_string(), test_tag(1), ValueFlags::new(0))
+            .unwrap();
+        let value = heap
+            .alloc_typed_string("text/plain".to_string(), test_tag(1), ValueFlags::new(0))
+            .unwrap();
         let header = heap
             .allocate_record(
                 &[
@@ -3568,14 +4060,16 @@ mod tests {
                         value,
                     },
                 ],
-                CompactTypeTag::new(0),
+                test_tag(2),
                 ValueFlags::new(0),
             )
             .unwrap();
         let headers = heap
-            .allocate_array(&[header], CompactTypeTag::new(0), ValueFlags::new(0))
+            .allocate_array(&[header], test_tag(2), ValueFlags::new(0))
             .unwrap();
-        let body = heap.alloc_bytes(b"ok".to_vec()).unwrap();
+        let body = heap
+            .alloc_typed_bytes(b"ok".to_vec(), test_tag(3), ValueFlags::new(0))
+            .unwrap();
         let response = heap
             .allocate_record(
                 &[
@@ -3592,7 +4086,7 @@ mod tests {
                         value: body,
                     },
                 ],
-                CompactTypeTag::new(0),
+                test_tag(4),
                 ValueFlags::new(0),
             )
             .unwrap();
@@ -3787,6 +4281,7 @@ mod tests {
             http_client: None,
             execution_control: ExecutionControl::new(CancellationToken::new(), &budget).owned(),
             stream_registrar: BytecodeHttpStreamRegistrar::new(_context.resource_table()),
+            cleanup_roots: Mutex::new(Vec::new()),
             manual_sleep_completion: Mutex::new(Some(completion.clone())),
         });
         let authority = RequestPendingCompletion {
@@ -3816,6 +4311,7 @@ mod tests {
             http_client: None,
             execution_control: ExecutionControl::new(CancellationToken::new(), &budget).owned(),
             stream_registrar: BytecodeHttpStreamRegistrar::new(resources),
+            cleanup_roots: Mutex::new(Vec::new()),
             manual_sleep_completion: Mutex::new(Some(completion.clone())),
         });
         let authority = RequestPendingCompletion {

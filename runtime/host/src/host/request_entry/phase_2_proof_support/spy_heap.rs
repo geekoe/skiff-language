@@ -221,14 +221,6 @@ impl VmHeap for RecordingVmHeap {
             .allocate_representation(payload, identity, compact_type_tag, flags)
     }
 
-    fn alloc_bytes(&mut self, value: Vec<u8>) -> Result<ValueSlot, VmHeapError> {
-        self.inner.alloc_bytes(value)
-    }
-
-    fn alloc_string(&mut self, value: String) -> Result<ValueSlot, VmHeapError> {
-        self.inner.alloc_string(value)
-    }
-
     fn string_value(&self, value: &ValueSlot) -> Result<String, VmHeapError> {
         self.inner.string_value(value)
     }

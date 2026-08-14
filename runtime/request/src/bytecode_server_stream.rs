@@ -1,7 +1,7 @@
 use std::{sync::Arc, task::Poll};
 
 use skiff_artifact_model::{LiteralIr, TypeRefIr};
-use skiff_runtime_linked_bytecode::{LinkedShapeEntry, TypeIndex};
+use skiff_runtime_linked_bytecode::{LinkedShapeEntry, ShapeIndex, TypeIndex};
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{error::RuntimeErrorPayload, vm_heap::VmHeap, vm_value::ValueSlot};
 use skiff_runtime_scheduler::{
@@ -21,7 +21,7 @@ use crate::{
         SharedBytecodeServerStreamWriterPort,
     },
     bytecode_ingress::{
-        array_element_type, poll_future_once, require_exact_slot_type, require_exact_slot_type_ref,
+        array_element_type, poll_future_once, require_exact_slot_type_ref, required_slot_type,
         shape_field_type, validate_builtin_type, validate_record_carrier_fields,
         RequestPendingOutcome, RequestPendingRuntime, VmSuspended,
     },
@@ -108,12 +108,22 @@ fn decode_server_stream_headers(
         let name = heap
             .record_field(&header, "name")
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        validate_builtin_type(
+            image,
+            required_slot_type(&name, "server-stream header name")?,
+            "string",
+        )?;
         let name = heap
             .string_value(&name)
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
         let value = heap
             .record_field(&header, "value")
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        validate_builtin_type(
+            image,
+            required_slot_type(&value, "server-stream header value")?,
+            "string",
+        )?;
         let value = heap
             .string_value(&value)
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
@@ -153,29 +163,29 @@ fn validate_server_stream_tag_type(
 
 fn exact_server_stream_variant_shape<'a>(
     image: &'a DeploymentExecutionImage,
-    item_type: TypeIndex,
+    item_shape: ShapeIndex,
     expected_fields: &[&str],
 ) -> Result<&'a LinkedShapeEntry, BytecodeSchedulerError> {
-    let mut matches = image.shapes().iter().filter(|shape| {
-        shape.nominal_type() == item_type
-            && shape.fields().len() == expected_fields.len()
-            && shape
-                .fields()
-                .iter()
-                .zip(expected_fields)
-                .all(|(field, expected)| field.name() == *expected)
-    });
-    let shape = matches.next().ok_or_else(|| {
-        BytecodeSchedulerError::Port(format!(
-            "server-stream item type {} has no exact linked {:?} variant",
-            item_type.get(),
-            expected_fields
-        ))
-    })?;
-    if matches.next().is_some() {
+    let shape = image
+        .shapes()
+        .get(item_shape.get() as usize)
+        .filter(|shape| shape.index() == item_shape)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "server-stream item references missing linked shape {}",
+                item_shape.get()
+            ))
+        })?;
+    if shape.fields().len() != expected_fields.len()
+        || !shape
+            .fields()
+            .iter()
+            .zip(expected_fields)
+            .all(|(field, expected)| field.name() == *expected)
+    {
         return Err(BytecodeSchedulerError::Port(format!(
-            "server-stream item type {} has duplicate linked {:?} variants",
-            item_type.get(),
+            "server-stream item shape {} does not carry exact linked {:?} fields",
+            item_shape.get(),
             expected_fields
         )));
     }
@@ -185,6 +195,7 @@ fn exact_server_stream_variant_shape<'a>(
 fn decode_server_stream_frame(
     image: &DeploymentExecutionImage,
     item_type: TypeIndex,
+    item_shape: ShapeIndex,
     values: &[ValueSlot],
     heap: &mut dyn VmHeap,
 ) -> Result<DecodedServerStreamFrame, BytecodeSchedulerError> {
@@ -193,18 +204,49 @@ fn decode_server_stream_frame(
             "server-stream EmitStream must carry exactly one item".to_string(),
         ));
     };
-    require_exact_slot_type(item, item_type, "server-stream item")?;
-    let tag = heap
+    require_exact_slot_type_ref(image, item, item_type, "server-stream item")?;
+    let shape = image
+        .shapes()
+        .get(item_shape.get() as usize)
+        .filter(|shape| shape.index() == item_shape)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "server-stream item references missing linked shape {}",
+                item_shape.get()
+            ))
+        })?;
+    require_exact_slot_type_ref(
+        image,
+        item,
+        shape.nominal_type(),
+        "server-stream item shape",
+    )?;
+    let tag_value = heap
         .record_field(item, "tag")
         .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
     let tag = heap
-        .string_value(&tag)
+        .string_value(&tag_value)
         .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
     match tag.as_str() {
         "start" => {
-            let shape =
-                exact_server_stream_variant_shape(image, item_type, &["headers", "status", "tag"])?;
+            let shape = exact_server_stream_variant_shape(
+                image,
+                item_shape,
+                &["headers", "status", "tag"],
+            )?;
+            validate_record_carrier_fields(
+                heap,
+                item,
+                &["headers", "status", "tag"],
+                "server-stream start item",
+            )?;
             validate_server_stream_tag_type(image, shape, "start")?;
+            require_exact_slot_type_ref(
+                image,
+                &tag_value,
+                shape_field_type(shape, "tag")?,
+                "server-stream start discriminator",
+            )?;
             let status_type = shape_field_type(shape, "status")?;
             validate_builtin_type(image, status_type, "integer")?;
             let status = heap
@@ -238,21 +280,41 @@ fn decode_server_stream_frame(
             Ok(DecodedServerStreamFrame::Start { status, headers })
         }
         "chunk" => {
-            let shape = exact_server_stream_variant_shape(image, item_type, &["tag", "value"])?;
+            let shape = exact_server_stream_variant_shape(image, item_shape, &["tag", "value"])?;
+            validate_record_carrier_fields(
+                heap,
+                item,
+                &["tag", "value"],
+                "server-stream chunk item",
+            )?;
             validate_server_stream_tag_type(image, shape, "chunk")?;
+            require_exact_slot_type_ref(
+                image,
+                &tag_value,
+                shape_field_type(shape, "tag")?,
+                "server-stream chunk discriminator",
+            )?;
             let value_type = shape_field_type(shape, "value")?;
             validate_builtin_type(image, value_type, "bytes")?;
             let value = heap
                 .record_field(item, "value")
                 .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+            require_exact_slot_type_ref(image, &value, value_type, "server-stream chunk")?;
             let payload = heap
                 .bytes_value(&value)
                 .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
             Ok(DecodedServerStreamFrame::Chunk(payload))
         }
         "end" => {
-            let shape = exact_server_stream_variant_shape(image, item_type, &["tag"])?;
+            let shape = exact_server_stream_variant_shape(image, item_shape, &["tag"])?;
+            validate_record_carrier_fields(heap, item, &["tag"], "server-stream end item")?;
             validate_server_stream_tag_type(image, shape, "end")?;
+            require_exact_slot_type_ref(
+                image,
+                &tag_value,
+                shape_field_type(shape, "tag")?,
+                "server-stream end discriminator",
+            )?;
             Ok(DecodedServerStreamFrame::End)
         }
         _ => Err(BytecodeSchedulerError::Port(
@@ -289,7 +351,6 @@ fn release_stream_item_after_decode<T>(
 pub(super) struct BytecodeServerStreamSupervisor {
     runtime: Arc<RequestPendingRuntime>,
     handle: RequestResourceHandle,
-    item_type: TypeIndex,
     writer: SharedBytecodeServerStreamWriterPort,
 }
 
@@ -297,13 +358,11 @@ impl BytecodeServerStreamSupervisor {
     pub(super) fn new(
         runtime: Arc<RequestPendingRuntime>,
         handle: RequestResourceHandle,
-        item_type: TypeIndex,
         writer: SharedBytecodeServerStreamWriterPort,
     ) -> Self {
         Self {
             runtime,
             handle,
-            item_type,
             writer,
         }
     }
@@ -349,16 +408,10 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
         _budget: &mut dyn VmBudget,
     ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodeSchedulerError> {
         let prepared = prepare_root_server_stream_frame(depth, || {
-            if item.item_type() != self.item_type {
-                return Err(BytecodeSchedulerError::Port(format!(
-                    "server-stream emitted type {} does not match the linked root item type {}",
-                    item.item_type().get(),
-                    self.item_type.get()
-                )));
-            }
             decode_server_stream_frame(
                 item.resume().image(),
                 item.item_type(),
+                item.item_shape(),
                 item.item().values(),
                 heap,
             )

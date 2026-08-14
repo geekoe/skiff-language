@@ -400,17 +400,7 @@ pub trait VmHeap {
         })
     }
 
-    /// Allocates a request-local bytes heap node.
-    fn alloc_bytes(&mut self, _value: Vec<u8>) -> Result<ValueSlot, VmHeapError> {
-        Err(VmHeapError::OperationKindMismatch {
-            operation: VmHeapOperation::AllocateArray,
-            kind: ValueKind::RequestHeapRef,
-        })
-    }
-
     /// Allocates bytes carrying the exact verified concrete type metadata.
-    /// Typed host materialization must use this port instead of relying on the
-    /// untyped boundary helper.
     fn alloc_typed_bytes(
         &mut self,
         _value: Vec<u8>,
@@ -419,14 +409,6 @@ pub trait VmHeap {
     ) -> Result<ValueSlot, VmHeapError> {
         Err(VmHeapError::OperationKindMismatch {
             operation: VmHeapOperation::AllocateArray,
-            kind: ValueKind::RequestHeapRef,
-        })
-    }
-
-    /// Allocates a request-local string carrier cell.
-    fn alloc_string(&mut self, _value: String) -> Result<ValueSlot, VmHeapError> {
-        Err(VmHeapError::OperationKindMismatch {
-            operation: VmHeapOperation::AllocateRepresentation,
             kind: ValueKind::RequestHeapRef,
         })
     }

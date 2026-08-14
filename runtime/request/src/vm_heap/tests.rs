@@ -19,9 +19,16 @@ use skiff_runtime_vm::VmFiber;
 
 use super::RequestVmHeap;
 
-const TAG: CompactTypeTag = CompactTypeTag::new(17);
+const fn tag(type_index: u32) -> CompactTypeTag {
+    match CompactTypeTag::try_from_type_index(type_index) {
+        Some(tag) => tag,
+        None => panic!("test type index must fit compact tag"),
+    }
+}
+
+const TAG: CompactTypeTag = tag(17);
 const FLAGS: ValueFlags = ValueFlags::new(1);
-const RESOURCE_TAG: CompactTypeTag = CompactTypeTag::new(27);
+const RESOURCE_TAG: CompactTypeTag = tag(27);
 const RESOURCE_FLAGS: ValueFlags = ValueFlags::new(2);
 
 fn heap() -> RequestVmHeap {
@@ -546,7 +553,9 @@ fn commit_cow_failure_leaves_the_old_chain_intact() {
 #[test]
 fn map_get_put_and_entry_at_roundtrip() {
     let mut heap = heap();
-    let key = heap.alloc_string("a").expect("string key should allocate");
+    let key = heap
+        .alloc_typed_string("a".to_string(), TAG, FLAGS)
+        .expect("string key should allocate");
     let map = heap
         .allocate_map(&[], TAG, FLAGS)
         .expect("map should allocate");
@@ -599,7 +608,9 @@ fn record_field_writable_path_and_representation() {
     assert!(replacement == record);
     assert!(heap.record_field(&record, "count") == Ok(ValueSlot::bool(true)));
 
-    let payload = heap.alloc_string("payload").expect("payload string");
+    let payload = heap
+        .alloc_typed_string("payload".to_string(), TAG, FLAGS)
+        .expect("payload string");
     let representation = heap
         .allocate_representation(&payload, local_identity(4), TAG, FLAGS)
         .expect("representation should allocate");
@@ -751,7 +762,7 @@ fn phase_5_resource_request_heap_admits_validates_moves_and_drops_exact_route() 
     assert!(heap.transfer_owner(&slot) == Ok(slot));
     let forged = ValueSlot::resource_ref(
         handle.vm_handle(),
-        CompactTypeTag::new(RESOURCE_TAG.get() + 1),
+        tag(RESOURCE_TAG.type_index() + 1),
         RESOURCE_FLAGS,
     );
     assert_eq!(
@@ -773,8 +784,8 @@ fn phase_5_resource_request_heap_admits_validates_moves_and_drops_exact_route() 
 #[test]
 fn phase_5_first_poll_typed_host_carriers_keep_nonzero_verified_metadata() {
     let mut heap = heap();
-    let bytes_tag = CompactTypeTag::new(71);
-    let string_tag = CompactTypeTag::new(72);
+    let bytes_tag = tag(71);
+    let string_tag = tag(72);
     let flags = ValueFlags::new(5);
     let bytes = heap
         .alloc_typed_bytes(b"typed".to_vec(), bytes_tag, flags)
@@ -783,16 +794,16 @@ fn phase_5_first_poll_typed_host_carriers_keep_nonzero_verified_metadata() {
         .alloc_typed_string("header".to_string(), string_tag, flags)
         .unwrap();
 
-    assert_eq!(bytes.compact_type_tag(), bytes_tag);
+    assert_eq!(bytes.compact_type_tag(), Some(bytes_tag));
     assert_eq!(bytes.flags(), flags);
     assert_eq!(heap.bytes_value(&bytes).unwrap(), b"typed");
-    assert_eq!(string.compact_type_tag(), string_tag);
+    assert_eq!(string.compact_type_tag(), Some(string_tag));
     assert_eq!(string.flags(), flags);
     assert_eq!(heap.string_value(&string).unwrap(), "header");
 
     let drifted_bytes = ValueSlot::request_heap_ref(
         bytes.as_request_heap_ref().unwrap(),
-        CompactTypeTag::new(bytes_tag.get() + 1),
+        tag(bytes_tag.type_index() + 1),
         flags,
     );
     let drifted_string = ValueSlot::request_heap_ref(
