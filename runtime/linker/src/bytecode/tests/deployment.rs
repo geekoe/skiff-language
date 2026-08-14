@@ -30,6 +30,7 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeLoader, FilesystemDeploymentBytecodeContentResolver, HydratedBytecodePackage,
+    HydratedDeploymentBytecode,
 };
 
 use crate::bytecode::{
@@ -130,8 +131,10 @@ fn atomic_image_exposes_image_owned_runtime_views_without_effect_certificate() {
 
 #[test]
 fn atomic_image_resume_view_rejects_swapped_descriptor_with_typed_construction_error() {
-    let fixture = Fixture::host();
-    let hydrated = fixture.hydrate();
+    let hydrated = production_hydrated_deployment(
+        "runtime/host/src/host/request_entry/phase_4_proof_support/fixtures/vcp4-sleep",
+        "swapped-resume",
+    );
     let candidate = link_deployment_backend_for_test(&hydrated, &super::generous_limits()).unwrap();
     let mut parts = clone_candidate_parts(&candidate);
     let original = parts.resume_sites[0].clone();
@@ -863,6 +866,16 @@ fn function<'a>(candidate: &'a LinkedBytecodeCandidate, key: &str) -> &'a Linked
 }
 
 fn production_execution_image(fixture_relative: &str, label: &str) -> DeploymentExecutionImage {
+    let hydrated = production_hydrated_deployment(fixture_relative, label);
+    link_deployment_execution_image(hydrated, &super::generous_execution_limits()).unwrap_or_else(
+        |error| panic!("production atomic image construction accepts {label}: {error}"),
+    )
+}
+
+fn production_hydrated_deployment(
+    fixture_relative: &str,
+    label: &str,
+) -> HydratedDeploymentBytecode {
     let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|path| path.parent())
@@ -901,11 +914,9 @@ fn production_execution_image(fixture_relative: &str, label: &str) -> Deployment
     .expect("authoring deployment receipt remains typed");
     let resolver = FilesystemDeploymentBytecodeContentResolver::open(&artifact_root.0)
         .expect("open production artifact resolver");
-    let hydrated = DeploymentBytecodeLoader::new(&resolver)
+    DeploymentBytecodeLoader::new(&resolver)
         .load(&deployment)
-        .expect("load exact production deployment");
-    link_deployment_execution_image(hydrated, &super::generous_execution_limits())
-        .unwrap_or_else(|error| panic!("production link and verification accept {label}: {error}"))
+        .expect("load exact production deployment")
 }
 
 fn statement_manifest(
