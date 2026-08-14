@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    bytecode::limits, BytecodeConstantRef, BytecodePoolEntry, BytecodePools, ExprIr,
-    FrozenConstantGraph, FrozenConstantNode, NominalTypeRefBaseIr, ResumeDescriptor,
-    ShapeDeclaration, ShapeFieldDeclaration, TypeRefIr, ValueTransferPlan, WritablePathDeclaration,
-    WritablePathSegment,
+    bytecode::limits, BytecodeConstantRef, BytecodePoolEntry, BytecodePools,
+    CallableRegistryTypeExpression, ExprIr, FrozenConstantGraph, FrozenConstantNode,
+    NativeResourceDropPlan, NativeValueDropPlan, NativeValueLifecycleConcrete,
+    NominalTypeRefBaseIr, PackageRefIr, PrivilegedAffineCompositeIdentity, ResourceDropPlan,
+    ResumeDescriptor, ShapeDeclaration, ShapeFieldDeclaration, TypeRefIr, ValueDropPlan,
+    ValueTransferPlan, WritablePathDeclaration, WritablePathSegment,
 };
 use skiff_compiler_core::type_ref::{map_type_ref, walk_type_ref};
 use skiff_compiler_lowering::mir::{MirFunction, MirUnit};
@@ -102,20 +104,31 @@ impl ConstantImage {
         context: &str,
     ) -> Result<u32, BytecodeEmissionError> {
         let type_ref = self.intern_type(module_path, ty, context)?;
+        let privileged_schema = privileged_affine_schema(ty).cloned();
+        if let Some(schema) = &privileged_schema {
+            validate_privileged_fields(schema, fields, context)?;
+        }
         let field_declarations = fields
             .iter()
-            .map(|(name, field_ty)| {
+            .enumerate()
+            .map(|(ordinal, (name, field_ty))| {
                 let field_type_ref = self.intern_type(module_path, field_ty, context)?;
                 let qualified = qualify_local_types(module_path, field_ty);
                 Ok(ShapeFieldDeclaration {
                     name: name.clone(),
                     type_ref: field_type_ref,
-                    plan: ValueTransferPlan::FromType { ty: qualified },
+                    plan: match &privileged_schema {
+                        Some(schema) => {
+                            privileged_field_plan(&schema.fields[ordinal].lifecycle, context)?
+                        }
+                        None => ValueTransferPlan::FromType { ty: qualified },
+                    },
                 })
             })
             .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
         let shape = ShapeDeclaration {
             type_ref,
+            privileged_affine_composite: privileged_schema.as_ref().map(|schema| schema.identity),
             fields: field_declarations,
         };
         let key = serde_json::to_string(&shape).map_err(|error| {
@@ -197,6 +210,138 @@ impl ConstantImage {
             limits::MAX_POOL_ENTRIES,
         )?;
         Ok(index)
+    }
+}
+
+pub(crate) fn privileged_affine_identity(
+    ty: &TypeRefIr,
+) -> Option<PrivilegedAffineCompositeIdentity> {
+    privileged_affine_schema(ty).map(|schema| schema.identity)
+}
+
+fn privileged_affine_schema(
+    ty: &TypeRefIr,
+) -> Option<&'static skiff_artifact_model::PrivilegedAffineCompositeSchema> {
+    let symbol = match ty {
+        TypeRefIr::PackageSymbol { symbol } => symbol,
+        TypeRefIr::AppliedNominal {
+            base: NominalTypeRefBaseIr::PackageSymbol { symbol },
+            arguments,
+        } if arguments.is_empty() => symbol,
+        _ => return None,
+    };
+    skiff_artifact_model::native_value_lifecycle_registry()
+        .privileged_affine_composite_for_symbol(symbol)
+}
+
+fn validate_privileged_fields(
+    schema: &skiff_artifact_model::PrivilegedAffineCompositeSchema,
+    fields: &BTreeMap<String, TypeRefIr>,
+    context: &str,
+) -> Result<(), BytecodeEmissionError> {
+    if fields.len() != schema.fields.len() {
+        return Err(BytecodeEmissionError::CanonicalSerialization {
+            context: context.to_string(),
+            message: format!(
+                "privileged affine composite {:?} has {} fields, expected {}",
+                schema.identity,
+                fields.len(),
+                schema.fields.len()
+            ),
+        });
+    }
+    for ((actual_name, actual_ty), expected) in fields.iter().zip(&schema.fields) {
+        if actual_name != &expected.name || !registry_type_matches(&expected.ty, actual_ty) {
+            return Err(BytecodeEmissionError::CanonicalSerialization {
+                context: context.to_string(),
+                message: format!(
+                    "privileged affine composite {:?} field `{actual_name}` does not match exact registry field `{}`",
+                    schema.identity, expected.name
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn registry_type_matches(expected: &CallableRegistryTypeExpression, actual: &TypeRefIr) -> bool {
+    match (expected, actual) {
+        (
+            CallableRegistryTypeExpression::Builtin { name, arguments },
+            TypeRefIr::Builtin {
+                name: actual_name,
+                args,
+            },
+        ) => {
+            name == actual_name
+                && arguments.len() == args.len()
+                && arguments
+                    .iter()
+                    .zip(args)
+                    .all(|(expected, actual)| registry_type_matches(expected, actual))
+        }
+        (
+            CallableRegistryTypeExpression::PackageSymbol {
+                package_id,
+                symbol_path,
+            },
+            TypeRefIr::PackageSymbol { symbol },
+        ) => {
+            matches!(
+                &symbol.package,
+                PackageRefIr::PackageId {
+                    package_id: actual_package
+                } if actual_package == package_id
+            ) && symbol.symbol_path == *symbol_path
+        }
+        _ => false,
+    }
+}
+
+fn privileged_field_plan(
+    lifecycle: &NativeValueLifecycleConcrete,
+    context: &str,
+) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+    match lifecycle {
+        NativeValueLifecycleConcrete::SnapshotShare { drop } => {
+            Ok(ValueTransferPlan::SnapshotShare {
+                drop: match drop {
+                    NativeValueDropPlan::Trivial => ValueDropPlan::Trivial,
+                    NativeValueDropPlan::SnapshotRelease => ValueDropPlan::SnapshotRelease,
+                    NativeValueDropPlan::PrivilegedRecursiveShape
+                    | NativeValueDropPlan::NativeAdapter { .. } => {
+                        return Err(BytecodeEmissionError::CanonicalSerialization {
+                            context: context.to_string(),
+                            message: "privileged affine field has a non-local snapshot drop plan"
+                                .to_string(),
+                        })
+                    }
+                },
+            })
+        }
+        NativeValueLifecycleConcrete::AffineResource { drop } => {
+            let drop = match drop {
+                NativeResourceDropPlan::ResourceTableRelease => {
+                    ResourceDropPlan::ResourceTableRelease
+                }
+                NativeResourceDropPlan::NativeAdapter { .. } => {
+                    return Err(BytecodeEmissionError::CanonicalSerialization {
+                        context: context.to_string(),
+                        message: "privileged affine field has an unbound native drop adapter"
+                            .to_string(),
+                    })
+                }
+            };
+            Ok(ValueTransferPlan::AffineResource { drop })
+        }
+        NativeValueLifecycleConcrete::MoveOnly { .. }
+        | NativeValueLifecycleConcrete::ExplicitCloneLease { .. } => {
+            Err(BytecodeEmissionError::CanonicalSerialization {
+                context: context.to_string(),
+                message: "privileged affine field lifecycle is outside the pinned compiler carrier"
+                    .to_string(),
+            })
+        }
     }
 }
 
@@ -552,6 +697,7 @@ fn relocate_constant_shape(
     }
     let declaration = ShapeDeclaration {
         type_ref: owner_ref,
+        privileged_affine_composite: None,
         fields,
     };
     let key = serde_json::to_string(&declaration).map_err(|error| {

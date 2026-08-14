@@ -255,6 +255,9 @@ impl<'facts, 'registry> Classifier<'facts, 'registry> {
         substitutions: &BTreeMap<String, Classification>,
     ) -> Result<Classification, SourceValueTransferError> {
         let stable_symbol = self.stable_package_symbol(symbol)?;
+        if let Some(classification) = self.classify_privileged_package(stable_symbol.clone(), &[]) {
+            return classification;
+        }
         if self.registry_owns_package_symbol(&stable_symbol) {
             return self.classify_registry_package(module_path, stable_symbol, &[], substitutions);
         }
@@ -278,6 +281,11 @@ impl<'facts, 'registry> Classifier<'facts, 'registry> {
     ) -> Result<Classification, SourceValueTransferError> {
         let stable_base = self.stable_nominal_base(module_path, base)?;
         if let NominalTypeRefBaseIr::PackageSymbol { symbol } = &stable_base {
+            if let Some(classification) =
+                self.classify_privileged_package(symbol.clone(), arguments)
+            {
+                return classification;
+            }
             if self.registry_owns_package_symbol(symbol) {
                 return self.classify_registry_package(
                     module_path,

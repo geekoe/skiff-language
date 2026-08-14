@@ -189,14 +189,40 @@ fn admit_function(
                     ),
                 )
             })?;
-    admit_type(
-        units,
-        unit,
-        function_key,
-        &function.return_type,
-        true,
-        "return type",
-    )?;
+    if let Some(stream) = &function.stream_result {
+        let TypeRefIr::Builtin { name, args } = &function.return_type else {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Stream,
+                "stream result authority without Stream<T> return type",
+            ));
+        };
+        if name != "Stream" || args.as_slice() != [stream.item_type.clone()] {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Stream,
+                "stream result authority differs from Stream<T> return type",
+            ));
+        }
+        admit_stream_carried_type(
+            units,
+            unit,
+            function_key,
+            &stream.item_type,
+            "server-stream result item type",
+        )?;
+    } else {
+        admit_type(
+            units,
+            unit,
+            function_key,
+            &function.return_type,
+            true,
+            "return type",
+        )?;
+    }
     let mut parameter_slots = BTreeSet::new();
     for (parameter_index, parameter) in function.params.iter().enumerate() {
         if parameter.mode == MirParamMode::InOut {
@@ -281,15 +307,13 @@ fn admit_function(
         ));
     }
     admit_exception_regions(unit, function_key, function)?;
-    if function.stream_result.is_some() {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::Stream,
-            "stream result facts",
-        ));
-    }
-    admit_effects(unit, function_key, function, &function.effect_summary)?;
+    admit_effects_with_authority(
+        unit,
+        function_key,
+        function,
+        &function.effect_summary,
+        &host_effects,
+    )?;
     if let CallableEffectSummary::Analyzed { effects } = &function.effect_summary {
         host_effects
             .validate_effect_coverage(effects)
@@ -316,7 +340,14 @@ fn admit_function(
     }
     for block in &function.blocks {
         for statement in &block.statements {
-            admit_statement(units, unit, function_key, function, statement)?;
+            admit_statement_with_authority(
+                units,
+                unit,
+                function_key,
+                function,
+                statement,
+                &host_effects,
+            )?;
         }
     }
     if let Some(reason) = function.source_event_plan.unavailable_reason() {
@@ -461,11 +492,25 @@ fn function_contains_throw(function: &MirFunction) -> bool {
         .any(|expression| matches!(expression.expression, ExprIr::Throw { .. }))
 }
 
+#[cfg(test)]
 fn admit_effects(
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
     summary: &CallableEffectSummary,
+) -> Result<(), BytecodeEmissionError> {
+    let host_effects =
+        HostEffectAdmissions::analyze(function, CANONICAL_DURATION_MILLISECONDS_BINDING_KEY)
+            .unwrap_or_default();
+    admit_effects_with_authority(unit, function_key, function, summary, &host_effects)
+}
+
+fn admit_effects_with_authority(
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    summary: &CallableEffectSummary,
+    host_effects: &HostEffectAdmissions,
 ) -> Result<(), BytecodeEmissionError> {
     let effects = match summary {
         CallableEffectSummary::Unknown { .. } => {
@@ -500,18 +545,41 @@ fn admit_effects(
                 "throw inside a may-pending function",
             ));
         }
-        // Phase 4 gate 1 narrows the pending face to the exact trace produced
-        // by a canonical `std.time.sleep` call: `mayPending` plus the single
-        // `NativeCall` category. Every other pending trace (service, stream,
-        // actor, unknown, or any category mix) stays fail closed. A
-        // `mayPending` flag that disagrees with the category trace is a fact
-        // drift and keeps the same stable rejection.
-        let canonical_sleep_pending = effects.may_pending
-            && matches!(
-                effects.pending_effect_categories.as_slice(),
-                [PendingEffectCategory::NativeCall] | [PendingEffectCategory::HostEffect]
-            );
-        if !canonical_sleep_pending {
+        let stream_pending = host_effects.has_stream_pending()
+            || (function.stream_result.is_some()
+                && function.blocks.iter().any(|block| {
+                    block
+                        .statements
+                        .iter()
+                        .any(|statement| matches!(statement.kind, MirStmtKind::Emit { .. }))
+                }));
+        let mut host_category = false;
+        let mut stream_category = false;
+        let mut seen = BTreeSet::new();
+        let exact_categories = effects.pending_effect_categories.iter().all(|category| {
+            if !seen.insert(*category) {
+                return false;
+            }
+            match category {
+                PendingEffectCategory::NativeCall | PendingEffectCategory::HostEffect
+                    if host_effects.has_host_pending() && !host_category =>
+                {
+                    host_category = true;
+                    true
+                }
+                PendingEffectCategory::Stream if stream_pending && !stream_category => {
+                    stream_category = true;
+                    true
+                }
+                _ => false,
+            }
+        });
+        if !effects.may_pending
+            || effects.pending_effect_categories.is_empty()
+            || !exact_categories
+            || host_category != host_effects.has_host_pending()
+            || stream_category != stream_pending
+        {
             return Err(rejected_function(
                 unit,
                 function_key,
@@ -534,12 +602,34 @@ fn admit_effects(
     Ok(())
 }
 
+#[cfg(test)]
 fn admit_statement(
     units: &[MirUnit],
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
     statement: &skiff_compiler_lowering::mir::MirStmt,
+) -> Result<(), BytecodeEmissionError> {
+    let host_effects =
+        HostEffectAdmissions::analyze(function, CANONICAL_DURATION_MILLISECONDS_BINDING_KEY)
+            .unwrap_or_default();
+    admit_statement_with_authority(
+        units,
+        unit,
+        function_key,
+        function,
+        statement,
+        &host_effects,
+    )
+}
+
+fn admit_statement_with_authority(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    statement: &skiff_compiler_lowering::mir::MirStmt,
+    host_effects: &HostEffectAdmissions,
 ) -> Result<(), BytecodeEmissionError> {
     let capability = match &statement.kind {
         MirStmtKind::InitSlot { slot, value } => {
@@ -556,6 +646,17 @@ fn admit_statement(
         }
         MirStmtKind::Expr { .. } | MirStmtKind::If { .. } => None,
         MirStmtKind::Return { value } => {
+            if function.stream_result.is_some() && value.is_some() {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Stream,
+                    &format!(
+                        "statement {} returns a value from a server-stream producer",
+                        statement.statement_index
+                    ),
+                ));
+            }
             if let Some(value) = value.as_ref() {
                 if is_tail_local_call(function, value.expression) {
                     if let Some(callee) = tail_local_call_callee(unit, function, value.expression) {
@@ -603,10 +704,44 @@ fn admit_statement(
             function.slot(*exception_slot)?;
             None
         }
-        MirStmtKind::Emit { .. } | MirStmtKind::StreamNext { .. } => {
-            Some(Phase1UnsupportedCapability::Stream)
+        MirStmtKind::Emit { operation, value } => {
+            let Some(stream) = &function.stream_result else {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Stream,
+                    &format!(
+                        "statement {} emit without server-stream authority",
+                        statement.statement_index
+                    ),
+                ));
+            };
+            let value_type = &function.expression(*value)?.ty;
+            if !operation.is_empty() || value_type != &stream.item_type {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Stream,
+                    &format!(
+                        "statement {} emit differs from exact stream item facts",
+                        statement.statement_index
+                    ),
+                ));
+            }
+            None
         }
+        MirStmtKind::StreamNext { .. }
+            if host_effects.admits_stream_next(statement.statement_index) =>
+        {
+            None
+        }
+        MirStmtKind::StreamNext { .. } => Some(Phase1UnsupportedCapability::Stream),
         MirStmtKind::TestEffectRegister { .. } => Some(Phase1UnsupportedCapability::HostTarget),
+        MirStmtKind::ForIn { .. }
+            if host_effects.admits_stream_for_in(statement.statement_index) =>
+        {
+            None
+        }
         MirStmtKind::Dispatch { .. }
         | MirStmtKind::ForIn { .. }
         | MirStmtKind::While { .. }
@@ -823,6 +958,7 @@ fn admit_expression_with_host_effects(
     host_effects: &HostEffectAdmissions,
 ) -> Result<(), BytecodeEmissionError> {
     let registry_authorities = host_effects.expression_authorities(expression.index);
+    let server_stream_item = server_stream_emit_item_type(function, expression.index);
     if let ExprIr::Call { call } = &expression.expression {
         admit_call(
             units,
@@ -871,7 +1007,23 @@ fn admit_expression_with_host_effects(
                 expression: expression.index,
             },
         )?;
-    if !registry_authorities
+    if let Some(item_type) = server_stream_item {
+        if item_type != &expression.ty {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Stream,
+                &format!("expression {} emit item type", expression.index),
+            ));
+        }
+        admit_stream_carried_type(
+            units,
+            unit,
+            function_key,
+            &expression.ty,
+            &format!("expression {} server-stream item", expression.index),
+        )?;
+    } else if !registry_authorities
         .iter()
         .any(|authority| authority.admits(&expression.ty))
     {
@@ -893,13 +1045,26 @@ fn admit_expression_with_host_effects(
             &format!("expression {} writable facts", expression.index),
         ));
     }
-    if expression.stream_result.is_some() {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::Stream,
-            &format!("expression {} stream facts", expression.index),
-        ));
+    if let Some(stream) = &expression.stream_result {
+        let exact_stream_authority = registry_authorities.iter().any(|authority| {
+            authority.admits(&expression.ty)
+                && matches!(
+                    &expression.ty,
+                    TypeRefIr::Builtin { name, args }
+                        if name == "Stream" && args.as_slice() == [stream.item_type.clone()]
+                )
+        });
+        if !exact_stream_authority {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Stream,
+                &format!(
+                    "expression {} stream facts lack exact producer authority",
+                    expression.index
+                ),
+            ));
+        }
     }
     if expression.remote_interface.is_some() {
         return Err(rejected_function(
@@ -1561,6 +1726,49 @@ fn admit_type(
     location: &str,
 ) -> Result<(), BytecodeEmissionError> {
     admit_type_with_discriminator_flag(units, unit, function_key, ty, allow_void, location, false)
+}
+
+fn admit_stream_carried_type(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    ty: &TypeRefIr,
+    location: &str,
+) -> Result<(), BytecodeEmissionError> {
+    match ty {
+        TypeRefIr::Builtin { name, args }
+            if args.is_empty() && matches!(name.as_str(), "string" | "bytes") =>
+        {
+            Ok(())
+        }
+        TypeRefIr::Nullable { inner } => {
+            admit_stream_carried_type(units, unit, function_key, inner, location)
+        }
+        TypeRefIr::Builtin { name, args }
+            if matches!(name.as_str(), "Array" | "Nullable") && args.len() == 1 =>
+        {
+            admit_stream_carried_type(units, unit, function_key, &args[0], location)
+        }
+        _ => admit_type(units, unit, function_key, ty, false, location),
+    }
+}
+
+fn server_stream_emit_item_type(
+    function: &MirFunction,
+    expression_index: u32,
+) -> Option<&TypeRefIr> {
+    let stream = function.stream_result.as_ref()?;
+    function
+        .blocks
+        .iter()
+        .flat_map(|block| &block.statements)
+        .any(|statement| {
+            matches!(
+                &statement.kind,
+                MirStmtKind::Emit { value, .. } if value.expression == expression_index
+            )
+        })
+        .then_some(&stream.item_type)
 }
 
 fn admit_type_with_registry_authority(
@@ -2360,7 +2568,6 @@ mod tests {
 
     #[test]
     fn phase_4_admission_admits_canonical_host_effect_pending_trace() {
-        let units = [unit(Vec::new(), Vec::new())];
         let summary = CallableEffectSummary::Analyzed {
             effects: CallableMayEffects {
                 escapes_caller_value: false,
@@ -2371,8 +2578,17 @@ mod tests {
                 inout_path_effects: Vec::new(),
             },
         };
-        let function = function();
-        admit_effects(&units[0], FUNCTION_KEY, &function, &summary).expect(
+        let mut function = sleep_call_function(
+            canonical_duration_type(),
+            native_call(
+                native_target("std.time", "sleep", Some("std.time.sleep")),
+                vec![ExprRefIr { expression: 0 }],
+            ),
+            TypeRefIr::builtin("void"),
+        );
+        function.effect_summary = summary.clone();
+        let units = [unit(vec![function], Vec::new())];
+        admit_effects(&units[0], FUNCTION_KEY, &units[0].functions[0], &summary).expect(
             "the production std.time.sleep trace is the canonical HostEffect pending category",
         );
     }

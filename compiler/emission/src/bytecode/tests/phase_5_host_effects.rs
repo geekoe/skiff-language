@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use skiff_artifact_model::{
-    bytecode::BoundedDecoder, BytecodeRelocation, HostEffectExecutorIdentity, Opcode,
-    ValueTransferPlan,
+    bytecode::BoundedDecoder, BytecodePoolEntry, BytecodeRelocation, HostEffectExecutorIdentity,
+    Opcode, PrivilegedAffineCompositeIdentity, ResourceDropPlan, ValueDropPlan, ValueTransferPlan,
 };
 use skiff_compiler_lowering::{
     mir::source_program::{lower_single_source_program, SingleSourceProgram},
@@ -128,6 +128,112 @@ function stream(input: std.http.HttpClientRequest) -> void {
             .count(),
         3
     );
+}
+
+#[test]
+fn exact_stream_body_flows_from_real_source_to_affine_take_and_recursive_drop() {
+    let lowered = lower(
+        r#"
+import std
+
+function consume(input: std.http.HttpClientRequest) -> void {
+  final response = std.http.stream(input)
+  for chunk in response.body {
+  }
+}
+"#,
+    );
+    let admitted = admit_phase_1_bytecode_mir(lowered.mir_units())
+        .expect("exact host result/body/for-in MIR facts are admitted");
+    let plans = derive_bytecode_value_transfer_plans(&admitted, |_module_path, ty| {
+        Ok(ValueTransferPlan::FromType { ty: ty.clone() })
+    })
+    .expect("source plans defer only the pool-local privileged shape binding");
+    let bundles = lowered
+        .file_ir_units()
+        .iter()
+        .map(|unit| {
+            ConstEvaluator::new(Bounds::default())
+                .evaluate_unit(unit)
+                .expect("constant-free source has an exact empty bundle")
+        })
+        .collect::<Vec<_>>();
+    let artifact = emit_bytecode_artifact(&admitted, &bundles, &plans)
+        .expect("public emission closes the exact privileged shape authority");
+    let function = artifact
+        .image
+        .functions
+        .get("main::consume")
+        .expect("real source function is published under its canonical key");
+    let decoded = BoundedDecoder::new()
+        .decode_function(&function.words)
+        .expect("affine source emits decodable wordcode");
+    let take = decoded
+        .instructions
+        .windows(2)
+        .find(|pair| {
+            pair[0].descriptor.kind == Opcode::TakeSlot
+                && pair[1].descriptor.kind == Opcode::TakeDenseField
+        })
+        .expect("body projection is one adjacent consume-whole affine take");
+    let shape_ref = take[1].operand(0);
+    assert_eq!(take[1].operand(1), 0, "body is exact dense ordinal zero");
+    let Some(BytecodePoolEntry::ShapeRef { shape }) =
+        artifact.image.pools.shapes.get(shape_ref as usize)
+    else {
+        panic!("TakeDenseField does not reference a shape declaration")
+    };
+    assert_eq!(
+        shape.privileged_affine_composite,
+        Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
+    );
+    assert_eq!(shape.fields[0].name, "body");
+    assert_eq!(
+        shape.fields[0].plan,
+        ValueTransferPlan::AffineResource {
+            drop: ResourceDropPlan::ResourceTableRelease,
+        }
+    );
+    assert!(function.frame_layout.slot_plans.iter().any(|plan| {
+        matches!(
+            plan,
+            ValueTransferPlan::MoveOnly {
+                drop: ValueDropPlan::RecursiveShape {
+                    shape_ref: root_shape
+                }
+            } if *root_shape == shape_ref
+        )
+    }));
+    assert!(decoded
+        .instructions
+        .iter()
+        .any(|instruction| instruction.descriptor.kind == Opcode::StreamNext));
+}
+
+#[test]
+fn a_second_real_source_body_take_fails_before_emission() {
+    let lowered = lower(
+        r#"
+import std
+
+function consume(input: std.http.HttpClientRequest) -> void {
+  final response = std.http.stream(input)
+  for first in response.body {
+  }
+  for second in response.body {
+  }
+}
+"#,
+    );
+    let error = admit_phase_1_bytecode_mir(lowered.mir_units())
+        .expect_err("a second affine take must not acquire compiler authority");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedPhase1Capability {
+            capability: Phase1UnsupportedCapability::HostTarget,
+            ..
+        }
+    ));
 }
 
 #[test]

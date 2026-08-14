@@ -152,6 +152,32 @@ impl Classifier<'_, '_> {
             .any(|entry| entry.pattern.constructor == constructor)
     }
 
+    pub(super) fn classify_privileged_package(
+        &self,
+        symbol: PackageSymbolRef,
+        arguments: &[TypeRefIr],
+    ) -> Option<Result<Classification, SourceValueTransferError>> {
+        let schema = self
+            .registry
+            .privileged_affine_composite_for_symbol(&symbol)?;
+        if !arguments.is_empty() {
+            let constructor = package_constructor(&symbol);
+            return Some(Err(native_lookup_error(
+                RegistryTypeHead::PackageSymbol(symbol).diagnostic_type_ref(arguments),
+                NativeValueLifecycleLookupError::ArityMismatch {
+                    constructor,
+                    expected: vec![0],
+                    actual: arguments.len(),
+                },
+            )));
+        }
+        Some(Ok(Classification::deferred(
+            TypeRefIr::PackageSymbol { symbol },
+            Some(ValueTransferPlanKind::MoveOnly),
+            Some(schema.embedding),
+        )))
+    }
+
     pub(super) fn classify_registry_package(
         &mut self,
         module_path: &str,
@@ -400,6 +426,27 @@ impl Classifier<'_, '_> {
         Ok(match drop {
             NativeValueDropPlan::Trivial => ValueDropPlan::Trivial,
             NativeValueDropPlan::SnapshotRelease => ValueDropPlan::SnapshotRelease,
+            NativeValueDropPlan::PrivilegedRecursiveShape => {
+                let schema = self
+                    .registry
+                    .privileged_affine_composites()
+                    .iter()
+                    .find(|schema| {
+                        matches!(
+                            &schema.lifecycle,
+                            NativeValueLifecycleConcrete::MoveOnly {
+                                drop: NativeValueDropPlan::PrivilegedRecursiveShape
+                            }
+                        )
+                    })
+                    .expect("validated privileged recursive lifecycle has a registry schema");
+                return Err(
+                    SourceValueTransferError::PrivilegedCompositeRequiresEmissionShape {
+                        package_id: schema.package_id.clone(),
+                        symbol_path: schema.symbol_path.clone(),
+                    },
+                );
+            }
             NativeValueDropPlan::NativeAdapter { adapter } => ValueDropPlan::NativeAdapter {
                 adapter: self.adapter_ref(adapter, NativeValueAdapterRole::ValueDrop)?,
             },

@@ -239,3 +239,58 @@ fn package_registry_identity_and_arity_are_exact() {
         Err(SourceValueTransferError::MissingPackageSymbolAbi { .. })
     ));
 }
+
+#[test]
+fn privileged_affine_composite_is_exact_and_deferred_to_emission_shape_binding() {
+    let facts = SourceValueTransferFacts::new();
+    let exact = TypeRefIr::PackageSymbol {
+        symbol: skiff_artifact_model::PackageSymbolRef {
+            package: skiff_artifact_model::PackageRefIr::PackageId {
+                package_id: "skiff.run/std".to_string(),
+            },
+            symbol_path: "std.http.HttpClientStreamHandle".to_string(),
+            abi_expectation: Some("std-abi-fixture".to_string()),
+        },
+    };
+    assert_eq!(
+        plan(&facts, &exact),
+        Ok(ValueTransferPlan::FromType { ty: exact.clone() }),
+        "source owns the exact registry identity but cannot invent a pool-local shape ref"
+    );
+    assert!(matches!(
+        plan(&facts, &record([("handle", exact.clone())])),
+        Err(
+            SourceValueTransferError::StructuralPositionNotSnapshotShare {
+                found: ValueTransferPlanKind::MoveOnly,
+                ..
+            }
+        )
+    ));
+
+    let TypeRefIr::PackageSymbol { symbol } = exact else {
+        unreachable!()
+    };
+    let applied = TypeRefIr::AppliedNominal {
+        base: skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol },
+        arguments: vec![builtin("bytes")],
+    };
+    assert!(matches!(
+        plan(&facts, &applied),
+        Err(SourceValueTransferError::NativeLifecycleLookup { source, .. })
+            if matches!(source.as_ref(), NativeValueLifecycleLookupError::ArityMismatch { actual: 1, .. })
+    ));
+
+    let lookalike = TypeRefIr::PackageSymbol {
+        symbol: skiff_artifact_model::PackageSymbolRef {
+            package: skiff_artifact_model::PackageRefIr::PackageId {
+                package_id: "example.com/lookalike".to_string(),
+            },
+            symbol_path: "std.http.HttpClientStreamHandle".to_string(),
+            abi_expectation: Some("std-abi-fixture".to_string()),
+        },
+    };
+    assert!(matches!(
+        plan(&facts, &lookalike),
+        Err(SourceValueTransferError::MissingNominalFacts { .. })
+    ));
+}

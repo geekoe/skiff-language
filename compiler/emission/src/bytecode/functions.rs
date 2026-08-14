@@ -7,9 +7,10 @@ use skiff_artifact_model::{
     DbOperandRole, DbOperationKind, DbOperationReference, DbTargetIr, ExceptionRegion, ExprIr,
     ExprRefIr, FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
     IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
-    ParamModeIr, ParameterSlotDecl, PatternIr, RelocatableBytecodeFunction, RemoteInterfaceMethod,
-    RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, SourceMapEntry, StatementAttributionId,
-    StatementEntry, SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr,
+    ParamModeIr, ParameterSlotDecl, PatternIr, PrivilegedAffineFieldAccess,
+    RelocatableBytecodeFunction, RemoteInterfaceMethod, RemoteInterfaceRef, ResumeDescriptor,
+    ResumeErrorMode, SourceMapEntry, StatementAttributionId, StatementEntry,
+    SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan,
     WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
@@ -2289,7 +2290,13 @@ impl<'a> FunctionEmitter<'a> {
         field: &str,
     ) -> Result<(), BytecodeEmissionError> {
         let object_expression = self.function.expression(object)?;
-        let fields = self.record_shape_fields(&object_expression.ty, "field read")?;
+        let object_index = object_expression.index;
+        let object_ty = object_expression.ty.clone();
+        let object_slot = match &object_expression.expression {
+            ExprIr::LoadSlot { slot } => Some(*slot),
+            _ => None,
+        };
+        let fields = self.record_shape_fields(&object_ty, "field read")?;
         let ordinal = fields
             .keys()
             .position(|name| name == field)
@@ -2302,12 +2309,33 @@ impl<'a> FunctionEmitter<'a> {
             })?;
         let shape = self.image.intern_shape(
             self.unit.module_path.as_str(),
-            &object_expression.ty,
+            &object_ty,
             &fields,
             &format!("field read `{field}` in `{}`", self.key),
         )?;
-        self.emit_expression(object)?;
-        self.emit_op(Opcode::GetDenseField, vec![shape, ordinal as u32])?;
+        let privileged_access = super::constants::privileged_affine_identity(&object_ty)
+            .and_then(|identity| {
+                skiff_artifact_model::native_value_lifecycle_registry()
+                    .privileged_affine_composite(identity)
+            })
+            .and_then(|schema| schema.fields.get(ordinal))
+            .map(|field| field.access);
+        if privileged_access == Some(PrivilegedAffineFieldAccess::AffineTake) {
+            let Some(slot) = object_slot else {
+                return Err(unsupported(
+                    &self.key,
+                    "privileged affine field take",
+                    "the exact aggregate owner is not a source slot",
+                ));
+            };
+            self.begin_expression(object_index);
+            self.emit_op(Opcode::TakeSlot, vec![slot])?;
+            self.map_completed_expression_events(object_index)?;
+            self.emit_op(Opcode::TakeDenseField, vec![shape, ordinal as u32])?;
+        } else {
+            self.emit_expression(object)?;
+            self.emit_op(Opcode::GetDenseField, vec![shape, ordinal as u32])?;
+        }
         Ok(())
     }
 
@@ -2876,6 +2904,23 @@ impl<'a> FunctionEmitter<'a> {
             self.event_mapping.push(None);
             let header_instruction = self.emit_op(Opcode::BudgetCheckpoint, Vec::new())?;
             self.event_mapping[event_index] = Some(header_instruction);
+            let next_event_index = self.events.len();
+            self.events.push(MirSourceEvent {
+                attribution_id: StatementAttributionId::Generated {
+                    ordinal: next_generated
+                        .checked_add(1)
+                        .ok_or_else(|| arithmetic(&self.key, "stream event ordinal"))?,
+                },
+                site: InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                },
+                anchor: MirEmissionAnchor::GeneratedStatement {
+                    statement_index: 0,
+                    placement: MirStatementPlacement::BeforeStatement,
+                },
+            });
+            self.event_mapping.push(Some(self.instructions.len()));
+            debug_assert_eq!(next_event_index, self.event_mapping.len() - 1);
             self.emit_stream_next(iterable_slot, &item_ty, Some(continuation))?;
             self.emit_op(Opcode::StoreSlot, vec![item_slot])?;
             self.emit_jump_to_block(body)?;
@@ -3688,6 +3733,7 @@ impl<'a> FunctionEmitter<'a> {
                     | MirEmissionAnchor::LocalCall { .. }
                     | MirEmissionAnchor::TailLocalCallCandidate { .. }
                     | MirEmissionAnchor::BudgetCheckpoint { .. }
+                    | MirEmissionAnchor::GeneratedStatement { .. }
             ) {
                 continue;
             }
@@ -3759,7 +3805,7 @@ impl<'a> FunctionEmitter<'a> {
         Ok(rows)
     }
 
-    fn build_frame(&self) -> Result<FrameLayout, BytecodeEmissionError> {
+    fn build_frame(&mut self) -> Result<FrameLayout, BytecodeEmissionError> {
         let slot_count = self.function.slots.len() + self.generated_slots.len();
         let mut slot_type_refs = Vec::with_capacity(slot_count);
         for slot in &self.function.slots {
@@ -3780,7 +3826,26 @@ impl<'a> FunctionEmitter<'a> {
                 ),
             )?);
         }
-        let mut slot_plans = self.plans.slot_plans.clone();
+        let source_slot_plans = self
+            .function
+            .slots
+            .iter()
+            .zip(&self.plans.slot_plans)
+            .map(|(slot, plan)| {
+                let ty = slot.ty.as_ref().ok_or_else(|| {
+                    unsupported(
+                        &self.key,
+                        "frame slot type",
+                        &format!("slot `{}` has no exact type", slot.name),
+                    )
+                })?;
+                Ok((ty.clone(), plan.clone()))
+            })
+            .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
+        let mut slot_plans = Vec::with_capacity(slot_count);
+        for (ty, plan) in source_slot_plans {
+            slot_plans.push(self.bind_privileged_slot_plan(&ty, &plan)?);
+        }
         for generated in &self.generated_slots {
             let ty = generated.ty.as_ref().ok_or_else(|| {
                 unsupported(
@@ -3803,7 +3868,7 @@ impl<'a> FunctionEmitter<'a> {
         let mut parameter_slots = Vec::new();
         for parameter in &self.function.params {
             let slot = parameter.slot as usize;
-            let plan = self.plans.slot_plans.get(slot).cloned().ok_or_else(|| {
+            let plan = slot_plans.get(slot).cloned().ok_or_else(|| {
                 unsupported(
                     &self.key,
                     "parameter transfer plan",
@@ -3825,7 +3890,7 @@ impl<'a> FunctionEmitter<'a> {
                 .any(|parameter| parameter.slot == receiver.slot)
             {
                 let slot = receiver.slot as usize;
-                let plan = self.plans.slot_plans.get(slot).cloned().ok_or_else(|| {
+                let plan = slot_plans.get(slot).cloned().ok_or_else(|| {
                     unsupported(
                         &self.key,
                         "receiver transfer plan",
@@ -3889,6 +3954,56 @@ impl<'a> FunctionEmitter<'a> {
             slot_plans,
         })
     }
+
+    fn bind_privileged_slot_plan(
+        &mut self,
+        ty: &TypeRefIr,
+        source_plan: &ValueTransferPlan,
+    ) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+        let Some(identity) = super::constants::privileged_affine_identity(ty) else {
+            return Ok(source_plan.clone());
+        };
+        let ValueTransferPlan::FromType { ty: planned_ty } = source_plan else {
+            return Err(unsupported(
+                &self.key,
+                "privileged affine slot plan",
+                "source authority must defer the pool-local recursive shape binding",
+            ));
+        };
+        if !same_privileged_package_symbol(ty, planned_ty)
+            || super::constants::privileged_affine_identity(planned_ty) != Some(identity)
+        {
+            return Err(unsupported(
+                &self.key,
+                "privileged affine slot plan",
+                "FromType authority differs from the exact privileged slot type",
+            ));
+        }
+        let fields = self.record_shape_fields(ty, "privileged affine slot plan")?;
+        let shape_ref = self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            ty,
+            &fields,
+            &format!("privileged affine slot plan in `{}`", self.key),
+        )?;
+        Ok(ValueTransferPlan::MoveOnly {
+            drop: ValueDropPlan::RecursiveShape { shape_ref },
+        })
+    }
+}
+
+fn same_privileged_package_symbol(left: &TypeRefIr, right: &TypeRefIr) -> bool {
+    fn symbol(ty: &TypeRefIr) -> Option<&skiff_artifact_model::PackageSymbolRef> {
+        match ty {
+            TypeRefIr::PackageSymbol { symbol } => Some(symbol),
+            TypeRefIr::AppliedNominal {
+                base: skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol },
+                arguments,
+            } if arguments.is_empty() => Some(symbol),
+            _ => None,
+        }
+    }
+    matches!((symbol(left), symbol(right)), (Some(left), Some(right)) if left == right)
 }
 
 fn stack_effect(
@@ -3947,7 +4062,7 @@ fn stack_effect(
         | Opcode::GreaterOrEqual => (2, 1),
         Opcode::Trap | Opcode::Throw => (1, 0),
         Opcode::NewRecord => (instruction.operands[1] as usize, 1),
-        Opcode::GetDenseField | Opcode::RepresentationWrap => (1, 1),
+        Opcode::GetDenseField | Opcode::TakeDenseField | Opcode::RepresentationWrap => (1, 1),
         Opcode::SetWritablePath => (instruction.operands[2] as usize + 1, 0),
         Opcode::NewArrayBuilder | Opcode::NewMapBuilder => (0, 1),
         Opcode::ArrayBuilderPush => (2, 1),

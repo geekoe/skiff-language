@@ -306,6 +306,13 @@ pub enum SourceValueTransferError {
         expected_role: NativeValueAdapterRole,
         expected_abi_version: u32,
     },
+    #[error(
+        "privileged recursive composite `{package_id}/{symbol_path}` requires an emission-owned shape binding"
+    )]
+    PrivilegedCompositeRequiresEmissionShape {
+        package_id: String,
+        symbol_path: String,
+    },
     #[error("{position} must be SnapshotShare, found {found:?}")]
     StructuralPositionNotSnapshotShare {
         position: SourceValueTransferPosition,
