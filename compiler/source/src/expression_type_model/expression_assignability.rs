@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
 use super::{
-    object_literal_key_text,
+    object_literal_field_value, object_literal_key_text,
     object_materialization::{
         ObjectLiteralSource, ObjectMaterializationKind, ObjectMaterializationPlan,
     },
     resolved_type_from_ir, span_label, transparent_value_target, ExpressionKey,
-    ExpressionSourceMap, ResolvedTypeRef, TypeResolutionContext, TypeResolutionModel,
+    ExpressionSourceMap, ObjectLiteralContextualAuthority, ResolvedTypeRef, TypeResolutionContext,
+    TypeResolutionModel,
 };
 use skiff_artifact_model::{
     FunctionTypeParamIr, PackageRefIr, PackageTypeRef, TypeDescriptorIr, TypeRefIr,
@@ -48,6 +49,7 @@ pub(super) struct ObjectLiteralAssignabilityContext<'a> {
     pub expected: &'a ResolvedTypeRef,
     pub diagnostic_context: &'a str,
     pub source: Option<&'a ObjectLiteralSource>,
+    pub contextual_authority: ObjectLiteralContextualAuthority,
 }
 
 pub(super) struct ExpressionAssignability<'a, 'ctx> {
@@ -338,6 +340,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             expected,
             diagnostic_context: context,
             source,
+            contextual_authority: _,
         } = input;
         let actual_fields = self.object_literal_actual_fields(value, value_key, actual, source)?;
         let candidates = self.object_literal_target_candidates(annotation, expected);
@@ -349,6 +352,8 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                     &candidate,
                     &actual_fields,
                     self.expression_span(value_key),
+                    value,
+                    ObjectLiteralContextualAuthority::None,
                 )
             })
             .min_by_key(|diagnostics| diagnostics.len())
@@ -367,6 +372,7 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             expected,
             diagnostic_context: context,
             source,
+            contextual_authority,
         } = input;
         let Some(actual_fields) =
             self.object_literal_actual_fields(value, value_key, actual, source)
@@ -417,6 +423,8 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                     &candidate,
                     &actual_fields,
                     self.expression_span(value_key),
+                    value,
+                    contextual_authority,
                 );
                 (candidate, diagnostics)
             })
@@ -612,6 +620,8 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
         target: &ObjectLiteralTargetCandidate,
         actual_fields: &[ObjectLiteralActualField],
         object_span: SourceSpan,
+        value: &Expr,
+        contextual_authority: ObjectLiteralContextualAuthority,
     ) -> Vec<String> {
         let mut diagnostics = Vec::new();
         let mut provided = BTreeMap::<String, &ObjectLiteralActualField>::new();
@@ -637,7 +647,15 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
                 continue;
             };
             if let Some(actual) = &field.ty {
-                if !self.type_ir_assignable_to_resolved_expected(&actual.ir, expected) {
+                if !self.type_ir_assignable_to_resolved_expected(&actual.ir, expected)
+                    && !contextual_empty_array_field_matches(
+                        contextual_authority,
+                        value,
+                        target,
+                        field,
+                        expected,
+                    )
+                {
                     diagnostics.push(format!(
                         "{}: {context} object literal field `{}` type mismatch at {}: expected {}, found {}",
                         self.diagnostic_path,
@@ -668,6 +686,54 @@ impl<'a, 'ctx> ExpressionAssignability<'a, 'ctx> {
             .map(|fact| fact.span)
             .unwrap_or_else(SourceSpan::synthetic)
     }
+}
+
+fn contextual_empty_array_field_matches(
+    authority: ObjectLiteralContextualAuthority,
+    value: &Expr,
+    target: &ObjectLiteralTargetCandidate,
+    field: &ObjectLiteralActualField,
+    expected: &ResolvedTypeRef,
+) -> bool {
+    if authority != ObjectLiteralContextualAuthority::ExactHttpResponseStreamEmit
+        || field.name != "headers"
+        || !matches!(
+            object_literal_field_value(value, "tag"),
+            Some(Expr::Literal(crate::shared::ast::Literal::String(tag))) if tag == "start"
+        )
+        || !matches!(
+            object_literal_field_value(value, "headers"),
+            Some(Expr::ArrayLiteral { items }) if items.is_empty()
+        )
+        || !matches!(
+            field.ty.as_ref().map(|ty| &ty.ir),
+            Some(TypeRefIr::Builtin { name, args })
+                if name == BuiltinShape::Array.name()
+                    && matches!(args.as_slice(), [TypeRefIr::Builtin { name, args }]
+                        if name == BuiltinShape::Unknown.name() && args.is_empty())
+        )
+    {
+        return false;
+    }
+    let ObjectMaterializationKind::DiscriminatedUnionBranch { branch } = &target.kind else {
+        return false;
+    };
+    let TypeRefIr::Record { fields } = &branch.ir else {
+        return false;
+    };
+    let Some(TypeRefIr::Literal {
+        value: skiff_artifact_model::LiteralIr::String { value: tag },
+    }) = fields.get("tag")
+    else {
+        return false;
+    };
+    tag == "start"
+        && fields.get("headers") == Some(&expected.ir)
+        && matches!(
+            &expected.ir,
+            TypeRefIr::Builtin { name, args }
+                if name == BuiltinShape::Array.name() && args.len() == 1
+        )
 }
 
 fn builtin_object_literal_targets(

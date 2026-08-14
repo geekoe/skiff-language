@@ -1220,7 +1220,7 @@ fn admit_call(
     host_effects: &HostEffectAdmissions,
     server_stream: &ServerStreamAdmissions,
 ) -> Result<(), BytecodeEmissionError> {
-    if !call.type_args.is_empty() && !server_stream.admits_builtin_call(expression.index) {
+    if !call.type_args.is_empty() {
         return Err(rejected_function(
             unit,
             function_key,
@@ -1309,9 +1309,6 @@ fn admit_call(
                     ),
                 ));
             }
-            return Ok(());
-        }
-        CallTargetIr::Builtin { .. } if server_stream.admits_builtin_call(expression.index) => {
             return Ok(());
         }
         CallTargetIr::ReceiverBuiltin { .. }

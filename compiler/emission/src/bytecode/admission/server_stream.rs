@@ -106,7 +106,6 @@ pub(super) struct ServerStreamAdmissions {
     slots: BTreeMap<u32, TypeRefIr>,
     expressions: BTreeMap<u32, Vec<ServerStreamValueAuthority>>,
     construct_types: BTreeMap<u32, TypeRefIr>,
-    builtin_calls: BTreeSet<u32>,
     receiver_calls: BTreeSet<u32>,
     emit_statements: BTreeMap<u32, u32>,
 }
@@ -241,7 +240,6 @@ impl ServerStreamAdmissions {
             );
         }
         admissions.admit_request_body_utf8(function)?;
-        admissions.admit_response_intrinsics(function)?;
         Ok(admissions)
     }
 
@@ -261,10 +259,6 @@ impl ServerStreamAdmissions {
 
     pub(super) fn admits_construct(&self, expression: u32, ty: &TypeRefIr) -> bool {
         self.construct_types.get(&expression) == Some(ty)
-    }
-
-    pub(super) fn admits_builtin_call(&self, expression: u32) -> bool {
-        self.builtin_calls.contains(&expression)
     }
 
     pub(super) fn admits_receiver_call(&self, expression: u32) -> bool {
@@ -401,42 +395,6 @@ impl ServerStreamAdmissions {
                 ServerStreamValueRole::RequestBodyUtf8,
                 expression.ty.clone(),
             );
-        }
-        Ok(())
-    }
-
-    fn admit_response_intrinsics(&mut self, function: &MirFunction) -> Result<(), String> {
-        for expression in &function.expressions {
-            let ExprIr::Call { call } = &expression.expression else {
-                continue;
-            };
-            let CallTargetIr::Builtin { op } = &call.target else {
-                continue;
-            };
-            if op != "Array.empty"
-                || !call.args.is_empty()
-                || !call.inout_args.is_empty()
-                || call.concrete_receiver.is_some()
-                || !call.metadata.is_empty()
-                || call.type_args.len() != 1
-                || call.type_args.get("T0").is_none_or(|item| {
-                    expression.ty
-                        != (TypeRefIr::Builtin {
-                            name: "Array".to_string(),
-                            args: vec![item.clone()],
-                        })
-                })
-                || !self.has_role(
-                    expression.index,
-                    &ServerStreamValueRole::ResponseField {
-                        tag: "start".to_string(),
-                        field: "headers".to_string(),
-                    },
-                )
-            {
-                continue;
-            }
-            self.builtin_calls.insert(expression.index);
         }
         Ok(())
     }
@@ -731,7 +689,7 @@ function consume(
     timeoutMs: null,
   }
   final response = std.http.stream(outbound)
-  emit({ tag: "start", status: 207, headers: Array.empty<std.http.HttpHeader>() })
+  emit({ tag: "start", status: 207, headers: [] })
   for chunk in response.body {
     emit({ tag: "chunk", value: chunk })
   }
@@ -759,6 +717,35 @@ function consume(
             &[authority],
         )
         .expect("exact canonical gateway authority admits the real source carrier");
+    }
+
+    #[test]
+    fn static_collection_intrinsics_remain_fail_closed_in_exact_server_streams() {
+        let array_source =
+            SOURCE.replace("headers: []", "headers: Array.empty<std.http.HttpHeader>()");
+        let (array_units, array_authority) = fixture_for_source(&array_source);
+        assert!(
+            super::super::admit_phase_1_bytecode_mir_with_server_stream_authorities(
+                &array_units,
+                &[array_authority]
+            )
+            .is_err(),
+            "exact response role must not mint Array.empty intrinsic authority"
+        );
+
+        let map_source = SOURCE.replace(
+            "  final outbound =",
+            "  Map.empty<string, string>()\n  final outbound =",
+        );
+        let (map_units, map_authority) = fixture_for_source(&map_source);
+        assert!(
+            super::super::admit_phase_1_bytecode_mir_with_server_stream_authorities(
+                &map_units,
+                &[map_authority]
+            )
+            .is_err(),
+            "exact producer context must not mint Map.empty intrinsic authority"
+        );
     }
 
     #[test]
@@ -841,13 +828,17 @@ function consume(
     }
 
     fn fixture() -> (Vec<MirUnit>, ServerStreamGatewayAuthority) {
+        fixture_for_source(SOURCE)
+    }
+
+    fn fixture_for_source(source: &str) -> (Vec<MirUnit>, ServerStreamGatewayAuthority) {
         let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let lowered = lower_single_source_program(SingleSourceProgram {
             platform_root: &platform_root,
             package_id: "example.com/server-stream-authority",
             module_path: "main",
             relative_path: "main.skiff",
-            source: SOURCE,
+            source,
         })
         .expect("real server-stream source lowers");
         let mut units = super::super::package_type_authority::normalize_package_type_authorities(

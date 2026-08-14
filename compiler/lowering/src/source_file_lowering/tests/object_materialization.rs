@@ -259,6 +259,71 @@ fn object_materialization_lowers_accept_reject_nullable_and_nested_nominals_to_c
 }
 
 #[test]
+fn exact_response_start_emit_lowers_contextual_empty_headers_as_typed_array() {
+    let unit = lowered_unit(
+        r#"
+          import std
+
+          function events() -> Stream<std.http.HttpResponseStreamEvent> {
+            emit({ tag: "start", status: 207, headers: [] })
+            emit({ tag: "end" })
+            return
+          }
+        "#,
+    );
+    let executable = executable(&unit, "events");
+    let (array_index, items) = executable
+        .body
+        .expressions
+        .iter()
+        .enumerate()
+        .find_map(|(index, expression)| match expression {
+            ExprIr::ArrayLiteral { items } => Some((index, items)),
+            _ => None,
+        })
+        .expect("direct empty headers should lower as an array literal");
+    assert!(items.is_empty());
+    let TypeRefIr::Builtin { name, args } = &executable.expression_types[array_index] else {
+        panic!(
+            "empty headers should retain its source-owned Array type, found {:?}",
+            executable.expression_types[array_index]
+        )
+    };
+    assert_eq!(name, "Array");
+    let [TypeRefIr::PackageSymbol { symbol: header }] = args.as_slice() else {
+        panic!("headers should carry one exact nominal item, found {args:?}")
+    };
+    assert_eq!(
+        header.package,
+        skiff_artifact_model::PackageRefIr::PackageId {
+            package_id: "skiff.run/std".to_string()
+        }
+    );
+    assert_eq!(header.symbol_path, "std.http.HttpHeader");
+
+    let (start_index, start_type, start_fields) = executable
+        .body
+        .expressions
+        .iter()
+        .enumerate()
+        .find_map(|(index, expression)| match expression {
+            ExprIr::Construct { type_ref, fields } if fields.contains_key("headers") => {
+                Some((index, type_ref, fields))
+            }
+            _ => None,
+        })
+        .expect("start branch should lower through its source-owned union materialization");
+    let TypeRefIr::PackageSymbol { symbol: event } = start_type else {
+        panic!("start branch must retain the exact response event target: {start_type:?}")
+    };
+    assert_eq!(event.symbol_path, "std.http.HttpResponseStreamEvent");
+    assert_eq!(start_fields["headers"].expression as usize, array_index);
+    assert!(executable.body.statements.iter().any(|statement| {
+        matches!(statement, StmtIr::Emit { value, .. } if value.expression as usize == start_index)
+    }));
+}
+
+#[test]
 fn object_materialization_keeps_only_map_and_json_facts_as_map_literals() {
     let unit = lowered_unit(
         r#"

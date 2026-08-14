@@ -514,6 +514,129 @@ fn stream_emit_materializes_record_union_nullable_and_nested_object_facts() {
 }
 
 #[test]
+fn exact_http_response_start_emit_contextualizes_direct_empty_headers() {
+    let built = build(
+        r#"
+          import std
+
+          function events() -> Stream<std.http.HttpResponseStreamEvent> {
+            emit({ tag: "start", status: 207, headers: [] })
+            emit({ tag: "end" })
+            return
+          }
+        "#,
+    )
+    .expect("exact response start Emit should contextually type direct empty headers");
+
+    let headers_key = built.key("[]");
+    let headers = built
+        .model
+        .fact(&headers_key)
+        .and_then(|fact| fact.ty.as_ref())
+        .expect("empty headers should retain a concrete source type fact");
+    let TypeRefIr::Builtin { name, args } = &headers.ir else {
+        panic!(
+            "empty headers should be an exact Array, found {:?}",
+            headers.ir
+        )
+    };
+    assert_eq!(name, "Array");
+    let [TypeRefIr::PackageSymbol { symbol }] = args.as_slice() else {
+        panic!("empty headers should carry the exact HttpHeader item: {args:?}")
+    };
+    assert_eq!(
+        symbol.package,
+        skiff_artifact_model::PackageRefIr::PackageId {
+            package_id: "skiff.run/std".to_string()
+        }
+    );
+    assert_eq!(symbol.symbol_path, "std.http.HttpHeader");
+
+    let start = built.materialization(r#"{ tag: "start", status: 207, headers: [] }"#);
+    assert_eq!(union_tag(start), Some("start"));
+    assert_eq!(
+        start
+            .fields
+            .iter()
+            .find(|field| field.name == "headers")
+            .expect("start branch has headers")
+            .ty
+            .ir,
+        headers.ir
+    );
+}
+
+#[test]
+fn response_start_empty_headers_context_does_not_escape_exact_direct_emit() {
+    let cases = [
+        (
+            r#"
+              import std
+              type Lookalike discriminator "tag" =
+                { tag: "start", status: integer, headers: Array<std.http.HttpHeader> }
+                | { tag: "end" }
+
+              function events() -> Stream<Lookalike> {
+                emit({ tag: "start", status: 207, headers: [] })
+                return
+              }
+            "#,
+            "object literal field `headers` type mismatch",
+        ),
+        (
+            r#"
+              import std
+              function value() -> std.http.HttpResponseStreamEvent {
+                return { tag: "start", status: 207, headers: [] }
+              }
+            "#,
+            "object literal field `headers` type mismatch",
+        ),
+        (
+            r#"
+              import std
+              function events() -> Stream<std.http.HttpResponseStreamEvent> {
+                final headers = []
+                emit({ tag: "start", status: 207, headers: headers })
+                return
+              }
+            "#,
+            "object literal field `headers` type mismatch",
+        ),
+        (
+            r#"
+              import std
+              function events() -> Stream<std.http.HttpResponseStreamEvent> {
+                emit({ tag: "chunk", value: [] })
+                return
+              }
+            "#,
+            "object literal field `value` type mismatch",
+        ),
+        (
+            r#"
+              import std
+              function events() -> Stream<std.http.HttpResponseStreamEvent> {
+                emit({ tag: "start", status: 207, headers: Map.empty<string, string>() })
+                return
+              }
+            "#,
+            "object literal field `headers` type mismatch",
+        ),
+    ];
+
+    for (source, expected) in cases {
+        let error = build(source)
+            .expect_err("contextual empty-array authority must remain exact and direct")
+            .message();
+        assert!(
+            error.contains(expected),
+            "expected diagnostic {expected:?}, got:\n{error}"
+        );
+    }
+}
+
+#[test]
 fn stream_emit_object_and_scalar_negatives_fail_in_the_unified_type_owner() {
     let cases = [
         (

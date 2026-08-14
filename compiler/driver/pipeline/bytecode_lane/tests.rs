@@ -38,7 +38,7 @@ function consume(
   emit({
     tag: "start",
     status: 207,
-    headers: Array.empty<std.http.HttpHeader>(),
+    headers: [],
   })
   for chunk in response.body {
     emit({ tag: "chunk", value: chunk })
@@ -229,6 +229,39 @@ fn production_authoring_publishes_exact_affine_http_stream_bytecode() {
         pair[0].descriptor.kind == Opcode::TakeSlot
             && pair[1].descriptor.kind == Opcode::TakeDenseField
     }));
+    assert_eq!(
+        decoded
+            .instructions
+            .iter()
+            .filter(|instruction| instruction.descriptor.kind == Opcode::NewArrayBuilder)
+            .count(),
+        1
+    );
+    assert_eq!(
+        decoded
+            .instructions
+            .iter()
+            .filter(|instruction| instruction.descriptor.kind == Opcode::FreezeArray)
+            .count(),
+        1
+    );
+    assert_eq!(
+        function
+            .relocations
+            .iter()
+            .filter(|relocation| {
+                matches!(
+                    relocation,
+                    skiff_artifact_model::BytecodeRelocation::IntrinsicRef { intrinsic }
+                        if matches!(
+                            &intrinsic.target,
+                            skiff_artifact_model::BytecodeIntrinsicRef::Static { .. }
+                        )
+                )
+            })
+            .count(),
+        0
+    );
     let deployment_ref: skiff_artifact_model::ServiceDeploymentRef =
         serde_json::from_value(receipt["serviceDeploymentReceipt"]["deployment"].clone())
             .expect("authoring receipt carries the formal deployment reference");

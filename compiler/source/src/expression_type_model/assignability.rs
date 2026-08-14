@@ -240,6 +240,25 @@ impl<'a> OwnerChecker<'a> {
         expected: &ResolvedTypeRef,
         assignment: ValueAssignmentContext<'_>,
     ) -> bool {
+        self.check_value_assignable_to_expected_with_object_authority(
+            value,
+            value_key,
+            actual,
+            expected,
+            assignment,
+            ObjectLiteralContextualAuthority::None,
+        )
+    }
+
+    pub(super) fn check_value_assignable_to_expected_with_object_authority(
+        &mut self,
+        value: &Expr,
+        value_key: &ExpressionKey,
+        actual: &ResolvedTypeRef,
+        expected: &ResolvedTypeRef,
+        assignment: ValueAssignmentContext<'_>,
+        object_authority: ObjectLiteralContextualAuthority,
+    ) -> bool {
         let ValueAssignmentContext {
             annotation,
             exact_expected,
@@ -275,6 +294,7 @@ impl<'a> OwnerChecker<'a> {
                 &target_actual,
                 expected,
                 context,
+                object_authority,
             );
         }
         let assignability = ExpressionAssignability::new(
@@ -375,6 +395,7 @@ impl<'a> OwnerChecker<'a> {
                 expected,
                 diagnostic_context: context,
                 source: object_source,
+                contextual_authority: ObjectLiteralContextualAuthority::None,
             },
         ) {
             if !diagnostics.is_empty() {

@@ -300,6 +300,7 @@ impl<'a> OwnerChecker<'a> {
         actual: &ResolvedTypeRef,
         expected: &ResolvedTypeRef,
         context: &str,
+        object_authority: ObjectLiteralContextualAuthority,
     ) -> bool {
         self.outputs
             .object_materialization
@@ -327,6 +328,7 @@ impl<'a> OwnerChecker<'a> {
                 expected,
                 diagnostic_context: context,
                 source: object_source,
+                contextual_authority: object_authority,
             },
         ) {
             Ok(plan) => plan,
@@ -408,6 +410,14 @@ impl<'a> OwnerChecker<'a> {
         if valid {
             let map_materialization = matches!(&plan.kind, ObjectMaterializationKind::Map);
             let resolved_target = plan.resolved_target.clone();
+            let contextual_expression_type = match (object_authority, &plan.kind) {
+                (
+                    ObjectLiteralContextualAuthority::ExactHttpResponseStreamEmit,
+                    ObjectMaterializationKind::DiscriminatedUnionBranch { branch },
+                ) => Some(branch.clone()),
+                _ if map_materialization => Some(resolved_target.clone()),
+                _ => None,
+            };
             let source_fields = source
                 .fields
                 .iter()
@@ -430,9 +440,9 @@ impl<'a> OwnerChecker<'a> {
                     source_fields,
                 },
             );
-            if map_materialization {
+            if let Some(expression_type) = contextual_expression_type {
                 if let Some(fact) = self.outputs.facts.get_mut(value_key) {
-                    fact.ty = Some(resolved_target);
+                    fact.ty = Some(expression_type);
                 }
             }
         }

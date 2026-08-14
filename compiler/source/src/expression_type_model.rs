@@ -2,9 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_identity::type_ref_abi_key;
 use skiff_artifact_model::{
-    builtin_receiver_op_spec_by_name, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, BuiltinReceiverPublicReturnType,
-    LiteralIr, PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamModeIr, TypeRefIr,
+    builtin_receiver_op_spec_by_name,
+    http_boundary::{canonical_http_boundary_symbol, HTTP_RESPONSE_STREAM_EVENT_TYPE},
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr, PackageSymbolRef,
+    PackageTypeRef, ParamModeIr, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
     catch_result_branches, contains_type_param, debug_text, is_null_type, map_entry,
@@ -338,6 +340,13 @@ struct ValueAssignmentContext<'a> {
     fallback_span: SourceSpan,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ObjectLiteralContextualAuthority {
+    #[default]
+    None,
+    ExactHttpResponseStreamEmit,
+}
+
 impl ExpressionTypeModel {
     pub fn build(
         parsed_sources: &[ParsedCompilerSource],
@@ -596,6 +605,32 @@ fn direct_stream_item_type(ty: &PackageTypeRef) -> Option<&PackageTypeRef> {
             arguments.first()
         }
         _ => None,
+    }
+}
+
+fn direct_http_response_stream_emit_authority(
+    value: &Expr,
+    canonical_expected: &TypeRefIr,
+) -> ObjectLiteralContextualAuthority {
+    if !matches!(value, Expr::ObjectLiteral { .. } | Expr::MapLiteral { .. })
+        || !matches!(
+            object_literal_field_value(value, "tag"),
+            Some(Expr::Literal(Literal::String(tag))) if tag == "start"
+        )
+        || !matches!(
+            object_literal_field_value(value, "headers"),
+            Some(Expr::ArrayLiteral { items }) if items.is_empty()
+        )
+    {
+        return ObjectLiteralContextualAuthority::None;
+    }
+    match canonical_expected {
+        TypeRefIr::PackageSymbol { symbol }
+            if canonical_http_boundary_symbol(symbol) == Some(HTTP_RESPONSE_STREAM_EVENT_TYPE) =>
+        {
+            ObjectLiteralContextualAuthority::ExactHttpResponseStreamEmit
+        }
+        _ => ObjectLiteralContextualAuthority::None,
     }
 }
 
@@ -1283,7 +1318,10 @@ impl<'a> OwnerChecker<'a> {
         };
         self.record_stream_emit_target(&value_key, expected.clone());
         if let Some(actual) = actual {
-            self.check_value_assignable_to_expected(
+            let canonical_expected = self
+                .type_resolution
+                .canonicalize_type_ref_for_module(self.module_path, &expected.ir);
+            self.check_value_assignable_to_expected_with_object_authority(
                 value,
                 &value_key,
                 &actual,
@@ -1294,6 +1332,7 @@ impl<'a> OwnerChecker<'a> {
                     diagnostic_context: "emit chunk",
                     fallback_span: self.expression_span(&value_key),
                 },
+                direct_http_response_stream_emit_authority(value, &canonical_expected),
             );
         }
         false
